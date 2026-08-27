@@ -65,7 +65,7 @@ struct HostModeController {
     ) async throws -> ModeChangeReport {
         try rejectRootMutation()
 
-        let prepared = try receiptStore.withExclusiveLock {
+        return try await receiptStore.withExclusiveLock {
             let xcode = try installationInspector.validatedTargetXcode()
             let simulator: SimulatorInstallation?
             switch mode {
@@ -84,65 +84,69 @@ struct HostModeController {
             let receiptURL: URL? = try receiptStore.load() == nil
                 ? nil
                 : receiptStore.receiptURL
-            return (
+
+            var terminatedDeviceHubCount = 0
+            if let simulator {
+                var deviceHubTerminationError: (any Error)?
+                do {
+                    let deviceHubURL = xcode.applicationURL
+                        .appendingPathComponent(
+                            ToolConstants.deviceHubPath,
+                            isDirectory: true
+                        )
+                    terminatedDeviceHubCount = try await workspace.terminateDeviceHubs(
+                        deviceHubURL
+                    )
+                } catch {
+                    deviceHubTerminationError = error
+                }
+
+                var simulatorLaunchError: (any Error)?
+                do {
+                    let observed = try defaultsStore.readState()
+                    guard observed == mode.targetState else {
+                        throw conflictError(
+                            expected: mode.targetState,
+                            observed: observed
+                        )
+                    }
+                    do {
+                        _ = try await workspace.openApplication(
+                            simulator.applicationURL
+                        )
+                    } catch {
+                        simulatorLaunchError = error
+                    }
+                } catch {
+                    let category = (error as? CLIError)?.category ?? .io
+                    let terminationDetail = deviceHubTerminationError.map {
+                        " Device Hub also could not be closed: \(errorMessage($0))."
+                    } ?? ""
+                    throw CLIError(
+                        category: category,
+                        identifier: "legacy-host-invalidated",
+                        message: "legacy mode was committed, but it could not be held through the final Simulator open: \(errorMessage(error)). Simulator was not opened.\(terminationDetail)"
+                    )
+                }
+
+                if deviceHubTerminationError != nil || simulatorLaunchError != nil {
+                    throw legacyHostPartialSuccessError(
+                        receiptURL: receiptURL,
+                        deviceHubTerminationError: deviceHubTerminationError,
+                        simulatorLaunchError: simulatorLaunchError
+                    )
+                }
+            }
+
+            return ModeChangeReport(
+                mode: mode,
+                didChange: didChange,
                 xcode: xcode,
                 simulator: simulator,
-                didChange: didChange,
-                receiptURL: receiptURL
+                receiptURL: receiptURL,
+                terminatedDeviceHubCount: terminatedDeviceHubCount
             )
         }
-
-        var terminatedDeviceHubCount = 0
-        if let simulator = prepared.simulator {
-            var deviceHubTerminationError: (any Error)?
-            do {
-                let deviceHubURL = prepared.xcode.applicationURL
-                    .appendingPathComponent(
-                        ToolConstants.deviceHubPath,
-                        isDirectory: true
-                    )
-                terminatedDeviceHubCount = try await workspace.terminateDeviceHubs(
-                    deviceHubURL
-                )
-            } catch {
-                deviceHubTerminationError = error
-            }
-
-            var simulatorLaunchError: (any Error)?
-            do {
-                simulatorLaunchError = try await openLegacySimulatorIfCommitted(
-                    expected: mode.targetState,
-                    applicationURL: simulator.applicationURL
-                )
-            } catch {
-                let category = (error as? CLIError)?.category ?? .io
-                let terminationDetail = deviceHubTerminationError.map {
-                    " Device Hub also could not be closed: \(errorMessage($0))."
-                } ?? ""
-                throw CLIError(
-                    category: category,
-                    identifier: "legacy-host-invalidated",
-                    message: "legacy mode was committed, but it could not be held through the final Simulator open: \(errorMessage(error)). Simulator was not opened.\(terminationDetail)"
-                )
-            }
-
-            if deviceHubTerminationError != nil || simulatorLaunchError != nil {
-                throw legacyHostPartialSuccessError(
-                    receiptURL: prepared.receiptURL,
-                    deviceHubTerminationError: deviceHubTerminationError,
-                    simulatorLaunchError: simulatorLaunchError
-                )
-            }
-        }
-
-        return ModeChangeReport(
-            mode: mode,
-            didChange: prepared.didChange,
-            xcode: prepared.xcode,
-            simulator: prepared.simulator,
-            receiptURL: prepared.receiptURL,
-            terminatedDeviceHubCount: terminatedDeviceHubCount
-        )
     }
 
     func restore(force: Bool = false) throws -> RestoreReport {
@@ -443,24 +447,6 @@ struct HostModeController {
                 "root-user",
                 "do not run this command with sudo; it manages per-user Xcode preferences"
             )
-        }
-    }
-
-    private func openLegacySimulatorIfCommitted(
-        expected: ManagedPreferenceState,
-        applicationURL: URL
-    ) async throws -> (any Error)? {
-        try await receiptStore.withExclusiveLock {
-            let observed = try defaultsStore.readState()
-            guard observed == expected else {
-                throw conflictError(expected: expected, observed: observed)
-            }
-            do {
-                _ = try await workspace.openApplication(applicationURL)
-                return nil
-            } catch {
-                return error
-            }
         }
     }
 

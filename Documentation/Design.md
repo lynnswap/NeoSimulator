@@ -130,19 +130,21 @@ state as a new rollback point, writes and verifies the saved original values,
 then deletes the receipt. It still refuses non-Boolean preference values.
 
 Device Hub termination and opening the legacy Simulator are separate failure
-boundaries after a successful preference transaction. `WorkspaceClient` only
-terminates running applications whose resolved bundle URL exactly matches the
-validated Device Hub inside the selected Xcode. It requests normal termination,
-observes `isTerminated` through KVO, and re-enumerates the current
-`NSWorkspace` inventory until no matching process remains within one 10-second
-operation deadline. It never force-terminates Device Hub.
+boundaries after a successful preference transaction, but remain inside the
+same exclusive operation lock. `WorkspaceClient` only terminates running
+applications whose resolved bundle URL exactly matches the validated Device Hub
+inside the selected Xcode. It requests normal termination, observes
+`isTerminated` through KVO, and re-enumerates the current `NSWorkspace`
+inventory until no matching process remains within one 10-second operation
+deadline. It never force-terminates Device Hub.
 
-Because Device Hub termination suspends, `HostModeController` reacquires the
-operation lock, verifies the committed legacy state, and holds that same lock
-until `NSWorkspace.openApplication` completes. A concurrent switch therefore
-cannot commit between final verification and Simulator launch. Termination and
-launch failures are reported as partial success; the selected mode remains
-configured and can be restored.
+`HostModeController` holds the operation lock from compatibility validation
+through preference commit, Device Hub termination, final legacy-state
+verification, and `NSWorkspace.openApplication` completion. A concurrent
+switch or restore therefore cannot commit while an older legacy operation is
+still applying process lifecycle side effects. Termination and launch failures
+are reported as partial success; the selected mode remains configured and can
+be restored.
 
 `restore` remains available when the currently selected Xcode is unsupported or
 running. It deletes the receipt only after the original values are read back.

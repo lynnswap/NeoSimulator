@@ -177,7 +177,7 @@ final class WorkspaceRecorder {
     var runningXcodes: [RunningApplication] = []
     var deviceHubCount = 0
     var terminateDeviceHubsError: (any Error)?
-    var onTerminateDeviceHubs: (() -> Void)?
+    var onTerminateDeviceHubs: (() async -> Void)?
     private(set) var requestedDeviceHubURLs: [URL] = []
     var openedApplications: [URL] = []
     var openError: (any Error)?
@@ -190,7 +190,7 @@ final class WorkspaceRecorder {
             terminateDeviceHubs: { url in
                 self.events.append("terminate-device-hubs")
                 self.requestedDeviceHubURLs.append(url)
-                self.onTerminateDeviceHubs?()
+                await self.onTerminateDeviceHubs?()
                 if let terminateDeviceHubsError = self.terminateDeviceHubsError {
                     throw terminateDeviceHubsError
                 }

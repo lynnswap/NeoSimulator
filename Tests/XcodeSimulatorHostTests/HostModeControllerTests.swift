@@ -480,6 +480,43 @@ struct HostModeControllerTests {
         #expect(fixture.runner.storedBoolean(ToolConstants.deviceHubPreference) == .trueValue)
     }
 
+    @Test func deviceHubTerminationHoldsTheOperationLockAgainstNewMutations() async throws {
+        let fixture = try ControllerFixture()
+        fixture.workspace.onTerminateDeviceHubs = {
+            do {
+                _ = try await fixture.controller.use(
+                    mode: .deviceHub,
+                    explicitLegacyXcodeURL: nil
+                )
+                Issue.record("expected concurrent switch to be serialized")
+            } catch let error as CLIError {
+                #expect(error.identifier == "operation-lock")
+                #expect(error.category == .temporary)
+            } catch {
+                Issue.record("unexpected switch error: \(error)")
+            }
+
+            do {
+                _ = try fixture.controller.restore()
+                Issue.record("expected concurrent restore to be serialized")
+            } catch let error as CLIError {
+                #expect(error.identifier == "operation-lock")
+                #expect(error.category == .temporary)
+            } catch {
+                Issue.record("unexpected restore error: \(error)")
+            }
+        }
+
+        let report = try await fixture.controller.use(
+            mode: .legacy,
+            explicitLegacyXcodeURL: nil
+        )
+
+        #expect(report.didChange)
+        #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .trueValue)
+        #expect(fixture.runner.storedBoolean(ToolConstants.deviceHubPreference) == .trueValue)
+    }
+
     @Test func simulatorLaunchFailureWithoutAReceiptDoesNotSuggestRestore() async throws {
         let fixture = try ControllerFixture(initialState: .legacy)
         fixture.workspace.openError = CLIError.io("open", "injected open failure")
