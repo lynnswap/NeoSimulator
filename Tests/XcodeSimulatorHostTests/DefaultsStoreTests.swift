@@ -22,6 +22,54 @@ struct DefaultsStoreTests {
         )
     }
 
+    @Test func missingDomainsAreReadAsAbsentWhenExportFails() throws {
+        let runner = FakeSystemCommandRunner()
+        runner.failMissingDomainExports = true
+        let store = DefaultsStore(runner: runner)
+
+        #expect(try store.readState() == .deviceHub)
+        #expect(
+            runner.calls.filter {
+                $0.executable.path == "/usr/bin/defaults"
+                    && $0.arguments == ["domains"]
+            }.count == 2
+        )
+    }
+
+    @Test func exportFailureForAnExistingDomainIsNotTreatedAsAbsent() {
+        let runner = FakeSystemCommandRunner()
+        runner.setStoredValue(false, for: ToolConstants.xcodePreference)
+        runner.failExportNumber = 1
+        let store = DefaultsStore(runner: runner)
+
+        do {
+            _ = try store.readState()
+            Issue.record("expected export failure")
+        } catch let error as CLIError {
+            #expect(error.identifier == "preference-read")
+            #expect(error.category == .io)
+        } catch {
+            Issue.record("unexpected error: \(error)")
+        }
+    }
+
+    @Test func domainListingFailureIsNotTreatedAsAbsent() {
+        let runner = FakeSystemCommandRunner()
+        runner.failMissingDomainExports = true
+        runner.failDomainListing = true
+        let store = DefaultsStore(runner: runner)
+
+        do {
+            _ = try store.readState()
+            Issue.record("expected domain listing failure")
+        } catch let error as CLIError {
+            #expect(error.identifier == "preference-read")
+            #expect(error.category == .io)
+        } catch {
+            Issue.record("unexpected error: \(error)")
+        }
+    }
+
     @Test func applyWritesAndVerifiesBothPreferences() throws {
         let runner = FakeSystemCommandRunner()
         let store = DefaultsStore(runner: runner)

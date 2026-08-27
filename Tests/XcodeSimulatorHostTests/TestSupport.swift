@@ -38,6 +38,8 @@ final class FakeSystemCommandRunner: CommandRunning {
     var selectedDeveloperDirectory: URL?
     var failMutationNumbers: Set<Int> = []
     var failExportNumber: Int?
+    var failMissingDomainExports = false
+    var failDomainListing = false
     var failureTiming: FailureTiming = .beforeMutation
     var beforeRun: ((Call) -> Void)?
     private(set) var calls: [Call] = []
@@ -86,6 +88,15 @@ final class FakeSystemCommandRunner: CommandRunning {
         }
 
         switch operation {
+        case "domains":
+            guard arguments.count == 1 else {
+                return failure("invalid domains arguments")
+            }
+            if failDomainListing {
+                return failure("injected domain listing failure")
+            }
+            return success(domains.keys.sorted().joined(separator: ", "))
+
         case "export":
             guard arguments.count == 3, arguments[2] == "-" else {
                 return failure("invalid export arguments")
@@ -94,13 +105,13 @@ final class FakeSystemCommandRunner: CommandRunning {
             if failExportNumber == exportCount {
                 return failure("injected export failure")
             }
-            let domain = domains[arguments[1], default: [:]]
-            let data = try PropertyListSerialization.data(
-                fromPropertyList: domain,
-                format: .xml,
-                options: 0
-            )
-            return CommandOutput(terminationStatus: 0, stdout: data, stderr: Data())
+            guard let domain = domains[arguments[1]] else {
+                if failMissingDomainExports {
+                    return failure("domain does not exist")
+                }
+                return try exportedDomain([:])
+            }
+            return try exportedDomain(domain)
 
         case "write":
             guard arguments.count == 5, arguments[3] == "-bool" else {
@@ -133,6 +144,15 @@ final class FakeSystemCommandRunner: CommandRunning {
         default:
             return failure("unexpected defaults operation")
         }
+    }
+
+    private func exportedDomain(_ domain: [String: Any]) throws -> CommandOutput {
+        let data = try PropertyListSerialization.data(
+            fromPropertyList: domain,
+            format: .xml,
+            options: 0
+        )
+        return CommandOutput(terminationStatus: 0, stdout: data, stderr: Data())
     }
 
     private func success(_ text: String = "") -> CommandOutput {

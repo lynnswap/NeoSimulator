@@ -103,6 +103,9 @@ struct DefaultsStore {
             arguments: ["export", preference.domain, "-"]
         )
         guard output.terminationStatus == 0 else {
+            if try !domainExists(preference.domain) {
+                return .absent
+            }
             throw commandFailure(
                 identifier: "preference-read",
                 action: "read \(preference.domain).\(preference.key)",
@@ -143,6 +146,26 @@ struct DefaultsStore {
             )
         }
         return StoredBoolean(number.boolValue)
+    }
+
+    private func domainExists(_ domain: String) throws -> Bool {
+        let output = try runner.run(
+            executable: Self.executable,
+            arguments: ["domains"]
+        )
+        guard output.terminationStatus == 0 else {
+            throw commandFailure(
+                identifier: "preference-read",
+                action: "list preference domains",
+                output: output
+            )
+        }
+
+        return output.stdoutText
+            .split(separator: ",")
+            .contains { candidate in
+                candidate.trimmingCharacters(in: .whitespacesAndNewlines) == domain
+            }
     }
 
     private func write(_ value: StoredBoolean, to preference: ManagedPreference) throws {
