@@ -6,13 +6,36 @@ Simulator の間で切り替える macOS コマンドです。
 Apple が公開していない Xcode 27 の設定を利用する実験的なツールです。対応範囲を
 推測せず、選択中の Xcode、Device Hub、設定キーを検証できた場合だけ変更します。
 
-## Quick Start
-
-Xcode 27 を開いたまま、リポジトリ内で次を実行できます。
+## Install
 
 ```bash
-swift run -c release xcode-simulator-host status
-swift run -c release xcode-simulator-host use legacy
+curl -fsSL https://github.com/lynnswap/xcode-simulator-host/releases/latest/download/install.sh | sh
+```
+
+<details>
+<summary>Other install options</summary>
+
+インストール先を指定します。
+
+```bash
+curl -fsSL https://github.com/lynnswap/xcode-simulator-host/releases/latest/download/install.sh | sh -s -- --bindir "$HOME/bin"
+```
+
+versionを固定します。
+
+```bash
+curl -fsSL https://github.com/lynnswap/xcode-simulator-host/releases/download/v0.1.0/install.sh | sh
+```
+
+</details>
+
+## Quick Start
+
+Xcode 27を開いたまま実行できます。
+
+```bash
+xcode-simulator-host status
+xcode-simulator-host use legacy
 ```
 
 `use legacy` は設定変更後に、選択中のXcode 27に含まれるDevice Hubへ通常終了を
@@ -22,13 +45,13 @@ Build & Runします。
 Device Hub経路へ戻す場合もXcodeを終了する必要はありません。
 
 ```bash
-swift run -c release xcode-simulator-host use device-hub
+xcode-simulator-host use device-hub
 ```
 
 このツールを初めて実行する前の設定へ正確に戻すには、`restore` を使います。
 
 ```bash
-swift run -c release xcode-simulator-host restore
+xcode-simulator-host restore
 ```
 
 `use device-hub` は Device Hub 用の標準状態（両方の上書き設定が存在しない状態）を
@@ -38,7 +61,8 @@ swift run -c release xcode-simulator-host restore
 ## Requirements
 
 - macOS 26.4 以降（Xcode 27 の `LSMinimumSystemVersion` に合わせています）
-- Swift 6.4 を含む Xcode 27
+- GitHub ReleasesのbinaryはApple Silicon
+- Xcode 27（source buildにはSwift 6.4が必要）
 - 従来型 Simulator 用の Xcode 26（`use legacy` のみ）
 
 対象の Xcode 27 は `DEVELOPER_DIR`、未指定なら `xcode-select -p` から解決します。
@@ -46,14 +70,14 @@ swift run -c release xcode-simulator-host restore
 
 ```bash
 DEVELOPER_DIR=/Applications/Xcode_27.app/Contents/Developer \
-  swift run -c release xcode-simulator-host status
+  xcode-simulator-host status
 ```
 
 従来型 Simulator は `/Applications` にある検証済み Xcode 26 のうち、最も新しい
 ものを選びます。別の場所にあるXcodeを明示する場合は絶対パスを渡します。
 
 ```bash
-swift run -c release xcode-simulator-host use legacy \
+xcode-simulator-host use legacy \
   --legacy-xcode /Applications/Xcode.app
 ```
 
@@ -86,7 +110,7 @@ Simulatorを開きます。最終確認からopen完了までは同じoperation 
 起動だけに失敗した場合は、設定変更済みであることをpartial-successエラーに明記します。
 その状態も `restore` で復元できます。
 
-## Build
+## Build from Source
 
 依存には Apple の
 [swift-argument-parser](https://github.com/apple/swift-argument-parser) 1.8.2 を使います。
@@ -153,6 +177,26 @@ Simulatorの署名済み `DTXcode` もmajor 26である場合だけ開きます�
 ```bash
 swift test
 ```
+
+release assetをローカルで作成・検証します。
+
+```bash
+scripts/build-release.sh --version v0.1.0
+scripts/package-release.sh --version v0.1.0
+scripts/verify-release-assets.sh \
+  --version v0.1.0 \
+  --repo lynnswap/xcode-simulator-host
+```
+
+GitHubではdefault branchの最新commitからworkflowをdispatchします。
+
+```bash
+gh workflow run release.yml --ref main -f version=v0.1.0
+```
+
+workflowはtagとassetを持つdraft releaseを作成します。release notesを確認してから
+GitHub上で手動publishします。suffix付きversionはprereleaseとして作成され、
+`releases/latest`のinstall経路には入りません。
 
 ## License
 

@@ -171,6 +171,23 @@ bypass signature or generation validation.
 No alternative binary path, preference key, or application is guessed when a
 gate fails. Xcode 28 and later require a new verified compatibility profile.
 
+## Distribution
+
+GitHub Releases distribute one ad-hoc-signed arm64 archive containing
+`bin/xcode-simulator-host`. Each release also contains `SHA256SUMS.txt` and a
+version-pinned `install.sh`. The installer downloads the archive and checksum
+from the same tag, verifies the archive before extraction, and installs to
+`~/.local/bin` by default. `--prefix` and `--bindir` select another destination.
+It prints PATH guidance but never edits a shell profile.
+
+The build script rejects a release tag whose semantic version does not match
+the binary's `--version`. The packaging verifier checks the exact asset set,
+checksums, rendered installer, and archive entries. `release.yml` runs package
+tests, builds and verifies the assets on an arm64 macOS 26 runner, transfers the
+archive digest across jobs, and creates or repairs a draft release. Publishing
+the draft remains a manual action. A version with a prerelease suffix is marked
+as a GitHub prerelease and explicitly excluded from `releases/latest`.
+
 ## Failure semantics
 
 The executable follows BSD `sysexits` categories:
