@@ -134,11 +134,13 @@ the complete snapshot under the existing operation lock. Once state exists,
 `status` always uses that existing lock. It does not recover pending state or
 change a preference, receipt, or state artifact.
 
-`restore` first checks whether a receipt exists. Without one it is a no-op and
-does not create state or read the managed preferences. With one it recovers an
-interrupted journal if necessary, restores the exact original state, and
-verifies the read-back while Xcode may remain open. It does not require the
-currently selected Xcode to pass the compatibility gate.
+`restore` first checks the monotonic state directory marker. If it is absent,
+the command is a no-op and does not create state or read the managed
+preferences. If state exists, `restore` acquires the existing operation lock
+before deciding whether a receipt exists. It then recovers an interrupted
+journal if necessary, restores the exact original state, and verifies the
+read-back while Xcode may remain open. It does not require the currently
+selected Xcode to pass the compatibility gate.
 
 After inspecting a conflict, `restore --force` records the observed Boolean
 state as a new rollback point, writes and verifies the saved original values,

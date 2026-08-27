@@ -137,7 +137,7 @@ struct HostModeController {
     func restore(force: Bool = false) throws -> RestoreReport {
         try rejectRootMutation()
 
-        guard try receiptStore.load() != nil else {
+        guard try receiptStore.stateDirectoryExists() else {
             return RestoreReport(
                 didRestore: false,
                 restoredState: nil,
@@ -145,7 +145,7 @@ struct HostModeController {
             )
         }
 
-        return try receiptStore.withExclusiveLock {
+        return try receiptStore.withExistingExclusiveLock {
             guard let receipt = try receiptStore.load() else {
                 return RestoreReport(
                     didRestore: false,

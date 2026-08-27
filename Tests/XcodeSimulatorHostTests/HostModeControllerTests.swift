@@ -312,7 +312,9 @@ struct HostModeControllerTests {
             original: .deviceHub
         )
         receipt.pending = PendingMutation(before: .deviceHub, target: .legacy)
-        try fixture.receiptStore.save(receipt)
+        try fixture.receiptStore.withExclusiveLock {
+            try fixture.receiptStore.save(receipt)
+        }
         fixture.runner.setStoredValue(true, for: ToolConstants.xcodePreference)
         fixture.runner.setStoredValue(true, for: ToolConstants.deviceHubPreference)
 
@@ -338,7 +340,9 @@ struct HostModeControllerTests {
             original: .deviceHub
         )
         receipt.pending = PendingMutation(before: .deviceHub, target: .legacy)
-        try fixture.receiptStore.save(receipt)
+        try fixture.receiptStore.withExclusiveLock {
+            try fixture.receiptStore.save(receipt)
+        }
         fixture.runner.setStoredValue(true, for: ToolConstants.xcodePreference)
 
         do {
@@ -370,7 +374,9 @@ struct HostModeControllerTests {
             original: .deviceHub
         )
         receipt.pending = PendingMutation(before: .deviceHub, target: .legacy)
-        try fixture.receiptStore.save(receipt)
+        try fixture.receiptStore.withExclusiveLock {
+            try fixture.receiptStore.save(receipt)
+        }
         fixture.runner.setStoredValue(true, for: ToolConstants.xcodePreference)
 
         do {
@@ -614,6 +620,39 @@ struct HostModeControllerTests {
         #expect(report.didRestore)
         #expect(fixture.runner.mutationCount == 4)
         #expect(try fixture.receiptStore.load() == nil)
+    }
+
+    @Test func restoreIsSerializedBeforeUseCapturesItsReceipt() async throws {
+        let fixture = try ControllerFixture()
+        var checkedRestore = false
+        fixture.runner.beforeRun = { call in
+            guard !checkedRestore,
+                  call.executable.path == "/usr/bin/defaults",
+                  call.arguments == ["domains"]
+            else {
+                return
+            }
+            checkedRestore = true
+            do {
+                _ = try fixture.controller.restore()
+                Issue.record("expected restore to observe the active operation lock")
+            } catch let error as CLIError {
+                #expect(error.identifier == "operation-lock")
+                #expect(error.category == .temporary)
+            } catch {
+                Issue.record("unexpected restore error: \(error)")
+            }
+        }
+
+        let report = try await fixture.controller.use(
+            mode: .legacy,
+            explicitLegacyXcodeURL: nil
+        )
+
+        #expect(checkedRestore)
+        #expect(report.didChange)
+        #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .trueValue)
+        #expect(fixture.runner.storedBoolean(ToolConstants.deviceHubPreference) == .trueValue)
     }
 
     @Test func runningXcodeDoesNotBlockDeviceHubMode() async throws {
