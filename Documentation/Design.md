@@ -101,12 +101,23 @@ For every `use` transition, `HostModeController`:
 2. validates compatibility while allowing Xcode GUI processes to remain open;
 3. reads the current preference state;
 4. saves a pending `before -> target` mutation;
-5. confirms the state still equals `before`, applies both keys, and reads them back;
+5. brackets every individual preference write with full-state verification;
 6. finalizes the verified state in the receipt.
 
 If applying or verifying either key fails, the controller restores the state
-from immediately before that operation and verifies the rollback. A rollback
-failure is reported as an inconsistent state and the receipt is retained.
+from immediately before that operation using the same guarded step sequence.
+If a pre-write or post-write check detects a different state, no automatic
+rollback runs over that state; the pending receipt is retained and the
+forward transition is reported as a conflict. A deviation detected during
+rollback, or a different rollback failure, is reported as an inconsistent
+state and the receipt is retained.
+
+The `defaults` command does not provide a conditional compare-and-swap. The
+operation lock serializes this tool's processes, while full-state reads
+immediately before and after each write detect cooperating or slower external
+changes. An external write in the narrow interval between a check and the
+managed write can be indistinguishable if the managed write replaces it with
+the intended value.
 
 On the next `use` or `restore` invocation, a pending mutation is finalized when
 the live state equals its `before` or `target` value. A state matching the

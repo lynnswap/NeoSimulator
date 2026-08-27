@@ -7,6 +7,12 @@ struct DefaultsStore {
         let observed: ManagedPreferenceState
     }
 
+    private struct MutationStep {
+        let preference: ManagedPreference
+        let value: StoredBoolean
+        let resultingState: ManagedPreferenceState
+    }
+
     private static let executable = URL(fileURLWithPath: "/usr/bin/defaults")
 
     private let runner: any CommandRunning
@@ -16,9 +22,16 @@ struct DefaultsStore {
     }
 
     func readState() throws -> ManagedPreferenceState {
-        ManagedPreferenceState(
-            xcodeSession: try read(ToolConstants.xcodePreference),
-            deviceHubAutoStartSuppression: try read(ToolConstants.deviceHubPreference)
+        let existingDomains = try existingDomains()
+        return ManagedPreferenceState(
+            xcodeSession: try read(
+                ToolConstants.xcodePreference,
+                existingDomains: existingDomains
+            ),
+            deviceHubAutoStartSuppression: try read(
+                ToolConstants.deviceHubPreference,
+                existingDomains: existingDomains
+            )
         )
     }
 
@@ -66,25 +79,56 @@ struct DefaultsStore {
                 observed: current
             )
         }
-        var didChange = false
 
-        if current.xcodeSession != target.xcodeSession {
-            try write(target.xcodeSession, to: ToolConstants.xcodePreference)
-            didChange = true
-        }
-        if current.deviceHubAutoStartSuppression != target.deviceHubAutoStartSuppression {
-            try write(target.deviceHubAutoStartSuppression, to: ToolConstants.deviceHubPreference)
-            didChange = true
+        let steps = mutationSteps(from: current, to: target)
+        var expected = current
+        for step in steps {
+            let observed = try readState()
+            guard observed == expected else {
+                throw StateMismatch(expected: [expected], observed: observed)
+            }
+            try write(step.value, to: step.preference)
+            expected = step.resultingState
         }
 
         let observed = try readState()
         guard observed == target else {
-            throw CLIError.io(
-                "preference-verification",
-                "expected \(target), observed \(observed)"
+            throw StateMismatch(expected: [target], observed: observed)
+        }
+        return !steps.isEmpty
+    }
+
+    private func mutationSteps(
+        from current: ManagedPreferenceState,
+        to target: ManagedPreferenceState
+    ) -> [MutationStep] {
+        var state = current
+        var steps: [MutationStep] = []
+
+        if state.xcodeSession != target.xcodeSession {
+            state = stateAfterXcodePreference(from: state, to: target)
+            steps.append(
+                MutationStep(
+                    preference: ToolConstants.xcodePreference,
+                    value: target.xcodeSession,
+                    resultingState: state
+                )
             )
         }
-        return didChange
+        if state.deviceHubAutoStartSuppression != target.deviceHubAutoStartSuppression {
+            state = ManagedPreferenceState(
+                xcodeSession: state.xcodeSession,
+                deviceHubAutoStartSuppression: target.deviceHubAutoStartSuppression
+            )
+            steps.append(
+                MutationStep(
+                    preference: ToolConstants.deviceHubPreference,
+                    value: target.deviceHubAutoStartSuppression,
+                    resultingState: state
+                )
+            )
+        }
+        return steps
     }
 
     private func stateAfterXcodePreference(
@@ -97,15 +141,19 @@ struct DefaultsStore {
         )
     }
 
-    private func read(_ preference: ManagedPreference) throws -> StoredBoolean {
+    private func read(
+        _ preference: ManagedPreference,
+        existingDomains: Set<String>
+    ) throws -> StoredBoolean {
+        guard existingDomains.contains(preference.domain) else {
+            return .absent
+        }
+
         let output = try runner.run(
             executable: Self.executable,
             arguments: ["export", preference.domain, "-"]
         )
         guard output.terminationStatus == 0 else {
-            if try !domainExists(preference.domain) {
-                return .absent
-            }
             throw commandFailure(
                 identifier: "preference-read",
                 action: "read \(preference.domain).\(preference.key)",
@@ -148,7 +196,7 @@ struct DefaultsStore {
         return StoredBoolean(number.boolValue)
     }
 
-    private func domainExists(_ domain: String) throws -> Bool {
+    private func existingDomains() throws -> Set<String> {
         let output = try runner.run(
             executable: Self.executable,
             arguments: ["domains"]
@@ -161,11 +209,14 @@ struct DefaultsStore {
             )
         }
 
-        return output.stdoutText
-            .split(separator: ",")
-            .contains { candidate in
-                candidate.trimmingCharacters(in: .whitespacesAndNewlines) == domain
-            }
+        return Set(
+            output.stdoutText
+                .split(separator: ",")
+                .map { candidate in
+                    candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+                .filter { !$0.isEmpty }
+        )
     }
 
     private func write(_ value: StoredBoolean, to preference: ManagedPreference) throws {

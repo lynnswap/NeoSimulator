@@ -250,7 +250,7 @@ struct HostModeController {
             _ = try defaultsStore.apply(target, from: before)
         } catch let mismatch as DefaultsStore.StateMismatch {
             throw conflictError(
-                expected: before,
+                expected: mismatch.expected.first ?? before,
                 observed: mismatch.observed
             )
         } catch {

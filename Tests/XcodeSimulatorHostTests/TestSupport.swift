@@ -38,6 +38,7 @@ final class FakeSystemCommandRunner: CommandRunning {
     var selectedDeveloperDirectory: URL?
     var failMutationNumbers: Set<Int> = []
     var failExportNumber: Int?
+    var failFirstExportAfterMutationCount: Int?
     var failMissingDomainExports = false
     var failDomainListing = false
     var failureTiming: FailureTiming = .beforeMutation
@@ -104,6 +105,10 @@ final class FakeSystemCommandRunner: CommandRunning {
             exportCount += 1
             if failExportNumber == exportCount {
                 return failure("injected export failure")
+            }
+            if failFirstExportAfterMutationCount == mutationCount {
+                failFirstExportAfterMutationCount = nil
+                return failure("injected post-mutation export failure")
             }
             guard let domain = domains[arguments[1]] else {
                 if failMissingDomainExports {

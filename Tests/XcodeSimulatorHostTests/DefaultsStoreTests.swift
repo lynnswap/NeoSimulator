@@ -22,7 +22,7 @@ struct DefaultsStoreTests {
         )
     }
 
-    @Test func missingDomainsAreReadAsAbsentWhenExportFails() throws {
+    @Test func missingDomainsAreReadAsAbsentWithoutExporting() throws {
         let runner = FakeSystemCommandRunner()
         runner.failMissingDomainExports = true
         let store = DefaultsStore(runner: runner)
@@ -31,8 +31,8 @@ struct DefaultsStoreTests {
         #expect(
             runner.calls.filter {
                 $0.executable.path == "/usr/bin/defaults"
-                    && $0.arguments == ["domains"]
-            }.count == 2
+                    && $0.arguments.first == "export"
+            }.isEmpty
         )
     }
 
@@ -55,7 +55,6 @@ struct DefaultsStoreTests {
 
     @Test func domainListingFailureIsNotTreatedAsAbsent() {
         let runner = FakeSystemCommandRunner()
-        runner.failMissingDomainExports = true
         runner.failDomainListing = true
         let store = DefaultsStore(runner: runner)
 
@@ -135,5 +134,86 @@ struct DefaultsStoreTests {
             )
         }
         #expect(runner.mutationCount == 0)
+    }
+
+    @Test func externalChangeBeforeTheSecondWriteIsNotOverwritten() {
+        let runner = FakeSystemCommandRunner()
+        runner.setStoredValue(true, for: ToolConstants.xcodePreference)
+        runner.setStoredValue(true, for: ToolConstants.deviceHubPreference)
+        var injectedChange = false
+        runner.beforeRun = { call in
+            guard !injectedChange,
+                  runner.mutationCount == 1,
+                  call.executable.path == "/usr/bin/defaults",
+                  call.arguments == ["domains"]
+            else {
+                return
+            }
+            injectedChange = true
+            runner.setStoredValue(false, for: ToolConstants.deviceHubPreference)
+        }
+        let store = DefaultsStore(runner: runner)
+
+        do {
+            _ = try store.apply(.deviceHub, from: .legacy)
+            Issue.record("expected external change to stop the transition")
+        } catch let mismatch as DefaultsStore.StateMismatch {
+            #expect(
+                mismatch.observed
+                    == ManagedPreferenceState(
+                        xcodeSession: .absent,
+                        deviceHubAutoStartSuppression: .falseValue
+                    )
+            )
+        } catch {
+            Issue.record("unexpected error: \(error)")
+        }
+
+        #expect(injectedChange)
+        #expect(runner.mutationCount == 1)
+        #expect(runner.storedBoolean(ToolConstants.xcodePreference) == .absent)
+        #expect(runner.storedBoolean(ToolConstants.deviceHubPreference) == .falseValue)
+    }
+
+    @Test func externalChangeDuringRollbackIsNotOverwritten() {
+        let runner = FakeSystemCommandRunner()
+        runner.setStoredValue(true, for: ToolConstants.xcodePreference)
+        runner.setStoredValue(true, for: ToolConstants.deviceHubPreference)
+        var injectedChange = false
+        runner.beforeRun = { call in
+            guard !injectedChange,
+                  runner.mutationCount == 1,
+                  call.executable.path == "/usr/bin/defaults",
+                  call.arguments == ["domains"]
+            else {
+                return
+            }
+            injectedChange = true
+            runner.setStoredValue(false, for: ToolConstants.deviceHubPreference)
+        }
+        let store = DefaultsStore(runner: runner)
+
+        do {
+            _ = try store.rollback(
+                to: .deviceHub,
+                fromAttemptedTarget: .legacy
+            )
+            Issue.record("expected external change to stop rollback")
+        } catch let mismatch as DefaultsStore.StateMismatch {
+            #expect(
+                mismatch.observed
+                    == ManagedPreferenceState(
+                        xcodeSession: .absent,
+                        deviceHubAutoStartSuppression: .falseValue
+                    )
+            )
+        } catch {
+            Issue.record("unexpected error: \(error)")
+        }
+
+        #expect(injectedChange)
+        #expect(runner.mutationCount == 1)
+        #expect(runner.storedBoolean(ToolConstants.xcodePreference) == .absent)
+        #expect(runner.storedBoolean(ToolConstants.deviceHubPreference) == .falseValue)
     }
 }

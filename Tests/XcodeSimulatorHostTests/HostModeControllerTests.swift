@@ -141,7 +141,7 @@ struct HostModeControllerTests {
 
     @Test func verificationReadFailureIsRolledBack() async throws {
         let fixture = try ControllerFixture()
-        fixture.runner.failExportNumber = 5
+        fixture.runner.failFirstExportAfterMutationCount = 2
 
         do {
             _ = try await fixture.controller.use(mode: .legacy, explicitLegacyXcodeURL: nil)
@@ -189,17 +189,56 @@ struct HostModeControllerTests {
         }
     }
 
-    @Test func changeBetweenReceiptCaptureAndApplyIsNotOverwritten() async throws {
-        let fixture = try ControllerFixture()
-        var exportCount = 0
+    @Test func detectedChangeBetweenWritesIsNotRolledBack() async throws {
+        let fixture = try ControllerFixture(initialState: .legacy)
+        var injectedChange = false
         fixture.runner.beforeRun = { call in
-            guard call.executable.path == "/usr/bin/defaults",
-                  call.arguments.first == "export"
+            guard !injectedChange,
+                  fixture.runner.mutationCount == 1,
+                  call.executable.path == "/usr/bin/defaults",
+                  call.arguments == ["domains"]
             else {
                 return
             }
-            exportCount += 1
-            if exportCount == 3 {
+            injectedChange = true
+            fixture.runner.setStoredValue(
+                false,
+                for: ToolConstants.deviceHubPreference
+            )
+        }
+
+        do {
+            _ = try await fixture.controller.use(
+                mode: .deviceHub,
+                explicitLegacyXcodeURL: nil
+            )
+            Issue.record("expected external change to be reported")
+        } catch let error as CLIError {
+            #expect(error.identifier == "preference-conflict")
+            #expect(error.category == .configuration)
+        }
+
+        #expect(injectedChange)
+        #expect(fixture.runner.mutationCount == 1)
+        #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .absent)
+        #expect(
+            fixture.runner.storedBoolean(ToolConstants.deviceHubPreference)
+                == .falseValue
+        )
+        #expect(try fixture.receiptStore.load()?.pending != nil)
+    }
+
+    @Test func changeBetweenReceiptCaptureAndApplyIsNotOverwritten() async throws {
+        let fixture = try ControllerFixture()
+        var stateReadCount = 0
+        fixture.runner.beforeRun = { call in
+            guard call.executable.path == "/usr/bin/defaults",
+                  call.arguments == ["domains"]
+            else {
+                return
+            }
+            stateReadCount += 1
+            if stateReadCount == 2 {
                 fixture.runner.setStoredValue(
                     false,
                     for: ToolConstants.xcodePreference
@@ -223,15 +262,15 @@ struct HostModeControllerTests {
 
     @Test func externalChangeMatchingAnIntermediateIsNeverAssumedToBeOurs() async throws {
         let fixture = try ControllerFixture()
-        var exportCount = 0
+        var stateReadCount = 0
         fixture.runner.beforeRun = { call in
             guard call.executable.path == "/usr/bin/defaults",
-                  call.arguments.first == "export"
+                  call.arguments == ["domains"]
             else {
                 return
             }
-            exportCount += 1
-            if exportCount == 3 {
+            stateReadCount += 1
+            if stateReadCount == 2 {
                 fixture.runner.setStoredValue(
                     true,
                     for: ToolConstants.xcodePreference
@@ -642,7 +681,7 @@ struct HostModeControllerTests {
         fixture.runner.beforeRun = { call in
             guard !createdState,
                   call.executable.path == "/usr/bin/defaults",
-                  call.arguments.first == "export"
+                  call.arguments == ["domains"]
             else {
                 return
             }
@@ -662,8 +701,8 @@ struct HostModeControllerTests {
         #expect(
             fixture.runner.calls.filter {
                 $0.executable.path == "/usr/bin/defaults"
-                    && $0.arguments.first == "export"
-            }.count == 4
+                    && $0.arguments == ["domains"]
+            }.count == 2
         )
     }
 }
