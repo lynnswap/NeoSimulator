@@ -402,7 +402,12 @@ struct ControllerFixture {
             for: ToolConstants.deviceHubPreference
         )
         workspace = WorkspaceRecorder()
-        receiptStore = try ReceiptStore(directoryURL: stateDirectory.url)
+        receiptStore = try ReceiptStore(
+            directoryURL: stateDirectory.url.appendingPathComponent(
+                "state",
+                isDirectory: true
+            )
+        )
 
         let inspector = InstallationInspector(
             runner: runner,

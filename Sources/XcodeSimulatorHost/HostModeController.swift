@@ -32,30 +32,15 @@ struct HostModeController {
     }
 
     func status(explicitLegacyXcodeURL: URL?) throws -> HostStatus {
-        try receiptStore.withExclusiveLock {
-            let xcode = try installationInspector.validatedTargetXcode()
-            let preferences = try defaultsStore.readState()
-            let legacySimulator: SimulatorInstallation?
-            if let explicitLegacyXcodeURL {
-                legacySimulator = try installationInspector.legacySimulator(
-                    explicitXcodeURL: explicitLegacyXcodeURL
-                )
-            } else {
-                legacySimulator = try? installationInspector.legacySimulator(
-                    explicitXcodeURL: nil
-                )
+        if try !receiptStore.stateDirectoryExists() {
+            let snapshot = try makeStatus(explicitLegacyXcodeURL: explicitLegacyXcodeURL)
+            if try !receiptStore.stateDirectoryExists() {
+                return snapshot
             }
+        }
 
-            let receipt = try receiptStore.load()
-            let receiptStatus = classify(receipt: receipt, observed: preferences)
-            return HostStatus(
-                xcode: xcode,
-                preferences: preferences,
-                legacySimulator: legacySimulator,
-                receiptStatus: receiptStatus,
-                receiptURL: receiptStore.receiptURL,
-                runningXcodes: workspace.runningXcodes()
-            )
+        return try receiptStore.withExistingExclusiveLock {
+            try makeStatus(explicitLegacyXcodeURL: explicitLegacyXcodeURL)
         }
     }
 
@@ -152,6 +137,14 @@ struct HostModeController {
     func restore(force: Bool = false) throws -> RestoreReport {
         try rejectRootMutation()
 
+        guard try receiptStore.load() != nil else {
+            return RestoreReport(
+                didRestore: false,
+                restoredState: nil,
+                receiptURL: receiptStore.receiptURL
+            )
+        }
+
         return try receiptStore.withExclusiveLock {
             guard let receipt = try receiptStore.load() else {
                 return RestoreReport(
@@ -183,6 +176,32 @@ struct HostModeController {
                 receiptURL: receiptStore.receiptURL
             )
         }
+    }
+
+    private func makeStatus(explicitLegacyXcodeURL: URL?) throws -> HostStatus {
+        let xcode = try installationInspector.validatedTargetXcode()
+        let preferences = try defaultsStore.readState()
+        let legacySimulator: SimulatorInstallation?
+        if let explicitLegacyXcodeURL {
+            legacySimulator = try installationInspector.legacySimulator(
+                explicitXcodeURL: explicitLegacyXcodeURL
+            )
+        } else {
+            legacySimulator = try? installationInspector.legacySimulator(
+                explicitXcodeURL: nil
+            )
+        }
+
+        let receipt = try receiptStore.load()
+        let receiptStatus = classify(receipt: receipt, observed: preferences)
+        return HostStatus(
+            xcode: xcode,
+            preferences: preferences,
+            legacySimulator: legacySimulator,
+            receiptStatus: receiptStatus,
+            receiptURL: receiptStore.receiptURL,
+            runningXcodes: workspace.runningXcodes()
+        )
     }
 
     private func transition(

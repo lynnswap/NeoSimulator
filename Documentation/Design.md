@@ -115,15 +115,19 @@ interrupted tool write or an external change made after the journal was saved.
 It is never rolled back automatically. Any other third value is also an
 external conflict, and no mutation proceeds.
 
-`status` takes the same operation lock while reading preferences and the
-receipt, so it cannot combine two different transaction snapshots. It does not
-recover pending state or change a preference or receipt.
+`status` does not create the state directory or operation lock. Before the
+first mutation it takes an optimistic snapshot and confirms that the state
+directory stayed absent. Creating that directory is the first, monotonic step
+of every mutating operation, so if it appears during the read, `status` retries
+the complete snapshot under the existing operation lock. Once state exists,
+`status` always uses that existing lock. It does not recover pending state or
+change a preference, receipt, or state artifact.
 
 `restore` first checks whether a receipt exists. Without one it is a no-op and
-does not read the managed preferences. With one it recovers an interrupted
-journal if necessary, restores the exact original state, and verifies the
-read-back while Xcode may remain open. It does not require the currently
-selected Xcode to pass the compatibility gate.
+does not create state or read the managed preferences. With one it recovers an
+interrupted journal if necessary, restores the exact original state, and
+verifies the read-back while Xcode may remain open. It does not require the
+currently selected Xcode to pass the compatibility gate.
 
 After inspecting a conflict, `restore --force` records the observed Boolean
 state as a new rollback point, writes and verifies the saved original values,

@@ -107,7 +107,7 @@ struct ReceiptStore {
     }
 
     func withExclusiveLock<T>(_ body: () throws -> T) throws -> T {
-        let descriptor = try acquireExclusiveLock()
+        let descriptor = try acquireExclusiveLock(createIfNeeded: true)
         defer {
             releaseExclusiveLock(descriptor)
         }
@@ -116,22 +116,68 @@ struct ReceiptStore {
 
     nonisolated(nonsending)
     func withExclusiveLock<T>(_ body: () async throws -> T) async throws -> T {
-        let descriptor = try acquireExclusiveLock()
+        let descriptor = try acquireExclusiveLock(createIfNeeded: true)
         defer {
             releaseExclusiveLock(descriptor)
         }
         return try await body()
     }
 
-    private func acquireExclusiveLock() throws -> Int32 {
-        try createDirectoryIfNeeded()
+    func withExistingExclusiveLock<T>(_ body: () throws -> T) throws -> T {
+        let descriptor = try acquireExclusiveLock(createIfNeeded: false)
+        defer {
+            releaseExclusiveLock(descriptor)
+        }
+        return try body()
+    }
+
+    func stateDirectoryExists() throws -> Bool {
+        var metadata = stat()
+        guard Darwin.lstat(directoryURL.path, &metadata) == 0 else {
+            if errno == ENOENT {
+                return false
+            }
+            throw CLIError.io(
+                "state-directory",
+                "could not inspect \(directoryURL.path): \(String(cString: strerror(errno)))"
+            )
+        }
+        guard metadata.st_mode & mode_t(S_IFMT) == mode_t(S_IFDIR) else {
+            throw CLIError.configuration(
+                "state-directory",
+                "state path is not a real directory: \(directoryURL.path)"
+            )
+        }
+        return true
+    }
+
+    private func acquireExclusiveLock(createIfNeeded: Bool) throws -> Int32 {
+        if createIfNeeded {
+            try createDirectoryIfNeeded()
+        } else if try !stateDirectoryExists() {
+            throw CLIError.temporary(
+                "operation-lock",
+                "state changed while a read-only snapshot was being prepared; retry"
+            )
+        }
+
+        var openFlags = O_RDWR | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK
+        if createIfNeeded {
+            openFlags |= O_CREAT
+        }
 
         let descriptor = Darwin.open(
             lockURL.path,
-            O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK,
+            openFlags,
             mode_t(0o600)
         )
         guard descriptor >= 0 else {
+            if !createIfNeeded, errno == ENOENT {
+                throw CLIError.temporary(
+                    "operation-lock",
+                    "state directory exists without its operation lock; retry"
+                )
+            }
             throw CLIError.cannotCreate(
                 "operation-lock",
                 "could not open \(lockURL.path): \(String(cString: strerror(errno)))"

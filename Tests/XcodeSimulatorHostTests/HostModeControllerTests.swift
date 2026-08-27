@@ -534,10 +534,20 @@ struct HostModeControllerTests {
 
     @Test func restoreWithoutAReceiptIsADocumentedNoOp() throws {
         let fixture = try ControllerFixture()
+        #expect(
+            !FileManager.default.fileExists(
+                atPath: fixture.receiptStore.directoryURL.path
+            )
+        )
         let report = try fixture.controller.restore()
 
         #expect(!report.didRestore)
         #expect(fixture.runner.mutationCount == 0)
+        #expect(
+            !FileManager.default.fileExists(
+                atPath: fixture.receiptStore.directoryURL.path
+            )
+        )
     }
 
     @Test func restoreWithoutAReceiptDoesNotReadInvalidPreferences() throws {
@@ -600,6 +610,11 @@ struct HostModeControllerTests {
 
     @Test func statusIsReadOnly() throws {
         let fixture = try ControllerFixture()
+        #expect(
+            !FileManager.default.fileExists(
+                atPath: fixture.receiptStore.directoryURL.path
+            )
+        )
         fixture.workspace.runningXcodes = [
             RunningApplication(
                 processIdentifier: 42,
@@ -612,7 +627,43 @@ struct HostModeControllerTests {
         #expect(status.legacySimulator != nil)
         #expect(fixture.runner.mutationCount == 0)
         #expect(try fixture.receiptStore.load() == nil)
+        #expect(
+            !FileManager.default.fileExists(
+                atPath: fixture.receiptStore.directoryURL.path
+            )
+        )
         #expect(status.rendered.contains("hot switching is supported"))
         #expect(!status.rendered.contains("mode changes are blocked"))
+    }
+
+    @Test func statusRetriesWhenStateAppearsDuringTheOptimisticSnapshot() throws {
+        let fixture = try ControllerFixture()
+        var createdState = false
+        fixture.runner.beforeRun = { call in
+            guard !createdState,
+                  call.executable.path == "/usr/bin/defaults",
+                  call.arguments.first == "export"
+            else {
+                return
+            }
+            createdState = true
+            do {
+                try fixture.receiptStore.withExclusiveLock {}
+            } catch {
+                Issue.record("could not create simulated concurrent state: \(error)")
+            }
+        }
+
+        let status = try fixture.controller.status(explicitLegacyXcodeURL: nil)
+
+        #expect(createdState)
+        #expect(status.preferences == .deviceHub)
+        #expect(status.receiptStatus == .unmanaged)
+        #expect(
+            fixture.runner.calls.filter {
+                $0.executable.path == "/usr/bin/defaults"
+                    && $0.arguments.first == "export"
+            }.count == 4
+        )
     }
 }
