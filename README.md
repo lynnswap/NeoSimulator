@@ -153,3 +153,7 @@ Simulatorの署名済み `DTXcode` もmajor 26である場合だけ開きます�
 ```bash
 swift test
 ```
+
+## License
+
+[LICENSE](LICENSE)
