@@ -273,6 +273,10 @@ struct InstallationFixture {
     static func makeLegacyXcode(at url: URL, version: String, build: String) throws {
         try makeXcodeBase(at: url, version: version, build: build)
 
+        let versionComponents = try ToolVersion(version).components
+        let minor = versionComponents.count > 1 ? versionComponents[1] : 0
+        let dtXcode = versionComponents[0] * 100 + minor * 10
+
         let simulatorURL = url.appendingPathComponent(ToolConstants.simulatorPath, isDirectory: true)
         try writePropertyList(
             [
@@ -280,6 +284,7 @@ struct InstallationFixture {
                 "CFBundleExecutable": "Simulator",
                 "CFBundleShortVersionString": "16.0",
                 "CFBundleVersion": "1063.4",
+                "DTXcode": String(dtXcode),
             ],
             to: simulatorURL.appendingPathComponent("Contents/Info.plist")
         )

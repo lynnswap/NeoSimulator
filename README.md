@@ -48,8 +48,8 @@ DEVELOPER_DIR=/Applications/Xcode_27.app/Contents/Developer \
   swift run -c release xcode-simulator-host status
 ```
 
-従来型 Simulator は `/Applications` と `~/Applications` にある検証済み Xcode 26
-のうち、最も新しいものを選びます。明示する場合は絶対パスを渡します。
+従来型 Simulator は `/Applications` にある検証済み Xcode 26 のうち、最も新しい
+ものを選びます。別の場所にあるXcodeを明示する場合は絶対パスを渡します。
 
 ```bash
 swift run -c release xcode-simulator-host use legacy \
@@ -130,9 +130,10 @@ Xcode の設定ドメイン `com.apple.dt.Xcode` はインストールごとで�
 このツールで選択した Xcode 27 は互換性確認の対象であり、設定の適用先をその
 Xcode だけに限定するものではありません。
 
-自動探索または `--legacy-xcode` で指定した Simulator は、bundle情報と実行ファイルに
-加えて、identifier `com.apple.iphonesimulator` と Apple anchor を満たすcode signatureを
-検証してから開きます。
+自動探索または `--legacy-xcode` で指定したXcodeとSimulatorは、bundle情報と実行
+ファイルに加えてApple code signatureを検証します。外側はidentifier
+`com.apple.dt.Xcode`、内側は `com.apple.iphonesimulator` とApple anchorを満たし、
+Simulatorの署名済み `DTXcode` もmajor 26である場合だけ開きます。
 
 設計、管理する設定、トランザクション、失敗意味論の詳細は
 [Documentation/Design.md](Documentation/Design.md) を参照してください。

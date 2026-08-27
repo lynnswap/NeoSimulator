@@ -150,11 +150,12 @@ must have:
 
 A legacy host must come from Xcode 26 and contain an executable Simulator app
 with bundle identifier `com.apple.iphonesimulator`. Before launch, the complete
-Simulator bundle must pass strict static code validation for the requirement
-`identifier "com.apple.iphonesimulator" and anchor apple`. Automatic discovery
-checks Xcode applications in `/Applications` and `~/Applications` and chooses
-the highest validated version. `--legacy-xcode` selects an explicit candidate
-but does not bypass signature validation.
+outer Xcode and nested Simulator bundles must pass strict static code validation
+for their respective identifiers and `anchor apple`. The signed Simulator
+`DTXcode` value must also identify Xcode major 26. Automatic discovery checks
+Xcode applications in `/Applications` and chooses the highest validated
+version. `--legacy-xcode` selects an explicit candidate elsewhere but does not
+bypass signature or generation validation.
 
 No alternative binary path, preference key, or application is guessed when a
 gate fails. Xcode 28 and later require a new verified compatibility profile.

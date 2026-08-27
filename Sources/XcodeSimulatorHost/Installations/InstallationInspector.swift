@@ -22,8 +22,6 @@ struct InstallationInspector {
         self.signatureValidator = signatureValidator
         self.legacySearchRoots = legacySearchRoots ?? [
             URL(fileURLWithPath: "/Applications", isDirectory: true),
-            fileManager.homeDirectoryForCurrentUser
-                .appendingPathComponent("Applications", isDirectory: true),
         ]
     }
 
@@ -193,6 +191,10 @@ struct InstallationInspector {
                 "legacy Simulator must come from Xcode 26, found Xcode \(xcode.version)"
             )
         }
+        try signatureValidator.validateAppleApplication(
+            xcode.applicationURL,
+            ToolConstants.xcodeBundleIdentifier
+        )
 
         let simulatorURL = xcode.applicationURL
             .appendingPathComponent(ToolConstants.simulatorPath, isDirectory: true)
@@ -200,11 +202,14 @@ struct InstallationInspector {
         guard info["CFBundleIdentifier"] as? String == ToolConstants.simulatorBundleIdentifier,
               let executable = info["CFBundleExecutable"] as? String,
               let version = info["CFBundleShortVersionString"] as? String,
-              let buildVersion = info["CFBundleVersion"] as? String
+              let buildVersion = info["CFBundleVersion"] as? String,
+              let dtXcodeString = info["DTXcode"] as? String,
+              let dtXcode = Int(dtXcodeString),
+              dtXcode / 100 == ToolConstants.legacyXcodeMajorVersion
         else {
             throw CLIError.unavailable(
                 "legacy-simulator-bundle",
-                "\(simulatorURL.path) is not a valid Simulator application"
+                "\(simulatorURL.path) is not a valid Xcode 26 Simulator application"
             )
         }
 

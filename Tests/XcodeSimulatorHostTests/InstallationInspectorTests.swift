@@ -132,7 +132,7 @@ struct InstallationInspectorTests {
         }
     }
 
-    @Test func legacySimulatorMustHaveAnAppleCodeSignature() throws {
+    @Test func legacyXcodeMustHaveAnAppleCodeSignature() throws {
         let fixture = try InstallationFixture()
         let inspector = InstallationInspector(
             runner: FakeSystemCommandRunner(),
@@ -153,6 +153,70 @@ struct InstallationInspectorTests {
             Issue.record("expected invalid code signature to fail")
         } catch let error as CLIError {
             #expect(error.identifier == "code-signature")
+        }
+    }
+
+    @Test func legacySimulatorMustHaveAnAppleCodeSignature() throws {
+        let fixture = try InstallationFixture()
+        let inspector = InstallationInspector(
+            runner: FakeSystemCommandRunner(),
+            environment: ["DEVELOPER_DIR": fixture.developerDirectoryURL.path],
+            legacySearchRoots: [fixture.applicationsURL],
+            signatureValidator: CodeSignatureValidator { _, bundleIdentifier in
+                if bundleIdentifier == ToolConstants.simulatorBundleIdentifier {
+                    throw CLIError.unavailable(
+                        "code-signature",
+                        "injected invalid Simulator signature"
+                    )
+                }
+            }
+        )
+
+        do {
+            _ = try inspector.legacySimulator(
+                explicitXcodeURL: fixture.legacyXcodeURL
+            )
+            Issue.record("expected invalid Simulator code signature to fail")
+        } catch let error as CLIError {
+            #expect(error.identifier == "code-signature")
+        }
+    }
+
+    @Test func signedSimulatorMustIdentifyXcode26() throws {
+        let fixture = try InstallationFixture()
+        let infoURL = fixture.legacyXcodeURL
+            .appendingPathComponent(ToolConstants.simulatorPath, isDirectory: true)
+            .appendingPathComponent("Contents/Info.plist")
+        let data = try Data(contentsOf: infoURL)
+        guard var info = try PropertyListSerialization.propertyList(
+            from: data,
+            options: [],
+            format: nil
+        ) as? [String: Any] else {
+            Issue.record("invalid test fixture Info.plist")
+            return
+        }
+        info["DTXcode"] = "2700"
+        let modifiedData = try PropertyListSerialization.data(
+            fromPropertyList: info,
+            format: .xml,
+            options: 0
+        )
+        try modifiedData.write(to: infoURL)
+        let inspector = InstallationInspector(
+            runner: FakeSystemCommandRunner(),
+            environment: ["DEVELOPER_DIR": fixture.developerDirectoryURL.path],
+            legacySearchRoots: [fixture.applicationsURL],
+            signatureValidator: .acceptingTestFixtures
+        )
+
+        do {
+            _ = try inspector.legacySimulator(
+                explicitXcodeURL: fixture.legacyXcodeURL
+            )
+            Issue.record("expected mismatched DTXcode to fail")
+        } catch let error as CLIError {
+            #expect(error.identifier == "legacy-simulator-bundle")
         }
     }
 
