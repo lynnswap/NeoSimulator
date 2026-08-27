@@ -14,8 +14,9 @@ xcode-simulator-host restore [--force]
 
 - `status` is read-only.
 - `use legacy` configures Xcode for a CoreSimulator-only session, prevents an
-  already-running Device Hub from automatically starting a live view, and
-  opens the validated Simulator app from Xcode 26.
+  already-running Device Hub from automatically starting a live view, normally
+  terminates the verified Device Hub, and opens the validated Simulator app
+  from Xcode 26. Xcode itself remains open.
 - `use device-hub` removes both overrides so Xcode 27 uses its default Device
   Hub route.
 - `restore` restores the exact preference state from before the tool first
@@ -57,6 +58,7 @@ dependency is required.
 | Resolve and validate a legacy Simulator host | `InstallationInspector` |
 | Validate the legacy Simulator code signature | `CodeSignatureValidator` |
 | Serialize preference transitions and rollback | `HostModeController` |
+| Observe Xcode, terminate the exact Device Hub, and open Simulator | `WorkspaceClient` |
 | Render output and select an exit category | `XcodeSimulatorHostApplication` |
 
 The current preference values remain the source of truth for the effective
@@ -96,7 +98,7 @@ preference. Later mode switches never replace the original state.
 For every `use` transition, `HostModeController`:
 
 1. acquires an exclusive operation lock;
-2. validates compatibility and confirms all Xcode GUI processes are closed;
+2. validates compatibility while allowing Xcode GUI processes to remain open;
 3. reads the current preference state;
 4. saves a pending `before -> target` mutation;
 5. confirms the state still equals `before`, applies both keys, and reads them back;
@@ -118,23 +120,32 @@ receipt, so it cannot combine two different transaction snapshots. It does not
 recover pending state or change a preference or receipt.
 
 `restore` first checks whether a receipt exists. Without one it is a no-op and
-does not read the managed preferences. With one it requires all Xcode GUI
-processes to be closed, recovers an interrupted journal if necessary, restores
-the exact original state, and verifies the read-back. It does not require the
-currently selected Xcode to pass the compatibility gate.
+does not read the managed preferences. With one it recovers an interrupted
+journal if necessary, restores the exact original state, and verifies the
+read-back while Xcode may remain open. It does not require the currently
+selected Xcode to pass the compatibility gate.
 
 After inspecting a conflict, `restore --force` records the observed Boolean
 state as a new rollback point, writes and verifies the saved original values,
-then deletes the receipt. It still refuses non-Boolean preference values and
-still requires Xcode to be closed.
+then deletes the receipt. It still refuses non-Boolean preference values.
 
-Opening the legacy Simulator is a separate failure boundary after a successful
-preference transaction. Failure to open it is reported as a partial success;
-the selected mode remains configured and can be restored normally.
+Device Hub termination and opening the legacy Simulator are separate failure
+boundaries after a successful preference transaction. `WorkspaceClient` only
+terminates running applications whose resolved bundle URL exactly matches the
+validated Device Hub inside the selected Xcode. It requests normal termination,
+observes `isTerminated` through KVO, and re-enumerates the current
+`NSWorkspace` inventory until no matching process remains within one 10-second
+operation deadline. It never force-terminates Device Hub.
 
-`restore` remains available when the currently selected Xcode is unsupported.
-Like `use`, it refuses to mutate preferences while Xcode is running. It deletes
-the receipt only after the original values are read back.
+Because Device Hub termination suspends, `HostModeController` reacquires the
+operation lock, verifies the committed legacy state, and holds that same lock
+until `NSWorkspace.openApplication` completes. A concurrent switch therefore
+cannot commit between final verification and Simulator launch. Termination and
+launch failures are reported as partial success; the selected mode remains
+configured and can be restored.
+
+`restore` remains available when the currently selected Xcode is unsupported or
+running. It deletes the receipt only after the original values are read back.
 
 ## Compatibility gate
 
@@ -172,7 +183,7 @@ The executable follows BSD `sysexits` categories:
 | 70 | internal invariant failure |
 | 73 | receipt or lock cannot be created |
 | 74 | preference or state I/O failed |
-| 75 | Xcode is running or another operation holds the lock |
+| 75 | another operation holds the lock, or Device Hub does not terminate normally |
 | 78 | invalid preference, corrupt receipt, or external conflict |
 
 ArgumentParser owns invocation diagnostics. Operational errors use stable
@@ -183,7 +194,7 @@ the live preferences.
 ## Non-goals
 
 - Modifying, replacing, re-signing, or deleting Xcode and Device Hub bundles.
-- Killing or automatically restarting Xcode, Device Hub, or Simulator.
+- Force-killing or automatically restarting Xcode, Device Hub, or Simulator.
 - Booting, shutting down, creating, or deleting simulator devices.
 - Making the shared Xcode preference installation-specific.
 - Claiming that the undocumented behavior is supported by Apple.
@@ -199,6 +210,7 @@ domains or launch applications. Coverage includes parsing, compatibility
 gates, tri-state round trips, pending-mutation recovery, idempotence, external
 conflicts, rollback, and restore.
 
-The only live smoke test during development is `status`, which is read-only.
-Changing the real preferences and verifying Xcode's GUI Run behavior is a
-separate, explicitly controlled A/B test.
+The live A/B test keeps one Xcode 27 process running while switching from the
+default Device Hub route to the Xcode 26 Simulator route and back. It verifies
+the host application and launched demo at each step, then restores the exact
+preferences, scheme, destination, app, Device Hub, and simulator-device state.

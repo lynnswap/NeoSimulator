@@ -155,14 +155,33 @@ final class FakeSystemCommandRunner: CommandRunning {
 @MainActor
 final class WorkspaceRecorder {
     var runningXcodes: [RunningApplication] = []
+    var deviceHubCount = 0
+    var terminateDeviceHubsError: (any Error)?
+    var onTerminateDeviceHubs: (() -> Void)?
+    private(set) var requestedDeviceHubURLs: [URL] = []
     var openedApplications: [URL] = []
     var openError: (any Error)?
+    var onOpenApplication: ((URL) async throws -> Void)?
+    private(set) var events: [String] = []
 
     var client: WorkspaceClient {
         WorkspaceClient(
             runningXcodes: { self.runningXcodes },
+            terminateDeviceHubs: { url in
+                self.events.append("terminate-device-hubs")
+                self.requestedDeviceHubURLs.append(url)
+                self.onTerminateDeviceHubs?()
+                if let terminateDeviceHubsError = self.terminateDeviceHubsError {
+                    throw terminateDeviceHubsError
+                }
+                return self.deviceHubCount
+            },
             openApplication: { url in
+                self.events.append("open-simulator")
                 self.openedApplications.append(url)
+                if let onOpenApplication = self.onOpenApplication {
+                    try await onOpenApplication(url)
+                }
                 if let openError = self.openError {
                     throw openError
                 }

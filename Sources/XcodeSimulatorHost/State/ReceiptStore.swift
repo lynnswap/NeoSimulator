@@ -107,6 +107,23 @@ struct ReceiptStore {
     }
 
     func withExclusiveLock<T>(_ body: () throws -> T) throws -> T {
+        let descriptor = try acquireExclusiveLock()
+        defer {
+            releaseExclusiveLock(descriptor)
+        }
+        return try body()
+    }
+
+    nonisolated(nonsending)
+    func withExclusiveLock<T>(_ body: () async throws -> T) async throws -> T {
+        let descriptor = try acquireExclusiveLock()
+        defer {
+            releaseExclusiveLock(descriptor)
+        }
+        return try await body()
+    }
+
+    private func acquireExclusiveLock() throws -> Int32 {
         try createDirectoryIfNeeded()
 
         let descriptor = Darwin.open(
@@ -120,41 +137,44 @@ struct ReceiptStore {
                 "could not open \(lockURL.path): \(String(cString: strerror(errno)))"
             )
         }
-        defer {
-            Darwin.close(descriptor)
-        }
 
-        var metadata = stat()
-        guard Darwin.fstat(descriptor, &metadata) == 0 else {
-            throw CLIError.io(
-                "operation-lock",
-                "could not inspect \(lockURL.path): \(String(cString: strerror(errno)))"
-            )
-        }
-        guard metadata.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG) else {
-            throw CLIError.configuration(
-                "operation-lock",
-                "operation lock is not a regular file: \(lockURL.path)"
-            )
-        }
-
-        guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
-            if errno == EWOULDBLOCK || errno == EAGAIN {
-                throw CLIError.temporary(
+        do {
+            var metadata = stat()
+            guard Darwin.fstat(descriptor, &metadata) == 0 else {
+                throw CLIError.io(
                     "operation-lock",
-                    "another \(ToolConstants.name) operation is in progress"
+                    "could not inspect \(lockURL.path): \(String(cString: strerror(errno)))"
                 )
             }
-            throw CLIError.io(
-                "operation-lock",
-                "could not lock \(lockURL.path): \(String(cString: strerror(errno)))"
-            )
-        }
-        defer {
-            _ = flock(descriptor, LOCK_UN)
-        }
+            guard metadata.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG) else {
+                throw CLIError.configuration(
+                    "operation-lock",
+                    "operation lock is not a regular file: \(lockURL.path)"
+                )
+            }
 
-        return try body()
+            guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
+                if errno == EWOULDBLOCK || errno == EAGAIN {
+                    throw CLIError.temporary(
+                        "operation-lock",
+                        "another \(ToolConstants.name) operation is in progress"
+                    )
+                }
+                throw CLIError.io(
+                    "operation-lock",
+                    "could not lock \(lockURL.path): \(String(cString: strerror(errno)))"
+                )
+            }
+            return descriptor
+        } catch {
+            Darwin.close(descriptor)
+            throw error
+        }
+    }
+
+    private func releaseExclusiveLock(_ descriptor: Int32) {
+        _ = flock(descriptor, LOCK_UN)
+        Darwin.close(descriptor)
     }
 
     private func createDirectoryIfNeeded() throws {

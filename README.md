@@ -8,17 +8,18 @@ Apple が公開していない Xcode 27 の設定を利用する実験的なツ�
 
 ## Quick Start
 
-Xcode 27 と Xcode 26 を終了してから、リポジトリ内で次を実行します。
+Xcode 27 を開いたまま、リポジトリ内で次を実行できます。
 
 ```bash
 swift run -c release xcode-simulator-host status
 swift run -c release xcode-simulator-host use legacy
 ```
 
-`use legacy` は設定変更後に、検証済みの Xcode 26 内の Simulator を開きます。
-その後 Xcode 27 を開き、通常どおり GUI から Build & Run します。
+`use legacy` は設定変更後に、選択中のXcode 27に含まれるDevice Hubへ通常終了を
+依頼し、検証済みのXcode 26内のSimulatorを開きます。そのままXcode 27のGUIから
+Build & Runします。
 
-Device Hub 経路へ切り替える場合も、先にすべての Xcode を終了します。
+Device Hub経路へ戻す場合もXcodeを終了する必要はありません。
 
 ```bash
 swift run -c release xcode-simulator-host use device-hub
@@ -70,7 +71,7 @@ xcode-simulator-host restore [--force]
 - `status`: 選択中の Xcode、2つの設定値、Xcode 26 Simulator、復元情報、実行中の
   Xcode を表示します。実設定は変更しません。
 - `use legacy`: Device Hub を経由しない CoreSimulator セッションを選び、Xcode 26
-  の Simulator を開きます。
+  の Simulator を開きます。実行中のDevice Hubは正常終了させます。
 - `use device-hub`: 2つの上書き設定を削除し、Xcode 27 の標準 Device Hub 経路を
   選びます。
 - `restore`: 最初の変更前に保存した2つの設定を復元します。live設定とreceiptが
@@ -78,12 +79,12 @@ xcode-simulator-host restore [--force]
 - `restore --force`: conflictを確認したユーザーの明示操作として、保存済みの元設定を
   現在のBoolean値より優先します。
 
-`use` は、Xcode が1つでも実行中なら設定を変更しません。Simulator の起動だけに
-失敗した場合は、設定変更済みであることをエラーに明記します。その状態も `restore`
-で復元できます。
-
-復元対象がある `restore` も、Xcode が実行中なら停止します。Xcode の設定キャッシュに
-よる再保存と競合させないためです。すべての Xcode を終了して再実行してください。
+`use` と `restore` はXcodeの起動中にも設定を切り替えます。`use legacy` では設定の
+commit後にDevice Hubの終了完了を待ち、設定がまだlegacyであることを再確認してから
+Simulatorを開きます。最終確認からopen完了までは同じoperation lockを保持するため、
+並行する別の切り替えが間へ入ることはありません。Device Hubの終了またはSimulatorの
+起動だけに失敗した場合は、設定変更済みであることをpartial-successエラーに明記します。
+その状態も `restore` で復元できます。
 
 ## Build
 
@@ -117,11 +118,12 @@ install -m 755 .build/release/xcode-simulator-host ~/.local/bin/xcode-simulator-
 receiptに記録した2設定の書き込み途中と同じ値が見つかっても、それがこのツールの
 中断結果か外部変更かは証明できません。この場合も自動復旧せず、`status`は終了コード
 `78`で曖昧な状態を表示します。receiptと現在値を確認し、保存済みの元設定を優先すると
-判断した場合だけ、Xcodeを終了して `restore --force` を実行してください。
+判断した場合だけ `restore --force` を実行してください。Xcodeは開いたままで構いません。
 
 終了コードはBSD `sysexits`に沿います。主な値は `0`（成功または仕様上のno-op）、
 `64`（引数エラー）、`69`（対応するXcode/Simulatorなし）、`74`（I/O失敗）、
-`75`（Xcode実行中またはlock競合）、`78`（設定不整合・receipt conflict）です。
+`75`（lock競合、またはDevice Hubの正常終了失敗）、`78`（設定不整合・receipt
+conflict）です。
 `status` はconflictの内容をstdoutへ表示し、`78`で終了します。
 
 アンインストールや状態ファイルの削除より先に `restore` を実行してください。
@@ -134,6 +136,12 @@ Xcode だけに限定するものではありません。
 ファイルに加えてApple code signatureを検証します。外側はidentifier
 `com.apple.dt.Xcode`、内側は `com.apple.iphonesimulator` とApple anchorを満たし、
 Simulatorの署名済み `DTXcode` もmajor 26である場合だけ開きます。
+
+終了対象のDevice Hubも、選択中Xcode内の検証済みbundle URLと完全一致するものに
+限定します。同じbundle identifierを名乗る別pathのprocessは終了しません。終了要求後は
+`NSRunningApplication.isTerminated` のKVOで完了を確認し、`NSWorkspace`のfull inventoryを
+読み直します。再起動したinstanceを含めて最大10秒間、実行中の対象が0になるまで収束
+させます。強制終了は行いません。
 
 設計、管理する設定、トランザクション、失敗意味論の詳細は
 [Documentation/Design.md](Documentation/Design.md) を参照してください。

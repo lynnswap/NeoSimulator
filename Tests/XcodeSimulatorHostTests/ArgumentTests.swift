@@ -13,6 +13,8 @@ struct ArgumentTests {
         #expect(help.contains("use"))
         #expect(help.contains("restore"))
         #expect(help.contains("DEVELOPER_DIR"))
+        #expect(help.contains("Xcode can remain open"))
+        #expect(!help.contains("Quit all Xcode"))
     }
 
     @Test func statusParsesWithoutAnOverride() throws {

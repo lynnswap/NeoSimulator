@@ -20,7 +20,7 @@ struct XcodeSimulatorHostArguments: ParsableCommand {
         discussion: """
             Xcode is resolved from DEVELOPER_DIR or xcode-select. The managed
             com.apple.dt.Xcode preference is shared by every installed Xcode.
-            Quit all Xcode processes before changing modes.
+            Xcode can remain open while modes change.
             """,
         version: ToolConstants.version,
         subcommands: [StatusArguments.self, UseArguments.self, RestoreArguments.self]

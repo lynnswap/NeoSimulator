@@ -77,8 +77,6 @@ struct HostModeController {
                 simulator = nil
             }
 
-            try rejectRunningXcodes()
-
             let didChange = try transition(
                 to: mode.targetState,
                 capturingWith: xcode
@@ -94,20 +92,45 @@ struct HostModeController {
             )
         }
 
+        var terminatedDeviceHubCount = 0
         if let simulator = prepared.simulator {
+            var deviceHubTerminationError: (any Error)?
             do {
-                _ = try await workspace.openApplication(simulator.applicationURL)
+                let deviceHubURL = prepared.xcode.applicationURL
+                    .appendingPathComponent(
+                        ToolConstants.deviceHubPath,
+                        isDirectory: true
+                    )
+                terminatedDeviceHubCount = try await workspace.terminateDeviceHubs(
+                    deviceHubURL
+                )
             } catch {
-                let detail = errorMessage(error)
-                let recoveryGuidance: String
-                if prepared.receiptURL != nil {
-                    recoveryGuidance = "The preferences remain managed; run restore to undo them."
-                } else {
-                    recoveryGuidance = "No restoration receipt exists because these are the original preferences."
-                }
-                throw CLIError.io(
-                    "simulator-launch-partial-success",
-                    "legacy mode is configured, but Simulator could not be opened: \(detail). \(recoveryGuidance)"
+                deviceHubTerminationError = error
+            }
+
+            var simulatorLaunchError: (any Error)?
+            do {
+                simulatorLaunchError = try await openLegacySimulatorIfCommitted(
+                    expected: mode.targetState,
+                    applicationURL: simulator.applicationURL
+                )
+            } catch {
+                let category = (error as? CLIError)?.category ?? .io
+                let terminationDetail = deviceHubTerminationError.map {
+                    " Device Hub also could not be closed: \(errorMessage($0))."
+                } ?? ""
+                throw CLIError(
+                    category: category,
+                    identifier: "legacy-host-invalidated",
+                    message: "legacy mode was committed, but it could not be held through the final Simulator open: \(errorMessage(error)). Simulator was not opened.\(terminationDetail)"
+                )
+            }
+
+            if deviceHubTerminationError != nil || simulatorLaunchError != nil {
+                throw legacyHostPartialSuccessError(
+                    receiptURL: prepared.receiptURL,
+                    deviceHubTerminationError: deviceHubTerminationError,
+                    simulatorLaunchError: simulatorLaunchError
                 )
             }
         }
@@ -117,7 +140,8 @@ struct HostModeController {
             didChange: prepared.didChange,
             xcode: prepared.xcode,
             simulator: prepared.simulator,
-            receiptURL: prepared.receiptURL
+            receiptURL: prepared.receiptURL,
+            terminatedDeviceHubCount: terminatedDeviceHubCount
         )
     }
 
@@ -132,8 +156,6 @@ struct HostModeController {
                     receiptURL: receiptStore.receiptURL
                 )
             }
-            try rejectRunningXcodes()
-
             if force {
                 return try forceRestore(receipt)
             }
@@ -424,15 +446,56 @@ struct HostModeController {
         }
     }
 
-    private func rejectRunningXcodes() throws {
-        let runningXcodes = workspace.runningXcodes()
-        guard runningXcodes.isEmpty else {
-            let details = runningXcodes.map { application in
-                application.bundleURL?.path ?? "pid \(application.processIdentifier)"
-            }.joined(separator: ", ")
-            throw CLIError.temporary(
-                "xcode-running",
-                "quit every Xcode process before changing modes: \(details)"
+    private func openLegacySimulatorIfCommitted(
+        expected: ManagedPreferenceState,
+        applicationURL: URL
+    ) async throws -> (any Error)? {
+        try await receiptStore.withExclusiveLock {
+            let observed = try defaultsStore.readState()
+            guard observed == expected else {
+                throw conflictError(expected: expected, observed: observed)
+            }
+            do {
+                _ = try await workspace.openApplication(applicationURL)
+                return nil
+            } catch {
+                return error
+            }
+        }
+    }
+
+    private func legacyHostPartialSuccessError(
+        receiptURL: URL?,
+        deviceHubTerminationError: (any Error)?,
+        simulatorLaunchError: (any Error)?
+    ) -> CLIError {
+        let recoveryGuidance = if receiptURL != nil {
+            "The preferences remain managed; run restore to undo them."
+        } else {
+            "No restoration receipt exists because these are the original preferences."
+        }
+
+        switch (deviceHubTerminationError, simulatorLaunchError) {
+        case let (terminationError?, nil):
+            return CLIError(
+                category: (terminationError as? CLIError)?.category ?? .temporary,
+                identifier: "device-hub-termination-partial-success",
+                message: "legacy mode is configured and Simulator is open, but Device Hub could not be closed: \(errorMessage(terminationError)). \(recoveryGuidance)"
+            )
+        case let (nil, launchError?):
+            return CLIError.io(
+                "simulator-launch-partial-success",
+                "legacy mode is configured, but Simulator could not be opened: \(errorMessage(launchError)). \(recoveryGuidance)"
+            )
+        case let (terminationError?, launchError?):
+            return CLIError.io(
+                "legacy-host-partial-success",
+                "legacy mode is configured, but Device Hub could not be closed (\(errorMessage(terminationError))) and Simulator could not be opened (\(errorMessage(launchError))). \(recoveryGuidance)"
+            )
+        case (nil, nil):
+            return CLIError.software(
+                "legacy-host-partial-success",
+                "legacy host failure was requested without a failing operation"
             )
         }
     }

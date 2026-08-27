@@ -69,7 +69,7 @@ struct HostStatus: Equatable {
         if runningXcodes.isEmpty {
             lines.append("Running Xcode processes: none")
         } else {
-            lines.append("Running Xcode processes: \(runningXcodes.count) (mode changes are blocked)")
+            lines.append("Running Xcode processes: \(runningXcodes.count) (hot switching is supported)")
             for application in runningXcodes {
                 let path = application.bundleURL?.path ?? "unknown path"
                 lines.append("  pid \(application.processIdentifier): \(path)")
@@ -87,6 +87,7 @@ struct ModeChangeReport: Equatable {
     let xcode: XcodeInstallation
     let simulator: SimulatorInstallation?
     let receiptURL: URL?
+    let terminatedDeviceHubCount: Int
 
     var rendered: String {
         var lines: [String]
@@ -100,6 +101,9 @@ struct ModeChangeReport: Equatable {
         if let simulator {
             lines.append("Simulator: \(simulator.applicationURL.path)")
         }
+        if terminatedDeviceHubCount > 0 {
+            lines.append("Closed Device Hub instances: \(terminatedDeviceHubCount)")
+        }
         if let receiptURL {
             lines.append("Restoration receipt: saved at \(receiptURL.path)")
         } else if didChange {
@@ -107,7 +111,7 @@ struct ModeChangeReport: Equatable {
         } else {
             lines.append("Restoration receipt: none")
         }
-        lines.append("Launch Xcode 27 after changing modes.")
+        lines.append("Xcode 27 can remain open; the next Run uses this mode.")
         return lines.joined(separator: "\n")
     }
 }
@@ -130,7 +134,7 @@ struct RestoreReport: Equatable {
         return """
             Restored original preferences: \(restoredState)
             Removed restoration receipt: \(receiptURL.path)
-            Launch Xcode again to use the restored configuration.
+            Xcode can remain open; the next Run uses the restored configuration.
             """
     }
 }
