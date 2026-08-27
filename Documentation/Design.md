@@ -183,10 +183,11 @@ It prints PATH guidance but never edits a shell profile.
 The build script rejects a release tag whose semantic version does not match
 the binary's `--version`. The packaging verifier checks the exact asset set,
 checksums, rendered installer, and archive entries. `release.yml` runs package
-tests, builds and verifies the assets on an arm64 macOS 26 runner, transfers the
-archive digest across jobs, and creates or repairs a draft release. Publishing
-the draft remains a manual action. A version with a prerelease suffix is marked
-as a GitHub prerelease and explicitly excluded from `releases/latest`.
+tests, builds and verifies the assets on GitHub's arm64 Xcode 27 runner,
+transfers the archive digest across jobs, and creates or repairs a draft
+release. Publishing the draft remains a manual action. A version with a
+prerelease suffix is marked as a GitHub prerelease and explicitly excluded from
+`releases/latest`.
 
 ## Failure semantics
 
