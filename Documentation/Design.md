@@ -9,7 +9,7 @@ used alongside Xcode 27 simulator runs.
 xcode-simulator-host status
 xcode-simulator-host use legacy [--legacy-xcode /Applications/Xcode.app]
 xcode-simulator-host use device-hub
-xcode-simulator-host restore
+xcode-simulator-host restore [--force]
 ```
 
 - `status` is read-only.
@@ -21,6 +21,8 @@ xcode-simulator-host restore
 - `restore` restores the exact preference state from before the tool first
   changed it, including the distinction between an absent key and an explicit
   Boolean value.
+- `restore --force` is the explicit recovery path that lets the saved original
+  values win over a conflicting live Boolean state.
 
 The selected Xcode comes from `DEVELOPER_DIR` when set and otherwise from
 `xcode-select -p`. The preference domain is shared by every installed Xcode;
@@ -35,25 +37,27 @@ boundary that justifies another product or implementation target.
 ```text
 xcode-simulator-host (executable product)
   -> XcodeSimulatorHost (composition root and all internal owners)
-  -> XcodeSimulatorHostTests
+XcodeSimulatorHostTests
+  -> XcodeSimulatorHost
 ```
 
-Third-party argument parsing and persistence dependencies are intentionally
-absent. The command grammar is closed and small enough for a typed parser, and
-Foundation provides the required process, property-list, and file APIs.
+The CLI surface uses Apple's `swift-argument-parser` 1.8.2. Persistence and system
+integration use Foundation, AppKit, and Darwin directly; no additional runtime
+dependency is required.
 
 ## Owner map
 
 | Responsibility | Owner |
 | --- | --- |
-| Parse commands and options | `CommandParser` |
+| Parse commands and options | `ArgumentParser` command types |
 | Execute fixed system commands | `SystemCommandRunner` |
 | Read and mutate the two Boolean preferences | `DefaultsStore` |
 | Persist the original state and in-flight mutation | `ReceiptStore` |
 | Resolve and validate Xcode 27 | `InstallationInspector` |
 | Resolve and validate a legacy Simulator host | `InstallationInspector` |
+| Validate the legacy Simulator code signature | `CodeSignatureValidator` |
 | Serialize preference transitions and rollback | `HostModeController` |
-| Render output and select an exit category | `CLIApplication` |
+| Render output and select an exit category | `XcodeSimulatorHostApplication` |
 
 The current preference values remain the source of truth for the effective
 mode. The receipt owns only restoration and interruption recovery metadata.
@@ -89,44 +93,68 @@ contains:
 The first successful management attempt creates the receipt before changing a
 preference. Later mode switches never replace the original state.
 
-For every transition, `HostModeController`:
+For every `use` transition, `HostModeController`:
 
 1. acquires an exclusive operation lock;
 2. validates compatibility and confirms all Xcode GUI processes are closed;
 3. reads the current preference state;
 4. saves a pending `before -> target` mutation;
-5. applies both keys and reads them back;
+5. confirms the state still equals `before`, applies both keys, and reads them back;
 6. finalizes the verified state in the receipt.
 
 If applying or verifying either key fails, the controller restores the state
 from immediately before that operation and verifies the rollback. A rollback
 failure is reported as an inconsistent state and the receipt is retained.
 
-On the next invocation, a pending mutation is recovered only when the live
-state equals its `before` or `target` value. Any third value is an external
-conflict and no mutation proceeds.
+On the next `use` or `restore` invocation, a pending mutation is finalized when
+the live state equals its `before` or `target` value. A state matching the
+possible value after writing only the Xcode key is ambiguous: it could be an
+interrupted tool write or an external change made after the journal was saved.
+It is never rolled back automatically. Any other third value is also an
+external conflict, and no mutation proceeds.
+
+`status` takes the same operation lock while reading preferences and the
+receipt, so it cannot combine two different transaction snapshots. It does not
+recover pending state or change a preference or receipt.
+
+`restore` first checks whether a receipt exists. Without one it is a no-op and
+does not read the managed preferences. With one it requires all Xcode GUI
+processes to be closed, recovers an interrupted journal if necessary, restores
+the exact original state, and verifies the read-back. It does not require the
+currently selected Xcode to pass the compatibility gate.
+
+After inspecting a conflict, `restore --force` records the observed Boolean
+state as a new rollback point, writes and verifies the saved original values,
+then deletes the receipt. It still refuses non-Boolean preference values and
+still requires Xcode to be closed.
 
 Opening the legacy Simulator is a separate failure boundary after a successful
 preference transaction. Failure to open it is reported as a partial success;
 the selected mode remains configured and can be restored normally.
 
-`restore` remains available even when the current Xcode is unsupported or
-running. It deletes the receipt only after the original values are read back.
+`restore` remains available when the currently selected Xcode is unsupported.
+Like `use`, it refuses to mutate preferences while Xcode is running. It deletes
+the receipt only after the original values are read back.
 
 ## Compatibility gate
 
-Mutation support is deliberately limited to Xcode 27. A target installation
+`use` support is deliberately limited to Xcode 27. A target installation
 must have:
 
 - bundle identifier `com.apple.dt.Xcode` and major version 27;
 - `Contents/Applications/DeviceHub.app` with identifier
-  `com.apple.dt.Devices`;
-- the expected `IDEiOSSupportCore` binary containing the exact hidden key.
+  `com.apple.dt.Devices`, a launchable bundle executable, and its expected
+  internal implementation executable;
+- the expected `IDEiOSSupportCore` binary containing the exact Xcode key;
+- the Device Hub implementation binary containing the exact auto-start key.
 
 A legacy host must come from Xcode 26 and contain an executable Simulator app
-with bundle identifier `com.apple.iphonesimulator`. Automatic discovery checks
-Xcode applications in `/Applications` and `~/Applications` and chooses the
-highest validated version. `--legacy-xcode` selects an explicit candidate.
+with bundle identifier `com.apple.iphonesimulator`. Before launch, the complete
+Simulator bundle must pass strict static code validation for the requirement
+`identifier "com.apple.iphonesimulator" and anchor apple`. Automatic discovery
+checks Xcode applications in `/Applications` and `~/Applications` and chooses
+the highest validated version. `--legacy-xcode` selects an explicit candidate
+but does not bypass signature validation.
 
 No alternative binary path, preference key, or application is guessed when a
 gate fails. Xcode 28 and later require a new verified compatibility profile.
@@ -146,8 +174,10 @@ The executable follows BSD `sysexits` categories:
 | 75 | Xcode is running or another operation holds the lock |
 | 78 | invalid preference, corrupt receipt, or external conflict |
 
-Errors use stable identifiers on stderr. Successful status and transition
-reports use stdout.
+ArgumentParser owns invocation diagnostics. Operational errors use stable
+identifiers on stderr. Successful transition reports use stdout. `status`
+always writes its report to stdout and exits 78 when a receipt conflicts with
+the live preferences.
 
 ## Non-goals
 
