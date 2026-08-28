@@ -80,7 +80,7 @@ curl -fsSL https://github.com/lynnswap/xcode-simulator-host/releases/latest/down
 Install a specific version:
 
 ```bash
-curl -fsSL https://github.com/lynnswap/xcode-simulator-host/releases/download/v0.1.0/install.sh | sh
+curl -fsSL https://github.com/lynnswap/xcode-simulator-host/releases/download/v0.0.1/install.sh | sh
 ```
 
 </details>
