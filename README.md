@@ -69,18 +69,12 @@ preference domain.
 ## Install Options
 
 <details>
-<summary>Custom directory or pinned version</summary>
+<summary>Custom install directory</summary>
 
 Install into a custom directory:
 
 ```bash
 curl -fsSL https://github.com/lynnswap/xcode-simulator-host/releases/latest/download/install.sh | sh -s -- --bindir "$HOME/bin"
-```
-
-Install a specific version:
-
-```bash
-curl -fsSL https://github.com/lynnswap/xcode-simulator-host/releases/download/v0.0.1/install.sh | sh
 ```
 
 </details>
