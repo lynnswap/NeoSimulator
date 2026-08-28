@@ -1,0 +1,278 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release tag to create
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  verify-release:
+    name: Verify Release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Verify release input
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_BRANCH: ${{ github.event.repository.default_branch }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ ! "${RELEASE_VERSION}" =~ ^v[0-9]+[.][0-9]+[.][0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Release tag must look like v1.2.3 or v1.2.3-rc.1." >&2
+            exit 1
+          fi
+          if [[ "${GITHUB_REF_TYPE}" != "branch" || "${GITHUB_REF_NAME}" != "${RELEASE_BRANCH}" ]]; then
+            echo "Release workflow must be dispatched from ${RELEASE_BRANCH}." >&2
+            exit 1
+          fi
+          remote_head="$(git ls-remote origin "refs/heads/${RELEASE_BRANCH}" | awk '{ print $1 }')"
+          if [[ -z "${remote_head}" || "${remote_head}" != "${GITHUB_SHA}" ]]; then
+            echo "Release workflow must run against the current ${RELEASE_BRANCH} head." >&2
+            echo "Remote head: ${remote_head:-missing}" >&2
+            echo "Workflow SHA: ${GITHUB_SHA}" >&2
+            exit 1
+          fi
+          remote_tag_target() {
+            git ls-remote --tags origin "refs/tags/${RELEASE_VERSION}" "refs/tags/${RELEASE_VERSION}^{}" |
+              awk '$2 ~ /\^\{\}$/ { peeled = $1 } $2 !~ /\^\{\}$/ { direct = $1 } END { if (peeled != "") print peeled; else if (direct != "") print direct }'
+          }
+          tag_target="$(remote_tag_target)"
+          if [[ -n "${tag_target}" && "${tag_target}" != "${GITHUB_SHA}" ]]; then
+            echo "Release tag already exists for a different commit: ${RELEASE_VERSION}" >&2
+            exit 1
+          fi
+          if release_info="$(gh release view "${RELEASE_VERSION}" --repo "${GITHUB_REPOSITORY}" --json isDraft,targetCommitish 2>/dev/null)"; then
+            release_is_draft="$(jq -r '.isDraft' <<< "${release_info}")"
+            release_target="$(jq -r '.targetCommitish' <<< "${release_info}")"
+            if [[ "${release_is_draft}" != "true" ]]; then
+              echo "GitHub Release already exists and is not a draft: ${RELEASE_VERSION}" >&2
+              exit 1
+            fi
+            if [[ "${release_target}" != "${GITHUB_SHA}" ]]; then
+              echo "Draft release targets a different commit: ${RELEASE_VERSION}" >&2
+              echo "Draft target: ${release_target}" >&2
+              echo "Workflow SHA: ${GITHUB_SHA}" >&2
+              exit 1
+            fi
+            echo "Existing draft release will be repaired: ${RELEASE_VERSION}"
+          fi
+
+  package-checks:
+    name: Package Checks
+    needs: verify-release
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+    with:
+      concurrency_group: release-package-checks-${{ inputs.version }}
+
+  build-release:
+    name: Build Release
+    needs: package-checks
+    runs-on: xcode-27
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      archive_sha256: ${{ steps.release_digests.outputs.archive_sha256 }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Show Xcode toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Build release binary
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: scripts/build-release.sh --version "${RELEASE_VERSION}" --dist-root dist
+
+      - name: Package release assets
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          scripts/package-release.sh \
+            --version "${RELEASE_VERSION}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --dist-root dist \
+            --output-dir release
+
+      - name: Verify release assets
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          scripts/verify-release-assets.sh \
+            --version "${RELEASE_VERSION}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --release-dir release
+
+      - name: Record trusted release digest
+        id: release_digests
+        run: |
+          set -euo pipefail
+          archive_sha256="$(shasum -a 256 release/xcode-simulator-host-darwin-arm64.tar.gz | awk '{ print $1 }')"
+          echo "archive_sha256=${archive_sha256}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload release assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-assets
+          path: |
+            release/xcode-simulator-host-darwin-arm64.tar.gz
+            release/SHA256SUMS.txt
+            release/install.sh
+          if-no-files-found: error
+
+  create-draft-release:
+    name: Create Draft Release
+    needs: build-release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Download release assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-assets
+          path: release
+
+      - name: Verify release target
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_TYPE}" != "branch" || "${GITHUB_REF_NAME}" != "${RELEASE_BRANCH}" ]]; then
+            echo "Release workflow must be dispatched from ${RELEASE_BRANCH}." >&2
+            exit 1
+          fi
+          remote_head="$(git ls-remote origin "refs/heads/${RELEASE_BRANCH}" | awk '{ print $1 }')"
+          if [[ -z "${remote_head}" || "${remote_head}" != "${GITHUB_SHA}" ]]; then
+            echo "Release workflow must still target the current ${RELEASE_BRANCH} head." >&2
+            exit 1
+          fi
+
+      - name: Verify downloaded release assets
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          scripts/verify-release-assets.sh \
+            --version "${RELEASE_VERSION}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --release-dir release \
+            --archive-sha256 "${{ needs.build-release.outputs.archive_sha256 }}"
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          remote_tag_target() {
+            git ls-remote --tags origin "refs/tags/${RELEASE_VERSION}" "refs/tags/${RELEASE_VERSION}^{}" |
+              awk '$2 ~ /\^\{\}$/ { peeled = $1 } $2 !~ /\^\{\}$/ { direct = $1 } END { if (peeled != "") print peeled; else if (direct != "") print direct }'
+          }
+          is_expected_asset() {
+            case "$1" in
+              xcode-simulator-host-darwin-arm64.tar.gz|SHA256SUMS.txt|install.sh)
+                return 0
+                ;;
+              *)
+                return 1
+                ;;
+            esac
+          }
+
+          tag_target="$(remote_tag_target)"
+          if [[ -n "${tag_target}" && "${tag_target}" != "${GITHUB_SHA}" ]]; then
+            echo "Release tag already exists for a different commit: ${RELEASE_VERSION}" >&2
+            exit 1
+          fi
+
+          if release_info="$(gh release view "${RELEASE_VERSION}" --repo "${GITHUB_REPOSITORY}" --json isDraft,targetCommitish 2>/dev/null)"; then
+            release_is_draft="$(jq -r '.isDraft' <<< "${release_info}")"
+            release_target="$(jq -r '.targetCommitish' <<< "${release_info}")"
+            if [[ "${release_is_draft}" != "true" ]]; then
+              echo "GitHub Release already exists and is not a draft: ${RELEASE_VERSION}" >&2
+              exit 1
+            fi
+            if [[ "${release_target}" != "${GITHUB_SHA}" ]]; then
+              echo "Draft release targets a different commit: ${RELEASE_VERSION}" >&2
+              echo "Draft target: ${release_target}" >&2
+              echo "Workflow SHA: ${GITHUB_SHA}" >&2
+              exit 1
+            fi
+
+            if [[ "${RELEASE_VERSION}" == *-* ]]; then
+              gh release edit "${RELEASE_VERSION}" \
+                --repo "${GITHUB_REPOSITORY}" \
+                --prerelease \
+                --latest=false
+            else
+              gh release edit "${RELEASE_VERSION}" \
+                --repo "${GITHUB_REPOSITORY}" \
+                --prerelease=false
+            fi
+
+            while IFS= read -r asset_name; do
+              [[ -n "${asset_name}" ]] || continue
+              if ! is_expected_asset "${asset_name}"; then
+                gh release delete-asset "${RELEASE_VERSION}" "${asset_name}" --repo "${GITHUB_REPOSITORY}" --yes
+              fi
+            done < <(gh release view "${RELEASE_VERSION}" --repo "${GITHUB_REPOSITORY}" --json assets --jq '.assets[].name')
+
+            gh release upload "${RELEASE_VERSION}" \
+              release/xcode-simulator-host-darwin-arm64.tar.gz \
+              release/SHA256SUMS.txt \
+              release/install.sh \
+              --repo "${GITHUB_REPOSITORY}" \
+              --clobber
+
+            echo "Repaired draft release ${RELEASE_VERSION}."
+          else
+            release_classification=()
+            if [[ "${RELEASE_VERSION}" == *-* ]]; then
+              release_classification+=(--prerelease --latest=false)
+            fi
+            gh release create "${RELEASE_VERSION}" \
+              release/xcode-simulator-host-darwin-arm64.tar.gz \
+              release/SHA256SUMS.txt \
+              release/install.sh \
+              --repo "${GITHUB_REPOSITORY}" \
+              --draft \
+              --generate-notes \
+              --target "${GITHUB_SHA}" \
+              --title "${RELEASE_VERSION}" \
+              "${release_classification[@]}"
+
+            echo "Created draft release ${RELEASE_VERSION}."
+          fi
+          echo "Edit the release notes, then publish the draft manually."
