@@ -103,9 +103,9 @@ diagnostics, `DEVELOPER_DIR`, and non-default Xcode installations.
 
 `use` validates compatibility before changing managed preferences, serializes
 transitions, and verifies every write. It rolls back a failed write when the
-previous state can be safely restored; external changes are never overwritten.
-`restore` remains available without the compatibility check so the saved values
-can be recovered.
+previous state can be safely restored. A conflicting external change is left
+untouched unless the user explicitly runs `restore --force`. `restore` remains
+available without the compatibility check so the saved values can be recovered.
 
 The tool requests normal termination only for the exact Device Hub inside the
 selected Xcode. It never force-quits Xcode or Device Hub.
