@@ -1,4 +1,4 @@
-# Xcode 27 standalone simulator host
+# Xcode 27+ standalone simulator host
 
 ## Why
 
@@ -15,8 +15,8 @@ adds its own chrome and scaling. It does not use DeviceKit or launch Device Hub.
 
 Legacy mode provides a dedicated AppKit host with these guarantees:
 
-- it uses only the selected Xcode 27 installation and the CoreSimulator system
-  resources installed with Xcode 27;
+- it uses only the selected Xcode 27 or later installation and the matching
+  CoreSimulator system resources installed with Xcode;
 - it never opens the Device Hub URL scheme or loads
   `DeviceKit.framework`;
 - it does not create a clipboard synchronization owner;
@@ -36,7 +36,7 @@ reported as an unavailable legacy host.
 
 ```text
 xcode-simulator-host use legacy
-  -> validate the selected Xcode 27 and standalone host components
+  -> validate the selected Xcode 27+ and standalone host components
   -> commit the CoreSimulator-only preference route
   -> normally terminate the exact Device Hub from that Xcode
   -> verify Device Hub is absent
@@ -74,9 +74,11 @@ required symbols:
 - `Xcode.app/Contents/SharedFrameworks/SimulatorKit.framework`
 - `Xcode.app/Contents/Frameworks/IDEPlaygroundSimulator.framework`
 
-`CoreSimulator.framework` is installed by Xcode 27's
+`CoreSimulator.framework` is installed by Xcode's
 `com.apple.pkg.XcodeSystemResources` package. `SimulatorKit` links to that
 system resource; the host must reject an incompatible or missing installation.
+The selected Xcode major version and the installed CoreSimulator `DTXcode`
+generation must match.
 
 The display factory is
 `IDEPlaygroundSimulator.IDESimulatorPlaygroundUntil`
@@ -84,8 +86,8 @@ The display factory is
 integrated `SimDeviceScreen`; it must not assume screen ID zero.
 
 Home and Software Keyboard use one `SimDeviceLegacyHIDClient` per displayed
-device and `IndigoHIDMessageForButton` with the Xcode 27 values verified by the
-live probe:
+device and `IndigoHIDMessageForButton` with the values verified on the baseline
+Xcode 27 build:
 
 | Input | Button | Down | Up | Target |
 | --- | ---: | ---: | ---: | ---: |
@@ -149,6 +151,13 @@ confirmed all of the following in an ordinary, ad-hoc-signed process:
 - only `/Applications/Xcode_27.app` supplied Xcode frameworks;
 - no Device Hub process or launch log during the probe;
 - no `DeviceKit.framework` mapping and no pasteboard-session log.
+
+Xcode 27 is the minimum supported generation, not the only supported version.
+Later Xcode versions are accepted when the selected installation and its
+matching CoreSimulator resources still satisfy every required preference,
+class, selector, and C-symbol check. A later major version that changes this
+private surface fails the compatibility gate instead of falling back to Device
+Hub.
 
 ## Progress
 
