@@ -12,6 +12,10 @@ let package = Package(
             name: "xcode-simulator-host",
             targets: ["XcodeSimulatorHost"]
         ),
+        .executable(
+            name: "XcodeSimulatorLegacyHost",
+            targets: ["XcodeSimulatorLegacyHost"]
+        ),
     ],
     dependencies: [
         .package(
@@ -24,6 +28,17 @@ let package = Package(
             name: "XcodeSimulatorHost",
             dependencies: [
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
+            ]
+        ),
+        .executableTarget(
+            name: "XcodeSimulatorLegacyHost",
+            path: "Sources/XcodeSimulatorLegacyHost",
+            exclude: ["Info.plist"],
+            cSettings: [
+                .unsafeFlags(["-fobjc-arc"]),
+            ],
+            linkerSettings: [
+                .linkedFramework("AppKit"),
             ]
         ),
         .testTarget(
