@@ -96,6 +96,13 @@ plist_value() {
   /usr/libexec/PlistBuddy -c "Print :$1" "$host_info_plist" 2>/dev/null || true
 }
 
+host_short_version="$(plist_value CFBundleShortVersionString)"
+if [[ "$host_short_version" != "$expected_version" ]]; then
+  echo "Companion app version does not match release tag." >&2
+  echo "Expected: $expected_version" >&2
+  echo "Actual:   $host_short_version" >&2
+  exit 1
+fi
 if [[ "$(plist_value CFBundleExecutable)" != "$host_product" ]]; then
   echo "Host Info.plist must declare CFBundleExecutable=$host_product." >&2
   exit 1

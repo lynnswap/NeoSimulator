@@ -110,7 +110,8 @@ int main(int argc, const char *argv[]) {
         XSHMenuController *menuController = [[XSHMenuController alloc] init];
         [menuController installMainMenu];
 
-        XSHLegacyHostApplication *controller = [[XSHLegacyHostApplication alloc]
+        __attribute__((objc_precise_lifetime)) XSHLegacyHostApplication *controller =
+            [[XSHLegacyHostApplication alloc]
             initWithXcodeURL:xcodeURL
              menuController:menuController];
         application.delegate = controller;
