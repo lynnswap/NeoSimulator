@@ -63,6 +63,8 @@ curl -fsSL https://github.com/lynnswap/xcode-simulator-host/releases/latest/down
 
 The installer verifies the release checksum and never edits shell profiles.
 Use `xcode-simulator-host --help` for the complete command and option list.
+See [Advanced configuration](Documentation/AdvancedConfiguration.md) for
+detailed diagnostics and non-default Xcode installations.
 
 ## Safety and Recovery
 
