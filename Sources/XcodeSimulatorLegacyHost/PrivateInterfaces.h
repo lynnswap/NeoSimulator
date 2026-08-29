@@ -32,6 +32,7 @@ static const uint32_t XSHButtonStateUp = 2;
 @end
 
 @interface XSHSimRuntime : NSObject
+- (nullable NSString *)name;
 - (nullable NSString *)platformIdentifier;
 @end
 

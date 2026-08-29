@@ -16,6 +16,7 @@ static NSString *const XSHCoreSimulatorFrameworkPath =
 @property (nonatomic, readwrite) Class displayFactoryClass;
 @property (nonatomic, readwrite) Class legacyHIDClientClass;
 @property (nonatomic, readwrite) XSHIndigoHIDMessageForButtonFunction messageForButton;
+@property (nonatomic, readwrite) void *showDeviceChromeFunction;
 @property (nonatomic, readwrite) void *disconnectDisplayFunction;
 @property (nonatomic, readwrite) void *beginResizeFunction;
 @property (nonatomic, readwrite) void *resizeToFunction;
@@ -70,6 +71,10 @@ static NSString *const XSHCoreSimulatorFrameworkPath =
         return nil;
     }
 
+    _showDeviceChromeFunction = [self
+        requiredSymbol:"$s12SimulatorKit14SimDisplayViewC16showDeviceChromeSbvsTj"
+                handle:_simulatorKitHandle
+                 error:error];
     _disconnectDisplayFunction = [self
         requiredSymbol:"$s12SimulatorKit14SimDisplayViewC10disconnect10completionyyycSg_tFTj"
                 handle:_simulatorKitHandle
@@ -86,7 +91,8 @@ static NSString *const XSHCoreSimulatorFrameworkPath =
         requiredSymbol:"$s12SimulatorKit14SimDisplayViewC9endResizeyyFTj"
                 handle:_simulatorKitHandle
                  error:error];
-    if (_disconnectDisplayFunction == NULL ||
+    if (_showDeviceChromeFunction == NULL ||
+        _disconnectDisplayFunction == NULL ||
         _beginResizeFunction == NULL ||
         _resizeToFunction == NULL ||
         _endResizeFunction == NULL) {
@@ -208,6 +214,7 @@ static NSString *const XSHCoreSimulatorFrameworkPath =
                        name:@"SimRuntime"
              classSelectors:@[]
           instanceSelectors:@[
+                NSStringFromSelector(@selector(name)),
                 NSStringFromSelector(@selector(platformIdentifier)),
             ]
                       error:error] &&

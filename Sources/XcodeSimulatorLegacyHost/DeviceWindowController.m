@@ -7,47 +7,73 @@
 
 #import <stdlib.h>
 
-static const CGFloat XSHControlBarHeight = 46.0;
-static const CGFloat XSHDisplayInset = 10.0;
+static const CGFloat XSHHeaderHeight = 74.0;
+static const CGFloat XSHHeaderCornerRadius = 22.0;
+static const CGFloat XSHHeaderDisplaySpacing = 14.0;
+static const CGFloat XSHDisplayInset = 8.0;
+static const CGFloat XSHMinimumHeaderWidth = 360.0;
+
+@interface XSHHeaderView : NSVisualEffectView
+@end
+
+@implementation XSHHeaderView
+
+- (nullable NSView *)hitTest:(NSPoint)point {
+    NSView *hitView = [super hitTest:point];
+    if (hitView == nil || [hitView isKindOfClass:NSButton.class]) {
+        return hitView;
+    }
+    return self;
+}
+
+- (BOOL)mouseDownCanMoveWindow {
+    return YES;
+}
+
+@end
 
 @interface XSHDeviceContentView : NSView
 @property (nonatomic, readonly) NSView *displayView;
-@property (nonatomic, readonly) NSView *controlBar;
+@property (nonatomic, readonly) NSView *headerView;
 - (instancetype)initWithDisplayView:(NSView *)displayView
-                         controlBar:(NSView *)controlBar;
+                         headerView:(NSView *)headerView;
 - (CGSize)availableDisplaySize;
 @end
 
 @implementation XSHDeviceContentView
 
 - (instancetype)initWithDisplayView:(NSView *)displayView
-                         controlBar:(NSView *)controlBar {
+                         headerView:(NSView *)headerView {
     self = [super initWithFrame:NSZeroRect];
     if (self != nil) {
         _displayView = displayView;
-        _controlBar = controlBar;
+        _headerView = headerView;
         self.wantsLayer = YES;
         [self addSubview:displayView];
-        [self addSubview:controlBar];
+        [self addSubview:headerView];
     }
     return self;
 }
 
 - (CGSize)availableDisplaySize {
+    CGFloat availableHeight = NSHeight(self.bounds) -
+        XSHHeaderHeight -
+        XSHHeaderDisplaySpacing -
+        XSHDisplayInset;
     return CGSizeMake(
         MAX(1.0, NSWidth(self.bounds) - (2.0 * XSHDisplayInset)),
-        MAX(1.0, NSHeight(self.bounds) - XSHControlBarHeight - (2.0 * XSHDisplayInset))
+        MAX(1.0, availableHeight)
     );
 }
 
 - (void)layout {
     [super layout];
 
-    self.controlBar.frame = NSMakeRect(
+    self.headerView.frame = NSMakeRect(
         0.0,
-        0.0,
+        MAX(0.0, NSHeight(self.bounds) - XSHHeaderHeight),
         NSWidth(self.bounds),
-        XSHControlBarHeight
+        XSHHeaderHeight
     );
 
     NSSize displaySize = self.displayView.intrinsicContentSize;
@@ -57,9 +83,13 @@ static const CGFloat XSHDisplayInset = 10.0;
 
     NSRect availableRect = NSMakeRect(
         XSHDisplayInset,
-        XSHControlBarHeight + XSHDisplayInset,
+        XSHDisplayInset,
         MAX(1.0, NSWidth(self.bounds) - (2.0 * XSHDisplayInset)),
-        MAX(1.0, NSHeight(self.bounds) - XSHControlBarHeight - (2.0 * XSHDisplayInset))
+        MAX(1.0,
+            NSHeight(self.bounds) -
+                XSHHeaderHeight -
+                XSHHeaderDisplaySpacing -
+                XSHDisplayInset)
     );
     self.displayView.frame = NSMakeRect(
         NSMidX(availableRect) - (displaySize.width / 2.0),
@@ -91,6 +121,21 @@ static const CGFloat XSHDisplayInset = 10.0;
                                 runtime:(XSHPrivateRuntime *)runtime
                            closeHandler:(XSHDeviceWindowCloseHandler)closeHandler
                                   error:(NSError **)error {
+    NSString *deviceName = device.name;
+    NSString *runtimeName = device.runtime.name;
+    if (deviceName.length == 0 || runtimeName.length == 0) {
+        if (error != NULL) {
+            *error = XSHLegacyHostError(
+                XSHLegacyHostErrorDeviceConnection,
+                @"booted simulator is missing its device or runtime display name"
+            );
+        }
+        return nil;
+    }
+    NSString *windowTitle = [NSString stringWithFormat:@"%@ – %@",
+                                                       deviceName,
+                                                       runtimeName];
+
     NSError *hidError = nil;
     XSHLegacyHIDClient *hidClient = [[runtime.legacyHIDClientClass alloc]
         initWithDevice:device
@@ -101,7 +146,7 @@ static const CGFloat XSHDisplayInset = 10.0;
             *error = XSHLegacyHostError(
                 XSHLegacyHostErrorDeviceConnection,
                 [NSString stringWithFormat:@"could not create HID client for %@: %@",
-                                           device.name ?: @"simulator",
+                                           deviceName,
                                            detail]
             );
         }
@@ -130,7 +175,7 @@ static const CGFloat XSHDisplayInset = 10.0;
             *error = XSHLegacyHostError(
                 XSHLegacyHostErrorDeviceConnection,
                 [NSString stringWithFormat:@"display factory returned no view for %@",
-                                           device.name ?: @"simulator"]
+                                           deviceName]
             );
         }
         return nil;
@@ -145,6 +190,8 @@ static const CGFloat XSHDisplayInset = 10.0;
         return nil;
     }
 
+    XSHSwiftCallBoolMethod(runtime.showDeviceChromeFunction, displayView, YES);
+
     NSSize naturalSize = displayView.intrinsicContentSize;
     if (naturalSize.width <= 0.0 || naturalSize.height <= 0.0) {
         if (displayView.frame.size.width > 0.0 && displayView.frame.size.height > 0.0) {
@@ -155,7 +202,7 @@ static const CGFloat XSHDisplayInset = 10.0;
                 *error = XSHLegacyHostError(
                     XSHLegacyHostErrorDeviceConnection,
                     [NSString stringWithFormat:@"display view for %@ has no usable size",
-                                               device.name ?: @"simulator"]
+                                               deviceName]
                 );
             }
             return nil;
@@ -175,35 +222,50 @@ static const CGFloat XSHDisplayInset = 10.0;
     _deviceIdentifier = device.UDID.UUIDString.copy;
     _closeHandler = [closeHandler copy];
 
-    NSView *controlBar = [self makeControlBar];
+    NSView *headerView = [self makeHeaderViewWithTitle:windowTitle];
     _deviceContentView = [[XSHDeviceContentView alloc]
         initWithDisplayView:displayView
-                 controlBar:controlBar];
+                 headerView:headerView];
 
     NSSize initialDisplaySize = [self initialDisplaySizeForNaturalSize:naturalSize];
     NSRect contentRect = NSMakeRect(
         0.0,
         0.0,
-        initialDisplaySize.width + (2.0 * XSHDisplayInset),
-        initialDisplaySize.height + XSHControlBarHeight + (2.0 * XSHDisplayInset)
+        MAX(initialDisplaySize.width + (2.0 * XSHDisplayInset),
+            XSHMinimumHeaderWidth),
+        initialDisplaySize.height +
+            XSHDisplayInset +
+            XSHHeaderDisplaySpacing +
+            XSHHeaderHeight
     );
     NSWindowStyleMask styleMask = NSWindowStyleMaskTitled |
         NSWindowStyleMaskClosable |
         NSWindowStyleMaskMiniaturizable |
-        NSWindowStyleMaskResizable;
+        NSWindowStyleMaskResizable |
+        NSWindowStyleMaskFullSizeContentView;
     NSWindow *window = [[NSWindow alloc] initWithContentRect:contentRect
                                                   styleMask:styleMask
                                                     backing:NSBackingStoreBuffered
                                                       defer:NO];
-    window.title = device.name ?: @"iOS Simulator";
+    window.title = windowTitle;
+    window.titleVisibility = NSWindowTitleHidden;
+    window.titlebarAppearsTransparent = YES;
+    window.titlebarSeparatorStyle = NSTitlebarSeparatorStyleNone;
+    window.tabbingMode = NSWindowTabbingModeDisallowed;
+    window.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
+    window.backgroundColor = NSColor.clearColor;
+    window.opaque = NO;
+    window.hasShadow = YES;
+    window.movableByWindowBackground = NO;
     window.releasedWhenClosed = NO;
     window.delegate = self;
     window.contentView = self.deviceContentView;
-    window.minSize = NSMakeSize(260.0, 420.0);
+    window.contentMinSize = NSMakeSize(300.0, 460.0);
     self.window = window;
 
     [self.deviceContentView layoutSubtreeIfNeeded];
     [self resizeDisplayToFit];
+    [window invalidateShadow];
 
     return self;
 }
@@ -215,8 +277,11 @@ static const CGFloat XSHDisplayInset = 10.0;
     }
 
     NSRect visibleFrame = screen.visibleFrame;
-    CGFloat maximumWidth = NSWidth(visibleFrame) * 0.8;
-    CGFloat maximumHeight = (NSHeight(visibleFrame) * 0.8) - XSHControlBarHeight;
+    CGFloat maximumWidth = (NSWidth(visibleFrame) * 0.8) - (2.0 * XSHDisplayInset);
+    CGFloat maximumHeight = (NSHeight(visibleFrame) * 0.8) -
+        XSHHeaderHeight -
+        XSHHeaderDisplaySpacing -
+        XSHDisplayInset;
     CGFloat scale = MIN(
         1.0,
         MIN(maximumWidth / naturalSize.width, maximumHeight / naturalSize.height)
@@ -224,14 +289,43 @@ static const CGFloat XSHDisplayInset = 10.0;
     return NSMakeSize(naturalSize.width * scale, naturalSize.height * scale);
 }
 
-- (NSView *)makeControlBar {
-    NSVisualEffectView *bar = [[NSVisualEffectView alloc] initWithFrame:NSZeroRect];
-    bar.material = NSVisualEffectMaterialHeaderView;
-    bar.blendingMode = NSVisualEffectBlendingModeWithinWindow;
-    bar.state = NSVisualEffectStateActive;
+- (NSView *)makeHeaderViewWithTitle:(NSString *)title {
+    XSHHeaderView *header = [[XSHHeaderView alloc] initWithFrame:NSZeroRect];
+    header.material = NSVisualEffectMaterialHUDWindow;
+    header.blendingMode = NSVisualEffectBlendingModeBehindWindow;
+    header.state = NSVisualEffectStateActive;
+    header.wantsLayer = YES;
+    header.layer.cornerRadius = XSHHeaderCornerRadius;
+    header.layer.borderColor = [NSColor colorWithWhite:1.0 alpha:0.22].CGColor;
+    header.layer.borderWidth = 1.0;
+    header.layer.masksToBounds = YES;
+
+    NSTextField *titleLabel = [NSTextField labelWithString:title];
+    titleLabel.alignment = NSTextAlignmentCenter;
+    titleLabel.font = [NSFont systemFontOfSize:13.0 weight:NSFontWeightSemibold];
+    titleLabel.textColor = NSColor.secondaryLabelColor;
+    titleLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
+    titleLabel.maximumNumberOfLines = 1;
+    titleLabel.toolTip = title;
+    titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    [titleLabel setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
+                                         forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [header addSubview:titleLabel];
+
+    NSVisualEffectView *capsule = [[NSVisualEffectView alloc] initWithFrame:NSZeroRect];
+    capsule.material = NSVisualEffectMaterialMenu;
+    capsule.blendingMode = NSVisualEffectBlendingModeWithinWindow;
+    capsule.state = NSVisualEffectStateActive;
+    capsule.wantsLayer = YES;
+    capsule.layer.cornerRadius = 18.0;
+    capsule.layer.borderColor = [NSColor colorWithWhite:1.0 alpha:0.10].CGColor;
+    capsule.layer.borderWidth = 1.0;
+    capsule.layer.masksToBounds = YES;
+    capsule.translatesAutoresizingMaskIntoConstraints = NO;
+    [header addSubview:capsule];
 
     NSButton *homeButton = [NSButton buttonWithImage:[self
-        imageWithSystemName:@"circle.inset.filled"
+        imageWithSystemName:@"house"
        accessibilityLabel:@"Home"]
                                                 target:self
                                                 action:@selector(pressHome:)];
@@ -250,16 +344,26 @@ static const CGFloat XSHDisplayInset = 10.0;
     ]];
     controls.orientation = NSUserInterfaceLayoutOrientationHorizontal;
     controls.alignment = NSLayoutAttributeCenterY;
-    controls.spacing = 8.0;
+    controls.spacing = 2.0;
     controls.translatesAutoresizingMaskIntoConstraints = NO;
-    [bar addSubview:controls];
+    [capsule addSubview:controls];
 
     [NSLayoutConstraint activateConstraints:@[
-        [controls.centerXAnchor constraintEqualToAnchor:bar.centerXAnchor],
-        [controls.centerYAnchor constraintEqualToAnchor:bar.centerYAnchor],
+        [titleLabel.topAnchor constraintEqualToAnchor:header.topAnchor constant:9.0],
+        [titleLabel.centerXAnchor constraintEqualToAnchor:header.centerXAnchor],
+        [titleLabel.leadingAnchor constraintGreaterThanOrEqualToAnchor:header.leadingAnchor
+                                                              constant:94.0],
+        [titleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:header.trailingAnchor
+                                                               constant:-16.0],
+        [capsule.centerXAnchor constraintEqualToAnchor:header.centerXAnchor],
+        [capsule.bottomAnchor constraintEqualToAnchor:header.bottomAnchor constant:-6.0],
+        [capsule.widthAnchor constraintEqualToConstant:88.0],
+        [capsule.heightAnchor constraintEqualToConstant:36.0],
+        [controls.centerXAnchor constraintEqualToAnchor:capsule.centerXAnchor],
+        [controls.centerYAnchor constraintEqualToAnchor:capsule.centerYAnchor],
     ]];
 
-    return bar;
+    return header;
 }
 
 - (NSImage *)imageWithSystemName:(NSString *)systemName
@@ -271,13 +375,16 @@ static const CGFloat XSHDisplayInset = 10.0;
 }
 
 - (void)configureControlButton:(NSButton *)button label:(NSString *)label {
-    button.bezelStyle = NSBezelStyleTexturedRounded;
+    button.bezelStyle = NSBezelStyleRegularSquare;
+    button.bordered = NO;
     button.imagePosition = NSImageOnly;
+    button.imageScaling = NSImageScaleProportionallyDown;
+    button.contentTintColor = NSColor.labelColor;
     button.toolTip = label;
     button.accessibilityLabel = label;
     button.translatesAutoresizingMaskIntoConstraints = NO;
     [NSLayoutConstraint activateConstraints:@[
-        [button.widthAnchor constraintEqualToConstant:34.0],
+        [button.widthAnchor constraintEqualToConstant:38.0],
         [button.heightAnchor constraintEqualToConstant:30.0],
     ]];
 }
@@ -381,6 +488,7 @@ static const CGFloat XSHDisplayInset = 10.0;
     [self.displayView invalidateIntrinsicContentSize];
     [self.deviceContentView setNeedsLayout:YES];
     [self.deviceContentView layoutSubtreeIfNeeded];
+    [self.window invalidateShadow];
     self.applyingResize = NO;
 }
 

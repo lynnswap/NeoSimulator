@@ -6,6 +6,11 @@ NS_ASSUME_NONNULL_BEGIN
 // Keep the ABI bridge isolated here so runtime symbol validation and the
 // Xcode-version boundary remain explicit.
 FOUNDATION_EXPORT void XSHSwiftCallVoidMethod(void *function, id object);
+FOUNDATION_EXPORT void XSHSwiftCallBoolMethod(
+    void *function,
+    id object,
+    BOOL value
+);
 FOUNDATION_EXPORT void XSHSwiftCallCGSizeMethod(
     void *function,
     id object,
