@@ -16,7 +16,7 @@ choose the UI that presents it.
 
 | Command | UI host | Intended use |
 | --- | --- | --- |
-| `use neo` | Packaged `Xcode Simulator Neo` app | Use the selected Xcode 27+ installation without needing an older Xcode |
+| `use neo` | Packaged `NeoSimulator` app | Use the selected Xcode 27+ installation without needing an older Xcode |
 | `use legacy` | Apple's `Simulator.app` from Xcode 26 | Keep the complete older Simulator UI when Xcode 26 is installed |
 | `use device-hub` | Device Hub from the selected Xcode | Return to Xcode's default behavior |
 
@@ -145,8 +145,8 @@ Before changing preferences, every `use` command validates the selected Xcode
 Additional host-specific gates run before any process or preference mutation:
 
 - `use neo` validates the installed CoreSimulator/CoreDevice generations,
-  direct tools and plugin, the packaged Neo identity, and the exact private
-  runtime contract used by the GUI process;
+  direct tools and plugin, the packaged NeoSimulator identity, and the exact
+  private runtime contract used by the GUI process;
 - `use legacy` validates the outer Xcode 26 application, its version and Apple
   signature, and the nested `Simulator.app` identity, `DTXcode`, executable,
   and Apple signature.
@@ -164,7 +164,7 @@ Do not run mutation commands with `sudo`; preferences and recovery state are
 per-user. Run `restore` before uninstalling the command or deleting its state.
 
 See the [design and safety contract](Documentation/Design.md), the
-[Neo host contract](Documentation/StandaloneHost.md), and the
+[NeoSimulator contract](Documentation/StandaloneHost.md), and the
 [Simulator.app analysis](Documentation/SimulatorAppAnalysis.md) for exact
 owners and exclusions.
 
@@ -175,9 +175,9 @@ curl -fsSL https://github.com/lynnswap/xcode-simulator-host/releases/latest/down
   | sh -s -- --bindir "$HOME/bin"
 ```
 
-The installer keeps the CLI and Neo app in a fixed relative layout. It resolves
-a symlinked bindir to its physical directory, then stages and verifies both
-before replacing an existing installation.
+The installer keeps the CLI and NeoSimulator app in a fixed relative layout. It
+resolves a symlinked bindir to its physical directory, then stages and verifies
+both before replacing an existing installation.
 
 ## Build from Source
 
@@ -188,7 +188,7 @@ scripts/build-local.sh
 .build/local/arm64/bin/xcode-simulator-host --help
 ```
 
-The source build uses SwiftPM for the CLI and the `XcodeSimulatorNeoHost` app
+The source build uses SwiftPM for the CLI and the `NeoSimulator` app
 target in `xcode-simulator-host.xcworkspace`. The staging script puts both
 products in the same relative layout used by releases.
 

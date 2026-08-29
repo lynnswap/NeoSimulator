@@ -3,7 +3,7 @@
 #import <stdarg.h>
 #import <stdio.h>
 
-NSString *const XSHNeoHostErrorDomain = @"dev.lynnswap.XcodeSimulatorNeoHost";
+NSString *const XSHNeoHostErrorDomain = @"dev.lynnswap.NeoSimulator";
 
 NSError *XSHNeoHostError(
     XSHNeoHostErrorCode code,
@@ -20,5 +20,5 @@ void XSHLog(NSString *format, ...) {
     NSString *message = [[NSString alloc] initWithFormat:format arguments:arguments];
     va_end(arguments);
 
-    fprintf(stderr, "xcode-simulator-neo-host: %s\n", message.UTF8String);
+    fprintf(stderr, "neo-simulator: %s\n", message.UTF8String);
 }

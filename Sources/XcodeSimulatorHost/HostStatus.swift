@@ -67,7 +67,7 @@ struct HostStatus: Equatable {
         ]
 
         if let neoHost {
-            lines.append("Neo host: validated")
+            lines.append("NeoSimulator: validated")
             lines.append("  \(neoHost.applicationURL.path)")
             lines.append("  SimulatorKit: \(neoHost.simulatorKitBinaryURL.path)")
             lines.append(
@@ -85,7 +85,7 @@ struct HostStatus: Equatable {
                 "  Simulator CoreDevice plugin (\(neoHost.coreSimulatorVersion)): \(neoHost.simulatorCoreDevicePluginBinaryURL.path)"
             )
         } else {
-            lines.append("Neo host: unavailable")
+            lines.append("NeoSimulator: unavailable")
         }
 
         if let legacySimulator {
@@ -136,10 +136,10 @@ struct HostStatus: Equatable {
         }
 
         if runningNeoHosts.isEmpty {
-            lines.append("Running Neo host processes: none")
+            lines.append("Running NeoSimulator processes: none")
         } else {
             lines.append(
-                "Running Neo host processes: \(runningNeoHosts.count)"
+                "Running NeoSimulator processes: \(runningNeoHosts.count)"
             )
             for application in runningNeoHosts {
                 let path = application.bundleURL?.path ?? "unknown path"
@@ -200,7 +200,7 @@ struct ModeChangeReport: Equatable {
         lines.append("Xcode: \(xcode.version) (\(xcode.buildVersion))")
         switch host {
         case .neo(let neoHost):
-            lines.append("Neo host: \(neoHost.applicationURL.path)")
+            lines.append("NeoSimulator: \(neoHost.applicationURL.path)")
         case .legacy(let simulator):
             lines.append("Legacy Simulator: \(simulator.applicationURL.path)")
         case .deviceHub:
@@ -219,7 +219,7 @@ struct ModeChangeReport: Equatable {
         }
         if terminatedNeoHostCount > 0 {
             lines.append(
-                "Closed Neo host instances: \(terminatedNeoHostCount)"
+                "Closed NeoSimulator instances: \(terminatedNeoHostCount)"
             )
         }
         if terminatedLegacySimulatorCount > 0 {
@@ -251,7 +251,7 @@ struct RestoreReport: Equatable {
             var lines = ["No restoration receipt exists; preferences did not change."]
             if terminatedNeoHostCount > 0 {
                 lines.append(
-                    "Closed Neo host instances: \(terminatedNeoHostCount)"
+                    "Closed NeoSimulator instances: \(terminatedNeoHostCount)"
                 )
             }
             if terminatedLegacySimulatorCount > 0 {
@@ -276,7 +276,7 @@ struct RestoreReport: Equatable {
         }
         if terminatedNeoHostCount > 0 {
             lines.append(
-                "Closed Neo host instances: \(terminatedNeoHostCount)"
+                "Closed NeoSimulator instances: \(terminatedNeoHostCount)"
             )
         }
         if terminatedLegacySimulatorCount > 0 {

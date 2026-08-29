@@ -48,7 +48,7 @@ Run owner.
 ```text
 Xcode Build & Run
   -> CoreSimulator session
-  -> XcodeSimulatorNeoHost.app
+  -> NeoSimulator.app
        -> CoreSimulator device-set membership
        -> IDEPlaygroundSimulator display factory
        -> SimulatorKit SimDisplayView
@@ -60,7 +60,7 @@ Xcode Build & Run
 
 ```text
 xcode-simulator-host (CLI executable)
-XcodeSimulatorNeoHost (workspace AppKit application target)
+NeoSimulator (workspace AppKit application target)
 XcodeSimulatorHostTests
 ```
 
@@ -68,7 +68,7 @@ The release archive preserves this layout:
 
 ```text
 bin/xcode-simulator-host
-libexec/xcode-simulator-host/XcodeSimulatorNeoHost.app
+libexec/xcode-simulator-host/NeoSimulator.app
 ```
 
 The CLI resolves the app relative to its own real executable path. The installer
@@ -206,8 +206,8 @@ exists, status always uses that lock and never performs recovery or mutation.
 
 ### Select Neo
 
-1. Validate the selected Xcode, packaged Neo app, private frameworks, tools,
-   plugin, and runtime contract.
+1. Validate the selected Xcode, packaged NeoSimulator app, private frameworks,
+   tools, plugin, and runtime contract.
 2. Validate the owning Xcode 26 bundle for every running legacy Simulator.
 3. Reject receipt conflicts, then close those legacy Simulators and restart the
    exact Neo bundle.

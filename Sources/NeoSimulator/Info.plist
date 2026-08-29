@@ -5,15 +5,15 @@
     <key>CFBundleDevelopmentRegion</key>
     <string>en</string>
     <key>CFBundleDisplayName</key>
-    <string>Xcode Simulator Neo</string>
+    <string>NeoSimulator</string>
     <key>CFBundleExecutable</key>
-    <string>XcodeSimulatorNeoHost</string>
+    <string>NeoSimulator</string>
     <key>CFBundleIdentifier</key>
-    <string>dev.lynnswap.XcodeSimulatorNeoHost</string>
+    <string>dev.lynnswap.NeoSimulator</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
-    <string>XcodeSimulatorNeoHost</string>
+    <string>NeoSimulator</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>

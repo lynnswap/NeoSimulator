@@ -95,7 +95,7 @@ static NSString *XSHConflictingHostName(NSString *bundleIdentifier) {
 }
 
 - (BOOL)startWithRuntime:(XSHPrivateRuntime *)runtime error:(NSError **)error {
-    NSAssert(NSThread.isMainThread, @"Neo host startup must run on the main thread");
+    NSAssert(NSThread.isMainThread, @"NeoSimulator startup must run on the main thread");
 
     NSString *conflictingHostName =
         self.conflictingHostName ?: self.class.runningConflictingHostName;
@@ -186,7 +186,7 @@ static NSString *XSHConflictingHostName(NSString *bundleIdentifier) {
             *error = XSHNeoHostError(
                 XSHNeoHostErrorHostConflict,
                 [NSString stringWithFormat:
-                    @"%@ launched during Neo host startup",
+                    @"%@ launched during NeoSimulator startup",
                     conflictingHostName]
             );
         }

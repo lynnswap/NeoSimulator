@@ -12,7 +12,7 @@ static NSString *XSHFunctionKeyEquivalent(unichar character) {
     NSString *applicationName = [NSBundle.mainBundle
         objectForInfoDictionaryKey:@"CFBundleDisplayName"];
     NSAssert(applicationName.length > 0,
-             @"CFBundleDisplayName must name the Neo application");
+             @"CFBundleDisplayName must name the NeoSimulator application");
     NSMenu *mainMenu = [[NSMenu alloc] initWithTitle:@""];
 
     NSMenu *applicationMenu = [self addMenuWithTitle:applicationName

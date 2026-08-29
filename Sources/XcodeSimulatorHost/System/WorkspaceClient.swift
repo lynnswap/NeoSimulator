@@ -185,7 +185,7 @@ struct WorkspaceClient {
         terminateNeoHosts: { expectedApplicationURL in
             try await terminateApplications(
                 ManagedApplicationIdentity(
-                    displayName: "Neo simulator host",
+                    displayName: "NeoSimulator",
                     bundleIdentifier: ToolConstants.neoHostBundleIdentifier,
                     expectedURLs: [expectedApplicationURL],
                     errorIdentifier: "neo-host"
@@ -237,7 +237,7 @@ struct WorkspaceClient {
                 configuration: configuration
             )
             let identity = ManagedApplicationIdentity(
-                displayName: "Neo simulator host",
+                displayName: "NeoSimulator",
                 bundleIdentifier: ToolConstants.neoHostBundleIdentifier,
                 expectedURLs: [applicationURL],
                 errorIdentifier: "neo-host"
@@ -285,7 +285,7 @@ struct WorkspaceClient {
                 } catch let terminationError {
                     throw CLIError.temporary(
                         "neo-host-launch-cleanup",
-                        "Neo host launch failed (\(launchError.localizedDescription)), and pid \(application.processIdentifier) could not be terminated (\(terminationError.localizedDescription))"
+                        "NeoSimulator launch failed (\(launchError.localizedDescription)), and pid \(application.processIdentifier) could not be terminated (\(terminationError.localizedDescription))"
                     )
                 }
                 throw launchError
@@ -443,7 +443,7 @@ struct WorkspaceClient {
         } catch {
             throw CLIError.cannotCreate(
                 "neo-host-startup-directory",
-                "could not create the Neo host startup directory: \(error.localizedDescription)"
+                "could not create the NeoSimulator startup directory: \(error.localizedDescription)"
             )
         }
         return directory
@@ -460,7 +460,7 @@ struct WorkspaceClient {
             guard !application.isTerminated else {
                 throw CLIError.temporary(
                     "neo-host-startup",
-                    "the Neo simulator host exited before startup completed"
+                    "NeoSimulator exited before startup completed"
                 )
             }
 
@@ -471,20 +471,20 @@ struct WorkspaceClient {
                 } catch {
                     throw CLIError.io(
                         "neo-host-startup-result",
-                        "could not read the Neo host startup result: \(error.localizedDescription)"
+                        "could not read the NeoSimulator startup result: \(error.localizedDescription)"
                     )
                 }
                 guard result == neoHostStartupPayload else {
                     throw CLIError.configuration(
                         "neo-host-startup-result",
-                        "the Neo host wrote an invalid startup result"
+                        "NeoSimulator wrote an invalid startup result"
                     )
                 }
                 await Task.yield()
                 guard !application.isTerminated else {
                     throw CLIError.temporary(
                         "neo-host-startup",
-                        "the Neo simulator host exited during startup"
+                        "NeoSimulator exited during startup"
                     )
                 }
                 return
@@ -495,7 +495,7 @@ struct WorkspaceClient {
 
         throw CLIError.temporary(
             "neo-host-startup-timeout",
-            "the Neo simulator host did not finish startup within 10 seconds"
+            "NeoSimulator did not finish startup within 10 seconds"
         )
     }
 

@@ -657,7 +657,7 @@ struct InstallationInspector {
             }
             throw CLIError.unavailable(
                 "neo-host-runtime",
-                "the Neo host rejected Xcode \(xcode.version) build \(xcode.buildVersion): \(detail)"
+                "NeoSimulator rejected Xcode \(xcode.version) build \(xcode.buildVersion): \(detail)"
             )
         }
     }

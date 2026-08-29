@@ -1,4 +1,4 @@
-# Xcode Simulator Neo host
+# NeoSimulator
 
 ## Why
 
@@ -31,7 +31,7 @@ Neo mode provides a dedicated AppKit host with these guarantees:
 
 There is no fallback to Device Hub from Neo mode. An unsupported Xcode build,
 missing private symbol, display connection failure, or process conflict is
-reported as an unavailable Neo host.
+reported as an unavailable NeoSimulator.
 
 ## How
 
@@ -39,13 +39,13 @@ reported as an unavailable Neo host.
 xcode-simulator-host use neo
   -> validate the selected Xcode 27+ and standalone host components
   -> validate and close any running Xcode 26 Simulator.app
-  -> restart the exact packaged Neo host
+  -> restart the exact packaged NeoSimulator
   -> commit the CoreSimulator-only preference route
   -> terminate the exact Device Hub from that Xcode
   -> verify Device Hub is absent
-  -> launch XcodeSimulatorNeoHost.app and wait for its startup result
+  -> launch NeoSimulator.app and wait for its startup result
 
-XcodeSimulatorNeoHost.app
+NeoSimulator.app
   -> CoreSimulator SimServiceContext / default device set
   -> observe booted iOS SimDevice instances
   -> IDEPlaygroundSimulator display factory

@@ -15,7 +15,7 @@ xcode-simulator-host status --verbose
 Verbose status reports:
 
 - the selected Xcode 27+ installation and build;
-- whether the packaged Neo host is available;
+- whether the packaged NeoSimulator is available;
 - the validated SimulatorKit, IDEPlaygroundSimulator, CoreSimulator, CoreDevice,
   `simctl`, `devicectl`, and simulator CoreDevice plugin paths and versions;
 - the discovered or explicitly selected Xcode 26 `Simulator.app`;

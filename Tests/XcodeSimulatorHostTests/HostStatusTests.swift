@@ -59,9 +59,9 @@ struct HostStatusTests {
 
         #expect(status.rendered.hasPrefix("Simulator route: Device Hub\n\n"))
         #expect(status.rendered.contains("Selected Xcode: 27.0 (27A5252f)"))
-        #expect(status.rendered.contains("Neo host: validated"))
+        #expect(status.rendered.contains("NeoSimulator: validated"))
         #expect(status.rendered.contains("Legacy Simulator: validated"))
-        #expect(status.rendered.contains("XcodeSimulatorNeoHost.app"))
+        #expect(status.rendered.contains("NeoSimulator.app"))
         #expect(status.rendered.contains("CoreSimulator version: 1171.6"))
         #expect(status.rendered.contains("Contents/Developer/usr/bin/simctl"))
         #expect(status.rendered.contains("Resources/bin/simctl"))
@@ -71,7 +71,7 @@ struct HostStatusTests {
         #expect(status.rendered.contains("Simulator CoreDevice plugin (1171.6)"))
         #expect(status.rendered.contains("Restoration receipt: none"))
         #expect(status.rendered.contains("Running Xcode processes: 2"))
-        #expect(status.rendered.contains("Running Neo host processes: 1"))
+        #expect(status.rendered.contains("Running NeoSimulator processes: 1"))
         #expect(status.rendered.contains("Running legacy Simulator processes: 1"))
         #expect(status.rendered.contains("CoreSimulator session: not set (default)"))
         #expect(status.rendered.contains("Suppress Device Hub auto-start: not set (default)"))
@@ -111,7 +111,7 @@ struct HostStatusTests {
 
         #expect(report.rendered.hasPrefix("Selected simulator host: legacy\n"))
         #expect(report.rendered.contains("Preference route: already CoreSimulator"))
-        #expect(report.rendered.contains("Closed Neo host instances: 1"))
+        #expect(report.rendered.contains("Closed NeoSimulator instances: 1"))
         #expect(!report.rendered.contains("already configured"))
     }
 
@@ -135,7 +135,7 @@ struct HostStatusTests {
             buildVersion: "27A5252f"
         )
         let neoHostURL = URL(
-            fileURLWithPath: "/usr/local/libexec/xcode-simulator-host/XcodeSimulatorNeoHost.app"
+            fileURLWithPath: "/usr/local/libexec/xcode-simulator-host/NeoSimulator.app"
         )
         return HostStatus(
             xcode: selectedXcode,

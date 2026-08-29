@@ -7,7 +7,7 @@ Usage: scripts/package-release.sh --version <tag> [--repo <owner/repo>] [--dist-
 
 Requires:
   <dist-root>/arm64/bin/xcode-simulator-host
-  <dist-root>/arm64/libexec/xcode-simulator-host/XcodeSimulatorNeoHost.app
+  <dist-root>/arm64/libexec/xcode-simulator-host/NeoSimulator.app
 
 Outputs:
   <output-dir>/xcode-simulator-host-darwin-arm64.tar.gz
@@ -22,7 +22,7 @@ dist_root="dist"
 output_dir="release"
 archive_name="xcode-simulator-host-darwin-arm64.tar.gz"
 cli_product="xcode-simulator-host"
-host_product="XcodeSimulatorNeoHost"
+host_product="NeoSimulator"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in

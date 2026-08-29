@@ -16,9 +16,9 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "0B7837795C8C6DC7CC39C54C"
-               BuildableName = "XcodeSimulatorNeoHost.app"
-               BlueprintName = "XcodeSimulatorNeoHost"
-               ReferencedContainer = "container:XcodeSimulatorNeoHost.xcodeproj">
+               BuildableName = "NeoSimulator.app"
+               BlueprintName = "NeoSimulator"
+               ReferencedContainer = "container:NeoSimulator.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
       </BuildActionEntries>
@@ -33,9 +33,9 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "0B7837795C8C6DC7CC39C54C"
-            BuildableName = "XcodeSimulatorNeoHost.app"
-            BlueprintName = "XcodeSimulatorNeoHost"
-            ReferencedContainer = "container:XcodeSimulatorNeoHost.xcodeproj">
+            BuildableName = "NeoSimulator.app"
+            BlueprintName = "NeoSimulator"
+            ReferencedContainer = "container:NeoSimulator.xcodeproj">
          </BuildableReference>
       </MacroExpansion>
       <Testables>
@@ -56,9 +56,9 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "0B7837795C8C6DC7CC39C54C"
-            BuildableName = "XcodeSimulatorNeoHost.app"
-            BlueprintName = "XcodeSimulatorNeoHost"
-            ReferencedContainer = "container:XcodeSimulatorNeoHost.xcodeproj">
+            BuildableName = "NeoSimulator.app"
+            BlueprintName = "NeoSimulator"
+            ReferencedContainer = "container:NeoSimulator.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
       <CommandLineArguments>
@@ -75,9 +75,9 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "0B7837795C8C6DC7CC39C54C"
-            BuildableName = "XcodeSimulatorNeoHost.app"
-            BlueprintName = "XcodeSimulatorNeoHost"
-            ReferencedContainer = "container:XcodeSimulatorNeoHost.xcodeproj">
+            BuildableName = "NeoSimulator.app"
+            BlueprintName = "NeoSimulator"
+            ReferencedContainer = "container:NeoSimulator.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </ProfileAction>

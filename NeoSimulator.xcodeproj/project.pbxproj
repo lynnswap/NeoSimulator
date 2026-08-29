@@ -29,7 +29,7 @@
 		30A73376C1CBD9AA1A9D8787 /* PrivateRuntime.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = PrivateRuntime.m; sourceTree = "<group>"; };
 		32B6A3B9F0C9E369282118D5 /* MenuController.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = MenuController.m; sourceTree = "<group>"; };
 		3A09AFD3B4103E481017E8E3 /* DeviceToolRunner.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = DeviceToolRunner.h; sourceTree = "<group>"; };
-		52678CF6A775A386BE4B4373 /* XcodeSimulatorNeoHost.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = XcodeSimulatorNeoHost.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		52678CF6A775A386BE4B4373 /* NeoSimulator.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NeoSimulator.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		56A8E17F853428106E66988C /* UniformTypeIdentifiers.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UniformTypeIdentifiers.framework; path = System/Library/Frameworks/UniformTypeIdentifiers.framework; sourceTree = SDKROOT; };
 		68241AF51A7F1D2CD8C6CFEF /* DeviceWindowController.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = DeviceWindowController.m; sourceTree = "<group>"; };
 		7A80E37E806CEBA871155E15 /* NeoHostApplication.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = NeoHostApplication.m; sourceTree = "<group>"; };
@@ -54,7 +54,7 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
-		5DAB8499E5A4516CE59C7476 /* XcodeSimulatorNeoHost */ = {
+		5DAB8499E5A4516CE59C7476 /* NeoSimulator */ = {
 			isa = PBXGroup;
 			children = (
 				3A09AFD3B4103E481017E8E3 /* DeviceToolRunner.h */,
@@ -74,8 +74,8 @@
 				94608C2B326927F820DF853A /* SwiftABI.h */,
 				F0CF40A3D9ED18473E7B7596 /* SwiftABI.S */,
 			);
-			name = XcodeSimulatorNeoHost;
-			path = Sources/XcodeSimulatorNeoHost;
+			name = NeoSimulator;
+			path = Sources/NeoSimulator;
 			sourceTree = "<group>";
 		};
 		BCDC1DD1EEB1BB50983BF994 /* Frameworks */ = {
@@ -90,7 +90,7 @@
 		ED0F55DCB13C7EB73C08B823 = {
 			isa = PBXGroup;
 			children = (
-				5DAB8499E5A4516CE59C7476 /* XcodeSimulatorNeoHost */,
+				5DAB8499E5A4516CE59C7476 /* NeoSimulator */,
 				BCDC1DD1EEB1BB50983BF994 /* Frameworks */,
 				FDB510CAC6FEE8EF9E896DA9 /* Products */,
 			);
@@ -99,7 +99,7 @@
 		FDB510CAC6FEE8EF9E896DA9 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				52678CF6A775A386BE4B4373 /* XcodeSimulatorNeoHost.app */,
+				52678CF6A775A386BE4B4373 /* NeoSimulator.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -107,9 +107,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		0B7837795C8C6DC7CC39C54C /* XcodeSimulatorNeoHost */ = {
+		0B7837795C8C6DC7CC39C54C /* NeoSimulator */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = C289F1000F5C5628CF6DF3F3 /* Build configuration list for PBXNativeTarget "XcodeSimulatorNeoHost" */;
+			buildConfigurationList = C289F1000F5C5628CF6DF3F3 /* Build configuration list for PBXNativeTarget "NeoSimulator" */;
 			buildPhases = (
 				540975CE2A9631FBCE5BB1EA /* Sources */,
 				73FE7537F589CAAF42B9E3FD /* Frameworks */,
@@ -118,11 +118,11 @@
 			);
 			dependencies = (
 			);
-			name = XcodeSimulatorNeoHost;
+			name = NeoSimulator;
 			packageProductDependencies = (
 			);
-			productName = XcodeSimulatorNeoHost;
-			productReference = 52678CF6A775A386BE4B4373 /* XcodeSimulatorNeoHost.app */;
+			productName = NeoSimulator;
+			productReference = 52678CF6A775A386BE4B4373 /* NeoSimulator.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -139,7 +139,7 @@
 					};
 				};
 			};
-			buildConfigurationList = 438313BB9C989B224AA857E3 /* Build configuration list for PBXProject "XcodeSimulatorNeoHost" */;
+			buildConfigurationList = 438313BB9C989B224AA857E3 /* Build configuration list for PBXProject "NeoSimulator" */;
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -153,7 +153,7 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				0B7837795C8C6DC7CC39C54C /* XcodeSimulatorNeoHost */,
+				0B7837795C8C6DC7CC39C54C /* NeoSimulator */,
 			);
 		};
 /* End PBXProject section */
@@ -187,14 +187,14 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = NO;
 				GENERATE_PKGINFO_FILE = NO;
-				INFOPLIST_FILE = Sources/XcodeSimulatorNeoHost/Info.plist;
+				INFOPLIST_FILE = Sources/NeoSimulator/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
 				MARKETING_VERSION = 0.0.1;
-				PRODUCT_BUNDLE_IDENTIFIER = dev.lynnswap.XcodeSimulatorNeoHost;
-				PRODUCT_NAME = XcodeSimulatorNeoHost;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.lynnswap.NeoSimulator;
+				PRODUCT_NAME = NeoSimulator;
 				SDKROOT = macosx;
 			};
 			name = Debug;
@@ -273,14 +273,14 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = NO;
 				GENERATE_PKGINFO_FILE = NO;
-				INFOPLIST_FILE = Sources/XcodeSimulatorNeoHost/Info.plist;
+				INFOPLIST_FILE = Sources/NeoSimulator/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
 				MARKETING_VERSION = 0.0.1;
-				PRODUCT_BUNDLE_IDENTIFIER = dev.lynnswap.XcodeSimulatorNeoHost;
-				PRODUCT_NAME = XcodeSimulatorNeoHost;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.lynnswap.NeoSimulator;
+				PRODUCT_NAME = NeoSimulator;
 				SDKROOT = macosx;
 			};
 			name = Release;
@@ -345,7 +345,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		438313BB9C989B224AA857E3 /* Build configuration list for PBXProject "XcodeSimulatorNeoHost" */ = {
+		438313BB9C989B224AA857E3 /* Build configuration list for PBXProject "NeoSimulator" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				5EAE16CF1C2534853B2F4516 /* Debug */,
@@ -354,7 +354,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
 		};
-		C289F1000F5C5628CF6DF3F3 /* Build configuration list for PBXNativeTarget "XcodeSimulatorNeoHost" */ = {
+		C289F1000F5C5628CF6DF3F3 /* Build configuration list for PBXNativeTarget "NeoSimulator" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				1CD0E904EF568CCE52151742 /* Debug */,

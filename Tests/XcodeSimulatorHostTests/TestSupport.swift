@@ -63,7 +63,7 @@ final class FakeSystemCommandRunner: CommandRunning {
             }
             return success("\(selectedDeveloperDirectory.path)\n")
         default:
-            guard executable.lastPathComponent == "XcodeSimulatorNeoHost",
+            guard executable.lastPathComponent == "NeoSimulator",
                   arguments.count == 3,
                   arguments[0] == "--validate-runtime",
                   arguments[1] == "--xcode"
@@ -414,7 +414,7 @@ struct InstallationFixture {
             to: commandExecutableURL
         )
         neoHostURL = directory.url.appendingPathComponent(
-            "prefix/libexec/xcode-simulator-host/XcodeSimulatorNeoHost.app",
+            "prefix/libexec/xcode-simulator-host/NeoSimulator.app",
             isDirectory: true
         )
         if includeNeoHost {
@@ -467,7 +467,7 @@ struct InstallationFixture {
 
     var neoHostExecutableURL: URL {
         neoHostURL.appendingPathComponent(
-            "Contents/MacOS/XcodeSimulatorNeoHost"
+            "Contents/MacOS/NeoSimulator"
         )
     }
 
@@ -655,14 +655,14 @@ struct InstallationFixture {
         try writePropertyList(
             [
                 "CFBundleIdentifier": ToolConstants.neoHostBundleIdentifier,
-                "CFBundleExecutable": "XcodeSimulatorNeoHost",
+                "CFBundleExecutable": "NeoSimulator",
             ],
             to: url.appendingPathComponent("Contents/Info.plist")
         )
         try writeExecutable(
             content: "fixture-host",
             to: url.appendingPathComponent(
-                "Contents/MacOS/XcodeSimulatorNeoHost"
+                "Contents/MacOS/NeoSimulator"
             )
         )
     }

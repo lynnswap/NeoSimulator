@@ -1,5 +1,5 @@
 #if !defined(__arm64__)
-#error XcodeSimulatorNeoHost currently supports arm64 only
+#error NeoSimulator currently supports arm64 only
 #endif
 
 .text

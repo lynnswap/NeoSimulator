@@ -26,7 +26,7 @@ static NSError *XSHScreenshotError(NSString *description) {
 
 static NSURL *XSHScreenshotTemporaryURL(NSURL *destinationURL, NSError **error) {
     NSURL *directoryURL = destinationURL.URLByDeletingLastPathComponent;
-    NSString *name = [NSString stringWithFormat:@".xcode-simulator-neo-host-%@.png",
+    NSString *name = [NSString stringWithFormat:@".neo-simulator-%@.png",
                                                NSUUID.UUID.UUIDString];
     NSURL *temporaryURL = [directoryURL URLByAppendingPathComponent:name];
     struct stat fileStatus;

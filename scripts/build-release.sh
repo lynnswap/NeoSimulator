@@ -7,7 +7,7 @@ Usage: scripts/build-release.sh --version <tag> [--dist-root <dir>]
 
 Builds the arm64 CLI and companion app, then stages them under:
   <dist-root>/arm64/bin/xcode-simulator-host
-  <dist-root>/arm64/libexec/xcode-simulator-host/XcodeSimulatorNeoHost.app
+  <dist-root>/arm64/libexec/xcode-simulator-host/NeoSimulator.app
 EOF
 }
 
@@ -15,8 +15,8 @@ version=""
 dist_root="dist"
 arch="arm64"
 cli_product="xcode-simulator-host"
-host_product="XcodeSimulatorNeoHost"
-host_bundle_identifier="dev.lynnswap.XcodeSimulatorNeoHost"
+host_product="NeoSimulator"
+host_bundle_identifier="dev.lynnswap.NeoSimulator"
 host_workspace="xcode-simulator-host.xcworkspace"
 
 while [[ $# -gt 0 ]]; do

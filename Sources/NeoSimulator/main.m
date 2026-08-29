@@ -10,7 +10,7 @@
 
 static void XSHPrintUsage(FILE *stream) {
     fprintf(stream,
-            "usage: XcodeSimulatorNeoHost [--validate-runtime] "
+            "usage: NeoSimulator [--validate-runtime] "
             "[--startup-result /absolute/path] --xcode "
             "/absolute/path/to/Xcode.app\n");
 }

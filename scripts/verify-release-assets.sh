@@ -15,7 +15,7 @@ archive_asset="xcode-simulator-host-darwin-arm64.tar.gz"
 checksum_asset="SHA256SUMS.txt"
 installer_asset="install.sh"
 cli_product="xcode-simulator-host"
-host_product="XcodeSimulatorNeoHost"
+host_product="NeoSimulator"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in

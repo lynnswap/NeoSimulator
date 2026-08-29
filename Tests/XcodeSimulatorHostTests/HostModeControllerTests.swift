@@ -28,7 +28,7 @@ struct HostModeControllerTests {
         #expect(neo.terminatedDeviceHubCount == 1)
         #expect(neo.rendered.contains("Xcode can remain open"))
         guard case .neo(let neoHost) = neo.host else {
-            Issue.record("expected resolved Neo host")
+            Issue.record("expected resolved NeoSimulator")
             return
         }
         #expect(
@@ -162,7 +162,7 @@ struct HostModeControllerTests {
         #expect(!report.didChangePreferences)
         #expect(report.terminatedNeoHostCount == 1)
         guard case .neo(let neoHost) = report.host else {
-            Issue.record("expected resolved Neo host")
+            Issue.record("expected resolved NeoSimulator")
             return
         }
         #expect(neoHost.applicationURL == fixture.installations.neoHostURL)

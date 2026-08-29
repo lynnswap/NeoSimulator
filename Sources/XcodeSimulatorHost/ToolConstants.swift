@@ -10,7 +10,7 @@ enum ToolConstants {
     static let xcodeBundleIdentifier = "com.apple.dt.Xcode"
     static let deviceHubBundleIdentifier = "com.apple.dt.Devices"
     static let simulatorBundleIdentifier = "com.apple.iphonesimulator"
-    static let neoHostBundleIdentifier = "dev.lynnswap.XcodeSimulatorNeoHost"
+    static let neoHostBundleIdentifier = "dev.lynnswap.NeoSimulator"
     static let coreSimulatorBundleIdentifier = "com.apple.CoreSimulator"
     static let coreDeviceBundleIdentifier = "com.apple.CoreDevice"
     static let simctlBundleIdentifier = "com.apple.CoreSimulator.simctl"
@@ -51,5 +51,5 @@ enum ToolConstants {
     static let simulatorCoreDevicePluginPath =
         "Versions/A/PlugIns/SimulatorCoreDevicePlugin.coredeviceplugin"
     static let neoHostRelativePath =
-        "../libexec/xcode-simulator-host/XcodeSimulatorNeoHost.app"
+        "../libexec/xcode-simulator-host/NeoSimulator.app"
 }

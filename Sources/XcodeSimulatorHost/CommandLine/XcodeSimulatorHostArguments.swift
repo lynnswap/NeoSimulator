@@ -65,7 +65,7 @@ struct UseArguments: ParsableCommand {
 struct UseNeoArguments: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "neo",
-        abstract: "Use CoreSimulator with the packaged Neo host."
+        abstract: "Use CoreSimulator with the packaged NeoSimulator."
     )
 }
 
