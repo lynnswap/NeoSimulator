@@ -246,6 +246,7 @@ struct InstallationFixture {
     let commandExecutableURL: URL
     let legacyHostURL: URL
     let coreSimulatorFrameworkURL: URL
+    let coreDeviceFrameworkURL: URL
 
     init(
         targetVersion: String = "27.0",
@@ -256,7 +257,14 @@ struct InstallationFixture {
         includeIDEPlaygroundSimulatorSurface: Bool = true,
         includeCoreSimulatorSurface: Bool = true,
         includeLegacyHost: Bool = true,
-        coreSimulatorXcodeMajorVersion: Int? = nil
+        coreSimulatorXcodeMajorVersion: Int? = nil,
+        coreDeviceXcodeMajorVersion: Int? = nil,
+        simulatorCoreDevicePluginXcodeMajorVersion: Int? = nil,
+        simctlExpectedVersion: String = "1171.6",
+        devicectlExpectedVersion: String = "642.15",
+        coreSimulatorBundleVersion: String? = nil,
+        coreDeviceBundleVersion: String? = nil,
+        simulatorCoreDevicePluginBundleVersion: String? = nil
     ) throws {
         directory = try TemporaryTestDirectory()
         let applicationsURL = directory.url.appendingPathComponent(
@@ -276,6 +284,8 @@ struct InstallationFixture {
             includeDeviceHubKey: includeDeviceHubKey,
             includeSimulatorKitSurface: includeSimulatorKitSurface,
             includeIDEPlaygroundSimulatorSurface: includeIDEPlaygroundSimulatorSurface,
+            simctlExpectedVersion: simctlExpectedVersion,
+            devicectlExpectedVersion: devicectlExpectedVersion,
             dtXcode: dtXcode
         )
 
@@ -289,6 +299,7 @@ struct InstallationFixture {
             bundleIdentifier: ToolConstants.coreSimulatorBundleIdentifier,
             executable: "CoreSimulator",
             dtXcode: coreMajor * 100,
+            bundleVersion: coreSimulatorBundleVersion ?? simctlExpectedVersion,
             binaryContent: includeCoreSimulatorSurface
                 ? [
                     "SimServiceContext",
@@ -298,6 +309,46 @@ struct InstallationFixture {
                     "registerNotificationHandlerOnQueue:handler:",
                 ]
                 : ["missing-core-surface"]
+        )
+        let simctlBinaryURL = coreSimulatorFrameworkURL.appendingPathComponent(
+            ToolConstants.simctlBinaryPath
+        )
+        try Self.writeExecutable(
+            content: "fixture-simctl",
+            to: simctlBinaryURL
+        )
+
+        coreDeviceFrameworkURL = directory.url.appendingPathComponent(
+            "Library/Developer/PrivateFrameworks/CoreDevice.framework",
+            isDirectory: true
+        )
+        let coreDeviceMajor = coreDeviceXcodeMajorVersion ?? targetMajor
+        try Self.makeFramework(
+            at: coreDeviceFrameworkURL,
+            bundleIdentifier: ToolConstants.coreDeviceBundleIdentifier,
+            executable: "CoreDevice",
+            dtXcode: coreDeviceMajor * 100,
+            bundleVersion: coreDeviceBundleVersion ?? devicectlExpectedVersion,
+            binaryContent: ["fixture-core-device"]
+        )
+        let devicectlBinaryURL = coreDeviceFrameworkURL.appendingPathComponent(
+            ToolConstants.devicectlBinaryPath
+        )
+        try Self.writeExecutable(
+            content: "fixture-devicectl",
+            to: devicectlBinaryURL
+        )
+        let simulatorCoreDevicePluginURL = coreDeviceFrameworkURL
+            .appendingPathComponent(
+                ToolConstants.simulatorCoreDevicePluginPath,
+                isDirectory: true
+            )
+        try Self.makeSimulatorCoreDevicePlugin(
+            at: simulatorCoreDevicePluginURL,
+            dtXcode: (simulatorCoreDevicePluginXcodeMajorVersion ?? targetMajor)
+                * 100,
+            bundleVersion: simulatorCoreDevicePluginBundleVersion
+                ?? simctlExpectedVersion
         )
 
         commandExecutableURL = directory.url.appendingPathComponent(
@@ -320,6 +371,39 @@ struct InstallationFixture {
         targetXcodeURL.appendingPathComponent("Contents/Developer", isDirectory: true)
     }
 
+    var simctlWrapperURL: URL {
+        targetXcodeURL.appendingPathComponent(ToolConstants.simctlWrapperPath)
+    }
+
+    var devicectlWrapperURL: URL {
+        targetXcodeURL.appendingPathComponent(ToolConstants.devicectlWrapperPath)
+    }
+
+    var simctlBinaryURL: URL {
+        coreSimulatorFrameworkURL.appendingPathComponent(
+            ToolConstants.simctlBinaryPath
+        )
+    }
+
+    var devicectlBinaryURL: URL {
+        coreDeviceFrameworkURL.appendingPathComponent(
+            ToolConstants.devicectlBinaryPath
+        )
+    }
+
+    var simulatorCoreDevicePluginURL: URL {
+        coreDeviceFrameworkURL.appendingPathComponent(
+            ToolConstants.simulatorCoreDevicePluginPath,
+            isDirectory: true
+        )
+    }
+
+    var simulatorCoreDevicePluginBinaryURL: URL {
+        simulatorCoreDevicePluginURL.appendingPathComponent(
+            "Contents/MacOS/SimulatorCoreDevicePlugin"
+        )
+    }
+
     static func makeTargetXcode(
         at url: URL,
         version: String,
@@ -328,9 +412,20 @@ struct InstallationFixture {
         includeDeviceHubKey: Bool,
         includeSimulatorKitSurface: Bool,
         includeIDEPlaygroundSimulatorSurface: Bool,
+        simctlExpectedVersion: String,
+        devicectlExpectedVersion: String,
         dtXcode: Int
     ) throws {
         try makeXcodeBase(at: url, version: version, build: build)
+
+        try writeExecutable(
+            content: "#!/bin/bash\nEXPECTED_VERSION=\"\(simctlExpectedVersion)\"\n",
+            to: url.appendingPathComponent(ToolConstants.simctlWrapperPath)
+        )
+        try writeExecutable(
+            content: "#!/bin/zsh\nEXPECTED_VERSION=\"\(devicectlExpectedVersion)\"\n",
+            to: url.appendingPathComponent(ToolConstants.devicectlWrapperPath)
+        )
 
         let deviceHubURL = url.appendingPathComponent(ToolConstants.deviceHubPath, isDirectory: true)
         try writePropertyList(
@@ -381,6 +476,7 @@ struct InstallationFixture {
             bundleIdentifier: ToolConstants.simulatorKitBundleIdentifier,
             executable: "SimulatorKit",
             dtXcode: dtXcode,
+            bundleVersion: String(dtXcode),
             binaryContent: includeSimulatorKitSurface
                 ? [
                     "_TtC12SimulatorKit14SimDisplayView",
@@ -399,6 +495,7 @@ struct InstallationFixture {
             bundleIdentifier: ToolConstants.idePlaygroundSimulatorBundleIdentifier,
             executable: "IDEPlaygroundSimulator",
             dtXcode: dtXcode,
+            bundleVersion: String(dtXcode),
             binaryContent: includeIDEPlaygroundSimulatorSurface
                 ? [
                     "_TtC22IDEPlaygroundSimulator27IDESimulatorPlaygroundUntil",
@@ -431,12 +528,14 @@ struct InstallationFixture {
         bundleIdentifier: String,
         executable: String,
         dtXcode: Int,
+        bundleVersion: String,
         binaryContent: [String]
     ) throws {
         try writePropertyList(
             [
                 "CFBundleIdentifier": bundleIdentifier,
                 "CFBundleExecutable": executable,
+                "CFBundleVersion": bundleVersion,
                 "DTXcode": String(dtXcode),
                 "DTXcodeBuild": "fixture-build",
             ],
@@ -445,6 +544,28 @@ struct InstallationFixture {
         try writeExecutable(
             content: binaryContent.joined(separator: "\n"),
             to: url.appendingPathComponent("Versions/A/\(executable)")
+        )
+    }
+
+    private static func makeSimulatorCoreDevicePlugin(
+        at url: URL,
+        dtXcode: Int,
+        bundleVersion: String
+    ) throws {
+        try writePropertyList(
+            [
+                "CFBundleIdentifier": ToolConstants.simulatorCoreDevicePluginBundleIdentifier,
+                "CFBundleExecutable": "SimulatorCoreDevicePlugin",
+                "CFBundleVersion": bundleVersion,
+                "DTXcode": String(dtXcode),
+            ],
+            to: url.appendingPathComponent("Contents/Info.plist")
+        )
+        try writeExecutable(
+            content: "fixture-simulator-core-device-plugin",
+            to: url.appendingPathComponent(
+                "Contents/MacOS/SimulatorCoreDevicePlugin"
+            )
         )
     }
 
@@ -535,6 +656,7 @@ struct ControllerFixture {
             environment: ["DEVELOPER_DIR": installations.developerDirectoryURL.path],
             commandExecutableURL: installations.commandExecutableURL,
             coreSimulatorFrameworkURL: installations.coreSimulatorFrameworkURL,
+            coreDeviceFrameworkURL: installations.coreDeviceFrameworkURL,
             signatureValidator: .acceptingTestFixtures
         )
         controller = HostModeController(

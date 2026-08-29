@@ -58,6 +58,13 @@ struct HostStatusTests {
         #expect(status.rendered.contains("Selected Xcode: 27.0 (27A5252f)"))
         #expect(status.rendered.contains("Standalone host: validated"))
         #expect(status.rendered.contains("XcodeSimulatorLegacyHost.app"))
+        #expect(status.rendered.contains("CoreSimulator version: 1171.6"))
+        #expect(status.rendered.contains("Contents/Developer/usr/bin/simctl"))
+        #expect(status.rendered.contains("Resources/bin/simctl"))
+        #expect(status.rendered.contains("CoreDevice version: 642.15"))
+        #expect(status.rendered.contains("Contents/Developer/usr/bin/devicectl"))
+        #expect(status.rendered.contains("Resources/bin/devicectl"))
+        #expect(status.rendered.contains("Simulator CoreDevice plugin (1171.6)"))
         #expect(status.rendered.contains("Restoration receipt: none"))
         #expect(status.rendered.contains("Running Xcode processes: 2"))
         #expect(status.rendered.contains("Running standalone host processes: 1"))
@@ -105,6 +112,26 @@ struct HostStatusTests {
                 ),
                 coreSimulatorBinaryURL: URL(
                     fileURLWithPath: "/Library/Developer/PrivateFrameworks/CoreSimulator.framework/Versions/A/CoreSimulator"
+                ),
+                coreSimulatorVersion: "1171.6",
+                simctlWrapperURL: URL(
+                    fileURLWithPath: "/Applications/Xcode_27.app/Contents/Developer/usr/bin/simctl"
+                ),
+                simctlBinaryURL: URL(
+                    fileURLWithPath: "/Library/Developer/PrivateFrameworks/CoreSimulator.framework/Versions/A/Resources/bin/simctl"
+                ),
+                coreDeviceBinaryURL: URL(
+                    fileURLWithPath: "/Library/Developer/PrivateFrameworks/CoreDevice.framework/Versions/A/CoreDevice"
+                ),
+                coreDeviceVersion: "642.15",
+                devicectlWrapperURL: URL(
+                    fileURLWithPath: "/Applications/Xcode_27.app/Contents/Developer/usr/bin/devicectl"
+                ),
+                devicectlBinaryURL: URL(
+                    fileURLWithPath: "/Library/Developer/PrivateFrameworks/CoreDevice.framework/Versions/A/Resources/bin/devicectl"
+                ),
+                simulatorCoreDevicePluginBinaryURL: URL(
+                    fileURLWithPath: "/Library/Developer/PrivateFrameworks/CoreDevice.framework/Versions/A/PlugIns/SimulatorCoreDevicePlugin.coredeviceplugin/Contents/MacOS/SimulatorCoreDevicePlugin"
                 )
             ),
             receiptURL: URL(

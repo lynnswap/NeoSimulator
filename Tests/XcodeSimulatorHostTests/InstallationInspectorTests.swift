@@ -23,6 +23,17 @@ struct InstallationInspectorTests {
                 == "IDEPlaygroundSimulator"
         )
         #expect(host.coreSimulatorBinaryURL.lastPathComponent == "CoreSimulator")
+        #expect(host.coreSimulatorVersion == "1171.6")
+        #expect(host.simctlWrapperURL == fixture.simctlWrapperURL)
+        #expect(host.simctlBinaryURL == fixture.simctlBinaryURL)
+        #expect(host.coreDeviceBinaryURL.lastPathComponent == "CoreDevice")
+        #expect(host.coreDeviceVersion == "642.15")
+        #expect(host.devicectlWrapperURL == fixture.devicectlWrapperURL)
+        #expect(host.devicectlBinaryURL == fixture.devicectlBinaryURL)
+        #expect(
+            host.simulatorCoreDevicePluginBinaryURL
+                == fixture.simulatorCoreDevicePluginBinaryURL
+        )
     }
 
     @Test func rejectsXcode26() throws {
@@ -43,7 +54,9 @@ struct InstallationInspectorTests {
     @Test func acceptsXcode28WhenTheVerifiedSurfaceMatches() throws {
         let fixture = try InstallationFixture(
             targetVersion: "28.0",
-            targetBuild: "28A100"
+            targetBuild: "28A100",
+            simctlExpectedVersion: "1280.1",
+            devicectlExpectedVersion: "700.2"
         )
         let inspector = makeInspector(fixture)
 
@@ -52,6 +65,8 @@ struct InstallationInspectorTests {
 
         #expect(xcode.version == (try ToolVersion("28.0")))
         #expect(host.xcode == xcode)
+        #expect(host.coreSimulatorVersion == "1280.1")
+        #expect(host.coreDeviceVersion == "700.2")
     }
 
     @Test func selectedXcodeMustBeIntactAppleSignedCode() throws {
@@ -61,6 +76,7 @@ struct InstallationInspectorTests {
             environment: ["DEVELOPER_DIR": fixture.developerDirectoryURL.path],
             commandExecutableURL: fixture.commandExecutableURL,
             coreSimulatorFrameworkURL: fixture.coreSimulatorFrameworkURL,
+            coreDeviceFrameworkURL: fixture.coreDeviceFrameworkURL,
             signatureValidator: CodeSignatureValidator { _, identifier in
                 if identifier == ToolConstants.xcodeBundleIdentifier {
                     throw CLIError.unavailable(
@@ -83,6 +99,7 @@ struct InstallationInspectorTests {
             environment: ["DEVELOPER_DIR": fixture.developerDirectoryURL.path],
             commandExecutableURL: fixture.commandExecutableURL,
             coreSimulatorFrameworkURL: fixture.coreSimulatorFrameworkURL,
+            coreDeviceFrameworkURL: fixture.coreDeviceFrameworkURL,
             signatureValidator: CodeSignatureValidator { _, identifier in
                 if identifier == ToolConstants.simulatorKitBundleIdentifier {
                     throw CLIError.unavailable(
@@ -197,6 +214,264 @@ struct InstallationInspectorTests {
         }
     }
 
+    @Test func globalCoreDeviceMustMatchTheSelectedXcodeMajor() throws {
+        let fixture = try InstallationFixture(
+            targetVersion: "28.0",
+            targetBuild: "28A100",
+            coreDeviceXcodeMajorVersion: 27
+        )
+        let inspector = makeInspector(fixture)
+        let xcode = try inspector.validatedTargetXcode()
+
+        do {
+            _ = try inspector.validatedLegacyHost(for: xcode)
+            Issue.record("expected mismatched CoreDevice generation to fail")
+        } catch let error as CLIError {
+            #expect(error.identifier == "core-device-bundle")
+        }
+    }
+
+    @Test func simulatorCoreDevicePluginMustMatchTheSelectedXcodeMajor() throws {
+        let fixture = try InstallationFixture(
+            targetVersion: "28.0",
+            targetBuild: "28A100",
+            simulatorCoreDevicePluginXcodeMajorVersion: 27
+        )
+        let inspector = makeInspector(fixture)
+        let xcode = try inspector.validatedTargetXcode()
+
+        do {
+            _ = try inspector.validatedLegacyHost(for: xcode)
+            Issue.record("expected mismatched plugin generation to fail")
+        } catch let error as CLIError {
+            #expect(error.identifier == "simulator-core-device-plugin-bundle")
+        }
+    }
+
+    @Test func staleCoreSimulatorVersionIsRejected() throws {
+        let fixture = try InstallationFixture(
+            coreSimulatorBundleVersion: "1171.5"
+        )
+        let inspector = makeInspector(fixture)
+        let xcode = try inspector.validatedTargetXcode()
+
+        do {
+            _ = try inspector.validatedLegacyHost(for: xcode)
+            Issue.record("expected stale CoreSimulator version to fail")
+        } catch let error as CLIError {
+            #expect(error.identifier == "core-simulator-bundle")
+        }
+    }
+
+    @Test func staleCoreDeviceVersionIsRejected() throws {
+        let fixture = try InstallationFixture(
+            coreDeviceBundleVersion: "642.14"
+        )
+        let inspector = makeInspector(fixture)
+        let xcode = try inspector.validatedTargetXcode()
+
+        do {
+            _ = try inspector.validatedLegacyHost(for: xcode)
+            Issue.record("expected stale CoreDevice version to fail")
+        } catch let error as CLIError {
+            #expect(error.identifier == "core-device-bundle")
+        }
+    }
+
+    @Test func simulatorCoreDevicePluginMustMatchCoreSimulatorVersion() throws {
+        let fixture = try InstallationFixture(
+            simulatorCoreDevicePluginBundleVersion: "1171.5"
+        )
+        let inspector = makeInspector(fixture)
+        let xcode = try inspector.validatedTargetXcode()
+
+        do {
+            _ = try inspector.validatedLegacyHost(for: xcode)
+            Issue.record("expected stale simulator plugin version to fail")
+        } catch let error as CLIError {
+            #expect(error.identifier == "simulator-core-device-plugin-bundle")
+        }
+    }
+
+    @Test func missingWrapperIsRejected() throws {
+        let fixture = try InstallationFixture()
+        try FileManager.default.removeItem(at: fixture.simctlWrapperURL)
+        let inspector = makeInspector(fixture)
+        let xcode = try inspector.validatedTargetXcode()
+
+        do {
+            _ = try inspector.validatedLegacyHost(for: xcode)
+            Issue.record("expected missing simctl wrapper to fail")
+        } catch let error as CLIError {
+            #expect(error.identifier == "simctl-wrapper")
+        }
+    }
+
+    @Test func changedWrapperAssignmentFormatIsRejected() throws {
+        let fixture = try InstallationFixture()
+        try overwrite(
+            "#!/bin/zsh\nEXPECTED_VERSION = \"642.15\"\n",
+            at: fixture.devicectlWrapperURL
+        )
+        let inspector = makeInspector(fixture)
+        let xcode = try inspector.validatedTargetXcode()
+
+        do {
+            _ = try inspector.validatedLegacyHost(for: xcode)
+            Issue.record("expected changed devicectl wrapper format to fail")
+        } catch let error as CLIError {
+            #expect(error.identifier == "devicectl-wrapper-version")
+        }
+    }
+
+    @Test func nonnumericWrapperVersionIsRejected() throws {
+        let fixture = try InstallationFixture()
+        try overwrite(
+            "#!/bin/zsh\nEXPECTED_VERSION=\"642.beta\"\n",
+            at: fixture.devicectlWrapperURL
+        )
+        let inspector = makeInspector(fixture)
+        let xcode = try inspector.validatedTargetXcode()
+
+        do {
+            _ = try inspector.validatedLegacyHost(for: xcode)
+            Issue.record("expected nonnumeric devicectl version to fail")
+        } catch let error as CLIError {
+            #expect(error.identifier == "devicectl-wrapper-version")
+        }
+    }
+
+    @Test func ambiguousWrapperVersionAssignmentsAreRejected() throws {
+        let fixture = try InstallationFixture()
+        try overwrite(
+            """
+            #!/bin/bash
+            EXPECTED_VERSION="1171.6"
+            export EXPECTED_VERSION="1171.7"
+            """,
+            at: fixture.simctlWrapperURL
+        )
+        let inspector = makeInspector(fixture)
+        let xcode = try inspector.validatedTargetXcode()
+
+        do {
+            _ = try inspector.validatedLegacyHost(for: xcode)
+            Issue.record("expected ambiguous simctl wrapper version to fail")
+        } catch let error as CLIError {
+            #expect(error.identifier == "simctl-wrapper-version")
+        }
+    }
+
+    @Test func directSimctlMustBeIntactAppleSignedCode() throws {
+        let fixture = try InstallationFixture()
+        let inspector = makeInspector(
+            fixture,
+            rejectingSignatureIdentifier: ToolConstants.simctlBundleIdentifier
+        )
+        let xcode = try inspector.validatedTargetXcode()
+
+        do {
+            _ = try inspector.validatedLegacyHost(for: xcode)
+            Issue.record("expected invalid simctl signature to fail")
+        } catch let error as CLIError {
+            #expect(error.identifier == "code-signature")
+        }
+    }
+
+    @Test func directDevicectlMustBeIntactAppleSignedCode() throws {
+        let fixture = try InstallationFixture()
+        let inspector = makeInspector(
+            fixture,
+            rejectingSignatureIdentifier: ToolConstants.devicectlBundleIdentifier
+        )
+        let xcode = try inspector.validatedTargetXcode()
+
+        do {
+            _ = try inspector.validatedLegacyHost(for: xcode)
+            Issue.record("expected invalid devicectl signature to fail")
+        } catch let error as CLIError {
+            #expect(error.identifier == "code-signature")
+        }
+    }
+
+    @Test func simulatorCoreDevicePluginMustBeIntactAppleSignedCode() throws {
+        let fixture = try InstallationFixture()
+        let inspector = makeInspector(
+            fixture,
+            rejectingSignatureIdentifier:
+                ToolConstants.simulatorCoreDevicePluginBundleIdentifier
+        )
+        let xcode = try inspector.validatedTargetXcode()
+
+        do {
+            _ = try inspector.validatedLegacyHost(for: xcode)
+            Issue.record("expected invalid simulator plugin signature to fail")
+        } catch let error as CLIError {
+            #expect(error.identifier == "code-signature")
+        }
+    }
+
+    @Test func devicectlMustNotLinkDeviceKitOrDeviceHub() throws {
+        for fragment in [
+            "@rpath/DeviceKit.framework/Versions/A/DeviceKit",
+            "/Applications/Xcode.app/Contents/Applications/DeviceHub.app/Contents/MacOS/DeviceHub",
+        ] {
+            let fixture = try InstallationFixture()
+            try overwrite(fragment, at: fixture.devicectlBinaryURL)
+            let inspector = makeInspector(fixture)
+            let xcode = try inspector.validatedTargetXcode()
+
+            do {
+                _ = try inspector.validatedLegacyHost(for: xcode)
+                Issue.record("expected forbidden devicectl linkage to fail")
+            } catch let error as CLIError {
+                #expect(error.identifier == "devicectl-linkage")
+            }
+        }
+    }
+
+    @Test func simulatorCoreDevicePluginMustNotLinkDeviceKitOrDeviceHub() throws {
+        for fragment in [
+            "@rpath/DeviceKit.framework/Versions/A/DeviceKit",
+            "/Applications/Xcode.app/Contents/Applications/DeviceHub.app/Contents/MacOS/DeviceHub",
+        ] {
+            let fixture = try InstallationFixture()
+            try overwrite(
+                fragment,
+                at: fixture.simulatorCoreDevicePluginBinaryURL
+            )
+            let inspector = makeInspector(fixture)
+            let xcode = try inspector.validatedTargetXcode()
+
+            do {
+                _ = try inspector.validatedLegacyHost(for: xcode)
+                Issue.record("expected forbidden simulator plugin linkage to fail")
+            } catch let error as CLIError {
+                #expect(
+                    error.identifier == "simulator-core-device-plugin-linkage"
+                )
+            }
+        }
+    }
+
+    @Test func compatibilityGateNeverExecutesWrappersOrDirectTools() throws {
+        let fixture = try InstallationFixture()
+        let runner = FakeSystemCommandRunner()
+        let inspector = InstallationInspector(
+            runner: runner,
+            environment: ["DEVELOPER_DIR": fixture.developerDirectoryURL.path],
+            commandExecutableURL: fixture.commandExecutableURL,
+            coreSimulatorFrameworkURL: fixture.coreSimulatorFrameworkURL,
+            coreDeviceFrameworkURL: fixture.coreDeviceFrameworkURL,
+            signatureValidator: .acceptingTestFixtures
+        )
+
+        let xcode = try inspector.validatedTargetXcode()
+        _ = try inspector.validatedLegacyHost(for: xcode)
+
+        #expect(runner.calls.isEmpty)
+    }
+
     @Test func packagedHostIsResolvedRelativeToTheCommandBinary() throws {
         let fixture = try InstallationFixture()
         let inspector = makeInspector(fixture)
@@ -222,6 +497,7 @@ struct InstallationInspectorTests {
             environment: ["DEVELOPER_DIR": fixture.developerDirectoryURL.path],
             commandExecutableURL: symlinkURL,
             coreSimulatorFrameworkURL: fixture.coreSimulatorFrameworkURL,
+            coreDeviceFrameworkURL: fixture.coreDeviceFrameworkURL,
             signatureValidator: .acceptingTestFixtures
         )
 
@@ -248,13 +524,29 @@ struct InstallationInspectorTests {
         #expect(try ToolVersion("27.0") > ToolVersion("26.99"))
     }
 
-    private func makeInspector(_ fixture: InstallationFixture) -> InstallationInspector {
+    private func makeInspector(
+        _ fixture: InstallationFixture,
+        rejectingSignatureIdentifier: String? = nil
+    ) -> InstallationInspector {
         InstallationInspector(
             runner: FakeSystemCommandRunner(),
             environment: ["DEVELOPER_DIR": fixture.developerDirectoryURL.path],
             commandExecutableURL: fixture.commandExecutableURL,
             coreSimulatorFrameworkURL: fixture.coreSimulatorFrameworkURL,
-            signatureValidator: .acceptingTestFixtures
+            coreDeviceFrameworkURL: fixture.coreDeviceFrameworkURL,
+            signatureValidator: CodeSignatureValidator { _, identifier in
+                guard identifier == rejectingSignatureIdentifier else {
+                    return
+                }
+                throw CLIError.unavailable(
+                    "code-signature",
+                    "injected invalid signature for \(identifier)"
+                )
+            }
         )
+    }
+
+    private func overwrite(_ content: String, at url: URL) throws {
+        try Data(content.utf8).write(to: url)
     }
 }

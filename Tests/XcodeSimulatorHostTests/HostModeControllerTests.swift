@@ -179,6 +179,25 @@ struct HostModeControllerTests {
         #expect(try fixture.receiptStore.load() == nil)
     }
 
+    @Test func legacyToolGateFailsBeforeChangingPreferencesOrProcesses() async throws {
+        let fixture = try ControllerFixture()
+        try Data("#!/bin/zsh\nEXPECTED_VERSION='642.15'\n".utf8).write(
+            to: fixture.installations.devicectlWrapperURL
+        )
+
+        do {
+            _ = try await fixture.controller.use(mode: .legacy)
+            Issue.record("expected changed devicectl wrapper to fail")
+        } catch let error as CLIError {
+            #expect(error.identifier == "devicectl-wrapper-version")
+            #expect(error.category == .unavailable)
+        }
+
+        #expect(fixture.runner.mutationCount == 0)
+        #expect(fixture.workspace.events.isEmpty)
+        #expect(try fixture.receiptStore.load() == nil)
+    }
+
     @Test func deviceHubModeCanRecoverWhenThePackagedHostIsMissing() async throws {
         let fixture = try ControllerFixture(
             initialState: .legacy,
@@ -194,6 +213,19 @@ struct HostModeControllerTests {
             fixture.workspace.requestedLegacyHostURLs
                 == [fixture.installations.legacyHostURL]
         )
+    }
+
+    @Test func deviceHubModeDoesNotDependOnTheLegacyToolGate() async throws {
+        let fixture = try ControllerFixture(initialState: .legacy)
+        try Data("#!/bin/zsh\nEXPECTED_VERSION='642.15'\n".utf8).write(
+            to: fixture.installations.devicectlWrapperURL
+        )
+
+        let report = try await fixture.controller.use(mode: .deviceHub)
+
+        #expect(report.didChange)
+        #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .absent)
+        #expect(fixture.workspace.events == ["terminate-legacy-hosts"])
     }
 
     @Test func deviceHubModeDoesNotChangePreferencesWhenHostCannotClose() async throws {

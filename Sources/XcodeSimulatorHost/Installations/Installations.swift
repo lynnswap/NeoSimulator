@@ -19,4 +19,12 @@ struct LegacyHostInstallation: Equatable {
     let simulatorKitBinaryURL: URL
     let idePlaygroundSimulatorBinaryURL: URL
     let coreSimulatorBinaryURL: URL
+    let coreSimulatorVersion: String
+    let simctlWrapperURL: URL
+    let simctlBinaryURL: URL
+    let coreDeviceBinaryURL: URL
+    let coreDeviceVersion: String
+    let devicectlWrapperURL: URL
+    let devicectlBinaryURL: URL
+    let simulatorCoreDevicePluginBinaryURL: URL
 }

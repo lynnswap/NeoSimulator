@@ -25,11 +25,17 @@ struct InstallationInspector {
         "registerNotificationHandlerOnQueue:handler:",
     ]
 
+    private static let forbiddenCoreDeviceLoadPathFragments = [
+        "/DeviceKit.framework/",
+        "/DeviceHub.app/",
+    ]
+
     private let runner: any CommandRunning
     private let fileManager: FileManager
     private let environment: [String: String]
     private let commandExecutableURL: URL?
     private let coreSimulatorFrameworkURL: URL
+    private let coreDeviceFrameworkURL: URL
     private let signatureValidator: CodeSignatureValidator
 
     init(
@@ -41,6 +47,10 @@ struct InstallationInspector {
             fileURLWithPath: ToolConstants.coreSimulatorFrameworkPath,
             isDirectory: true
         ),
+        coreDeviceFrameworkURL: URL = URL(
+            fileURLWithPath: ToolConstants.coreDeviceFrameworkPath,
+            isDirectory: true
+        ),
         signatureValidator: CodeSignatureValidator = .live
     ) {
         self.runner = runner
@@ -48,6 +58,7 @@ struct InstallationInspector {
         self.environment = environment
         self.commandExecutableURL = commandExecutableURL
         self.coreSimulatorFrameworkURL = coreSimulatorFrameworkURL.standardizedFileURL
+        self.coreDeviceFrameworkURL = coreDeviceFrameworkURL.standardizedFileURL
         self.signatureValidator = signatureValidator
     }
 
@@ -119,6 +130,21 @@ struct InstallationInspector {
     func validatedLegacyHost(
         for xcode: XcodeInstallation
     ) throws -> LegacyHostInstallation {
+        let simctlWrapperURL = xcode.applicationURL.appendingPathComponent(
+            ToolConstants.simctlWrapperPath
+        )
+        let coreSimulatorVersion = try expectedVersion(
+            inWrapperAt: simctlWrapperURL,
+            identifier: "simctl-wrapper"
+        )
+        let devicectlWrapperURL = xcode.applicationURL.appendingPathComponent(
+            ToolConstants.devicectlWrapperPath
+        )
+        let coreDeviceVersion = try expectedVersion(
+            inWrapperAt: devicectlWrapperURL,
+            identifier: "devicectl-wrapper"
+        )
+
         let simulatorKitBinaryURL = try validatedFrameworkBinary(
             at: xcode.applicationURL.appendingPathComponent(
                 ToolConstants.simulatorKitPath,
@@ -144,7 +170,53 @@ struct InstallationInspector {
             expectedBundleIdentifier: ToolConstants.coreSimulatorBundleIdentifier,
             identifier: "core-simulator",
             requiredXcodeMajorVersion: xcode.version.major,
+            requiredBundleVersion: coreSimulatorVersion,
             requiredSurface: Self.coreSimulatorRequiredSurface
+        )
+        let simctlBinaryURL = coreSimulatorFrameworkURL.appendingPathComponent(
+            ToolConstants.simctlBinaryPath
+        )
+        try validateAppleExecutable(
+            at: simctlBinaryURL,
+            expectedIdentifier: ToolConstants.simctlBundleIdentifier,
+            identifier: "simctl"
+        )
+
+        let coreDeviceBinaryURL = try validatedFrameworkBinary(
+            at: coreDeviceFrameworkURL,
+            expectedBundleIdentifier: ToolConstants.coreDeviceBundleIdentifier,
+            identifier: "core-device",
+            requiredXcodeMajorVersion: xcode.version.major,
+            requiredBundleVersion: coreDeviceVersion,
+            requiredSurface: []
+        )
+        let devicectlBinaryURL = coreDeviceFrameworkURL.appendingPathComponent(
+            ToolConstants.devicectlBinaryPath
+        )
+        try validateAppleExecutable(
+            at: devicectlBinaryURL,
+            expectedIdentifier: ToolConstants.devicectlBundleIdentifier,
+            identifier: "devicectl"
+        )
+        try rejectForbiddenLoadPaths(
+            in: devicectlBinaryURL,
+            identifier: "devicectl-linkage"
+        )
+
+        let simulatorCoreDevicePluginURL = coreDeviceFrameworkURL
+            .appendingPathComponent(
+                ToolConstants.simulatorCoreDevicePluginPath,
+                isDirectory: true
+            )
+        let simulatorCoreDevicePluginBinaryURL =
+            try validatedSimulatorCoreDevicePlugin(
+                at: simulatorCoreDevicePluginURL,
+                requiredXcodeMajorVersion: xcode.version.major,
+                requiredBundleVersion: coreSimulatorVersion
+            )
+        try rejectForbiddenLoadPaths(
+            in: simulatorCoreDevicePluginBinaryURL,
+            identifier: "simulator-core-device-plugin-linkage"
         )
 
         let applicationURL = try legacyHostApplicationURL()
@@ -159,7 +231,15 @@ struct InstallationInspector {
             xcode: xcode,
             simulatorKitBinaryURL: simulatorKitBinaryURL,
             idePlaygroundSimulatorBinaryURL: idePlaygroundSimulatorBinaryURL,
-            coreSimulatorBinaryURL: coreSimulatorBinaryURL
+            coreSimulatorBinaryURL: coreSimulatorBinaryURL,
+            coreSimulatorVersion: coreSimulatorVersion,
+            simctlWrapperURL: simctlWrapperURL,
+            simctlBinaryURL: simctlBinaryURL,
+            coreDeviceBinaryURL: coreDeviceBinaryURL,
+            coreDeviceVersion: coreDeviceVersion,
+            devicectlWrapperURL: devicectlWrapperURL,
+            devicectlBinaryURL: devicectlBinaryURL,
+            simulatorCoreDevicePluginBinaryURL: simulatorCoreDevicePluginBinaryURL
         )
     }
 
@@ -235,11 +315,85 @@ struct InstallationInspector {
         return executableURL
     }
 
+    private func expectedVersion(
+        inWrapperAt wrapperURL: URL,
+        identifier: String
+    ) throws -> String {
+        try requireExecutable(at: wrapperURL, identifier: identifier)
+        let data = try binaryData(
+            at: wrapperURL,
+            identifier: "\(identifier)-version"
+        )
+        guard let source = String(data: data, encoding: .utf8) else {
+            throw CLIError.unavailable(
+                "\(identifier)-version",
+                "\(wrapperURL.path) is not a UTF-8 wrapper script"
+            )
+        }
+
+        let assignmentLines = source.split(
+            separator: "\n",
+            omittingEmptySubsequences: false
+        ).filter(isExpectedVersionAssignment)
+        let prefix = "EXPECTED_VERSION=\""
+        guard assignmentLines.count == 1,
+              let assignment = assignmentLines.first,
+              assignment.hasPrefix(prefix),
+              assignment.hasSuffix("\"")
+        else {
+            throw CLIError.unavailable(
+                "\(identifier)-version",
+                "\(wrapperURL.path) must contain exactly one EXPECTED_VERSION=\"<numeric version>\" literal"
+            )
+        }
+
+        let valueStart = assignment.index(
+            assignment.startIndex,
+            offsetBy: prefix.count
+        )
+        let valueEnd = assignment.index(before: assignment.endIndex)
+        let version = String(assignment[valueStart..<valueEnd])
+        let components = version.split(
+            separator: ".",
+            omittingEmptySubsequences: false
+        )
+        guard !components.isEmpty,
+              components.allSatisfy({ component in
+                  !component.isEmpty
+                      && component.utf8.allSatisfy { byte in
+                          byte >= 48 && byte <= 57
+                      }
+              })
+        else {
+            throw CLIError.unavailable(
+                "\(identifier)-version",
+                "\(wrapperURL.path) has an invalid EXPECTED_VERSION literal"
+            )
+        }
+        return version
+    }
+
+    private func isExpectedVersionAssignment(_ line: Substring) -> Bool {
+        let trimmed = line.drop { character in
+            character == " " || character == "\t"
+        }
+        guard !trimmed.hasPrefix("#"),
+              let nameRange = trimmed.range(of: "EXPECTED_VERSION")
+        else {
+            return false
+        }
+        let suffix = trimmed[nameRange.upperBound...].drop { character in
+            character == " " || character == "\t"
+        }
+        return suffix.hasPrefix("=")
+    }
+
     private func validatedFrameworkBinary(
         at frameworkURL: URL,
         expectedBundleIdentifier: String,
         identifier: String,
         requiredXcodeMajorVersion: Int,
+        requiredBundleVersion: String? = nil,
         requiredSurface: [String]
     ) throws -> URL {
         let infoURL = frameworkURL.appendingPathComponent(
@@ -257,7 +411,10 @@ struct InstallationInspector {
               !executable.isEmpty,
               let dtXcodeString = info["DTXcode"] as? String,
               let dtXcode = Int(dtXcodeString),
-              dtXcode / 100 == requiredXcodeMajorVersion
+              dtXcode / 100 == requiredXcodeMajorVersion,
+              (requiredBundleVersion.map {
+                  info["CFBundleVersion"] as? String == $0
+              } ?? true)
         else {
             throw CLIError.unavailable(
                 "\(identifier)-bundle",
@@ -283,6 +440,75 @@ struct InstallationInspector {
             description: expectedBundleIdentifier
         )
         return executableURL
+    }
+
+    private func validatedSimulatorCoreDevicePlugin(
+        at pluginURL: URL,
+        requiredXcodeMajorVersion: Int,
+        requiredBundleVersion: String
+    ) throws -> URL {
+        let infoURL = pluginURL.appendingPathComponent("Contents/Info.plist")
+        guard fileManager.isReadableFile(atPath: infoURL.path) else {
+            throw CLIError.unavailable(
+                "simulator-core-device-plugin-bundle",
+                "missing plugin bundle at \(pluginURL.path)"
+            )
+        }
+        let info = try propertyList(at: infoURL)
+        guard info["CFBundleIdentifier"] as? String
+                == ToolConstants.simulatorCoreDevicePluginBundleIdentifier,
+              let executable = info["CFBundleExecutable"] as? String,
+              !executable.isEmpty,
+              info["CFBundleVersion"] as? String == requiredBundleVersion,
+              let dtXcodeString = info["DTXcode"] as? String,
+              let dtXcode = Int(dtXcodeString),
+              dtXcode / 100 == requiredXcodeMajorVersion
+        else {
+            throw CLIError.unavailable(
+                "simulator-core-device-plugin-bundle",
+                "\(pluginURL.path) is not the expected Xcode \(requiredXcodeMajorVersion) \(ToolConstants.simulatorCoreDevicePluginBundleIdentifier) plugin at version \(requiredBundleVersion)"
+            )
+        }
+        try signatureValidator.validateAppleCode(
+            pluginURL,
+            ToolConstants.simulatorCoreDevicePluginBundleIdentifier
+        )
+
+        let executableURL = pluginURL
+            .appendingPathComponent("Contents/MacOS", isDirectory: true)
+            .appendingPathComponent(executable)
+        try requireExecutable(
+            at: executableURL,
+            identifier: "simulator-core-device-plugin-executable"
+        )
+        return executableURL
+    }
+
+    private func validateAppleExecutable(
+        at executableURL: URL,
+        expectedIdentifier: String,
+        identifier: String
+    ) throws {
+        try requireExecutable(at: executableURL, identifier: identifier)
+        try signatureValidator.validateAppleCode(
+            executableURL,
+            expectedIdentifier
+        )
+    }
+
+    private func rejectForbiddenLoadPaths(
+        in binaryURL: URL,
+        identifier: String
+    ) throws {
+        let binary = try binaryData(at: binaryURL, identifier: identifier)
+        for fragment in Self.forbiddenCoreDeviceLoadPathFragments {
+            guard binary.range(of: Data(fragment.utf8)) == nil else {
+                throw CLIError.unavailable(
+                    identifier,
+                    "\(binaryURL.path) requires forbidden DeviceKit/Device Hub component \(fragment)"
+                )
+            }
+        }
     }
 
     private func validateSurface(

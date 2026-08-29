@@ -72,6 +72,16 @@ struct HostStatus: Equatable {
                 "  IDEPlaygroundSimulator: \(legacyHost.idePlaygroundSimulatorBinaryURL.path)"
             )
             lines.append("  CoreSimulator: \(legacyHost.coreSimulatorBinaryURL.path)")
+            lines.append("  CoreSimulator version: \(legacyHost.coreSimulatorVersion)")
+            lines.append("  simctl wrapper: \(legacyHost.simctlWrapperURL.path)")
+            lines.append("  simctl: \(legacyHost.simctlBinaryURL.path)")
+            lines.append("  CoreDevice: \(legacyHost.coreDeviceBinaryURL.path)")
+            lines.append("  CoreDevice version: \(legacyHost.coreDeviceVersion)")
+            lines.append("  devicectl wrapper: \(legacyHost.devicectlWrapperURL.path)")
+            lines.append("  devicectl: \(legacyHost.devicectlBinaryURL.path)")
+            lines.append(
+                "  Simulator CoreDevice plugin (\(legacyHost.coreSimulatorVersion)): \(legacyHost.simulatorCoreDevicePluginBinaryURL.path)"
+            )
         } else {
             lines.append("Standalone host: unavailable")
         }
