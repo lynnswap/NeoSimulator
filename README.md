@@ -139,7 +139,8 @@ curl -fsSL https://github.com/lynnswap/xcode-simulator-host/releases/latest/down
 ```
 
 The installer keeps the CLI and companion app in a fixed relative layout. It
-stages and verifies both before replacing an existing installation.
+resolves a symlinked bindir to its physical directory, then stages and verifies
+both before replacing an existing installation.
 
 ## Build from Source
 

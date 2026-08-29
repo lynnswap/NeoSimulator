@@ -104,14 +104,7 @@ private final class ApplicationTerminationWaiter {
                             guard let self else {
                                 return
                             }
-                            let isStillRunning = NSRunningApplication.runningApplications(
-                                withBundleIdentifier: self.identity.bundleIdentifier
-                            ).contains {
-                                // Do not compare PIDs: AppKit documents that an
-                                // NSRunningApplication PID may change.
-                                $0.isEqual(self.application) && !$0.isTerminated
-                            }
-                            if isStillRunning {
+                            if !self.application.isTerminated {
                                 self.finish(
                                     .failure(
                                         CLIError.temporary(
@@ -225,28 +218,6 @@ struct WorkspaceClient {
                 at: applicationURL,
                 configuration: configuration
             )
-            guard application.bundleIdentifier == ToolConstants.legacyHostBundleIdentifier else {
-                throw CLIError.configuration(
-                    "legacy-host-identifier",
-                    "LaunchServices opened pid \(application.processIdentifier) with bundle identifier \(application.bundleIdentifier ?? "unknown"); expected \(ToolConstants.legacyHostBundleIdentifier)"
-                )
-            }
-            guard let openedURL = application.bundleURL else {
-                throw CLIError.io(
-                    "legacy-host-launch",
-                    "LaunchServices opened the standalone simulator host without a bundle URL"
-                )
-            }
-
-            let expected = normalized(applicationURL)
-            let observed = normalized(openedURL)
-            guard observed == expected else {
-                throw CLIError.configuration(
-                    "legacy-host-substitution",
-                    "requested \(expected.path), but LaunchServices opened \(observed.path)"
-                )
-            }
-
             let identity = ManagedApplicationIdentity(
                 displayName: "standalone simulator host",
                 bundleIdentifier: ToolConstants.legacyHostBundleIdentifier,
@@ -254,11 +225,35 @@ struct WorkspaceClient {
                 errorIdentifier: "legacy-host"
             )
             do {
+                guard application.bundleIdentifier
+                        == ToolConstants.legacyHostBundleIdentifier
+                else {
+                    throw CLIError.configuration(
+                        "legacy-host-identifier",
+                        "LaunchServices opened pid \(application.processIdentifier) with bundle identifier \(application.bundleIdentifier ?? "unknown"); expected \(ToolConstants.legacyHostBundleIdentifier)"
+                    )
+                }
+                guard let openedURL = application.bundleURL else {
+                    throw CLIError.io(
+                        "legacy-host-launch",
+                        "LaunchServices opened the standalone simulator host without a bundle URL"
+                    )
+                }
+
+                let expected = normalized(applicationURL)
+                let observed = normalized(openedURL)
+                guard observed == expected else {
+                    throw CLIError.configuration(
+                        "legacy-host-substitution",
+                        "requested \(expected.path), but LaunchServices opened \(observed.path)"
+                    )
+                }
                 try await waitForLegacyHostStartup(
                     application,
                     resultURL: startupResultURL
                 )
-            } catch {
+                return observed
+            } catch let launchError {
                 if !application.isTerminated {
                     _ = application.terminate()
                 }
@@ -267,10 +262,16 @@ struct WorkspaceClient {
                     identity: identity,
                     timeoutInterval: 10
                 )
-                try? await waiter.terminate()
-                throw error
+                do {
+                    try await waiter.terminate()
+                } catch let terminationError {
+                    throw CLIError.temporary(
+                        "legacy-host-launch-cleanup",
+                        "standalone host launch failed (\(launchError.localizedDescription)), and pid \(application.processIdentifier) could not be terminated (\(terminationError.localizedDescription))"
+                    )
+                }
+                throw launchError
             }
-            return observed
         }
     )
 

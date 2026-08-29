@@ -64,9 +64,10 @@ libexec/xcode-simulator-host/XcodeSimulatorLegacyHost.app
 ```
 
 The CLI resolves the app relative to its own real executable path. The installer
-stages and verifies both artifacts, installs the app first, commits the CLI last,
-and restores the previous pair if installation fails. Rollback derives whether
-an old artifact moved from the presence of its same-filesystem backup path, so a
+first resolves a symlinked bindir to its physical directory, then stages and
+verifies both artifacts, installs the app first, commits the CLI last, and
+restores the previous pair if installation fails. Rollback derives whether an
+old artifact moved from the presence of its same-filesystem backup path, so a
 signal cannot land between a move and a separate bookkeeping update.
 
 ## Owner map

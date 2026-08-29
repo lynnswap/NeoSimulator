@@ -240,16 +240,38 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
     exit 1
   fi
 
+  physical_root="$tmp_dir/symlink-physical"
+  linked_root="$tmp_dir/symlink-entry"
+  mkdir -p "$physical_root/bin" "$linked_root"
+  ln -s "$physical_root/bin" "$linked_root/bin"
+  XCODE_SIMULATOR_HOST_BASE_URL="file://$release_base" \
+    sh "$release_base/$installer_asset" --bindir "$linked_root/bin"
+  physical_app="$physical_root/libexec/$cli_product/$host_product.app"
+  cmp -s "$physical_root/bin/$cli_product" "$extracted_cli"
+  cmp -s "$physical_app/Contents/Info.plist" "$extracted_app/Contents/Info.plist"
+  cmp -s "$physical_app/Contents/MacOS/$host_product" "$extracted_host"
+  if [[ -e "$linked_root/libexec" ]]; then
+    echo "A symlinked bindir installed the companion relative to the logical path." >&2
+    exit 1
+  fi
+
   verify_interrupted_backup_rollback() {
     local interrupted_artifact="$1"
     local interrupted_root="$tmp_dir/interrupted-$interrupted_artifact"
-    local interrupted_app="$interrupted_root/libexec/$cli_product/$host_product.app"
-    local fake_bin="$interrupted_root/fake-bin"
-    local marker="$interrupted_root/interrupted"
+    local interrupted_app
+    local fake_bin
+    local marker
     local interrupt_source
     local real_mv
 
-    mkdir -p "$interrupted_root/bin" "$interrupted_app" "$fake_bin"
+    mkdir -p \
+      "$interrupted_root/bin" \
+      "$interrupted_root/libexec/$cli_product/$host_product.app" \
+      "$interrupted_root/fake-bin"
+    interrupted_root="$(cd -P "$interrupted_root" && pwd)"
+    interrupted_app="$interrupted_root/libexec/$cli_product/$host_product.app"
+    fake_bin="$interrupted_root/fake-bin"
+    marker="$interrupted_root/interrupted"
     printf 'previous cli\n' > "$interrupted_root/bin/$cli_product"
     printf 'previous app\n' > "$interrupted_app/previous-version"
     if [[ "$interrupted_artifact" == "app" ]]; then
