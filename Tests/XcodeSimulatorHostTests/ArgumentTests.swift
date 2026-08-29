@@ -20,7 +20,32 @@ struct ArgumentTests {
     @Test func statusParsesWithoutAnOverride() throws {
         #expect(
             try parseXcodeSimulatorHostCommand([ToolConstants.name, "status"])
-                == .status(legacyXcode: nil)
+                == .status(.compact)
+        )
+    }
+
+    @Test func verboseStatusParses() throws {
+        #expect(
+            try parseXcodeSimulatorHostCommand([
+                ToolConstants.name, "status", "--verbose",
+            ]) == .status(.verbose(legacyXcode: nil))
+        )
+    }
+
+    @Test func statusLegacyOverrideImpliesVerboseOutput() throws {
+        #expect(
+            try parseXcodeSimulatorHostCommand([
+                ToolConstants.name,
+                "status",
+                "--legacy-xcode",
+                "/Applications/Xcode 26.app",
+            ])
+                == .status(
+                    .verbose(legacyXcode: URL(
+                        fileURLWithPath: "/Applications/Xcode 26.app",
+                        isDirectory: true
+                    ).standardizedFileURL)
+                )
         )
     }
 

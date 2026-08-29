@@ -25,6 +25,10 @@ xcode-simulator-host status
 xcode-simulator-host use legacy
 ```
 
+`status` prints only the simulator route used by the next Run. Use
+`xcode-simulator-host status --verbose` for Xcode installations, preferences,
+restoration state, and running processes.
+
 Leave Xcode 27 open. After the command opens Simulator, use **Build & Run** in
 Xcode as usual.
 
@@ -44,28 +48,6 @@ xcode-simulator-host restore
 `restore` instead preserves whether each original preference was absent,
 explicitly `false`, or explicitly `true`.
 
-## Selecting Xcode Installations
-
-The Xcode 27 installation comes from `DEVELOPER_DIR`, or from `xcode-select -p`
-when `DEVELOPER_DIR` is unset:
-
-```bash
-DEVELOPER_DIR=/Applications/Xcode_27.app/Contents/Developer \
-  xcode-simulator-host status
-```
-
-`use legacy` selects the newest validated Xcode 26 in `/Applications`. Pass an
-absolute path when the installation is elsewhere:
-
-```bash
-xcode-simulator-host use legacy \
-  --legacy-xcode /Applications/Xcode_26.app
-```
-
-The managed Xcode preference is shared by all installed Xcode versions. The
-selected Xcode 27 determines which installation is validated, not a separate
-preference domain.
-
 ## Install Options
 
 <details>
@@ -81,6 +63,8 @@ curl -fsSL https://github.com/lynnswap/xcode-simulator-host/releases/latest/down
 
 The installer verifies the release checksum and never edits shell profiles.
 Use `xcode-simulator-host --help` for the complete command and option list.
+See [Advanced configuration](Documentation/AdvancedConfiguration.md) for
+detailed diagnostics and non-default Xcode installations.
 
 ## Safety and Recovery
 

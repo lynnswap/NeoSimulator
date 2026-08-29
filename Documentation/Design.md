@@ -6,13 +6,17 @@
 used alongside Xcode 27 simulator runs.
 
 ```console
-xcode-simulator-host status
+xcode-simulator-host status [--verbose]
 xcode-simulator-host use legacy [--legacy-xcode /Applications/Xcode.app]
 xcode-simulator-host use device-hub
 xcode-simulator-host restore [--force]
 ```
 
-- `status` is read-only.
+- `status` is read-only. Its default output is only the simulator route used by
+  the next Run; `--verbose` adds installations, preferences, restoration state,
+  and running processes. The default path reads only managed preferences and
+  restoration state, so reporting the route does not depend on Xcode discovery
+  or installation validation.
 - `use legacy` configures Xcode for a CoreSimulator-only session, prevents an
   already-running Device Hub from automatically starting a live view, normally
   terminates the verified Device Hub, and opens the validated Simulator app

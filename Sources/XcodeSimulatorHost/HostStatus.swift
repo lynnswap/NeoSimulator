@@ -16,21 +16,51 @@ enum ReceiptStatus: Equatable {
     }
 }
 
+struct SimulatorRouteStatus: Equatable {
+    let preferences: ManagedPreferenceState
+    let receiptStatus: ReceiptStatus
+
+    var rendered: String {
+        let route = routeLine
+        switch receiptStatus {
+        case .pendingBefore, .pendingTarget:
+            return """
+                \(route)
+                Attention: an interrupted change needs recovery. Run 'xcode-simulator-host status --verbose'.
+                """
+        case .ambiguousIntermediate, .conflict:
+            return """
+                \(route)
+                Attention: preferences need review. Run 'xcode-simulator-host status --verbose'.
+                """
+        case .unmanaged, .managed:
+            return route
+        }
+    }
+
+    fileprivate var routeLine: String {
+        switch preferences.effectiveMode {
+        case .deviceHub:
+            "Simulator route: Device Hub"
+        case .legacy:
+            "Simulator route: CoreSimulator (Xcode 26 Simulator)"
+        }
+    }
+}
+
 struct HostStatus: Equatable {
     let xcode: XcodeInstallation
-    let preferences: ManagedPreferenceState
+    let routeStatus: SimulatorRouteStatus
     let legacySimulator: SimulatorInstallation?
-    let receiptStatus: ReceiptStatus
     let receiptURL: URL
     let runningXcodes: [RunningApplication]
 
     var rendered: String {
         var lines = [
+            routeStatus.routeLine,
+            "",
             "Selected Xcode: \(xcode.version) (\(xcode.buildVersion))",
             "  \(xcode.applicationURL.path)",
-            "Configured host: \(preferences.effectiveMode.rawValue)",
-            "Xcode preference: \(preferences.xcodeSession)",
-            "Device Hub auto-start suppression: \(preferences.deviceHubAutoStartSuppression)",
         ]
 
         if let legacySimulator {
@@ -42,7 +72,8 @@ struct HostStatus: Equatable {
             lines.append("Legacy Simulator: not found")
         }
 
-        switch receiptStatus {
+        lines.append("")
+        switch routeStatus.receiptStatus {
         case .unmanaged:
             lines.append("Restoration receipt: none")
         case .managed(let original):
@@ -66,6 +97,7 @@ struct HostStatus: Equatable {
             lines.append("  \(receiptURL.path)")
         }
 
+        lines.append("")
         if runningXcodes.isEmpty {
             lines.append("Running Xcode processes: none")
         } else {
@@ -76,8 +108,29 @@ struct HostStatus: Equatable {
             }
         }
 
-        lines.append("Note: com.apple.dt.Xcode preferences are shared by all installed Xcode versions.")
+        lines.append("")
+        lines.append("Preference details:")
+        lines.append(
+            "  CoreSimulator session: \(routeStatus.preferences.xcodeSession.statusDescription)"
+        )
+        lines.append(
+            "  Suppress Device Hub auto-start: \(routeStatus.preferences.deviceHubAutoStartSuppression.statusDescription)"
+        )
+        lines.append("  Scope: shared by all installed Xcode versions")
         return lines.joined(separator: "\n")
+    }
+}
+
+private extension StoredBoolean {
+    var statusDescription: String {
+        switch self {
+        case .absent:
+            "not set (default)"
+        case .falseValue:
+            "false"
+        case .trueValue:
+            "true"
+        }
     }
 }
 

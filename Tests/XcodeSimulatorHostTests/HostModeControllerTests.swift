@@ -169,7 +169,7 @@ struct HostModeControllerTests {
         #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .trueValue)
         #expect(fixture.runner.storedBoolean(ToolConstants.deviceHubPreference) == .absent)
         let status = try fixture.controller.status(explicitLegacyXcodeURL: nil)
-        #expect(status.receiptStatus == .ambiguousIntermediate)
+        #expect(status.routeStatus.receiptStatus == .ambiguousIntermediate)
     }
 
     @Test func externalPreferenceChangeIsReportedAsAConflict() async throws {
@@ -178,7 +178,7 @@ struct HostModeControllerTests {
         fixture.runner.setStoredValue(false, for: ToolConstants.xcodePreference)
 
         let status = try fixture.controller.status(explicitLegacyXcodeURL: nil)
-        #expect(status.receiptStatus.hasConflict)
+        #expect(status.routeStatus.receiptStatus.hasConflict)
 
         do {
             _ = try fixture.controller.restore()
@@ -701,7 +701,7 @@ struct HostModeControllerTests {
         ]
         let status = try fixture.controller.status(explicitLegacyXcodeURL: nil)
 
-        #expect(status.preferences == .deviceHub)
+        #expect(status.routeStatus.preferences == .deviceHub)
         #expect(status.legacySimulator != nil)
         #expect(fixture.runner.mutationCount == 0)
         #expect(try fixture.receiptStore.load() == nil)
@@ -714,7 +714,7 @@ struct HostModeControllerTests {
         #expect(!status.rendered.contains("mode changes are blocked"))
     }
 
-    @Test func statusRetriesWhenStateAppearsDuringTheOptimisticSnapshot() throws {
+    @Test func routeStatusRetriesWhenStateAppearsDuringTheOptimisticSnapshot() throws {
         let fixture = try ControllerFixture()
         var createdState = false
         fixture.runner.beforeRun = { call in
@@ -732,7 +732,7 @@ struct HostModeControllerTests {
             }
         }
 
-        let status = try fixture.controller.status(explicitLegacyXcodeURL: nil)
+        let status = try fixture.controller.routeStatus()
 
         #expect(createdState)
         #expect(status.preferences == .deviceHub)

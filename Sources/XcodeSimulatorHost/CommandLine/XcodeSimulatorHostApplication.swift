@@ -21,9 +21,16 @@ struct XcodeSimulatorHostApplication {
 
     func run(_ command: XcodeSimulatorHostCommand) async throws -> (String, Int32) {
         switch command {
-        case .status(let legacyXcode):
-            let status = try controller.status(explicitLegacyXcodeURL: legacyXcode)
+        case .status(.compact):
+            let status = try controller.routeStatus()
             let exitCode = status.receiptStatus.hasConflict
+                ? CLIError.Category.configuration.rawValue
+                : 0
+            return (status.rendered, exitCode)
+
+        case .status(.verbose(let legacyXcode)):
+            let status = try controller.status(explicitLegacyXcodeURL: legacyXcode)
+            let exitCode = status.routeStatus.receiptStatus.hasConflict
                 ? CLIError.Category.configuration.rawValue
                 : 0
             return (status.rendered, exitCode)
