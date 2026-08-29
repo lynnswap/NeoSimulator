@@ -22,7 +22,8 @@ Legacy mode provides a dedicated AppKit host with these guarantees:
 - it does not create a clipboard synchronization owner;
 - it displays each booted iOS simulator and forwards touch, accessibility, and
   focused keyboard input;
-- it provides Home and Software Keyboard controls;
+- it provides Home, Save Screen, Rotate Right, and Software Keyboard controls
+  in the header, plus validated Simulator-style menus;
 - its windows resize the hosted display without changing the simulated
   device's logical screen size;
 - it fails closed if Device Hub is already running or launches while the host
@@ -47,7 +48,8 @@ XcodeSimulatorLegacyHost.app
   -> observe booted iOS SimDevice instances
   -> IDEPlaygroundSimulator display factory
   -> SimulatorKit SimDisplayView in a resizable AppKit window
-  -> SimDeviceLegacyHIDClient for Home and Software Keyboard
+  -> SimDeviceLegacyHIDClient for Home, Lock, and Software Keyboard
+  -> typed direct simctl/devicectl operations for screenshot and rotation
 ```
 
 ### Owner map
@@ -60,6 +62,8 @@ XcodeSimulatorLegacyHost.app
 | Booted-device membership | standalone host device-set observer |
 | One display connection and HID session | standalone host device session |
 | Window, toolbar, focus, and scaling | standalone host AppKit window controller |
+| Menu construction and active-window routing | standalone host menu controller |
+| Screenshot and rotation subprocesses | per-window typed device-tool runner |
 | Clipboard synchronization | deliberately no owner |
 
 The CLI and GUI host exchange only the selected Xcode application path. Private
@@ -85,14 +89,21 @@ The display factory is
 `createSimDisplayViewWithDevice:simScreenID:`. The host discovers the default
 integrated `SimDeviceScreen`; it must not assume screen ID zero.
 
-Home and Software Keyboard use one `SimDeviceLegacyHIDClient` per displayed
-device and `IndigoHIDMessageForButton` with the values verified on the baseline
-Xcode 27 build:
+Home, Lock, and Software Keyboard use one `SimDeviceLegacyHIDClient` per
+displayed device and `IndigoHIDMessageForButton` with values verified on the
+baseline Xcode 27 build:
 
 | Input | Button | Down | Up | Target |
 | --- | ---: | ---: | ---: | ---: |
 | Home | `0` | `1` | `2` | `0x33` |
+| Lock | `1` | `1` | `2` | `0x33` |
 | Software Keyboard | `0x3f0` | `1` | `2` | `0x33` |
+
+Save Screen runs the direct, compatibility-checked CoreSimulator `simctl`
+binary and atomically installs a validated PNG chosen through `NSSavePanel`.
+Rotate Left/Right runs the direct, compatibility-checked CoreDevice
+`devicectl` binary. Both are typed, single-flight operations with drained
+output, a bounded timeout, and cancellation on window close.
 
 ### Device Hub invariant
 
@@ -165,6 +176,8 @@ Hub.
   frameworks
 - [x] Focused live probe for display, input, controls, resize, and Device Hub
   absence
-- [ ] Packaged AppKit host
-- [ ] CLI lifecycle integration and status reporting
-- [ ] Unit, packaging, and live regression validation
+- [x] Packaged AppKit host
+- [x] CLI lifecycle integration and status reporting
+- [x] Simulator.app window and menu analysis
+- [x] Unit and packaging validation
+- [ ] Final integrated live regression and review

@@ -1,27 +1,48 @@
 # xcode-simulator-host
 
-Use CoreSimulator for iOS Simulator runs from Xcode 27 without quitting Xcode.
+Use iOS Simulator through CoreSimulator from Xcode 27 or later, without running
+Device Hub.
 
-## What It Does
+## Why
 
-`xcode-simulator-host` lets you:
+Xcode 27 routes simulator runs through Device Hub by default. Device Hub also
+owns integrations such as continuous pasteboard synchronization, which can
+interfere with simulator workflows that only need the traditional CoreSimulator
+display and input path.
 
-- Run iOS Simulator from Xcode 27 through CoreSimulator.
-- Return to Xcode 27's default Device Hub route.
-- Restore the exact configuration from before the tool's first change.
-- Switch routes without quitting Xcode.
+`xcode-simulator-host` selects the direct CoreSimulator route and supplies its
+own lightweight simulator window. Xcode can remain open while the route changes.
+
+## What
+
+Legacy mode provides:
+
+- one resizable window for each booted iOS simulator;
+- device bezel, touch, accessibility, and focused keyboard input;
+- Home, Save Screen, Rotate Right, and Software Keyboard controls in the
+  window header;
+- File, Device, I/O, Features, and Window menus modeled after Simulator.app;
+- Home, Lock, Shake, rotation, appearance, bezel, Stay on Top, Fit Screen, and
+  standard window commands;
+- exact restoration of the preferences that existed before the first change.
+
+Legacy mode does not launch Device Hub, load DeviceKit, or create a continuous
+pasteboard-sync session. If Device Hub appears while the standalone host is
+active, the host disconnects its simulator displays and exits.
 
 ## Requirements
 
 - macOS 26.4 or later
-- Xcode 27
-- Xcode 26 when using the CoreSimulator route
+- Xcode 27 or later
 - Apple Silicon when installing a prebuilt release
 - Swift 6.4 when building from source
 
-## How to Use
+Later Xcode versions are accepted only when their private CoreSimulator,
+SimulatorKit, CoreDevice, and command-tool surfaces still pass the compatibility
+gate. An incompatible version fails closed; legacy mode never falls back to
+Device Hub.
 
-### Install
+## Quick Start
 
 Install the latest prebuilt release:
 
@@ -29,48 +50,28 @@ Install the latest prebuilt release:
 curl -fsSL https://github.com/lynnswap/xcode-simulator-host/releases/latest/download/install.sh | sh
 ```
 
-The installer places the command in `~/.local/bin` by default, verifies the
-release checksum, and prints PATH guidance when needed. Follow that guidance
-before continuing; the installer never edits shell profiles.
-
-<details>
-<summary>Install to a custom directory</summary>
-
-```bash
-curl -fsSL https://github.com/lynnswap/xcode-simulator-host/releases/latest/download/install.sh | sh -s -- --bindir "$HOME/bin"
-```
-
-</details>
-
-Use `xcode-simulator-host --help` for the command list and
-`xcode-simulator-host help <subcommand>` for subcommand options.
-
-### Quick Start
-
-Keep Xcode 27 open and run:
+Follow the printed PATH guidance if needed, then run:
 
 ```bash
 xcode-simulator-host use legacy
 ```
 
-When Simulator opens, use **Build & Run** in Xcode as usual.
+Keep Xcode open and use **Build & Run** as usual. The standalone host waits for
+booted iOS simulators and opens their windows automatically.
 
-You can run `use legacy` again when the CoreSimulator route is already selected.
-It leaves the selected route unchanged and opens or activates Simulator.
+Running `use legacy` again is safe. It restarts the exact packaged host with the
+currently selected Xcode, so switching between compatible Xcode 27+ installs
+cannot leave a host using frameworks from the previous selection.
 
-### Return to Device Hub
-
-Select Xcode 27's default Device Hub route:
+## Return to Device Hub
 
 ```bash
 xcode-simulator-host use device-hub
 ```
 
-The next Run uses Device Hub.
+The standalone host closes before the default Device Hub route is enabled.
 
-### Restore the Original Settings
-
-Restore the exact configuration captured before the tool's first change:
+## Restore the Original Settings
 
 ```bash
 xcode-simulator-host restore
@@ -80,57 +81,62 @@ Use `restore` to undo the tool's changes instead of explicitly choosing a route.
 
 ## Inspect the Current Route
 
-Check the simulator route used by the next Run:
-
 ```bash
 xcode-simulator-host status
 ```
 
-For Xcode installations, preferences, restoration state, and running processes:
+For selected Xcode details, compatibility-checked private components,
+preferences, restoration state, and running processes:
 
 ```bash
 xcode-simulator-host status --verbose
 ```
 
 Both commands are read-only. See
-[Advanced configuration](Documentation/AdvancedConfiguration.md) for detailed
-diagnostics, `DEVELOPER_DIR`, and non-default Xcode installations.
+[Advanced configuration](Documentation/AdvancedConfiguration.md) for
+`DEVELOPER_DIR` and recovery details.
 
 ## Safety and Recovery
 
 > [!IMPORTANT]
-> This is an experimental tool built around undocumented Xcode preferences.
+> This is an experimental tool built on undocumented Apple frameworks and Xcode
+> preferences.
 
-`use` validates compatibility before changing managed preferences, serializes
-transitions, and verifies every write. It rolls back a failed write when the
-previous state can be safely restored. A conflicting external change is left
-untouched unless the user explicitly runs `restore --force`. `restore` remains
-available without the compatibility check so the saved values can be recovered.
+Before changing preferences, `use legacy` verifies:
 
-The tool requests normal termination only for the exact Device Hub inside the
-selected Xcode. It never force-quits Xcode or Device Hub.
+- the selected Xcode is version 27 or later and intact Apple-signed code;
+- the required preference keys and private framework symbols still exist;
+- the installed CoreSimulator and CoreDevice generations match that Xcode;
+- direct `simctl`, `devicectl`, and the simulator CoreDevice plugin are intact
+  Apple-signed components with no DeviceKit or Device Hub linkage;
+- the packaged standalone host has the expected identity and location.
 
-The original preference state and any in-progress transition are stored at:
+Preference changes are journaled and verified. A conflicting external change is
+left untouched unless the user explicitly runs `restore --force`.
+
+The restoration receipt is stored at:
 
 ```text
 ~/Library/Application Support/xcode-simulator-host/state.plist
 ```
 
-If the tool detects that another process changed a managed preference, it stops
-rather than guessing which value should win. Inspect `status --verbose` before
-using `restore --force`, which explicitly gives the saved original state
-precedence over conflicting Boolean values.
-
-If Device Hub termination or Simulator launch fails after the preference
-transaction commits, the command reports partial success. Check the detailed
-output from `status --verbose` before retrying or restoring.
-
 Do not run mutation commands with `sudo`; preferences and recovery state are
-per-user. Run `restore` before uninstalling the command or deleting its state
-file.
+per-user. Run `restore` before uninstalling the command or deleting its state.
 
-See [Design and safety contract](Documentation/Design.md) for compatibility
-checks, transaction ownership, partial-success behavior, and exit codes.
+See the [design and safety contract](Documentation/Design.md), the
+[standalone host contract](Documentation/StandaloneHost.md), and the
+[Simulator.app analysis](Documentation/SimulatorAppAnalysis.md) for the exact
+owners and exclusions.
+
+## Install to a Custom Directory
+
+```bash
+curl -fsSL https://github.com/lynnswap/xcode-simulator-host/releases/latest/download/install.sh \
+  | sh -s -- --bindir "$HOME/bin"
+```
+
+The installer keeps the CLI and companion app in a fixed relative layout. It
+stages and verifies both before replacing an existing installation.
 
 ## Build from Source
 
