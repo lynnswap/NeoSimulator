@@ -8,6 +8,7 @@
 
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <errno.h>
+#import <math.h>
 #import <stdio.h>
 #import <stdlib.h>
 #import <string.h>
@@ -206,6 +207,7 @@ static BOOL XSHAtomicallyReplaceURL(NSURL *temporaryURL,
 @property (nonatomic) BOOL disconnected;
 @property (nonatomic) BOOL applyingResize;
 @property (nonatomic) BOOL operationInProgress;
+@property (nonatomic) double deviceRotationDegrees;
 @end
 
 @implementation XSHDeviceWindowController
@@ -638,12 +640,30 @@ static BOOL XSHAtomicallyReplaceURL(NSURL *temporaryURL,
             return;
         }
         strongSelf.operationInProgress = NO;
+        if (error == nil && !strongSelf.invalidated) {
+            [strongSelf applyRotation:direction];
+        }
         if (!strongSelf.invalidated &&
             error != nil &&
             error.code != NSUserCancelledError) {
             [strongSelf presentActionError:error];
         }
     }];
+}
+
+- (void)applyRotation:(XSHDeviceRotationDirection)direction {
+    double delta = direction == XSHDeviceRotationDirectionLeft ? -90.0 : 90.0;
+    self.deviceRotationDegrees = fmod(self.deviceRotationDegrees + delta, 360.0);
+    XSHSwiftSetAngleMeasurement(
+        self.runtime.deviceRotationSetterFunction,
+        self.displayView,
+        self.deviceRotationDegrees,
+        NSUnitAngle.degrees
+    );
+    [self.displayView invalidateIntrinsicContentSize];
+    [self.deviceContentView setNeedsLayout:YES];
+    [self fitScreen:nil];
+    [self.window invalidateShadow];
 }
 
 - (void)homeButtonPressed:(id)sender {

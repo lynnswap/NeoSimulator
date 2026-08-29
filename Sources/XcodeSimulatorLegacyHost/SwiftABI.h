@@ -12,6 +12,12 @@ FOUNDATION_EXPORT void XSHSwiftCallBoolMethod(
     BOOL value
 );
 FOUNDATION_EXPORT CGFloat XSHSwiftCallCGFloatGetter(void *function, id object);
+FOUNDATION_EXPORT void XSHSwiftSetAngleMeasurement(
+    void *function,
+    id object,
+    double valueInDegrees,
+    NSUnitAngle *unit
+);
 FOUNDATION_EXPORT void XSHSwiftCallCGSizeMethod(
     void *function,
     id object,

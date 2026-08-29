@@ -18,6 +18,7 @@ static NSString *const XSHCoreSimulatorFrameworkPath =
 @property (nonatomic, readwrite) XSHIndigoHIDMessageForButtonFunction messageForButton;
 @property (nonatomic, readwrite) void *showDeviceChromeFunction;
 @property (nonatomic, readwrite) void *renderScaleGetterFunction;
+@property (nonatomic, readwrite) void *deviceRotationSetterFunction;
 @property (nonatomic, readwrite) void *disconnectDisplayFunction;
 @property (nonatomic, readwrite) void *beginResizeFunction;
 @property (nonatomic, readwrite) void *resizeToFunction;
@@ -80,6 +81,10 @@ static NSString *const XSHCoreSimulatorFrameworkPath =
         requiredSymbol:"$s12SimulatorKit14SimDisplayViewC11renderScale12CoreGraphics7CGFloatVvgTj"
                 handle:_simulatorKitHandle
                  error:error];
+    _deviceRotationSetterFunction = [self
+        requiredSymbol:"$s12SimulatorKit14SimDisplayViewC14deviceRotation10Foundation11MeasurementVySo11NSUnitAngleCGvsTj"
+                handle:_simulatorKitHandle
+                 error:error];
     _disconnectDisplayFunction = [self
         requiredSymbol:"$s12SimulatorKit14SimDisplayViewC10disconnect10completionyyycSg_tFTj"
                 handle:_simulatorKitHandle
@@ -98,6 +103,7 @@ static NSString *const XSHCoreSimulatorFrameworkPath =
                  error:error];
     if (_showDeviceChromeFunction == NULL ||
         _renderScaleGetterFunction == NULL ||
+        _deviceRotationSetterFunction == NULL ||
         _disconnectDisplayFunction == NULL ||
         _beginResizeFunction == NULL ||
         _resizeToFunction == NULL ||
