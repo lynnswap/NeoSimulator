@@ -48,28 +48,6 @@ xcode-simulator-host restore
 `restore` instead preserves whether each original preference was absent,
 explicitly `false`, or explicitly `true`.
 
-## Selecting Xcode Installations
-
-The Xcode 27 installation comes from `DEVELOPER_DIR`, or from `xcode-select -p`
-when `DEVELOPER_DIR` is unset:
-
-```bash
-DEVELOPER_DIR=/Applications/Xcode_27.app/Contents/Developer \
-  xcode-simulator-host status --verbose
-```
-
-`use legacy` selects the newest validated Xcode 26 in `/Applications`. Pass an
-absolute path when the installation is elsewhere:
-
-```bash
-xcode-simulator-host use legacy \
-  --legacy-xcode /Applications/Xcode_26.app
-```
-
-The managed Xcode preference is shared by all installed Xcode versions. The
-selected Xcode 27 determines which installation is validated, not a separate
-preference domain.
-
 ## Install Options
 
 <details>
