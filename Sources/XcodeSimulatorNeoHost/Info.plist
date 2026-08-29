@@ -5,15 +5,15 @@
     <key>CFBundleDevelopmentRegion</key>
     <string>en</string>
     <key>CFBundleDisplayName</key>
-    <string>Xcode Simulator Legacy Host</string>
+    <string>Xcode Simulator Neo</string>
     <key>CFBundleExecutable</key>
-    <string>XcodeSimulatorLegacyHost</string>
+    <string>XcodeSimulatorNeoHost</string>
     <key>CFBundleIdentifier</key>
-    <string>dev.lynnswap.XcodeSimulatorLegacyHost</string>
+    <string>dev.lynnswap.XcodeSimulatorNeoHost</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
-    <string>XcodeSimulatorLegacyHost</string>
+    <string>XcodeSimulatorNeoHost</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>

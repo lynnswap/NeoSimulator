@@ -21,8 +21,8 @@ struct ReceiptStoreTests {
                 deviceHubAutoStartSuppression: .absent
             )
         )
-        receipt.expectedCurrent = .legacy
-        receipt.pending = PendingMutation(before: .legacy, target: .deviceHub)
+        receipt.expectedCurrent = .coreSimulator
+        receipt.pending = PendingMutation(before: .coreSimulator, target: .deviceHub)
 
         try store.save(receipt)
         #expect(try store.load() == receipt)
@@ -65,7 +65,10 @@ struct ReceiptStoreTests {
             xcode: xcode,
             original: .deviceHub
         )
-        wrongBefore.pending = PendingMutation(before: .legacy, target: .deviceHub)
+        wrongBefore.pending = PendingMutation(
+            before: .coreSimulator,
+            target: .deviceHub
+        )
         #expect(throws: CLIError.self) {
             try wrongBefore.validate()
         }

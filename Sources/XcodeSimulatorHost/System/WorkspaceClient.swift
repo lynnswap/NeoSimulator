@@ -20,11 +20,11 @@ struct RunningApplication: Equatable {
 private struct ManagedApplicationIdentity {
     let displayName: String
     let bundleIdentifier: String
-    let expectedURL: URL
+    let expectedURLs: [URL]
     let errorIdentifier: String
 }
 
-private let legacyHostStartupPayload = Data("ready\n".utf8)
+private let neoHostStartupPayload = Data("ready\n".utf8)
 
 @MainActor
 private final class ApplicationTerminationWaiter {
@@ -148,10 +148,13 @@ private final class ApplicationTerminationWaiter {
 @MainActor
 struct WorkspaceClient {
     var runningXcodes: () -> [RunningApplication]
-    var runningLegacyHosts: () -> [RunningApplication]
+    var runningNeoHosts: () -> [RunningApplication]
+    var runningLegacySimulators: () -> [RunningApplication]
     var terminateDeviceHubs: (URL) async throws -> Int
-    var terminateLegacyHosts: (URL) async throws -> Int
-    var openLegacyHost: (URL, URL) async throws -> URL
+    var terminateNeoHosts: (URL) async throws -> Int
+    var terminateLegacySimulators: ([URL]) async throws -> Int
+    var openNeoHost: (URL, URL) async throws -> URL
+    var openLegacySimulator: (URL) async throws -> URL
 
     static let live = WorkspaceClient(
         runningXcodes: {
@@ -159,9 +162,14 @@ struct WorkspaceClient {
                 withBundleIdentifier: ToolConstants.xcodeBundleIdentifier
             )
         },
-        runningLegacyHosts: {
+        runningNeoHosts: {
             runningApplications(
-                withBundleIdentifier: ToolConstants.legacyHostBundleIdentifier
+                withBundleIdentifier: ToolConstants.neoHostBundleIdentifier
+            )
+        },
+        runningLegacySimulators: {
+            runningApplications(
+                withBundleIdentifier: ToolConstants.simulatorBundleIdentifier
             )
         },
         terminateDeviceHubs: { expectedApplicationURL in
@@ -169,32 +177,42 @@ struct WorkspaceClient {
                 ManagedApplicationIdentity(
                     displayName: "Device Hub",
                     bundleIdentifier: ToolConstants.deviceHubBundleIdentifier,
-                    expectedURL: expectedApplicationURL,
+                    expectedURLs: [expectedApplicationURL],
                     errorIdentifier: "device-hub"
                 )
             )
         },
-        terminateLegacyHosts: { expectedApplicationURL in
+        terminateNeoHosts: { expectedApplicationURL in
             try await terminateApplications(
                 ManagedApplicationIdentity(
-                    displayName: "standalone simulator host",
-                    bundleIdentifier: ToolConstants.legacyHostBundleIdentifier,
-                    expectedURL: expectedApplicationURL,
-                    errorIdentifier: "legacy-host"
+                    displayName: "Neo simulator host",
+                    bundleIdentifier: ToolConstants.neoHostBundleIdentifier,
+                    expectedURLs: [expectedApplicationURL],
+                    errorIdentifier: "neo-host"
                 )
             )
         },
-        openLegacyHost: { applicationURL, xcodeURL in
+        terminateLegacySimulators: { expectedApplicationURLs in
+            try await terminateApplications(
+                ManagedApplicationIdentity(
+                    displayName: "legacy Simulator",
+                    bundleIdentifier: ToolConstants.simulatorBundleIdentifier,
+                    expectedURLs: expectedApplicationURLs,
+                    errorIdentifier: "legacy-simulator"
+                )
+            )
+        },
+        openNeoHost: { applicationURL, xcodeURL in
             guard Bundle(url: applicationURL)?.bundleIdentifier
-                    == ToolConstants.legacyHostBundleIdentifier
+                    == ToolConstants.neoHostBundleIdentifier
             else {
                 throw CLIError.configuration(
-                    "legacy-host-bundle",
-                    "refusing to launch \(applicationURL.path) because it is not \(ToolConstants.legacyHostBundleIdentifier)"
+                    "neo-host-bundle",
+                    "refusing to launch \(applicationURL.path) because it is not \(ToolConstants.neoHostBundleIdentifier)"
                 )
             }
 
-            let startupDirectory = try makeLegacyHostStartupDirectory()
+            let startupDirectory = try makeNeoHostStartupDirectory()
             defer {
                 try? FileManager.default.removeItem(at: startupDirectory)
             }
@@ -219,23 +237,23 @@ struct WorkspaceClient {
                 configuration: configuration
             )
             let identity = ManagedApplicationIdentity(
-                displayName: "standalone simulator host",
-                bundleIdentifier: ToolConstants.legacyHostBundleIdentifier,
-                expectedURL: applicationURL,
-                errorIdentifier: "legacy-host"
+                displayName: "Neo simulator host",
+                bundleIdentifier: ToolConstants.neoHostBundleIdentifier,
+                expectedURLs: [applicationURL],
+                errorIdentifier: "neo-host"
             )
             do {
                 guard application.bundleIdentifier
-                        == ToolConstants.legacyHostBundleIdentifier
+                        == ToolConstants.neoHostBundleIdentifier
                 else {
                     throw CLIError.configuration(
-                        "legacy-host-identifier",
-                        "LaunchServices opened pid \(application.processIdentifier) with bundle identifier \(application.bundleIdentifier ?? "unknown"); expected \(ToolConstants.legacyHostBundleIdentifier)"
+                        "neo-host-identifier",
+                        "LaunchServices opened pid \(application.processIdentifier) with bundle identifier \(application.bundleIdentifier ?? "unknown"); expected \(ToolConstants.neoHostBundleIdentifier)"
                     )
                 }
                 guard let openedURL = application.bundleURL else {
                     throw CLIError.io(
-                        "legacy-host-launch",
+                        "neo-host-launch",
                         "LaunchServices opened the standalone simulator host without a bundle URL"
                     )
                 }
@@ -244,11 +262,11 @@ struct WorkspaceClient {
                 let observed = normalized(openedURL)
                 guard observed == expected else {
                     throw CLIError.configuration(
-                        "legacy-host-substitution",
+                        "neo-host-substitution",
                         "requested \(expected.path), but LaunchServices opened \(observed.path)"
                     )
                 }
-                try await waitForLegacyHostStartup(
+                try await waitForNeoHostStartup(
                     application,
                     resultURL: startupResultURL
                 )
@@ -266,8 +284,68 @@ struct WorkspaceClient {
                     try await waiter.terminate()
                 } catch let terminationError {
                     throw CLIError.temporary(
-                        "legacy-host-launch-cleanup",
-                        "standalone host launch failed (\(launchError.localizedDescription)), and pid \(application.processIdentifier) could not be terminated (\(terminationError.localizedDescription))"
+                        "neo-host-launch-cleanup",
+                        "Neo host launch failed (\(launchError.localizedDescription)), and pid \(application.processIdentifier) could not be terminated (\(terminationError.localizedDescription))"
+                    )
+                }
+                throw launchError
+            }
+        },
+        openLegacySimulator: { applicationURL in
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.activates = true
+            configuration.createsNewApplicationInstance = false
+            configuration.allowsRunningApplicationSubstitution = false
+
+            let application = try await NSWorkspace.shared.openApplication(
+                at: applicationURL,
+                configuration: configuration
+            )
+            let identity = ManagedApplicationIdentity(
+                displayName: "legacy Simulator",
+                bundleIdentifier: ToolConstants.simulatorBundleIdentifier,
+                expectedURLs: [applicationURL],
+                errorIdentifier: "legacy-simulator"
+            )
+            do {
+                guard application.bundleIdentifier
+                        == ToolConstants.simulatorBundleIdentifier
+                else {
+                    throw CLIError.configuration(
+                        "legacy-simulator-identifier",
+                        "LaunchServices opened pid \(application.processIdentifier) with bundle identifier \(application.bundleIdentifier ?? "unknown"); expected \(ToolConstants.simulatorBundleIdentifier)"
+                    )
+                }
+                guard let openedURL = application.bundleURL else {
+                    throw CLIError.io(
+                        "legacy-simulator-launch",
+                        "LaunchServices opened Simulator without a bundle URL"
+                    )
+                }
+                let expected = normalized(applicationURL)
+                let observed = normalized(openedURL)
+                guard observed == expected else {
+                    throw CLIError.configuration(
+                        "legacy-simulator-substitution",
+                        "requested \(expected.path), but LaunchServices opened \(observed.path)"
+                    )
+                }
+                return observed
+            } catch let launchError {
+                if !application.isTerminated {
+                    _ = application.terminate()
+                }
+                let waiter = ApplicationTerminationWaiter(
+                    application: application,
+                    identity: identity,
+                    timeoutInterval: 10
+                )
+                do {
+                    try await waiter.terminate()
+                } catch let terminationError {
+                    throw CLIError.temporary(
+                        "legacy-simulator-launch-cleanup",
+                        "legacy Simulator launch failed (\(launchError.localizedDescription)), and pid \(application.processIdentifier) could not be terminated (\(terminationError.localizedDescription))"
                     )
                 }
                 throw launchError
@@ -292,7 +370,7 @@ struct WorkspaceClient {
     private static func terminateApplications(
         _ identity: ManagedApplicationIdentity
     ) async throws -> Int {
-        let expected = normalized(identity.expectedURL)
+        let expected = Set(identity.expectedURLs.map(normalized))
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: .seconds(10))
         var terminatedCount = 0
@@ -319,10 +397,11 @@ struct WorkspaceClient {
                     )
                 }
                 let observed = normalized(bundleURL)
-                guard observed == expected else {
+                guard expected.contains(observed) else {
+                    let allowedPaths = expected.map(\.path).sorted().joined(separator: ", ")
                     throw CLIError.configuration(
                         "\(identity.errorIdentifier)-substitution",
-                        "refusing to terminate \(identity.displayName) pid \(application.processIdentifier) from \(observed.path); expected \(expected.path)"
+                        "refusing to terminate \(identity.displayName) pid \(application.processIdentifier) from \(observed.path); expected one of: \(allowedPaths)"
                     )
                 }
             }
@@ -350,7 +429,7 @@ struct WorkspaceClient {
         }
     }
 
-    private static func makeLegacyHostStartupDirectory() throws -> URL {
+    private static func makeNeoHostStartupDirectory() throws -> URL {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
             "\(ToolConstants.name)-startup-\(UUID().uuidString)",
             isDirectory: true
@@ -363,14 +442,14 @@ struct WorkspaceClient {
             )
         } catch {
             throw CLIError.cannotCreate(
-                "legacy-host-startup-directory",
-                "could not create the standalone host startup directory: \(error.localizedDescription)"
+                "neo-host-startup-directory",
+                "could not create the Neo host startup directory: \(error.localizedDescription)"
             )
         }
         return directory
     }
 
-    private static func waitForLegacyHostStartup(
+    private static func waitForNeoHostStartup(
         _ application: NSRunningApplication,
         resultURL: URL
     ) async throws {
@@ -380,8 +459,8 @@ struct WorkspaceClient {
         while clock.now < deadline {
             guard !application.isTerminated else {
                 throw CLIError.temporary(
-                    "legacy-host-startup",
-                    "the standalone simulator host exited before startup completed"
+                    "neo-host-startup",
+                    "the Neo simulator host exited before startup completed"
                 )
             }
 
@@ -391,21 +470,21 @@ struct WorkspaceClient {
                     result = try Data(contentsOf: resultURL)
                 } catch {
                     throw CLIError.io(
-                        "legacy-host-startup-result",
-                        "could not read the standalone host startup result: \(error.localizedDescription)"
+                        "neo-host-startup-result",
+                        "could not read the Neo host startup result: \(error.localizedDescription)"
                     )
                 }
-                guard result == legacyHostStartupPayload else {
+                guard result == neoHostStartupPayload else {
                     throw CLIError.configuration(
-                        "legacy-host-startup-result",
-                        "the standalone host wrote an invalid startup result"
+                        "neo-host-startup-result",
+                        "the Neo host wrote an invalid startup result"
                     )
                 }
                 await Task.yield()
                 guard !application.isTerminated else {
                     throw CLIError.temporary(
-                        "legacy-host-startup",
-                        "the standalone simulator host exited during startup"
+                        "neo-host-startup",
+                        "the Neo simulator host exited during startup"
                     )
                 }
                 return
@@ -415,8 +494,8 @@ struct WorkspaceClient {
         }
 
         throw CLIError.temporary(
-            "legacy-host-startup-timeout",
-            "the standalone simulator host did not finish startup within 10 seconds"
+            "neo-host-startup-timeout",
+            "the Neo simulator host did not finish startup within 10 seconds"
         )
     }
 

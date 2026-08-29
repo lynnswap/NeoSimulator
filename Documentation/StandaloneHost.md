@@ -1,8 +1,8 @@
-# Xcode 27+ standalone simulator host
+# Xcode Simulator Neo host
 
 ## Why
 
-Legacy mode exists so an Xcode Run can use CoreSimulator directly without a
+Neo mode exists so an Xcode Run can use CoreSimulator directly without a
 Device Hub process. Device Hub is not an acceptable display host for this mode:
 starting it can activate clipboard synchronization and other device-management
 behavior that changes the simulator session.
@@ -13,7 +13,7 @@ adds its own chrome and scaling. It does not use DeviceKit or launch Device Hub.
 
 ## What
 
-Legacy mode provides a dedicated AppKit host with these guarantees:
+Neo mode provides a dedicated AppKit host with these guarantees:
 
 - it uses only the selected Xcode 27 or later installation and the matching
   CoreSimulator system resources installed with Xcode;
@@ -26,24 +26,26 @@ Legacy mode provides a dedicated AppKit host with these guarantees:
   in the header, plus validated Simulator-style menus;
 - its windows resize the hosted display without changing the simulated
   device's logical screen size;
-- it fails closed if Device Hub is already running or launches while the host
-  is active.
+- it fails closed if Device Hub or a legacy `Simulator.app` is already running
+  or launches while the host is active.
 
-There is no fallback to Device Hub from legacy mode. An unsupported Xcode build,
+There is no fallback to Device Hub from Neo mode. An unsupported Xcode build,
 missing private symbol, display connection failure, or process conflict is
-reported as an unavailable legacy host.
+reported as an unavailable Neo host.
 
 ## How
 
 ```text
-xcode-simulator-host use legacy
+xcode-simulator-host use neo
   -> validate the selected Xcode 27+ and standalone host components
+  -> validate and close any running Xcode 26 Simulator.app
+  -> restart the exact packaged Neo host
   -> commit the CoreSimulator-only preference route
-  -> normally terminate the exact Device Hub from that Xcode
+  -> terminate the exact Device Hub from that Xcode
   -> verify Device Hub is absent
-  -> launch XcodeSimulatorLegacyHost.app and wait for its startup result
+  -> launch XcodeSimulatorNeoHost.app and wait for its startup result
 
-XcodeSimulatorLegacyHost.app
+XcodeSimulatorNeoHost.app
   -> CoreSimulator SimServiceContext / default device set
   -> observe booted iOS SimDevice instances
   -> IDEPlaygroundSimulator display factory
@@ -57,7 +59,7 @@ XcodeSimulatorLegacyHost.app
 | Responsibility | Owner |
 | --- | --- |
 | Route preferences and restoration | `HostModeController` |
-| Exact Device Hub termination and host launch | `WorkspaceClient` |
+| Exact Neo, Legacy Simulator, and Device Hub lifecycle | `WorkspaceClient` |
 | Xcode and private-component compatibility gate | `InstallationInspector` |
 | Private runtime classes, selectors, and Swift thunks | `XSHPrivateRuntime` |
 | Booted-device membership | standalone host device-set observer |
@@ -84,8 +86,8 @@ in its non-UI `--validate-runtime` mode. That mode constructs
 `XSHPrivateRuntime`, exercising the same `dlopen`, `dlsym`, private-class,
 selector, and loaded-image checks used by the GUI launch, then exits without
 creating `NSApplication`, a device set, or a display session. It deliberately
-does not reject an already-running Device Hub; the mutation flow terminates the
-validated Device Hub later, after the route is committed.
+does not inspect running UI hosts; `HostModeController` validates and closes
+them at the process-lifecycle boundary.
 
 `CoreSimulator.framework` is installed by Xcode's
 `com.apple.pkg.XcodeSystemResources` package. `SimulatorKit` links to that
@@ -116,17 +118,18 @@ and after every relative rotation before updating the display chrome. Both
 operations are typed and single-flight, with drained output, a bounded timeout,
 and cancellation on window close.
 
-### Device Hub invariant
+### Competing-host invariant
 
 Before the GUI host connects to CoreSimulator, it verifies that no running
-application has bundle identifier `com.apple.dt.Devices`. It observes workspace
-launches while active. If Device Hub appears, the host disconnects every display
-and exits instead of allowing both hosts to own the same simulator session.
+application has bundle identifier `com.apple.dt.Devices` or
+`com.apple.iphonesimulator`. It observes workspace launches while active. If
+Device Hub or a legacy Simulator appears, the host disconnects every display
+and exits instead of allowing two UI hosts to own the same simulator session.
 
-`use legacy` keeps `disableAutoStartLiveDeviceView = true` and normally
-terminates only a Device Hub whose resolved bundle URL matches the selected
-Xcode. The standalone host never imports DeviceKit, loads a DeviceKit plugin, or
-opens a `devices:` URL.
+`use neo` keeps `disableAutoStartLiveDeviceView = true` and terminates only a
+Device Hub whose resolved bundle URL matches the selected Xcode. If that
+termination cannot be confirmed, Neo is not opened. The standalone host never
+imports DeviceKit, loads a DeviceKit plugin, or opens a `devices:` URL.
 
 CoreSimulator transitively maps `SimPasteboardPlus.framework`; merely mapping
 that dependency is not a synchronization session. The standalone host does not
@@ -135,7 +138,7 @@ DeviceKit nor Device Hub is loaded.
 
 ### Lifecycle
 
-- `use legacy` is idempotent: it normally terminates the exact packaged host and
+- `use neo` is idempotent: it normally terminates the exact packaged host and
   starts it again with the currently selected Xcode after validating the route
   and Device Hub absence.
 - LaunchServices process creation is not treated as readiness. The CLI returns
@@ -146,7 +149,7 @@ DeviceKit nor Device Hub is loaded.
 - Device-set notifications add windows for newly booted iOS devices and remove
   their sessions after shutdown.
 - Closing a device window suppresses reopening it until that device leaves the
-  booted state. Running `use legacy` again restarts the exact packaged host and
+  booted state. Running `use neo` again restarts the exact packaged host and
   reconstructs windows for currently booted devices.
 - Switching to Device Hub, or restoring a Device Hub route, closes the standalone
   host before enabling that route.
@@ -154,13 +157,14 @@ DeviceKit nor Device Hub is loaded.
 ### Failure semantics
 
 - Missing or changed private components: unavailable, no host launch.
-- Device Hub cannot terminate or is observed at host startup: temporary
-  conflict, no display connection.
+- Device Hub cannot terminate, or Device Hub/Legacy Simulator is observed at
+  host startup: temporary conflict, no display connection.
 - A device has no discoverable default integrated screen: that device gets no
   window and the host surfaces the connection error.
 - HID creation fails: the device window is not opened with nonfunctional
   controls.
-- Device Hub launches while connected: disconnect all sessions and exit.
+- Device Hub or Legacy Simulator launches while connected: disconnect all
+  sessions and exit.
 
 ## Verified baseline
 
@@ -188,15 +192,3 @@ matching CoreSimulator resources still satisfy every required preference,
 class, selector, and C-symbol check. A later major version that changes this
 private surface fails the compatibility gate instead of falling back to Device
 Hub.
-
-## Progress
-
-- [x] Static owner analysis, including Xcode Previews and macOS private
-  frameworks
-- [x] Focused live probe for display, input, controls, resize, and Device Hub
-  absence
-- [x] Packaged AppKit host
-- [x] CLI lifecycle integration and status reporting
-- [x] Simulator.app window and menu analysis
-- [x] Unit and packaging validation
-- [x] Final integrated live regression and review

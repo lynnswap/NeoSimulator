@@ -133,5 +133,5 @@ contract before being user-visible:
 - FaceTime/audio-routing and internal GPU/debug menus.
 - Device Manager or any Device Hub URL handoff.
 
-These exclusions are part of the legacy-mode safety boundary, not missing
+These exclusions are part of the Neo-mode safety boundary, not missing
 fallbacks.

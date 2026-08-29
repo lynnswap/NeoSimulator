@@ -4,21 +4,21 @@
 #import <sysexits.h>
 
 #import "HostLogging.h"
-#import "LegacyHostApplication.h"
+#import "NeoHostApplication.h"
 #import "MenuController.h"
 #import "PrivateRuntime.h"
 
 static void XSHPrintUsage(FILE *stream) {
     fprintf(stream,
-            "usage: XcodeSimulatorLegacyHost [--validate-runtime] "
+            "usage: XcodeSimulatorNeoHost [--validate-runtime] "
             "[--startup-result /absolute/path] --xcode "
             "/absolute/path/to/Xcode.app\n");
 }
 
 static void XSHSetInvalidArgumentsError(NSError **error) {
     if (error != NULL) {
-        *error = XSHLegacyHostError(
-            XSHLegacyHostErrorInvalidArguments,
+        *error = XSHNeoHostError(
+            XSHNeoHostErrorInvalidArguments,
             @"expected [--validate-runtime] [--startup-result /absolute/path] "
              "--xcode /absolute/path/to/Xcode.app"
         );
@@ -82,8 +82,8 @@ static NSURL *XSHParseXcodeURL(int argc,
     NSString *path = [NSString stringWithUTF8String:xcodePath];
     if (path.length == 0 || !path.isAbsolutePath) {
         if (error != NULL) {
-            *error = XSHLegacyHostError(
-                XSHLegacyHostErrorInvalidArguments,
+            *error = XSHNeoHostError(
+                XSHNeoHostErrorInvalidArguments,
                 @"--xcode must be an absolute path"
             );
         }
@@ -98,8 +98,8 @@ static NSURL *XSHParseXcodeURL(int argc,
         !isDirectory ||
         ![xcodeURL.pathExtension.lowercaseString isEqualToString:@"app"]) {
         if (error != NULL) {
-            *error = XSHLegacyHostError(
-                XSHLegacyHostErrorInvalidInstallation,
+            *error = XSHNeoHostError(
+                XSHNeoHostErrorInvalidInstallation,
                 [NSString stringWithFormat:@"%@ is not an Xcode application directory",
                                            xcodeURL.path]
             );
@@ -110,8 +110,8 @@ static NSURL *XSHParseXcodeURL(int argc,
     NSBundle *xcodeBundle = [NSBundle bundleWithURL:xcodeURL];
     if (![xcodeBundle.bundleIdentifier isEqualToString:@"com.apple.dt.Xcode"]) {
         if (error != NULL) {
-            *error = XSHLegacyHostError(
-                XSHLegacyHostErrorInvalidInstallation,
+            *error = XSHNeoHostError(
+                XSHNeoHostErrorInvalidInstallation,
                 [NSString stringWithFormat:@"%@ is not a com.apple.dt.Xcode bundle",
                                            xcodeURL.path]
             );
@@ -125,8 +125,8 @@ static NSURL *XSHParseXcodeURL(int argc,
                                              isDirectory:&isDirectory] ||
         !isDirectory) {
         if (error != NULL) {
-            *error = XSHLegacyHostError(
-                XSHLegacyHostErrorInvalidInstallation,
+            *error = XSHNeoHostError(
+                XSHNeoHostErrorInvalidInstallation,
                 [NSString stringWithFormat:@"%@ has no Contents/Developer directory",
                                            xcodeURL.path]
             );
@@ -147,6 +147,18 @@ static BOOL XSHWriteStartupResult(NSURL *startupResultURL, NSError **error) {
                         error:error];
 }
 
+static BOOL XSHRejectRunningConflictingHost(NSString *phase) {
+    NSString *conflictingHostName =
+        XSHNeoHostApplication.runningConflictingHostName;
+    if (conflictingHostName == nil) {
+        return NO;
+    }
+    XSHLog(@"%@ %@; refusing to connect to CoreSimulator",
+           conflictingHostName,
+           phase);
+    return YES;
+}
+
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
         NSError *argumentError = nil;
@@ -160,11 +172,11 @@ int main(int argc, const char *argv[]) {
             &argumentError
         );
         if (xcodeURL == nil) {
-            if (argumentError.code == XSHLegacyHostErrorInvalidArguments) {
+            if (argumentError.code == XSHNeoHostErrorInvalidArguments) {
                 XSHPrintUsage(stderr);
             }
             XSHLog(@"%@", argumentError.localizedDescription);
-            return argumentError.code == XSHLegacyHostErrorInvalidArguments
+            return argumentError.code == XSHNeoHostErrorInvalidArguments
                 ? EX_USAGE
                 : EX_UNAVAILABLE;
         }
@@ -181,8 +193,7 @@ int main(int argc, const char *argv[]) {
             return EX_OK;
         }
 
-        if (XSHLegacyHostApplication.isDeviceHubRunning) {
-            XSHLog(@"Device Hub is already running; refusing to start");
+        if (XSHRejectRunningConflictingHost(@"is already running")) {
             return EX_TEMPFAIL;
         }
 
@@ -191,15 +202,14 @@ int main(int argc, const char *argv[]) {
         XSHMenuController *menuController = [[XSHMenuController alloc] init];
         [menuController installMainMenu];
 
-        __attribute__((objc_precise_lifetime)) XSHLegacyHostApplication *controller =
-            [[XSHLegacyHostApplication alloc]
+        __attribute__((objc_precise_lifetime)) XSHNeoHostApplication *controller =
+            [[XSHNeoHostApplication alloc]
             initWithXcodeURL:xcodeURL
              menuController:menuController];
         application.delegate = controller;
         [application finishLaunching];
 
-        if (XSHLegacyHostApplication.isDeviceHubRunning) {
-            XSHLog(@"Device Hub launched during host startup; refusing to connect");
+        if (XSHRejectRunningConflictingHost(@"launched during host startup")) {
             return EX_TEMPFAIL;
         }
 
@@ -215,16 +225,19 @@ int main(int argc, const char *argv[]) {
         NSError *startupError = nil;
         if (![controller startWithRuntime:runtime error:&startupError]) {
             XSHLog(@"%@", startupError.localizedDescription);
-            return startupError.code == XSHLegacyHostErrorDeviceHubConflict
+            return startupError.code == XSHNeoHostErrorHostConflict
                 ? EX_TEMPFAIL
                 : EX_UNAVAILABLE;
         }
 
         [application activate];
         [controller activateDeviceWindows];
-        if (controller.deviceHubConflictObserved ||
-            XSHLegacyHostApplication.isDeviceHubRunning) {
-            XSHLog(@"Device Hub launched before startup completed; refusing to connect");
+        if (controller.conflictingHostName != nil) {
+            XSHLog(@"%@ launched before startup completed; refusing to connect to CoreSimulator",
+                   controller.conflictingHostName);
+            return EX_TEMPFAIL;
+        }
+        if (XSHRejectRunningConflictingHost(@"launched before startup completed")) {
             return EX_TEMPFAIL;
         }
         NSError *startupResultError = nil;

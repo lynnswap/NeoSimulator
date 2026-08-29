@@ -1,5 +1,5 @@
 #if !defined(__arm64__)
-#error XcodeSimulatorLegacyHost currently supports arm64 only
+#error XcodeSimulatorNeoHost currently supports arm64 only
 #endif
 
 .text

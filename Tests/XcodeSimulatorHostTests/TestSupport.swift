@@ -41,8 +41,8 @@ final class FakeSystemCommandRunner: CommandRunning {
     var failFirstExportAfterMutationCount: Int?
     var failMissingDomainExports = false
     var failDomainListing = false
-    var legacyHostRuntimeValidationStatus: Int32 = 0
-    var legacyHostRuntimeValidationError = ""
+    var neoHostRuntimeValidationStatus: Int32 = 0
+    var neoHostRuntimeValidationError = ""
     var failureTiming: FailureTiming = .beforeMutation
     var beforeRun: ((Call) -> Void)?
     private(set) var calls: [Call] = []
@@ -63,7 +63,7 @@ final class FakeSystemCommandRunner: CommandRunning {
             }
             return success("\(selectedDeveloperDirectory.path)\n")
         default:
-            guard executable.lastPathComponent == "XcodeSimulatorLegacyHost",
+            guard executable.lastPathComponent == "XcodeSimulatorNeoHost",
                   arguments.count == 3,
                   arguments[0] == "--validate-runtime",
                   arguments[1] == "--xcode"
@@ -74,9 +74,9 @@ final class FakeSystemCommandRunner: CommandRunning {
                 )
             }
             return CommandOutput(
-                terminationStatus: legacyHostRuntimeValidationStatus,
+                terminationStatus: neoHostRuntimeValidationStatus,
                 stdout: Data(),
-                stderr: Data(legacyHostRuntimeValidationError.utf8)
+                stderr: Data(neoHostRuntimeValidationError.utf8)
             )
         }
     }
@@ -192,30 +192,39 @@ final class FakeSystemCommandRunner: CommandRunning {
 
 @MainActor
 final class WorkspaceRecorder {
-    struct LegacyHostOpen: Equatable {
+    struct NeoHostOpen: Equatable {
         let applicationURL: URL
         let xcodeURL: URL
     }
 
     var runningXcodes: [RunningApplication] = []
-    var runningLegacyHosts: [RunningApplication] = []
+    var runningNeoHosts: [RunningApplication] = []
+    var runningLegacySimulators: [RunningApplication] = []
     var deviceHubCount = 0
-    var legacyHostCount = 0
+    var neoHostCount = 0
+    var legacySimulatorCount = 0
     var terminateDeviceHubsError: (any Error)?
-    var terminateLegacyHostsError: (any Error)?
+    var terminateNeoHostsError: (any Error)?
+    var terminateLegacySimulatorsError: (any Error)?
     var onTerminateDeviceHubs: (() async -> Void)?
-    var onTerminateLegacyHosts: (() async -> Void)?
+    var onTerminateNeoHosts: (() async -> Void)?
+    var onTerminateLegacySimulators: (() async -> Void)?
     private(set) var requestedDeviceHubURLs: [URL] = []
-    private(set) var requestedLegacyHostURLs: [URL] = []
-    var openedLegacyHosts: [LegacyHostOpen] = []
-    var openLegacyHostError: (any Error)?
-    var onOpenLegacyHost: ((LegacyHostOpen) async throws -> Void)?
+    private(set) var requestedNeoHostURLs: [URL] = []
+    private(set) var requestedLegacySimulatorURLSets: [[URL]] = []
+    var openedNeoHosts: [NeoHostOpen] = []
+    var openedLegacySimulators: [URL] = []
+    var openNeoHostError: (any Error)?
+    var openLegacySimulatorError: (any Error)?
+    var onOpenNeoHost: ((NeoHostOpen) async throws -> Void)?
+    var onOpenLegacySimulator: ((URL) async throws -> Void)?
     private(set) var events: [String] = []
 
     var client: WorkspaceClient {
         WorkspaceClient(
             runningXcodes: { self.runningXcodes },
-            runningLegacyHosts: { self.runningLegacyHosts },
+            runningNeoHosts: { self.runningNeoHosts },
+            runningLegacySimulators: { self.runningLegacySimulators },
             terminateDeviceHubs: { url in
                 self.events.append("terminate-device-hubs")
                 self.requestedDeviceHubURLs.append(url)
@@ -225,27 +234,49 @@ final class WorkspaceRecorder {
                 }
                 return self.deviceHubCount
             },
-            terminateLegacyHosts: { url in
-                self.events.append("terminate-legacy-hosts")
-                self.requestedLegacyHostURLs.append(url)
-                await self.onTerminateLegacyHosts?()
-                if let terminateLegacyHostsError = self.terminateLegacyHostsError {
-                    throw terminateLegacyHostsError
+            terminateNeoHosts: { url in
+                self.events.append("terminate-neo-hosts")
+                self.requestedNeoHostURLs.append(url)
+                await self.onTerminateNeoHosts?()
+                if let terminateNeoHostsError = self.terminateNeoHostsError {
+                    throw terminateNeoHostsError
                 }
-                return self.legacyHostCount
+                return self.neoHostCount
             },
-            openLegacyHost: { applicationURL, xcodeURL in
-                self.events.append("open-legacy-host")
-                let request = LegacyHostOpen(
+            terminateLegacySimulators: { urls in
+                self.events.append("terminate-legacy-simulators")
+                self.requestedLegacySimulatorURLSets.append(urls)
+                await self.onTerminateLegacySimulators?()
+                if let terminateLegacySimulatorsError =
+                    self.terminateLegacySimulatorsError
+                {
+                    throw terminateLegacySimulatorsError
+                }
+                return self.legacySimulatorCount
+            },
+            openNeoHost: { applicationURL, xcodeURL in
+                self.events.append("open-neo-host")
+                let request = NeoHostOpen(
                     applicationURL: applicationURL,
                     xcodeURL: xcodeURL
                 )
-                self.openedLegacyHosts.append(request)
-                if let onOpenLegacyHost = self.onOpenLegacyHost {
-                    try await onOpenLegacyHost(request)
+                self.openedNeoHosts.append(request)
+                if let onOpenNeoHost = self.onOpenNeoHost {
+                    try await onOpenNeoHost(request)
                 }
-                if let openLegacyHostError = self.openLegacyHostError {
-                    throw openLegacyHostError
+                if let openNeoHostError = self.openNeoHostError {
+                    throw openNeoHostError
+                }
+                return applicationURL
+            },
+            openLegacySimulator: { applicationURL in
+                self.events.append("open-legacy-simulator")
+                self.openedLegacySimulators.append(applicationURL)
+                if let onOpenLegacySimulator = self.onOpenLegacySimulator {
+                    try await onOpenLegacySimulator(applicationURL)
+                }
+                if let openLegacySimulatorError = self.openLegacySimulatorError {
+                    throw openLegacySimulatorError
                 }
                 return applicationURL
             }
@@ -255,9 +286,11 @@ final class WorkspaceRecorder {
 
 struct InstallationFixture {
     let directory: TemporaryTestDirectory
+    let applicationsURL: URL
     let targetXcodeURL: URL
+    let legacyXcodeURLs: [URL]
     let commandExecutableURL: URL
-    let legacyHostURL: URL
+    let neoHostURL: URL
     let coreSimulatorFrameworkURL: URL
     let coreDeviceFrameworkURL: URL
 
@@ -266,7 +299,10 @@ struct InstallationFixture {
         targetBuild: String = "27A5252f",
         includeHiddenKey: Bool = true,
         includeDeviceHubKey: Bool = true,
-        includeLegacyHost: Bool = true,
+        includeNeoHost: Bool = true,
+        legacyVersions: [(String, String, String)] = [
+            ("Xcode_26.app", "26.6", "17F109"),
+        ],
         coreSimulatorXcodeMajorVersion: Int? = nil,
         coreDeviceXcodeMajorVersion: Int? = nil,
         simulatorCoreDevicePluginXcodeMajorVersion: Int? = nil,
@@ -277,9 +313,13 @@ struct InstallationFixture {
         simulatorCoreDevicePluginBundleVersion: String? = nil
     ) throws {
         directory = try TemporaryTestDirectory()
-        let applicationsURL = directory.url.appendingPathComponent(
+        applicationsURL = directory.url.appendingPathComponent(
             "Applications",
             isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: applicationsURL,
+            withIntermediateDirectories: false
         )
         targetXcodeURL = applicationsURL.appendingPathComponent("Xcode_27.app", isDirectory: true)
         let versionComponents = try ToolVersion(targetVersion).components
@@ -296,6 +336,21 @@ struct InstallationFixture {
             devicectlExpectedVersion: devicectlExpectedVersion,
             dtXcode: dtXcode
         )
+
+        var legacyXcodeURLs: [URL] = []
+        for entry in legacyVersions {
+            let url = applicationsURL.appendingPathComponent(
+                entry.0,
+                isDirectory: true
+            )
+            try Self.makeLegacyXcode(
+                at: url,
+                version: entry.1,
+                build: entry.2
+            )
+            legacyXcodeURLs.append(url)
+        }
+        self.legacyXcodeURLs = legacyXcodeURLs
 
         coreSimulatorFrameworkURL = directory.url.appendingPathComponent(
             "Library/Developer/PrivateFrameworks/CoreSimulator.framework",
@@ -358,17 +413,23 @@ struct InstallationFixture {
             content: "fixture-command",
             to: commandExecutableURL
         )
-        legacyHostURL = directory.url.appendingPathComponent(
-            "prefix/libexec/xcode-simulator-host/XcodeSimulatorLegacyHost.app",
+        neoHostURL = directory.url.appendingPathComponent(
+            "prefix/libexec/xcode-simulator-host/XcodeSimulatorNeoHost.app",
             isDirectory: true
         )
-        if includeLegacyHost {
-            try Self.makeLegacyHost(at: legacyHostURL)
+        if includeNeoHost {
+            try Self.makeNeoHost(at: neoHostURL)
         }
     }
 
     var developerDirectoryURL: URL {
         targetXcodeURL.appendingPathComponent("Contents/Developer", isDirectory: true)
+    }
+
+    var legacySimulatorURLs: [URL] {
+        legacyXcodeURLs.map {
+            $0.appendingPathComponent(ToolConstants.simulatorPath, isDirectory: true)
+        }
     }
 
     var simctlWrapperURL: URL {
@@ -404,9 +465,9 @@ struct InstallationFixture {
         )
     }
 
-    var legacyHostExecutableURL: URL {
-        legacyHostURL.appendingPathComponent(
-            "Contents/MacOS/XcodeSimulatorLegacyHost"
+    var neoHostExecutableURL: URL {
+        neoHostURL.appendingPathComponent(
+            "Contents/MacOS/XcodeSimulatorNeoHost"
         )
     }
 
@@ -496,6 +557,36 @@ struct InstallationFixture {
         )
     }
 
+    static func makeLegacyXcode(
+        at url: URL,
+        version: String,
+        build: String
+    ) throws {
+        try makeXcodeBase(at: url, version: version, build: build)
+
+        let versionComponents = try ToolVersion(version).components
+        let minor = versionComponents.count > 1 ? versionComponents[1] : 0
+        let dtXcode = versionComponents[0] * 100 + minor * 10
+        let simulatorURL = url.appendingPathComponent(
+            ToolConstants.simulatorPath,
+            isDirectory: true
+        )
+        try writePropertyList(
+            [
+                "CFBundleIdentifier": ToolConstants.simulatorBundleIdentifier,
+                "CFBundleExecutable": "Simulator",
+                "CFBundleShortVersionString": "16.0",
+                "CFBundleVersion": "1063.4",
+                "DTXcode": String(dtXcode),
+            ],
+            to: simulatorURL.appendingPathComponent("Contents/Info.plist")
+        )
+        try writeExecutable(
+            content: "fixture-simulator",
+            to: simulatorURL.appendingPathComponent("Contents/MacOS/Simulator")
+        )
+    }
+
     private static func makeXcodeBase(at url: URL, version: String, build: String) throws {
         try writePropertyList(
             [
@@ -560,18 +651,18 @@ struct InstallationFixture {
         )
     }
 
-    private static func makeLegacyHost(at url: URL) throws {
+    private static func makeNeoHost(at url: URL) throws {
         try writePropertyList(
             [
-                "CFBundleIdentifier": ToolConstants.legacyHostBundleIdentifier,
-                "CFBundleExecutable": "XcodeSimulatorLegacyHost",
+                "CFBundleIdentifier": ToolConstants.neoHostBundleIdentifier,
+                "CFBundleExecutable": "XcodeSimulatorNeoHost",
             ],
             to: url.appendingPathComponent("Contents/Info.plist")
         )
         try writeExecutable(
             content: "fixture-host",
             to: url.appendingPathComponent(
-                "Contents/MacOS/XcodeSimulatorLegacyHost"
+                "Contents/MacOS/XcodeSimulatorNeoHost"
             )
         )
     }
@@ -615,20 +706,20 @@ struct ControllerFixture {
         initialState: ManagedPreferenceState = .deviceHub,
         targetVersion: String = "27.0",
         includeHiddenKey: Bool = true,
-        includeLegacyHost: Bool = true,
-        legacyHostRuntimeValidationStatus: Int32 = 0,
+        includeNeoHost: Bool = true,
+        neoHostRuntimeValidationStatus: Int32 = 0,
         effectiveUserID: uid_t = 501
     ) throws {
         installations = try InstallationFixture(
             targetVersion: targetVersion,
             includeHiddenKey: includeHiddenKey,
-            includeLegacyHost: includeLegacyHost
+            includeNeoHost: includeNeoHost
         )
         stateDirectory = try TemporaryTestDirectory()
         runner = FakeSystemCommandRunner()
-        runner.legacyHostRuntimeValidationStatus = legacyHostRuntimeValidationStatus
-        if legacyHostRuntimeValidationStatus != 0 {
-            runner.legacyHostRuntimeValidationError =
+        runner.neoHostRuntimeValidationStatus = neoHostRuntimeValidationStatus
+        if neoHostRuntimeValidationStatus != 0 {
+            runner.neoHostRuntimeValidationError =
                 "injected private runtime validation failure"
         }
         runner.selectedDeveloperDirectory = installations.developerDirectoryURL
@@ -651,6 +742,7 @@ struct ControllerFixture {
         let inspector = InstallationInspector(
             runner: runner,
             environment: ["DEVELOPER_DIR": installations.developerDirectoryURL.path],
+            legacySearchRoots: [installations.applicationsURL],
             commandExecutableURL: installations.commandExecutableURL,
             coreSimulatorFrameworkURL: installations.coreSimulatorFrameworkURL,
             coreDeviceFrameworkURL: installations.coreDeviceFrameworkURL,

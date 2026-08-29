@@ -28,15 +28,17 @@ struct XcodeSimulatorHostApplication {
                 : 0
             return (status.rendered, exitCode)
 
-        case .status(.verbose):
-            let status = try controller.status()
+        case .status(.verbose(let legacyXcodeURL)):
+            let status = try controller.status(
+                explicitLegacyXcodeURL: legacyXcodeURL
+            )
             let exitCode = status.routeStatus.receiptStatus.hasConflict
                 ? CLIError.Category.configuration.rawValue
                 : 0
             return (status.rendered, exitCode)
 
-        case .use(let mode):
-            let report = try await controller.use(mode: mode)
+        case .use(let request):
+            let report = try await controller.use(request)
             return (report.rendered, 0)
 
         case .restore(let force):

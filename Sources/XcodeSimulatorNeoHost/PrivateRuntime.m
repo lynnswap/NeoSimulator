@@ -136,8 +136,8 @@ static NSString *const XSHCoreSimulatorFrameworkPath =
     NSString *executablePath = bundle.executablePath;
     if (bundle == nil || executablePath.length == 0) {
         if (error != NULL) {
-            *error = XSHLegacyHostError(
-                XSHLegacyHostErrorInvalidInstallation,
+            *error = XSHNeoHostError(
+                XSHNeoHostErrorInvalidInstallation,
                 [NSString stringWithFormat:@"missing framework at %@", frameworkURL.path]
             );
         }
@@ -149,8 +149,8 @@ static NSString *const XSHCoreSimulatorFrameworkPath =
     if (handle == NULL) {
         const char *detail = dlerror();
         if (error != NULL) {
-            *error = XSHLegacyHostError(
-                XSHLegacyHostErrorPrivateRuntime,
+            *error = XSHNeoHostError(
+                XSHNeoHostErrorPrivateRuntime,
                 [NSString stringWithFormat:@"could not load %@: %s",
                                            executablePath,
                                            detail != NULL ? detail : "unknown error"]
@@ -170,8 +170,8 @@ static NSString *const XSHCoreSimulatorFrameworkPath =
     const char *detail = dlerror();
     if (symbol == NULL || detail != NULL) {
         if (error != NULL) {
-            *error = XSHLegacyHostError(
-                XSHLegacyHostErrorPrivateRuntime,
+            *error = XSHNeoHostError(
+                XSHNeoHostErrorPrivateRuntime,
                 [NSString stringWithFormat:@"required private symbol %s is unavailable: %s",
                                            name,
                                            detail != NULL ? detail : "not found"]
@@ -271,8 +271,8 @@ static NSString *const XSHCoreSimulatorFrameworkPath =
                 error:(NSError **)error {
     if (cls == Nil) {
         if (error != NULL) {
-            *error = XSHLegacyHostError(
-                XSHLegacyHostErrorPrivateRuntime,
+            *error = XSHNeoHostError(
+                XSHNeoHostErrorPrivateRuntime,
                 [NSString stringWithFormat:@"required private class %@ is unavailable", name]
             );
         }
@@ -282,8 +282,8 @@ static NSString *const XSHCoreSimulatorFrameworkPath =
     for (NSString *selectorName in classSelectorNames) {
         if (![cls respondsToSelector:NSSelectorFromString(selectorName)]) {
             if (error != NULL) {
-                *error = XSHLegacyHostError(
-                    XSHLegacyHostErrorPrivateRuntime,
+                *error = XSHNeoHostError(
+                    XSHNeoHostErrorPrivateRuntime,
                     [NSString stringWithFormat:@"%@ does not provide +%@",
                                                name,
                                                selectorName]
@@ -296,8 +296,8 @@ static NSString *const XSHCoreSimulatorFrameworkPath =
     for (NSString *selectorName in instanceSelectorNames) {
         if (class_getInstanceMethod(cls, NSSelectorFromString(selectorName)) == NULL) {
             if (error != NULL) {
-                *error = XSHLegacyHostError(
-                    XSHLegacyHostErrorPrivateRuntime,
+                *error = XSHNeoHostError(
+                    XSHNeoHostErrorPrivateRuntime,
                     [NSString stringWithFormat:@"%@ does not provide -%@",
                                                name,
                                                selectorName]
@@ -323,8 +323,8 @@ static NSString *const XSHCoreSimulatorFrameworkPath =
         if ([path containsString:@"/DeviceKit.framework/"] ||
             [path containsString:@"/DeviceHub.app/"]) {
             if (error != NULL) {
-                *error = XSHLegacyHostError(
-                    XSHLegacyHostErrorPrivateRuntime,
+                *error = XSHNeoHostError(
+                    XSHNeoHostErrorPrivateRuntime,
                     [NSString stringWithFormat:@"forbidden Device Hub component is loaded: %@",
                                                path]
                 );
@@ -337,8 +337,8 @@ static NSString *const XSHCoreSimulatorFrameworkPath =
             [path containsString:@"/IDEPlaygroundSimulator.framework/"];
         if (isSelectedFramework && ![path hasPrefix:selectedXcodePrefix]) {
             if (error != NULL) {
-                *error = XSHLegacyHostError(
-                    XSHLegacyHostErrorPrivateRuntime,
+                *error = XSHNeoHostError(
+                    XSHNeoHostErrorPrivateRuntime,
                     [NSString stringWithFormat:
                         @"private simulator framework came from a different Xcode: %@",
                         path]

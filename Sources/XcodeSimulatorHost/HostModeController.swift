@@ -37,9 +37,9 @@ struct HostModeController {
         }
     }
 
-    func status() throws -> HostStatus {
+    func status(explicitLegacyXcodeURL: URL?) throws -> HostStatus {
         try readStatusSnapshot {
-            try makeStatus()
+            try makeStatus(explicitLegacyXcodeURL: explicitLegacyXcodeURL)
         }
     }
 
@@ -56,87 +56,107 @@ struct HostModeController {
         }
     }
 
-    func use(mode: HostMode) async throws -> ModeChangeReport {
+    func use(_ request: HostRequest) async throws -> ModeChangeReport {
         try rejectRootMutation()
 
         return try await receiptStore.withExclusiveLock {
             let xcode = try installationInspector.validatedTargetXcode()
-            let legacyHost: LegacyHostInstallation?
-            switch mode {
-            case .legacy:
-                legacyHost = try installationInspector.validatedLegacyHost(for: xcode)
+            let host: ResolvedHost = switch request {
+            case .neo:
+                .neo(try installationInspector.validatedNeoHost(for: xcode))
+            case .legacy(let explicitXcodeURL):
+                .legacy(
+                    try installationInspector.legacySimulator(
+                        explicitXcodeURL: explicitXcodeURL
+                    )
+                )
             case .deviceHub:
-                legacyHost = nil
+                .deviceHub
             }
 
             // Process lifecycle changes are not part of the preference rollback.
-            // Reject an existing receipt conflict before closing a healthy host.
+            // Resolve every process identity and reject an existing receipt conflict
+            // before closing a healthy host.
+            let runningLegacySimulatorURLs = try validatedRunningLegacySimulatorURLs()
             _ = try recoverManagedContext()
-            let terminatedLegacyHostCount = try await workspace.terminateLegacyHosts(
-                legacyHost?.applicationURL
-                    ?? installationInspector.legacyHostApplicationURL()
+            let terminatedHosts = try await closeUIHosts(
+                for: host,
+                runningLegacySimulatorURLs: runningLegacySimulatorURLs
             )
 
-            let didChange = try transition(
-                to: mode.targetState,
+            let didChangePreferences = try transition(
+                to: host.mode.targetState,
                 capturingWith: xcode
             )
             let receiptURL: URL? = try receiptStore.load() == nil
                 ? nil
                 : receiptStore.receiptURL
 
-            var terminatedDeviceHubCount = 0
-            if let legacyHost {
+            let terminatedDeviceHubCount: Int
+            switch host {
+            case .deviceHub:
+                terminatedDeviceHubCount = 0
+
+            case .neo, .legacy:
                 do {
                     terminatedDeviceHubCount = try await workspace.terminateDeviceHubs(
                         xcode.deviceHubApplicationURL
                     )
                 } catch {
-                    throw legacyHostPartialSuccessError(
+                    throw hostPartialSuccessError(
                         receiptURL: receiptURL,
                         identifier: "device-hub-termination-partial-success",
                         error: error,
-                        message: "legacy mode is configured, but Device Hub could not be closed and the standalone host was not opened"
+                        message: "\(host.mode.rawValue) mode is configured, but Device Hub could not be closed and its UI host was not opened"
                     )
                 }
 
                 do {
                     let observed = try defaultsStore.readState()
-                    guard observed == mode.targetState else {
+                    guard observed == host.mode.targetState else {
                         throw conflictError(
-                            expected: mode.targetState,
+                            expected: host.mode.targetState,
                             observed: observed
                         )
                     }
-                    _ = try await workspace.openLegacyHost(
-                        legacyHost.applicationURL,
-                        xcode.applicationURL
-                    )
+                    switch host {
+                    case .neo(let neoHost):
+                        _ = try await workspace.openNeoHost(
+                            neoHost.applicationURL,
+                            xcode.applicationURL
+                        )
+                    case .legacy(let simulator):
+                        _ = try await workspace.openLegacySimulator(
+                            simulator.applicationURL
+                        )
+                    case .deviceHub:
+                        break
+                    }
                 } catch {
                     let identifier = if (error as? CLIError)?.identifier
                         == "preference-conflict"
                     {
-                        "legacy-host-invalidated"
+                        "\(host.mode.rawValue)-host-invalidated"
                     } else {
-                        "legacy-host-launch-partial-success"
+                        "\(host.mode.rawValue)-host-launch-partial-success"
                     }
-                    throw legacyHostPartialSuccessError(
+                    throw hostPartialSuccessError(
                         receiptURL: receiptURL,
                         identifier: identifier,
                         error: error,
-                        message: "legacy mode is configured, but the standalone host could not be opened"
+                        message: "\(host.mode.rawValue) mode is configured, but its UI host could not be opened"
                     )
                 }
             }
 
             return ModeChangeReport(
-                mode: mode,
-                didChange: didChange,
+                host: host,
+                didChangePreferences: didChangePreferences,
                 xcode: xcode,
-                legacyHost: legacyHost,
                 receiptURL: receiptURL,
                 terminatedDeviceHubCount: terminatedDeviceHubCount,
-                terminatedLegacyHostCount: terminatedLegacyHostCount
+                terminatedNeoHostCount: terminatedHosts.neo,
+                terminatedLegacySimulatorCount: terminatedHosts.legacy
             )
         }
     }
@@ -149,7 +169,8 @@ struct HostModeController {
                 didRestore: false,
                 restoredState: nil,
                 receiptURL: receiptStore.receiptURL,
-                terminatedLegacyHostCount: 0
+                terminatedNeoHostCount: 0,
+                terminatedLegacySimulatorCount: 0
             )
         }
 
@@ -159,7 +180,8 @@ struct HostModeController {
                     didRestore: false,
                     restoredState: nil,
                     receiptURL: receiptStore.receiptURL,
-                    terminatedLegacyHostCount: 0
+                    terminatedNeoHostCount: 0,
+                    terminatedLegacySimulatorCount: 0
                 )
             }
 
@@ -170,18 +192,21 @@ struct HostModeController {
             } else {
                 _ = try recoverManagedContext()
             }
-            let terminatedLegacyHostCount: Int
-            if receipt.original.effectiveMode == .deviceHub {
-                terminatedLegacyHostCount = try await workspace.terminateLegacyHosts(
-                    installationInspector.legacyHostApplicationURL()
+            let terminatedHosts: (neo: Int, legacy: Int)
+            if receipt.original.effectiveRoute == .deviceHub {
+                let runningLegacySimulatorURLs = try validatedRunningLegacySimulatorURLs()
+                terminatedHosts = try await closeUIHosts(
+                    for: .deviceHub,
+                    runningLegacySimulatorURLs: runningLegacySimulatorURLs
                 )
             } else {
-                terminatedLegacyHostCount = 0
+                terminatedHosts = (0, 0)
             }
             if force {
                 return try forceRestore(
                     receipt,
-                    terminatedLegacyHostCount: terminatedLegacyHostCount
+                    terminatedNeoHostCount: terminatedHosts.neo,
+                    terminatedLegacySimulatorCount: terminatedHosts.legacy
                 )
             }
 
@@ -191,7 +216,8 @@ struct HostModeController {
                     didRestore: false,
                     restoredState: nil,
                     receiptURL: receiptStore.receiptURL,
-                    terminatedLegacyHostCount: terminatedLegacyHostCount
+                    terminatedNeoHostCount: terminatedHosts.neo,
+                    terminatedLegacySimulatorCount: terminatedHosts.legacy
                 )
             }
 
@@ -203,23 +229,77 @@ struct HostModeController {
                 didRestore: didChange,
                 restoredState: receipt.original,
                 receiptURL: receiptStore.receiptURL,
-                terminatedLegacyHostCount: terminatedLegacyHostCount
+                terminatedNeoHostCount: terminatedHosts.neo,
+                terminatedLegacySimulatorCount: terminatedHosts.legacy
             )
         }
     }
 
-    private func makeStatus() throws -> HostStatus {
+    private func makeStatus(explicitLegacyXcodeURL: URL?) throws -> HostStatus {
         let xcode = try installationInspector.validatedTargetXcode()
         let routeStatus = try makeRouteStatus()
-        let legacyHost = try? installationInspector.validatedLegacyHost(for: xcode)
+        let neoHost = try? installationInspector.validatedNeoHost(for: xcode)
+        let legacySimulator: SimulatorInstallation?
+        if let explicitLegacyXcodeURL {
+            legacySimulator = try installationInspector.legacySimulator(
+                explicitXcodeURL: explicitLegacyXcodeURL
+            )
+        } else {
+            legacySimulator = try? installationInspector.legacySimulator(
+                explicitXcodeURL: nil
+            )
+        }
         return HostStatus(
             xcode: xcode,
             routeStatus: routeStatus,
-            legacyHost: legacyHost,
+            neoHost: neoHost,
+            legacySimulator: legacySimulator,
             receiptURL: receiptStore.receiptURL,
             runningXcodes: workspace.runningXcodes(),
-            runningLegacyHosts: workspace.runningLegacyHosts()
+            runningNeoHosts: workspace.runningNeoHosts(),
+            runningLegacySimulators: workspace.runningLegacySimulators()
         )
+    }
+
+    private func validatedRunningLegacySimulatorURLs() throws -> [URL] {
+        var urls = Set<URL>()
+        for application in workspace.runningLegacySimulators() {
+            guard application.bundleIdentifier == ToolConstants.simulatorBundleIdentifier,
+                  let bundleURL = application.bundleURL
+            else {
+                throw CLIError.configuration(
+                    "legacy-simulator-identity",
+                    "refusing to manage legacy Simulator pid \(application.processIdentifier) because its process identity is incomplete"
+                )
+            }
+            let installation = try installationInspector.validatedLegacySimulator(
+                at: bundleURL
+            )
+            urls.insert(installation.applicationURL)
+        }
+        return urls.sorted { $0.path < $1.path }
+    }
+
+    private func closeUIHosts(
+        for target: ResolvedHost,
+        runningLegacySimulatorURLs: [URL]
+    ) async throws -> (neo: Int, legacy: Int) {
+        let neoHostURL = try installationInspector.neoHostApplicationURL()
+        switch target {
+        case .neo:
+            let legacy = try await workspace.terminateLegacySimulators(
+                runningLegacySimulatorURLs
+            )
+            let neo = try await workspace.terminateNeoHosts(neoHostURL)
+            return (neo, legacy)
+
+        case .legacy, .deviceHub:
+            let neo = try await workspace.terminateNeoHosts(neoHostURL)
+            let legacy = try await workspace.terminateLegacySimulators(
+                runningLegacySimulatorURLs
+            )
+            return (neo, legacy)
+        }
     }
 
     private func makeRouteStatus() throws -> SimulatorRouteStatus {
@@ -375,7 +455,8 @@ struct HostModeController {
 
     private func forceRestore(
         _ receipt: RestorationReceipt,
-        terminatedLegacyHostCount: Int
+        terminatedNeoHostCount: Int,
+        terminatedLegacySimulatorCount: Int
     ) throws -> RestoreReport {
         let observed = try defaultsStore.readState()
         guard observed != receipt.original else {
@@ -384,7 +465,8 @@ struct HostModeController {
                 didRestore: false,
                 restoredState: receipt.original,
                 receiptURL: receiptStore.receiptURL,
-                terminatedLegacyHostCount: terminatedLegacyHostCount
+                terminatedNeoHostCount: terminatedNeoHostCount,
+                terminatedLegacySimulatorCount: terminatedLegacySimulatorCount
             )
         }
 
@@ -414,7 +496,8 @@ struct HostModeController {
             didRestore: true,
             restoredState: receipt.original,
             receiptURL: receiptStore.receiptURL,
-            terminatedLegacyHostCount: terminatedLegacyHostCount
+            terminatedNeoHostCount: terminatedNeoHostCount,
+            terminatedLegacySimulatorCount: terminatedLegacySimulatorCount
         )
     }
 
@@ -501,7 +584,7 @@ struct HostModeController {
         }
     }
 
-    private func legacyHostPartialSuccessError(
+    private func hostPartialSuccessError(
         receiptURL: URL?,
         identifier: String,
         error: any Error,

@@ -5,17 +5,17 @@ import Testing
 
 @Suite
 struct InstallationInspectorTests {
-    @Test func validatesSelectedXcode27AndStandaloneHostComponents() throws {
+    @Test func validatesSelectedXcode27AndNeoHostComponents() throws {
         let fixture = try InstallationFixture()
         let inspector = makeInspector(fixture)
 
         let xcode = try inspector.validatedTargetXcode()
-        let host = try inspector.validatedLegacyHost(for: xcode)
+        let host = try inspector.validatedNeoHost(for: xcode)
 
         #expect(xcode.applicationURL == fixture.targetXcodeURL)
         #expect(xcode.version == (try ToolVersion("27.0")))
         #expect(xcode.buildVersion == "27A5252f")
-        #expect(host.applicationURL == fixture.legacyHostURL)
+        #expect(host.applicationURL == fixture.neoHostURL)
         #expect(host.xcode == xcode)
         #expect(host.simulatorKitBinaryURL.lastPathComponent == "SimulatorKit")
         #expect(
@@ -61,12 +61,182 @@ struct InstallationInspectorTests {
         let inspector = makeInspector(fixture)
 
         let xcode = try inspector.validatedTargetXcode()
-        let host = try inspector.validatedLegacyHost(for: xcode)
+        let host = try inspector.validatedNeoHost(for: xcode)
 
         #expect(xcode.version == (try ToolVersion("28.0")))
         #expect(host.xcode == xcode)
         #expect(host.coreSimulatorVersion == "1280.1")
         #expect(host.coreDeviceVersion == "700.2")
+    }
+
+    @Test func legacyModeChoosesTheHighestValidatedXcode26() throws {
+        let fixture = try InstallationFixture(
+            legacyVersions: [
+                ("Xcode_26.3.app", "26.3", "17C529"),
+                ("Xcode_26.6.app", "26.6", "17F109"),
+                ("Xcode_26.5.app", "26.5", "17F42"),
+            ]
+        )
+        let inspector = makeInspector(fixture)
+
+        let simulator = try inspector.legacySimulator(explicitXcodeURL: nil)
+
+        #expect(simulator.xcode.applicationURL == fixture.legacyXcodeURLs[1])
+        #expect(simulator.xcode.version == (try ToolVersion("26.6")))
+        #expect(simulator.xcode.buildVersion == "17F109")
+        #expect(simulator.applicationURL == fixture.legacySimulatorURLs[1])
+    }
+
+    @Test func explicitLegacyXcodeMustBeVersion26() throws {
+        let fixture = try InstallationFixture()
+
+        do {
+            _ = try makeInspector(fixture).legacySimulator(
+                explicitXcodeURL: fixture.targetXcodeURL
+            )
+            Issue.record("expected non-Xcode 26 legacy host to fail")
+        } catch let error as CLIError {
+            #expect(error.identifier == "legacy-xcode-version")
+            #expect(error.category == .unavailable)
+        }
+    }
+
+    @Test func legacyXcodeMustPassApplicationSignatureValidation() throws {
+        let fixture = try InstallationFixture()
+        let inspector = InstallationInspector(
+            runner: FakeSystemCommandRunner(),
+            environment: ["DEVELOPER_DIR": fixture.developerDirectoryURL.path],
+            legacySearchRoots: [fixture.applicationsURL],
+            signatureValidator: CodeSignatureValidator(
+                { _, _ in
+                    throw CLIError.software(
+                        "generic-signature-validator",
+                        "application validation used the generic code validator"
+                    )
+                },
+                validateAppleApplication: { _, identifier in
+                    guard identifier != ToolConstants.xcodeBundleIdentifier else {
+                        throw CLIError.unavailable(
+                            "legacy-xcode-signature",
+                            "injected invalid legacy Xcode signature"
+                        )
+                    }
+                    throw CLIError.software(
+                        "unexpected-application-signature",
+                        "unexpected application identifier \(identifier)"
+                    )
+                }
+            )
+        )
+
+        do {
+            _ = try inspector.legacySimulator(
+                explicitXcodeURL: fixture.legacyXcodeURLs[0]
+            )
+            Issue.record("expected invalid legacy Xcode signature to fail")
+        } catch let error as CLIError {
+            #expect(error.identifier == "legacy-xcode-signature")
+        }
+    }
+
+    @Test func legacySimulatorMustPassApplicationSignatureValidation() throws {
+        let fixture = try InstallationFixture()
+        let inspector = InstallationInspector(
+            runner: FakeSystemCommandRunner(),
+            environment: ["DEVELOPER_DIR": fixture.developerDirectoryURL.path],
+            legacySearchRoots: [fixture.applicationsURL],
+            signatureValidator: CodeSignatureValidator(
+                { _, _ in
+                    throw CLIError.software(
+                        "generic-signature-validator",
+                        "application validation used the generic code validator"
+                    )
+                },
+                validateAppleApplication: { _, identifier in
+                    switch identifier {
+                    case ToolConstants.xcodeBundleIdentifier:
+                        return
+                    case ToolConstants.simulatorBundleIdentifier:
+                        throw CLIError.unavailable(
+                            "legacy-simulator-signature",
+                            "injected invalid legacy Simulator signature"
+                        )
+                    default:
+                        throw CLIError.software(
+                            "unexpected-application-signature",
+                            "unexpected application identifier \(identifier)"
+                        )
+                    }
+                }
+            )
+        )
+
+        do {
+            _ = try inspector.legacySimulator(
+                explicitXcodeURL: fixture.legacyXcodeURLs[0]
+            )
+            Issue.record("expected invalid legacy Simulator signature to fail")
+        } catch let error as CLIError {
+            #expect(error.identifier == "legacy-simulator-signature")
+        }
+    }
+
+    @Test func legacySimulatorBundleMustIdentifyXcode26() throws {
+        let fixture = try InstallationFixture()
+        let infoURL = fixture.legacySimulatorURLs[0]
+            .appendingPathComponent("Contents/Info.plist")
+        let data = try Data(contentsOf: infoURL)
+        guard var info = try PropertyListSerialization.propertyList(
+            from: data,
+            options: [],
+            format: nil
+        ) as? [String: Any] else {
+            Issue.record("invalid test fixture Info.plist")
+            return
+        }
+        info["DTXcode"] = "2700"
+        let modifiedData = try PropertyListSerialization.data(
+            fromPropertyList: info,
+            format: .xml,
+            options: 0
+        )
+        try modifiedData.write(to: infoURL)
+
+        do {
+            _ = try makeInspector(fixture).legacySimulator(
+                explicitXcodeURL: fixture.legacyXcodeURLs[0]
+            )
+            Issue.record("expected mismatched Simulator DTXcode to fail")
+        } catch let error as CLIError {
+            #expect(error.identifier == "legacy-simulator-bundle")
+        }
+    }
+
+    @Test func validatesRunningLegacySimulatorOutsideDiscoveryRoots() throws {
+        let fixture = try InstallationFixture(legacyVersions: [])
+        let externalXcodeURL = fixture.directory.url.appendingPathComponent(
+            "External Toolchains/Xcode_26.6.app",
+            isDirectory: true
+        )
+        try InstallationFixture.makeLegacyXcode(
+            at: externalXcodeURL,
+            version: "26.6",
+            build: "17F109"
+        )
+        let simulatorURL = externalXcodeURL.appendingPathComponent(
+            ToolConstants.simulatorPath,
+            isDirectory: true
+        )
+        let inspector = makeInspector(fixture)
+
+        #expect(inspector.legacySimulatorApplications().isEmpty)
+
+        let simulator = try inspector.validatedLegacySimulator(at: simulatorURL)
+
+        #expect(simulator.applicationURL == simulatorURL)
+        #expect(simulator.xcode.applicationURL == externalXcodeURL)
+        #expect(simulator.xcode.version == (try ToolVersion("26.6")))
+        #expect(simulator.xcode.buildVersion == "17F109")
     }
 
     @Test func selectedXcodeMustBeIntactAppleSignedCode() throws {
@@ -112,7 +282,7 @@ struct InstallationInspectorTests {
         let xcode = try inspector.validatedTargetXcode()
 
         do {
-            _ = try inspector.validatedLegacyHost(for: xcode)
+            _ = try inspector.validatedNeoHost(for: xcode)
             Issue.record("expected invalid SimulatorKit signature to fail")
         } catch let error as CLIError {
             #expect(error.identifier == "code-signature")
@@ -156,11 +326,11 @@ struct InstallationInspectorTests {
         }
     }
 
-    @Test func packagedHostRuntimeValidationFailureIsRejected() throws {
+    @Test func neoHostRuntimeValidationFailureIsRejected() throws {
         let fixture = try InstallationFixture()
         let runner = FakeSystemCommandRunner()
-        runner.legacyHostRuntimeValidationStatus = 69
-        runner.legacyHostRuntimeValidationError =
+        runner.neoHostRuntimeValidationStatus = 69
+        runner.neoHostRuntimeValidationError =
             "required private symbol is unavailable"
         let inspector = InstallationInspector(
             runner: runner,
@@ -173,10 +343,10 @@ struct InstallationInspectorTests {
         let xcode = try inspector.validatedTargetXcode()
 
         do {
-            _ = try inspector.validatedLegacyHost(for: xcode)
+            _ = try inspector.validatedNeoHost(for: xcode)
             Issue.record("expected private runtime validation to fail")
         } catch let error as CLIError {
-            #expect(error.identifier == "legacy-host-runtime")
+            #expect(error.identifier == "neo-host-runtime")
             #expect(error.category == .unavailable)
             #expect(error.message.contains("required private symbol is unavailable"))
         }
@@ -192,7 +362,7 @@ struct InstallationInspectorTests {
         let xcode = try inspector.validatedTargetXcode()
 
         do {
-            _ = try inspector.validatedLegacyHost(for: xcode)
+            _ = try inspector.validatedNeoHost(for: xcode)
             Issue.record("expected mismatched CoreSimulator generation to fail")
         } catch let error as CLIError {
             #expect(error.identifier == "core-simulator-bundle")
@@ -209,7 +379,7 @@ struct InstallationInspectorTests {
         let xcode = try inspector.validatedTargetXcode()
 
         do {
-            _ = try inspector.validatedLegacyHost(for: xcode)
+            _ = try inspector.validatedNeoHost(for: xcode)
             Issue.record("expected mismatched CoreDevice generation to fail")
         } catch let error as CLIError {
             #expect(error.identifier == "core-device-bundle")
@@ -226,7 +396,7 @@ struct InstallationInspectorTests {
         let xcode = try inspector.validatedTargetXcode()
 
         do {
-            _ = try inspector.validatedLegacyHost(for: xcode)
+            _ = try inspector.validatedNeoHost(for: xcode)
             Issue.record("expected mismatched plugin generation to fail")
         } catch let error as CLIError {
             #expect(error.identifier == "simulator-core-device-plugin-bundle")
@@ -241,7 +411,7 @@ struct InstallationInspectorTests {
         let xcode = try inspector.validatedTargetXcode()
 
         do {
-            _ = try inspector.validatedLegacyHost(for: xcode)
+            _ = try inspector.validatedNeoHost(for: xcode)
             Issue.record("expected stale CoreSimulator version to fail")
         } catch let error as CLIError {
             #expect(error.identifier == "core-simulator-bundle")
@@ -256,7 +426,7 @@ struct InstallationInspectorTests {
         let xcode = try inspector.validatedTargetXcode()
 
         do {
-            _ = try inspector.validatedLegacyHost(for: xcode)
+            _ = try inspector.validatedNeoHost(for: xcode)
             Issue.record("expected stale CoreDevice version to fail")
         } catch let error as CLIError {
             #expect(error.identifier == "core-device-bundle")
@@ -271,7 +441,7 @@ struct InstallationInspectorTests {
         let xcode = try inspector.validatedTargetXcode()
 
         do {
-            _ = try inspector.validatedLegacyHost(for: xcode)
+            _ = try inspector.validatedNeoHost(for: xcode)
             Issue.record("expected stale simulator plugin version to fail")
         } catch let error as CLIError {
             #expect(error.identifier == "simulator-core-device-plugin-bundle")
@@ -285,7 +455,7 @@ struct InstallationInspectorTests {
         let xcode = try inspector.validatedTargetXcode()
 
         do {
-            _ = try inspector.validatedLegacyHost(for: xcode)
+            _ = try inspector.validatedNeoHost(for: xcode)
             Issue.record("expected missing simctl wrapper to fail")
         } catch let error as CLIError {
             #expect(error.identifier == "simctl-wrapper")
@@ -302,7 +472,7 @@ struct InstallationInspectorTests {
         let xcode = try inspector.validatedTargetXcode()
 
         do {
-            _ = try inspector.validatedLegacyHost(for: xcode)
+            _ = try inspector.validatedNeoHost(for: xcode)
             Issue.record("expected changed devicectl wrapper format to fail")
         } catch let error as CLIError {
             #expect(error.identifier == "devicectl-wrapper-version")
@@ -319,7 +489,7 @@ struct InstallationInspectorTests {
         let xcode = try inspector.validatedTargetXcode()
 
         do {
-            _ = try inspector.validatedLegacyHost(for: xcode)
+            _ = try inspector.validatedNeoHost(for: xcode)
             Issue.record("expected nonnumeric devicectl version to fail")
         } catch let error as CLIError {
             #expect(error.identifier == "devicectl-wrapper-version")
@@ -340,7 +510,7 @@ struct InstallationInspectorTests {
         let xcode = try inspector.validatedTargetXcode()
 
         do {
-            _ = try inspector.validatedLegacyHost(for: xcode)
+            _ = try inspector.validatedNeoHost(for: xcode)
             Issue.record("expected ambiguous simctl wrapper version to fail")
         } catch let error as CLIError {
             #expect(error.identifier == "simctl-wrapper-version")
@@ -356,7 +526,7 @@ struct InstallationInspectorTests {
         let xcode = try inspector.validatedTargetXcode()
 
         do {
-            _ = try inspector.validatedLegacyHost(for: xcode)
+            _ = try inspector.validatedNeoHost(for: xcode)
             Issue.record("expected invalid simctl signature to fail")
         } catch let error as CLIError {
             #expect(error.identifier == "code-signature")
@@ -372,7 +542,7 @@ struct InstallationInspectorTests {
         let xcode = try inspector.validatedTargetXcode()
 
         do {
-            _ = try inspector.validatedLegacyHost(for: xcode)
+            _ = try inspector.validatedNeoHost(for: xcode)
             Issue.record("expected invalid devicectl signature to fail")
         } catch let error as CLIError {
             #expect(error.identifier == "code-signature")
@@ -389,7 +559,7 @@ struct InstallationInspectorTests {
         let xcode = try inspector.validatedTargetXcode()
 
         do {
-            _ = try inspector.validatedLegacyHost(for: xcode)
+            _ = try inspector.validatedNeoHost(for: xcode)
             Issue.record("expected invalid simulator plugin signature to fail")
         } catch let error as CLIError {
             #expect(error.identifier == "code-signature")
@@ -407,7 +577,7 @@ struct InstallationInspectorTests {
             let xcode = try inspector.validatedTargetXcode()
 
             do {
-                _ = try inspector.validatedLegacyHost(for: xcode)
+                _ = try inspector.validatedNeoHost(for: xcode)
                 Issue.record("expected forbidden devicectl linkage to fail")
             } catch let error as CLIError {
                 #expect(error.identifier == "devicectl-linkage")
@@ -429,7 +599,7 @@ struct InstallationInspectorTests {
             let xcode = try inspector.validatedTargetXcode()
 
             do {
-                _ = try inspector.validatedLegacyHost(for: xcode)
+                _ = try inspector.validatedNeoHost(for: xcode)
                 Issue.record("expected forbidden simulator plugin linkage to fail")
             } catch let error as CLIError {
                 #expect(
@@ -452,13 +622,13 @@ struct InstallationInspectorTests {
         )
 
         let xcode = try inspector.validatedTargetXcode()
-        _ = try inspector.validatedLegacyHost(for: xcode)
+        _ = try inspector.validatedNeoHost(for: xcode)
 
         #expect(
             runner.calls
                 == [
                     FakeSystemCommandRunner.Call(
-                        executable: fixture.legacyHostExecutableURL,
+                        executable: fixture.neoHostExecutableURL,
                         arguments: [
                             "--validate-runtime",
                             "--xcode",
@@ -473,7 +643,7 @@ struct InstallationInspectorTests {
         let fixture = try InstallationFixture()
         let inspector = makeInspector(fixture)
 
-        #expect(try inspector.legacyHostApplicationURL() == fixture.legacyHostURL)
+        #expect(try inspector.neoHostApplicationURL() == fixture.neoHostURL)
     }
 
     @Test func packagedHostUsesTheResolvedCommandBinaryBehindASymlink() throws {
@@ -498,19 +668,19 @@ struct InstallationInspectorTests {
             signatureValidator: .acceptingTestFixtures
         )
 
-        #expect(try inspector.legacyHostApplicationURL() == fixture.legacyHostURL)
+        #expect(try inspector.neoHostApplicationURL() == fixture.neoHostURL)
     }
 
-    @Test func missingPackagedHostFailsBeforeLegacyModeCanBeUsed() throws {
-        let fixture = try InstallationFixture(includeLegacyHost: false)
+    @Test func missingPackagedHostFailsBeforeNeoModeCanBeUsed() throws {
+        let fixture = try InstallationFixture(includeNeoHost: false)
         let inspector = makeInspector(fixture)
         let xcode = try inspector.validatedTargetXcode()
 
         do {
-            _ = try inspector.validatedLegacyHost(for: xcode)
+            _ = try inspector.validatedNeoHost(for: xcode)
             Issue.record("expected missing packaged host to fail")
         } catch let error as CLIError {
-            #expect(error.identifier == "legacy-host-bundle")
+            #expect(error.identifier == "neo-host-bundle")
             #expect(error.category == .unavailable)
         }
     }
@@ -528,6 +698,7 @@ struct InstallationInspectorTests {
         InstallationInspector(
             runner: FakeSystemCommandRunner(),
             environment: ["DEVELOPER_DIR": fixture.developerDirectoryURL.path],
+            legacySearchRoots: [fixture.applicationsURL],
             commandExecutableURL: fixture.commandExecutableURL,
             coreSimulatorFrameworkURL: fixture.coreSimulatorFrameworkURL,
             coreDeviceFrameworkURL: fixture.coreDeviceFrameworkURL,

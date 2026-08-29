@@ -1,21 +1,30 @@
 # xcode-simulator-host
 
-Use iOS Simulator through CoreSimulator from Xcode 27 or later, without running
-Device Hub.
+Use iOS Simulator from Xcode 27 or later through CoreSimulator, without making
+Device Hub the display host.
 
 ## Why
 
-Xcode 27 routes simulator runs through Device Hub by default. Device Hub also
-owns integrations such as continuous pasteboard synchronization, which can
-interfere with simulator workflows that only need the traditional CoreSimulator
-display and input path.
-
-`xcode-simulator-host` selects the direct CoreSimulator route and supplies its
-own lightweight simulator window. Xcode can remain open while the route changes.
+Xcode 27 no longer bundles `Simulator.app`. Its default simulator UI is Device
+Hub, but CoreSimulator still owns the simulated devices used by Build & Run.
+This package makes that direct CoreSimulator route usable again and lets you
+choose the UI that presents it.
 
 ## What
 
-Legacy mode provides:
+`xcode-simulator-host` provides three explicit host choices:
+
+| Command | UI host | Intended use |
+| --- | --- | --- |
+| `use neo` | Packaged `Xcode Simulator Neo` app | Use the selected Xcode 27+ installation without needing an older Xcode |
+| `use legacy` | Apple's `Simulator.app` from Xcode 26 | Keep the complete older Simulator UI when Xcode 26 is installed |
+| `use device-hub` | Device Hub from the selected Xcode | Return to Xcode's default behavior |
+
+Neo and Legacy both select the same direct CoreSimulator preference route; the
+difference is the process that presents the simulator. The restoration receipt
+therefore owns preference recovery, not a remembered UI-host choice.
+
+Neo provides:
 
 - one resizable window for each booted iOS simulator;
 - device bezel, touch, accessibility, and focused keyboard input;
@@ -23,24 +32,24 @@ Legacy mode provides:
   window header;
 - File, Device, I/O, Features, and Window menus modeled after Simulator.app;
 - Home, Lock, Shake, rotation, appearance, bezel, Stay on Top, Fit Screen, and
-  standard window commands;
-- exact restoration of the preferences that existed before the first change.
+  standard window commands.
 
-Legacy mode does not launch Device Hub, load DeviceKit, or create a continuous
-pasteboard-sync session. If Device Hub appears while the standalone host is
-active, the host disconnects its simulator displays and exits.
+Neither `use neo` nor `use legacy` launches Device Hub. If the exact Device Hub
+process cannot be closed, the requested UI host is not opened. While Neo is
+running, it also exits if Device Hub or a legacy `Simulator.app` appears, so two
+UI hosts cannot own the same simulator session.
 
 ## Requirements
 
 - macOS 26.4 or later
-- Xcode 27 or later
+- Xcode 27 or later as the selected Build & Run installation
 - Apple Silicon when installing a prebuilt release
 - Swift 6.4 when building from source
+- Xcode 26 only when using `use legacy`
 
-Later Xcode versions are accepted only when their private CoreSimulator,
-SimulatorKit, CoreDevice, and command-tool surfaces still pass the compatibility
-gate. An incompatible version fails closed; legacy mode never falls back to
-Device Hub.
+Later Xcode versions are accepted by Neo only when their private CoreSimulator,
+SimulatorKit, CoreDevice, and command-tool surfaces pass the compatibility gate.
+An incompatible version fails closed; Neo never falls back to Device Hub.
 
 ## Quick Start
 
@@ -53,15 +62,37 @@ curl -fsSL https://github.com/lynnswap/xcode-simulator-host/releases/latest/down
 Follow the printed PATH guidance if needed, then run:
 
 ```bash
+xcode-simulator-host use neo
+```
+
+Keep Xcode open and use **Build & Run** as usual. Neo waits for booted iOS
+simulators and opens their windows automatically.
+
+Running `use neo` again is safe. It revalidates and restarts the exact packaged
+host with the currently selected Xcode, so switching between compatible Xcode
+27+ installations cannot leave a host using frameworks from the previous
+selection.
+
+## Use Simulator.app from Xcode 26
+
+When Xcode 26 is installed in `/Applications`, the highest validated Xcode 26
+version is selected automatically:
+
+```bash
 xcode-simulator-host use legacy
 ```
 
-Keep Xcode open and use **Build & Run** as usual. The standalone host waits for
-booted iOS simulators and opens their windows automatically.
+To choose a specific installation:
 
-Running `use legacy` again is safe. It restarts the exact packaged host with the
-currently selected Xcode, so switching between compatible Xcode 27+ installs
-cannot leave a host using frameworks from the previous selection.
+```bash
+xcode-simulator-host use legacy \
+  --legacy-xcode /Applications/Xcode_26.app
+```
+
+`--legacy-xcode` selects only the legacy UI host. Build & Run still uses the
+Xcode 27+ installation selected through `DEVELOPER_DIR` or `xcode-select`.
+Running the command again is safe: the exact validated `Simulator.app` is
+closed and reopened without rewriting an already-correct CoreSimulator route.
 
 ## Return to Device Hub
 
@@ -69,7 +100,8 @@ cannot leave a host using frameworks from the previous selection.
 xcode-simulator-host use device-hub
 ```
 
-The standalone host closes before the default Device Hub route is enabled.
+Neo and validated legacy Simulator processes close before the default Device
+Hub route is enabled.
 
 ## Restore the Original Settings
 
@@ -77,7 +109,9 @@ The standalone host closes before the default Device Hub route is enabled.
 xcode-simulator-host restore
 ```
 
-Use `restore` to undo the tool's changes instead of explicitly choosing a route.
+Use `restore` to undo the tool's preference changes instead of guessing which
+route was originally configured. If the saved original route is CoreSimulator,
+`restore` does not guess whether Neo or Legacy should be opened.
 
 ## Inspect the Current Route
 
@@ -85,8 +119,12 @@ Use `restore` to undo the tool's changes instead of explicitly choosing a route.
 xcode-simulator-host status
 ```
 
-For selected Xcode details, compatibility-checked private components,
-preferences, restoration state, and running processes:
+Compact status reports `CoreSimulator` or `Device Hub`. It cannot distinguish
+Neo from Legacy because those hosts intentionally share the same preference
+route.
+
+For host availability, selected Xcode details, compatibility-checked private
+components, preferences, restoration state, and running processes:
 
 ```bash
 xcode-simulator-host status --verbose
@@ -94,28 +132,27 @@ xcode-simulator-host status --verbose
 
 Both commands are read-only. See
 [Advanced configuration](Documentation/AdvancedConfiguration.md) for
-`DEVELOPER_DIR` and recovery details.
+`DEVELOPER_DIR`, `--legacy-xcode`, and recovery details.
 
 ## Safety and Recovery
 
 > [!IMPORTANT]
-> This is an experimental tool built on undocumented Apple frameworks and Xcode
-> preferences.
+> Neo uses undocumented Apple frameworks and Xcode preferences. Legacy launches
+> an intact Apple-signed `Simulator.app` from a validated Xcode 26 installation.
 
-Before changing preferences, `use legacy` verifies:
+Before changing preferences, every `use` command validates the selected Xcode
+27+ installation, the preference surfaces, and the exact Device Hub identity.
+Additional host-specific gates run before any process or preference mutation:
 
-- the selected Xcode is version 27 or later and intact Apple-signed code;
-- the required preference keys and private framework symbols still exist;
-- the installed CoreSimulator and CoreDevice generations match that Xcode;
-- direct `simctl`, `devicectl`, and the simulator CoreDevice plugin are intact
-  Apple-signed components with no DeviceKit or Device Hub linkage;
-- the packaged standalone host has the expected identity and location.
+- `use neo` validates the installed CoreSimulator/CoreDevice generations,
+  direct tools and plugin, the packaged Neo identity, and the exact private
+  runtime contract used by the GUI process;
+- `use legacy` validates the outer Xcode 26 application, its version and Apple
+  signature, and the nested `Simulator.app` identity, `DTXcode`, executable,
+  and Apple signature.
 
-The symbol check runs the exact packaged host in a non-UI validation mode, so
-the preflight and the GUI launch use the same private-runtime contract.
-
-Preference changes are journaled and verified. A conflicting external change is
-left untouched unless the user explicitly runs `restore --force`.
+Preference changes are journaled and verified. A conflicting external change
+is left untouched unless the user explicitly runs `restore --force`.
 
 The restoration receipt is stored at:
 
@@ -127,8 +164,8 @@ Do not run mutation commands with `sudo`; preferences and recovery state are
 per-user. Run `restore` before uninstalling the command or deleting its state.
 
 See the [design and safety contract](Documentation/Design.md), the
-[standalone host contract](Documentation/StandaloneHost.md), and the
-[Simulator.app analysis](Documentation/SimulatorAppAnalysis.md) for the exact
+[Neo host contract](Documentation/StandaloneHost.md), and the
+[Simulator.app analysis](Documentation/SimulatorAppAnalysis.md) for exact
 owners and exclusions.
 
 ## Install to a Custom Directory
@@ -138,9 +175,9 @@ curl -fsSL https://github.com/lynnswap/xcode-simulator-host/releases/latest/down
   | sh -s -- --bindir "$HOME/bin"
 ```
 
-The installer keeps the CLI and companion app in a fixed relative layout. It
-resolves a symlinked bindir to its physical directory, then stages and verifies
-both before replacing an existing installation.
+The installer keeps the CLI and Neo app in a fixed relative layout. It resolves
+a symlinked bindir to its physical directory, then stages and verifies both
+before replacing an existing installation.
 
 ## Build from Source
 
@@ -151,11 +188,9 @@ scripts/build-local.sh
 .build/local/arm64/bin/xcode-simulator-host --help
 ```
 
-The source build uses SwiftPM for the CLI and the
-`XcodeSimulatorLegacyHost` app target in
-`xcode-simulator-host.xcworkspace` for the companion. The staging script puts
-both products in the same relative layout used by releases, so the source-built
-command can also run `use legacy`.
+The source build uses SwiftPM for the CLI and the `XcodeSimulatorNeoHost` app
+target in `xcode-simulator-host.xcworkspace`. The staging script puts both
+products in the same relative layout used by releases.
 
 Run the isolated test suite with:
 

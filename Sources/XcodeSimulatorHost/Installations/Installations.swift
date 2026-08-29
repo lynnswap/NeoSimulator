@@ -13,7 +13,7 @@ struct XcodeInstallation: Equatable {
     }
 }
 
-struct LegacyHostInstallation: Equatable {
+struct NeoHostInstallation: Equatable {
     let applicationURL: URL
     let xcode: XcodeInstallation
     let simulatorKitBinaryURL: URL
@@ -27,4 +27,28 @@ struct LegacyHostInstallation: Equatable {
     let devicectlWrapperURL: URL
     let devicectlBinaryURL: URL
     let simulatorCoreDevicePluginBinaryURL: URL
+}
+
+struct SimulatorInstallation: Equatable {
+    let applicationURL: URL
+    let xcode: XcodeInstallation
+    let version: String
+    let buildVersion: String
+}
+
+enum ResolvedHost: Equatable {
+    case neo(NeoHostInstallation)
+    case legacy(SimulatorInstallation)
+    case deviceHub
+
+    var mode: HostMode {
+        switch self {
+        case .neo:
+            .neo
+        case .legacy:
+            .legacy
+        case .deviceHub:
+            .deviceHub
+        }
+    }
 }

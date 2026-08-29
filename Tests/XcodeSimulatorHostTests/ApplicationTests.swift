@@ -6,7 +6,7 @@ import Testing
 @Suite
 struct ApplicationTests {
     @Test func compactStatusDoesNotRequireXcodeDiscovery() async throws {
-        let fixture = try ControllerFixture(initialState: .legacy)
+        let fixture = try ControllerFixture(initialState: .coreSimulator)
         fixture.runner.selectedDeveloperDirectory = nil
         let application = XcodeSimulatorHostApplication(controller: fixture.controller)
 

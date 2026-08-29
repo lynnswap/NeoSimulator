@@ -12,6 +12,7 @@ struct InstallationInspector {
     private let runner: any CommandRunning
     private let fileManager: FileManager
     private let environment: [String: String]
+    private let legacySearchRoots: [URL]
     private let commandExecutableURL: URL?
     private let coreSimulatorFrameworkURL: URL
     private let coreDeviceFrameworkURL: URL
@@ -21,6 +22,7 @@ struct InstallationInspector {
         runner: any CommandRunning,
         fileManager: FileManager = .default,
         environment: [String: String] = ProcessInfo.processInfo.environment,
+        legacySearchRoots: [URL]? = nil,
         commandExecutableURL: URL? = nil,
         coreSimulatorFrameworkURL: URL = URL(
             fileURLWithPath: ToolConstants.coreSimulatorFrameworkPath,
@@ -35,6 +37,9 @@ struct InstallationInspector {
         self.runner = runner
         self.fileManager = fileManager
         self.environment = environment
+        self.legacySearchRoots = legacySearchRoots ?? [
+            URL(fileURLWithPath: "/Applications", isDirectory: true),
+        ]
         self.commandExecutableURL = commandExecutableURL
         self.coreSimulatorFrameworkURL = coreSimulatorFrameworkURL.standardizedFileURL
         self.coreDeviceFrameworkURL = coreDeviceFrameworkURL.standardizedFileURL
@@ -52,7 +57,7 @@ struct InstallationInspector {
                 "Xcode \(xcode.version) is selected; Xcode 27 or later is required"
             )
         }
-        try signatureValidator.validateAppleCode(
+        try signatureValidator.validateAppleApplication(
             xcode.applicationURL,
             ToolConstants.xcodeBundleIdentifier
         )
@@ -70,7 +75,7 @@ struct InstallationInspector {
                 "the selected Xcode does not contain the expected Device Hub"
             )
         }
-        try signatureValidator.validateAppleCode(
+        try signatureValidator.validateAppleApplication(
             deviceHubURL,
             ToolConstants.deviceHubBundleIdentifier
         )
@@ -106,9 +111,63 @@ struct InstallationInspector {
         return xcode
     }
 
-    func validatedLegacyHost(
+    func legacySimulator(explicitXcodeURL: URL?) throws -> SimulatorInstallation {
+        if let explicitXcodeURL {
+            return try inspectLegacySimulator(in: explicitXcodeURL)
+        }
+
+        guard let selected = legacySimulatorCandidates().max(by: { lhs, rhs in
+            if lhs.xcode.version != rhs.xcode.version {
+                return lhs.xcode.version < rhs.xcode.version
+            }
+            return lhs.xcode.applicationURL.path < rhs.xcode.applicationURL.path
+        }) else {
+            throw CLIError.unavailable(
+                "legacy-simulator",
+                "no validated Xcode 26 Simulator was found; use --legacy-xcode <path>"
+            )
+        }
+        return selected
+    }
+
+    func legacySimulatorApplications() -> [SimulatorInstallation] {
+        legacySimulatorCandidates()
+    }
+
+    func validatedLegacySimulator(
+        at applicationURL: URL
+    ) throws -> SimulatorInstallation {
+        let normalizedApplicationURL = applicationURL
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+        let relativeComponents = ToolConstants.simulatorPath.split(separator: "/")
+        var xcodeURL = normalizedApplicationURL
+        for expectedComponent in relativeComponents.reversed() {
+            guard xcodeURL.lastPathComponent == expectedComponent else {
+                throw CLIError.configuration(
+                    "legacy-simulator-location",
+                    "running Simulator is not inside an Xcode application: \(normalizedApplicationURL.path)"
+                )
+            }
+            xcodeURL.deleteLastPathComponent()
+        }
+
+        let installation = try inspectLegacySimulator(in: xcodeURL)
+        guard installation.applicationURL
+                .resolvingSymlinksInPath()
+                .standardizedFileURL == normalizedApplicationURL
+        else {
+            throw CLIError.configuration(
+                "legacy-simulator-location",
+                "running Simulator did not resolve to its validated Xcode application"
+            )
+        }
+        return installation
+    }
+
+    func validatedNeoHost(
         for xcode: XcodeInstallation
-    ) throws -> LegacyHostInstallation {
+    ) throws -> NeoHostInstallation {
         let simctlWrapperURL = xcode.applicationURL.appendingPathComponent(
             ToolConstants.simctlWrapperPath
         )
@@ -194,18 +253,18 @@ struct InstallationInspector {
             identifier: "simulator-core-device-plugin-linkage"
         )
 
-        let applicationURL = try legacyHostApplicationURL()
+        let applicationURL = try neoHostApplicationURL()
         let applicationExecutableURL = try validatedApplicationExecutable(
             at: applicationURL,
-            expectedBundleIdentifier: ToolConstants.legacyHostBundleIdentifier,
-            identifier: "legacy-host"
+            expectedBundleIdentifier: ToolConstants.neoHostBundleIdentifier,
+            identifier: "neo-host"
         )
-        try validateLegacyHostRuntime(
+        try validateNeoHostRuntime(
             executableURL: applicationExecutableURL,
             xcode: xcode
         )
 
-        return LegacyHostInstallation(
+        return NeoHostInstallation(
             applicationURL: applicationURL,
             xcode: xcode,
             simulatorKitBinaryURL: simulatorKitBinaryURL,
@@ -222,12 +281,88 @@ struct InstallationInspector {
         )
     }
 
-    func legacyHostApplicationURL() throws -> URL {
+    private func legacySimulatorCandidates() -> [SimulatorInstallation] {
+        legacySearchRoots.flatMap { root -> [SimulatorInstallation] in
+            guard let entries = try? fileManager.contentsOfDirectory(
+                at: root,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: [.skipsHiddenFiles]
+            ) else {
+                return []
+            }
+            return entries.compactMap { entry in
+                guard entry.pathExtension == "app",
+                      entry.lastPathComponent.hasPrefix("Xcode")
+                else {
+                    return nil
+                }
+                return try? inspectLegacySimulator(in: entry)
+            }
+        }
+    }
+
+    private func inspectLegacySimulator(
+        in xcodeURL: URL
+    ) throws -> SimulatorInstallation {
+        let xcode = try inspectXcode(at: xcodeURL.standardizedFileURL)
+        guard xcode.version.major == ToolConstants.legacyXcodeMajorVersion else {
+            throw CLIError.unavailable(
+                "legacy-xcode-version",
+                "legacy Simulator must come from Xcode 26, found Xcode \(xcode.version)"
+            )
+        }
+        try signatureValidator.validateAppleApplication(
+            xcode.applicationURL,
+            ToolConstants.xcodeBundleIdentifier
+        )
+
+        let simulatorURL = xcode.applicationURL.appendingPathComponent(
+            ToolConstants.simulatorPath,
+            isDirectory: true
+        )
+        let info = try propertyList(
+            at: simulatorURL.appendingPathComponent("Contents/Info.plist")
+        )
+        guard info["CFBundleIdentifier"] as? String
+                == ToolConstants.simulatorBundleIdentifier,
+              let executable = info["CFBundleExecutable"] as? String,
+              let version = info["CFBundleShortVersionString"] as? String,
+              let buildVersion = info["CFBundleVersion"] as? String,
+              let dtXcodeString = info["DTXcode"] as? String,
+              let dtXcode = Int(dtXcodeString),
+              dtXcode / 100 == ToolConstants.legacyXcodeMajorVersion
+        else {
+            throw CLIError.unavailable(
+                "legacy-simulator-bundle",
+                "\(simulatorURL.path) is not a valid Xcode 26 Simulator application"
+            )
+        }
+
+        let executableURL = simulatorURL
+            .appendingPathComponent("Contents/MacOS", isDirectory: true)
+            .appendingPathComponent(executable)
+        try requireExecutable(
+            at: executableURL,
+            identifier: "legacy-simulator-executable"
+        )
+        try signatureValidator.validateAppleApplication(
+            simulatorURL,
+            ToolConstants.simulatorBundleIdentifier
+        )
+        return SimulatorInstallation(
+            applicationURL: simulatorURL,
+            xcode: xcode,
+            version: version,
+            buildVersion: buildVersion
+        )
+    }
+
+    func neoHostApplicationURL() throws -> URL {
         let executableURL = try resolvedCommandExecutableURL()
         return executableURL
             .deletingLastPathComponent()
             .appendingPathComponent(
-                ToolConstants.legacyHostRelativePath,
+                ToolConstants.neoHostRelativePath,
                 isDirectory: true
             )
             .standardizedFileURL
@@ -500,7 +635,7 @@ struct InstallationInspector {
         }
     }
 
-    private func validateLegacyHostRuntime(
+    private func validateNeoHostRuntime(
         executableURL: URL,
         xcode: XcodeInstallation
     ) throws {
@@ -521,8 +656,8 @@ struct InstallationInspector {
                 "exit status \(output.terminationStatus)"
             }
             throw CLIError.unavailable(
-                "legacy-host-runtime",
-                "the standalone host rejected Xcode \(xcode.version) build \(xcode.buildVersion): \(detail)"
+                "neo-host-runtime",
+                "the Neo host rejected Xcode \(xcode.version) build \(xcode.buildVersion): \(detail)"
             )
         }
     }

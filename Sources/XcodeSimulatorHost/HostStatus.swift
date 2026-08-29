@@ -39,10 +39,10 @@ struct SimulatorRouteStatus: Equatable {
     }
 
     fileprivate var routeLine: String {
-        switch preferences.effectiveMode {
+        switch preferences.effectiveRoute {
         case .deviceHub:
             "Simulator route: Device Hub"
-        case .legacy:
+        case .coreSimulator:
             "Simulator route: CoreSimulator"
         }
     }
@@ -51,10 +51,12 @@ struct SimulatorRouteStatus: Equatable {
 struct HostStatus: Equatable {
     let xcode: XcodeInstallation
     let routeStatus: SimulatorRouteStatus
-    let legacyHost: LegacyHostInstallation?
+    let neoHost: NeoHostInstallation?
+    let legacySimulator: SimulatorInstallation?
     let receiptURL: URL
     let runningXcodes: [RunningApplication]
-    let runningLegacyHosts: [RunningApplication]
+    let runningNeoHosts: [RunningApplication]
+    let runningLegacySimulators: [RunningApplication]
 
     var rendered: String {
         var lines = [
@@ -64,26 +66,37 @@ struct HostStatus: Equatable {
             "  \(xcode.applicationURL.path)",
         ]
 
-        if let legacyHost {
-            lines.append("Standalone host: validated")
-            lines.append("  \(legacyHost.applicationURL.path)")
-            lines.append("  SimulatorKit: \(legacyHost.simulatorKitBinaryURL.path)")
+        if let neoHost {
+            lines.append("Neo host: validated")
+            lines.append("  \(neoHost.applicationURL.path)")
+            lines.append("  SimulatorKit: \(neoHost.simulatorKitBinaryURL.path)")
             lines.append(
-                "  IDEPlaygroundSimulator: \(legacyHost.idePlaygroundSimulatorBinaryURL.path)"
+                "  IDEPlaygroundSimulator: \(neoHost.idePlaygroundSimulatorBinaryURL.path)"
             )
-            lines.append("  CoreSimulator: \(legacyHost.coreSimulatorBinaryURL.path)")
-            lines.append("  CoreSimulator version: \(legacyHost.coreSimulatorVersion)")
-            lines.append("  simctl wrapper: \(legacyHost.simctlWrapperURL.path)")
-            lines.append("  simctl: \(legacyHost.simctlBinaryURL.path)")
-            lines.append("  CoreDevice: \(legacyHost.coreDeviceBinaryURL.path)")
-            lines.append("  CoreDevice version: \(legacyHost.coreDeviceVersion)")
-            lines.append("  devicectl wrapper: \(legacyHost.devicectlWrapperURL.path)")
-            lines.append("  devicectl: \(legacyHost.devicectlBinaryURL.path)")
+            lines.append("  CoreSimulator: \(neoHost.coreSimulatorBinaryURL.path)")
+            lines.append("  CoreSimulator version: \(neoHost.coreSimulatorVersion)")
+            lines.append("  simctl wrapper: \(neoHost.simctlWrapperURL.path)")
+            lines.append("  simctl: \(neoHost.simctlBinaryURL.path)")
+            lines.append("  CoreDevice: \(neoHost.coreDeviceBinaryURL.path)")
+            lines.append("  CoreDevice version: \(neoHost.coreDeviceVersion)")
+            lines.append("  devicectl wrapper: \(neoHost.devicectlWrapperURL.path)")
+            lines.append("  devicectl: \(neoHost.devicectlBinaryURL.path)")
             lines.append(
-                "  Simulator CoreDevice plugin (\(legacyHost.coreSimulatorVersion)): \(legacyHost.simulatorCoreDevicePluginBinaryURL.path)"
+                "  Simulator CoreDevice plugin (\(neoHost.coreSimulatorVersion)): \(neoHost.simulatorCoreDevicePluginBinaryURL.path)"
             )
         } else {
-            lines.append("Standalone host: unavailable")
+            lines.append("Neo host: unavailable")
+        }
+
+        if let legacySimulator {
+            lines.append("Legacy Simulator: validated")
+            lines.append("  Simulator \(legacySimulator.version) (\(legacySimulator.buildVersion))")
+            lines.append("  \(legacySimulator.applicationURL.path)")
+            lines.append(
+                "  Xcode \(legacySimulator.xcode.version) (\(legacySimulator.xcode.buildVersion)): \(legacySimulator.xcode.applicationURL.path)"
+            )
+        } else {
+            lines.append("Legacy Simulator: unavailable")
         }
 
         lines.append("")
@@ -122,13 +135,25 @@ struct HostStatus: Equatable {
             }
         }
 
-        if runningLegacyHosts.isEmpty {
-            lines.append("Running standalone host processes: none")
+        if runningNeoHosts.isEmpty {
+            lines.append("Running Neo host processes: none")
         } else {
             lines.append(
-                "Running standalone host processes: \(runningLegacyHosts.count)"
+                "Running Neo host processes: \(runningNeoHosts.count)"
             )
-            for application in runningLegacyHosts {
+            for application in runningNeoHosts {
+                let path = application.bundleURL?.path ?? "unknown path"
+                lines.append("  pid \(application.processIdentifier): \(path)")
+            }
+        }
+
+        if runningLegacySimulators.isEmpty {
+            lines.append("Running legacy Simulator processes: none")
+        } else {
+            lines.append(
+                "Running legacy Simulator processes: \(runningLegacySimulators.count)"
+            )
+            for application in runningLegacySimulators {
                 let path = application.bundleURL?.path ?? "unknown path"
                 lines.append("  pid \(application.processIdentifier): \(path)")
             }
@@ -161,37 +186,50 @@ private extension StoredBoolean {
 }
 
 struct ModeChangeReport: Equatable {
-    let mode: HostMode
-    let didChange: Bool
+    let host: ResolvedHost
+    let didChangePreferences: Bool
     let xcode: XcodeInstallation
-    let legacyHost: LegacyHostInstallation?
     let receiptURL: URL?
     let terminatedDeviceHubCount: Int
-    let terminatedLegacyHostCount: Int
+    let terminatedNeoHostCount: Int
+    let terminatedLegacySimulatorCount: Int
 
     var rendered: String {
-        var lines: [String]
-        if didChange {
-            lines = ["Configured simulator host: \(mode.rawValue)"]
-        } else {
-            lines = ["Simulator host is already configured for \(mode.rawValue)."]
-        }
+        var lines = ["Selected simulator host: \(host.mode.rawValue)"]
 
         lines.append("Xcode: \(xcode.version) (\(xcode.buildVersion))")
-        if let legacyHost {
-            lines.append("Standalone host: \(legacyHost.applicationURL.path)")
+        switch host {
+        case .neo(let neoHost):
+            lines.append("Neo host: \(neoHost.applicationURL.path)")
+        case .legacy(let simulator):
+            lines.append("Legacy Simulator: \(simulator.applicationURL.path)")
+        case .deviceHub:
+            break
         }
+        let routeName = host.mode.targetState.effectiveRoute == .coreSimulator
+            ? "CoreSimulator"
+            : "Device Hub"
+        lines.append(
+            didChangePreferences
+                ? "Preference route: changed to \(routeName)"
+                : "Preference route: already \(routeName)"
+        )
         if terminatedDeviceHubCount > 0 {
             lines.append("Closed Device Hub instances: \(terminatedDeviceHubCount)")
         }
-        if terminatedLegacyHostCount > 0 {
+        if terminatedNeoHostCount > 0 {
             lines.append(
-                "Closed standalone host instances: \(terminatedLegacyHostCount)"
+                "Closed Neo host instances: \(terminatedNeoHostCount)"
+            )
+        }
+        if terminatedLegacySimulatorCount > 0 {
+            lines.append(
+                "Closed legacy Simulator instances: \(terminatedLegacySimulatorCount)"
             )
         }
         if let receiptURL {
             lines.append("Restoration receipt: saved at \(receiptURL.path)")
-        } else if didChange {
+        } else if didChangePreferences {
             lines.append("Restoration receipt: removed after returning to the original state")
         } else {
             lines.append("Restoration receipt: none")
@@ -205,14 +243,20 @@ struct RestoreReport: Equatable {
     let didRestore: Bool
     let restoredState: ManagedPreferenceState?
     let receiptURL: URL
-    let terminatedLegacyHostCount: Int
+    let terminatedNeoHostCount: Int
+    let terminatedLegacySimulatorCount: Int
 
     var rendered: String {
         guard let restoredState else {
             var lines = ["No restoration receipt exists; preferences did not change."]
-            if terminatedLegacyHostCount > 0 {
+            if terminatedNeoHostCount > 0 {
                 lines.append(
-                    "Closed standalone host instances: \(terminatedLegacyHostCount)"
+                    "Closed Neo host instances: \(terminatedNeoHostCount)"
+                )
+            }
+            if terminatedLegacySimulatorCount > 0 {
+                lines.append(
+                    "Closed legacy Simulator instances: \(terminatedLegacySimulatorCount)"
                 )
             }
             return lines.joined(separator: "\n")
@@ -230,9 +274,14 @@ struct RestoreReport: Equatable {
                 "Xcode can remain open; the next Run uses the restored configuration.",
             ]
         }
-        if terminatedLegacyHostCount > 0 {
+        if terminatedNeoHostCount > 0 {
             lines.append(
-                "Closed standalone host instances: \(terminatedLegacyHostCount)"
+                "Closed Neo host instances: \(terminatedNeoHostCount)"
+            )
+        }
+        if terminatedLegacySimulatorCount > 0 {
+            lines.append(
+                "Closed legacy Simulator instances: \(terminatedLegacySimulatorCount)"
             )
         }
         return lines.joined(separator: "\n")

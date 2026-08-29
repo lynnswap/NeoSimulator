@@ -5,10 +5,10 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-@interface XSHLegacyHostApplication : NSObject <NSApplicationDelegate>
+@interface XSHNeoHostApplication : NSObject <NSApplicationDelegate>
 
-@property (class, nonatomic, readonly) BOOL isDeviceHubRunning;
-@property (atomic, readonly) BOOL deviceHubConflictObserved;
+@property (class, nonatomic, copy, readonly, nullable) NSString *runningConflictingHostName;
+@property (atomic, copy, readonly, nullable) NSString *conflictingHostName;
 
 - (instancetype)initWithXcodeURL:(NSURL *)xcodeURL
                   menuController:(XSHMenuController *)menuController;

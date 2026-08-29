@@ -46,8 +46,8 @@ typedef void (^XSHDeviceToolRawCompletion)(
     NSUUID *deviceUUID = [[NSUUID alloc] initWithUUIDString:deviceIdentifier];
     if (developerDirectory.length == 0 || deviceUUID == nil) {
         if (error != NULL) {
-            *error = XSHLegacyHostError(
-                XSHLegacyHostErrorInvalidInstallation,
+            *error = XSHNeoHostError(
+                XSHNeoHostErrorInvalidInstallation,
                 @"could not configure the selected developer directory and simulator UDID"
             );
         }
@@ -57,8 +57,8 @@ typedef void (^XSHDeviceToolRawCompletion)(
     for (NSString *toolPath in @[XSHSimctlPath, XSHDevicectlPath]) {
         if (![NSFileManager.defaultManager isExecutableFileAtPath:toolPath]) {
             if (error != NULL) {
-                *error = XSHLegacyHostError(
-                    XSHLegacyHostErrorInvalidInstallation,
+                *error = XSHNeoHostError(
+                    XSHNeoHostErrorInvalidInstallation,
                     [NSString stringWithFormat:@"required Apple device tool is unavailable: %@",
                                                toolPath]
                 );
@@ -164,8 +164,8 @@ typedef void (^XSHDeviceToolRawCompletion)(
                                               orientation ?: @"unknown"];
             completion(
                 0.0,
-                XSHLegacyHostError(
-                    XSHLegacyHostErrorToolOperation,
+                XSHNeoHostError(
+                    XSHNeoHostErrorToolOperation,
                     [NSString stringWithFormat:@"could not read device orientation: %@",
                                                detail]
                 )
@@ -185,8 +185,8 @@ typedef void (^XSHDeviceToolRawCompletion)(
     if (self.task != nil) {
         rawCompletion(
             NSData.data,
-            XSHLegacyHostError(
-                XSHLegacyHostErrorToolOperation,
+            XSHNeoHostError(
+                XSHNeoHostErrorToolOperation,
                 @"another device operation is already in progress"
             )
         );
@@ -326,8 +326,8 @@ typedef void (^XSHDeviceToolRawCompletion)(
 
     NSError *error = nil;
     if (self.timedOut) {
-        error = XSHLegacyHostError(
-            XSHLegacyHostErrorToolTimeout,
+        error = XSHNeoHostError(
+            XSHNeoHostErrorToolTimeout,
             [NSString stringWithFormat:@"%@ timed out after %.0f seconds",
                                        self.operationName,
                                        XSHDeviceToolTimeout]
@@ -337,8 +337,8 @@ typedef void (^XSHDeviceToolRawCompletion)(
                                     code:NSUserCancelledError
                                 userInfo:nil];
     } else if (self.launchError != nil) {
-        error = XSHLegacyHostError(
-            XSHLegacyHostErrorToolOperation,
+        error = XSHNeoHostError(
+            XSHNeoHostErrorToolOperation,
             [NSString stringWithFormat:@"could not start %@: %@",
                                        self.operationName,
                                        self.launchError.localizedDescription]
@@ -353,7 +353,7 @@ typedef void (^XSHDeviceToolRawCompletion)(
             : [NSString stringWithFormat:@"%@ failed: %@",
                                                  self.operationName,
                                                  diagnostic];
-        error = XSHLegacyHostError(XSHLegacyHostErrorToolOperation, description);
+        error = XSHNeoHostError(XSHNeoHostErrorToolOperation, description);
     }
 
     XSHDeviceToolRawCompletion rawCompletion = self.rawCompletion;

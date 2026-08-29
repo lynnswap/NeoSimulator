@@ -9,7 +9,10 @@ static NSString *XSHFunctionKeyEquivalent(unichar character) {
 @implementation XSHMenuController
 
 - (void)installMainMenu {
-    NSString *applicationName = @"Xcode Simulator Legacy Host";
+    NSString *applicationName = [NSBundle.mainBundle
+        objectForInfoDictionaryKey:@"CFBundleDisplayName"];
+    NSAssert(applicationName.length > 0,
+             @"CFBundleDisplayName must name the Neo application");
     NSMenu *mainMenu = [[NSMenu alloc] initWithTitle:@""];
 
     NSMenu *applicationMenu = [self addMenuWithTitle:applicationName

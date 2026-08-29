@@ -1,4 +1,4 @@
-#import "LegacyHostApplication.h"
+#import "NeoHostApplication.h"
 
 #import "DeviceWindowController.h"
 #import "HostLogging.h"
@@ -7,13 +7,24 @@
 #import "PrivateRuntime.h"
 
 static NSString *const XSHDeviceHubBundleIdentifier = @"com.apple.dt.Devices";
+static NSString *const XSHLegacySimulatorBundleIdentifier = @"com.apple.iphonesimulator";
 static NSString *const XSHIOSSimulatorPlatformIdentifier =
     @"com.apple.platform.iphonesimulator";
 static const NSUInteger XSHMaximumScreenIDCandidate = 63;
 static const NSUInteger XSHMaximumScreenDiscoveryAttempts = 40;
 static const NSTimeInterval XSHScreenDiscoveryRetryInterval = 0.25;
 
-@interface XSHLegacyHostApplication ()
+static NSString *XSHConflictingHostName(NSString *bundleIdentifier) {
+    if ([bundleIdentifier isEqualToString:XSHDeviceHubBundleIdentifier]) {
+        return @"Device Hub";
+    }
+    if ([bundleIdentifier isEqualToString:XSHLegacySimulatorBundleIdentifier]) {
+        return @"Legacy Simulator";
+    }
+    return nil;
+}
+
+@interface XSHNeoHostApplication ()
 @property (nonatomic) NSURL *xcodeURL;
 @property (nonatomic) XSHMenuController *menuController;
 @property (nonatomic, nullable) XSHPrivateRuntime *runtime;
@@ -24,18 +35,26 @@ static const NSTimeInterval XSHScreenDiscoveryRetryInterval = 0.25;
 @property (nonatomic) NSMutableDictionary<NSString *, NSNumber *> *pendingAttempts;
 @property (nonatomic) NSMutableSet<NSString *> *reportedConnectionFailures;
 @property (nonatomic, nullable) id workspaceLaunchObserver;
-@property (atomic) BOOL deviceHubConflictObserved;
+@property (atomic, copy, nullable) NSString *conflictingHostName;
 @property (atomic) BOOL started;
 @property (nonatomic) BOOL shuttingDown;
 @property (nonatomic) BOOL hasDeviceSetNotificationToken;
 @property (nonatomic) unsigned long long deviceSetNotificationToken;
 @end
 
-@implementation XSHLegacyHostApplication
+@implementation XSHNeoHostApplication
 
-+ (BOOL)isDeviceHubRunning {
-    return [NSRunningApplication
-        runningApplicationsWithBundleIdentifier:XSHDeviceHubBundleIdentifier].count > 0;
++ (NSString *)runningConflictingHostName {
+    for (NSString *bundleIdentifier in @[
+        XSHDeviceHubBundleIdentifier,
+        XSHLegacySimulatorBundleIdentifier,
+    ]) {
+        if ([NSRunningApplication
+                runningApplicationsWithBundleIdentifier:bundleIdentifier].count > 0) {
+            return XSHConflictingHostName(bundleIdentifier);
+        }
+    }
+    return nil;
 }
 
 - (instancetype)initWithXcodeURL:(NSURL *)xcodeURL
@@ -48,12 +67,12 @@ static const NSTimeInterval XSHScreenDiscoveryRetryInterval = 0.25;
         _suppressedDeviceIdentifiers = [NSMutableSet set];
         _pendingAttempts = [NSMutableDictionary dictionary];
         _reportedConnectionFailures = [NSMutableSet set];
-        [self installDeviceHubLaunchObserver];
+        [self installHostConflictObserver];
     }
     return self;
 }
 
-- (void)installDeviceHubLaunchObserver {
+- (void)installHostConflictObserver {
     __weak typeof(self) weakSelf = self;
     self.workspaceLaunchObserver = [NSWorkspace.sharedWorkspace.notificationCenter
         addObserverForName:NSWorkspaceDidLaunchApplicationNotification
@@ -62,25 +81,32 @@ static const NSTimeInterval XSHScreenDiscoveryRetryInterval = 0.25;
                 usingBlock:^(NSNotification *notification) {
         NSRunningApplication *application =
             notification.userInfo[NSWorkspaceApplicationKey];
-        if (![application.bundleIdentifier isEqualToString:XSHDeviceHubBundleIdentifier]) {
+        NSString *conflictingHostName =
+            XSHConflictingHostName(application.bundleIdentifier);
+        if (conflictingHostName == nil) {
             return;
         }
 
-        weakSelf.deviceHubConflictObserved = YES;
+        weakSelf.conflictingHostName = conflictingHostName;
         dispatch_async(dispatch_get_main_queue(), ^{
-            [weakSelf handleDeviceHubConflict];
+            [weakSelf handleHostConflict];
         });
     }];
 }
 
 - (BOOL)startWithRuntime:(XSHPrivateRuntime *)runtime error:(NSError **)error {
-    NSAssert(NSThread.isMainThread, @"legacy host startup must run on the main thread");
+    NSAssert(NSThread.isMainThread, @"Neo host startup must run on the main thread");
 
-    if (self.deviceHubConflictObserved || self.class.isDeviceHubRunning) {
+    NSString *conflictingHostName =
+        self.conflictingHostName ?: self.class.runningConflictingHostName;
+    if (conflictingHostName != nil) {
+        self.conflictingHostName = conflictingHostName;
         if (error != NULL) {
-            *error = XSHLegacyHostError(
-                XSHLegacyHostErrorDeviceHubConflict,
-                @"Device Hub is running; refusing to connect to CoreSimulator"
+            *error = XSHNeoHostError(
+                XSHNeoHostErrorHostConflict,
+                [NSString stringWithFormat:
+                    @"%@ is running; refusing to connect to CoreSimulator",
+                    conflictingHostName]
             );
         }
         return NO;
@@ -102,8 +128,8 @@ static const NSTimeInterval XSHScreenDiscoveryRetryInterval = 0.25;
                                       error:&contextError];
     if (serviceContext == nil) {
         if (error != NULL) {
-            *error = XSHLegacyHostError(
-                XSHLegacyHostErrorPrivateRuntime,
+            *error = XSHNeoHostError(
+                XSHNeoHostErrorPrivateRuntime,
                 [NSString stringWithFormat:@"could not connect to CoreSimulator: %@",
                                            contextError.localizedDescription ?: @"unknown error"]
             );
@@ -116,8 +142,8 @@ static const NSTimeInterval XSHScreenDiscoveryRetryInterval = 0.25;
         defaultDeviceSetWithError:&deviceSetError];
     if (deviceSet == nil) {
         if (error != NULL) {
-            *error = XSHLegacyHostError(
-                XSHLegacyHostErrorPrivateRuntime,
+            *error = XSHNeoHostError(
+                XSHNeoHostErrorPrivateRuntime,
                 [NSString stringWithFormat:@"could not open the default simulator device set: %@",
                                            deviceSetError.localizedDescription ?: @"unknown error"]
             );
@@ -128,8 +154,8 @@ static const NSTimeInterval XSHScreenDiscoveryRetryInterval = 0.25;
     NSError *subscriptionError = nil;
     if (![deviceSet subscribeToNotificationsWithError:&subscriptionError]) {
         if (error != NULL) {
-            *error = XSHLegacyHostError(
-                XSHLegacyHostErrorPrivateRuntime,
+            *error = XSHNeoHostError(
+                XSHNeoHostErrorPrivateRuntime,
                 [NSString stringWithFormat:@"could not subscribe to simulator devices: %@",
                                            subscriptionError.localizedDescription ?: @"unknown error"]
             );
@@ -151,12 +177,17 @@ static const NSTimeInterval XSHScreenDiscoveryRetryInterval = 0.25;
     self.hasDeviceSetNotificationToken = YES;
     self.started = YES;
 
-    if (self.deviceHubConflictObserved || self.class.isDeviceHubRunning) {
+    conflictingHostName =
+        self.conflictingHostName ?: self.class.runningConflictingHostName;
+    if (conflictingHostName != nil) {
+        self.conflictingHostName = conflictingHostName;
         [self shutdown];
         if (error != NULL) {
-            *error = XSHLegacyHostError(
-                XSHLegacyHostErrorDeviceHubConflict,
-                @"Device Hub launched during legacy host startup"
+            *error = XSHNeoHostError(
+                XSHNeoHostErrorHostConflict,
+                [NSString stringWithFormat:
+                    @"%@ launched during Neo host startup",
+                    conflictingHostName]
             );
         }
         return NO;
@@ -173,8 +204,9 @@ static const NSTimeInterval XSHScreenDiscoveryRetryInterval = 0.25;
         return;
     }
 
-    if (self.deviceHubConflictObserved || self.class.isDeviceHubRunning) {
-        [self handleDeviceHubConflict];
+    if (self.conflictingHostName != nil ||
+        self.class.runningConflictingHostName != nil) {
+        [self handleHostConflict];
         return;
     }
 
@@ -247,8 +279,9 @@ static const NSTimeInterval XSHScreenDiscoveryRetryInterval = 0.25;
     [self.pendingAttempts removeObjectForKey:identifier];
     [self.reportedConnectionFailures removeObject:identifier];
 
-    if (self.deviceHubConflictObserved || self.class.isDeviceHubRunning) {
-        [self handleDeviceHubConflict];
+    if (self.conflictingHostName != nil ||
+        self.class.runningConflictingHostName != nil) {
+        [self handleHostConflict];
         return;
     }
 
@@ -269,9 +302,10 @@ static const NSTimeInterval XSHScreenDiscoveryRetryInterval = 0.25;
         return;
     }
 
-    if (self.deviceHubConflictObserved || self.class.isDeviceHubRunning) {
+    if (self.conflictingHostName != nil ||
+        self.class.runningConflictingHostName != nil) {
         [session invalidate];
-        [self handleDeviceHubConflict];
+        [self handleHostConflict];
         return;
     }
 
@@ -368,13 +402,16 @@ static const NSTimeInterval XSHScreenDiscoveryRetryInterval = 0.25;
            identifier);
 }
 
-- (void)handleDeviceHubConflict {
-    if (!self.deviceHubConflictObserved && !self.class.isDeviceHubRunning) {
+- (void)handleHostConflict {
+    NSString *conflictingHostName =
+        self.conflictingHostName ?: self.class.runningConflictingHostName;
+    if (conflictingHostName == nil) {
         return;
     }
 
-    self.deviceHubConflictObserved = YES;
-    XSHLog(@"Device Hub appeared; disconnecting every simulator and exiting");
+    self.conflictingHostName = conflictingHostName;
+    XSHLog(@"%@ appeared; disconnecting every simulator and exiting",
+           conflictingHostName);
     [self shutdown];
     [NSApp terminate:nil];
 }

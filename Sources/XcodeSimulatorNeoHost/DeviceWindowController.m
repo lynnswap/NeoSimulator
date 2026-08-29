@@ -21,12 +21,12 @@ static const CGFloat XSHMinimumHeaderWidth = 360.0;
 static NSString *const XSHShakeNotification = @"com.apple.UIKit.SimulatorShake";
 
 static NSError *XSHScreenshotError(NSString *description) {
-    return XSHLegacyHostError(XSHLegacyHostErrorToolOperation, description);
+    return XSHNeoHostError(XSHNeoHostErrorToolOperation, description);
 }
 
 static NSURL *XSHScreenshotTemporaryURL(NSURL *destinationURL, NSError **error) {
     NSURL *directoryURL = destinationURL.URLByDeletingLastPathComponent;
-    NSString *name = [NSString stringWithFormat:@".xcode-simulator-legacy-host-%@.png",
+    NSString *name = [NSString stringWithFormat:@".xcode-simulator-neo-host-%@.png",
                                                NSUUID.UUID.UUIDString];
     NSURL *temporaryURL = [directoryURL URLByAppendingPathComponent:name];
     struct stat fileStatus;
@@ -223,8 +223,8 @@ static BOOL XSHAtomicallyReplaceURL(NSURL *temporaryURL,
         runtimeName.length == 0 ||
         deviceIdentifier.length == 0) {
         if (error != NULL) {
-            *error = XSHLegacyHostError(
-                XSHLegacyHostErrorDeviceConnection,
+            *error = XSHNeoHostError(
+                XSHNeoHostErrorDeviceConnection,
                 @"booted simulator is missing its device or runtime display name"
             );
         }
@@ -253,8 +253,8 @@ static BOOL XSHAtomicallyReplaceURL(NSURL *temporaryURL,
     if (hidClient == nil) {
         if (error != NULL) {
             NSString *detail = hidError.localizedDescription ?: @"unknown HID error";
-            *error = XSHLegacyHostError(
-                XSHLegacyHostErrorDeviceConnection,
+            *error = XSHNeoHostError(
+                XSHNeoHostErrorDeviceConnection,
                 [NSString stringWithFormat:@"could not create HID client for %@: %@",
                                            deviceName,
                                            detail]
@@ -270,8 +270,8 @@ static BOOL XSHAtomicallyReplaceURL(NSURL *temporaryURL,
                               simScreenID:screenID];
     } @catch (NSException *exception) {
         if (error != NULL) {
-            *error = XSHLegacyHostError(
-                XSHLegacyHostErrorDeviceConnection,
+            *error = XSHNeoHostError(
+                XSHNeoHostErrorDeviceConnection,
                 [NSString stringWithFormat:@"display factory raised %@: %@",
                                            exception.name,
                                            exception.reason ?: @"no reason"]
@@ -282,8 +282,8 @@ static BOOL XSHAtomicallyReplaceURL(NSURL *temporaryURL,
 
     if (displayView == nil) {
         if (error != NULL) {
-            *error = XSHLegacyHostError(
-                XSHLegacyHostErrorDeviceConnection,
+            *error = XSHNeoHostError(
+                XSHNeoHostErrorDeviceConnection,
                 [NSString stringWithFormat:@"display factory returned no view for %@",
                                            deviceName]
             );
@@ -309,8 +309,8 @@ static BOOL XSHAtomicallyReplaceURL(NSURL *temporaryURL,
         } else {
             XSHSwiftDisconnect(runtime.disconnectDisplayFunction, displayView);
             if (error != NULL) {
-                *error = XSHLegacyHostError(
-                    XSHLegacyHostErrorDeviceConnection,
+                *error = XSHNeoHostError(
+                    XSHNeoHostErrorDeviceConnection,
                     [NSString stringWithFormat:@"display view for %@ has no usable size",
                                                deviceName]
                 );
@@ -746,8 +746,8 @@ static BOOL XSHAtomicallyReplaceURL(NSURL *temporaryURL,
     if (down == NULL || up == NULL) {
         free(down);
         free(up);
-        return XSHLegacyHostError(
-            XSHLegacyHostErrorDeviceConnection,
+        return XSHNeoHostError(
+            XSHNeoHostErrorDeviceConnection,
             [NSString stringWithFormat:@"could not allocate %@ HID messages", name]
         );
     }
@@ -762,8 +762,8 @@ static BOOL XSHAtomicallyReplaceURL(NSURL *temporaryURL,
                        completionQueue:nil
                             completion:nil];
     } @catch (NSException *exception) {
-        return XSHLegacyHostError(
-            XSHLegacyHostErrorDeviceConnection,
+        return XSHNeoHostError(
+            XSHNeoHostErrorDeviceConnection,
             [NSString stringWithFormat:@"%@ failed: %@",
                                        name,
                                        exception.reason ?: exception.name]
@@ -782,14 +782,14 @@ static BOOL XSHAtomicallyReplaceURL(NSURL *temporaryURL,
     @try {
         if (![self.device postDarwinNotification:XSHShakeNotification error:&error] &&
             error == nil) {
-            error = XSHLegacyHostError(
-                XSHLegacyHostErrorDeviceConnection,
+            error = XSHNeoHostError(
+                XSHNeoHostErrorDeviceConnection,
                 @"the simulator rejected the shake notification"
             );
         }
     } @catch (NSException *exception) {
-        error = XSHLegacyHostError(
-            XSHLegacyHostErrorDeviceConnection,
+        error = XSHNeoHostError(
+            XSHNeoHostErrorDeviceConnection,
             [NSString stringWithFormat:@"Shake failed: %@",
                                        exception.reason ?: exception.name]
         );
@@ -809,14 +809,14 @@ static BOOL XSHAtomicallyReplaceURL(NSURL *temporaryURL,
         NSUInteger targetStyle = currentStyle == 2 ? 1 : 2;
         if (![self.device setUIInterfaceStyle:targetStyle error:&error] &&
             error == nil) {
-            error = XSHLegacyHostError(
-                XSHLegacyHostErrorDeviceConnection,
+            error = XSHNeoHostError(
+                XSHNeoHostErrorDeviceConnection,
                 @"the simulator rejected the appearance change"
             );
         }
     } @catch (NSException *exception) {
-        error = XSHLegacyHostError(
-            XSHLegacyHostErrorDeviceConnection,
+        error = XSHNeoHostError(
+            XSHNeoHostErrorDeviceConnection,
             [NSString stringWithFormat:@"Toggle Appearance failed: %@",
                                        exception.reason ?: exception.name]
         );

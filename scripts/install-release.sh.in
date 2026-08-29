@@ -9,8 +9,8 @@ PREFIX="${PREFIX:-${HOME}/.local}"
 BINDIR="${BINDIR:-}"
 ARCHIVE="xcode-simulator-host-darwin-arm64.tar.gz"
 CLI_PRODUCT="xcode-simulator-host"
-HOST_PRODUCT="XcodeSimulatorLegacyHost"
-HOST_BUNDLE_IDENTIFIER="dev.lynnswap.XcodeSimulatorLegacyHost"
+HOST_PRODUCT="XcodeSimulatorNeoHost"
+HOST_BUNDLE_IDENTIFIER="dev.lynnswap.XcodeSimulatorNeoHost"
 
 usage() {
   cat <<'EOF'

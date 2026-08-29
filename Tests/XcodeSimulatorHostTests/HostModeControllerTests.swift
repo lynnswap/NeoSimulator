@@ -6,7 +6,7 @@ import Testing
 @MainActor
 @Suite
 struct HostModeControllerTests {
-    @Test func legacyAndDeviceHubModesRoundTripTheOriginalAbsentState() async throws {
+    @Test func neoAndDeviceHubModesRoundTripTheOriginalAbsentState() async throws {
         let fixture = try ControllerFixture()
         fixture.workspace.deviceHubCount = 1
         fixture.workspace.onTerminateDeviceHubs = {
@@ -20,21 +20,22 @@ struct HostModeControllerTests {
             )
         }
 
-        let legacy = try await fixture.controller.use(
-            mode: .legacy
-        )
-        #expect(legacy.didChange)
+        let neo = try await fixture.controller.use(.neo)
+        #expect(neo.didChangePreferences)
         #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .trueValue)
         #expect(fixture.runner.storedBoolean(ToolConstants.deviceHubPreference) == .trueValue)
-        #expect(legacy.receiptURL != nil)
-        #expect(legacy.terminatedDeviceHubCount == 1)
-        #expect(legacy.rendered.contains("Xcode can remain open"))
-        let legacyHost = try #require(legacy.legacyHost)
+        #expect(neo.receiptURL != nil)
+        #expect(neo.terminatedDeviceHubCount == 1)
+        #expect(neo.rendered.contains("Xcode can remain open"))
+        guard case .neo(let neoHost) = neo.host else {
+            Issue.record("expected resolved Neo host")
+            return
+        }
         #expect(
-            fixture.workspace.openedLegacyHosts
+            fixture.workspace.openedNeoHosts
                 == [
-                    WorkspaceRecorder.LegacyHostOpen(
-                        applicationURL: legacyHost.applicationURL,
+                    WorkspaceRecorder.NeoHostOpen(
+                        applicationURL: neoHost.applicationURL,
                         xcodeURL: fixture.installations.targetXcodeURL
                     ),
                 ]
@@ -42,9 +43,10 @@ struct HostModeControllerTests {
         #expect(
             fixture.workspace.events
                 == [
-                    "terminate-legacy-hosts",
+                    "terminate-legacy-simulators",
+                    "terminate-neo-hosts",
                     "terminate-device-hubs",
-                    "open-legacy-host",
+                    "open-neo-host",
                 ]
         )
         #expect(
@@ -58,30 +60,30 @@ struct HostModeControllerTests {
         )
         #expect(try fixture.receiptStore.load()?.original == .deviceHub)
 
-        fixture.workspace.legacyHostCount = 1
-        let deviceHub = try await fixture.controller.use(
-            mode: .deviceHub
-        )
-        #expect(deviceHub.didChange)
+        fixture.workspace.neoHostCount = 1
+        let deviceHub = try await fixture.controller.use(.deviceHub)
+        #expect(deviceHub.didChangePreferences)
         #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .absent)
         #expect(fixture.runner.storedBoolean(ToolConstants.deviceHubPreference) == .absent)
         #expect(deviceHub.receiptURL == nil)
         #expect(deviceHub.terminatedDeviceHubCount == 0)
-        #expect(deviceHub.terminatedLegacyHostCount == 1)
+        #expect(deviceHub.terminatedNeoHostCount == 1)
         #expect(
             fixture.workspace.events
                 == [
-                    "terminate-legacy-hosts",
+                    "terminate-legacy-simulators",
+                    "terminate-neo-hosts",
                     "terminate-device-hubs",
-                    "open-legacy-host",
-                    "terminate-legacy-hosts",
+                    "open-neo-host",
+                    "terminate-neo-hosts",
+                    "terminate-legacy-simulators",
                 ]
         )
         #expect(
-            fixture.workspace.requestedLegacyHostURLs
+            fixture.workspace.requestedNeoHostURLs
                 == [
-                    fixture.installations.legacyHostURL,
-                    fixture.installations.legacyHostURL,
+                    fixture.installations.neoHostURL,
+                    fixture.installations.neoHostURL,
                 ]
         )
         #expect(try fixture.receiptStore.load() == nil)
@@ -94,13 +96,13 @@ struct HostModeControllerTests {
         )
         let fixture = try ControllerFixture(initialState: original)
 
-        _ = try await fixture.controller.use(mode: .legacy)
+        _ = try await fixture.controller.use(.neo)
         let loadedReceipt = try fixture.receiptStore.load()
         let receipt = try #require(loadedReceipt)
         #expect(receipt.original == original)
 
-        fixture.workspace.legacyHostCount = 1
-        fixture.workspace.onTerminateLegacyHosts = {
+        fixture.workspace.neoHostCount = 1
+        fixture.workspace.onTerminateNeoHosts = {
             #expect(
                 fixture.runner.storedBoolean(ToolConstants.xcodePreference)
                     == .trueValue
@@ -108,7 +110,7 @@ struct HostModeControllerTests {
         }
         let restored = try await fixture.controller.restore()
         #expect(restored.didRestore)
-        #expect(restored.terminatedLegacyHostCount == 1)
+        #expect(restored.terminatedNeoHostCount == 1)
         #expect(restored.rendered.contains("Xcode can remain open"))
         #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .falseValue)
         #expect(fixture.runner.storedBoolean(ToolConstants.deviceHubPreference) == .trueValue)
@@ -116,25 +118,34 @@ struct HostModeControllerTests {
         #expect(
             fixture.workspace.events
                 == [
-                    "terminate-legacy-hosts",
+                    "terminate-legacy-simulators",
+                    "terminate-neo-hosts",
                     "terminate-device-hubs",
-                    "open-legacy-host",
-                    "terminate-legacy-hosts",
+                    "open-neo-host",
+                    "terminate-neo-hosts",
+                    "terminate-legacy-simulators",
                 ]
         )
     }
 
-    @Test func restoringALegacyRouteDoesNotCloseTheStandaloneHost() async throws {
-        let fixture = try ControllerFixture(initialState: .legacy)
-        _ = try await fixture.controller.use(mode: .deviceHub)
-        #expect(fixture.workspace.events == ["terminate-legacy-hosts"])
+    @Test func restoringACoreSimulatorRouteDoesNotCloseTheNeoHost() async throws {
+        let fixture = try ControllerFixture(initialState: .coreSimulator)
+        _ = try await fixture.controller.use(.deviceHub)
+        #expect(
+            fixture.workspace.events
+                == ["terminate-neo-hosts", "terminate-legacy-simulators"]
+        )
 
         let report = try await fixture.controller.restore()
 
         #expect(report.didRestore)
-        #expect(report.restoredState == .legacy)
-        #expect(report.terminatedLegacyHostCount == 0)
-        #expect(fixture.workspace.events == ["terminate-legacy-hosts"])
+        #expect(report.restoredState == .coreSimulator)
+        #expect(report.terminatedNeoHostCount == 0)
+        #expect(report.terminatedLegacySimulatorCount == 0)
+        #expect(
+            fixture.workspace.events
+                == ["terminate-neo-hosts", "terminate-legacy-simulators"]
+        )
         #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .trueValue)
         #expect(
             fixture.runner.storedBoolean(ToolConstants.deviceHubPreference)
@@ -142,35 +153,169 @@ struct HostModeControllerTests {
         )
     }
 
-    @Test func repeatedLegacyUseRestartsTheHostWithTheSelectedXcode() async throws {
-        let fixture = try ControllerFixture(initialState: .legacy)
-        fixture.workspace.legacyHostCount = 1
+    @Test func repeatedNeoUseRestartsTheHostWithTheSelectedXcode() async throws {
+        let fixture = try ControllerFixture(initialState: .coreSimulator)
+        fixture.workspace.neoHostCount = 1
 
-        let report = try await fixture.controller.use(mode: .legacy)
+        let report = try await fixture.controller.use(.neo)
 
-        #expect(!report.didChange)
-        #expect(report.terminatedLegacyHostCount == 1)
-        #expect(report.legacyHost?.applicationURL == fixture.installations.legacyHostURL)
+        #expect(!report.didChangePreferences)
+        #expect(report.terminatedNeoHostCount == 1)
+        guard case .neo(let neoHost) = report.host else {
+            Issue.record("expected resolved Neo host")
+            return
+        }
+        #expect(neoHost.applicationURL == fixture.installations.neoHostURL)
         #expect(
             fixture.workspace.events
                 == [
-                    "terminate-legacy-hosts",
+                    "terminate-legacy-simulators",
+                    "terminate-neo-hosts",
                     "terminate-device-hubs",
-                    "open-legacy-host",
+                    "open-neo-host",
                 ]
         )
-        #expect(fixture.workspace.openedLegacyHosts.count == 1)
+        #expect(fixture.workspace.openedNeoHosts.count == 1)
         #expect(try fixture.receiptStore.load() == nil)
     }
 
-    @Test func legacyModeRejectsAMissingHostBeforeChangingPreferences() async throws {
-        let fixture = try ControllerFixture(includeLegacyHost: false)
+    @Test func neoToLegacySwitchesHostsWithoutChangingCoreSimulatorPreferences() async throws {
+        let fixture = try ControllerFixture(initialState: .coreSimulator)
+        fixture.workspace.neoHostCount = 1
+        let legacySimulatorURL = try #require(
+            fixture.installations.legacySimulatorURLs.first
+        )
+
+        let report = try await fixture.controller.use(
+            .legacy(xcodeURL: nil)
+        )
+
+        #expect(!report.didChangePreferences)
+        #expect(fixture.runner.mutationCount == 0)
+        #expect(report.terminatedNeoHostCount == 1)
+        #expect(report.terminatedLegacySimulatorCount == 0)
+        guard case .legacy(let simulator) = report.host else {
+            Issue.record("expected resolved legacy Simulator")
+            return
+        }
+        #expect(simulator.applicationURL == legacySimulatorURL)
+        #expect(fixture.workspace.openedLegacySimulators == [legacySimulatorURL])
+        #expect(
+            fixture.workspace.events
+                == [
+                    "terminate-neo-hosts",
+                    "terminate-legacy-simulators",
+                    "terminate-device-hubs",
+                    "open-legacy-simulator",
+                ]
+        )
+        #expect(try fixture.receiptStore.load() == nil)
+    }
+
+    @Test func legacyToNeoTerminatesTheValidatedSimulatorAtItsExactURLWithoutChangingPreferences() async throws {
+        let fixture = try ControllerFixture(initialState: .coreSimulator)
+        let legacySimulatorURL = try #require(
+            fixture.installations.legacySimulatorURLs.first
+        )
+        fixture.workspace.runningLegacySimulators = [
+            RunningApplication(
+                processIdentifier: 42,
+                bundleURL: legacySimulatorURL,
+                bundleIdentifier: ToolConstants.simulatorBundleIdentifier
+            ),
+        ]
+        fixture.workspace.legacySimulatorCount = 1
+
+        let report = try await fixture.controller.use(.neo)
+
+        #expect(!report.didChangePreferences)
+        #expect(fixture.runner.mutationCount == 0)
+        #expect(report.terminatedNeoHostCount == 0)
+        #expect(report.terminatedLegacySimulatorCount == 1)
+        #expect(
+            fixture.workspace.requestedLegacySimulatorURLSets
+                == [[legacySimulatorURL]]
+        )
+        #expect(
+            fixture.workspace.events
+                == [
+                    "terminate-legacy-simulators",
+                    "terminate-neo-hosts",
+                    "terminate-device-hubs",
+                    "open-neo-host",
+                ]
+        )
+        #expect(fixture.workspace.openedNeoHosts.count == 1)
+        #expect(try fixture.receiptStore.load() == nil)
+    }
+
+    @Test func unvalidatedRunningSimulatorIsRejectedBeforeProcessOrPreferenceMutation() async throws {
+        let fixture = try ControllerFixture(initialState: .coreSimulator)
+        fixture.workspace.runningLegacySimulators = [
+            RunningApplication(
+                processIdentifier: 42,
+                bundleURL: fixture.installations.targetXcodeURL
+                    .appendingPathComponent(
+                        ToolConstants.simulatorPath,
+                        isDirectory: true
+                    ),
+                bundleIdentifier: ToolConstants.simulatorBundleIdentifier
+            ),
+        ]
 
         do {
-            _ = try await fixture.controller.use(mode: .legacy)
+            _ = try await fixture.controller.use(.neo)
+            Issue.record("expected unvalidated Simulator to be rejected")
+        } catch let error as CLIError {
+            #expect(error.identifier == "legacy-xcode-version")
+            #expect(error.category == .unavailable)
+        }
+
+        #expect(fixture.workspace.events.isEmpty)
+        #expect(fixture.runner.mutationCount == 0)
+        #expect(try fixture.receiptStore.load() == nil)
+    }
+
+    @Test func deviceHubTerminationFailureDoesNotOpenLegacySimulator() async throws {
+        let fixture = try ControllerFixture()
+        fixture.workspace.terminateDeviceHubsError = CLIError.temporary(
+            "injected-termination",
+            "injected Device Hub termination failure"
+        )
+
+        do {
+            _ = try await fixture.controller.use(.legacy(xcodeURL: nil))
+            Issue.record("expected Device Hub termination failure")
+        } catch let error as CLIError {
+            #expect(error.identifier == "device-hub-termination-partial-success")
+            #expect(error.category == .temporary)
+        }
+
+        #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .trueValue)
+        #expect(
+            fixture.runner.storedBoolean(ToolConstants.deviceHubPreference)
+                == .trueValue
+        )
+        #expect(fixture.workspace.openedLegacySimulators.isEmpty)
+        #expect(
+            fixture.workspace.events
+                == [
+                    "terminate-neo-hosts",
+                    "terminate-legacy-simulators",
+                    "terminate-device-hubs",
+                ]
+        )
+        #expect(try fixture.receiptStore.load() != nil)
+    }
+
+    @Test func neoModeRejectsAMissingHostBeforeChangingPreferences() async throws {
+        let fixture = try ControllerFixture(includeNeoHost: false)
+
+        do {
+            _ = try await fixture.controller.use(.neo)
             Issue.record("expected missing standalone host to fail")
         } catch let error as CLIError {
-            #expect(error.identifier == "legacy-host-bundle")
+            #expect(error.identifier == "neo-host-bundle")
             #expect(error.category == .unavailable)
         }
 
@@ -179,14 +324,14 @@ struct HostModeControllerTests {
         #expect(try fixture.receiptStore.load() == nil)
     }
 
-    @Test func legacyToolGateFailsBeforeChangingPreferencesOrProcesses() async throws {
+    @Test func neoToolGateFailsBeforeChangingPreferencesOrProcesses() async throws {
         let fixture = try ControllerFixture()
         try Data("#!/bin/zsh\nEXPECTED_VERSION='642.15'\n".utf8).write(
             to: fixture.installations.devicectlWrapperURL
         )
 
         do {
-            _ = try await fixture.controller.use(mode: .legacy)
+            _ = try await fixture.controller.use(.neo)
             Issue.record("expected changed devicectl wrapper to fail")
         } catch let error as CLIError {
             #expect(error.identifier == "devicectl-wrapper-version")
@@ -200,14 +345,14 @@ struct HostModeControllerTests {
 
     @Test func missingRuntimeSymbolFailsBeforeChangingPreferencesOrProcesses() async throws {
         let fixture = try ControllerFixture(
-            legacyHostRuntimeValidationStatus: 69
+            neoHostRuntimeValidationStatus: 69
         )
 
         do {
-            _ = try await fixture.controller.use(mode: .legacy)
+            _ = try await fixture.controller.use(.neo)
             Issue.record("expected missing SimulatorKit runtime symbols to fail")
         } catch let error as CLIError {
-            #expect(error.identifier == "legacy-host-runtime")
+            #expect(error.identifier == "neo-host-runtime")
             #expect(error.category == .unavailable)
         }
 
@@ -218,43 +363,49 @@ struct HostModeControllerTests {
 
     @Test func deviceHubModeCanRecoverWhenThePackagedHostIsMissing() async throws {
         let fixture = try ControllerFixture(
-            initialState: .legacy,
-            includeLegacyHost: false
+            initialState: .coreSimulator,
+            includeNeoHost: false
         )
 
-        let report = try await fixture.controller.use(mode: .deviceHub)
+        let report = try await fixture.controller.use(.deviceHub)
 
-        #expect(report.didChange)
+        #expect(report.didChangePreferences)
         #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .absent)
-        #expect(fixture.workspace.events == ["terminate-legacy-hosts"])
         #expect(
-            fixture.workspace.requestedLegacyHostURLs
-                == [fixture.installations.legacyHostURL]
+            fixture.workspace.events
+                == ["terminate-neo-hosts", "terminate-legacy-simulators"]
+        )
+        #expect(
+            fixture.workspace.requestedNeoHostURLs
+                == [fixture.installations.neoHostURL]
         )
     }
 
-    @Test func deviceHubModeDoesNotDependOnTheLegacyToolGate() async throws {
-        let fixture = try ControllerFixture(initialState: .legacy)
+    @Test func deviceHubModeDoesNotDependOnTheNeoToolGate() async throws {
+        let fixture = try ControllerFixture(initialState: .coreSimulator)
         try Data("#!/bin/zsh\nEXPECTED_VERSION='642.15'\n".utf8).write(
             to: fixture.installations.devicectlWrapperURL
         )
 
-        let report = try await fixture.controller.use(mode: .deviceHub)
+        let report = try await fixture.controller.use(.deviceHub)
 
-        #expect(report.didChange)
+        #expect(report.didChangePreferences)
         #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .absent)
-        #expect(fixture.workspace.events == ["terminate-legacy-hosts"])
+        #expect(
+            fixture.workspace.events
+                == ["terminate-neo-hosts", "terminate-legacy-simulators"]
+        )
     }
 
     @Test func deviceHubModeDoesNotChangePreferencesWhenHostCannotClose() async throws {
-        let fixture = try ControllerFixture(initialState: .legacy)
-        fixture.workspace.terminateLegacyHostsError = CLIError.temporary(
+        let fixture = try ControllerFixture(initialState: .coreSimulator)
+        fixture.workspace.terminateNeoHostsError = CLIError.temporary(
             "injected-termination",
             "injected standalone host termination failure"
         )
 
         do {
-            _ = try await fixture.controller.use(mode: .deviceHub)
+            _ = try await fixture.controller.use(.deviceHub)
             Issue.record("expected standalone host termination failure")
         } catch let error as CLIError {
             #expect(error.identifier == "injected-termination")
@@ -266,18 +417,18 @@ struct HostModeControllerTests {
             fixture.runner.storedBoolean(ToolConstants.deviceHubPreference)
                 == .trueValue
         )
-        #expect(fixture.workspace.events == ["terminate-legacy-hosts"])
+        #expect(fixture.workspace.events == ["terminate-neo-hosts"])
     }
 
-    @Test func legacyModeDoesNotChangePreferencesWhenHostCannotRestart() async throws {
+    @Test func neoModeDoesNotChangePreferencesWhenHostCannotRestart() async throws {
         let fixture = try ControllerFixture()
-        fixture.workspace.terminateLegacyHostsError = CLIError.temporary(
+        fixture.workspace.terminateNeoHostsError = CLIError.temporary(
             "injected-termination",
             "injected standalone host termination failure"
         )
 
         do {
-            _ = try await fixture.controller.use(mode: .legacy)
+            _ = try await fixture.controller.use(.neo)
             Issue.record("expected standalone host termination failure")
         } catch let error as CLIError {
             #expect(error.identifier == "injected-termination")
@@ -286,11 +437,14 @@ struct HostModeControllerTests {
         #expect(fixture.runner.mutationCount == 0)
         #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .absent)
         #expect(fixture.runner.storedBoolean(ToolConstants.deviceHubPreference) == .absent)
-        #expect(fixture.workspace.events == ["terminate-legacy-hosts"])
-        #expect(fixture.workspace.openedLegacyHosts.isEmpty)
+        #expect(
+            fixture.workspace.events
+                == ["terminate-legacy-simulators", "terminate-neo-hosts"]
+        )
+        #expect(fixture.workspace.openedNeoHosts.isEmpty)
     }
 
-    @Test func runningXcodeDoesNotBlockLegacyMode() async throws {
+    @Test func runningXcodeDoesNotBlockNeoMode() async throws {
         let fixture = try ControllerFixture()
         fixture.workspace.runningXcodes = [
             RunningApplication(
@@ -299,19 +453,18 @@ struct HostModeControllerTests {
             ),
         ]
 
-        let report = try await fixture.controller.use(
-            mode: .legacy
-        )
+        let report = try await fixture.controller.use(.neo)
 
-        #expect(report.didChange)
+        #expect(report.didChangePreferences)
         #expect(fixture.runner.mutationCount == 2)
         #expect(try fixture.receiptStore.load() != nil)
         #expect(
             fixture.workspace.events
                 == [
-                    "terminate-legacy-hosts",
+                    "terminate-legacy-simulators",
+                    "terminate-neo-hosts",
                     "terminate-device-hubs",
-                    "open-legacy-host",
+                    "open-neo-host",
                 ]
         )
     }
@@ -321,7 +474,7 @@ struct HostModeControllerTests {
         fixture.runner.failMutationNumbers = [2]
 
         do {
-            _ = try await fixture.controller.use(mode: .legacy)
+            _ = try await fixture.controller.use(.neo)
             Issue.record("expected injected transition failure")
         } catch let error as CLIError {
             #expect(error.identifier == "transition-rolled-back")
@@ -338,7 +491,7 @@ struct HostModeControllerTests {
         fixture.runner.failureTiming = .afterMutation
 
         do {
-            _ = try await fixture.controller.use(mode: .legacy)
+            _ = try await fixture.controller.use(.neo)
             Issue.record("expected injected transition failure")
         } catch let error as CLIError {
             #expect(error.identifier == "transition-rolled-back")
@@ -354,7 +507,7 @@ struct HostModeControllerTests {
         fixture.runner.failFirstExportAfterMutationCount = 2
 
         do {
-            _ = try await fixture.controller.use(mode: .legacy)
+            _ = try await fixture.controller.use(.neo)
             Issue.record("expected injected verification failure")
         } catch let error as CLIError {
             #expect(error.identifier == "transition-rolled-back")
@@ -370,7 +523,7 @@ struct HostModeControllerTests {
         fixture.runner.failMutationNumbers = [2, 3]
 
         do {
-            _ = try await fixture.controller.use(mode: .legacy)
+            _ = try await fixture.controller.use(.neo)
             Issue.record("expected rollback failure")
         } catch let error as CLIError {
             #expect(error.identifier == "inconsistent-preferences")
@@ -378,16 +531,16 @@ struct HostModeControllerTests {
 
         #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .trueValue)
         #expect(fixture.runner.storedBoolean(ToolConstants.deviceHubPreference) == .absent)
-        let status = try fixture.controller.status()
+        let status = try fixture.controller.status(explicitLegacyXcodeURL: nil)
         #expect(status.routeStatus.receiptStatus == .ambiguousIntermediate)
     }
 
     @Test func externalPreferenceChangeIsReportedAsAConflict() async throws {
         let fixture = try ControllerFixture()
-        _ = try await fixture.controller.use(mode: .legacy)
+        _ = try await fixture.controller.use(.neo)
         fixture.runner.setStoredValue(false, for: ToolConstants.xcodePreference)
 
-        let status = try fixture.controller.status()
+        let status = try fixture.controller.status(explicitLegacyXcodeURL: nil)
         #expect(status.routeStatus.receiptStatus.hasConflict)
         let eventsBeforeRestore = fixture.workspace.events
 
@@ -402,7 +555,7 @@ struct HostModeControllerTests {
     }
 
     @Test func detectedChangeBetweenWritesIsNotRolledBack() async throws {
-        let fixture = try ControllerFixture(initialState: .legacy)
+        let fixture = try ControllerFixture(initialState: .coreSimulator)
         var injectedChange = false
         fixture.runner.beforeRun = { call in
             guard !injectedChange,
@@ -420,9 +573,7 @@ struct HostModeControllerTests {
         }
 
         do {
-            _ = try await fixture.controller.use(
-                mode: .deviceHub
-            )
+            _ = try await fixture.controller.use(.deviceHub)
             Issue.record("expected external change to be reported")
         } catch let error as CLIError {
             #expect(error.identifier == "preference-conflict")
@@ -458,7 +609,7 @@ struct HostModeControllerTests {
         }
 
         do {
-            _ = try await fixture.controller.use(mode: .legacy)
+            _ = try await fixture.controller.use(.neo)
             Issue.record("expected external change to be reported")
         } catch let error as CLIError {
             #expect(error.identifier == "preference-conflict")
@@ -468,7 +619,10 @@ struct HostModeControllerTests {
         #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .falseValue)
         let loadedReceipt = try fixture.receiptStore.load()
         let receipt = try #require(loadedReceipt)
-        #expect(receipt.pending == PendingMutation(before: .deviceHub, target: .legacy))
+        #expect(
+            receipt.pending
+                == PendingMutation(before: .deviceHub, target: .coreSimulator)
+        )
     }
 
     @Test func externalChangeMatchingAnIntermediateIsNeverAssumedToBeOurs() async throws {
@@ -490,7 +644,7 @@ struct HostModeControllerTests {
         }
 
         do {
-            _ = try await fixture.controller.use(mode: .legacy)
+            _ = try await fixture.controller.use(.neo)
             Issue.record("expected external change to be reported")
         } catch let error as CLIError {
             #expect(error.identifier == "preference-conflict")
@@ -499,7 +653,7 @@ struct HostModeControllerTests {
         let eventsBeforeRetry = fixture.workspace.events
 
         do {
-            _ = try await fixture.controller.use(mode: .legacy)
+            _ = try await fixture.controller.use(.neo)
             Issue.record("expected ambiguous state to remain protected")
         } catch let error as CLIError {
             #expect(error.identifier == "ambiguous-intermediate")
@@ -523,18 +677,21 @@ struct HostModeControllerTests {
             xcode: xcode,
             original: .deviceHub
         )
-        receipt.pending = PendingMutation(before: .deviceHub, target: .legacy)
+        receipt.pending = PendingMutation(
+            before: .deviceHub,
+            target: .coreSimulator
+        )
         try fixture.receiptStore.withExclusiveLock {
             try fixture.receiptStore.save(receipt)
         }
         fixture.runner.setStoredValue(true, for: ToolConstants.xcodePreference)
         fixture.runner.setStoredValue(true, for: ToolConstants.deviceHubPreference)
 
-        let report = try await fixture.controller.use(mode: .legacy)
-        #expect(!report.didChange)
+        let report = try await fixture.controller.use(.neo)
+        #expect(!report.didChangePreferences)
         let loadedReceipt = try fixture.receiptStore.load()
         let recovered = try #require(loadedReceipt)
-        #expect(recovered.expectedCurrent == .legacy)
+        #expect(recovered.expectedCurrent == .coreSimulator)
         #expect(recovered.pending == nil)
     }
 
@@ -550,14 +707,17 @@ struct HostModeControllerTests {
             xcode: xcode,
             original: .deviceHub
         )
-        receipt.pending = PendingMutation(before: .deviceHub, target: .legacy)
+        receipt.pending = PendingMutation(
+            before: .deviceHub,
+            target: .coreSimulator
+        )
         try fixture.receiptStore.withExclusiveLock {
             try fixture.receiptStore.save(receipt)
         }
         fixture.runner.setStoredValue(true, for: ToolConstants.xcodePreference)
 
         do {
-            _ = try await fixture.controller.use(mode: .legacy)
+            _ = try await fixture.controller.use(.neo)
             Issue.record("expected ambiguous intermediate state")
         } catch let error as CLIError {
             #expect(error.identifier == "ambiguous-intermediate")
@@ -568,7 +728,10 @@ struct HostModeControllerTests {
         let loadedReceipt = try fixture.receiptStore.load()
         let recovered = try #require(loadedReceipt)
         #expect(recovered.expectedCurrent == .deviceHub)
-        #expect(recovered.pending == PendingMutation(before: .deviceHub, target: .legacy))
+        #expect(
+            recovered.pending
+                == PendingMutation(before: .deviceHub, target: .coreSimulator)
+        )
     }
 
     @Test func forceRestoreCanResolveAnAmbiguousIntermediateState() async throws {
@@ -583,7 +746,10 @@ struct HostModeControllerTests {
             xcode: xcode,
             original: .deviceHub
         )
-        receipt.pending = PendingMutation(before: .deviceHub, target: .legacy)
+        receipt.pending = PendingMutation(
+            before: .deviceHub,
+            target: .coreSimulator
+        )
         try fixture.receiptStore.withExclusiveLock {
             try fixture.receiptStore.save(receipt)
         }
@@ -606,15 +772,15 @@ struct HostModeControllerTests {
         #expect(try fixture.receiptStore.load() == nil)
     }
 
-    @Test func legacyHostLaunchFailureLeavesTheCommittedModeRestorable() async throws {
+    @Test func neoHostLaunchFailureLeavesTheCommittedModeRestorable() async throws {
         let fixture = try ControllerFixture()
-        fixture.workspace.openLegacyHostError = CLIError.io("open", "injected open failure")
+        fixture.workspace.openNeoHostError = CLIError.io("open", "injected open failure")
 
         do {
-            _ = try await fixture.controller.use(mode: .legacy)
+            _ = try await fixture.controller.use(.neo)
             Issue.record("expected standalone host launch failure")
         } catch let error as CLIError {
-            #expect(error.identifier == "legacy-host-launch-partial-success")
+            #expect(error.identifier == "neo-host-launch-partial-success")
         }
         #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .trueValue)
         #expect(try fixture.receiptStore.load() != nil)
@@ -631,7 +797,7 @@ struct HostModeControllerTests {
         )
 
         do {
-            _ = try await fixture.controller.use(mode: .legacy)
+            _ = try await fixture.controller.use(.neo)
             Issue.record("expected Device Hub termination failure")
         } catch let error as CLIError {
             #expect(error.identifier == "device-hub-termination-partial-success")
@@ -639,10 +805,14 @@ struct HostModeControllerTests {
         }
 
         #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .trueValue)
-        #expect(fixture.workspace.openedLegacyHosts.isEmpty)
+        #expect(fixture.workspace.openedNeoHosts.isEmpty)
         #expect(
             fixture.workspace.events
-                == ["terminate-legacy-hosts", "terminate-device-hubs"]
+                == [
+                    "terminate-legacy-simulators",
+                    "terminate-neo-hosts",
+                    "terminate-device-hubs",
+                ]
         )
         #expect(try fixture.receiptStore.load() != nil)
     }
@@ -655,13 +825,13 @@ struct HostModeControllerTests {
         )
 
         do {
-            _ = try await fixture.controller.use(mode: .legacy)
+            _ = try await fixture.controller.use(.neo)
             Issue.record("expected Device Hub identity failure")
         } catch let error as CLIError {
             #expect(error.identifier == "device-hub-termination-partial-success")
             #expect(error.category == .configuration)
         }
-        #expect(fixture.workspace.openedLegacyHosts.isEmpty)
+        #expect(fixture.workspace.openedNeoHosts.isEmpty)
     }
 
     @Test func deviceHubFailurePreventsAConfiguredHostLaunchFailure() async throws {
@@ -670,19 +840,19 @@ struct HostModeControllerTests {
             "injected-termination",
             "injected Device Hub termination failure"
         )
-        fixture.workspace.openLegacyHostError = CLIError.io(
+        fixture.workspace.openNeoHostError = CLIError.io(
             "injected-open",
             "injected standalone host open failure"
         )
 
         do {
-            _ = try await fixture.controller.use(mode: .legacy)
+            _ = try await fixture.controller.use(.neo)
             Issue.record("expected Device Hub termination failure")
         } catch let error as CLIError {
             #expect(error.identifier == "device-hub-termination-partial-success")
             #expect(error.message.contains("Device Hub"))
         }
-        #expect(fixture.workspace.openedLegacyHosts.isEmpty)
+        #expect(fixture.workspace.openedNeoHosts.isEmpty)
     }
 
     @Test func modeIsRevalidatedAfterClosingDeviceHub() async throws {
@@ -699,27 +869,29 @@ struct HostModeControllerTests {
         }
 
         do {
-            _ = try await fixture.controller.use(mode: .legacy)
+            _ = try await fixture.controller.use(.neo)
             Issue.record("expected post-await preference conflict")
         } catch let error as CLIError {
-            #expect(error.identifier == "legacy-host-invalidated")
+            #expect(error.identifier == "neo-host-invalidated")
             #expect(error.category == .configuration)
         }
 
-        #expect(fixture.workspace.openedLegacyHosts.isEmpty)
+        #expect(fixture.workspace.openedNeoHosts.isEmpty)
         #expect(
             fixture.workspace.events
-                == ["terminate-legacy-hosts", "terminate-device-hubs"]
+                == [
+                    "terminate-legacy-simulators",
+                    "terminate-neo-hosts",
+                    "terminate-device-hubs",
+                ]
         )
     }
 
-    @Test func legacyHostOpenHoldsTheOperationLockAgainstAnotherSwitch() async throws {
+    @Test func neoHostOpenHoldsTheOperationLockAgainstAnotherSwitch() async throws {
         let fixture = try ControllerFixture()
-        fixture.workspace.onOpenLegacyHost = { _ in
+        fixture.workspace.onOpenNeoHost = { _ in
             do {
-                _ = try await fixture.controller.use(
-                    mode: .deviceHub
-                )
+                _ = try await fixture.controller.use(.deviceHub)
                 Issue.record("expected concurrent switch to be serialized")
             } catch let error as CLIError {
                 #expect(error.identifier == "operation-lock")
@@ -727,11 +899,9 @@ struct HostModeControllerTests {
             }
         }
 
-        let report = try await fixture.controller.use(
-            mode: .legacy
-        )
+        let report = try await fixture.controller.use(.neo)
 
-        #expect(report.didChange)
+        #expect(report.didChangePreferences)
         #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .trueValue)
         #expect(fixture.runner.storedBoolean(ToolConstants.deviceHubPreference) == .trueValue)
     }
@@ -740,9 +910,7 @@ struct HostModeControllerTests {
         let fixture = try ControllerFixture()
         fixture.workspace.onTerminateDeviceHubs = {
             do {
-                _ = try await fixture.controller.use(
-                    mode: .deviceHub
-                )
+                _ = try await fixture.controller.use(.deviceHub)
                 Issue.record("expected concurrent switch to be serialized")
             } catch let error as CLIError {
                 #expect(error.identifier == "operation-lock")
@@ -762,24 +930,22 @@ struct HostModeControllerTests {
             }
         }
 
-        let report = try await fixture.controller.use(
-            mode: .legacy
-        )
+        let report = try await fixture.controller.use(.neo)
 
-        #expect(report.didChange)
+        #expect(report.didChangePreferences)
         #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .trueValue)
         #expect(fixture.runner.storedBoolean(ToolConstants.deviceHubPreference) == .trueValue)
     }
 
-    @Test func legacyHostLaunchFailureWithoutAReceiptDoesNotSuggestRestore() async throws {
-        let fixture = try ControllerFixture(initialState: .legacy)
-        fixture.workspace.openLegacyHostError = CLIError.io("open", "injected open failure")
+    @Test func neoHostLaunchFailureWithoutAReceiptDoesNotSuggestRestore() async throws {
+        let fixture = try ControllerFixture(initialState: .coreSimulator)
+        fixture.workspace.openNeoHostError = CLIError.io("open", "injected open failure")
 
         do {
-            _ = try await fixture.controller.use(mode: .legacy)
+            _ = try await fixture.controller.use(.neo)
             Issue.record("expected standalone host launch failure")
         } catch let error as CLIError {
-            #expect(error.identifier == "legacy-host-launch-partial-success")
+            #expect(error.identifier == "neo-host-launch-partial-success")
             #expect(error.message.contains("No restoration receipt exists"))
             #expect(!error.message.contains("run restore"))
         }
@@ -816,7 +982,7 @@ struct HostModeControllerTests {
 
     @Test func runningXcodeDoesNotBlockRestore() async throws {
         let fixture = try ControllerFixture()
-        _ = try await fixture.controller.use(mode: .legacy)
+        _ = try await fixture.controller.use(.neo)
         fixture.workspace.runningXcodes = [
             RunningApplication(
                 processIdentifier: 42,
@@ -831,11 +997,11 @@ struct HostModeControllerTests {
         #expect(try fixture.receiptStore.load() == nil)
     }
 
-    @Test func legacyHostTerminationHoldsTheOperationLockAgainstRestore() async throws {
+    @Test func neoHostTerminationHoldsTheOperationLockAgainstRestore() async throws {
         let fixture = try ControllerFixture()
-        _ = try await fixture.controller.use(mode: .legacy)
+        _ = try await fixture.controller.use(.neo)
         var checkedRestore = false
-        fixture.workspace.onTerminateLegacyHosts = {
+        fixture.workspace.onTerminateNeoHosts = {
             checkedRestore = true
             do {
                 _ = try await fixture.controller.restore()
@@ -848,16 +1014,16 @@ struct HostModeControllerTests {
             }
         }
 
-        let report = try await fixture.controller.use(mode: .deviceHub)
+        let report = try await fixture.controller.use(.deviceHub)
 
         #expect(checkedRestore)
-        #expect(report.didChange)
+        #expect(report.didChangePreferences)
         #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .absent)
         #expect(fixture.runner.storedBoolean(ToolConstants.deviceHubPreference) == .absent)
     }
 
     @Test func runningXcodeDoesNotBlockDeviceHubMode() async throws {
-        let fixture = try ControllerFixture(initialState: .legacy)
+        let fixture = try ControllerFixture(initialState: .coreSimulator)
         fixture.workspace.runningXcodes = [
             RunningApplication(
                 processIdentifier: 42,
@@ -865,20 +1031,21 @@ struct HostModeControllerTests {
             ),
         ]
 
-        let report = try await fixture.controller.use(
-            mode: .deviceHub
-        )
+        let report = try await fixture.controller.use(.deviceHub)
 
-        #expect(report.didChange)
+        #expect(report.didChangePreferences)
         #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .absent)
-        #expect(fixture.workspace.events == ["terminate-legacy-hosts"])
+        #expect(
+            fixture.workspace.events
+                == ["terminate-neo-hosts", "terminate-legacy-simulators"]
+        )
     }
 
     @Test func sudoIsRejectedBeforeMutation() async throws {
         let fixture = try ControllerFixture(effectiveUserID: 0)
 
         do {
-            _ = try await fixture.controller.use(mode: .legacy)
+            _ = try await fixture.controller.use(.neo)
             Issue.record("expected root user to be rejected")
         } catch let error as CLIError {
             #expect(error.identifier == "root-user")
@@ -899,10 +1066,10 @@ struct HostModeControllerTests {
                 bundleURL: URL(fileURLWithPath: "/Applications/Xcode_27.app")
             ),
         ]
-        let status = try fixture.controller.status()
+        let status = try fixture.controller.status(explicitLegacyXcodeURL: nil)
 
         #expect(status.routeStatus.preferences == .deviceHub)
-        #expect(status.legacyHost != nil)
+        #expect(status.neoHost != nil)
         #expect(fixture.runner.mutationCount == 0)
         #expect(try fixture.receiptStore.load() == nil)
         #expect(
