@@ -6,41 +6,41 @@ import Testing
 @Suite
 struct HostStatusTests {
     @Test func compactStatusAnswersWhichRouteTheNextRunUses() throws {
-        let deviceHub = try makeStatus(
+        let deviceHub = makeRouteStatus(
             preferences: .deviceHub,
             receiptStatus: .unmanaged
         )
-        #expect(deviceHub.compactRendered == "Simulator route: Device Hub")
+        #expect(deviceHub.rendered == "Simulator route: Device Hub")
 
-        let legacy = try makeStatus(
+        let legacy = makeRouteStatus(
             preferences: .legacy,
             receiptStatus: .managed(original: .deviceHub)
         )
         #expect(
-            legacy.compactRendered
+            legacy.rendered
                 == "Simulator route: CoreSimulator (Xcode 26 Simulator)"
         )
     }
 
     @Test func compactStatusAddsOnlyActionableSafetyWarnings() throws {
-        let pending = try makeStatus(
+        let pending = makeRouteStatus(
             preferences: .legacy,
             receiptStatus: .pendingTarget
         )
         #expect(
-            pending.compactRendered
+            pending.rendered
                 == """
                 Simulator route: CoreSimulator (Xcode 26 Simulator)
                 Attention: an interrupted change needs recovery. Run 'xcode-simulator-host status --verbose'.
                 """
         )
 
-        let conflict = try makeStatus(
+        let conflict = makeRouteStatus(
             preferences: .deviceHub,
             receiptStatus: .conflict(expected: .legacy, observed: .deviceHub)
         )
         #expect(
-            conflict.compactRendered
+            conflict.rendered
                 == """
                 Simulator route: Device Hub
                 Attention: preferences need review. Run 'xcode-simulator-host status --verbose'.
@@ -49,7 +49,7 @@ struct HostStatusTests {
     }
 
     @Test func verboseStatusStartsWithTheRouteAndKeepsTechnicalDetails() throws {
-        let status = try makeStatus(
+        let status = try makeVerboseStatus(
             preferences: .deviceHub,
             receiptStatus: .unmanaged
         )
@@ -64,7 +64,17 @@ struct HostStatusTests {
         #expect(!status.rendered.contains("Configured host:"))
     }
 
-    private func makeStatus(
+    private func makeRouteStatus(
+        preferences: ManagedPreferenceState,
+        receiptStatus: ReceiptStatus
+    ) -> SimulatorRouteStatus {
+        SimulatorRouteStatus(
+            preferences: preferences,
+            receiptStatus: receiptStatus
+        )
+    }
+
+    private func makeVerboseStatus(
         preferences: ManagedPreferenceState,
         receiptStatus: ReceiptStatus
     ) throws -> HostStatus {
@@ -80,7 +90,10 @@ struct HostStatusTests {
         )
         return HostStatus(
             xcode: selectedXcode,
-            preferences: preferences,
+            routeStatus: SimulatorRouteStatus(
+                preferences: preferences,
+                receiptStatus: receiptStatus
+            ),
             legacySimulator: SimulatorInstallation(
                 applicationURL: URL(
                     fileURLWithPath: "/Applications/Xcode.app/Contents/Developer/Applications/Simulator.app"
@@ -89,7 +102,6 @@ struct HostStatusTests {
                 version: "16.0",
                 buildVersion: "1063.4"
             ),
-            receiptStatus: receiptStatus,
             receiptURL: URL(
                 fileURLWithPath: "/Users/test/Library/Application Support/xcode-simulator-host/state.plist"
             ),

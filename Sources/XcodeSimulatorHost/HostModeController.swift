@@ -31,16 +31,28 @@ struct HostModeController {
         self.effectiveUserID = effectiveUserID
     }
 
+    func routeStatus() throws -> SimulatorRouteStatus {
+        try readStatusSnapshot {
+            try makeRouteStatus()
+        }
+    }
+
     func status(explicitLegacyXcodeURL: URL?) throws -> HostStatus {
+        try readStatusSnapshot {
+            try makeStatus(explicitLegacyXcodeURL: explicitLegacyXcodeURL)
+        }
+    }
+
+    private func readStatusSnapshot<T>(_ makeSnapshot: () throws -> T) throws -> T {
         if try !receiptStore.stateDirectoryExists() {
-            let snapshot = try makeStatus(explicitLegacyXcodeURL: explicitLegacyXcodeURL)
+            let snapshot = try makeSnapshot()
             if try !receiptStore.stateDirectoryExists() {
                 return snapshot
             }
         }
 
         return try receiptStore.withExistingExclusiveLock {
-            try makeStatus(explicitLegacyXcodeURL: explicitLegacyXcodeURL)
+            try makeSnapshot()
         }
     }
 
@@ -180,7 +192,7 @@ struct HostModeController {
 
     private func makeStatus(explicitLegacyXcodeURL: URL?) throws -> HostStatus {
         let xcode = try installationInspector.validatedTargetXcode()
-        let preferences = try defaultsStore.readState()
+        let routeStatus = try makeRouteStatus()
         let legacySimulator: SimulatorInstallation?
         if let explicitLegacyXcodeURL {
             legacySimulator = try installationInspector.legacySimulator(
@@ -191,16 +203,21 @@ struct HostModeController {
                 explicitXcodeURL: nil
             )
         }
-
-        let receipt = try receiptStore.load()
-        let receiptStatus = classify(receipt: receipt, observed: preferences)
         return HostStatus(
             xcode: xcode,
-            preferences: preferences,
+            routeStatus: routeStatus,
             legacySimulator: legacySimulator,
-            receiptStatus: receiptStatus,
             receiptURL: receiptStore.receiptURL,
             runningXcodes: workspace.runningXcodes()
+        )
+    }
+
+    private func makeRouteStatus() throws -> SimulatorRouteStatus {
+        let preferences = try defaultsStore.readState()
+        let receipt = try receiptStore.load()
+        return SimulatorRouteStatus(
+            preferences: preferences,
+            receiptStatus: classify(receipt: receipt, observed: preferences)
         )
     }
 

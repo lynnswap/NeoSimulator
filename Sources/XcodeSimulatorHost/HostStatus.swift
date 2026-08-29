@@ -16,15 +16,11 @@ enum ReceiptStatus: Equatable {
     }
 }
 
-struct HostStatus: Equatable {
-    let xcode: XcodeInstallation
+struct SimulatorRouteStatus: Equatable {
     let preferences: ManagedPreferenceState
-    let legacySimulator: SimulatorInstallation?
     let receiptStatus: ReceiptStatus
-    let receiptURL: URL
-    let runningXcodes: [RunningApplication]
 
-    var compactRendered: String {
+    var rendered: String {
         let route = routeLine
         switch receiptStatus {
         case .pendingBefore, .pendingTarget:
@@ -42,9 +38,26 @@ struct HostStatus: Equatable {
         }
     }
 
+    fileprivate var routeLine: String {
+        switch preferences.effectiveMode {
+        case .deviceHub:
+            "Simulator route: Device Hub"
+        case .legacy:
+            "Simulator route: CoreSimulator (Xcode 26 Simulator)"
+        }
+    }
+}
+
+struct HostStatus: Equatable {
+    let xcode: XcodeInstallation
+    let routeStatus: SimulatorRouteStatus
+    let legacySimulator: SimulatorInstallation?
+    let receiptURL: URL
+    let runningXcodes: [RunningApplication]
+
     var rendered: String {
         var lines = [
-            routeLine,
+            routeStatus.routeLine,
             "",
             "Selected Xcode: \(xcode.version) (\(xcode.buildVersion))",
             "  \(xcode.applicationURL.path)",
@@ -60,7 +73,7 @@ struct HostStatus: Equatable {
         }
 
         lines.append("")
-        switch receiptStatus {
+        switch routeStatus.receiptStatus {
         case .unmanaged:
             lines.append("Restoration receipt: none")
         case .managed(let original):
@@ -98,22 +111,13 @@ struct HostStatus: Equatable {
         lines.append("")
         lines.append("Preference details:")
         lines.append(
-            "  CoreSimulator session: \(preferences.xcodeSession.statusDescription)"
+            "  CoreSimulator session: \(routeStatus.preferences.xcodeSession.statusDescription)"
         )
         lines.append(
-            "  Suppress Device Hub auto-start: \(preferences.deviceHubAutoStartSuppression.statusDescription)"
+            "  Suppress Device Hub auto-start: \(routeStatus.preferences.deviceHubAutoStartSuppression.statusDescription)"
         )
         lines.append("  Scope: shared by all installed Xcode versions")
         return lines.joined(separator: "\n")
-    }
-
-    private var routeLine: String {
-        switch preferences.effectiveMode {
-        case .deviceHub:
-            "Simulator route: Device Hub"
-        case .legacy:
-            "Simulator route: CoreSimulator (Xcode 26 Simulator)"
-        }
     }
 }
 
