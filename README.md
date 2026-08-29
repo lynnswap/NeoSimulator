@@ -1,59 +1,40 @@
 # xcode-simulator-host
 
-Switch Xcode 27 iOS Simulator runs between Device Hub and the classic Simulator
-app from Xcode 26 while Xcode remains open.
+Use CoreSimulator for iOS Simulator runs from Xcode 27 without quitting Xcode.
 
-This is an experimental tool built around undocumented Xcode preferences. It
-checks the selected Xcode 27 installation, Device Hub, and managed preference
-keys for the expected compatibility markers before `use` changes anything.
-`use legacy` additionally requires an Apple-signed Xcode 26 and Simulator.
+## What It Does
 
-Requires macOS 26.4 or later and Xcode 27. Prebuilt releases are for Apple
-Silicon. The legacy route also requires an installed Xcode 26; source builds
-require Swift 6.4.
+`xcode-simulator-host` lets you:
 
-## Quick Start
+- Run iOS Simulator from Xcode 27 through CoreSimulator.
+- Return to Xcode 27's default Device Hub route.
+- Restore the exact configuration from before the tool's first change.
+- Switch routes without quitting Xcode.
+
+## Requirements
+
+- macOS 26.4 or later
+- Xcode 27
+- Xcode 26 when using the CoreSimulator route
+- Apple Silicon when installing a prebuilt release
+- Swift 6.4 when building from source
+
+## How to Use
+
+### Install
+
+Install the latest prebuilt release:
 
 ```bash
 curl -fsSL https://github.com/lynnswap/xcode-simulator-host/releases/latest/download/install.sh | sh
 ```
 
-Inspect the current configuration, then switch to the Xcode 26 Simulator:
-
-```bash
-xcode-simulator-host status
-xcode-simulator-host use legacy
-```
-
-`status` prints only the simulator route used by the next Run. Use
-`xcode-simulator-host status --verbose` for Xcode installations, preferences,
-restoration state, and running processes.
-
-Leave Xcode 27 open. After the command opens Simulator, use **Build & Run** in
-Xcode as usual.
-
-Switch back to Xcode 27's Device Hub route:
-
-```bash
-xcode-simulator-host use device-hub
-```
-
-Restore the exact preference state saved before the tool's first change:
-
-```bash
-xcode-simulator-host restore
-```
-
-`use device-hub` selects Xcode 27's default route by removing both overrides.
-`restore` instead preserves whether each original preference was absent,
-explicitly `false`, or explicitly `true`.
-
-## Install Options
+The installer places the command in `~/.local/bin` by default, verifies the
+release checksum, and prints PATH guidance when needed. Follow that guidance
+before continuing; the installer never edits shell profiles.
 
 <details>
-<summary>Custom install directory</summary>
-
-Install into a custom directory:
+<summary>Install to a custom directory</summary>
 
 ```bash
 curl -fsSL https://github.com/lynnswap/xcode-simulator-host/releases/latest/download/install.sh | sh -s -- --bindir "$HOME/bin"
@@ -61,18 +42,73 @@ curl -fsSL https://github.com/lynnswap/xcode-simulator-host/releases/latest/down
 
 </details>
 
-The installer verifies the release checksum and never edits shell profiles.
-Use `xcode-simulator-host --help` for the complete command and option list.
-See [Advanced configuration](Documentation/AdvancedConfiguration.md) for
-detailed diagnostics and non-default Xcode installations.
+Use `xcode-simulator-host --help` for the command list and
+`xcode-simulator-host help <subcommand>` for subcommand options.
+
+### Quick Start
+
+Keep Xcode 27 open and run:
+
+```bash
+xcode-simulator-host use legacy
+```
+
+When Simulator opens, use **Build & Run** in Xcode as usual.
+
+You can run `use legacy` again when the CoreSimulator route is already selected.
+It leaves the selected route unchanged and opens or activates Simulator.
+
+### Return to Device Hub
+
+Select Xcode 27's default Device Hub route:
+
+```bash
+xcode-simulator-host use device-hub
+```
+
+The next Run uses Device Hub.
+
+### Restore the Original Settings
+
+Restore the exact configuration captured before the tool's first change:
+
+```bash
+xcode-simulator-host restore
+```
+
+Use `restore` to undo the tool's changes instead of explicitly choosing a route.
+
+## Inspect the Current Route
+
+Check the simulator route used by the next Run:
+
+```bash
+xcode-simulator-host status
+```
+
+For Xcode installations, preferences, restoration state, and running processes:
+
+```bash
+xcode-simulator-host status --verbose
+```
+
+Both commands are read-only. See
+[Advanced configuration](Documentation/AdvancedConfiguration.md) for detailed
+diagnostics, `DEVELOPER_DIR`, and non-default Xcode installations.
 
 ## Safety and Recovery
 
-`use` validates the selected Xcode before changing preferences, serializes
-transitions, verifies every write, and rolls back a failed transition. `restore`
-remains available without that compatibility check so the saved values can be
-recovered. The tool only requests normal termination of the exact Device Hub
-inside the selected Xcode; it never force-quits Xcode or Device Hub.
+> [!IMPORTANT]
+> This is an experimental tool built around undocumented Xcode preferences.
+
+`use` validates compatibility before changing managed preferences, serializes
+transitions, and verifies every write. It rolls back a failed write when the
+previous state can be safely restored. A conflicting external change is left
+untouched unless the user explicitly runs `restore --force`. `restore` remains
+available without the compatibility check so the saved values can be recovered.
+
+The tool requests normal termination only for the exact Device Hub inside the
+selected Xcode. It never force-quits Xcode or Device Hub.
 
 The original preference state and any in-progress transition are stored at:
 
@@ -81,11 +117,13 @@ The original preference state and any in-progress transition are stored at:
 ```
 
 If the tool detects that another process changed a managed preference, it stops
-rather than guessing which value should win. Inspect `status` before using
-`restore --force`, which explicitly gives the saved original state precedence
-over conflicting Boolean values. If Device Hub termination or Simulator launch
-fails after the preference transaction commits, the command reports partial
-success; check `status` before retrying or restoring.
+rather than guessing which value should win. Inspect `status --verbose` before
+using `restore --force`, which explicitly gives the saved original state
+precedence over conflicting Boolean values.
+
+If Device Hub termination or Simulator launch fails after the preference
+transaction commits, the command reports partial success. Check the detailed
+output from `status --verbose` before retrying or restoring.
 
 Do not run mutation commands with `sudo`; preferences and recovery state are
 per-user. Run `restore` before uninstalling the command or deleting its state
