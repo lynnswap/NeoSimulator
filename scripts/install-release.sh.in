@@ -106,8 +106,6 @@ tmp_root="${TMPDIR:-/tmp}"
 tmp_dir="$(mktemp -d "${tmp_root%/}/xcode-simulator-host.XXXXXX")"
 transaction_dir=""
 transaction_active=0
-old_bin_moved=0
-old_app_moved=0
 new_bin_installed=0
 new_app_installed=0
 target_bin="${BINDIR}/${CLI_PRODUCT}"
@@ -125,10 +123,12 @@ cleanup() {
     if [ "$new_app_installed" = "1" ]; then
       rm -rf "$target_app" || rollback_failed=1
     fi
-    if [ "$old_bin_moved" = "1" ]; then
+    if [ -e "$transaction_dir/backup/$CLI_PRODUCT" ] ||
+       [ -L "$transaction_dir/backup/$CLI_PRODUCT" ]; then
       mv "$transaction_dir/backup/$CLI_PRODUCT" "$target_bin" || rollback_failed=1
     fi
-    if [ "$old_app_moved" = "1" ]; then
+    if [ -e "$transaction_dir/backup/$HOST_PRODUCT.app" ] ||
+       [ -L "$transaction_dir/backup/$HOST_PRODUCT.app" ]; then
       mv "$transaction_dir/backup/$HOST_PRODUCT.app" "$target_app" || rollback_failed=1
     fi
     set -e
@@ -239,11 +239,9 @@ codesign --verify --strict "$stage_bin"
 transaction_active=1
 if [ -e "$target_app" ] || [ -L "$target_app" ]; then
   mv "$target_app" "$transaction_dir/backup/$HOST_PRODUCT.app"
-  old_app_moved=1
 fi
 if [ -e "$target_bin" ] || [ -L "$target_bin" ]; then
   mv "$target_bin" "$transaction_dir/backup/$CLI_PRODUCT"
-  old_bin_moved=1
 fi
 
 # Install the companion first and the CLI last. A newly invoked CLI therefore

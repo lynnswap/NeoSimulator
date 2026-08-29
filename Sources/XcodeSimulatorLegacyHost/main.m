@@ -10,37 +10,76 @@
 
 static void XSHPrintUsage(FILE *stream) {
     fprintf(stream,
-            "usage: XcodeSimulatorLegacyHost [--validate-runtime] --xcode "
+            "usage: XcodeSimulatorLegacyHost [--validate-runtime] "
+            "[--startup-result /absolute/path] --xcode "
             "/absolute/path/to/Xcode.app\n");
+}
+
+static void XSHSetInvalidArgumentsError(NSError **error) {
+    if (error != NULL) {
+        *error = XSHLegacyHostError(
+            XSHLegacyHostErrorInvalidArguments,
+            @"expected [--validate-runtime] [--startup-result /absolute/path] "
+             "--xcode /absolute/path/to/Xcode.app"
+        );
+    }
 }
 
 static NSURL *XSHParseXcodeURL(int argc,
                               const char *argv[],
                               BOOL *validateRuntimeOnly,
+                              NSURL **startupResultURL,
                               NSError **error) {
     *validateRuntimeOnly = NO;
+    *startupResultURL = nil;
     if (argc == 2 && strcmp(argv[1], "--help") == 0) {
         XSHPrintUsage(stdout);
         exit(EX_OK);
     }
 
-    int xcodeOptionIndex = 1;
-    if (argc == 4 && strcmp(argv[1], "--validate-runtime") == 0) {
-        *validateRuntimeOnly = YES;
-        xcodeOptionIndex = 2;
-    }
-    if (argc != xcodeOptionIndex + 2 ||
-        strcmp(argv[xcodeOptionIndex], "--xcode") != 0) {
-        if (error != NULL) {
-            *error = XSHLegacyHostError(
-                XSHLegacyHostErrorInvalidArguments,
-                @"expected --xcode followed by an absolute Xcode.app path"
-            );
+    const char *xcodePath = NULL;
+    for (int index = 1; index < argc; index++) {
+        if (strcmp(argv[index], "--validate-runtime") == 0) {
+            if (*validateRuntimeOnly) {
+                XSHSetInvalidArgumentsError(error);
+                return nil;
+            }
+            *validateRuntimeOnly = YES;
+            continue;
         }
+        if (strcmp(argv[index], "--xcode") == 0) {
+            if (xcodePath != NULL || index + 1 >= argc) {
+                XSHSetInvalidArgumentsError(error);
+                return nil;
+            }
+            xcodePath = argv[++index];
+            continue;
+        }
+        if (strcmp(argv[index], "--startup-result") == 0) {
+            if (*startupResultURL != nil || index + 1 >= argc) {
+                XSHSetInvalidArgumentsError(error);
+                return nil;
+            }
+            NSString *resultPath = [NSString stringWithUTF8String:argv[++index]];
+            if (resultPath.length == 0 || !resultPath.isAbsolutePath) {
+                XSHSetInvalidArgumentsError(error);
+                return nil;
+            }
+            *startupResultURL = [NSURL fileURLWithPath:resultPath isDirectory:NO]
+                .URLByStandardizingPath;
+            continue;
+        }
+
+        XSHSetInvalidArgumentsError(error);
         return nil;
     }
 
-    NSString *path = [NSString stringWithUTF8String:argv[xcodeOptionIndex + 1]];
+    if (xcodePath == NULL || (*validateRuntimeOnly && *startupResultURL != nil)) {
+        XSHSetInvalidArgumentsError(error);
+        return nil;
+    }
+
+    NSString *path = [NSString stringWithUTF8String:xcodePath];
     if (path.length == 0 || !path.isAbsolutePath) {
         if (error != NULL) {
             *error = XSHLegacyHostError(
@@ -98,14 +137,26 @@ static NSURL *XSHParseXcodeURL(int argc,
     return xcodeURL;
 }
 
+static BOOL XSHWriteStartupResult(NSURL *startupResultURL, NSError **error) {
+    if (startupResultURL == nil) {
+        return YES;
+    }
+    NSData *payload = [@"ready\n" dataUsingEncoding:NSUTF8StringEncoding];
+    return [payload writeToURL:startupResultURL
+                      options:NSDataWritingAtomic
+                        error:error];
+}
+
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
         NSError *argumentError = nil;
         BOOL validateRuntimeOnly = NO;
+        NSURL *startupResultURL = nil;
         NSURL *xcodeURL = XSHParseXcodeURL(
             argc,
             argv,
             &validateRuntimeOnly,
+            &startupResultURL,
             &argumentError
         );
         if (xcodeURL == nil) {
@@ -171,6 +222,19 @@ int main(int argc, const char *argv[]) {
 
         [application activate];
         [controller activateDeviceWindows];
+        if (controller.deviceHubConflictObserved ||
+            XSHLegacyHostApplication.isDeviceHubRunning) {
+            XSHLog(@"Device Hub launched before startup completed; refusing to connect");
+            return EX_TEMPFAIL;
+        }
+        NSError *startupResultError = nil;
+        // LaunchServices reports process creation, not successful simulator-host
+        // startup. Acknowledge only after the runtime and device-set owners exist.
+        if (!XSHWriteStartupResult(startupResultURL, &startupResultError)) {
+            XSHLog(@"could not write startup result: %@",
+                   startupResultError.localizedDescription);
+            return EX_CANTCREAT;
+        }
         [application run];
     }
     return EX_OK;

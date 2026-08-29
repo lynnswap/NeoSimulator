@@ -24,6 +24,8 @@ private struct ManagedApplicationIdentity {
     let errorIdentifier: String
 }
 
+private let legacyHostStartupPayload = Data("ready\n".utf8)
+
 @MainActor
 private final class ApplicationTerminationWaiter {
     private let application: NSRunningApplication
@@ -199,11 +201,25 @@ struct WorkspaceClient {
                 )
             }
 
+            let startupDirectory = try makeLegacyHostStartupDirectory()
+            defer {
+                try? FileManager.default.removeItem(at: startupDirectory)
+            }
+            let startupResultURL = startupDirectory.appendingPathComponent(
+                "result",
+                isDirectory: false
+            )
+
             let configuration = NSWorkspace.OpenConfiguration()
             configuration.activates = true
             configuration.createsNewApplicationInstance = false
             configuration.allowsRunningApplicationSubstitution = false
-            configuration.arguments = ["--xcode", xcodeURL.path]
+            configuration.arguments = [
+                "--startup-result",
+                startupResultURL.path,
+                "--xcode",
+                xcodeURL.path,
+            ]
 
             let application = try await NSWorkspace.shared.openApplication(
                 at: applicationURL,
@@ -229,6 +245,30 @@ struct WorkspaceClient {
                     "legacy-host-substitution",
                     "requested \(expected.path), but LaunchServices opened \(observed.path)"
                 )
+            }
+
+            let identity = ManagedApplicationIdentity(
+                displayName: "standalone simulator host",
+                bundleIdentifier: ToolConstants.legacyHostBundleIdentifier,
+                expectedURL: applicationURL,
+                errorIdentifier: "legacy-host"
+            )
+            do {
+                try await waitForLegacyHostStartup(
+                    application,
+                    resultURL: startupResultURL
+                )
+            } catch {
+                if !application.isTerminated {
+                    _ = application.terminate()
+                }
+                let waiter = ApplicationTerminationWaiter(
+                    application: application,
+                    identity: identity,
+                    timeoutInterval: 10
+                )
+                try? await waiter.terminate()
+                throw error
             }
             return observed
         }
@@ -307,6 +347,76 @@ struct WorkspaceClient {
                 terminatedCount += 1
             }
         }
+    }
+
+    private static func makeLegacyHostStartupDirectory() throws -> URL {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "\(ToolConstants.name)-startup-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        do {
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: false,
+                attributes: [.posixPermissions: 0o700]
+            )
+        } catch {
+            throw CLIError.cannotCreate(
+                "legacy-host-startup-directory",
+                "could not create the standalone host startup directory: \(error.localizedDescription)"
+            )
+        }
+        return directory
+    }
+
+    private static func waitForLegacyHostStartup(
+        _ application: NSRunningApplication,
+        resultURL: URL
+    ) async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(10))
+
+        while clock.now < deadline {
+            guard !application.isTerminated else {
+                throw CLIError.temporary(
+                    "legacy-host-startup",
+                    "the standalone simulator host exited before startup completed"
+                )
+            }
+
+            if FileManager.default.fileExists(atPath: resultURL.path) {
+                let result: Data
+                do {
+                    result = try Data(contentsOf: resultURL)
+                } catch {
+                    throw CLIError.io(
+                        "legacy-host-startup-result",
+                        "could not read the standalone host startup result: \(error.localizedDescription)"
+                    )
+                }
+                guard result == legacyHostStartupPayload else {
+                    throw CLIError.configuration(
+                        "legacy-host-startup-result",
+                        "the standalone host wrote an invalid startup result"
+                    )
+                }
+                await Task.yield()
+                guard !application.isTerminated else {
+                    throw CLIError.temporary(
+                        "legacy-host-startup",
+                        "the standalone simulator host exited during startup"
+                    )
+                }
+                return
+            }
+
+            try await Task.sleep(for: .milliseconds(50))
+        }
+
+        throw CLIError.temporary(
+            "legacy-host-startup-timeout",
+            "the standalone simulator host did not finish startup within 10 seconds"
+        )
     }
 
     private static func normalized(_ url: URL) -> URL {

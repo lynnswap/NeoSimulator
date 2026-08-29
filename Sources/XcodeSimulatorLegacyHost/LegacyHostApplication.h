@@ -8,6 +8,7 @@ NS_ASSUME_NONNULL_BEGIN
 @interface XSHLegacyHostApplication : NSObject <NSApplicationDelegate>
 
 @property (class, nonatomic, readonly) BOOL isDeviceHubRunning;
+@property (atomic, readonly) BOOL deviceHubConflictObserved;
 
 - (instancetype)initWithXcodeURL:(NSURL *)xcodeURL
                   menuController:(XSHMenuController *)menuController;

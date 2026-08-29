@@ -65,7 +65,9 @@ libexec/xcode-simulator-host/XcodeSimulatorLegacyHost.app
 
 The CLI resolves the app relative to its own real executable path. The installer
 stages and verifies both artifacts, installs the app first, commits the CLI last,
-and restores the previous pair if installation fails.
+and restores the previous pair if installation fails. Rollback derives whether
+an old artifact moved from the presence of its same-filesystem backup path, so a
+signal cannot land between a move and a separate bookkeeping update.
 
 ## Owner map
 
@@ -272,6 +274,11 @@ Preference commit followed by Device Hub termination or companion launch
 failure is reported as partial success; the receipt remains available for
 `restore`. A failure to close the companion before leaving legacy mode happens
 before preference mutation.
+
+Companion launch is successful only after the new process writes its private
+startup result following runtime creation, device-set subscription, activation,
+and any initial booted-device window creation. LaunchServices returning an
+application object is not itself a successful startup.
 
 Optional menu-operation failures are shown on the active simulator window and
 do not change the route or launch Device Hub.

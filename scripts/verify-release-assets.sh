@@ -239,4 +239,57 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
     echo "Actual:   $installed_version" >&2
     exit 1
   fi
+
+  verify_interrupted_backup_rollback() {
+    local interrupted_artifact="$1"
+    local interrupted_root="$tmp_dir/interrupted-$interrupted_artifact"
+    local interrupted_app="$interrupted_root/libexec/$cli_product/$host_product.app"
+    local fake_bin="$interrupted_root/fake-bin"
+    local marker="$interrupted_root/interrupted"
+    local interrupt_source
+    local real_mv
+
+    mkdir -p "$interrupted_root/bin" "$interrupted_app" "$fake_bin"
+    printf 'previous cli\n' > "$interrupted_root/bin/$cli_product"
+    printf 'previous app\n' > "$interrupted_app/previous-version"
+    if [[ "$interrupted_artifact" == "app" ]]; then
+      interrupt_source="$interrupted_app"
+    else
+      interrupt_source="$interrupted_root/bin/$cli_product"
+    fi
+    real_mv="$(command -v mv)"
+    printf '%s\n' \
+      '#!/bin/sh' \
+      '"$XSH_REAL_MV" "$@"' \
+      'if [ "$1" = "$XSH_INTERRUPT_SOURCE" ] && [ ! -e "$XSH_INTERRUPT_MARKER" ]; then' \
+      '  : > "$XSH_INTERRUPT_MARKER"' \
+      '  kill -TERM "$PPID"' \
+      'fi' > "$fake_bin/mv"
+    chmod 755 "$fake_bin/mv"
+
+    if PATH="$fake_bin:$PATH" \
+      XSH_REAL_MV="$real_mv" \
+      XSH_INTERRUPT_SOURCE="$interrupt_source" \
+      XSH_INTERRUPT_MARKER="$marker" \
+      XCODE_SIMULATOR_HOST_BASE_URL="file://$release_base" \
+      sh "$release_base/$installer_asset" --bindir "$interrupted_root/bin"; then
+      echo "Interrupted $interrupted_artifact backup unexpectedly completed." >&2
+      exit 1
+    fi
+
+    if ! grep -qxF 'previous cli' "$interrupted_root/bin/$cli_product" ||
+       ! grep -qxF 'previous app' "$interrupted_app/previous-version" ||
+       [[ -e "$interrupted_app/Contents" ]]; then
+      echo "Interrupted $interrupted_artifact backup did not restore the previous installation." >&2
+      exit 1
+    fi
+    if find "$interrupted_root" -maxdepth 1 \
+      -name '.xcode-simulator-host-install.*' -print -quit | grep -q .; then
+      echo "Interrupted $interrupted_artifact backup left a completed rollback transaction." >&2
+      exit 1
+    fi
+  }
+
+  verify_interrupted_backup_rollback app
+  verify_interrupted_backup_rollback cli
 fi

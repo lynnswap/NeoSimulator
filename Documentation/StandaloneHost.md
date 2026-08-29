@@ -41,7 +41,7 @@ xcode-simulator-host use legacy
   -> commit the CoreSimulator-only preference route
   -> normally terminate the exact Device Hub from that Xcode
   -> verify Device Hub is absent
-  -> launch or activate XcodeSimulatorLegacyHost.app
+  -> launch XcodeSimulatorLegacyHost.app and wait for its startup result
 
 XcodeSimulatorLegacyHost.app
   -> CoreSimulator SimServiceContext / default device set
@@ -138,6 +138,9 @@ DeviceKit nor Device Hub is loaded.
 - `use legacy` is idempotent: it normally terminates the exact packaged host and
   starts it again with the currently selected Xcode after validating the route
   and Device Hub absence.
+- LaunchServices process creation is not treated as readiness. The CLI returns
+  success only after the host has created its private runtime and device-set
+  owners and atomically written the per-launch startup result.
 - The host stays alive without a booted device so it can display a simulator
   started by a later Xcode Run.
 - Device-set notifications add windows for newly booted iOS devices and remove
