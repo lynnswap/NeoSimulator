@@ -55,7 +55,7 @@ when `DEVELOPER_DIR` is unset:
 
 ```bash
 DEVELOPER_DIR=/Applications/Xcode_27.app/Contents/Developer \
-  xcode-simulator-host status
+  xcode-simulator-host status --verbose
 ```
 
 `use legacy` selects the newest validated Xcode 26 in `/Applications`. Pass an
