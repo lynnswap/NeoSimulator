@@ -8,7 +8,6 @@
 
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <errno.h>
-#import <math.h>
 #import <stdio.h>
 #import <stdlib.h>
 #import <string.h>
@@ -207,7 +206,7 @@ static BOOL XSHAtomicallyReplaceURL(NSURL *temporaryURL,
 @property (nonatomic) BOOL disconnected;
 @property (nonatomic) BOOL applyingResize;
 @property (nonatomic) BOOL operationInProgress;
-@property (nonatomic) double deviceRotationDegrees;
+@property (nonatomic) BOOL requestedInitialOrientation;
 @end
 
 @implementation XSHDeviceWindowController
@@ -523,6 +522,10 @@ static BOOL XSHAtomicallyReplaceURL(NSURL *temporaryURL,
     [self showWindow:nil];
     [self.window makeKeyAndOrderFront:nil];
     [self.window makeFirstResponder:self.displayView];
+    if (!self.requestedInitialOrientation) {
+        self.requestedInitialOrientation = YES;
+        [self synchronizeDeviceRotationPresentingError:NO];
+    }
 }
 
 - (BOOL)canPerformCommands {
@@ -639,25 +642,57 @@ static BOOL XSHAtomicallyReplaceURL(NSURL *temporaryURL,
         if (strongSelf == nil) {
             return;
         }
-        strongSelf.operationInProgress = NO;
-        if (error == nil && !strongSelf.invalidated) {
-            [strongSelf applyRotation:direction];
+        if (error != nil || strongSelf.invalidated) {
+            strongSelf.operationInProgress = NO;
+            if (!strongSelf.invalidated && error.code != NSUserCancelledError) {
+                [strongSelf presentActionError:error];
+            }
+            return;
         }
-        if (!strongSelf.invalidated &&
-            error != nil &&
-            error.code != NSUserCancelledError) {
-            [strongSelf presentActionError:error];
-        }
+        [strongSelf readAndApplyDeviceRotationPresentingError:YES];
     }];
 }
 
-- (void)applyRotation:(XSHDeviceRotationDirection)direction {
-    double delta = direction == XSHDeviceRotationDirectionLeft ? -90.0 : 90.0;
-    self.deviceRotationDegrees = fmod(self.deviceRotationDegrees + delta, 360.0);
+- (void)synchronizeDeviceRotationPresentingError:(BOOL)presentError {
+    if (!self.canPerformToolOperation) {
+        return;
+    }
+    self.operationInProgress = YES;
+    [self readAndApplyDeviceRotationPresentingError:presentError];
+}
+
+- (void)readAndApplyDeviceRotationPresentingError:(BOOL)presentError {
+    __weak typeof(self) weakSelf = self;
+    [self.toolRunner readOrientationWithCompletion:^(
+        double rotationDegrees,
+        NSError *error
+    ) {
+        typeof(self) strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return;
+        }
+        strongSelf.operationInProgress = NO;
+        if (error != nil || strongSelf.invalidated) {
+            if (!strongSelf.invalidated && error.code != NSUserCancelledError) {
+                if (presentError) {
+                    [strongSelf presentActionError:error];
+                } else {
+                    XSHLog(@"could not synchronize orientation for %@: %@",
+                           strongSelf.deviceIdentifier,
+                           error.localizedDescription);
+                }
+            }
+            return;
+        }
+        [strongSelf applyRotationDegrees:rotationDegrees];
+    }];
+}
+
+- (void)applyRotationDegrees:(double)rotationDegrees {
     XSHSwiftSetAngleMeasurement(
         self.runtime.deviceRotationSetterFunction,
         self.displayView,
-        self.deviceRotationDegrees,
+        rotationDegrees,
         NSUnitAngle.degrees
     );
     [self.displayView invalidateIntrinsicContentSize];

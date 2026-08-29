@@ -8,6 +8,10 @@ typedef NS_ENUM(NSUInteger, XSHDeviceRotationDirection) {
 };
 
 typedef void (^XSHDeviceToolCompletion)(NSError * _Nullable error);
+typedef void (^XSHDeviceOrientationCompletion)(
+    double rotationDegrees,
+    NSError * _Nullable error
+);
 
 @interface XSHDeviceToolRunner : NSObject
 
@@ -21,6 +25,7 @@ typedef void (^XSHDeviceToolCompletion)(NSError * _Nullable error);
                      completion:(XSHDeviceToolCompletion)completion;
 - (void)rotate:(XSHDeviceRotationDirection)direction
      completion:(XSHDeviceToolCompletion)completion;
+- (void)readOrientationWithCompletion:(XSHDeviceOrientationCompletion)completion;
 - (void)cancel;
 
 @end

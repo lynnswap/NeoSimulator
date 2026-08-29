@@ -224,11 +224,14 @@ Home, Lock, and Software Keyboard use typed HID button messages. Shake uses a
 fail-loud CoreSimulator Darwin-notification call. Appearance uses the current
 and target UI style selectors.
 
-Rotation uses direct Apple `devicectl`. Save Screen uses direct Apple `simctl`
-and a same-directory temporary PNG. The file is signature-checked and then
-atomically renamed, so cancellation or failure preserves an existing
-destination. Device-tool operations are single-flight, drain both output pipes,
-have a bounded timeout, and are cancelled when their window closes.
+Rotation uses direct Apple `devicectl`. On initial attachment and after each
+relative rotation, the session reads the versioned JSON orientation result and
+sets `SimDisplayView.deviceRotation` from that actual value; no local counter is
+the orientation source of truth. Save Screen uses direct Apple `simctl` and a
+same-directory temporary PNG. The file is signature-checked and then atomically
+renamed, so cancellation or failure preserves an existing destination.
+Device-tool operations are single-flight, drain both output pipes, have a
+bounded timeout, and are cancelled when their window closes.
 
 The following are intentionally absent:
 

@@ -12,6 +12,11 @@ static const NSUInteger XSHMaximumDiagnosticOutputLength = 4096;
 static const NSTimeInterval XSHDeviceToolTimeout = 30.0;
 static const NSTimeInterval XSHDeviceToolTerminationGracePeriod = 2.0;
 
+typedef void (^XSHDeviceToolRawCompletion)(
+    NSData *standardOutput,
+    NSError * _Nullable error
+);
+
 @interface XSHDeviceToolRunner ()
 @property (nonatomic) NSString *developerDirectory;
 @property (nonatomic) NSString *deviceIdentifier;
@@ -20,7 +25,7 @@ static const NSTimeInterval XSHDeviceToolTerminationGracePeriod = 2.0;
 @property (nonatomic, nullable) NSData *standardErrorData;
 @property (nonatomic, nullable) NSError *launchError;
 @property (nonatomic, copy, nullable) NSString *operationName;
-@property (nonatomic, copy, nullable) XSHDeviceToolCompletion completion;
+@property (nonatomic, copy, nullable) XSHDeviceToolRawCompletion rawCompletion;
 @property (nonatomic) BOOL cancellationRequested;
 @property (nonatomic) BOOL timedOut;
 @property (nonatomic, nullable) dispatch_source_t timeoutSource;
@@ -83,7 +88,10 @@ static const NSTimeInterval XSHDeviceToolTerminationGracePeriod = 2.0;
                         outputURL.path,
                     ]
                  operationName:@"Save Screen"
-                    completion:completion];
+                 rawCompletion:^(NSData *standardOutput, NSError *error) {
+        (void)standardOutput;
+        completion(error);
+    }];
 }
 
 - (void)rotate:(XSHDeviceRotationDirection)direction
@@ -104,20 +112,84 @@ static const NSTimeInterval XSHDeviceToolTerminationGracePeriod = 2.0;
                  operationName:direction == XSHDeviceRotationDirectionLeft
                     ? @"Rotate Left"
                     : @"Rotate Right"
-                    completion:completion];
+                 rawCompletion:^(NSData *standardOutput, NSError *error) {
+        (void)standardOutput;
+        completion(error);
+    }];
+}
+
+- (void)readOrientationWithCompletion:(XSHDeviceOrientationCompletion)completion {
+    [self runExecutableAtPath:XSHDevicectlPath
+                    arguments:@[
+                        @"device",
+                        @"orientation",
+                        @"get",
+                        @"--device",
+                        self.deviceIdentifier,
+                        @"--json-output",
+                        @"-",
+                        @"--quiet",
+                    ]
+                 operationName:@"Read Orientation"
+                 rawCompletion:^(NSData *standardOutput, NSError *toolError) {
+        if (toolError != nil) {
+            completion(0.0, toolError);
+            return;
+        }
+
+        NSError *jsonError = nil;
+        id object = [NSJSONSerialization JSONObjectWithData:standardOutput
+                                                    options:0
+                                                      error:&jsonError];
+        NSDictionary *document = [object isKindOfClass:NSDictionary.class]
+            ? object
+            : nil;
+        NSDictionary *result = [document[@"result"] isKindOfClass:NSDictionary.class]
+            ? document[@"result"]
+            : nil;
+        NSString *orientation = [result[@"deviceOrientationNonFlat"]
+            isKindOfClass:NSString.class]
+            ? result[@"deviceOrientationNonFlat"]
+            : nil;
+        NSDictionary<NSString *, NSNumber *> *angles = @{
+            @"portrait": @0.0,
+            @"landscapeRight": @90.0,
+            @"portraitUpsideDown": @180.0,
+            @"landscapeLeft": @(-90.0),
+        };
+        NSNumber *angle = angles[orientation];
+        if (jsonError != nil || angle == nil) {
+            NSString *detail = jsonError.localizedDescription
+                ?: [NSString stringWithFormat:@"unsupported orientation %@",
+                                              orientation ?: @"unknown"];
+            completion(
+                0.0,
+                XSHLegacyHostError(
+                    XSHLegacyHostErrorToolOperation,
+                    [NSString stringWithFormat:@"could not read device orientation: %@",
+                                               detail]
+                )
+            );
+            return;
+        }
+        completion(angle.doubleValue, nil);
+    }];
 }
 
 - (void)runExecutableAtPath:(NSString *)executablePath
                   arguments:(NSArray<NSString *> *)arguments
                operationName:(NSString *)operationName
-                  completion:(XSHDeviceToolCompletion)completion {
+               rawCompletion:(XSHDeviceToolRawCompletion)rawCompletion {
     NSAssert(NSThread.isMainThread, @"device tools must be started on the main thread");
 
     if (self.task != nil) {
-        completion(XSHLegacyHostError(
-            XSHLegacyHostErrorToolOperation,
-            @"another device operation is already in progress"
-        ));
+        rawCompletion(
+            NSData.data,
+            XSHLegacyHostError(
+                XSHLegacyHostErrorToolOperation,
+                @"another device operation is already in progress"
+            )
+        );
         return;
     }
 
@@ -139,7 +211,7 @@ static const NSTimeInterval XSHDeviceToolTerminationGracePeriod = 2.0;
     self.standardErrorData = nil;
     self.launchError = nil;
     self.operationName = operationName;
-    self.completion = completion;
+    self.rawCompletion = rawCompletion;
     self.cancellationRequested = NO;
     self.timedOut = NO;
 
@@ -284,7 +356,8 @@ static const NSTimeInterval XSHDeviceToolTerminationGracePeriod = 2.0;
         error = XSHLegacyHostError(XSHLegacyHostErrorToolOperation, description);
     }
 
-    XSHDeviceToolCompletion completion = self.completion;
+    XSHDeviceToolRawCompletion rawCompletion = self.rawCompletion;
+    NSData *standardOutput = self.standardOutputData ?: NSData.data;
     if (self.timeoutSource != nil) {
         dispatch_source_cancel(self.timeoutSource);
         self.timeoutSource = nil;
@@ -295,10 +368,10 @@ static const NSTimeInterval XSHDeviceToolTerminationGracePeriod = 2.0;
     self.standardErrorData = nil;
     self.launchError = nil;
     self.operationName = nil;
-    self.completion = nil;
+    self.rawCompletion = nil;
     self.cancellationRequested = NO;
     self.timedOut = NO;
-    completion(error);
+    rawCompletion(standardOutput, error);
 }
 
 - (NSString *)diagnosticOutput {

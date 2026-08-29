@@ -102,8 +102,10 @@ baseline Xcode 27 build:
 Save Screen runs the direct, compatibility-checked CoreSimulator `simctl`
 binary and atomically installs a validated PNG chosen through `NSSavePanel`.
 Rotate Left/Right runs the direct, compatibility-checked CoreDevice
-`devicectl` binary. Both are typed, single-flight operations with drained
-output, a bounded timeout, and cancellation on window close.
+`devicectl` binary. The session reads its actual JSON orientation on attachment
+and after every relative rotation before updating the display chrome. Both
+operations are typed and single-flight, with drained output, a bounded timeout,
+and cancellation on window close.
 
 ### Device Hub invariant
 
