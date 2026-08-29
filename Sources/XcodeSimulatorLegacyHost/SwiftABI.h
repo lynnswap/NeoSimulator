@@ -11,6 +11,7 @@ FOUNDATION_EXPORT void XSHSwiftCallBoolMethod(
     id object,
     BOOL value
 );
+FOUNDATION_EXPORT CGFloat XSHSwiftCallCGFloatGetter(void *function, id object);
 FOUNDATION_EXPORT void XSHSwiftCallCGSizeMethod(
     void *function,
     id object,

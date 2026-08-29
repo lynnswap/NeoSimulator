@@ -5,6 +5,7 @@
 
 #import "HostLogging.h"
 #import "LegacyHostApplication.h"
+#import "MenuController.h"
 #import "PrivateRuntime.h"
 
 static void XSHPrintUsage(FILE *stream) {
@@ -85,38 +86,6 @@ static NSURL *XSHParseXcodeURL(int argc, const char *argv[], NSError **error) {
     return xcodeURL;
 }
 
-static void XSHInstallMainMenu(void) {
-    NSString *applicationName = @"Xcode Simulator Legacy Host";
-    NSMenu *mainMenu = [[NSMenu alloc] initWithTitle:@""];
-
-    NSMenuItem *applicationMenuItem = [[NSMenuItem alloc] initWithTitle:@""
-                                                                 action:nil
-                                                          keyEquivalent:@""];
-    [mainMenu addItem:applicationMenuItem];
-    NSMenu *applicationMenu = [[NSMenu alloc] initWithTitle:applicationName];
-    applicationMenuItem.submenu = applicationMenu;
-    [applicationMenu addItemWithTitle:[@"Hide " stringByAppendingString:applicationName]
-                                action:@selector(hide:)
-                         keyEquivalent:@"h"];
-    [applicationMenu addItem:[NSMenuItem separatorItem]];
-    [applicationMenu addItemWithTitle:[@"Quit " stringByAppendingString:applicationName]
-                                action:@selector(terminate:)
-                         keyEquivalent:@"q"];
-
-    NSMenuItem *windowMenuItem = [[NSMenuItem alloc] initWithTitle:@""
-                                                            action:nil
-                                                     keyEquivalent:@""];
-    [mainMenu addItem:windowMenuItem];
-    NSMenu *windowMenu = [[NSMenu alloc] initWithTitle:@"Window"];
-    windowMenuItem.submenu = windowMenu;
-    [windowMenu addItemWithTitle:@"Bring All to Front"
-                           action:@selector(arrangeInFront:)
-                    keyEquivalent:@""];
-
-    NSApp.mainMenu = mainMenu;
-    NSApp.windowsMenu = windowMenu;
-}
-
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
         NSError *argumentError = nil;
@@ -138,10 +107,12 @@ int main(int argc, const char *argv[]) {
 
         NSApplication *application = NSApplication.sharedApplication;
         [application setActivationPolicy:NSApplicationActivationPolicyRegular];
-        XSHInstallMainMenu();
+        XSHMenuController *menuController = [[XSHMenuController alloc] init];
+        [menuController installMainMenu];
 
         XSHLegacyHostApplication *controller = [[XSHLegacyHostApplication alloc]
-            initWithXcodeURL:xcodeURL];
+            initWithXcodeURL:xcodeURL
+             menuController:menuController];
         application.delegate = controller;
         [application finishLaunching];
 

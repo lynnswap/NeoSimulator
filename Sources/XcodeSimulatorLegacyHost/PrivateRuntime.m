@@ -17,6 +17,7 @@ static NSString *const XSHCoreSimulatorFrameworkPath =
 @property (nonatomic, readwrite) Class legacyHIDClientClass;
 @property (nonatomic, readwrite) XSHIndigoHIDMessageForButtonFunction messageForButton;
 @property (nonatomic, readwrite) void *showDeviceChromeFunction;
+@property (nonatomic, readwrite) void *renderScaleGetterFunction;
 @property (nonatomic, readwrite) void *disconnectDisplayFunction;
 @property (nonatomic, readwrite) void *beginResizeFunction;
 @property (nonatomic, readwrite) void *resizeToFunction;
@@ -75,6 +76,10 @@ static NSString *const XSHCoreSimulatorFrameworkPath =
         requiredSymbol:"$s12SimulatorKit14SimDisplayViewC16showDeviceChromeSbvsTj"
                 handle:_simulatorKitHandle
                  error:error];
+    _renderScaleGetterFunction = [self
+        requiredSymbol:"$s12SimulatorKit14SimDisplayViewC11renderScale12CoreGraphics7CGFloatVvgTj"
+                handle:_simulatorKitHandle
+                 error:error];
     _disconnectDisplayFunction = [self
         requiredSymbol:"$s12SimulatorKit14SimDisplayViewC10disconnect10completionyyycSg_tFTj"
                 handle:_simulatorKitHandle
@@ -92,6 +97,7 @@ static NSString *const XSHCoreSimulatorFrameworkPath =
                 handle:_simulatorKitHandle
                  error:error];
     if (_showDeviceChromeFunction == NULL ||
+        _renderScaleGetterFunction == NULL ||
         _disconnectDisplayFunction == NULL ||
         _beginResizeFunction == NULL ||
         _resizeToFunction == NULL ||
@@ -208,6 +214,9 @@ static NSString *const XSHCoreSimulatorFrameworkPath =
                 NSStringFromSelector(@selector(name)),
                 NSStringFromSelector(@selector(UDID)),
                 NSStringFromSelector(@selector(runtime)),
+                NSStringFromSelector(@selector(currentUIInterfaceStyle)),
+                NSStringFromSelector(@selector(setUIInterfaceStyle:error:)),
+                NSStringFromSelector(@selector(postDarwinNotification:error:)),
             ]
                       error:error] &&
         [self validateClass:runtimeClass

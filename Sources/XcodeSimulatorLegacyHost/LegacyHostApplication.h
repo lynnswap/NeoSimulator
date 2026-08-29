@@ -1,6 +1,7 @@
 #import <AppKit/AppKit.h>
 
 @class XSHPrivateRuntime;
+@class XSHMenuController;
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -8,7 +9,8 @@ NS_ASSUME_NONNULL_BEGIN
 
 @property (class, nonatomic, readonly) BOOL isDeviceHubRunning;
 
-- (instancetype)initWithXcodeURL:(NSURL *)xcodeURL;
+- (instancetype)initWithXcodeURL:(NSURL *)xcodeURL
+                  menuController:(XSHMenuController *)menuController;
 - (BOOL)startWithRuntime:(XSHPrivateRuntime *)runtime error:(NSError **)error;
 - (void)activateDeviceWindows;
 

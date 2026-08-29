@@ -10,6 +10,8 @@ typedef NS_ENUM(NSInteger, XSHLegacyHostErrorCode) {
     XSHLegacyHostErrorPrivateRuntime = 3,
     XSHLegacyHostErrorDeviceHubConflict = 4,
     XSHLegacyHostErrorDeviceConnection = 5,
+    XSHLegacyHostErrorToolOperation = 6,
+    XSHLegacyHostErrorToolTimeout = 7,
 };
 
 FOUNDATION_EXPORT NSError *XSHLegacyHostError(

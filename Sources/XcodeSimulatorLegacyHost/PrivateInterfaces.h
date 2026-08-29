@@ -12,6 +12,7 @@ typedef IndigoHIDMessageStruct * _Nullable (*XSHIndigoHIDMessageForButtonFunctio
 static const NSUInteger XSHSimDeviceStateBooted = 3;
 static const uint32_t XSHIntegratedDisplayHIDTarget = 0x33;
 static const uint32_t XSHHomeButton = 0;
+static const uint32_t XSHLockButton = 1;
 static const uint32_t XSHSoftwareKeyboardButton = 0x3f0;
 static const uint32_t XSHButtonStateDown = 1;
 static const uint32_t XSHButtonStateUp = 2;
@@ -41,6 +42,9 @@ static const uint32_t XSHButtonStateUp = 2;
 - (nullable NSString *)name;
 - (nullable NSUUID *)UDID;
 - (nullable XSHSimRuntime *)runtime;
+- (NSUInteger)currentUIInterfaceStyle;
+- (BOOL)setUIInterfaceStyle:(NSUInteger)style error:(NSError **)error;
+- (BOOL)postDarwinNotification:(NSString *)notificationName error:(NSError **)error;
 @end
 
 @interface XSHSimDeviceScreen : NSObject

@@ -39,6 +39,7 @@ let package = Package(
             ],
             linkerSettings: [
                 .linkedFramework("AppKit"),
+                .linkedFramework("UniformTypeIdentifiers"),
             ]
         ),
         .testTarget(

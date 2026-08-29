@@ -2,6 +2,7 @@
 
 #import "DeviceWindowController.h"
 #import "HostLogging.h"
+#import "MenuController.h"
 #import "PrivateInterfaces.h"
 #import "PrivateRuntime.h"
 
@@ -14,6 +15,7 @@ static const NSTimeInterval XSHScreenDiscoveryRetryInterval = 0.25;
 
 @interface XSHLegacyHostApplication ()
 @property (nonatomic) NSURL *xcodeURL;
+@property (nonatomic) XSHMenuController *menuController;
 @property (nonatomic, nullable) XSHPrivateRuntime *runtime;
 @property (nonatomic, nullable) XSHSimServiceContext *serviceContext;
 @property (nonatomic, nullable) XSHSimDeviceSet *deviceSet;
@@ -36,10 +38,12 @@ static const NSTimeInterval XSHScreenDiscoveryRetryInterval = 0.25;
         runningApplicationsWithBundleIdentifier:XSHDeviceHubBundleIdentifier].count > 0;
 }
 
-- (instancetype)initWithXcodeURL:(NSURL *)xcodeURL {
+- (instancetype)initWithXcodeURL:(NSURL *)xcodeURL
+                  menuController:(XSHMenuController *)menuController {
     self = [super init];
     if (self != nil) {
         _xcodeURL = xcodeURL;
+        _menuController = menuController;
         _sessions = [NSMutableDictionary dictionary];
         _suppressedDeviceIdentifiers = [NSMutableSet set];
         _pendingAttempts = [NSMutableDictionary dictionary];
