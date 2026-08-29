@@ -4,27 +4,6 @@ import Foundation
 struct InstallationInspector {
     private static let xcodeSelect = URL(fileURLWithPath: "/usr/bin/xcode-select")
 
-    private static let simulatorKitRequiredSurface = [
-        "_TtC12SimulatorKit14SimDisplayView",
-        "_TtC12SimulatorKit15SimDeviceScreen",
-        "_TtC12SimulatorKit24SimDeviceLegacyHIDClient",
-        "isDefault",
-        "IndigoHIDMessageForButton",
-    ]
-
-    private static let idePlaygroundSimulatorRequiredSurface = [
-        "_TtC22IDEPlaygroundSimulator27IDESimulatorPlaygroundUntil",
-        "createSimDisplayViewWithDevice:simScreenID:",
-    ]
-
-    private static let coreSimulatorRequiredSurface = [
-        "SimServiceContext",
-        "sharedServiceContextForDeveloperDir:error:",
-        "defaultDeviceSetWithError:",
-        "availableDevices",
-        "registerNotificationHandlerOnQueue:handler:",
-    ]
-
     private static let forbiddenCoreDeviceLoadPathFragments = [
         "/DeviceKit.framework/",
         "/DeviceHub.app/",
@@ -152,8 +131,7 @@ struct InstallationInspector {
             ),
             expectedBundleIdentifier: ToolConstants.simulatorKitBundleIdentifier,
             identifier: "simulator-kit",
-            requiredXcodeMajorVersion: xcode.version.major,
-            requiredSurface: Self.simulatorKitRequiredSurface
+            requiredXcodeMajorVersion: xcode.version.major
         )
         let idePlaygroundSimulatorBinaryURL = try validatedFrameworkBinary(
             at: xcode.applicationURL.appendingPathComponent(
@@ -162,16 +140,14 @@ struct InstallationInspector {
             ),
             expectedBundleIdentifier: ToolConstants.idePlaygroundSimulatorBundleIdentifier,
             identifier: "ide-playground-simulator",
-            requiredXcodeMajorVersion: xcode.version.major,
-            requiredSurface: Self.idePlaygroundSimulatorRequiredSurface
+            requiredXcodeMajorVersion: xcode.version.major
         )
         let coreSimulatorBinaryURL = try validatedFrameworkBinary(
             at: coreSimulatorFrameworkURL,
             expectedBundleIdentifier: ToolConstants.coreSimulatorBundleIdentifier,
             identifier: "core-simulator",
             requiredXcodeMajorVersion: xcode.version.major,
-            requiredBundleVersion: coreSimulatorVersion,
-            requiredSurface: Self.coreSimulatorRequiredSurface
+            requiredBundleVersion: coreSimulatorVersion
         )
         let simctlBinaryURL = coreSimulatorFrameworkURL.appendingPathComponent(
             ToolConstants.simctlBinaryPath
@@ -187,8 +163,7 @@ struct InstallationInspector {
             expectedBundleIdentifier: ToolConstants.coreDeviceBundleIdentifier,
             identifier: "core-device",
             requiredXcodeMajorVersion: xcode.version.major,
-            requiredBundleVersion: coreDeviceVersion,
-            requiredSurface: []
+            requiredBundleVersion: coreDeviceVersion
         )
         let devicectlBinaryURL = coreDeviceFrameworkURL.appendingPathComponent(
             ToolConstants.devicectlBinaryPath
@@ -220,10 +195,14 @@ struct InstallationInspector {
         )
 
         let applicationURL = try legacyHostApplicationURL()
-        _ = try validatedApplicationExecutable(
+        let applicationExecutableURL = try validatedApplicationExecutable(
             at: applicationURL,
             expectedBundleIdentifier: ToolConstants.legacyHostBundleIdentifier,
             identifier: "legacy-host"
+        )
+        try validateLegacyHostRuntime(
+            executableURL: applicationExecutableURL,
+            xcode: xcode
         )
 
         return LegacyHostInstallation(
@@ -393,8 +372,7 @@ struct InstallationInspector {
         expectedBundleIdentifier: String,
         identifier: String,
         requiredXcodeMajorVersion: Int,
-        requiredBundleVersion: String? = nil,
-        requiredSurface: [String]
+        requiredBundleVersion: String? = nil
     ) throws -> URL {
         let infoURL = frameworkURL.appendingPathComponent(
             "Versions/A/Resources/Info.plist"
@@ -432,12 +410,6 @@ struct InstallationInspector {
         try requireExecutable(
             at: executableURL,
             identifier: "\(identifier)-executable"
-        )
-        try validateSurface(
-            of: executableURL,
-            requiredStrings: requiredSurface,
-            identifier: "\(identifier)-surface",
-            description: expectedBundleIdentifier
         )
         return executableURL
     }
@@ -525,6 +497,33 @@ struct InstallationInspector {
                     "\(description) no longer contains the required private surface \(requiredString)"
                 )
             }
+        }
+    }
+
+    private func validateLegacyHostRuntime(
+        executableURL: URL,
+        xcode: XcodeInstallation
+    ) throws {
+        let output = try runner.run(
+            executable: executableURL,
+            arguments: [
+                "--validate-runtime",
+                "--xcode",
+                xcode.applicationURL.path,
+            ]
+        )
+        guard output.terminationStatus == 0 else {
+            let detail = if !output.stderrText.isEmpty {
+                output.stderrText
+            } else if !output.stdoutText.isEmpty {
+                output.stdoutText
+            } else {
+                "exit status \(output.terminationStatus)"
+            }
+            throw CLIError.unavailable(
+                "legacy-host-runtime",
+                "the standalone host rejected Xcode \(xcode.version) build \(xcode.buildVersion): \(detail)"
+            )
         }
     }
 

@@ -59,6 +59,7 @@ XcodeSimulatorLegacyHost.app
 | Route preferences and restoration | `HostModeController` |
 | Exact Device Hub termination and host launch | `WorkspaceClient` |
 | Xcode and private-component compatibility gate | `InstallationInspector` |
+| Private runtime classes, selectors, and Swift thunks | `XSHPrivateRuntime` |
 | Booted-device membership | standalone host device-set observer |
 | One display connection and HID session | standalone host device session |
 | Window, toolbar, focus, and scaling | standalone host AppKit window controller |
@@ -77,6 +78,14 @@ required symbols:
 - `/Library/Developer/PrivateFrameworks/CoreSimulator.framework`
 - `Xcode.app/Contents/SharedFrameworks/SimulatorKit.framework`
 - `Xcode.app/Contents/Frameworks/IDEPlaygroundSimulator.framework`
+
+Before any preference or process change, the CLI runs the exact packaged host
+in its non-UI `--validate-runtime` mode. That mode constructs
+`XSHPrivateRuntime`, exercising the same `dlopen`, `dlsym`, private-class,
+selector, and loaded-image checks used by the GUI launch, then exits without
+creating `NSApplication`, a device set, or a display session. It deliberately
+does not reject an already-running Device Hub; the mutation flow terminates the
+validated Device Hub later, after the route is committed.
 
 `CoreSimulator.framework` is installed by Xcode's
 `com.apple.pkg.XcodeSystemResources` package. `SimulatorKit` links to that
@@ -126,8 +135,9 @@ DeviceKit nor Device Hub is loaded.
 
 ### Lifecycle
 
-- `use legacy` is idempotent: it activates an existing matching host or launches
-  the packaged host after validating the route and Device Hub absence.
+- `use legacy` is idempotent: it normally terminates the exact packaged host and
+  starts it again with the currently selected Xcode after validating the route
+  and Device Hub absence.
 - The host stays alive without a booted device so it can display a simulator
   started by a later Xcode Run.
 - Device-set notifications add windows for newly booted iOS devices and remove

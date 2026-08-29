@@ -41,6 +41,8 @@ final class FakeSystemCommandRunner: CommandRunning {
     var failFirstExportAfterMutationCount: Int?
     var failMissingDomainExports = false
     var failDomainListing = false
+    var legacyHostRuntimeValidationStatus: Int32 = 0
+    var legacyHostRuntimeValidationError = ""
     var failureTiming: FailureTiming = .beforeMutation
     var beforeRun: ((Call) -> Void)?
     private(set) var calls: [Call] = []
@@ -61,9 +63,20 @@ final class FakeSystemCommandRunner: CommandRunning {
             }
             return success("\(selectedDeveloperDirectory.path)\n")
         default:
-            throw CLIError.software(
-                "unexpected-test-command",
-                "unexpected command: \(executable.path) \(arguments)"
+            guard executable.lastPathComponent == "XcodeSimulatorLegacyHost",
+                  arguments.count == 3,
+                  arguments[0] == "--validate-runtime",
+                  arguments[1] == "--xcode"
+            else {
+                throw CLIError.software(
+                    "unexpected-test-command",
+                    "unexpected command: \(executable.path) \(arguments)"
+                )
+            }
+            return CommandOutput(
+                terminationStatus: legacyHostRuntimeValidationStatus,
+                stdout: Data(),
+                stderr: Data(legacyHostRuntimeValidationError.utf8)
             )
         }
     }
@@ -253,9 +266,6 @@ struct InstallationFixture {
         targetBuild: String = "27A5252f",
         includeHiddenKey: Bool = true,
         includeDeviceHubKey: Bool = true,
-        includeSimulatorKitSurface: Bool = true,
-        includeIDEPlaygroundSimulatorSurface: Bool = true,
-        includeCoreSimulatorSurface: Bool = true,
         includeLegacyHost: Bool = true,
         coreSimulatorXcodeMajorVersion: Int? = nil,
         coreDeviceXcodeMajorVersion: Int? = nil,
@@ -282,8 +292,6 @@ struct InstallationFixture {
             build: targetBuild,
             includeHiddenKey: includeHiddenKey,
             includeDeviceHubKey: includeDeviceHubKey,
-            includeSimulatorKitSurface: includeSimulatorKitSurface,
-            includeIDEPlaygroundSimulatorSurface: includeIDEPlaygroundSimulatorSurface,
             simctlExpectedVersion: simctlExpectedVersion,
             devicectlExpectedVersion: devicectlExpectedVersion,
             dtXcode: dtXcode
@@ -300,15 +308,7 @@ struct InstallationFixture {
             executable: "CoreSimulator",
             dtXcode: coreMajor * 100,
             bundleVersion: coreSimulatorBundleVersion ?? simctlExpectedVersion,
-            binaryContent: includeCoreSimulatorSurface
-                ? [
-                    "SimServiceContext",
-                    "sharedServiceContextForDeveloperDir:error:",
-                    "defaultDeviceSetWithError:",
-                    "availableDevices",
-                    "registerNotificationHandlerOnQueue:handler:",
-                ]
-                : ["missing-core-surface"]
+            binaryContent: ["fixture-core-simulator"]
         )
         let simctlBinaryURL = coreSimulatorFrameworkURL.appendingPathComponent(
             ToolConstants.simctlBinaryPath
@@ -404,14 +404,18 @@ struct InstallationFixture {
         )
     }
 
+    var legacyHostExecutableURL: URL {
+        legacyHostURL.appendingPathComponent(
+            "Contents/MacOS/XcodeSimulatorLegacyHost"
+        )
+    }
+
     static func makeTargetXcode(
         at url: URL,
         version: String,
         build: String,
         includeHiddenKey: Bool,
         includeDeviceHubKey: Bool,
-        includeSimulatorKitSurface: Bool,
-        includeIDEPlaygroundSimulatorSurface: Bool,
         simctlExpectedVersion: String,
         devicectlExpectedVersion: String,
         dtXcode: Int
@@ -477,15 +481,7 @@ struct InstallationFixture {
             executable: "SimulatorKit",
             dtXcode: dtXcode,
             bundleVersion: String(dtXcode),
-            binaryContent: includeSimulatorKitSurface
-                ? [
-                    "_TtC12SimulatorKit14SimDisplayView",
-                    "_TtC12SimulatorKit15SimDeviceScreen",
-                    "_TtC12SimulatorKit24SimDeviceLegacyHIDClient",
-                    "isDefault",
-                    "IndigoHIDMessageForButton",
-                ]
-                : ["missing-simulator-kit-surface"]
+            binaryContent: ["fixture-simulator-kit"]
         )
         try makeFramework(
             at: url.appendingPathComponent(
@@ -496,12 +492,7 @@ struct InstallationFixture {
             executable: "IDEPlaygroundSimulator",
             dtXcode: dtXcode,
             bundleVersion: String(dtXcode),
-            binaryContent: includeIDEPlaygroundSimulatorSurface
-                ? [
-                    "_TtC22IDEPlaygroundSimulator27IDESimulatorPlaygroundUntil",
-                    "createSimDisplayViewWithDevice:simScreenID:",
-                ]
-                : ["missing-ide-playground-surface"]
+            binaryContent: ["fixture-ide-playground-simulator"]
         )
     }
 
@@ -625,6 +616,7 @@ struct ControllerFixture {
         targetVersion: String = "27.0",
         includeHiddenKey: Bool = true,
         includeLegacyHost: Bool = true,
+        legacyHostRuntimeValidationStatus: Int32 = 0,
         effectiveUserID: uid_t = 501
     ) throws {
         installations = try InstallationFixture(
@@ -634,6 +626,11 @@ struct ControllerFixture {
         )
         stateDirectory = try TemporaryTestDirectory()
         runner = FakeSystemCommandRunner()
+        runner.legacyHostRuntimeValidationStatus = legacyHostRuntimeValidationStatus
+        if legacyHostRuntimeValidationStatus != 0 {
+            runner.legacyHostRuntimeValidationError =
+                "injected private runtime validation failure"
+        }
         runner.selectedDeveloperDirectory = installations.developerDirectoryURL
         runner.setStoredValue(
             initialState.xcodeSession.booleanValue,

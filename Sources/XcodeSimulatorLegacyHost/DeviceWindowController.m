@@ -402,7 +402,12 @@ static BOOL XSHAtomicallyReplaceURL(NSURL *temporaryURL,
 }
 
 - (NSView *)makeHeaderViewWithTitle:(NSString *)title {
-    XSHHeaderView *header = [[XSHHeaderView alloc] initWithFrame:NSZeroRect];
+    XSHHeaderView *header = [[XSHHeaderView alloc] initWithFrame:NSMakeRect(
+        0.0,
+        0.0,
+        XSHMinimumHeaderWidth,
+        XSHHeaderHeight
+    )];
     header.material = NSVisualEffectMaterialHUDWindow;
     header.blendingMode = NSVisualEffectBlendingModeBehindWindow;
     header.state = NSVisualEffectStateActive;

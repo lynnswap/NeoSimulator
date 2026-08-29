@@ -17,6 +17,7 @@ arch="arm64"
 cli_product="xcode-simulator-host"
 host_product="XcodeSimulatorLegacyHost"
 host_bundle_identifier="dev.lynnswap.XcodeSimulatorLegacyHost"
+host_workspace="xcode-simulator-host.xcworkspace"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -64,12 +65,34 @@ trap cleanup EXIT
 
 pushd "$repo_root" >/dev/null
 
+expected_version="${version#v}"
 swift build -c release --arch "$arch" --product "$cli_product"
-swift build -c release --arch "$arch" --product "$host_product"
 bin_path="$(swift build -c release --arch "$arch" --show-bin-path)"
 cli_source_path="$bin_path/$cli_product"
-host_source_path="$bin_path/$host_product"
-host_info_plist="$repo_root/Sources/$host_product/Info.plist"
+
+actual_version="$("$cli_source_path" --version)"
+if [[ "$actual_version" != "$expected_version" ]]; then
+  echo "Binary version does not match release tag." >&2
+  echo "Expected: $expected_version" >&2
+  echo "Actual:   $actual_version" >&2
+  exit 1
+fi
+
+host_derived_data="$repo_root/.build/$host_product"
+xcodebuild \
+  -quiet \
+  -workspace "$host_workspace" \
+  -scheme "$host_product" \
+  -configuration Release \
+  -derivedDataPath "$host_derived_data" \
+  ARCHS="$arch" \
+  ONLY_ACTIVE_ARCH=YES \
+  CODE_SIGNING_ALLOWED=NO \
+  MARKETING_VERSION="$expected_version" \
+  build
+host_source_app="$host_derived_data/Build/Products/Release/$host_product.app"
+host_source_path="$host_source_app/Contents/MacOS/$host_product"
+host_info_plist="$host_source_app/Contents/Info.plist"
 
 for source_path in "$cli_source_path" "$host_source_path" "$host_info_plist"; do
   if [[ ! -f "$source_path" ]]; then
@@ -80,15 +103,6 @@ done
 
 if [[ ! -x "$cli_source_path" || ! -x "$host_source_path" ]]; then
   echo "Release products must be executable." >&2
-  exit 1
-fi
-
-actual_version="$("$cli_source_path" --version)"
-expected_version="${version#v}"
-if [[ "$actual_version" != "$expected_version" ]]; then
-  echo "Binary version does not match release tag." >&2
-  echo "Expected: $expected_version" >&2
-  echo "Actual:   $actual_version" >&2
   exit 1
 fi
 

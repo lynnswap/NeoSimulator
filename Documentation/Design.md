@@ -52,7 +52,7 @@ Xcode Build & Run
 
 ```text
 xcode-simulator-host (CLI executable)
-XcodeSimulatorLegacyHost (AppKit executable)
+XcodeSimulatorLegacyHost (workspace AppKit application target)
 XcodeSimulatorHostTests
 ```
 
@@ -96,9 +96,8 @@ termination, or preference mutation:
 - selected Xcode bundle identifier `com.apple.dt.Xcode`, version 27 or later,
   and intact Apple signature;
 - Device Hub bundle and the two verified preference-key surfaces;
-- selected-Xcode SimulatorKit and IDEPlaygroundSimulator frameworks with the
-  required classes, selectors, Swift thunks, matching `DTXcode` generation, and
-  intact Apple signatures;
+- selected-Xcode SimulatorKit and IDEPlaygroundSimulator frameworks with
+  matching `DTXcode` generation and intact Apple signatures;
 - installed CoreSimulator and CoreDevice frameworks whose `DTXcode` generation
   matches the selected Xcode;
 - exactly one numeric `EXPECTED_VERSION` literal in each selected-Xcode
@@ -114,8 +113,16 @@ termination, or preference mutation:
 - the packaged companion app at the exact relative path, with its expected
   bundle identifier and executable.
 
-Wrappers and direct tools are inspected but never executed by the gate. This
-prevents their mismatch path from implicitly running `xcodebuild -runFirstLaunch`.
+After those provenance checks, the gate executes the exact packaged companion
+in non-UI `--validate-runtime` mode. `XSHPrivateRuntime` then performs the same
+framework loads, `dlsym`, class, selector, and loaded-image checks used by the
+GUI process, without creating an application, CoreSimulator device set, or
+display session. This keeps the runtime contract in one owner while still
+rejecting a changed Xcode before preference mutation.
+
+Wrappers and direct private tools are inspected but never executed by the gate.
+This prevents their mismatch path from implicitly running
+`xcodebuild -runFirstLaunch`.
 
 An unknown later Xcode that changes a private symbol or component version is
 unavailable. It is never guessed compatible and never falls back to Device Hub.
@@ -275,11 +282,12 @@ Unit tests use fake commands, temporary Xcode/framework/plugin fixtures, and
 isolated receipt directories. They cover tri-state transactions, interrupted
 recovery, conflicts, idempotence, exact process identity, Xcode 27/28 gates,
 wrapper parsing, generation/version mismatch, signatures, forbidden linkage,
-and read-only status behavior.
+exported runtime symbols, and read-only status behavior.
 
-Release verification builds both products, checks architectures and signatures,
-verifies the exact archive file set, installs over a synthetic previous version,
-and compares installed CLI/app files with the archive.
+Release verification builds the SwiftPM CLI and the workspace app target, checks
+bundle versions, architectures, and signatures, verifies the exact archive file
+set, installs over a synthetic previous version, and compares installed CLI/app
+files with the archive.
 
 Live validation additionally covers framebuffer/touch/accessibility, focused
 keyboard input, Home, Software Keyboard, resize, menu rotation, screenshot PNG,

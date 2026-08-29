@@ -111,6 +111,9 @@ Before changing preferences, `use legacy` verifies:
   Apple-signed components with no DeviceKit or Device Hub linkage;
 - the packaged standalone host has the expected identity and location.
 
+The symbol check runs the exact packaged host in a non-UI validation mode, so
+the preflight and the GUI launch use the same private-runtime contract.
+
 Preference changes are journaled and verified. A conflicting external change is
 left untouched unless the user explicitly runs `restore --force`.
 
@@ -143,9 +146,15 @@ stages and verifies both before replacing an existing installation.
 ```bash
 git clone https://github.com/lynnswap/xcode-simulator-host.git
 cd xcode-simulator-host
-swift build -c release
-.build/release/xcode-simulator-host --help
+scripts/build-local.sh
+.build/local/arm64/bin/xcode-simulator-host --help
 ```
+
+The source build uses SwiftPM for the CLI and the
+`XcodeSimulatorLegacyHost` app target in
+`xcode-simulator-host.xcworkspace` for the companion. The staging script puts
+both products in the same relative layout used by releases, so the source-built
+command can also run `use legacy`.
 
 Run the isolated test suite with:
 

@@ -9,16 +9,28 @@
 #import "PrivateRuntime.h"
 
 static void XSHPrintUsage(FILE *stream) {
-    fprintf(stream, "usage: XcodeSimulatorLegacyHost --xcode /absolute/path/to/Xcode.app\n");
+    fprintf(stream,
+            "usage: XcodeSimulatorLegacyHost [--validate-runtime] --xcode "
+            "/absolute/path/to/Xcode.app\n");
 }
 
-static NSURL *XSHParseXcodeURL(int argc, const char *argv[], NSError **error) {
+static NSURL *XSHParseXcodeURL(int argc,
+                              const char *argv[],
+                              BOOL *validateRuntimeOnly,
+                              NSError **error) {
+    *validateRuntimeOnly = NO;
     if (argc == 2 && strcmp(argv[1], "--help") == 0) {
         XSHPrintUsage(stdout);
         exit(EX_OK);
     }
 
-    if (argc != 3 || strcmp(argv[1], "--xcode") != 0) {
+    int xcodeOptionIndex = 1;
+    if (argc == 4 && strcmp(argv[1], "--validate-runtime") == 0) {
+        *validateRuntimeOnly = YES;
+        xcodeOptionIndex = 2;
+    }
+    if (argc != xcodeOptionIndex + 2 ||
+        strcmp(argv[xcodeOptionIndex], "--xcode") != 0) {
         if (error != NULL) {
             *error = XSHLegacyHostError(
                 XSHLegacyHostErrorInvalidArguments,
@@ -28,7 +40,7 @@ static NSURL *XSHParseXcodeURL(int argc, const char *argv[], NSError **error) {
         return nil;
     }
 
-    NSString *path = [NSString stringWithUTF8String:argv[2]];
+    NSString *path = [NSString stringWithUTF8String:argv[xcodeOptionIndex + 1]];
     if (path.length == 0 || !path.isAbsolutePath) {
         if (error != NULL) {
             *error = XSHLegacyHostError(
@@ -89,7 +101,13 @@ static NSURL *XSHParseXcodeURL(int argc, const char *argv[], NSError **error) {
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
         NSError *argumentError = nil;
-        NSURL *xcodeURL = XSHParseXcodeURL(argc, argv, &argumentError);
+        BOOL validateRuntimeOnly = NO;
+        NSURL *xcodeURL = XSHParseXcodeURL(
+            argc,
+            argv,
+            &validateRuntimeOnly,
+            &argumentError
+        );
         if (xcodeURL == nil) {
             if (argumentError.code == XSHLegacyHostErrorInvalidArguments) {
                 XSHPrintUsage(stderr);
@@ -98,6 +116,18 @@ int main(int argc, const char *argv[]) {
             return argumentError.code == XSHLegacyHostErrorInvalidArguments
                 ? EX_USAGE
                 : EX_UNAVAILABLE;
+        }
+
+        if (validateRuntimeOnly) {
+            NSError *runtimeError = nil;
+            XSHPrivateRuntime *runtime = [[XSHPrivateRuntime alloc]
+                initWithXcodeURL:xcodeURL
+                           error:&runtimeError];
+            if (runtime == nil) {
+                XSHLog(@"%@", runtimeError.localizedDescription);
+                return EX_UNAVAILABLE;
+            }
+            return EX_OK;
         }
 
         if (XSHLegacyHostApplication.isDeviceHubRunning) {

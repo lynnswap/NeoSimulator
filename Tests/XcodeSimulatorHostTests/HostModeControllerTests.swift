@@ -198,6 +198,24 @@ struct HostModeControllerTests {
         #expect(try fixture.receiptStore.load() == nil)
     }
 
+    @Test func missingRuntimeSymbolFailsBeforeChangingPreferencesOrProcesses() async throws {
+        let fixture = try ControllerFixture(
+            legacyHostRuntimeValidationStatus: 69
+        )
+
+        do {
+            _ = try await fixture.controller.use(mode: .legacy)
+            Issue.record("expected missing SimulatorKit runtime symbols to fail")
+        } catch let error as CLIError {
+            #expect(error.identifier == "legacy-host-runtime")
+            #expect(error.category == .unavailable)
+        }
+
+        #expect(fixture.runner.mutationCount == 0)
+        #expect(fixture.workspace.events.isEmpty)
+        #expect(try fixture.receiptStore.load() == nil)
+    }
+
     @Test func deviceHubModeCanRecoverWhenThePackagedHostIsMissing() async throws {
         let fixture = try ControllerFixture(
             initialState: .legacy,

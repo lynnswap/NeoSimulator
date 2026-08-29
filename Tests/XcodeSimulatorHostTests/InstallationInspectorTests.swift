@@ -156,44 +156,29 @@ struct InstallationInspectorTests {
         }
     }
 
-    @Test func rejectsChangedSimulatorKitSurface() throws {
-        let fixture = try InstallationFixture(includeSimulatorKitSurface: false)
-        let inspector = makeInspector(fixture)
-        let xcode = try inspector.validatedTargetXcode()
-
-        do {
-            _ = try inspector.validatedLegacyHost(for: xcode)
-            Issue.record("expected changed SimulatorKit surface to fail")
-        } catch let error as CLIError {
-            #expect(error.identifier == "simulator-kit-surface")
-        }
-    }
-
-    @Test func rejectsChangedIDEPlaygroundSimulatorSurface() throws {
-        let fixture = try InstallationFixture(
-            includeIDEPlaygroundSimulatorSurface: false
+    @Test func packagedHostRuntimeValidationFailureIsRejected() throws {
+        let fixture = try InstallationFixture()
+        let runner = FakeSystemCommandRunner()
+        runner.legacyHostRuntimeValidationStatus = 69
+        runner.legacyHostRuntimeValidationError =
+            "required private symbol is unavailable"
+        let inspector = InstallationInspector(
+            runner: runner,
+            environment: ["DEVELOPER_DIR": fixture.developerDirectoryURL.path],
+            commandExecutableURL: fixture.commandExecutableURL,
+            coreSimulatorFrameworkURL: fixture.coreSimulatorFrameworkURL,
+            coreDeviceFrameworkURL: fixture.coreDeviceFrameworkURL,
+            signatureValidator: .acceptingTestFixtures
         )
-        let inspector = makeInspector(fixture)
         let xcode = try inspector.validatedTargetXcode()
 
         do {
             _ = try inspector.validatedLegacyHost(for: xcode)
-            Issue.record("expected changed IDEPlaygroundSimulator surface to fail")
+            Issue.record("expected private runtime validation to fail")
         } catch let error as CLIError {
-            #expect(error.identifier == "ide-playground-simulator-surface")
-        }
-    }
-
-    @Test func rejectsChangedCoreSimulatorSurface() throws {
-        let fixture = try InstallationFixture(includeCoreSimulatorSurface: false)
-        let inspector = makeInspector(fixture)
-        let xcode = try inspector.validatedTargetXcode()
-
-        do {
-            _ = try inspector.validatedLegacyHost(for: xcode)
-            Issue.record("expected changed CoreSimulator surface to fail")
-        } catch let error as CLIError {
-            #expect(error.identifier == "core-simulator-surface")
+            #expect(error.identifier == "legacy-host-runtime")
+            #expect(error.category == .unavailable)
+            #expect(error.message.contains("required private symbol is unavailable"))
         }
     }
 
@@ -454,7 +439,7 @@ struct InstallationInspectorTests {
         }
     }
 
-    @Test func compatibilityGateNeverExecutesWrappersOrDirectTools() throws {
+    @Test func compatibilityGateExecutesOnlyThePackagedRuntimeValidator() throws {
         let fixture = try InstallationFixture()
         let runner = FakeSystemCommandRunner()
         let inspector = InstallationInspector(
@@ -469,7 +454,19 @@ struct InstallationInspectorTests {
         let xcode = try inspector.validatedTargetXcode()
         _ = try inspector.validatedLegacyHost(for: xcode)
 
-        #expect(runner.calls.isEmpty)
+        #expect(
+            runner.calls
+                == [
+                    FakeSystemCommandRunner.Call(
+                        executable: fixture.legacyHostExecutableURL,
+                        arguments: [
+                            "--validate-runtime",
+                            "--xcode",
+                            fixture.targetXcodeURL.path,
+                        ]
+                    ),
+                ]
+        )
     }
 
     @Test func packagedHostIsResolvedRelativeToTheCommandBinary() throws {
