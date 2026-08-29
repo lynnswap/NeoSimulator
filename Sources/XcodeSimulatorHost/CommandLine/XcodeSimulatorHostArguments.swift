@@ -30,8 +30,13 @@ struct XcodeSimulatorHostArguments: ParsableCommand {
 struct StatusArguments: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "status",
-        abstract: "Show the selected Xcode, managed preferences, and restoration receipt."
+        abstract: "Show whether the next Run uses Device Hub or CoreSimulator."
     )
+
+    @Flag(
+        help: "Show Xcode installations, preferences, restoration state, and running processes."
+    )
+    var verbose = false
 
     @Option(
         name: .customLong("legacy-xcode"),
@@ -83,7 +88,7 @@ struct RestoreArguments: ParsableCommand {
 }
 
 enum XcodeSimulatorHostCommand: Equatable {
-    case status(legacyXcode: URL?)
+    case status(legacyXcode: URL?, verbose: Bool)
     case use(mode: HostMode, legacyXcode: URL?)
     case restore(force: Bool)
 }
@@ -92,7 +97,10 @@ func parseXcodeSimulatorHostCommand(_ arguments: [String]) throws -> XcodeSimula
     var parsed = try XcodeSimulatorHostArguments.parseAsRoot(Array(arguments.dropFirst()))
     switch parsed {
     case let command as StatusArguments:
-        return .status(legacyXcode: command.legacyXcode?.url)
+        return .status(
+            legacyXcode: command.legacyXcode?.url,
+            verbose: command.verbose || command.legacyXcode != nil
+        )
     case let command as UseLegacyArguments:
         return .use(mode: .legacy, legacyXcode: command.legacyXcode?.url)
     case is UseDeviceHubArguments:

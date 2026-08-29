@@ -24,13 +24,30 @@ struct HostStatus: Equatable {
     let receiptURL: URL
     let runningXcodes: [RunningApplication]
 
+    var compactRendered: String {
+        let route = routeLine
+        switch receiptStatus {
+        case .pendingBefore, .pendingTarget:
+            return """
+                \(route)
+                Attention: an interrupted change needs recovery. Run 'xcode-simulator-host status --verbose'.
+                """
+        case .ambiguousIntermediate, .conflict:
+            return """
+                \(route)
+                Attention: preferences need review. Run 'xcode-simulator-host status --verbose'.
+                """
+        case .unmanaged, .managed:
+            return route
+        }
+    }
+
     var rendered: String {
         var lines = [
+            routeLine,
+            "",
             "Selected Xcode: \(xcode.version) (\(xcode.buildVersion))",
             "  \(xcode.applicationURL.path)",
-            "Configured host: \(preferences.effectiveMode.rawValue)",
-            "Xcode preference: \(preferences.xcodeSession)",
-            "Device Hub auto-start suppression: \(preferences.deviceHubAutoStartSuppression)",
         ]
 
         if let legacySimulator {
@@ -42,6 +59,7 @@ struct HostStatus: Equatable {
             lines.append("Legacy Simulator: not found")
         }
 
+        lines.append("")
         switch receiptStatus {
         case .unmanaged:
             lines.append("Restoration receipt: none")
@@ -66,6 +84,7 @@ struct HostStatus: Equatable {
             lines.append("  \(receiptURL.path)")
         }
 
+        lines.append("")
         if runningXcodes.isEmpty {
             lines.append("Running Xcode processes: none")
         } else {
@@ -76,8 +95,38 @@ struct HostStatus: Equatable {
             }
         }
 
-        lines.append("Note: com.apple.dt.Xcode preferences are shared by all installed Xcode versions.")
+        lines.append("")
+        lines.append("Preference details:")
+        lines.append(
+            "  CoreSimulator session: \(preferences.xcodeSession.statusDescription)"
+        )
+        lines.append(
+            "  Suppress Device Hub auto-start: \(preferences.deviceHubAutoStartSuppression.statusDescription)"
+        )
+        lines.append("  Scope: shared by all installed Xcode versions")
         return lines.joined(separator: "\n")
+    }
+
+    private var routeLine: String {
+        switch preferences.effectiveMode {
+        case .deviceHub:
+            "Simulator route: Device Hub"
+        case .legacy:
+            "Simulator route: CoreSimulator (Xcode 26 Simulator)"
+        }
+    }
+}
+
+private extension StoredBoolean {
+    var statusDescription: String {
+        switch self {
+        case .absent:
+            "not set (default)"
+        case .falseValue:
+            "false"
+        case .trueValue:
+            "true"
+        }
     }
 }
 

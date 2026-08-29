@@ -25,6 +25,10 @@ xcode-simulator-host status
 xcode-simulator-host use legacy
 ```
 
+`status` prints only the simulator route used by the next Run. Use
+`xcode-simulator-host status --verbose` for Xcode installations, preferences,
+restoration state, and running processes.
+
 Leave Xcode 27 open. After the command opens Simulator, use **Build & Run** in
 Xcode as usual.
 
