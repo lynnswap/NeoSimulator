@@ -1,22 +1,9 @@
 import ArgumentParser
-import Foundation
-
-struct AbsolutePath: ExpressibleByArgument, Equatable {
-    let url: URL
-
-    init?(argument: String) {
-        let path = argument.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard path.hasPrefix("/") else {
-            return nil
-        }
-        url = URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
-    }
-}
 
 struct XcodeSimulatorHostArguments: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: ToolConstants.name,
-        abstract: "Select the simulator UI host used with Xcode 27.",
+        abstract: "Select the simulator UI host used with Xcode 27 or later.",
         discussion: """
             Xcode is resolved from DEVELOPER_DIR or xcode-select. The managed
             com.apple.dt.Xcode preference is shared by every installed Xcode.
@@ -37,13 +24,6 @@ struct StatusArguments: ParsableCommand {
         help: "Show Xcode installations, preferences, restoration state, and running processes."
     )
     var verbose = false
-
-    @Option(
-        name: .customLong("legacy-xcode"),
-        help: "Inspect a specific Xcode 26 application as the legacy host.",
-        completion: .file(extensions: ["app"])
-    )
-    var legacyXcode: AbsolutePath?
 }
 
 struct UseArguments: ParsableCommand {
@@ -57,21 +37,14 @@ struct UseArguments: ParsableCommand {
 struct UseLegacyArguments: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "legacy",
-        abstract: "Bypass Device Hub and open the Simulator from Xcode 26."
+        abstract: "Use CoreSimulator with the packaged standalone host."
     )
-
-    @Option(
-        name: .customLong("legacy-xcode"),
-        help: "Use a specific Xcode 26 application as the legacy host.",
-        completion: .file(extensions: ["app"])
-    )
-    var legacyXcode: AbsolutePath?
 }
 
 struct UseDeviceHubArguments: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "device-hub",
-        abstract: "Use Xcode 27's default Device Hub route."
+        abstract: "Use the selected Xcode's default Device Hub route."
     )
 }
 
@@ -89,12 +62,12 @@ struct RestoreArguments: ParsableCommand {
 
 enum StatusOutput: Equatable {
     case compact
-    case verbose(legacyXcode: URL?)
+    case verbose
 }
 
 enum XcodeSimulatorHostCommand: Equatable {
     case status(StatusOutput)
-    case use(mode: HostMode, legacyXcode: URL?)
+    case use(mode: HostMode)
     case restore(force: Bool)
 }
 
@@ -102,14 +75,14 @@ func parseXcodeSimulatorHostCommand(_ arguments: [String]) throws -> XcodeSimula
     var parsed = try XcodeSimulatorHostArguments.parseAsRoot(Array(arguments.dropFirst()))
     switch parsed {
     case let command as StatusArguments:
-        if command.verbose || command.legacyXcode != nil {
-            return .status(.verbose(legacyXcode: command.legacyXcode?.url))
+        if command.verbose {
+            return .status(.verbose)
         }
         return .status(.compact)
-    case let command as UseLegacyArguments:
-        return .use(mode: .legacy, legacyXcode: command.legacyXcode?.url)
+    case is UseLegacyArguments:
+        return .use(mode: .legacy)
     case is UseDeviceHubArguments:
-        return .use(mode: .deviceHub, legacyXcode: nil)
+        return .use(mode: .deviceHub)
     case let command as RestoreArguments:
         return .restore(force: command.force)
     default:

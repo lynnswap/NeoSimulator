@@ -3,12 +3,31 @@ import Foundation
 
 struct RunningApplication: Equatable {
     let processIdentifier: pid_t
+    let bundleIdentifier: String?
     let bundleURL: URL?
+
+    init(
+        processIdentifier: pid_t,
+        bundleURL: URL?,
+        bundleIdentifier: String? = nil
+    ) {
+        self.processIdentifier = processIdentifier
+        self.bundleIdentifier = bundleIdentifier
+        self.bundleURL = bundleURL
+    }
+}
+
+private struct ManagedApplicationIdentity {
+    let displayName: String
+    let bundleIdentifier: String
+    let expectedURL: URL
+    let errorIdentifier: String
 }
 
 @MainActor
 private final class ApplicationTerminationWaiter {
     private let application: NSRunningApplication
+    private let identity: ManagedApplicationIdentity
     private let timeoutInterval: TimeInterval
     private var observation: NSKeyValueObservation?
     private var continuation: CheckedContinuation<Void, any Error>?
@@ -17,9 +36,11 @@ private final class ApplicationTerminationWaiter {
 
     init(
         application: NSRunningApplication,
+        identity: ManagedApplicationIdentity,
         timeoutInterval: TimeInterval
     ) {
         self.application = application
+        self.identity = identity
         self.timeoutInterval = timeoutInterval
     }
 
@@ -60,8 +81,8 @@ private final class ApplicationTerminationWaiter {
                         self.finish(
                             .failure(
                                 CLIError.temporary(
-                                    "device-hub-termination-timeout",
-                                    "Device Hub pid \(self.application.processIdentifier) did not finish terminating before the operation deadline"
+                                    "\(self.identity.errorIdentifier)-termination-timeout",
+                                    "\(self.identity.displayName) pid \(self.application.processIdentifier) did not finish terminating before the operation deadline"
                                 )
                             )
                         )
@@ -82,7 +103,7 @@ private final class ApplicationTerminationWaiter {
                                 return
                             }
                             let isStillRunning = NSRunningApplication.runningApplications(
-                                withBundleIdentifier: ToolConstants.deviceHubBundleIdentifier
+                                withBundleIdentifier: self.identity.bundleIdentifier
                             ).contains {
                                 // Do not compare PIDs: AppKit documents that an
                                 // NSRunningApplication PID may change.
@@ -92,8 +113,8 @@ private final class ApplicationTerminationWaiter {
                                 self.finish(
                                     .failure(
                                         CLIError.temporary(
-                                            "device-hub-termination",
-                                            "Device Hub pid \(self.application.processIdentifier) did not accept a normal termination request"
+                                            "\(self.identity.errorIdentifier)-termination",
+                                            "\(self.identity.displayName) pid \(self.application.processIdentifier) did not accept a normal termination request"
                                         )
                                     )
                                 )
@@ -132,100 +153,163 @@ private final class ApplicationTerminationWaiter {
 @MainActor
 struct WorkspaceClient {
     var runningXcodes: () -> [RunningApplication]
+    var runningLegacyHosts: () -> [RunningApplication]
     var terminateDeviceHubs: (URL) async throws -> Int
-    var openApplication: (URL) async throws -> URL
+    var terminateLegacyHosts: (URL) async throws -> Int
+    var openLegacyHost: (URL, URL) async throws -> URL
 
     static let live = WorkspaceClient(
         runningXcodes: {
-            NSRunningApplication.runningApplications(
+            runningApplications(
                 withBundleIdentifier: ToolConstants.xcodeBundleIdentifier
-            ).map {
-                RunningApplication(
-                    processIdentifier: $0.processIdentifier,
-                    bundleURL: $0.bundleURL
-                )
-            }
+            )
+        },
+        runningLegacyHosts: {
+            runningApplications(
+                withBundleIdentifier: ToolConstants.legacyHostBundleIdentifier
+            )
         },
         terminateDeviceHubs: { expectedApplicationURL in
-            let expected = expectedApplicationURL
-                .resolvingSymlinksInPath()
-                .standardizedFileURL
-            let clock = ContinuousClock()
-            let deadline = clock.now.advanced(by: .seconds(10))
-            var terminatedCount = 0
-
-            while true {
-                let applications = NSRunningApplication.runningApplications(
-                    withBundleIdentifier: ToolConstants.deviceHubBundleIdentifier
-                ).filter { !$0.isTerminated }
-                guard !applications.isEmpty else {
-                    return terminatedCount
-                }
-
-                for application in applications {
-                    guard let bundleURL = application.bundleURL else {
-                        throw CLIError.configuration(
-                            "device-hub-identity",
-                            "refusing to terminate Device Hub pid \(application.processIdentifier) because it has no bundle URL"
-                        )
-                    }
-                    let observed = bundleURL
-                        .resolvingSymlinksInPath()
-                        .standardizedFileURL
-                    guard observed == expected else {
-                        throw CLIError.configuration(
-                            "device-hub-substitution",
-                            "refusing to terminate Device Hub pid \(application.processIdentifier) from \(observed.path); expected \(expected.path)"
-                        )
-                    }
-                }
-
-                for application in applications {
-                    let remaining = clock.now.duration(to: deadline)
-                    guard remaining > .zero else {
-                        throw CLIError.temporary(
-                            "device-hub-termination-timeout",
-                            "Device Hub kept running or relaunching for 10 seconds"
-                        )
-                    }
-                    let components = remaining.components
-                    let timeoutInterval = TimeInterval(components.seconds)
-                        + TimeInterval(components.attoseconds) / 1_000_000_000_000_000_000
-                    let waiter = ApplicationTerminationWaiter(
-                        application: application,
-                        timeoutInterval: timeoutInterval
-                    )
-                    try await waiter.terminate()
-                    terminatedCount += 1
-                }
-            }
+            try await terminateApplications(
+                ManagedApplicationIdentity(
+                    displayName: "Device Hub",
+                    bundleIdentifier: ToolConstants.deviceHubBundleIdentifier,
+                    expectedURL: expectedApplicationURL,
+                    errorIdentifier: "device-hub"
+                )
+            )
         },
-        openApplication: { applicationURL in
+        terminateLegacyHosts: { expectedApplicationURL in
+            try await terminateApplications(
+                ManagedApplicationIdentity(
+                    displayName: "standalone simulator host",
+                    bundleIdentifier: ToolConstants.legacyHostBundleIdentifier,
+                    expectedURL: expectedApplicationURL,
+                    errorIdentifier: "legacy-host"
+                )
+            )
+        },
+        openLegacyHost: { applicationURL, xcodeURL in
+            guard Bundle(url: applicationURL)?.bundleIdentifier
+                    == ToolConstants.legacyHostBundleIdentifier
+            else {
+                throw CLIError.configuration(
+                    "legacy-host-bundle",
+                    "refusing to launch \(applicationURL.path) because it is not \(ToolConstants.legacyHostBundleIdentifier)"
+                )
+            }
+
             let configuration = NSWorkspace.OpenConfiguration()
             configuration.activates = true
             configuration.createsNewApplicationInstance = false
             configuration.allowsRunningApplicationSubstitution = false
+            configuration.arguments = ["--xcode", xcodeURL.path]
 
             let application = try await NSWorkspace.shared.openApplication(
                 at: applicationURL,
                 configuration: configuration
             )
+            guard application.bundleIdentifier == ToolConstants.legacyHostBundleIdentifier else {
+                throw CLIError.configuration(
+                    "legacy-host-identifier",
+                    "LaunchServices opened pid \(application.processIdentifier) with bundle identifier \(application.bundleIdentifier ?? "unknown"); expected \(ToolConstants.legacyHostBundleIdentifier)"
+                )
+            }
             guard let openedURL = application.bundleURL else {
                 throw CLIError.io(
-                    "simulator-launch",
-                    "LaunchServices opened Simulator without a bundle URL"
+                    "legacy-host-launch",
+                    "LaunchServices opened the standalone simulator host without a bundle URL"
                 )
             }
 
-            let expected = applicationURL.resolvingSymlinksInPath().standardizedFileURL
-            let observed = openedURL.resolvingSymlinksInPath().standardizedFileURL
+            let expected = normalized(applicationURL)
+            let observed = normalized(openedURL)
             guard observed == expected else {
-                throw CLIError.io(
-                    "simulator-substitution",
+                throw CLIError.configuration(
+                    "legacy-host-substitution",
                     "requested \(expected.path), but LaunchServices opened \(observed.path)"
                 )
             }
             return observed
         }
     )
+
+    private static func runningApplications(
+        withBundleIdentifier bundleIdentifier: String
+    ) -> [RunningApplication] {
+        NSRunningApplication.runningApplications(
+            withBundleIdentifier: bundleIdentifier
+        ).filter { !$0.isTerminated }.map {
+            RunningApplication(
+                processIdentifier: $0.processIdentifier,
+                bundleURL: $0.bundleURL,
+                bundleIdentifier: $0.bundleIdentifier
+            )
+        }
+    }
+
+    private static func terminateApplications(
+        _ identity: ManagedApplicationIdentity
+    ) async throws -> Int {
+        let expected = normalized(identity.expectedURL)
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(10))
+        var terminatedCount = 0
+
+        while true {
+            let applications = NSRunningApplication.runningApplications(
+                withBundleIdentifier: identity.bundleIdentifier
+            ).filter { !$0.isTerminated }
+            guard !applications.isEmpty else {
+                return terminatedCount
+            }
+
+            for application in applications {
+                guard application.bundleIdentifier == identity.bundleIdentifier else {
+                    throw CLIError.configuration(
+                        "\(identity.errorIdentifier)-identity",
+                        "refusing to terminate \(identity.displayName) pid \(application.processIdentifier) because its bundle identifier is \(application.bundleIdentifier ?? "unknown")"
+                    )
+                }
+                guard let bundleURL = application.bundleURL else {
+                    throw CLIError.configuration(
+                        "\(identity.errorIdentifier)-identity",
+                        "refusing to terminate \(identity.displayName) pid \(application.processIdentifier) because it has no bundle URL"
+                    )
+                }
+                let observed = normalized(bundleURL)
+                guard observed == expected else {
+                    throw CLIError.configuration(
+                        "\(identity.errorIdentifier)-substitution",
+                        "refusing to terminate \(identity.displayName) pid \(application.processIdentifier) from \(observed.path); expected \(expected.path)"
+                    )
+                }
+            }
+
+            for application in applications {
+                let remaining = clock.now.duration(to: deadline)
+                guard remaining > .zero else {
+                    throw CLIError.temporary(
+                        "\(identity.errorIdentifier)-termination-timeout",
+                        "\(identity.displayName) kept running or relaunching for 10 seconds"
+                    )
+                }
+                let components = remaining.components
+                let timeoutInterval = TimeInterval(components.seconds)
+                    + TimeInterval(components.attoseconds)
+                        / 1_000_000_000_000_000_000
+                let waiter = ApplicationTerminationWaiter(
+                    application: application,
+                    identity: identity,
+                    timeoutInterval: timeoutInterval
+                )
+                try await waiter.terminate()
+                terminatedCount += 1
+            }
+        }
+    }
+
+    private static func normalized(_ url: URL) -> URL {
+        url.resolvingSymlinksInPath().standardizedFileURL
+    }
 }

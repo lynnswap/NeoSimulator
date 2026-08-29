@@ -2,24 +2,24 @@ import Foundation
 import Security
 
 struct CodeSignatureValidator: Sendable {
-    let validateAppleApplication: @Sendable (URL, String) throws -> Void
+    let validateAppleCode: @Sendable (URL, String) throws -> Void
 
-    static let live = CodeSignatureValidator { applicationURL, bundleIdentifier in
+    static let live = CodeSignatureValidator { codeURL, identifier in
         var staticCode: SecStaticCode?
         let createStatus = SecStaticCodeCreateWithPath(
-            applicationURL as CFURL,
+            codeURL as CFURL,
             SecCSFlags(),
             &staticCode
         )
         guard createStatus == errSecSuccess, let staticCode else {
             throw CLIError.unavailable(
                 "code-signature",
-                "could not inspect the signature of \(applicationURL.path): \(securityMessage(createStatus))"
+                "could not inspect the signature of \(codeURL.path): \(securityMessage(createStatus))"
             )
         }
 
         var requirement: SecRequirement?
-        let requirementText = "identifier \"\(bundleIdentifier)\" and anchor apple" as CFString
+        let requirementText = "identifier \"\(identifier)\" and anchor apple" as CFString
         let requirementStatus = SecRequirementCreateWithString(
             requirementText,
             SecCSFlags(),
@@ -36,7 +36,6 @@ struct CodeSignatureValidator: Sendable {
             rawValue: kSecCSCheckAllArchitectures
                 | kSecCSStrictValidate
                 | kSecCSRestrictSymlinks
-                | kSecCSRestrictToAppLike
         )
         let validationStatus = SecStaticCodeCheckValidity(
             staticCode,
@@ -46,7 +45,7 @@ struct CodeSignatureValidator: Sendable {
         guard validationStatus == errSecSuccess else {
             throw CLIError.unavailable(
                 "code-signature",
-                "\(applicationURL.path) is not an intact Apple-signed \(bundleIdentifier) application: \(securityMessage(validationStatus))"
+                "\(codeURL.path) is not intact Apple-signed code with identifier \(identifier): \(securityMessage(validationStatus))"
             )
         }
     }

@@ -43,7 +43,7 @@ struct SimulatorRouteStatus: Equatable {
         case .deviceHub:
             "Simulator route: Device Hub"
         case .legacy:
-            "Simulator route: CoreSimulator (Xcode 26 Simulator)"
+            "Simulator route: CoreSimulator"
         }
     }
 }
@@ -51,9 +51,10 @@ struct SimulatorRouteStatus: Equatable {
 struct HostStatus: Equatable {
     let xcode: XcodeInstallation
     let routeStatus: SimulatorRouteStatus
-    let legacySimulator: SimulatorInstallation?
+    let legacyHost: LegacyHostInstallation?
     let receiptURL: URL
     let runningXcodes: [RunningApplication]
+    let runningLegacyHosts: [RunningApplication]
 
     var rendered: String {
         var lines = [
@@ -63,13 +64,16 @@ struct HostStatus: Equatable {
             "  \(xcode.applicationURL.path)",
         ]
 
-        if let legacySimulator {
+        if let legacyHost {
+            lines.append("Standalone host: validated")
+            lines.append("  \(legacyHost.applicationURL.path)")
+            lines.append("  SimulatorKit: \(legacyHost.simulatorKitBinaryURL.path)")
             lines.append(
-                "Legacy Simulator: Xcode \(legacySimulator.xcode.version), Simulator \(legacySimulator.version) (\(legacySimulator.buildVersion))"
+                "  IDEPlaygroundSimulator: \(legacyHost.idePlaygroundSimulatorBinaryURL.path)"
             )
-            lines.append("  \(legacySimulator.applicationURL.path)")
+            lines.append("  CoreSimulator: \(legacyHost.coreSimulatorBinaryURL.path)")
         } else {
-            lines.append("Legacy Simulator: not found")
+            lines.append("Standalone host: unavailable")
         }
 
         lines.append("")
@@ -108,6 +112,18 @@ struct HostStatus: Equatable {
             }
         }
 
+        if runningLegacyHosts.isEmpty {
+            lines.append("Running standalone host processes: none")
+        } else {
+            lines.append(
+                "Running standalone host processes: \(runningLegacyHosts.count)"
+            )
+            for application in runningLegacyHosts {
+                let path = application.bundleURL?.path ?? "unknown path"
+                lines.append("  pid \(application.processIdentifier): \(path)")
+            }
+        }
+
         lines.append("")
         lines.append("Preference details:")
         lines.append(
@@ -138,9 +154,10 @@ struct ModeChangeReport: Equatable {
     let mode: HostMode
     let didChange: Bool
     let xcode: XcodeInstallation
-    let simulator: SimulatorInstallation?
+    let legacyHost: LegacyHostInstallation?
     let receiptURL: URL?
     let terminatedDeviceHubCount: Int
+    let terminatedLegacyHostCount: Int
 
     var rendered: String {
         var lines: [String]
@@ -151,11 +168,16 @@ struct ModeChangeReport: Equatable {
         }
 
         lines.append("Xcode: \(xcode.version) (\(xcode.buildVersion))")
-        if let simulator {
-            lines.append("Simulator: \(simulator.applicationURL.path)")
+        if let legacyHost {
+            lines.append("Standalone host: \(legacyHost.applicationURL.path)")
         }
         if terminatedDeviceHubCount > 0 {
             lines.append("Closed Device Hub instances: \(terminatedDeviceHubCount)")
+        }
+        if terminatedLegacyHostCount > 0 {
+            lines.append(
+                "Closed standalone host instances: \(terminatedLegacyHostCount)"
+            )
         }
         if let receiptURL {
             lines.append("Restoration receipt: saved at \(receiptURL.path)")
@@ -164,7 +186,7 @@ struct ModeChangeReport: Equatable {
         } else {
             lines.append("Restoration receipt: none")
         }
-        lines.append("Xcode 27 can remain open; the next Run uses this mode.")
+        lines.append("Xcode can remain open; the next Run uses this mode.")
         return lines.joined(separator: "\n")
     }
 }
@@ -173,21 +195,36 @@ struct RestoreReport: Equatable {
     let didRestore: Bool
     let restoredState: ManagedPreferenceState?
     let receiptURL: URL
+    let terminatedLegacyHostCount: Int
 
     var rendered: String {
         guard let restoredState else {
-            return "No restoration receipt exists; nothing changed."
+            var lines = ["No restoration receipt exists; preferences did not change."]
+            if terminatedLegacyHostCount > 0 {
+                lines.append(
+                    "Closed standalone host instances: \(terminatedLegacyHostCount)"
+                )
+            }
+            return lines.joined(separator: "\n")
         }
+        var lines: [String]
         if !didRestore {
-            return """
-                Preferences already matched the saved original: \(restoredState)
-                Removed restoration receipt: \(receiptURL.path)
-                """
+            lines = [
+                "Preferences already matched the saved original: \(restoredState)",
+                "Removed restoration receipt: \(receiptURL.path)",
+            ]
+        } else {
+            lines = [
+                "Restored original preferences: \(restoredState)",
+                "Removed restoration receipt: \(receiptURL.path)",
+                "Xcode can remain open; the next Run uses the restored configuration.",
+            ]
         }
-        return """
-            Restored original preferences: \(restoredState)
-            Removed restoration receipt: \(receiptURL.path)
-            Xcode can remain open; the next Run uses the restored configuration.
-            """
+        if terminatedLegacyHostCount > 0 {
+            lines.append(
+                "Closed standalone host instances: \(terminatedLegacyHostCount)"
+            )
+        }
+        return lines.joined(separator: "\n")
     }
 }

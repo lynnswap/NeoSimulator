@@ -18,7 +18,7 @@ struct HostStatusTests {
         )
         #expect(
             legacy.rendered
-                == "Simulator route: CoreSimulator (Xcode 26 Simulator)"
+                == "Simulator route: CoreSimulator"
         )
     }
 
@@ -30,7 +30,7 @@ struct HostStatusTests {
         #expect(
             pending.rendered
                 == """
-                Simulator route: CoreSimulator (Xcode 26 Simulator)
+                Simulator route: CoreSimulator
                 Attention: an interrupted change needs recovery. Run 'xcode-simulator-host status --verbose'.
                 """
         )
@@ -56,9 +56,11 @@ struct HostStatusTests {
 
         #expect(status.rendered.hasPrefix("Simulator route: Device Hub\n\n"))
         #expect(status.rendered.contains("Selected Xcode: 27.0 (27A5252f)"))
-        #expect(status.rendered.contains("Legacy Simulator: Xcode 26.6"))
+        #expect(status.rendered.contains("Standalone host: validated"))
+        #expect(status.rendered.contains("XcodeSimulatorLegacyHost.app"))
         #expect(status.rendered.contains("Restoration receipt: none"))
         #expect(status.rendered.contains("Running Xcode processes: 2"))
+        #expect(status.rendered.contains("Running standalone host processes: 1"))
         #expect(status.rendered.contains("CoreSimulator session: not set (default)"))
         #expect(status.rendered.contains("Suppress Device Hub auto-start: not set (default)"))
         #expect(!status.rendered.contains("Configured host:"))
@@ -83,10 +85,8 @@ struct HostStatusTests {
             version: try ToolVersion("27.0"),
             buildVersion: "27A5252f"
         )
-        let legacyXcode = XcodeInstallation(
-            applicationURL: URL(fileURLWithPath: "/Applications/Xcode.app"),
-            version: try ToolVersion("26.6"),
-            buildVersion: "17F109"
+        let legacyHostURL = URL(
+            fileURLWithPath: "/usr/local/libexec/xcode-simulator-host/XcodeSimulatorLegacyHost.app"
         )
         return HostStatus(
             xcode: selectedXcode,
@@ -94,13 +94,18 @@ struct HostStatusTests {
                 preferences: preferences,
                 receiptStatus: receiptStatus
             ),
-            legacySimulator: SimulatorInstallation(
-                applicationURL: URL(
-                    fileURLWithPath: "/Applications/Xcode.app/Contents/Developer/Applications/Simulator.app"
+            legacyHost: LegacyHostInstallation(
+                applicationURL: legacyHostURL,
+                xcode: selectedXcode,
+                simulatorKitBinaryURL: URL(
+                    fileURLWithPath: "/Applications/Xcode_27.app/Contents/SharedFrameworks/SimulatorKit.framework/Versions/A/SimulatorKit"
                 ),
-                xcode: legacyXcode,
-                version: "16.0",
-                buildVersion: "1063.4"
+                idePlaygroundSimulatorBinaryURL: URL(
+                    fileURLWithPath: "/Applications/Xcode_27.app/Contents/Frameworks/IDEPlaygroundSimulator.framework/Versions/A/IDEPlaygroundSimulator"
+                ),
+                coreSimulatorBinaryURL: URL(
+                    fileURLWithPath: "/Library/Developer/PrivateFrameworks/CoreSimulator.framework/Versions/A/CoreSimulator"
+                )
             ),
             receiptURL: URL(
                 fileURLWithPath: "/Users/test/Library/Application Support/xcode-simulator-host/state.plist"
@@ -112,7 +117,14 @@ struct HostStatusTests {
                 ),
                 RunningApplication(
                     processIdentifier: 54_923,
-                    bundleURL: legacyXcode.applicationURL
+                    bundleURL: selectedXcode.applicationURL
+                ),
+            ],
+            runningLegacyHosts: [
+                RunningApplication(
+                    processIdentifier: 71_204,
+                    bundleURL: legacyHostURL,
+                    bundleIdentifier: ToolConstants.legacyHostBundleIdentifier
                 ),
             ]
         )

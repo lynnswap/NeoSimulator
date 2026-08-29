@@ -12,7 +12,7 @@ struct ApplicationTests {
 
         let result = try await application.run(.status(.compact))
 
-        #expect(result.0 == "Simulator route: CoreSimulator (Xcode 26 Simulator)")
+        #expect(result.0 == "Simulator route: CoreSimulator")
         #expect(result.1 == 0)
         #expect(
             !fixture.runner.calls.contains {

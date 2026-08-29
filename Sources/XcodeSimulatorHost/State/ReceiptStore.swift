@@ -131,6 +131,17 @@ struct ReceiptStore {
         return try body()
     }
 
+    nonisolated(nonsending)
+    func withExistingExclusiveLock<T>(
+        _ body: () async throws -> T
+    ) async throws -> T {
+        let descriptor = try acquireExclusiveLock(createIfNeeded: false)
+        defer {
+            releaseExclusiveLock(descriptor)
+        }
+        return try await body()
+    }
+
     func stateDirectoryExists() throws -> Bool {
         var metadata = stat()
         guard Darwin.lstat(directoryURL.path, &metadata) == 0 else {

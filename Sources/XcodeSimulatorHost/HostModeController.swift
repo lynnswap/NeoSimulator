@@ -37,9 +37,9 @@ struct HostModeController {
         }
     }
 
-    func status(explicitLegacyXcodeURL: URL?) throws -> HostStatus {
+    func status() throws -> HostStatus {
         try readStatusSnapshot {
-            try makeStatus(explicitLegacyXcodeURL: explicitLegacyXcodeURL)
+            try makeStatus()
         }
     }
 
@@ -56,23 +56,26 @@ struct HostModeController {
         }
     }
 
-    func use(
-        mode: HostMode,
-        explicitLegacyXcodeURL: URL?
-    ) async throws -> ModeChangeReport {
+    func use(mode: HostMode) async throws -> ModeChangeReport {
         try rejectRootMutation()
 
         return try await receiptStore.withExclusiveLock {
             let xcode = try installationInspector.validatedTargetXcode()
-            let simulator: SimulatorInstallation?
+            let legacyHost: LegacyHostInstallation?
             switch mode {
             case .legacy:
-                simulator = try installationInspector.legacySimulator(
-                    explicitXcodeURL: explicitLegacyXcodeURL
-                )
+                legacyHost = try installationInspector.validatedLegacyHost(for: xcode)
             case .deviceHub:
-                simulator = nil
+                legacyHost = nil
             }
+
+            // Process lifecycle changes are not part of the preference rollback.
+            // Reject an existing receipt conflict before closing a healthy host.
+            _ = try recoverManagedContext()
+            let terminatedLegacyHostCount = try await workspace.terminateLegacyHosts(
+                legacyHost?.applicationURL
+                    ?? installationInspector.legacyHostApplicationURL()
+            )
 
             let didChange = try transition(
                 to: mode.targetState,
@@ -83,22 +86,20 @@ struct HostModeController {
                 : receiptStore.receiptURL
 
             var terminatedDeviceHubCount = 0
-            if let simulator {
-                var deviceHubTerminationError: (any Error)?
+            if let legacyHost {
                 do {
-                    let deviceHubURL = xcode.applicationURL
-                        .appendingPathComponent(
-                            ToolConstants.deviceHubPath,
-                            isDirectory: true
-                        )
                     terminatedDeviceHubCount = try await workspace.terminateDeviceHubs(
-                        deviceHubURL
+                        xcode.deviceHubApplicationURL
                     )
                 } catch {
-                    deviceHubTerminationError = error
+                    throw legacyHostPartialSuccessError(
+                        receiptURL: receiptURL,
+                        identifier: "device-hub-termination-partial-success",
+                        error: error,
+                        message: "legacy mode is configured, but Device Hub could not be closed and the standalone host was not opened"
+                    )
                 }
 
-                var simulatorLaunchError: (any Error)?
                 do {
                     let observed = try defaultsStore.readState()
                     guard observed == mode.targetState else {
@@ -107,30 +108,23 @@ struct HostModeController {
                             observed: observed
                         )
                     }
-                    do {
-                        _ = try await workspace.openApplication(
-                            simulator.applicationURL
-                        )
-                    } catch {
-                        simulatorLaunchError = error
-                    }
-                } catch {
-                    let category = (error as? CLIError)?.category ?? .io
-                    let terminationDetail = deviceHubTerminationError.map {
-                        " Device Hub also could not be closed: \(errorMessage($0))."
-                    } ?? ""
-                    throw CLIError(
-                        category: category,
-                        identifier: "legacy-host-invalidated",
-                        message: "legacy mode was committed, but it could not be held through the final Simulator open: \(errorMessage(error)). Simulator was not opened.\(terminationDetail)"
+                    _ = try await workspace.openLegacyHost(
+                        legacyHost.applicationURL,
+                        xcode.applicationURL
                     )
-                }
-
-                if deviceHubTerminationError != nil || simulatorLaunchError != nil {
+                } catch {
+                    let identifier = if (error as? CLIError)?.identifier
+                        == "preference-conflict"
+                    {
+                        "legacy-host-invalidated"
+                    } else {
+                        "legacy-host-launch-partial-success"
+                    }
                     throw legacyHostPartialSuccessError(
                         receiptURL: receiptURL,
-                        deviceHubTerminationError: deviceHubTerminationError,
-                        simulatorLaunchError: simulatorLaunchError
+                        identifier: identifier,
+                        error: error,
+                        message: "legacy mode is configured, but the standalone host could not be opened"
                     )
                 }
             }
@@ -139,34 +133,56 @@ struct HostModeController {
                 mode: mode,
                 didChange: didChange,
                 xcode: xcode,
-                simulator: simulator,
+                legacyHost: legacyHost,
                 receiptURL: receiptURL,
-                terminatedDeviceHubCount: terminatedDeviceHubCount
+                terminatedDeviceHubCount: terminatedDeviceHubCount,
+                terminatedLegacyHostCount: terminatedLegacyHostCount
             )
         }
     }
 
-    func restore(force: Bool = false) throws -> RestoreReport {
+    func restore(force: Bool = false) async throws -> RestoreReport {
         try rejectRootMutation()
 
         guard try receiptStore.stateDirectoryExists() else {
             return RestoreReport(
                 didRestore: false,
                 restoredState: nil,
-                receiptURL: receiptStore.receiptURL
+                receiptURL: receiptStore.receiptURL,
+                terminatedLegacyHostCount: 0
             )
         }
 
-        return try receiptStore.withExistingExclusiveLock {
+        return try await receiptStore.withExistingExclusiveLock {
             guard let receipt = try receiptStore.load() else {
                 return RestoreReport(
                     didRestore: false,
                     restoredState: nil,
-                    receiptURL: receiptStore.receiptURL
+                    receiptURL: receiptStore.receiptURL,
+                    terminatedLegacyHostCount: 0
                 )
             }
+
             if force {
-                return try forceRestore(receipt)
+                // Validate the live tri-state values before closing the host. A
+                // force restore may intentionally proceed through a receipt conflict.
+                _ = try defaultsStore.readState()
+            } else {
+                _ = try recoverManagedContext()
+            }
+            let terminatedLegacyHostCount: Int
+            if receipt.original.effectiveMode == .deviceHub {
+                terminatedLegacyHostCount = try await workspace.terminateLegacyHosts(
+                    installationInspector.legacyHostApplicationURL()
+                )
+            } else {
+                terminatedLegacyHostCount = 0
+            }
+            if force {
+                return try forceRestore(
+                    receipt,
+                    terminatedLegacyHostCount: terminatedLegacyHostCount
+                )
             }
 
             let context = try recoverManagedContext()
@@ -174,7 +190,8 @@ struct HostModeController {
                 return RestoreReport(
                     didRestore: false,
                     restoredState: nil,
-                    receiptURL: receiptStore.receiptURL
+                    receiptURL: receiptStore.receiptURL,
+                    terminatedLegacyHostCount: terminatedLegacyHostCount
                 )
             }
 
@@ -185,30 +202,23 @@ struct HostModeController {
             return RestoreReport(
                 didRestore: didChange,
                 restoredState: receipt.original,
-                receiptURL: receiptStore.receiptURL
+                receiptURL: receiptStore.receiptURL,
+                terminatedLegacyHostCount: terminatedLegacyHostCount
             )
         }
     }
 
-    private func makeStatus(explicitLegacyXcodeURL: URL?) throws -> HostStatus {
+    private func makeStatus() throws -> HostStatus {
         let xcode = try installationInspector.validatedTargetXcode()
         let routeStatus = try makeRouteStatus()
-        let legacySimulator: SimulatorInstallation?
-        if let explicitLegacyXcodeURL {
-            legacySimulator = try installationInspector.legacySimulator(
-                explicitXcodeURL: explicitLegacyXcodeURL
-            )
-        } else {
-            legacySimulator = try? installationInspector.legacySimulator(
-                explicitXcodeURL: nil
-            )
-        }
+        let legacyHost = try? installationInspector.validatedLegacyHost(for: xcode)
         return HostStatus(
             xcode: xcode,
             routeStatus: routeStatus,
-            legacySimulator: legacySimulator,
+            legacyHost: legacyHost,
             receiptURL: receiptStore.receiptURL,
-            runningXcodes: workspace.runningXcodes()
+            runningXcodes: workspace.runningXcodes(),
+            runningLegacyHosts: workspace.runningLegacyHosts()
         )
     }
 
@@ -363,14 +373,18 @@ struct HostModeController {
         )
     }
 
-    private func forceRestore(_ receipt: RestorationReceipt) throws -> RestoreReport {
+    private func forceRestore(
+        _ receipt: RestorationReceipt,
+        terminatedLegacyHostCount: Int
+    ) throws -> RestoreReport {
         let observed = try defaultsStore.readState()
         guard observed != receipt.original else {
             try receiptStore.deleteReceipt()
             return RestoreReport(
                 didRestore: false,
                 restoredState: receipt.original,
-                receiptURL: receiptStore.receiptURL
+                receiptURL: receiptStore.receiptURL,
+                terminatedLegacyHostCount: terminatedLegacyHostCount
             )
         }
 
@@ -399,7 +413,8 @@ struct HostModeController {
         return RestoreReport(
             didRestore: true,
             restoredState: receipt.original,
-            receiptURL: receiptStore.receiptURL
+            receiptURL: receiptStore.receiptURL,
+            terminatedLegacyHostCount: terminatedLegacyHostCount
         )
     }
 
@@ -488,8 +503,9 @@ struct HostModeController {
 
     private func legacyHostPartialSuccessError(
         receiptURL: URL?,
-        deviceHubTerminationError: (any Error)?,
-        simulatorLaunchError: (any Error)?
+        identifier: String,
+        error: any Error,
+        message: String
     ) -> CLIError {
         let recoveryGuidance = if receiptURL != nil {
             "The preferences remain managed; run restore to undo them."
@@ -497,29 +513,11 @@ struct HostModeController {
             "No restoration receipt exists because these are the original preferences."
         }
 
-        switch (deviceHubTerminationError, simulatorLaunchError) {
-        case let (terminationError?, nil):
-            return CLIError(
-                category: (terminationError as? CLIError)?.category ?? .temporary,
-                identifier: "device-hub-termination-partial-success",
-                message: "legacy mode is configured and Simulator is open, but Device Hub could not be closed: \(errorMessage(terminationError)). \(recoveryGuidance)"
-            )
-        case let (nil, launchError?):
-            return CLIError.io(
-                "simulator-launch-partial-success",
-                "legacy mode is configured, but Simulator could not be opened: \(errorMessage(launchError)). \(recoveryGuidance)"
-            )
-        case let (terminationError?, launchError?):
-            return CLIError.io(
-                "legacy-host-partial-success",
-                "legacy mode is configured, but Device Hub could not be closed (\(errorMessage(terminationError))) and Simulator could not be opened (\(errorMessage(launchError))). \(recoveryGuidance)"
-            )
-        case (nil, nil):
-            return CLIError.software(
-                "legacy-host-partial-success",
-                "legacy host failure was requested without a failing operation"
-            )
-        }
+        return CLIError(
+            category: (error as? CLIError)?.category ?? .io,
+            identifier: identifier,
+            message: "\(message): \(errorMessage(error)). \(recoveryGuidance)"
+        )
     }
 
     private func conflictError(

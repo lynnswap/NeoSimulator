@@ -4,11 +4,19 @@ struct XcodeInstallation: Equatable {
     let applicationURL: URL
     let version: ToolVersion
     let buildVersion: String
+
+    var deviceHubApplicationURL: URL {
+        applicationURL.appendingPathComponent(
+            ToolConstants.deviceHubPath,
+            isDirectory: true
+        )
+    }
 }
 
-struct SimulatorInstallation: Equatable {
+struct LegacyHostInstallation: Equatable {
     let applicationURL: URL
     let xcode: XcodeInstallation
-    let version: String
-    let buildVersion: String
+    let simulatorKitBinaryURL: URL
+    let idePlaygroundSimulatorBinaryURL: URL
+    let coreSimulatorBinaryURL: URL
 }

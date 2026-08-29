@@ -4,12 +4,15 @@ enum ToolConstants {
     static let name = "xcode-simulator-host"
     static let version = "0.0.1"
 
-    static let supportedXcodeMajorVersion = 27
-    static let legacyXcodeMajorVersion = 26
+    static let minimumSupportedXcodeMajorVersion = 27
 
     static let xcodeBundleIdentifier = "com.apple.dt.Xcode"
     static let deviceHubBundleIdentifier = "com.apple.dt.Devices"
-    static let simulatorBundleIdentifier = "com.apple.iphonesimulator"
+    static let legacyHostBundleIdentifier = "dev.lynnswap.XcodeSimulatorLegacyHost"
+    static let coreSimulatorBundleIdentifier = "com.apple.CoreSimulator"
+    static let simulatorKitBundleIdentifier = "com.apple.SimulatorKit"
+    static let idePlaygroundSimulatorBundleIdentifier =
+        "com.apple.dt.IDE.IDEPlaygroundSimulator"
 
     static let xcodePreference = ManagedPreference(
         domain: "com.apple.dt.Xcode",
@@ -25,5 +28,12 @@ enum ToolConstants {
         "Contents/PlugIns/IDEiOSSupportCore.framework/Versions/A/IDEiOSSupportCore"
     static let deviceHubPath = "Contents/Applications/DeviceHub.app"
     static let deviceHubImplementationPath = "Contents/MacOS/DeviceHub"
-    static let simulatorPath = "Contents/Developer/Applications/Simulator.app"
+    static let simulatorKitPath =
+        "Contents/SharedFrameworks/SimulatorKit.framework"
+    static let idePlaygroundSimulatorPath =
+        "Contents/Frameworks/IDEPlaygroundSimulator.framework"
+    static let coreSimulatorFrameworkPath =
+        "/Library/Developer/PrivateFrameworks/CoreSimulator.framework"
+    static let legacyHostRelativePath =
+        "../libexec/xcode-simulator-host/XcodeSimulatorLegacyHost.app"
 }
