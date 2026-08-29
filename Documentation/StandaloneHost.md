@@ -146,8 +146,8 @@ DeviceKit nor Device Hub is loaded.
 - Device-set notifications add windows for newly booted iOS devices and remove
   their sessions after shutdown.
 - Closing a device window suppresses reopening it until that device leaves the
-  booted state. Running `use legacy` again activates the host; restarting the
-  host reconstructs windows for currently booted devices.
+  booted state. Running `use legacy` again restarts the exact packaged host and
+  reconstructs windows for currently booted devices.
 - Switching to Device Hub, or restoring a Device Hub route, closes the standalone
   host before enabling that route.
 
@@ -174,6 +174,10 @@ confirmed all of the following in an ordinary, ad-hoc-signed process:
 - focused macOS keyboard input reaching a guest Safari field;
 - window resize from `460x900` to `320x620` while preserving rendering and
   accessibility;
+- Simulator-style menus, Save Screen PNG output, appearance, and rotation in
+  both directions, including an initially landscape device;
+- source-built and release-layout app bundles passing the same non-UI runtime
+  validation and startup acknowledgement;
 - only `/Applications/Xcode_27.app` supplied Xcode frameworks;
 - no Device Hub process or launch log during the probe;
 - no `DeviceKit.framework` mapping and no pasteboard-session log.
@@ -195,4 +199,4 @@ Hub.
 - [x] CLI lifecycle integration and status reporting
 - [x] Simulator.app window and menu analysis
 - [x] Unit and packaging validation
-- [ ] Final integrated live regression and review
+- [x] Final integrated live regression and review
