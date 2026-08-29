@@ -104,7 +104,7 @@ jobs:
           xcodebuild -version
           swift --version
 
-      - name: Build release binary
+      - name: Build release distribution
         env:
           RELEASE_VERSION: ${{ inputs.version }}
         run: scripts/build-release.sh --version "${RELEASE_VERSION}" --dist-root dist

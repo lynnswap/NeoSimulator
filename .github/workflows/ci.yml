@@ -44,8 +44,10 @@ jobs:
       - name: Test
         run: swift test
 
-      - name: Build release product
-        run: swift build -c release --product xcode-simulator-host
+      - name: Build release products
+        run: |
+          swift build -c release --product xcode-simulator-host
+          swift build -c release --product XcodeSimulatorLegacyHost
 
       - name: Validate distribution scripts
         run: |
