@@ -26,7 +26,7 @@ struct XcodeSimulatorHostArguments: ParsableCommand {
             com.apple.dt.Xcode preference is shared by every installed Xcode.
             Xcode can remain open while modes change.
             """,
-        version: ToolConstants.version,
+        version: NeoSimulatorBuildInfo.version,
         subcommands: [StatusArguments.self, UseArguments.self, RestoreArguments.self]
     )
 }

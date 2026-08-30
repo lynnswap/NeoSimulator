@@ -66,8 +66,13 @@ trap cleanup EXIT
 pushd "$repo_root" >/dev/null
 
 expected_version="${version#v}"
-swift build -c release --arch "$arch" --product "$cli_product"
-bin_path="$(swift build -c release --arch "$arch" --show-bin-path)"
+expected_marketing_version="${expected_version%%-*}"
+NEOSIMULATOR_BUILD_VERSION="$expected_version" \
+  swift build -c release --arch "$arch" --product "$cli_product"
+bin_path="$(
+  NEOSIMULATOR_BUILD_VERSION="$expected_version" \
+    swift build -c release --arch "$arch" --show-bin-path
+)"
 cli_source_path="$bin_path/$cli_product"
 
 actual_version="$("$cli_source_path" --version)"
@@ -88,7 +93,7 @@ xcodebuild \
   ARCHS="$arch" \
   ONLY_ACTIVE_ARCH=YES \
   CODE_SIGNING_ALLOWED=NO \
-  MARKETING_VERSION="$expected_version" \
+  MARKETING_VERSION="$expected_marketing_version" \
   build
 host_source_app="$host_derived_data/Build/Products/Release/$host_product.app"
 host_source_path="$host_source_app/Contents/MacOS/$host_product"
@@ -111,9 +116,9 @@ plist_value() {
 }
 
 host_short_version="$(plist_value CFBundleShortVersionString)"
-if [[ "$host_short_version" != "$expected_version" ]]; then
-  echo "Companion app version does not match release tag." >&2
-  echo "Expected: $expected_version" >&2
+if [[ "$host_short_version" != "$expected_marketing_version" ]]; then
+  echo "Companion app marketing version does not match the release tag." >&2
+  echo "Expected: $expected_marketing_version" >&2
   echo "Actual:   $host_short_version" >&2
   exit 1
 fi

@@ -151,6 +151,6 @@ struct ArgumentTests {
 
         #expect(status == 0)
         #expect(!didConstructApplication)
-        #expect(output == [ToolConstants.version])
+        #expect(output == [NeoSimulatorBuildInfo.version])
     }
 }
