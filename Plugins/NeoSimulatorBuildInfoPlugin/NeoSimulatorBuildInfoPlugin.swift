@@ -16,7 +16,13 @@ struct NeoSimulatorBuildInfoPlugin: BuildToolPlugin {
             "--output", outputFile.path,
             "--package-directory", context.package.directoryURL.path,
         ]
-        if let environmentVersion = ProcessInfo.processInfo.environment[Self.environmentKey] {
+        let environmentVersion = ProcessInfo.processInfo.environment[Self.environmentKey]
+            .flatMap { value in
+                value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? nil
+                    : value
+            }
+        if let environmentVersion {
             arguments.append(contentsOf: ["--environment-version", environmentVersion])
         }
 
@@ -25,19 +31,27 @@ struct NeoSimulatorBuildInfoPlugin: BuildToolPlugin {
                 displayName: "Generate NeoSimulator build info",
                 executable: tool.url,
                 arguments: arguments,
-                inputFiles: Self.identityInputFiles(in: context.package.directoryURL),
+                inputFiles: environmentVersion == nil
+                    ? try Self.developmentIdentityInputFiles(
+                        in: context.package.directoryURL
+                    )
+                    : [],
                 outputFiles: [outputFile]
             )
         ]
     }
 
-    private static func identityInputFiles(in packageDirectory: URL) -> [URL] {
-        var inputs = [
+    private static func developmentIdentityInputFiles(
+        in packageDirectory: URL
+    ) throws -> [URL] {
+        var inputs: [URL] = []
+        try appendIdentityInput(
             packageDirectory.appending(path: "Package.swift"),
-        ]
+            to: &inputs
+        )
         let resolved = packageDirectory.appending(path: "Package.resolved")
         if FileManager.default.fileExists(atPath: resolved.path) {
-            inputs.append(resolved)
+            try appendIdentityInput(resolved, to: &inputs)
         }
         for relativeDirectory in ["Plugins", "Sources"] {
             let directory = packageDirectory.appending(path: relativeDirectory)
@@ -47,55 +61,53 @@ struct NeoSimulatorBuildInfoPlugin: BuildToolPlugin {
                 options: [.skipsHiddenFiles]
             ) else { continue }
             for case let url as URL in enumerator {
-                guard let values = try? url.resourceValues(forKeys: [
+                let values = try url.resourceValues(forKeys: [
                     .isRegularFileKey,
                     .isSymbolicLinkKey,
-                ]),
-                    values.isRegularFile == true || values.isSymbolicLink == true
-                else { continue }
-                inputs.append(url)
+                ])
+                guard values.isRegularFile == true || values.isSymbolicLink == true else {
+                    continue
+                }
+                try appendIdentityInput(url, to: &inputs)
             }
         }
-        inputs.append(contentsOf: gitAttributeInputs(in: packageDirectory))
         inputs.append(contentsOf: gitMetadataInputs(in: packageDirectory))
         return Dictionary(grouping: inputs, by: \.standardizedFileURL.path)
             .compactMap { $0.value.first }
             .sorted { $0.path < $1.path }
     }
 
-    private static func gitAttributeInputs(in packageDirectory: URL) -> [URL] {
-        let filename = ".gitattributes"
-        var inputs = [packageDirectory.appending(path: filename)].filter { url in
-            FileManager.default.fileExists(atPath: url.path)
-        }
-        for relativeDirectory in ["Plugins", "Sources"] {
-            let directory = packageDirectory.appending(path: relativeDirectory)
-            guard let enumerator = FileManager.default.enumerator(
-                at: directory,
-                includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey]
-            ) else { continue }
-            for case let url as URL in enumerator where url.lastPathComponent == filename {
-                guard let values = try? url.resourceValues(forKeys: [
-                    .isRegularFileKey,
-                    .isSymbolicLinkKey,
-                ]),
-                    values.isRegularFile == true || values.isSymbolicLink == true
-                else { continue }
-                inputs.append(url)
+    private static func appendIdentityInput(_ url: URL, to inputs: inout [URL]) throws {
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        switch attributes[.type] as? FileAttributeType {
+        case .typeRegular:
+            inputs.append(url)
+        case .typeSymbolicLink:
+            let target = url.resolvingSymlinksInPath()
+            let targetAttributes = try FileManager.default.attributesOfItem(
+                atPath: target.path
+            )
+            guard targetAttributes[.type] as? FileAttributeType == .typeRegular else {
+                throw BuildInfoPluginError.message(
+                    "build identity symlink must resolve to a regular file: \(url.path)"
+                )
             }
+            inputs.append(url)
+            inputs.append(target)
+        default:
+            throw BuildInfoPluginError.message(
+                "build identity input is not a regular file or symbolic link: \(url.path)"
+            )
         }
-        return inputs
     }
 
     private static func gitMetadataInputs(in packageDirectory: URL) -> [URL] {
         var inputs: [URL] = []
-        for gitPath in ["HEAD", "index", "info/attributes"] {
-            if let path = gitOutput(
-                ["rev-parse", "--git-path", gitPath],
-                in: packageDirectory
-            ) {
-                inputs.append(gitURL(path: path, packageDirectory: packageDirectory))
-            }
+        if let headPath = gitOutput(
+            ["rev-parse", "--git-path", "HEAD"],
+            in: packageDirectory
+        ) {
+            inputs.append(gitURL(path: headPath, packageDirectory: packageDirectory))
         }
         let headLogURL = gitOutput(
             ["rev-parse", "--git-path", "logs/HEAD"],
@@ -115,12 +127,6 @@ struct NeoSimulatorBuildInfoPlugin: BuildToolPlugin {
             )
         {
             inputs.append(gitURL(path: referencePath, packageDirectory: packageDirectory))
-        }
-        if let attributesPath = gitOutput(
-            ["config", "--path", "--get", "core.attributesFile"],
-            in: packageDirectory
-        ) {
-            inputs.append(gitURL(path: attributesPath, packageDirectory: packageDirectory))
         }
         return inputs.filter { FileManager.default.fileExists(atPath: $0.path) }
     }
@@ -150,5 +156,15 @@ struct NeoSimulatorBuildInfoPlugin: BuildToolPlugin {
         let value = String(decoding: data, as: UTF8.self)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return value.isEmpty ? nil : value
+    }
+}
+
+private enum BuildInfoPluginError: Error, CustomStringConvertible {
+    case message(String)
+
+    var description: String {
+        switch self {
+        case .message(let message): message
+        }
     }
 }

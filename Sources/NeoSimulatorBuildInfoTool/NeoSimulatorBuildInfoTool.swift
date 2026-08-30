@@ -84,7 +84,7 @@ private struct Options {
 }
 
 package enum BuildVersionResolver {
-    package struct DirtyInputRecord: Hashable, Sendable {
+    package struct BuildInputRecord: Hashable, Sendable {
         package let path: String
         package let kind: String
         package let contentDigest: Data
@@ -124,19 +124,35 @@ package enum BuildVersionResolver {
     }
 
     package static func developmentVersion(
+        objectFormat: String,
         commit: String,
-        dirtyFingerprint: String?
+        sourceFingerprint: String
     ) throws -> String {
-        let commit = try normalizedHex(commit, byteCount: 40, label: "Git commit")
-        guard let dirtyFingerprint else {
-            return "0.0.0-dev.\(commit)"
+        let objectFormat = objectFormat.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        ).lowercased()
+        let commitByteCount: Int
+        switch objectFormat {
+        case "sha1":
+            commitByteCount = 40
+        case "sha256":
+            commitByteCount = 64
+        default:
+            throw BuildInfoToolError.message(
+                "unsupported Git object format: \(objectFormat)"
+            )
         }
-        let fingerprint = try normalizedHex(
-            dirtyFingerprint,
-            byteCount: 64,
-            label: "dirty fingerprint"
+        let commit = try normalizedHex(
+            commit,
+            byteCount: commitByteCount,
+            label: "Git \(objectFormat) commit"
         )
-        return "0.0.0-dev.\(commit).dirty.\(fingerprint)"
+        let fingerprint = try normalizedHex(
+            sourceFingerprint,
+            byteCount: 64,
+            label: "source fingerprint"
+        )
+        return "0.0.0-dev.\(objectFormat).\(commit).source.\(fingerprint)"
     }
 
     private static func normalized(_ value: String?) throws -> String? {
@@ -183,18 +199,8 @@ package enum BuildVersionResolver {
             ["rev-parse", "HEAD"],
             in: packageDirectory
         ),
-            let trackedDiff = try gitOutputData(
-                [
-                    "diff", "--no-ext-diff", "--no-textconv", "--binary", "HEAD", "--",
-                    "Package.swift", "Package.resolved", "Plugins", "Sources",
-                ],
-                in: packageDirectory
-            ),
-            let trackedPaths = try gitOutputData(
-                [
-                    "ls-files", "-z", "--",
-                    "Package.swift", "Package.resolved", "Plugins", "Sources",
-                ],
+            let objectFormatData = try gitOutputData(
+                ["rev-parse", "--show-object-format=storage"],
                 in: packageDirectory
             )
         else {
@@ -202,28 +208,20 @@ package enum BuildVersionResolver {
         }
         let commit = String(decoding: commitData, as: UTF8.self)
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        let records = try untrackedInputRecords(
-            trackedPathsData: trackedPaths,
-            packageDirectory: packageDirectory
-        )
+        let objectFormat = String(decoding: objectFormatData, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let records = try buildInputRecords(in: packageDirectory)
         return try developmentVersion(
+            objectFormat: objectFormat,
             commit: commit,
-            dirtyFingerprint: dirtyFingerprint(
-                trackedDiff: trackedDiff,
-                untrackedRecords: records
-            )
+            sourceFingerprint: sourceFingerprint(records: records)
         )
     }
 
-    package static func dirtyFingerprint(
-        trackedDiff: Data,
-        untrackedRecords: [DirtyInputRecord]
-    ) -> String? {
-        guard !trackedDiff.isEmpty || !untrackedRecords.isEmpty else { return nil }
+    package static func sourceFingerprint(records: [BuildInputRecord]) -> String {
         var hasher = SHA256()
-        appendCanonical(Data("neosimulator-dirty-input-v1".utf8), to: &hasher)
-        appendCanonical(trackedDiff, to: &hasher)
-        for record in untrackedRecords.sorted(by: { lhs, rhs in
+        appendCanonical(Data("neosimulator-source-input-v1".utf8), to: &hasher)
+        for record in records.sorted(by: { lhs, rhs in
             lhs.path.utf8.lexicographicallyPrecedes(rhs.path.utf8)
         }) {
             appendCanonical(Data(record.path.utf8), to: &hasher)
@@ -233,20 +231,15 @@ package enum BuildVersionResolver {
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
-    package static func untrackedInputRecords(
-        trackedPathsData: Data,
-        packageDirectory: URL
-    ) throws -> [DirtyInputRecord] {
-        let trackedPaths = Set(trackedPathsData.split(separator: 0).map { bytes in
-            String(decoding: bytes, as: UTF8.self)
-        })
-        return try identityInputURLs(in: packageDirectory).compactMap { url in
+    package static func buildInputRecords(
+        in packageDirectory: URL
+    ) throws -> [BuildInputRecord] {
+        try identityInputURLs(in: packageDirectory).map { url in
             let path = try relativePath(for: url, in: packageDirectory)
-            guard !trackedPaths.contains(path) else { return nil }
             let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
             switch attributes[.type] as? FileAttributeType {
             case .typeRegular:
-                return DirtyInputRecord(
+                return BuildInputRecord(
                     path: path,
                     kind: "regular",
                     contentDigest: try fileDigest(at: url)
@@ -255,20 +248,29 @@ package enum BuildVersionResolver {
                 let destination = try FileManager.default.destinationOfSymbolicLink(
                     atPath: url.path
                 )
-                return DirtyInputRecord(
+                let target = url.resolvingSymlinksInPath()
+                let targetAttributes = try FileManager.default.attributesOfItem(
+                    atPath: target.path
+                )
+                guard targetAttributes[.type] as? FileAttributeType == .typeRegular else {
+                    throw BuildInfoToolError.message(
+                        "build identity symlink must resolve to a regular file: \(path)"
+                    )
+                }
+                return BuildInputRecord(
                     path: path,
-                    kind: "symlink",
-                    contentDigest: Data(SHA256.hash(data: Data(destination.utf8)))
+                    kind: "symlink:\(destination)",
+                    contentDigest: try fileDigest(at: target)
                 )
             default:
                 throw BuildInfoToolError.message(
-                    "untracked source input is not a regular file or symbolic link: \(path)"
+                    "build identity input is not a regular file or symbolic link: \(path)"
                 )
             }
         }
     }
 
-    private static func identityInputURLs(in packageDirectory: URL) -> [URL] {
+    private static func identityInputURLs(in packageDirectory: URL) throws -> [URL] {
         var inputs = [packageDirectory.appendingPathComponent("Package.swift")]
         let resolved = packageDirectory.appendingPathComponent("Package.resolved")
         if FileManager.default.fileExists(atPath: resolved.path) {
@@ -282,12 +284,13 @@ package enum BuildVersionResolver {
                 options: [.skipsHiddenFiles]
             ) else { continue }
             for case let url as URL in enumerator {
-                guard let values = try? url.resourceValues(forKeys: [
+                let values = try url.resourceValues(forKeys: [
                     .isRegularFileKey,
                     .isSymbolicLinkKey,
-                ]),
-                    values.isRegularFile == true || values.isSymbolicLink == true
-                else { continue }
+                ])
+                guard values.isRegularFile == true || values.isSymbolicLink == true else {
+                    continue
+                }
                 inputs.append(url)
             }
         }
