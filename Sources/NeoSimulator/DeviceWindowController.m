@@ -20,24 +20,6 @@ static const CGFloat XSHDisplayInset = 8.0;
 static const CGFloat XSHMinimumHeaderWidth = 360.0;
 static NSString *const XSHShakeNotification = @"com.apple.UIKit.SimulatorShake";
 
-static NSException * _Nullable XSHSendHIDMessage(
-    XSHLegacyHIDClient *client,
-    IndigoHIDMessageStruct **ownedMessage
-) {
-    @try {
-        [client sendWithMessage:*ownedMessage
-                   freeWhenDone:YES
-                completionQueue:nil
-                     completion:nil];
-        // A normal return transfers the message to SimulatorKit. On an
-        // Objective-C exception the caller retains it for cleanup or retry.
-        *ownedMessage = NULL;
-        return nil;
-    } @catch (NSException *exception) {
-        return exception;
-    }
-}
-
 static NSError *XSHScreenshotError(NSString *description) {
     return XSHNeoHostError(XSHNeoHostErrorToolOperation, description);
 }
@@ -770,32 +752,18 @@ static BOOL XSHAtomicallyReplaceURL(NSURL *temporaryURL,
         );
     }
 
-    NSException *sendException = XSHSendHIDMessage(self.hidClient, &down);
-    NSException *releaseException = nil;
-    if (sendException == nil) {
-        sendException = XSHSendHIDMessage(self.hidClient, &up);
-        if (sendException != nil) {
-            // The down event was accepted. Retry the still caller-owned up
-            // message as best-effort recovery so the button is not left held.
-            releaseException = XSHSendHIDMessage(self.hidClient, &up);
-        }
-    }
-    free(down);
-    free(up);
-
-    if (sendException != nil) {
-        NSString *detail = sendException.reason ?: sendException.name;
-        if (releaseException != nil) {
-            detail = [NSString stringWithFormat:
-                @"%@; releasing the button also failed: %@",
-                detail,
-                releaseException.reason ?: releaseException.name];
-        }
-        return XSHNeoHostError(
-            XSHNeoHostErrorDeviceConnection,
-            [NSString stringWithFormat:@"%@ failed: %@", name, detail]
-        );
-    }
+    // Do not catch exceptions across this ownership boundary. SimulatorKit may
+    // enqueue and take each freeWhenDone message before an exception escapes;
+    // retrying or freeing it would risk a use-after-free. An unexpected private
+    // API exception terminates the host and resets the HID session instead.
+    [self.hidClient sendWithMessage:down
+                      freeWhenDone:YES
+                   completionQueue:nil
+                        completion:nil];
+    [self.hidClient sendWithMessage:up
+                      freeWhenDone:YES
+                   completionQueue:nil
+                        completion:nil];
     return nil;
 }
 
