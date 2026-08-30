@@ -8,6 +8,9 @@ BASE_URL="${XCODE_SIMULATOR_HOST_BASE_URL:-$DEFAULT_BASE_URL}"
 PREFIX="${PREFIX:-${HOME}/.local}"
 BINDIR="${BINDIR:-}"
 ARCHIVE="xcode-simulator-host-darwin-arm64.tar.gz"
+CLI_PRODUCT="xcode-simulator-host"
+HOST_PRODUCT="NeoSimulator"
+HOST_BUNDLE_IDENTIFIER="dev.lynnswap.NeoSimulator"
 
 usage() {
   cat <<'EOF'
@@ -55,10 +58,18 @@ while [ "$#" -gt 0 ]; do
 done
 
 need curl
+need cmp
+need cp
+need dirname
+need find
 need grep
 need install
+need mkdir
 need mktemp
+need mv
+need rm
 need shasum
+need sort
 need tar
 need uname
 
@@ -85,12 +96,52 @@ if [ "$ARM64_CAPABLE" != "1" ]; then
   exit 1
 fi
 
+need codesign
+need lipo
+need plutil
+
 tmp_root="${TMPDIR:-/tmp}"
 tmp_dir="$(mktemp -d "${tmp_root%/}/xcode-simulator-host.XXXXXX")"
+transaction_dir=""
+transaction_active=0
+new_bin_installed=0
+new_app_installed=0
+target_bin=""
+target_app=""
+
 cleanup() {
+  status=$?
+  rollback_failed=0
+  trap - EXIT INT TERM
+  if [ "$transaction_active" = "1" ]; then
+    set +e
+    if [ "$new_bin_installed" = "1" ]; then
+      rm -f "$target_bin" || rollback_failed=1
+    fi
+    if [ "$new_app_installed" = "1" ]; then
+      rm -rf "$target_app" || rollback_failed=1
+    fi
+    if [ -e "$transaction_dir/backup/$CLI_PRODUCT" ] ||
+       [ -L "$transaction_dir/backup/$CLI_PRODUCT" ]; then
+      mv "$transaction_dir/backup/$CLI_PRODUCT" "$target_bin" || rollback_failed=1
+    fi
+    if [ -e "$transaction_dir/backup/$HOST_PRODUCT.app" ] ||
+       [ -L "$transaction_dir/backup/$HOST_PRODUCT.app" ]; then
+      mv "$transaction_dir/backup/$HOST_PRODUCT.app" "$target_app" || rollback_failed=1
+    fi
+    set -e
+  fi
+  if [ "$rollback_failed" = "1" ]; then
+    status=1
+    echo "Install rollback could not complete; recovery files remain at $transaction_dir" >&2
+  elif [ -n "$transaction_dir" ]; then
+    rm -rf "$transaction_dir"
+  fi
   rm -rf "$tmp_dir"
+  exit "$status"
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT TERM
 
 curl -fsSL -o "$tmp_dir/$ARCHIVE" "$BASE_URL/$ARCHIVE"
 curl -fsSL -o "$tmp_dir/SHA256SUMS.txt" "$BASE_URL/SHA256SUMS.txt"
@@ -99,13 +150,123 @@ curl -fsSL -o "$tmp_dir/SHA256SUMS.txt" "$BASE_URL/SHA256SUMS.txt"
   cd "$tmp_dir"
   grep "  ${ARCHIVE}\$" SHA256SUMS.txt > SHA256SUMS.selected
   shasum -a 256 -c SHA256SUMS.selected
-  tar -xzf "$ARCHIVE"
 )
 
+expected_entries="$tmp_dir/archive.expected"
+actual_entries="$tmp_dir/archive.actual"
+printf '%s\n' \
+  "bin/" \
+  "bin/$CLI_PRODUCT" \
+  "libexec/" \
+  "libexec/$CLI_PRODUCT/" \
+  "libexec/$CLI_PRODUCT/$HOST_PRODUCT.app/" \
+  "libexec/$CLI_PRODUCT/$HOST_PRODUCT.app/Contents/" \
+  "libexec/$CLI_PRODUCT/$HOST_PRODUCT.app/Contents/Info.plist" \
+  "libexec/$CLI_PRODUCT/$HOST_PRODUCT.app/Contents/MacOS/" \
+  "libexec/$CLI_PRODUCT/$HOST_PRODUCT.app/Contents/MacOS/$HOST_PRODUCT" \
+  "libexec/$CLI_PRODUCT/$HOST_PRODUCT.app/Contents/_CodeSignature/" \
+  "libexec/$CLI_PRODUCT/$HOST_PRODUCT.app/Contents/_CodeSignature/CodeResources" |
+  LC_ALL=C sort > "$expected_entries"
+tar -tzf "$tmp_dir/$ARCHIVE" | LC_ALL=C sort > "$actual_entries"
+if ! cmp -s "$expected_entries" "$actual_entries"; then
+  echo "Release archive contents are not expected." >&2
+  exit 1
+fi
+
+archive_root="$tmp_dir/archive"
+mkdir -p "$archive_root"
+tar -C "$archive_root" -xzf "$tmp_dir/$ARCHIVE"
+
+expected_files="$tmp_dir/files.expected"
+actual_files="$tmp_dir/files.actual"
+printf '%s\n' \
+  "bin/$CLI_PRODUCT" \
+  "libexec/$CLI_PRODUCT/$HOST_PRODUCT.app/Contents/Info.plist" \
+  "libexec/$CLI_PRODUCT/$HOST_PRODUCT.app/Contents/MacOS/$HOST_PRODUCT" \
+  "libexec/$CLI_PRODUCT/$HOST_PRODUCT.app/Contents/_CodeSignature/CodeResources" |
+  LC_ALL=C sort > "$expected_files"
+(
+  cd "$archive_root"
+  find bin libexec -type f -print | LC_ALL=C sort
+) > "$actual_files"
+if ! cmp -s "$expected_files" "$actual_files"; then
+  echo "Release archive file types are not expected." >&2
+  exit 1
+fi
+
+archive_bin="$archive_root/bin/$CLI_PRODUCT"
+archive_app="$archive_root/libexec/$CLI_PRODUCT/$HOST_PRODUCT.app"
+archive_host_bin="$archive_app/Contents/MacOS/$HOST_PRODUCT"
+if [ ! -x "$archive_bin" ] || [ ! -x "$archive_host_bin" ]; then
+  echo "Release archive executables are not executable." >&2
+  exit 1
+fi
+if [ "$(lipo -archs "$archive_bin")" != "arm64" ] ||
+   [ "$(lipo -archs "$archive_host_bin")" != "arm64" ]; then
+  echo "Release archive must contain arm64-only executables." >&2
+  exit 1
+fi
+if [ "$(plutil -extract CFBundleExecutable raw -o - "$archive_app/Contents/Info.plist")" != "$HOST_PRODUCT" ] ||
+   [ "$(plutil -extract CFBundleIdentifier raw -o - "$archive_app/Contents/Info.plist")" != "$HOST_BUNDLE_IDENTIFIER" ] ||
+   [ "$(plutil -extract CFBundlePackageType raw -o - "$archive_app/Contents/Info.plist")" != "APPL" ]; then
+  echo "Companion app Info.plist does not match the release contract." >&2
+  exit 1
+fi
+codesign --verify --deep --strict "$archive_app"
+codesign --verify --strict "$archive_bin"
+
 mkdir -p "$BINDIR"
-install -m 755 "$tmp_dir/bin/xcode-simulator-host" "$BINDIR/xcode-simulator-host"
+BINDIR="$(cd -P "$BINDIR" && pwd)"
+INSTALL_PARENT="$(dirname "$BINDIR")"
+LIBEXEC_DIR="${INSTALL_PARENT}/libexec/${CLI_PRODUCT}"
+target_bin="${BINDIR}/${CLI_PRODUCT}"
+target_app="${LIBEXEC_DIR}/${HOST_PRODUCT}.app"
+mkdir -p "$LIBEXEC_DIR"
+transaction_dir="$(mktemp -d "${INSTALL_PARENT%/}/.xcode-simulator-host-install.XXXXXX")"
+stage_root="$transaction_dir/stage"
+stage_bin="$stage_root/bin/$CLI_PRODUCT"
+stage_app="$stage_root/libexec/$CLI_PRODUCT/$HOST_PRODUCT.app"
+mkdir -p "$(dirname "$stage_bin")" "$(dirname "$stage_app")" "$transaction_dir/backup"
+install -m 755 "$archive_bin" "$stage_bin"
+cp -R "$archive_app" "$stage_app"
+chmod 755 "$stage_app/Contents/MacOS/$HOST_PRODUCT"
+
+cmp -s "$archive_bin" "$stage_bin"
+cmp -s "$archive_app/Contents/Info.plist" "$stage_app/Contents/Info.plist"
+cmp -s "$archive_host_bin" "$stage_app/Contents/MacOS/$HOST_PRODUCT"
+cmp -s \
+  "$archive_app/Contents/_CodeSignature/CodeResources" \
+  "$stage_app/Contents/_CodeSignature/CodeResources"
+codesign --verify --deep --strict "$stage_app"
+codesign --verify --strict "$stage_bin"
+
+transaction_active=1
+if [ -e "$target_app" ] || [ -L "$target_app" ]; then
+  mv "$target_app" "$transaction_dir/backup/$HOST_PRODUCT.app"
+fi
+if [ -e "$target_bin" ] || [ -L "$target_bin" ]; then
+  mv "$target_bin" "$transaction_dir/backup/$CLI_PRODUCT"
+fi
+
+# Install the companion first and the CLI last. A newly invoked CLI therefore
+# never observes the previous companion after the transaction commit point.
+new_app_installed=1
+mv "$stage_app" "$target_app"
+new_bin_installed=1
+mv "$stage_bin" "$target_bin"
+
+cmp -s "$archive_bin" "$target_bin"
+cmp -s "$archive_app/Contents/Info.plist" "$target_app/Contents/Info.plist"
+cmp -s "$archive_host_bin" "$target_app/Contents/MacOS/$HOST_PRODUCT"
+cmp -s \
+  "$archive_app/Contents/_CodeSignature/CodeResources" \
+  "$target_app/Contents/_CodeSignature/CodeResources"
+codesign --verify --deep --strict "$target_app"
+codesign --verify --strict "$target_bin"
+transaction_active=0
 
 echo "Installed xcode-simulator-host ${VERSION} to ${BINDIR}"
+echo "Installed companion app to ${target_app}"
 case ":${PATH}:" in
   *":${BINDIR}:"*) ;;
   *)

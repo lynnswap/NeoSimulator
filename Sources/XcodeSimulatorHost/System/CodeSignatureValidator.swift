@@ -2,53 +2,84 @@ import Foundation
 import Security
 
 struct CodeSignatureValidator: Sendable {
+    let validateAppleCode: @Sendable (URL, String) throws -> Void
     let validateAppleApplication: @Sendable (URL, String) throws -> Void
 
-    static let live = CodeSignatureValidator { applicationURL, bundleIdentifier in
-        var staticCode: SecStaticCode?
-        let createStatus = SecStaticCodeCreateWithPath(
-            applicationURL as CFURL,
-            SecCSFlags(),
-            &staticCode
-        )
-        guard createStatus == errSecSuccess, let staticCode else {
-            throw CLIError.unavailable(
-                "code-signature",
-                "could not inspect the signature of \(applicationURL.path): \(securityMessage(createStatus))"
-            )
-        }
+    init(
+        _ validateAppleCode: @escaping @Sendable (URL, String) throws -> Void,
+        validateAppleApplication: (@Sendable (URL, String) throws -> Void)? = nil
+    ) {
+        self.validateAppleCode = validateAppleCode
+        self.validateAppleApplication = validateAppleApplication ?? validateAppleCode
+    }
 
-        var requirement: SecRequirement?
-        let requirementText = "identifier \"\(bundleIdentifier)\" and anchor apple" as CFString
-        let requirementStatus = SecRequirementCreateWithString(
-            requirementText,
-            SecCSFlags(),
-            &requirement
-        )
-        guard requirementStatus == errSecSuccess, let requirement else {
-            throw CLIError.software(
-                "code-requirement",
-                "could not create the Apple code requirement: \(securityMessage(requirementStatus))"
+    static let live = CodeSignatureValidator(
+        { codeURL, identifier in
+            try checkAppleCodeSignature(
+                at: codeURL,
+                identifier: identifier,
+                requiresApplicationForm: false
+            )
+        },
+        validateAppleApplication: { applicationURL, identifier in
+            try checkAppleCodeSignature(
+                at: applicationURL,
+                identifier: identifier,
+                requiresApplicationForm: true
             )
         }
+    )
+}
 
-        let flags = SecCSFlags(
-            rawValue: kSecCSCheckAllArchitectures
-                | kSecCSStrictValidate
-                | kSecCSRestrictSymlinks
-                | kSecCSRestrictToAppLike
+private func checkAppleCodeSignature(
+    at codeURL: URL,
+    identifier: String,
+    requiresApplicationForm: Bool
+) throws {
+    var staticCode: SecStaticCode?
+    let createStatus = SecStaticCodeCreateWithPath(
+        codeURL as CFURL,
+        SecCSFlags(),
+        &staticCode
+    )
+    guard createStatus == errSecSuccess, let staticCode else {
+        throw CLIError.unavailable(
+            "code-signature",
+            "could not inspect the signature of \(codeURL.path): \(securityMessage(createStatus))"
         )
-        let validationStatus = SecStaticCodeCheckValidity(
-            staticCode,
-            flags,
-            requirement
+    }
+
+    var requirement: SecRequirement?
+    let requirementText = "identifier \"\(identifier)\" and anchor apple" as CFString
+    let requirementStatus = SecRequirementCreateWithString(
+        requirementText,
+        SecCSFlags(),
+        &requirement
+    )
+    guard requirementStatus == errSecSuccess, let requirement else {
+        throw CLIError.software(
+            "code-requirement",
+            "could not create the Apple code requirement: \(securityMessage(requirementStatus))"
         )
-        guard validationStatus == errSecSuccess else {
-            throw CLIError.unavailable(
-                "code-signature",
-                "\(applicationURL.path) is not an intact Apple-signed \(bundleIdentifier) application: \(securityMessage(validationStatus))"
-            )
-        }
+    }
+
+    var rawFlags = kSecCSCheckAllArchitectures
+        | kSecCSStrictValidate
+        | kSecCSRestrictSymlinks
+    if requiresApplicationForm {
+        rawFlags |= kSecCSRestrictToAppLike
+    }
+    let validationStatus = SecStaticCodeCheckValidity(
+        staticCode,
+        SecCSFlags(rawValue: rawFlags),
+        requirement
+    )
+    guard validationStatus == errSecSuccess else {
+        let kind = requiresApplicationForm ? "application" : "code"
+        throw CLIError.unavailable(
+            "code-signature",
+            "\(codeURL.path) is not intact Apple-signed \(kind) with identifier \(identifier): \(securityMessage(validationStatus))"
+        )
     }
 }
 

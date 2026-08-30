@@ -2,71 +2,155 @@
 
 ## Consumer contract
 
-`xcode-simulator-host` is a macOS command-line tool for selecting the UI host
-used alongside Xcode 27 simulator runs.
-
 ```console
-xcode-simulator-host status [--verbose]
-xcode-simulator-host use legacy [--legacy-xcode /Applications/Xcode.app]
+xcode-simulator-host status [--verbose] [--legacy-xcode /path/to/Xcode_26.app]
+xcode-simulator-host use neo
+xcode-simulator-host use legacy [--legacy-xcode /path/to/Xcode_26.app]
 xcode-simulator-host use device-hub
 xcode-simulator-host restore [--force]
 ```
 
-- `status` is read-only. Its default output is only the simulator route used by
-  the next Run; `--verbose` adds installations, preferences, restoration state,
-  and running processes. The default path reads only managed preferences and
-  restoration state, so reporting the route does not depend on Xcode discovery
-  or installation validation.
-- `use legacy` configures Xcode for a CoreSimulator-only session, prevents an
-  already-running Device Hub from automatically starting a live view, normally
-  terminates the verified Device Hub, and opens the validated Simulator app
-  from Xcode 26. Xcode itself remains open.
-- `use device-hub` removes both overrides so Xcode 27 uses its default Device
-  Hub route.
-- `restore` restores the exact preference state from before the tool first
-  changed it, including the distinction between an absent key and an explicit
-  Boolean value.
-- `restore --force` is the explicit recovery path that lets the saved original
-  values win over a conflicting live Boolean state.
+- `status` is read-only. Compact output reports only the route used by the next
+  Xcode Run. `--verbose` adds Neo and Legacy availability,
+  compatibility-checked components, preferences, restoration state, and
+  running processes.
+- `use neo` selects the direct CoreSimulator route and launches the packaged
+  host with the selected Xcode 27+ installation.
+- `use legacy` selects the same CoreSimulator route and launches Apple's
+  `Simulator.app` from a validated Xcode 26 installation. The highest validated
+  `/Applications/Xcode*.app` candidate is used unless `--legacy-xcode` is set.
+- `use device-hub` closes Neo and validated legacy Simulator processes before
+  restoring Xcode's default Device Hub route.
+- `restore` restores the exact preference state captured before the first
+  mutation. If that route uses Device Hub, it closes both direct-route UI hosts
+  first. A restored CoreSimulator route does not imply a Neo or Legacy choice.
+- `restore --force` is the explicit recovery path for a conflicting Boolean
+  live state.
 
-The selected Xcode comes from `DEVELOPER_DIR` when set and otherwise from
-`xcode-select -p`. The preference domain is shared by every installed Xcode;
-selecting an Xcode only chooses the installation to validate.
+Xcode is resolved from `DEVELOPER_DIR` or `xcode-select -p`. Xcode 27 is the
+minimum generation. Later versions are supported when they satisfy the same
+verified private contract.
 
-## Package topology
+## Why two direct-route hosts
 
-The package has one executable product, one executable target, and one test
-target. There is no library consumer and no independent release or dependency
-boundary that justifies another product or implementation target.
+Xcode 27 no longer supplies Simulator.app, while Device Hub is not an acceptable
+display host for workflows that require CoreSimulator without continuous
+pasteboard synchronization and other device-management behavior. Xcode Previews
+demonstrates that SimulatorKit can render and interact with a CoreSimulator
+screen directly.
+
+Neo is the self-contained Xcode 27+ path: the package ships a narrow AppKit
+companion instead of embedding DeviceKit or launching Device Hub. Legacy is the
+compatibility path for users who already have Xcode 26: it reuses Apple's full
+`Simulator.app` while the selected Xcode 27+ installation remains the Build &
+Run owner.
 
 ```text
-xcode-simulator-host (executable product)
-  -> XcodeSimulatorHost (composition root and all internal owners)
-XcodeSimulatorHostTests
-  -> XcodeSimulatorHost
+Xcode Build & Run
+  -> CoreSimulator session
+  -> NeoSimulator.app
+       -> CoreSimulator device-set membership
+       -> IDEPlaygroundSimulator display factory
+       -> SimulatorKit SimDisplayView
+       -> AppKit window, header, menus
+       -> typed HID and device-tool actions
 ```
 
-The CLI surface uses Apple's `swift-argument-parser` 1.8.2. Persistence and system
-integration use Foundation, AppKit, and Darwin directly; no additional runtime
-dependency is required.
+## Package and distribution topology
+
+```text
+xcode-simulator-host (CLI executable)
+NeoSimulator (workspace AppKit application target)
+XcodeSimulatorHostTests
+```
+
+The release archive preserves this layout:
+
+```text
+bin/xcode-simulator-host
+libexec/xcode-simulator-host/NeoSimulator.app
+```
+
+The CLI resolves the app relative to its own real executable path. The installer
+first resolves a symlinked bindir to its physical directory, then stages and
+verifies both artifacts, installs the app first, commits the CLI last, and
+restores the previous pair if installation fails. Rollback derives whether an
+old artifact moved from the presence of its same-filesystem backup path, so a
+signal cannot land between a move and a separate bookkeeping update.
 
 ## Owner map
 
 | Responsibility | Owner |
 | --- | --- |
-| Parse commands and options | `ArgumentParser` command types |
+| Parse CLI commands | ArgumentParser command types |
 | Execute fixed system commands | `SystemCommandRunner` |
-| Read and mutate the two Boolean preferences | `DefaultsStore` |
-| Persist the original state and in-flight mutation | `ReceiptStore` |
-| Resolve and validate Xcode 27 | `InstallationInspector` |
-| Resolve and validate a legacy Simulator host | `InstallationInspector` |
-| Validate the legacy Simulator code signature | `CodeSignatureValidator` |
-| Serialize preference transitions and rollback | `HostModeController` |
-| Observe Xcode, terminate the exact Device Hub, and open Simulator | `WorkspaceClient` |
-| Render output and select an exit category | `XcodeSimulatorHostApplication` |
+| Read and mutate the two preferences | `DefaultsStore` |
+| Persist original and pending state | `ReceiptStore` |
+| Validate Xcode 27+ and private components | `InstallationInspector` |
+| Serialize route and process transitions | `HostModeController` |
+| Observe and terminate exact app identities | `WorkspaceClient` |
+| Observe booted iOS simulator membership | `XSHNeoHostApplication` |
+| Load and validate the private runtime | `XSHPrivateRuntime` |
+| Own one display, HID client, and window | `XSHDeviceWindowController` |
+| Build and validate active-window menus | `XSHMenuController` |
+| Run screenshot and rotation operations | `XSHDeviceToolRunner` |
+| Clipboard synchronization | deliberately no owner |
 
-The current preference values remain the source of truth for the effective
-mode. The receipt owns only restoration and interruption recovery metadata.
+The active simulator for a menu command is derived from `NSApp.keyWindow` each
+time. Device selection is not mirrored in a second state store.
+
+## Compatibility gates
+
+Every mode first validates the selected Xcode 27+ application, its exact Device
+Hub, and both managed preference surfaces. Host-specific validation then runs
+before receipt recovery, process termination, or preference mutation.
+
+Neo additionally requires:
+
+- selected-Xcode SimulatorKit and IDEPlaygroundSimulator frameworks with
+  matching `DTXcode` generation and intact Apple signatures;
+- installed CoreSimulator and CoreDevice frameworks whose `DTXcode` generation
+  matches the selected Xcode;
+- exactly one numeric `EXPECTED_VERSION` literal in each selected-Xcode
+  `simctl` and `devicectl` wrapper;
+- exact equality between those expected versions and the installed framework
+  versions;
+- intact Apple-signed direct `simctl` and `devicectl` executables with their
+  expected identifiers;
+- an intact Apple-signed simulator CoreDevice plugin whose version matches
+  CoreSimulator and whose generation matches Xcode;
+- no DeviceKit or Device Hub load-path fragments in direct `devicectl` or the
+  simulator CoreDevice plugin;
+- the packaged companion app at the exact relative path, with its expected
+  bundle identifier and executable.
+
+After those provenance checks, the gate executes the exact packaged companion
+in non-UI `--validate-runtime` mode. `XSHPrivateRuntime` then performs the same
+framework loads, `dlsym`, class, selector, and loaded-image checks used by the
+GUI process, without creating an application, CoreSimulator device set, or
+display session. This keeps the runtime contract in one owner while still
+rejecting a changed Xcode before preference mutation.
+
+Wrappers and direct private tools are inspected but never executed by the gate.
+This prevents their mismatch path from implicitly running
+`xcodebuild -runFirstLaunch`.
+
+An unknown later Xcode that changes a private symbol or component version is
+unavailable. It is never guessed compatible and never falls back to Device Hub.
+
+Legacy instead validates:
+
+- an outer `com.apple.dt.Xcode` application whose version is exactly generation
+  26 and whose application signature is intact and Apple-anchored;
+- its nested `Contents/Developer/Applications/Simulator.app` bundle identifier,
+  executable, version metadata, generation-26 `DTXcode`, and Apple application
+  signature;
+- the exact bundle URL of every running legacy Simulator process before the
+  process can be terminated.
+
+An explicitly selected legacy Xcode may live outside `/Applications`. A copied
+or substituted `Simulator.app` outside its validated owning Xcode is never
+managed.
 
 ## Managed preferences
 
@@ -78,139 +162,151 @@ domain: com.apple.dt.Devices
 key:    disableAutoStartLiveDeviceView
 ```
 
-Each value is modeled as one of `absent`, `false`, or `true`. Any other stored
-type is a configuration error and is never guessed or overwritten.
+Each value is `absent`, `false`, or `true`. Any other type is a configuration
+error. The live adapter uses `defaults`; direct CFPreferences access cannot
+reliably observe the Device Hub container domain from this process.
 
-The `defaults` command is the live adapter. Direct `CFPreferences` access from
-this unsandboxed tool cannot observe the Device Hub container preference, while
-`defaults` resolves that domain to its application container.
+The preferences encode only two routes: CoreSimulator and Device Hub. Neo and
+Legacy are separate process strategies for the same CoreSimulator state. The
+receipt consequently stores only original, expected, and pending preference
+states; persisting a Neo/Legacy choice there would create a second source of
+truth for process lifecycle.
 
-## Transition transaction
+## Preference transaction
 
-The receipt is stored under the user's Application Support directory. It
-contains:
+The first mutation stores a receipt under the user's Application Support
+directory. It records the original tri-state values, last verified state,
+selected Xcode version/build, and an optional pending `before -> target`
+mutation. Later switches preserve the original state.
 
-- schema and tool identifiers;
-- the original two-key state;
-- the state the tool most recently verified;
-- an optional pending mutation with `before` and `target` states;
-- the Xcode version and build validated at capture time.
-
-The first successful management attempt creates the receipt before changing a
-preference. Later mode switches never replace the original state.
-
-For every `use` transition, `HostModeController`:
+For a route transition, `HostModeController`:
 
 1. acquires an exclusive operation lock;
-2. validates compatibility while allowing Xcode GUI processes to remain open;
-3. reads the current preference state;
-4. saves a pending `before -> target` mutation;
-5. brackets every individual preference write with full-state verification;
-6. finalizes the verified state in the receipt.
+2. validates every required component;
+3. closes validated UI hosts that conflict with the requested host;
+4. reads the current preference state;
+5. records the pending transition;
+6. verifies full state before and after each individual preference write;
+7. finalizes the receipt;
+8. applies target-specific process lifecycle work while still holding the lock.
 
-If applying or verifying either key fails, the controller restores the state
-from immediately before that operation using the same guarded step sequence.
-If a pre-write or post-write check detects a different state, no automatic
-rollback runs over that state; the pending receipt is retained and the
-forward transition is reported as a conflict. A deviation detected during
-rollback, or a different rollback failure, is reported as an inconsistent
-state and the receipt is retained.
+If a write fails, the controller restores the immediately preceding state when
+that state can still be proven. A different live state is treated as an
+external conflict and is not overwritten.
 
-The `defaults` command does not provide a conditional compare-and-swap. The
-operation lock serializes this tool's processes, while full-state reads
-immediately before and after each write detect cooperating or slower external
-changes. An external write in the narrow interval between a check and the
-managed write can be indistinguishable if the managed write replaces it with
-the intended value.
+An intermediate state that could be either an interrupted first write or an
+external change is intentionally ambiguous. Normal `use` and `restore` leave it
+untouched; only `restore --force` gives the saved original state precedence.
 
-On the next `use` or `restore` invocation, a pending mutation is finalized when
-the live state equals its `before` or `target` value. A state matching the
-possible value after writing only the Xcode key is ambiguous: it could be an
-interrupted tool write or an external change made after the journal was saved.
-It is never rolled back automatically. Any other third value is also an
-external conflict, and no mutation proceeds.
+Compact `status` takes an optimistic read before state exists and retries under
+the existing lock if the state directory appears concurrently. Once state
+exists, status always uses that lock and never performs recovery or mutation.
 
-`status` does not create the state directory or operation lock. Before the
-first mutation it takes an optimistic snapshot and confirms that the state
-directory stayed absent. Creating that directory is the first, monotonic step
-of every mutating operation, so if it appears during the read, `status` retries
-the complete snapshot under the existing operation lock. Once state exists,
-`status` always uses that existing lock. It does not recover pending state or
-change a preference, receipt, or state artifact.
+## Process lifecycle
 
-`restore` first checks the monotonic state directory marker. If it is absent,
-the command is a no-op and does not create state or read the managed
-preferences. If state exists, `restore` acquires the existing operation lock
-before deciding whether a receipt exists. It then recovers an interrupted
-journal if necessary, restores the exact original state, and verifies the
-read-back while Xcode may remain open. It does not require the currently
-selected Xcode to pass the compatibility gate.
+### Select Neo
 
-After inspecting a conflict, `restore --force` records the observed Boolean
-state as a new rollback point, writes and verifies the saved original values,
-then deletes the receipt. It still refuses non-Boolean preference values.
+1. Validate the selected Xcode, packaged NeoSimulator app, private frameworks,
+   tools, plugin, and runtime contract.
+2. Validate the owning Xcode 26 bundle for every running legacy Simulator.
+3. Reject receipt conflicts, then close those legacy Simulators and restart the
+   exact Neo bundle.
+4. Commit the CoreSimulator preference state if it is not already active.
+5. Terminate only Device Hub instances whose resolved bundle URL matches the
+   selected Xcode; failure stops before Neo is opened.
+6. Reverify the managed state and launch Neo with
+   `--xcode <selected Xcode.app>`.
 
-Device Hub termination and opening the legacy Simulator are separate failure
-boundaries after a successful preference transaction, but remain inside the
-same exclusive operation lock. `WorkspaceClient` only terminates running
-applications whose resolved bundle URL exactly matches the validated Device Hub
-inside the selected Xcode. It requests normal termination, observes
-`isTerminated` through KVO, and re-enumerates the current `NSWorkspace`
-inventory until no matching process remains within one 10-second operation
-deadline. It never force-terminates Device Hub.
+Every `use neo` restarts Neo. This makes Xcode 27-to-28 selection changes
+deterministic and avoids retaining frameworks from a previous selection.
 
-`HostModeController` holds the operation lock from compatibility validation
-through preference commit, Device Hub termination, final legacy-state
-verification, and `NSWorkspace.openApplication` completion. A concurrent
-switch or restore therefore cannot commit while an older legacy operation is
-still applying process lifecycle side effects. Termination and launch failures
-are reported as partial success; the selected mode remains configured and can
-be restored.
+### Select Legacy
 
-`restore` remains available when the currently selected Xcode is unsupported or
-running. It deletes the receipt only after the original values are read back.
+1. Validate the selected Xcode 27+, the requested or discovered Xcode 26, and
+   its nested `Simulator.app`.
+2. Validate every running legacy Simulator by its actual bundle URL.
+3. Reject receipt conflicts, then close Neo and all validated legacy Simulator
+   instances.
+4. Commit the same CoreSimulator preference state used by Neo if needed.
+5. Terminate the exact selected-Xcode Device Hub; failure stops before
+   Simulator is opened.
+6. Reverify the managed state and open the exact validated `Simulator.app`.
 
-## Compatibility gate
+Neo-to-Legacy and Legacy-to-Neo switches still execute this process lifecycle
+when the preference route is already CoreSimulator. “No preference change” is
+not treated as “already using this host.”
 
-`use` support is deliberately limited to Xcode 27. A target installation
-must have:
+### Select Device Hub or restore
 
-- bundle identifier `com.apple.dt.Xcode` and major version 27;
-- `Contents/Applications/DeviceHub.app` with identifier
-  `com.apple.dt.Devices`, a launchable bundle executable, and its expected
-  internal implementation executable;
-- the expected `IDEiOSSupportCore` binary containing the exact Xcode key;
-- the Device Hub implementation binary containing the exact auto-start key.
+`use device-hub` closes the exact Neo bundle and every validated legacy
+Simulator before committing the Device Hub preference state. Failure to close a
+managed direct-route host stops the transition before mutation.
 
-A legacy host must come from Xcode 26 and contain an executable Simulator app
-with bundle identifier `com.apple.iphonesimulator`. Before launch, the complete
-outer Xcode and nested Simulator bundles must pass strict static code validation
-for their respective identifiers and `anchor apple`. The signed Simulator
-`DTXcode` value must also identify Xcode major 26. Automatic discovery checks
-Xcode applications in `/Applications` and chooses the highest validated
-version. `--legacy-xcode` selects an explicit candidate elsewhere but does not
-bypass signature or generation validation.
+`restore` closes both host types only when the saved original route is Device
+Hub. When the original is CoreSimulator, the receipt has no authority to guess
+whether Neo or Legacy should run.
 
-No alternative binary path, preference key, or application is guessed when a
-gate fails. Xcode 28 and later require a new verified compatibility profile.
+### Runtime host conflicts
 
-## Distribution
+Neo refuses to connect if Device Hub (`com.apple.dt.Devices`) or legacy
+Simulator (`com.apple.iphonesimulator`) is already running. It observes
+application launches while active. If either appears, it cancels device
+operations, disconnects every display, and exits. It never kills the competing
+host or falls back to it.
 
-GitHub Releases distribute one ad-hoc-signed arm64 archive containing
-`bin/xcode-simulator-host`. Each release also contains `SHA256SUMS.txt` and a
-version-pinned `install.sh`. The installer downloads the archive and checksum
-from the same tag, verifies the archive before extraction, and installs to
-`~/.local/bin` by default. `--prefix` and `--bindir` select another destination.
-It prints PATH guidance but never edits a shell profile.
+## Standalone display lifecycle
 
-The build script rejects a release tag whose semantic version does not match
-the binary's `--version`. The packaging verifier checks the exact asset set,
-checksums, rendered installer, and archive entries. `release.yml` runs package
-tests, builds and verifies the assets on GitHub's arm64 Xcode 27 runner,
-transfers the archive digest across jobs, and creates or repairs a draft
-release. Publishing the draft remains a manual action. A version with a
-prerelease suffix is marked as a GitHub prerelease and explicitly excluded from
-`releases/latest`.
+The host connects to the selected Xcode's CoreSimulator service context and
+subscribes to the default device set. It creates sessions only for booted iOS
+devices.
+
+A session discovers the default integrated `SimDeviceScreen`; screen ID zero is
+not assumed. It creates a connected `SimDisplayView`, enables device chrome,
+creates one `SimDeviceLegacyHIDClient`, and installs the view in a resizable
+transparent AppKit window. Shutdown removes the session. Closing a window
+suppresses reopening until that device leaves the booted state.
+
+The header and window shell follow the owner behavior found in Simulator.app:
+DarkAqua, transparent titlebar, native traffic lights, device chrome, render
+scaling during resize, and shadow invalidation. Simulator.app itself is an
+analysis source only and is not a runtime dependency.
+
+## Commands and menus
+
+The first parity set contains only commands with an available, validated owner:
+
+- File: Save Screen, Close Window;
+- Device: Rotate Left/Right, Home, Lock, Shake;
+- I/O: Toggle Software Keyboard;
+- Features: Toggle Appearance;
+- Window: standard minimize/zoom/full screen, Show Device Bezels, Stay on Top,
+  Fit Screen, Bring All to Front.
+
+Home, Lock, and Software Keyboard use typed HID button messages. Shake uses a
+fail-loud CoreSimulator Darwin-notification call. Appearance uses the current
+and target UI style selectors.
+
+Rotation uses direct Apple `devicectl`. On initial attachment and after each
+relative rotation, the session reads the versioned JSON orientation result and
+sets `SimDisplayView.deviceRotation` from that actual value; no local counter is
+the orientation source of truth. Save Screen uses direct Apple `simctl` and a
+same-directory temporary PNG. The file is signature-checked and then atomically
+renamed, so cancellation or failure preserves an existing destination.
+Device-tool operations are single-flight, drain both output pipes, have a
+bounded timeout, and are cancelled when their window closes.
+
+The following are intentionally absent:
+
+- continuous, send, receive, or automatic pasteboard synchronization;
+- Copy Screen, Edit menu clipboard commands, and Services;
+- global keyboard, pointer, or game-controller capture;
+- Device Manager, external-display, CarPlay, audio-routing, FaceTime, GPU, and
+  internal debug menus;
+- platform-specific watchOS, tvOS, and visionOS commands;
+- commands whose remaining private implementation silently discards failure.
+
+See [Simulator.app analysis](SimulatorAppAnalysis.md) for the complete menu
+inventory and classification.
 
 ## Failure semantics
 
@@ -220,38 +316,54 @@ The executable follows BSD `sysexits` categories:
 | ---: | --- |
 | 0 | success or documented no-op |
 | 64 | invalid invocation |
-| 69 | unavailable or unsupported Xcode/Simulator |
+| 69 | unavailable Xcode, host, framework, symbol, tool, or plugin |
 | 70 | internal invariant failure |
 | 73 | receipt or lock cannot be created |
 | 74 | preference or state I/O failed |
-| 75 | another operation holds the lock, or Device Hub does not terminate normally |
-| 78 | invalid preference, corrupt receipt, or external conflict |
+| 75 | another operation holds the lock or a managed app does not terminate |
+| 78 | malformed configuration, receipt conflict, or external state conflict |
 
-ArgumentParser owns invocation diagnostics. Operational errors use stable
-identifiers on stderr. Successful transition reports use stdout. `status`
-always writes its report to stdout and exits 78 when a receipt conflicts with
-the live preferences.
+Preference commit followed by Device Hub termination or requested-host launch
+failure is reported as partial success; the receipt remains available for
+`restore`. A failure to close Neo or a validated legacy Simulator before
+selecting Device Hub happens before preference mutation.
 
-## Non-goals
+Neo launch is successful only after the new process writes its private
+startup result following runtime creation, device-set subscription, activation,
+and any initial booted-device window creation. LaunchServices returning an
+application object is not itself a successful startup.
 
-- Modifying, replacing, re-signing, or deleting Xcode and Device Hub bundles.
-- Force-killing or automatically restarting Xcode, Device Hub, or Simulator.
-- Booting, shutting down, creating, or deleting simulator devices.
-- Making the shared Xcode preference installation-specific.
-- Claiming that the undocumented behavior is supported by Apple.
-- Guessing support for Xcode 28 or a different legacy Simulator generation.
-- Providing a public Swift library API, JSON output, or shell completion in the
-  initial release.
+Legacy launch requires LaunchServices to return the same validated Simulator
+bundle URL and identifier. A substituted application is terminated and reported
+as a configuration failure.
+
+Optional menu-operation failures are shown on the active simulator window and
+do not change the route or launch Device Hub.
 
 ## Validation
 
-Unit tests use a scripted command runner, fake Xcode bundles, and isolated
-temporary receipt directories. They never write the real Xcode or Device Hub
-domains or launch applications. Coverage includes parsing, compatibility
-gates, tri-state round trips, pending-mutation recovery, idempotence, external
-conflicts, rollback, and restore.
+Unit tests use fake commands, temporary Xcode/framework/plugin fixtures, and
+isolated receipt directories. They cover tri-state transactions, interrupted
+recovery, conflicts, idempotence, same-route Neo/Legacy switching, exact process
+identity, Xcode 26/27/28 gates, wrapper parsing, generation/version mismatch,
+signatures, forbidden linkage, exported runtime symbols, and read-only status
+behavior.
 
-The live A/B test keeps one Xcode 27 process running while switching from the
-default Device Hub route to the Xcode 26 Simulator route and back. It verifies
-the host application and launched demo at each step, then restores the exact
-preferences, scheme, destination, app, Device Hub, and simulator-device state.
+Release verification builds the SwiftPM CLI and the workspace app target, checks
+bundle versions, architectures, and signatures, verifies the exact archive file
+set, installs over a synthetic previous version, and compares installed CLI/app
+files with the archive.
+
+Live validation additionally covers framebuffer/touch/accessibility, focused
+keyboard input, Home, Software Keyboard, resize, menu rotation, screenshot PNG,
+Device Hub absence, and loaded-image provenance.
+
+## Non-goals
+
+- Modifying, replacing, re-signing, or deleting Xcode or Device Hub.
+- Preventing another user or application from executing Device Hub at the OS
+  policy layer.
+- Claiming undocumented behavior is supported by Apple.
+- Guessing compatibility when a later Xcode changes private contracts.
+- Reproducing every platform- or entitlement-specific Simulator.app feature in
+  the first release.

@@ -44,12 +44,13 @@ jobs:
       - name: Test
         run: swift test
 
-      - name: Build release product
-        run: swift build -c release --product xcode-simulator-host
+      - name: Build release products
+        run: scripts/build-local.sh
 
       - name: Validate distribution scripts
         run: |
           bash -n \
+            scripts/build-local.sh \
             scripts/build-release.sh \
             scripts/package-release.sh \
             scripts/render-install-script.sh \

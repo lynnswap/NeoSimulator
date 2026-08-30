@@ -39,13 +39,13 @@ struct ManagedPreferenceState: Codable, Equatable, CustomStringConvertible {
         deviceHubAutoStartSuppression: .absent
     )
 
-    static let legacy = ManagedPreferenceState(
+    static let coreSimulator = ManagedPreferenceState(
         xcodeSession: .trueValue,
         deviceHubAutoStartSuppression: .trueValue
     )
 
-    var effectiveMode: HostMode {
-        xcodeSession == .trueValue ? .legacy : .deviceHub
+    var effectiveRoute: SimulatorRoute {
+        xcodeSession == .trueValue ? .coreSimulator : .deviceHub
     }
 
     var description: String {
@@ -53,16 +53,28 @@ struct ManagedPreferenceState: Codable, Equatable, CustomStringConvertible {
     }
 }
 
+enum SimulatorRoute: Equatable {
+    case coreSimulator
+    case deviceHub
+}
+
 enum HostMode: String, Codable, Equatable {
+    case neo
     case legacy
     case deviceHub = "device-hub"
 
     var targetState: ManagedPreferenceState {
         switch self {
-        case .legacy:
-            .legacy
+        case .neo, .legacy:
+            .coreSimulator
         case .deviceHub:
             .deviceHub
         }
     }
+}
+
+enum HostRequest: Equatable {
+    case neo
+    case legacy(xcodeURL: URL?)
+    case deviceHub
 }

@@ -14,6 +14,8 @@ archive_sha256=""
 archive_asset="xcode-simulator-host-darwin-arm64.tar.gz"
 checksum_asset="SHA256SUMS.txt"
 installer_asset="install.sh"
+cli_product="xcode-simulator-host"
+host_product="NeoSimulator"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -141,8 +143,18 @@ fi
 
 expected_entries="$(printf '%s\n' \
   "bin/" \
-  "bin/xcode-simulator-host")"
-actual_entries="$(tar -tzf "$release_base/$archive_asset" | sort)"
+  "bin/$cli_product" \
+  "libexec/" \
+  "libexec/$cli_product/" \
+  "libexec/$cli_product/$host_product.app/" \
+  "libexec/$cli_product/$host_product.app/Contents/" \
+  "libexec/$cli_product/$host_product.app/Contents/Info.plist" \
+  "libexec/$cli_product/$host_product.app/Contents/MacOS/" \
+  "libexec/$cli_product/$host_product.app/Contents/MacOS/$host_product" \
+  "libexec/$cli_product/$host_product.app/Contents/_CodeSignature/" \
+  "libexec/$cli_product/$host_product.app/Contents/_CodeSignature/CodeResources" |
+  LC_ALL=C sort)"
+actual_entries="$(tar -tzf "$release_base/$archive_asset" | LC_ALL=C sort)"
 if [[ "$actual_entries" != "$expected_entries" ]]; then
   echo "Release archive contents are not expected." >&2
   printf 'Expected:\n%s\n' "$expected_entries" >&2
@@ -150,21 +162,156 @@ if [[ "$actual_entries" != "$expected_entries" ]]; then
   exit 1
 fi
 
+extracted_root="$tmp_dir/extracted"
+mkdir -p "$extracted_root"
+tar -C "$extracted_root" -xzf "$release_base/$archive_asset"
+extracted_cli="$extracted_root/bin/$cli_product"
+extracted_app="$extracted_root/libexec/$cli_product/$host_product.app"
+extracted_host="$extracted_app/Contents/MacOS/$host_product"
+expected_files="$(printf '%s\n' \
+  "bin/$cli_product" \
+  "libexec/$cli_product/$host_product.app/Contents/Info.plist" \
+  "libexec/$cli_product/$host_product.app/Contents/MacOS/$host_product" \
+  "libexec/$cli_product/$host_product.app/Contents/_CodeSignature/CodeResources" | LC_ALL=C sort)"
+actual_files="$(
+  cd "$extracted_root"
+  find bin libexec -type f -print | LC_ALL=C sort
+)"
+if [[ "$actual_files" != "$expected_files" ]]; then
+  echo "Release archive file types are not expected." >&2
+  printf 'Expected:\n%s\n' "$expected_files" >&2
+  printf 'Actual:\n%s\n' "$actual_files" >&2
+  exit 1
+fi
+if [[ ! -x "$extracted_cli" || ! -x "$extracted_host" ]]; then
+  echo "Release archive executables are not executable." >&2
+  exit 1
+fi
+
 if [[ "$(uname -s)" == "Darwin" ]]; then
   install_root="$tmp_dir/install-root"
-  extracted_root="$tmp_dir/extracted"
-  mkdir -p "$extracted_root"
+  mkdir -p \
+    "$install_root/bin" \
+    "$install_root/libexec/$cli_product/$host_product.app"
+  printf 'previous cli\n' > "$install_root/bin/$cli_product"
+  printf 'previous app\n' > \
+    "$install_root/libexec/$cli_product/$host_product.app/previous-version"
   XCODE_SIMULATOR_HOST_BASE_URL="file://$release_base" \
     sh "$release_base/$installer_asset" --bindir "$install_root/bin"
-  tar -C "$extracted_root" -xzf "$release_base/$archive_asset"
+  installed_app="$install_root/libexec/$cli_product/$host_product.app"
   cmp -s \
-    "$install_root/bin/xcode-simulator-host" \
-    "$extracted_root/bin/xcode-simulator-host"
-  installed_version="$("$install_root/bin/xcode-simulator-host" --version)"
+    "$install_root/bin/$cli_product" \
+    "$extracted_cli"
+  cmp -s \
+    "$installed_app/Contents/Info.plist" \
+    "$extracted_app/Contents/Info.plist"
+  cmp -s \
+    "$installed_app/Contents/MacOS/$host_product" \
+    "$extracted_host"
+  cmp -s \
+    "$installed_app/Contents/_CodeSignature/CodeResources" \
+    "$extracted_app/Contents/_CodeSignature/CodeResources"
+  installed_app_files="$(
+    cd "$installed_app"
+    find . -type f -print | LC_ALL=C sort
+  )"
+  expected_app_files="$(printf '%s\n' \
+    "./Contents/Info.plist" \
+    "./Contents/MacOS/$host_product" \
+    "./Contents/_CodeSignature/CodeResources" | LC_ALL=C sort)"
+  if [[ "$installed_app_files" != "$expected_app_files" ]]; then
+    echo "Installed companion app file set is not expected." >&2
+    printf 'Expected:\n%s\n' "$expected_app_files" >&2
+    printf 'Actual:\n%s\n' "$installed_app_files" >&2
+    exit 1
+  fi
+  codesign --verify --deep --strict "$installed_app"
+  codesign --verify --strict "$install_root/bin/$cli_product"
+  if [[ "$(lipo -archs "$extracted_cli")" != "arm64" ||
+        "$(lipo -archs "$extracted_host")" != "arm64" ]]; then
+    echo "Release archive must contain arm64-only executables." >&2
+    exit 1
+  fi
+  installed_version="$("$install_root/bin/$cli_product" --version)"
   if [[ "$installed_version" != "${version#v}" ]]; then
     echo "Installed binary version does not match release tag." >&2
     echo "Expected: ${version#v}" >&2
     echo "Actual:   $installed_version" >&2
     exit 1
   fi
+
+  physical_root="$tmp_dir/symlink-physical"
+  linked_root="$tmp_dir/symlink-entry"
+  mkdir -p "$physical_root/bin" "$linked_root"
+  ln -s "$physical_root/bin" "$linked_root/bin"
+  XCODE_SIMULATOR_HOST_BASE_URL="file://$release_base" \
+    sh "$release_base/$installer_asset" --bindir "$linked_root/bin"
+  physical_app="$physical_root/libexec/$cli_product/$host_product.app"
+  cmp -s "$physical_root/bin/$cli_product" "$extracted_cli"
+  cmp -s "$physical_app/Contents/Info.plist" "$extracted_app/Contents/Info.plist"
+  cmp -s "$physical_app/Contents/MacOS/$host_product" "$extracted_host"
+  if [[ -e "$linked_root/libexec" ]]; then
+    echo "A symlinked bindir installed the companion relative to the logical path." >&2
+    exit 1
+  fi
+
+  verify_interrupted_backup_rollback() {
+    local interrupted_artifact="$1"
+    local interrupted_root="$tmp_dir/interrupted-$interrupted_artifact"
+    local interrupted_app
+    local fake_bin
+    local marker
+    local interrupt_source
+    local real_mv
+
+    mkdir -p \
+      "$interrupted_root/bin" \
+      "$interrupted_root/libexec/$cli_product/$host_product.app" \
+      "$interrupted_root/fake-bin"
+    interrupted_root="$(cd -P "$interrupted_root" && pwd)"
+    interrupted_app="$interrupted_root/libexec/$cli_product/$host_product.app"
+    fake_bin="$interrupted_root/fake-bin"
+    marker="$interrupted_root/interrupted"
+    printf 'previous cli\n' > "$interrupted_root/bin/$cli_product"
+    printf 'previous app\n' > "$interrupted_app/previous-version"
+    if [[ "$interrupted_artifact" == "app" ]]; then
+      interrupt_source="$interrupted_app"
+    else
+      interrupt_source="$interrupted_root/bin/$cli_product"
+    fi
+    real_mv="$(command -v mv)"
+    printf '%s\n' \
+      '#!/bin/sh' \
+      '"$XSH_REAL_MV" "$@"' \
+      'if [ "$1" = "$XSH_INTERRUPT_SOURCE" ] && [ ! -e "$XSH_INTERRUPT_MARKER" ]; then' \
+      '  : > "$XSH_INTERRUPT_MARKER"' \
+      '  kill -TERM "$PPID"' \
+      'fi' > "$fake_bin/mv"
+    chmod 755 "$fake_bin/mv"
+
+    if PATH="$fake_bin:$PATH" \
+      XSH_REAL_MV="$real_mv" \
+      XSH_INTERRUPT_SOURCE="$interrupt_source" \
+      XSH_INTERRUPT_MARKER="$marker" \
+      XCODE_SIMULATOR_HOST_BASE_URL="file://$release_base" \
+      sh "$release_base/$installer_asset" --bindir "$interrupted_root/bin"; then
+      echo "Interrupted $interrupted_artifact backup unexpectedly completed." >&2
+      exit 1
+    fi
+
+    if ! grep -qxF 'previous cli' "$interrupted_root/bin/$cli_product" ||
+       ! grep -qxF 'previous app' "$interrupted_app/previous-version" ||
+       [[ -e "$interrupted_app/Contents" ]]; then
+      echo "Interrupted $interrupted_artifact backup did not restore the previous installation." >&2
+      exit 1
+    fi
+    if find "$interrupted_root" -maxdepth 1 \
+      -name '.xcode-simulator-host-install.*' -print -quit | grep -q .; then
+      echo "Interrupted $interrupted_artifact backup left a completed rollback transaction." >&2
+      exit 1
+    fi
+  }
+
+  verify_interrupted_backup_rollback app
+  verify_interrupted_backup_rollback cli
 fi

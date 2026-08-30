@@ -56,117 +56,158 @@ struct HostModeController {
         }
     }
 
-    func use(
-        mode: HostMode,
-        explicitLegacyXcodeURL: URL?
-    ) async throws -> ModeChangeReport {
+    func use(_ request: HostRequest) async throws -> ModeChangeReport {
         try rejectRootMutation()
 
         return try await receiptStore.withExclusiveLock {
             let xcode = try installationInspector.validatedTargetXcode()
-            let simulator: SimulatorInstallation?
-            switch mode {
-            case .legacy:
-                simulator = try installationInspector.legacySimulator(
-                    explicitXcodeURL: explicitLegacyXcodeURL
+            let host: ResolvedHost = switch request {
+            case .neo:
+                .neo(try installationInspector.validatedNeoHost(for: xcode))
+            case .legacy(let explicitXcodeURL):
+                .legacy(
+                    try installationInspector.legacySimulator(
+                        explicitXcodeURL: explicitXcodeURL
+                    )
                 )
             case .deviceHub:
-                simulator = nil
+                .deviceHub
             }
 
-            let didChange = try transition(
-                to: mode.targetState,
+            // Process lifecycle changes are not part of the preference rollback.
+            // Resolve every process identity and reject an existing receipt conflict
+            // before closing a healthy host.
+            let runningLegacySimulatorURLs = try validatedRunningLegacySimulatorURLs()
+            _ = try recoverManagedContext()
+            let terminatedHosts = try await closeUIHosts(
+                for: host,
+                runningLegacySimulatorURLs: runningLegacySimulatorURLs
+            )
+
+            let didChangePreferences = try transition(
+                to: host.mode.targetState,
                 capturingWith: xcode
             )
             let receiptURL: URL? = try receiptStore.load() == nil
                 ? nil
                 : receiptStore.receiptURL
 
-            var terminatedDeviceHubCount = 0
-            if let simulator {
-                var deviceHubTerminationError: (any Error)?
+            let terminatedDeviceHubCount: Int
+            switch host {
+            case .deviceHub:
+                terminatedDeviceHubCount = 0
+
+            case .neo, .legacy:
                 do {
-                    let deviceHubURL = xcode.applicationURL
-                        .appendingPathComponent(
-                            ToolConstants.deviceHubPath,
-                            isDirectory: true
-                        )
                     terminatedDeviceHubCount = try await workspace.terminateDeviceHubs(
-                        deviceHubURL
+                        xcode.deviceHubApplicationURL
                     )
                 } catch {
-                    deviceHubTerminationError = error
+                    throw hostPartialSuccessError(
+                        receiptURL: receiptURL,
+                        identifier: "device-hub-termination-partial-success",
+                        error: error,
+                        message: "\(host.mode.rawValue) mode is configured, but Device Hub could not be closed and its UI host was not opened"
+                    )
                 }
 
-                var simulatorLaunchError: (any Error)?
                 do {
                     let observed = try defaultsStore.readState()
-                    guard observed == mode.targetState else {
+                    guard observed == host.mode.targetState else {
                         throw conflictError(
-                            expected: mode.targetState,
+                            expected: host.mode.targetState,
                             observed: observed
                         )
                     }
-                    do {
-                        _ = try await workspace.openApplication(
+                    switch host {
+                    case .neo(let neoHost):
+                        _ = try await workspace.openNeoHost(
+                            neoHost.applicationURL,
+                            xcode.applicationURL
+                        )
+                    case .legacy(let simulator):
+                        _ = try await workspace.openLegacySimulator(
                             simulator.applicationURL
                         )
-                    } catch {
-                        simulatorLaunchError = error
+                    case .deviceHub:
+                        break
                     }
                 } catch {
-                    let category = (error as? CLIError)?.category ?? .io
-                    let terminationDetail = deviceHubTerminationError.map {
-                        " Device Hub also could not be closed: \(errorMessage($0))."
-                    } ?? ""
-                    throw CLIError(
-                        category: category,
-                        identifier: "legacy-host-invalidated",
-                        message: "legacy mode was committed, but it could not be held through the final Simulator open: \(errorMessage(error)). Simulator was not opened.\(terminationDetail)"
-                    )
-                }
-
-                if deviceHubTerminationError != nil || simulatorLaunchError != nil {
-                    throw legacyHostPartialSuccessError(
+                    let identifier = if (error as? CLIError)?.identifier
+                        == "preference-conflict"
+                    {
+                        "\(host.mode.rawValue)-host-invalidated"
+                    } else {
+                        "\(host.mode.rawValue)-host-launch-partial-success"
+                    }
+                    throw hostPartialSuccessError(
                         receiptURL: receiptURL,
-                        deviceHubTerminationError: deviceHubTerminationError,
-                        simulatorLaunchError: simulatorLaunchError
+                        identifier: identifier,
+                        error: error,
+                        message: "\(host.mode.rawValue) mode is configured, but its UI host could not be opened"
                     )
                 }
             }
 
             return ModeChangeReport(
-                mode: mode,
-                didChange: didChange,
+                host: host,
+                didChangePreferences: didChangePreferences,
                 xcode: xcode,
-                simulator: simulator,
                 receiptURL: receiptURL,
-                terminatedDeviceHubCount: terminatedDeviceHubCount
+                terminatedDeviceHubCount: terminatedDeviceHubCount,
+                terminatedNeoHostCount: terminatedHosts.neo,
+                terminatedLegacySimulatorCount: terminatedHosts.legacy
             )
         }
     }
 
-    func restore(force: Bool = false) throws -> RestoreReport {
+    func restore(force: Bool = false) async throws -> RestoreReport {
         try rejectRootMutation()
 
         guard try receiptStore.stateDirectoryExists() else {
             return RestoreReport(
                 didRestore: false,
                 restoredState: nil,
-                receiptURL: receiptStore.receiptURL
+                receiptURL: receiptStore.receiptURL,
+                terminatedNeoHostCount: 0,
+                terminatedLegacySimulatorCount: 0
             )
         }
 
-        return try receiptStore.withExistingExclusiveLock {
+        return try await receiptStore.withExistingExclusiveLock {
             guard let receipt = try receiptStore.load() else {
                 return RestoreReport(
                     didRestore: false,
                     restoredState: nil,
-                    receiptURL: receiptStore.receiptURL
+                    receiptURL: receiptStore.receiptURL,
+                    terminatedNeoHostCount: 0,
+                    terminatedLegacySimulatorCount: 0
                 )
             }
+
             if force {
-                return try forceRestore(receipt)
+                // Validate the live tri-state values before closing the host. A
+                // force restore may intentionally proceed through a receipt conflict.
+                _ = try defaultsStore.readState()
+            } else {
+                _ = try recoverManagedContext()
+            }
+            let terminatedHosts: (neo: Int, legacy: Int)
+            if receipt.original.effectiveRoute == .deviceHub {
+                let runningLegacySimulatorURLs = try validatedRunningLegacySimulatorURLs()
+                terminatedHosts = try await closeUIHosts(
+                    for: .deviceHub,
+                    runningLegacySimulatorURLs: runningLegacySimulatorURLs
+                )
+            } else {
+                terminatedHosts = (0, 0)
+            }
+            if force {
+                return try forceRestore(
+                    receipt,
+                    terminatedNeoHostCount: terminatedHosts.neo,
+                    terminatedLegacySimulatorCount: terminatedHosts.legacy
+                )
             }
 
             let context = try recoverManagedContext()
@@ -174,7 +215,9 @@ struct HostModeController {
                 return RestoreReport(
                     didRestore: false,
                     restoredState: nil,
-                    receiptURL: receiptStore.receiptURL
+                    receiptURL: receiptStore.receiptURL,
+                    terminatedNeoHostCount: terminatedHosts.neo,
+                    terminatedLegacySimulatorCount: terminatedHosts.legacy
                 )
             }
 
@@ -185,7 +228,9 @@ struct HostModeController {
             return RestoreReport(
                 didRestore: didChange,
                 restoredState: receipt.original,
-                receiptURL: receiptStore.receiptURL
+                receiptURL: receiptStore.receiptURL,
+                terminatedNeoHostCount: terminatedHosts.neo,
+                terminatedLegacySimulatorCount: terminatedHosts.legacy
             )
         }
     }
@@ -193,6 +238,7 @@ struct HostModeController {
     private func makeStatus(explicitLegacyXcodeURL: URL?) throws -> HostStatus {
         let xcode = try installationInspector.validatedTargetXcode()
         let routeStatus = try makeRouteStatus()
+        let neoHost = try? installationInspector.validatedNeoHost(for: xcode)
         let legacySimulator: SimulatorInstallation?
         if let explicitLegacyXcodeURL {
             legacySimulator = try installationInspector.legacySimulator(
@@ -206,10 +252,54 @@ struct HostModeController {
         return HostStatus(
             xcode: xcode,
             routeStatus: routeStatus,
+            neoHost: neoHost,
             legacySimulator: legacySimulator,
             receiptURL: receiptStore.receiptURL,
-            runningXcodes: workspace.runningXcodes()
+            runningXcodes: workspace.runningXcodes(),
+            runningNeoHosts: workspace.runningNeoHosts(),
+            runningLegacySimulators: workspace.runningLegacySimulators()
         )
+    }
+
+    private func validatedRunningLegacySimulatorURLs() throws -> [URL] {
+        var urls = Set<URL>()
+        for application in workspace.runningLegacySimulators() {
+            guard application.bundleIdentifier == ToolConstants.simulatorBundleIdentifier,
+                  let bundleURL = application.bundleURL
+            else {
+                throw CLIError.configuration(
+                    "legacy-simulator-identity",
+                    "refusing to manage legacy Simulator pid \(application.processIdentifier) because its process identity is incomplete"
+                )
+            }
+            let installation = try installationInspector.validatedLegacySimulator(
+                at: bundleURL
+            )
+            urls.insert(installation.applicationURL)
+        }
+        return urls.sorted { $0.path < $1.path }
+    }
+
+    private func closeUIHosts(
+        for target: ResolvedHost,
+        runningLegacySimulatorURLs: [URL]
+    ) async throws -> (neo: Int, legacy: Int) {
+        let neoHostURL = try installationInspector.neoHostApplicationURL()
+        switch target {
+        case .neo:
+            let legacy = try await workspace.terminateLegacySimulators(
+                runningLegacySimulatorURLs
+            )
+            let neo = try await workspace.terminateNeoHosts(neoHostURL)
+            return (neo, legacy)
+
+        case .legacy, .deviceHub:
+            let neo = try await workspace.terminateNeoHosts(neoHostURL)
+            let legacy = try await workspace.terminateLegacySimulators(
+                runningLegacySimulatorURLs
+            )
+            return (neo, legacy)
+        }
     }
 
     private func makeRouteStatus() throws -> SimulatorRouteStatus {
@@ -363,14 +453,20 @@ struct HostModeController {
         )
     }
 
-    private func forceRestore(_ receipt: RestorationReceipt) throws -> RestoreReport {
+    private func forceRestore(
+        _ receipt: RestorationReceipt,
+        terminatedNeoHostCount: Int,
+        terminatedLegacySimulatorCount: Int
+    ) throws -> RestoreReport {
         let observed = try defaultsStore.readState()
         guard observed != receipt.original else {
             try receiptStore.deleteReceipt()
             return RestoreReport(
                 didRestore: false,
                 restoredState: receipt.original,
-                receiptURL: receiptStore.receiptURL
+                receiptURL: receiptStore.receiptURL,
+                terminatedNeoHostCount: terminatedNeoHostCount,
+                terminatedLegacySimulatorCount: terminatedLegacySimulatorCount
             )
         }
 
@@ -399,7 +495,9 @@ struct HostModeController {
         return RestoreReport(
             didRestore: true,
             restoredState: receipt.original,
-            receiptURL: receiptStore.receiptURL
+            receiptURL: receiptStore.receiptURL,
+            terminatedNeoHostCount: terminatedNeoHostCount,
+            terminatedLegacySimulatorCount: terminatedLegacySimulatorCount
         )
     }
 
@@ -486,10 +584,11 @@ struct HostModeController {
         }
     }
 
-    private func legacyHostPartialSuccessError(
+    private func hostPartialSuccessError(
         receiptURL: URL?,
-        deviceHubTerminationError: (any Error)?,
-        simulatorLaunchError: (any Error)?
+        identifier: String,
+        error: any Error,
+        message: String
     ) -> CLIError {
         let recoveryGuidance = if receiptURL != nil {
             "The preferences remain managed; run restore to undo them."
@@ -497,29 +596,11 @@ struct HostModeController {
             "No restoration receipt exists because these are the original preferences."
         }
 
-        switch (deviceHubTerminationError, simulatorLaunchError) {
-        case let (terminationError?, nil):
-            return CLIError(
-                category: (terminationError as? CLIError)?.category ?? .temporary,
-                identifier: "device-hub-termination-partial-success",
-                message: "legacy mode is configured and Simulator is open, but Device Hub could not be closed: \(errorMessage(terminationError)). \(recoveryGuidance)"
-            )
-        case let (nil, launchError?):
-            return CLIError.io(
-                "simulator-launch-partial-success",
-                "legacy mode is configured, but Simulator could not be opened: \(errorMessage(launchError)). \(recoveryGuidance)"
-            )
-        case let (terminationError?, launchError?):
-            return CLIError.io(
-                "legacy-host-partial-success",
-                "legacy mode is configured, but Device Hub could not be closed (\(errorMessage(terminationError))) and Simulator could not be opened (\(errorMessage(launchError))). \(recoveryGuidance)"
-            )
-        case (nil, nil):
-            return CLIError.software(
-                "legacy-host-partial-success",
-                "legacy host failure was requested without a failing operation"
-            )
-        }
+        return CLIError(
+            category: (error as? CLIError)?.category ?? .io,
+            identifier: identifier,
+            message: "\(message): \(errorMessage(error)). \(recoveryGuidance)"
+        )
     }
 
     private func conflictError(

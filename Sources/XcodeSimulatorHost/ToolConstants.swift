@@ -4,12 +4,22 @@ enum ToolConstants {
     static let name = "xcode-simulator-host"
     static let version = "0.0.1"
 
-    static let supportedXcodeMajorVersion = 27
+    static let minimumSupportedXcodeMajorVersion = 27
     static let legacyXcodeMajorVersion = 26
 
     static let xcodeBundleIdentifier = "com.apple.dt.Xcode"
     static let deviceHubBundleIdentifier = "com.apple.dt.Devices"
     static let simulatorBundleIdentifier = "com.apple.iphonesimulator"
+    static let neoHostBundleIdentifier = "dev.lynnswap.NeoSimulator"
+    static let coreSimulatorBundleIdentifier = "com.apple.CoreSimulator"
+    static let coreDeviceBundleIdentifier = "com.apple.CoreDevice"
+    static let simctlBundleIdentifier = "com.apple.CoreSimulator.simctl"
+    static let devicectlBundleIdentifier = "com.apple.CoreDevice.devicectl"
+    static let simulatorCoreDevicePluginBundleIdentifier =
+        "com.apple.CoreSimulator.SimulatorCoreDevicePlugin"
+    static let simulatorKitBundleIdentifier = "com.apple.SimulatorKit"
+    static let idePlaygroundSimulatorBundleIdentifier =
+        "com.apple.dt.IDE.IDEPlaygroundSimulator"
 
     static let xcodePreference = ManagedPreference(
         domain: "com.apple.dt.Xcode",
@@ -26,4 +36,20 @@ enum ToolConstants {
     static let deviceHubPath = "Contents/Applications/DeviceHub.app"
     static let deviceHubImplementationPath = "Contents/MacOS/DeviceHub"
     static let simulatorPath = "Contents/Developer/Applications/Simulator.app"
+    static let simulatorKitPath =
+        "Contents/SharedFrameworks/SimulatorKit.framework"
+    static let idePlaygroundSimulatorPath =
+        "Contents/Frameworks/IDEPlaygroundSimulator.framework"
+    static let simctlWrapperPath = "Contents/Developer/usr/bin/simctl"
+    static let devicectlWrapperPath = "Contents/Developer/usr/bin/devicectl"
+    static let coreSimulatorFrameworkPath =
+        "/Library/Developer/PrivateFrameworks/CoreSimulator.framework"
+    static let coreDeviceFrameworkPath =
+        "/Library/Developer/PrivateFrameworks/CoreDevice.framework"
+    static let simctlBinaryPath = "Versions/A/Resources/bin/simctl"
+    static let devicectlBinaryPath = "Versions/A/Resources/bin/devicectl"
+    static let simulatorCoreDevicePluginPath =
+        "Versions/A/PlugIns/SimulatorCoreDevicePlugin.coredeviceplugin"
+    static let neoHostRelativePath =
+        "../libexec/xcode-simulator-host/NeoSimulator.app"
 }

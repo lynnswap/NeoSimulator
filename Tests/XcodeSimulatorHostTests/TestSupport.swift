@@ -41,6 +41,8 @@ final class FakeSystemCommandRunner: CommandRunning {
     var failFirstExportAfterMutationCount: Int?
     var failMissingDomainExports = false
     var failDomainListing = false
+    var neoHostRuntimeValidationStatus: Int32 = 0
+    var neoHostRuntimeValidationError = ""
     var failureTiming: FailureTiming = .beforeMutation
     var beforeRun: ((Call) -> Void)?
     private(set) var calls: [Call] = []
@@ -61,9 +63,20 @@ final class FakeSystemCommandRunner: CommandRunning {
             }
             return success("\(selectedDeveloperDirectory.path)\n")
         default:
-            throw CLIError.software(
-                "unexpected-test-command",
-                "unexpected command: \(executable.path) \(arguments)"
+            guard executable.lastPathComponent == "NeoSimulator",
+                  arguments.count == 3,
+                  arguments[0] == "--validate-runtime",
+                  arguments[1] == "--xcode"
+            else {
+                throw CLIError.software(
+                    "unexpected-test-command",
+                    "unexpected command: \(executable.path) \(arguments)"
+                )
+            }
+            return CommandOutput(
+                terminationStatus: neoHostRuntimeValidationStatus,
+                stdout: Data(),
+                stderr: Data(neoHostRuntimeValidationError.utf8)
             )
         }
     }
@@ -179,19 +192,39 @@ final class FakeSystemCommandRunner: CommandRunning {
 
 @MainActor
 final class WorkspaceRecorder {
+    struct NeoHostOpen: Equatable {
+        let applicationURL: URL
+        let xcodeURL: URL
+    }
+
     var runningXcodes: [RunningApplication] = []
+    var runningNeoHosts: [RunningApplication] = []
+    var runningLegacySimulators: [RunningApplication] = []
     var deviceHubCount = 0
+    var neoHostCount = 0
+    var legacySimulatorCount = 0
     var terminateDeviceHubsError: (any Error)?
+    var terminateNeoHostsError: (any Error)?
+    var terminateLegacySimulatorsError: (any Error)?
     var onTerminateDeviceHubs: (() async -> Void)?
+    var onTerminateNeoHosts: (() async -> Void)?
+    var onTerminateLegacySimulators: (() async -> Void)?
     private(set) var requestedDeviceHubURLs: [URL] = []
-    var openedApplications: [URL] = []
-    var openError: (any Error)?
-    var onOpenApplication: ((URL) async throws -> Void)?
+    private(set) var requestedNeoHostURLs: [URL] = []
+    private(set) var requestedLegacySimulatorURLSets: [[URL]] = []
+    var openedNeoHosts: [NeoHostOpen] = []
+    var openedLegacySimulators: [URL] = []
+    var openNeoHostError: (any Error)?
+    var openLegacySimulatorError: (any Error)?
+    var onOpenNeoHost: ((NeoHostOpen) async throws -> Void)?
+    var onOpenLegacySimulator: ((URL) async throws -> Void)?
     private(set) var events: [String] = []
 
     var client: WorkspaceClient {
         WorkspaceClient(
             runningXcodes: { self.runningXcodes },
+            runningNeoHosts: { self.runningNeoHosts },
+            runningLegacySimulators: { self.runningLegacySimulators },
             terminateDeviceHubs: { url in
                 self.events.append("terminate-device-hubs")
                 self.requestedDeviceHubURLs.append(url)
@@ -201,16 +234,51 @@ final class WorkspaceRecorder {
                 }
                 return self.deviceHubCount
             },
-            openApplication: { url in
-                self.events.append("open-simulator")
-                self.openedApplications.append(url)
-                if let onOpenApplication = self.onOpenApplication {
-                    try await onOpenApplication(url)
+            terminateNeoHosts: { url in
+                self.events.append("terminate-neo-hosts")
+                self.requestedNeoHostURLs.append(url)
+                await self.onTerminateNeoHosts?()
+                if let terminateNeoHostsError = self.terminateNeoHostsError {
+                    throw terminateNeoHostsError
                 }
-                if let openError = self.openError {
-                    throw openError
+                return self.neoHostCount
+            },
+            terminateLegacySimulators: { urls in
+                self.events.append("terminate-legacy-simulators")
+                self.requestedLegacySimulatorURLSets.append(urls)
+                await self.onTerminateLegacySimulators?()
+                if let terminateLegacySimulatorsError =
+                    self.terminateLegacySimulatorsError
+                {
+                    throw terminateLegacySimulatorsError
                 }
-                return url
+                return self.legacySimulatorCount
+            },
+            openNeoHost: { applicationURL, xcodeURL in
+                self.events.append("open-neo-host")
+                let request = NeoHostOpen(
+                    applicationURL: applicationURL,
+                    xcodeURL: xcodeURL
+                )
+                self.openedNeoHosts.append(request)
+                if let onOpenNeoHost = self.onOpenNeoHost {
+                    try await onOpenNeoHost(request)
+                }
+                if let openNeoHostError = self.openNeoHostError {
+                    throw openNeoHostError
+                }
+                return applicationURL
+            },
+            openLegacySimulator: { applicationURL in
+                self.events.append("open-legacy-simulator")
+                self.openedLegacySimulators.append(applicationURL)
+                if let onOpenLegacySimulator = self.onOpenLegacySimulator {
+                    try await onOpenLegacySimulator(applicationURL)
+                }
+                if let openLegacySimulatorError = self.openLegacySimulatorError {
+                    throw openLegacySimulatorError
+                }
+                return applicationURL
             }
         )
     }
@@ -220,47 +288,187 @@ struct InstallationFixture {
     let directory: TemporaryTestDirectory
     let applicationsURL: URL
     let targetXcodeURL: URL
-    let legacyXcodeURL: URL
+    let legacyXcodeURLs: [URL]
+    let commandExecutableURL: URL
+    let neoHostURL: URL
+    let coreSimulatorFrameworkURL: URL
+    let coreDeviceFrameworkURL: URL
 
     init(
         targetVersion: String = "27.0",
         targetBuild: String = "27A5252f",
         includeHiddenKey: Bool = true,
         includeDeviceHubKey: Bool = true,
+        includeNeoHost: Bool = true,
         legacyVersions: [(String, String, String)] = [
-            ("Xcode.app", "26.6", "17F109"),
-        ]
+            ("Xcode_26.app", "26.6", "17F109"),
+        ],
+        coreSimulatorXcodeMajorVersion: Int? = nil,
+        coreDeviceXcodeMajorVersion: Int? = nil,
+        simulatorCoreDevicePluginXcodeMajorVersion: Int? = nil,
+        simctlExpectedVersion: String = "1171.6",
+        devicectlExpectedVersion: String = "642.15",
+        coreSimulatorBundleVersion: String? = nil,
+        coreDeviceBundleVersion: String? = nil,
+        simulatorCoreDevicePluginBundleVersion: String? = nil
     ) throws {
         directory = try TemporaryTestDirectory()
-        applicationsURL = directory.url.appendingPathComponent("Applications", isDirectory: true)
+        applicationsURL = directory.url.appendingPathComponent(
+            "Applications",
+            isDirectory: true
+        )
         try FileManager.default.createDirectory(
             at: applicationsURL,
             withIntermediateDirectories: false
         )
-
         targetXcodeURL = applicationsURL.appendingPathComponent("Xcode_27.app", isDirectory: true)
+        let versionComponents = try ToolVersion(targetVersion).components
+        let targetMajor = versionComponents[0]
+        let targetMinor = versionComponents.count > 1 ? versionComponents[1] : 0
+        let dtXcode = targetMajor * 100 + targetMinor * 10
         try Self.makeTargetXcode(
             at: targetXcodeURL,
             version: targetVersion,
             build: targetBuild,
             includeHiddenKey: includeHiddenKey,
-            includeDeviceHubKey: includeDeviceHubKey
+            includeDeviceHubKey: includeDeviceHubKey,
+            simctlExpectedVersion: simctlExpectedVersion,
+            devicectlExpectedVersion: devicectlExpectedVersion,
+            dtXcode: dtXcode
         )
 
-        var legacyURLs: [URL] = []
+        var legacyXcodeURLs: [URL] = []
         for entry in legacyVersions {
-            let url = applicationsURL.appendingPathComponent(entry.0, isDirectory: true)
-            try Self.makeLegacyXcode(at: url, version: entry.1, build: entry.2)
-            legacyURLs.append(url)
+            let url = applicationsURL.appendingPathComponent(
+                entry.0,
+                isDirectory: true
+            )
+            try Self.makeLegacyXcode(
+                at: url,
+                version: entry.1,
+                build: entry.2
+            )
+            legacyXcodeURLs.append(url)
         }
-        guard let first = legacyURLs.first else {
-            throw CLIError.software("test-fixture", "legacy fixture requires one Xcode")
+        self.legacyXcodeURLs = legacyXcodeURLs
+
+        coreSimulatorFrameworkURL = directory.url.appendingPathComponent(
+            "Library/Developer/PrivateFrameworks/CoreSimulator.framework",
+            isDirectory: true
+        )
+        let coreMajor = coreSimulatorXcodeMajorVersion ?? targetMajor
+        try Self.makeFramework(
+            at: coreSimulatorFrameworkURL,
+            bundleIdentifier: ToolConstants.coreSimulatorBundleIdentifier,
+            executable: "CoreSimulator",
+            dtXcode: coreMajor * 100,
+            bundleVersion: coreSimulatorBundleVersion ?? simctlExpectedVersion,
+            binaryContent: ["fixture-core-simulator"]
+        )
+        let simctlBinaryURL = coreSimulatorFrameworkURL.appendingPathComponent(
+            ToolConstants.simctlBinaryPath
+        )
+        try Self.writeExecutable(
+            content: "fixture-simctl",
+            to: simctlBinaryURL
+        )
+
+        coreDeviceFrameworkURL = directory.url.appendingPathComponent(
+            "Library/Developer/PrivateFrameworks/CoreDevice.framework",
+            isDirectory: true
+        )
+        let coreDeviceMajor = coreDeviceXcodeMajorVersion ?? targetMajor
+        try Self.makeFramework(
+            at: coreDeviceFrameworkURL,
+            bundleIdentifier: ToolConstants.coreDeviceBundleIdentifier,
+            executable: "CoreDevice",
+            dtXcode: coreDeviceMajor * 100,
+            bundleVersion: coreDeviceBundleVersion ?? devicectlExpectedVersion,
+            binaryContent: ["fixture-core-device"]
+        )
+        let devicectlBinaryURL = coreDeviceFrameworkURL.appendingPathComponent(
+            ToolConstants.devicectlBinaryPath
+        )
+        try Self.writeExecutable(
+            content: "fixture-devicectl",
+            to: devicectlBinaryURL
+        )
+        let simulatorCoreDevicePluginURL = coreDeviceFrameworkURL
+            .appendingPathComponent(
+                ToolConstants.simulatorCoreDevicePluginPath,
+                isDirectory: true
+            )
+        try Self.makeSimulatorCoreDevicePlugin(
+            at: simulatorCoreDevicePluginURL,
+            dtXcode: (simulatorCoreDevicePluginXcodeMajorVersion ?? targetMajor)
+                * 100,
+            bundleVersion: simulatorCoreDevicePluginBundleVersion
+                ?? simctlExpectedVersion
+        )
+
+        commandExecutableURL = directory.url.appendingPathComponent(
+            "prefix/bin/\(ToolConstants.name)"
+        )
+        try Self.writeExecutable(
+            content: "fixture-command",
+            to: commandExecutableURL
+        )
+        neoHostURL = directory.url.appendingPathComponent(
+            "prefix/libexec/xcode-simulator-host/NeoSimulator.app",
+            isDirectory: true
+        )
+        if includeNeoHost {
+            try Self.makeNeoHost(at: neoHostURL)
         }
-        legacyXcodeURL = first
     }
 
     var developerDirectoryURL: URL {
         targetXcodeURL.appendingPathComponent("Contents/Developer", isDirectory: true)
+    }
+
+    var legacySimulatorURLs: [URL] {
+        legacyXcodeURLs.map {
+            $0.appendingPathComponent(ToolConstants.simulatorPath, isDirectory: true)
+        }
+    }
+
+    var simctlWrapperURL: URL {
+        targetXcodeURL.appendingPathComponent(ToolConstants.simctlWrapperPath)
+    }
+
+    var devicectlWrapperURL: URL {
+        targetXcodeURL.appendingPathComponent(ToolConstants.devicectlWrapperPath)
+    }
+
+    var simctlBinaryURL: URL {
+        coreSimulatorFrameworkURL.appendingPathComponent(
+            ToolConstants.simctlBinaryPath
+        )
+    }
+
+    var devicectlBinaryURL: URL {
+        coreDeviceFrameworkURL.appendingPathComponent(
+            ToolConstants.devicectlBinaryPath
+        )
+    }
+
+    var simulatorCoreDevicePluginURL: URL {
+        coreDeviceFrameworkURL.appendingPathComponent(
+            ToolConstants.simulatorCoreDevicePluginPath,
+            isDirectory: true
+        )
+    }
+
+    var simulatorCoreDevicePluginBinaryURL: URL {
+        simulatorCoreDevicePluginURL.appendingPathComponent(
+            "Contents/MacOS/SimulatorCoreDevicePlugin"
+        )
+    }
+
+    var neoHostExecutableURL: URL {
+        neoHostURL.appendingPathComponent(
+            "Contents/MacOS/NeoSimulator"
+        )
     }
 
     static func makeTargetXcode(
@@ -268,9 +476,21 @@ struct InstallationFixture {
         version: String,
         build: String,
         includeHiddenKey: Bool,
-        includeDeviceHubKey: Bool
+        includeDeviceHubKey: Bool,
+        simctlExpectedVersion: String,
+        devicectlExpectedVersion: String,
+        dtXcode: Int
     ) throws {
         try makeXcodeBase(at: url, version: version, build: build)
+
+        try writeExecutable(
+            content: "#!/bin/bash\nEXPECTED_VERSION=\"\(simctlExpectedVersion)\"\n",
+            to: url.appendingPathComponent(ToolConstants.simctlWrapperPath)
+        )
+        try writeExecutable(
+            content: "#!/bin/zsh\nEXPECTED_VERSION=\"\(devicectlExpectedVersion)\"\n",
+            to: url.appendingPathComponent(ToolConstants.devicectlWrapperPath)
+        )
 
         let deviceHubURL = url.appendingPathComponent(ToolConstants.deviceHubPath, isDirectory: true)
         try writePropertyList(
@@ -312,16 +532,45 @@ struct InstallationFixture {
             ? "prefix\(ToolConstants.xcodePreference.key)suffix"
             : "missing-key"
         try Data(content.utf8).write(to: binaryURL)
+
+        try makeFramework(
+            at: url.appendingPathComponent(
+                ToolConstants.simulatorKitPath,
+                isDirectory: true
+            ),
+            bundleIdentifier: ToolConstants.simulatorKitBundleIdentifier,
+            executable: "SimulatorKit",
+            dtXcode: dtXcode,
+            bundleVersion: String(dtXcode),
+            binaryContent: ["fixture-simulator-kit"]
+        )
+        try makeFramework(
+            at: url.appendingPathComponent(
+                ToolConstants.idePlaygroundSimulatorPath,
+                isDirectory: true
+            ),
+            bundleIdentifier: ToolConstants.idePlaygroundSimulatorBundleIdentifier,
+            executable: "IDEPlaygroundSimulator",
+            dtXcode: dtXcode,
+            bundleVersion: String(dtXcode),
+            binaryContent: ["fixture-ide-playground-simulator"]
+        )
     }
 
-    static func makeLegacyXcode(at url: URL, version: String, build: String) throws {
+    static func makeLegacyXcode(
+        at url: URL,
+        version: String,
+        build: String
+    ) throws {
         try makeXcodeBase(at: url, version: version, build: build)
 
         let versionComponents = try ToolVersion(version).components
         let minor = versionComponents.count > 1 ? versionComponents[1] : 0
         let dtXcode = versionComponents[0] * 100 + minor * 10
-
-        let simulatorURL = url.appendingPathComponent(ToolConstants.simulatorPath, isDirectory: true)
+        let simulatorURL = url.appendingPathComponent(
+            ToolConstants.simulatorPath,
+            isDirectory: true
+        )
         try writePropertyList(
             [
                 "CFBundleIdentifier": ToolConstants.simulatorBundleIdentifier,
@@ -332,15 +581,9 @@ struct InstallationFixture {
             ],
             to: simulatorURL.appendingPathComponent("Contents/Info.plist")
         )
-        let executableURL = simulatorURL.appendingPathComponent("Contents/MacOS/Simulator")
-        try FileManager.default.createDirectory(
-            at: executableURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try Data("fixture".utf8).write(to: executableURL)
-        try FileManager.default.setAttributes(
-            [.posixPermissions: 0o755],
-            ofItemAtPath: executableURL.path
+        try writeExecutable(
+            content: "fixture-simulator",
+            to: simulatorURL.appendingPathComponent("Contents/MacOS/Simulator")
         )
     }
 
@@ -359,6 +602,80 @@ struct InstallationFixture {
         try FileManager.default.createDirectory(
             at: url.appendingPathComponent("Contents/Developer", isDirectory: true),
             withIntermediateDirectories: true
+        )
+    }
+
+    private static func makeFramework(
+        at url: URL,
+        bundleIdentifier: String,
+        executable: String,
+        dtXcode: Int,
+        bundleVersion: String,
+        binaryContent: [String]
+    ) throws {
+        try writePropertyList(
+            [
+                "CFBundleIdentifier": bundleIdentifier,
+                "CFBundleExecutable": executable,
+                "CFBundleVersion": bundleVersion,
+                "DTXcode": String(dtXcode),
+                "DTXcodeBuild": "fixture-build",
+            ],
+            to: url.appendingPathComponent("Versions/A/Resources/Info.plist")
+        )
+        try writeExecutable(
+            content: binaryContent.joined(separator: "\n"),
+            to: url.appendingPathComponent("Versions/A/\(executable)")
+        )
+    }
+
+    private static func makeSimulatorCoreDevicePlugin(
+        at url: URL,
+        dtXcode: Int,
+        bundleVersion: String
+    ) throws {
+        try writePropertyList(
+            [
+                "CFBundleIdentifier": ToolConstants.simulatorCoreDevicePluginBundleIdentifier,
+                "CFBundleExecutable": "SimulatorCoreDevicePlugin",
+                "CFBundleVersion": bundleVersion,
+                "DTXcode": String(dtXcode),
+            ],
+            to: url.appendingPathComponent("Contents/Info.plist")
+        )
+        try writeExecutable(
+            content: "fixture-simulator-core-device-plugin",
+            to: url.appendingPathComponent(
+                "Contents/MacOS/SimulatorCoreDevicePlugin"
+            )
+        )
+    }
+
+    private static func makeNeoHost(at url: URL) throws {
+        try writePropertyList(
+            [
+                "CFBundleIdentifier": ToolConstants.neoHostBundleIdentifier,
+                "CFBundleExecutable": "NeoSimulator",
+            ],
+            to: url.appendingPathComponent("Contents/Info.plist")
+        )
+        try writeExecutable(
+            content: "fixture-host",
+            to: url.appendingPathComponent(
+                "Contents/MacOS/NeoSimulator"
+            )
+        )
+    }
+
+    private static func writeExecutable(content: String, to url: URL) throws {
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data(content.utf8).write(to: url)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: url.path
         )
     }
 
@@ -389,14 +706,22 @@ struct ControllerFixture {
         initialState: ManagedPreferenceState = .deviceHub,
         targetVersion: String = "27.0",
         includeHiddenKey: Bool = true,
+        includeNeoHost: Bool = true,
+        neoHostRuntimeValidationStatus: Int32 = 0,
         effectiveUserID: uid_t = 501
     ) throws {
         installations = try InstallationFixture(
             targetVersion: targetVersion,
-            includeHiddenKey: includeHiddenKey
+            includeHiddenKey: includeHiddenKey,
+            includeNeoHost: includeNeoHost
         )
         stateDirectory = try TemporaryTestDirectory()
         runner = FakeSystemCommandRunner()
+        runner.neoHostRuntimeValidationStatus = neoHostRuntimeValidationStatus
+        if neoHostRuntimeValidationStatus != 0 {
+            runner.neoHostRuntimeValidationError =
+                "injected private runtime validation failure"
+        }
         runner.selectedDeveloperDirectory = installations.developerDirectoryURL
         runner.setStoredValue(
             initialState.xcodeSession.booleanValue,
@@ -418,6 +743,9 @@ struct ControllerFixture {
             runner: runner,
             environment: ["DEVELOPER_DIR": installations.developerDirectoryURL.path],
             legacySearchRoots: [installations.applicationsURL],
+            commandExecutableURL: installations.commandExecutableURL,
+            coreSimulatorFrameworkURL: installations.coreSimulatorFrameworkURL,
+            coreDeviceFrameworkURL: installations.coreDeviceFrameworkURL,
             signatureValidator: .acceptingTestFixtures
         )
         controller = HostModeController(

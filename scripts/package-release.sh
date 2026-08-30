@@ -7,6 +7,7 @@ Usage: scripts/package-release.sh --version <tag> [--repo <owner/repo>] [--dist-
 
 Requires:
   <dist-root>/arm64/bin/xcode-simulator-host
+  <dist-root>/arm64/libexec/xcode-simulator-host/NeoSimulator.app
 
 Outputs:
   <output-dir>/xcode-simulator-host-darwin-arm64.tar.gz
@@ -20,7 +21,8 @@ release_repo="lynnswap/xcode-simulator-host"
 dist_root="dist"
 output_dir="release"
 archive_name="xcode-simulator-host-darwin-arm64.tar.gz"
-product="xcode-simulator-host"
+cli_product="xcode-simulator-host"
+host_product="NeoSimulator"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -74,9 +76,30 @@ else
   output_base="$repo_root/$output_dir"
 fi
 
-source_path="$dist_base/arm64/bin/$product"
-if [[ ! -f "$source_path" ]]; then
-  echo "Missing staged binary: $source_path" >&2
+source_root="$dist_base/arm64"
+cli_source_path="$source_root/bin/$cli_product"
+host_source_app="$source_root/libexec/$cli_product/$host_product.app"
+host_source_binary="$host_source_app/Contents/MacOS/$host_product"
+for source_path in "$cli_source_path" "$host_source_app/Contents/Info.plist" "$host_source_binary" "$host_source_app/Contents/_CodeSignature/CodeResources"; do
+  if [[ ! -e "$source_path" ]]; then
+    echo "Missing staged release input: $source_path" >&2
+    exit 1
+  fi
+done
+
+expected_files="$(printf '%s\n' \
+  "bin/$cli_product" \
+  "libexec/$cli_product/$host_product.app/Contents/Info.plist" \
+  "libexec/$cli_product/$host_product.app/Contents/MacOS/$host_product" \
+  "libexec/$cli_product/$host_product.app/Contents/_CodeSignature/CodeResources" | LC_ALL=C sort)"
+actual_files="$(
+  cd "$source_root"
+  find bin libexec -type f -print | LC_ALL=C sort
+)"
+if [[ "$actual_files" != "$expected_files" ]]; then
+  echo "Staged release file set is not expected." >&2
+  printf 'Expected:\n%s\n' "$expected_files" >&2
+  printf 'Actual:\n%s\n' "$actual_files" >&2
   exit 1
 fi
 
@@ -84,22 +107,33 @@ tmp_root="${TMPDIR:-/tmp}"
 tmp_dir="$(mktemp -d "${tmp_root%/}/xcode-simulator-host-package.XXXXXX")"
 trap 'rm -rf "$tmp_dir"' EXIT
 
-mkdir -p "$output_base" "$tmp_dir/bin"
+mkdir -p "$output_base"
 archive="$output_base/$archive_name"
 install_script="$output_base/install.sh"
 rm -f "$archive" "$output_base/SHA256SUMS.txt" "$install_script"
 
-cp "$source_path" "$tmp_dir/bin/$product"
-chmod +x "$tmp_dir/bin/$product"
+cp -R "$source_root/bin" "$tmp_dir/bin"
+cp -R "$source_root/libexec" "$tmp_dir/libexec"
+chmod +x "$tmp_dir/bin/$cli_product"
+chmod +x "$tmp_dir/libexec/$cli_product/$host_product.app/Contents/MacOS/$host_product"
 if command -v lipo >/dev/null 2>&1; then
-  archs="$(lipo -archs "$tmp_dir/bin/$product")"
-  if [[ "$archs" != "arm64" ]]; then
-    echo "Expected arm64 binary for $product, got: $archs" >&2
-    exit 1
-  fi
+  for binary in \
+    "$tmp_dir/bin/$cli_product" \
+    "$tmp_dir/libexec/$cli_product/$host_product.app/Contents/MacOS/$host_product"; do
+    archs="$(lipo -archs "$binary")"
+    if [[ "$archs" != "arm64" ]]; then
+      echo "Expected arm64 binary, got $archs: $binary" >&2
+      exit 1
+    fi
+  done
+fi
+if command -v codesign >/dev/null 2>&1; then
+  codesign --verify --strict "$tmp_dir/bin/$cli_product"
+  codesign --verify --deep --strict \
+    "$tmp_dir/libexec/$cli_product/$host_product.app"
 fi
 
-tar -C "$tmp_dir" -czf "$archive" bin
+COPYFILE_DISABLE=1 tar -C "$tmp_dir" -czf "$archive" bin libexec
 
 "$repo_root/scripts/render-install-script.sh" \
   --version "$version" \

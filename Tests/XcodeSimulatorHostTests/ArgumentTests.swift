@@ -12,6 +12,9 @@ struct ArgumentTests {
         #expect(help.contains("status"))
         #expect(help.contains("use"))
         #expect(help.contains("restore"))
+        #expect(help.contains("neo"))
+        #expect(help.contains("legacy"))
+        #expect(help.contains("device-hub"))
         #expect(help.contains("DEVELOPER_DIR"))
         #expect(help.contains("Xcode can remain open"))
         #expect(!help.contains("Quit all Xcode"))
@@ -28,52 +31,33 @@ struct ArgumentTests {
         #expect(
             try parseXcodeSimulatorHostCommand([
                 ToolConstants.name, "status", "--verbose",
-            ]) == .status(.verbose(legacyXcode: nil))
+            ]) == .status(.verbose(legacyXcodeURL: nil))
         )
     }
 
-    @Test func statusLegacyOverrideImpliesVerboseOutput() throws {
+    @Test func neoAndLegacyParseAsDistinctHosts() throws {
         #expect(
             try parseXcodeSimulatorHostCommand([
                 ToolConstants.name,
-                "status",
-                "--legacy-xcode",
-                "/Applications/Xcode 26.app",
-            ])
-                == .status(
-                    .verbose(legacyXcode: URL(
-                        fileURLWithPath: "/Applications/Xcode 26.app",
-                        isDirectory: true
-                    ).standardizedFileURL)
-                )
+                "use",
+                "neo",
+            ]) == .use(.neo)
         )
-    }
 
-    @Test func legacyParsesAnAbsoluteXcodePath() throws {
         let command = try parseXcodeSimulatorHostCommand([
             ToolConstants.name,
             "use",
             "legacy",
-            "--legacy-xcode",
-            "/Applications/Xcode 26.app",
         ])
 
-        #expect(
-            command == .use(
-                mode: .legacy,
-                legacyXcode: URL(
-                    fileURLWithPath: "/Applications/Xcode 26.app",
-                    isDirectory: true
-                ).standardizedFileURL
-            )
-        )
+        #expect(command == .use(.legacy(xcodeURL: nil)))
     }
 
     @Test func deviceHubAndRestoreParse() throws {
         #expect(
             try parseXcodeSimulatorHostCommand([
                 ToolConstants.name, "use", "device-hub",
-            ]) == .use(mode: .deviceHub, legacyXcode: nil)
+            ]) == .use(.deviceHub)
         )
         #expect(
             try parseXcodeSimulatorHostCommand([
@@ -87,19 +71,40 @@ struct ArgumentTests {
         )
     }
 
-    @Test func relativeLegacyXcodePathFailsValidation() {
-        do {
+    @Test func legacyXcodeOverridesRequireAbsolutePaths() throws {
+        let path = "/Applications/Xcode_26.app"
+        let expectedURL = URL(
+            fileURLWithPath: path,
+            isDirectory: true
+        ).standardizedFileURL
+        #expect(
+            try parseXcodeSimulatorHostCommand([
+                ToolConstants.name,
+                "use",
+                "legacy",
+                "--legacy-xcode",
+                path,
+            ]) == .use(.legacy(xcodeURL: expectedURL))
+        )
+        #expect(
+            try parseXcodeSimulatorHostCommand([
+                ToolConstants.name,
+                "status",
+                "--legacy-xcode",
+                path,
+            ]) == .status(
+                .verbose(legacyXcodeURL: expectedURL)
+            )
+        )
+
+        #expect(throws: (any Error).self) {
             _ = try parseXcodeSimulatorHostCommand([
                 ToolConstants.name,
                 "use",
                 "legacy",
                 "--legacy-xcode",
-                "Xcode.app",
+                "Xcode_26.app",
             ])
-            Issue.record("expected relative path to fail")
-        } catch {
-            let message = XcodeSimulatorHostArguments.fullMessage(for: error)
-            #expect(message.contains("Usage: xcode-simulator-host use legacy"))
         }
     }
 

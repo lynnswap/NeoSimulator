@@ -73,15 +73,15 @@ struct DefaultsStoreTests {
         let runner = FakeSystemCommandRunner()
         let store = DefaultsStore(runner: runner)
 
-        #expect(try store.apply(.legacy, from: .deviceHub))
+        #expect(try store.apply(.coreSimulator, from: .deviceHub))
         #expect(runner.storedBoolean(ToolConstants.xcodePreference) == .trueValue)
         #expect(runner.storedBoolean(ToolConstants.deviceHubPreference) == .trueValue)
         #expect(runner.mutationCount == 2)
 
-        #expect(!(try store.apply(.legacy, from: .legacy)))
+        #expect(!(try store.apply(.coreSimulator, from: .coreSimulator)))
         #expect(runner.mutationCount == 2)
 
-        #expect(try store.apply(.deviceHub, from: .legacy))
+        #expect(try store.apply(.deviceHub, from: .coreSimulator))
         #expect(runner.storedBoolean(ToolConstants.xcodePreference) == .absent)
         #expect(runner.storedBoolean(ToolConstants.deviceHubPreference) == .absent)
     }
@@ -92,7 +92,7 @@ struct DefaultsStoreTests {
         let store = DefaultsStore(runner: runner)
 
         do {
-            _ = try store.apply(.legacy, from: .deviceHub)
+            _ = try store.apply(.coreSimulator, from: .deviceHub)
             Issue.record("expected invalid preference type")
         } catch let error as CLIError {
             #expect(error.identifier == "preference-value-type")
@@ -109,7 +109,7 @@ struct DefaultsStoreTests {
         let store = DefaultsStore(runner: runner)
 
         #expect(throws: CLIError.self) {
-            try store.apply(.legacy, from: .deviceHub)
+            try store.apply(.coreSimulator, from: .deviceHub)
         }
         #expect(runner.storedBoolean(ToolConstants.xcodePreference) == .trueValue)
         #expect(runner.storedBoolean(ToolConstants.deviceHubPreference) == .absent)
@@ -121,7 +121,7 @@ struct DefaultsStoreTests {
         let store = DefaultsStore(runner: runner)
 
         do {
-            _ = try store.apply(.legacy, from: .deviceHub)
+            _ = try store.apply(.coreSimulator, from: .deviceHub)
             Issue.record("expected stale state to fail")
         } catch let mismatch as DefaultsStore.StateMismatch {
             #expect(mismatch.expected == [.deviceHub])
@@ -155,7 +155,7 @@ struct DefaultsStoreTests {
         let store = DefaultsStore(runner: runner)
 
         do {
-            _ = try store.apply(.deviceHub, from: .legacy)
+            _ = try store.apply(.deviceHub, from: .coreSimulator)
             Issue.record("expected external change to stop the transition")
         } catch let mismatch as DefaultsStore.StateMismatch {
             #expect(
@@ -196,7 +196,7 @@ struct DefaultsStoreTests {
         do {
             _ = try store.rollback(
                 to: .deviceHub,
-                fromAttemptedTarget: .legacy
+                fromAttemptedTarget: .coreSimulator
             )
             Issue.record("expected external change to stop rollback")
         } catch let mismatch as DefaultsStore.StateMismatch {
