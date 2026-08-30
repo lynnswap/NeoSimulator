@@ -1,10 +1,13 @@
 # Advanced configuration
 
-The default workflow requires only:
+The recommended workflow uses Apple's validated Xcode 26 `Simulator.app`:
 
 ```console
-xcode-simulator-host use neo
+xcode-simulator-host use legacy
 ```
+
+The packaged `NeoSimulator` host is under active development and currently in
+beta. Select it with `xcode-simulator-host use neo`.
 
 ## Detailed status
 
@@ -20,7 +23,7 @@ Verbose status reports:
   `simctl`, `devicectl`, and simulator CoreDevice plugin paths and versions;
 - the discovered or explicitly selected Xcode 26 `Simulator.app`;
 - restoration receipt state;
-- running Xcode, Neo, and legacy Simulator processes;
+- running Xcode, legacy Simulator, and Neo processes;
 - exact managed preference values.
 
 `status` and `status --verbose` are read-only. Compact status reports only the
@@ -36,7 +39,14 @@ DEVELOPER_DIR=/Applications/Xcode_28.app/Contents/Developer \
   xcode-simulator-host status --verbose
 ```
 
-Use the same environment for a mutation:
+Use the same environment with the recommended Legacy host:
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode_28.app/Contents/Developer \
+  xcode-simulator-host use legacy
+```
+
+To evaluate the beta Neo host with that Xcode instead:
 
 ```bash
 DEVELOPER_DIR=/Applications/Xcode_28.app/Contents/Developer \
@@ -79,7 +89,7 @@ The managed Xcode preferences are shared by all installed Xcode versions.
 Selecting an installation changes which Xcode supplies Neo's private
 frameworks; it does not create installation-specific preference state.
 
-Neo and Legacy share one CoreSimulator preference state. Switching between
+Legacy and Neo share one CoreSimulator preference state. Switching between
 them changes process ownership even when no preference write is needed.
 
 ## Recovery
@@ -100,7 +110,7 @@ xcode-simulator-host restore --force
 `--force` lets the saved original Boolean state win over a conflicting live
 Boolean state. It still rejects malformed or non-Boolean preferences.
 
-The receipt records preferences, not whether Neo or Legacy was last selected.
+The receipt records preferences, not whether Legacy or Neo was last selected.
 Restoring an original CoreSimulator route therefore does not guess which UI
 host to launch.
 
