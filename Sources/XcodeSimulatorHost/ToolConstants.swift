@@ -2,7 +2,6 @@ import Foundation
 
 enum ToolConstants {
     static let name = "xcode-simulator-host"
-    static let version = "0.0.1"
 
     static let minimumSupportedXcodeMajorVersion = 27
     static let legacyXcodeMajorVersion = 26

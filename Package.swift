@@ -24,7 +24,18 @@ let package = Package(
             name: "XcodeSimulatorHost",
             dependencies: [
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
+            ],
+            plugins: [
+                .plugin(name: "NeoSimulatorBuildInfoPlugin"),
             ]
+        ),
+        .executableTarget(
+            name: "NeoSimulatorBuildInfoTool"
+        ),
+        .plugin(
+            name: "NeoSimulatorBuildInfoPlugin",
+            capability: .buildTool(),
+            dependencies: ["NeoSimulatorBuildInfoTool"]
         ),
         .testTarget(
             name: "XcodeSimulatorHostTests",
@@ -32,6 +43,10 @@ let package = Package(
                 "XcodeSimulatorHost",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
+        ),
+        .testTarget(
+            name: "NeoSimulatorBuildInfoToolTests",
+            dependencies: ["NeoSimulatorBuildInfoTool"]
         ),
     ]
 )
