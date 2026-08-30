@@ -3,7 +3,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "xcode-simulator-host",
+    name: "NeoSimulator",
     platforms: [
         .macOS("26.4"),
     ],

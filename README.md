@@ -1,4 +1,4 @@
-# xcode-simulator-host
+# NeoSimulator
 
 Use iOS Simulator from Xcode 27+ through CoreSimulator, without making
 Device Hub the display host.
@@ -17,7 +17,8 @@ choose the UI that presents it.
 
 ## Host Choices
 
-`xcode-simulator-host` provides three explicit host choices:
+NeoSimulator provides three explicit host choices through the
+`xcode-simulator-host` command:
 
 | Command | UI host | Status and intended use |
 | --- | --- | --- |
@@ -42,7 +43,7 @@ therefore owns preference recovery, not a remembered UI-host choice.
 Install the latest prebuilt release:
 
 ```bash
-curl -fsSL https://github.com/lynnswap/xcode-simulator-host/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/lynnswap/NeoSimulator/releases/latest/download/install.sh | sh
 ```
 
 Follow the printed PATH guidance if needed, then run:
@@ -183,7 +184,7 @@ exclusions.
 ## Install to a Custom Directory
 
 ```bash
-curl -fsSL https://github.com/lynnswap/xcode-simulator-host/releases/latest/download/install.sh \
+curl -fsSL https://github.com/lynnswap/NeoSimulator/releases/latest/download/install.sh \
   | sh -s -- --bindir "$HOME/bin"
 ```
 
@@ -194,14 +195,14 @@ stages and verifies both before replacing an existing installation.
 ## Build from Source
 
 ```bash
-git clone https://github.com/lynnswap/xcode-simulator-host.git
-cd xcode-simulator-host
+git clone https://github.com/lynnswap/NeoSimulator.git
+cd NeoSimulator
 scripts/build-local.sh
 .build/local/arm64/bin/xcode-simulator-host --help
 ```
 
 The source build uses SwiftPM for the CLI and the beta `NeoSimulator` app
-target in `xcode-simulator-host.xcworkspace`. The staging script puts both
+target in `NeoSimulator.xcworkspace`. The staging script puts both
 products in the same relative layout used by releases.
 
 Build and switch to the recommended Legacy host in one command:
@@ -221,4 +222,4 @@ swift test
 
 ## License
 
-xcode-simulator-host is available under the [MIT License](LICENSE).
+NeoSimulator is available under the [MIT License](LICENSE).
