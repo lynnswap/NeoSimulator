@@ -1,4 +1,4 @@
-# xcode-simulator-host design
+# NeoSimulator design
 
 ## Consumer contract
 
@@ -59,9 +59,13 @@ Xcode Build & Run
 ## Package and distribution topology
 
 ```text
-xcode-simulator-host (CLI executable)
-NeoSimulator (workspace AppKit application target)
-XcodeSimulatorHostTests
+NeoSimulator repository and distribution
+├── NeoSimulator (Swift package)
+│   ├── xcode-simulator-host (executable product)
+│   ├── XcodeSimulatorHost (executable target and module)
+│   └── XcodeSimulatorHostTests
+└── NeoSimulator.xcworkspace
+    └── NeoSimulator (AppKit application target)
 ```
 
 The release archive preserves this layout:

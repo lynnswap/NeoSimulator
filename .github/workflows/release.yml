@@ -132,7 +132,7 @@ jobs:
         id: release_digests
         run: |
           set -euo pipefail
-          archive_sha256="$(shasum -a 256 release/xcode-simulator-host-darwin-arm64.tar.gz | awk '{ print $1 }')"
+          archive_sha256="$(shasum -a 256 release/NeoSimulator-darwin-arm64.tar.gz | awk '{ print $1 }')"
           echo "archive_sha256=${archive_sha256}" >> "$GITHUB_OUTPUT"
 
       - name: Upload release assets
@@ -140,7 +140,7 @@ jobs:
         with:
           name: release-assets
           path: |
-            release/xcode-simulator-host-darwin-arm64.tar.gz
+            release/NeoSimulator-darwin-arm64.tar.gz
             release/SHA256SUMS.txt
             release/install.sh
           if-no-files-found: error
@@ -202,7 +202,7 @@ jobs:
           }
           is_expected_asset() {
             case "$1" in
-              xcode-simulator-host-darwin-arm64.tar.gz|SHA256SUMS.txt|install.sh)
+              NeoSimulator-darwin-arm64.tar.gz|SHA256SUMS.txt|install.sh)
                 return 0
                 ;;
               *)
@@ -250,7 +250,7 @@ jobs:
             done < <(gh release view "${RELEASE_VERSION}" --repo "${GITHUB_REPOSITORY}" --json assets --jq '.assets[].name')
 
             gh release upload "${RELEASE_VERSION}" \
-              release/xcode-simulator-host-darwin-arm64.tar.gz \
+              release/NeoSimulator-darwin-arm64.tar.gz \
               release/SHA256SUMS.txt \
               release/install.sh \
               --repo "${GITHUB_REPOSITORY}" \
@@ -263,7 +263,7 @@ jobs:
               release_classification+=(--prerelease --latest=false)
             fi
             gh release create "${RELEASE_VERSION}" \
-              release/xcode-simulator-host-darwin-arm64.tar.gz \
+              release/NeoSimulator-darwin-arm64.tar.gz \
               release/SHA256SUMS.txt \
               release/install.sh \
               --repo "${GITHUB_REPOSITORY}" \

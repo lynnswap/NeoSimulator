@@ -10,17 +10,17 @@ Requires:
   <dist-root>/arm64/libexec/xcode-simulator-host/NeoSimulator.app
 
 Outputs:
-  <output-dir>/xcode-simulator-host-darwin-arm64.tar.gz
+  <output-dir>/NeoSimulator-darwin-arm64.tar.gz
   <output-dir>/SHA256SUMS.txt
   <output-dir>/install.sh
 EOF
 }
 
 version=""
-release_repo="lynnswap/xcode-simulator-host"
+release_repo="lynnswap/NeoSimulator"
 dist_root="dist"
 output_dir="release"
-archive_name="xcode-simulator-host-darwin-arm64.tar.gz"
+archive_name="NeoSimulator-darwin-arm64.tar.gz"
 cli_product="xcode-simulator-host"
 host_product="NeoSimulator"
 
@@ -110,7 +110,11 @@ trap 'rm -rf "$tmp_dir"' EXIT
 mkdir -p "$output_base"
 archive="$output_base/$archive_name"
 install_script="$output_base/install.sh"
-rm -f "$archive" "$output_base/SHA256SUMS.txt" "$install_script"
+rm -f \
+  "$archive" \
+  "$output_base/xcode-simulator-host-darwin-arm64.tar.gz" \
+  "$output_base/SHA256SUMS.txt" \
+  "$install_script"
 
 cp -R "$source_root/bin" "$tmp_dir/bin"
 cp -R "$source_root/libexec" "$tmp_dir/libexec"

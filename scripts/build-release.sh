@@ -17,7 +17,7 @@ arch="arm64"
 cli_product="xcode-simulator-host"
 host_product="NeoSimulator"
 host_bundle_identifier="dev.lynnswap.NeoSimulator"
-host_workspace="xcode-simulator-host.xcworkspace"
+host_workspace="NeoSimulator.xcworkspace"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
