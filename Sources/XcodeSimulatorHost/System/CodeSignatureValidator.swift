@@ -18,23 +18,56 @@ struct CodeSignatureValidator: Sendable {
             try checkAppleCodeSignature(
                 at: codeURL,
                 identifier: identifier,
-                requiresApplicationForm: false
+                policy: .code
             )
         },
         validateAppleApplication: { applicationURL, identifier in
             try checkAppleCodeSignature(
                 at: applicationURL,
                 identifier: identifier,
-                requiresApplicationForm: true
+                policy: .application
             )
         }
     )
 }
 
+enum AppleCodeValidationPolicy: Sendable {
+    case code
+    case application
+
+    func requirement(for identifier: String) -> String {
+        switch self {
+        case .code:
+            return #"identifier "\#(identifier)" and anchor apple"#
+        case .application:
+            return #"identifier "\#(identifier)" and (anchor apple or (anchor apple generic and certificate leaf[field.1.2.840.113635.100.6.1.9] exists))"#
+        }
+    }
+
+    var validationFlags: SecCSFlags {
+        var rawFlags = kSecCSCheckAllArchitectures
+            | kSecCSStrictValidate
+            | kSecCSRestrictSymlinks
+        if self == .application {
+            rawFlags |= kSecCSRestrictToAppLike
+        }
+        return SecCSFlags(rawValue: rawFlags)
+    }
+
+    var description: String {
+        switch self {
+        case .code:
+            return "code"
+        case .application:
+            return "application"
+        }
+    }
+}
+
 private func checkAppleCodeSignature(
     at codeURL: URL,
     identifier: String,
-    requiresApplicationForm: Bool
+    policy: AppleCodeValidationPolicy
 ) throws {
     var staticCode: SecStaticCode?
     let createStatus = SecStaticCodeCreateWithPath(
@@ -50,7 +83,7 @@ private func checkAppleCodeSignature(
     }
 
     var requirement: SecRequirement?
-    let requirementText = "identifier \"\(identifier)\" and anchor apple" as CFString
+    let requirementText = policy.requirement(for: identifier) as CFString
     let requirementStatus = SecRequirementCreateWithString(
         requirementText,
         SecCSFlags(),
@@ -63,22 +96,15 @@ private func checkAppleCodeSignature(
         )
     }
 
-    var rawFlags = kSecCSCheckAllArchitectures
-        | kSecCSStrictValidate
-        | kSecCSRestrictSymlinks
-    if requiresApplicationForm {
-        rawFlags |= kSecCSRestrictToAppLike
-    }
     let validationStatus = SecStaticCodeCheckValidity(
         staticCode,
-        SecCSFlags(rawValue: rawFlags),
+        policy.validationFlags,
         requirement
     )
     guard validationStatus == errSecSuccess else {
-        let kind = requiresApplicationForm ? "application" : "code"
         throw CLIError.unavailable(
             "code-signature",
-            "\(codeURL.path) is not intact Apple-signed \(kind) with identifier \(identifier): \(securityMessage(validationStatus))"
+            "\(codeURL.path) is not intact Apple-signed \(policy.description) with identifier \(identifier): \(securityMessage(validationStatus))"
         )
     }
 }
