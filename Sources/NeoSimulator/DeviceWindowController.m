@@ -726,7 +726,7 @@ static BOOL XSHAtomicallyReplaceURL(NSURL *temporaryURL,
     (void)sender;
     NSError *error = [self sendButton:XSHHomeButton name:@"Home"];
     [self presentActionError:error];
-    [self.window makeFirstResponder:self.displayView];
+    [self focusInputView];
 }
 
 - (void)toggleSoftwareKeyboard:(id)sender {
@@ -734,14 +734,14 @@ static BOOL XSHAtomicallyReplaceURL(NSURL *temporaryURL,
     NSError *error = [self sendButton:XSHSoftwareKeyboardButton
                                   name:@"Software Keyboard"];
     [self presentActionError:error];
-    [self.window makeFirstResponder:self.displayView];
+    [self focusInputView];
 }
 
 - (void)lockButtonPressed:(id)sender {
     (void)sender;
     NSError *error = [self sendButton:XSHLockButton name:@"Lock"];
     [self presentActionError:error];
-    [self.window makeFirstResponder:self.displayView];
+    [self focusInputView];
 }
 
 - (nullable NSError *)sendButton:(uint32_t)button name:(NSString *)name {
@@ -953,6 +953,10 @@ static BOOL XSHAtomicallyReplaceURL(NSURL *temporaryURL,
 
 - (void)windowDidBecomeKey:(NSNotification *)notification {
     (void)notification;
+    [self focusInputView];
+}
+
+- (void)focusInputView {
     if (self.invalidated) {
         return;
     }
@@ -966,7 +970,7 @@ static BOOL XSHAtomicallyReplaceURL(NSURL *temporaryURL,
         return;
     }
 
-    // Modifier releases can go to another window while this one is inactive.
+    // Modifier releases can go to another responder while input lacks focus.
     // Let the digitizer reconcile its own gesture state before the next click.
     NSEvent *modifiers = [NSEvent keyEventWithType:NSEventTypeFlagsChanged
                                        location:self.window.mouseLocationOutsideOfEventStream

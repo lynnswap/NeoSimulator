@@ -35,6 +35,26 @@
 }
 @end
 
+@interface RecordingButtonController : XSHDeviceWindowController
+@property (nonatomic) NSMutableArray<NSNumber *> *sentButtons;
+@end
+
+@implementation RecordingButtonController
+- (instancetype)initWithWindow:(NSWindow *)window {
+    self = [super initWithWindow:window];
+    if (self != nil) {
+        _sentButtons = [NSMutableArray array];
+    }
+    return self;
+}
+
+- (NSError *)sendButton:(uint32_t)button name:(NSString *)name {
+    (void)name;
+    [self.sentButtons addObject:@(button)];
+    return nil;
+}
+@end
+
 static void Require(BOOL condition, NSString *message) {
     if (!condition) {
         fprintf(stderr, "FAIL: %s\n", message.UTF8String);
@@ -101,6 +121,53 @@ static void TestRefusedFocusDoesNotForwardInput(void) {
     puts("PASS: refused focus preserves the current input owner");
 }
 
+static void TestButtonCommandsRestoreInputFocus(void) {
+    NSDictionary<NSString *, NSNumber *> *commands = @{
+        NSStringFromSelector(@selector(homeButtonPressed:)): @(XSHHomeButton),
+        NSStringFromSelector(@selector(toggleSoftwareKeyboard:)): @(XSHSoftwareKeyboardButton),
+        NSStringFromSelector(@selector(lockButtonPressed:)): @(XSHLockButton),
+    };
+    for (NSString *actionName in commands) {
+        RecordingInputView *input = [[RecordingInputView alloc] initWithFrame:NSZeroRect];
+        NSWindow *window = MakeWindow(input);
+        RecordingButtonController *controller = [[RecordingButtonController alloc]
+            initWithWindow:window];
+        controller.inputView = input;
+        SEL action = NSSelectorFromString(actionName);
+
+        [window makeFirstResponder:window];
+        Require([NSApp sendAction:action to:controller from:nil], @"button action must be dispatched");
+        Require([controller.sentButtons.lastObject isEqual:commands[actionName]], @"button action must preserve its HID command");
+        Require(window.firstResponder == input, @"button action must restore digitizer focus without another activation");
+        Require(input.modifierEvents.count == 1, @"button action must reconcile the current modifiers");
+
+        NSEvent *option = [NSEvent keyEventWithType:NSEventTypeFlagsChanged
+                                         location:NSMakePoint(200.0, 400.0)
+                                    modifierFlags:NSEventModifierFlagOption
+                                        timestamp:NSProcessInfo.processInfo.systemUptime
+                                     windowNumber:window.windowNumber
+                                          context:nil
+                                       characters:@""
+                      charactersIgnoringModifiers:@""
+                                        isARepeat:NO
+                                          keyCode:58];
+        [window sendEvent:option];
+        Require(input.modifierEvents.lastObject == option, @"the next Option press must reach the digitizer");
+        NSUInteger eventCount = input.modifierEvents.count;
+
+        RefusingResponder *responder = [RefusingResponder new];
+        [window makeFirstResponder:responder];
+        [NSApp sendAction:action to:controller from:nil];
+        Require(window.firstResponder == responder, @"button action must respect refused focus");
+        Require(input.modifierEvents.count == eventCount, @"refused focus must not reconcile another input owner");
+
+        [controller invalidate];
+        [NSApp sendAction:action to:controller from:nil];
+        Require(input.modifierEvents.count == eventCount, @"a delayed button action must not refocus an invalidated session");
+    }
+    puts("PASS: Home, Software Keyboard, and Lock preserve modifier input");
+}
+
 static void TestNativeDigitizerGetter(XSHPrivateRuntime *runtime) {
     Class displayClass = NSClassFromString(@"SimulatorKit.SimDisplayView");
     Require(displayClass != Nil, @"selected SimulatorKit must provide SimDisplayView");
@@ -135,6 +202,7 @@ int main(int argc, const char *argv[]) {
         Require(runtime != nil, error.localizedDescription ?: @"private runtime validation failed");
         TestFocusAndModifierReconciliation();
         TestRefusedFocusDoesNotForwardInput();
+        TestButtonCommandsRestoreInputFocus();
         TestNativeDigitizerGetter(runtime);
     }
     return EXIT_SUCCESS;

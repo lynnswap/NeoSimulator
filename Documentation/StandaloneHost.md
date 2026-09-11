@@ -122,8 +122,9 @@ and cancellation on window close.
 
 SimulatorKit owns simulated contacts, their coordinates, finger indicators,
 mouse-move tracking, and HID delivery. The host assigns keyboard focus to the
-native digitizer when a window becomes key. Its unhandled keyboard events
-continue through the existing display responder. A current modifier-state event
+native digitizer when a window becomes key and after Home, Software Keyboard,
+and Lock commands. Its unhandled keyboard events continue through the existing
+display responder. A current modifier-state event
 also reconciles releases that occurred while another window was active.
 
 The digitizer getter is part of the private runtime compatibility gate. The host
