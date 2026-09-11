@@ -118,6 +118,24 @@ and after every relative rotation before updating the display chrome. Both
 operations are typed and single-flight, with drained output, a bounded timeout,
 and cancellation on window close.
 
+### Modifier input
+
+SimulatorKit owns simulated contacts, their coordinates, finger indicators,
+mouse-move tracking, and HID delivery. The host assigns keyboard focus to the
+native digitizer when a window becomes key and after Home, Software Keyboard,
+and Lock commands. Its unhandled keyboard events continue through the existing
+display responder. A current modifier-state event
+also reconciles releases that occurred while another window was active.
+
+The digitizer getter is part of the private runtime compatibility gate. The host
+uses the same input view for the lifetime of the display connection; it does not
+keep a second contact-state model or install a global input monitor.
+
+See the [gesture controls](../README.md#mouse-and-keyboard-gestures) for Option,
+Shift, and Control usage. Automatic cancellation of active contacts when a
+window closes is not part of the current native disconnect guarantee. Gestures
+and pinned contacts must be released before closing the window.
+
 ### Competing-host invariant
 
 Before the GUI host connects to CoreSimulator, it verifies that no running

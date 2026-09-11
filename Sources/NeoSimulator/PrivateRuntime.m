@@ -17,6 +17,7 @@ static NSString *const XSHCoreSimulatorFrameworkPath =
 @property (nonatomic, readwrite) Class legacyHIDClientClass;
 @property (nonatomic, readwrite) XSHIndigoHIDMessageForButtonFunction messageForButton;
 @property (nonatomic, readwrite) void *showDeviceChromeFunction;
+@property (nonatomic, readwrite) void *digitizerViewGetterFunction;
 @property (nonatomic, readwrite) void *renderScaleGetterFunction;
 @property (nonatomic, readwrite) void *deviceRotationSetterFunction;
 @property (nonatomic, readwrite) void *disconnectDisplayFunction;
@@ -77,6 +78,10 @@ static NSString *const XSHCoreSimulatorFrameworkPath =
         requiredSymbol:"$s12SimulatorKit14SimDisplayViewC16showDeviceChromeSbvsTj"
                 handle:_simulatorKitHandle
                  error:error];
+    _digitizerViewGetterFunction = [self
+        requiredSymbol:"$s12SimulatorKit14SimDisplayViewC09digitizerE0AA0c14DigitizerInputE0CvgTj"
+                handle:_simulatorKitHandle
+                 error:error];
     _renderScaleGetterFunction = [self
         requiredSymbol:"$s12SimulatorKit14SimDisplayViewC11renderScale12CoreGraphics7CGFloatVvgTj"
                 handle:_simulatorKitHandle
@@ -102,6 +107,7 @@ static NSString *const XSHCoreSimulatorFrameworkPath =
                 handle:_simulatorKitHandle
                  error:error];
     if (_showDeviceChromeFunction == NULL ||
+        _digitizerViewGetterFunction == NULL ||
         _renderScaleGetterFunction == NULL ||
         _deviceRotationSetterFunction == NULL ||
         _disconnectDisplayFunction == NULL ||

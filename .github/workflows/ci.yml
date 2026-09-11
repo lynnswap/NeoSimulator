@@ -44,6 +44,9 @@ jobs:
       - name: Test
         run: swift test
 
+      - name: Test native input focus
+        run: scripts/test-input-focus.sh
+
       - name: Build release products
         run: scripts/build-local.sh
 
@@ -51,6 +54,7 @@ jobs:
         run: |
           bash -n \
             scripts/build-local.sh \
+            scripts/test-input-focus.sh \
             scripts/build-release.sh \
             scripts/package-release.sh \
             scripts/render-install-script.sh \

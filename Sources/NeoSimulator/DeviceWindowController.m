@@ -198,6 +198,7 @@ static BOOL XSHAtomicallyReplaceURL(NSURL *temporaryURL,
 @property (nonatomic) XSHLegacyHIDClient *hidClient;
 @property (nonatomic) XSHDeviceToolRunner *toolRunner;
 @property (nonatomic) NSView *displayView;
+@property (nonatomic) NSView *inputView;
 @property (nonatomic) XSHDeviceContentView *deviceContentView;
 @property (nonatomic, nullable) NSSavePanel *savePanel;
 @property (nonatomic) NSArray<NSButton *> *toolOperationButtons;
@@ -300,6 +301,21 @@ static BOOL XSHAtomicallyReplaceURL(NSURL *temporaryURL,
         return nil;
     }
 
+    NSView *inputView = XSHSwiftCallObjectGetter(
+        runtime.digitizerViewGetterFunction,
+        displayView
+    );
+    if (inputView == nil) {
+        XSHSwiftDisconnect(runtime.disconnectDisplayFunction, displayView);
+        if (error != NULL) {
+            *error = XSHNeoHostError(
+                XSHNeoHostErrorDeviceConnection,
+                @"display view has no simulator input view"
+            );
+        }
+        return nil;
+    }
+
     XSHSwiftCallBoolMethod(runtime.showDeviceChromeFunction, displayView, YES);
 
     NSSize naturalSize = displayView.intrinsicContentSize;
@@ -330,6 +346,7 @@ static BOOL XSHAtomicallyReplaceURL(NSURL *temporaryURL,
     _hidClient = hidClient;
     _toolRunner = toolRunner;
     _displayView = displayView;
+    _inputView = inputView;
     _deviceIdentifier = deviceIdentifier.copy;
     _deviceChromeVisible = YES;
     _closeHandler = [closeHandler copy];
@@ -526,7 +543,6 @@ static BOOL XSHAtomicallyReplaceURL(NSURL *temporaryURL,
 - (void)showAndActivate {
     [self showWindow:nil];
     [self.window makeKeyAndOrderFront:nil];
-    [self.window makeFirstResponder:self.displayView];
     if (!self.requestedInitialOrientation) {
         self.requestedInitialOrientation = YES;
         [self synchronizeDeviceRotationPresentingError:NO];
@@ -710,7 +726,7 @@ static BOOL XSHAtomicallyReplaceURL(NSURL *temporaryURL,
     (void)sender;
     NSError *error = [self sendButton:XSHHomeButton name:@"Home"];
     [self presentActionError:error];
-    [self.window makeFirstResponder:self.displayView];
+    [self focusInputView];
 }
 
 - (void)toggleSoftwareKeyboard:(id)sender {
@@ -718,14 +734,14 @@ static BOOL XSHAtomicallyReplaceURL(NSURL *temporaryURL,
     NSError *error = [self sendButton:XSHSoftwareKeyboardButton
                                   name:@"Software Keyboard"];
     [self presentActionError:error];
-    [self.window makeFirstResponder:self.displayView];
+    [self focusInputView];
 }
 
 - (void)lockButtonPressed:(id)sender {
     (void)sender;
     NSError *error = [self sendButton:XSHLockButton name:@"Lock"];
     [self presentActionError:error];
-    [self.window makeFirstResponder:self.displayView];
+    [self focusInputView];
 }
 
 - (nullable NSError *)sendButton:(uint32_t)button name:(NSString *)name {
@@ -933,6 +949,40 @@ static BOOL XSHAtomicallyReplaceURL(NSURL *temporaryURL,
     [self.deviceContentView layoutSubtreeIfNeeded];
     [self.window invalidateShadow];
     self.applyingResize = NO;
+}
+
+- (void)windowDidBecomeKey:(NSNotification *)notification {
+    (void)notification;
+    [self focusInputView];
+}
+
+- (void)focusInputView {
+    if (self.invalidated) {
+        return;
+    }
+
+    // SimulatorKit explicitly focuses its digitizer when a touch begins. It is
+    // not a key-view-loop candidate, so initialFirstResponder would be ignored.
+    // Unhandled keyboard events continue up to SimDisplayView.
+    [self.window makeFirstResponder:self.inputView];
+    if (self.window.firstResponder != self.inputView) {
+        XSHLog(@"could not focus simulator input view for %@", self.deviceIdentifier);
+        return;
+    }
+
+    // Modifier releases can go to another responder while input lacks focus.
+    // Let the digitizer reconcile its own gesture state before the next click.
+    NSEvent *modifiers = [NSEvent keyEventWithType:NSEventTypeFlagsChanged
+                                       location:self.window.mouseLocationOutsideOfEventStream
+                                  modifierFlags:NSEvent.modifierFlags
+                                      timestamp:NSProcessInfo.processInfo.systemUptime
+                                   windowNumber:self.window.windowNumber
+                                        context:nil
+                                     characters:@""
+                    charactersIgnoringModifiers:@""
+                                      isARepeat:NO
+                                        keyCode:0];
+    [self.inputView flagsChanged:modifiers];
 }
 
 - (void)windowWillClose:(NSNotification *)notification {

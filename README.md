@@ -101,6 +101,24 @@ host with the currently selected Xcode, so switching between compatible Xcode
 27+ installations cannot leave a host using frameworks from the previous
 selection.
 
+### Mouse and Keyboard Gestures
+
+Use these controls over the simulated screen:
+
+| Control | Interaction |
+| --- | --- |
+| Hold Option, then drag | Pinch by changing the distance between the two fingers; rotate by moving around their center |
+| Hold Option and Shift, then move the pointer | Reposition the two-finger gesture center |
+| Hold Option and Shift, then drag | Move both fingers together |
+| While dragging, press Control and release the mouse button | Pin the first finger while you interact with a second finger |
+
+To release a pinned finger, release Control, click the pinned position, and
+release the mouse button. Releasing Control alone leaves the finger pinned.
+
+Finish gestures and release pinned fingers before closing the window. Closing
+mid-gesture can leave a touch active in the simulated app. Global pointer
+capture and arbitrary gestures with three or more fingers are not supported.
+
 ## Return to Device Hub
 
 ```bash
@@ -218,6 +236,13 @@ Run the isolated test suite with:
 
 ```bash
 swift test
+```
+
+Check the native input focus contract and the selected Xcode's digitizer getter
+without booting or connecting to a simulator:
+
+```bash
+scripts/test-input-focus.sh
 ```
 
 ## License
