@@ -272,10 +272,10 @@ struct HostModeController {
                     "refusing to manage legacy Simulator pid \(application.processIdentifier) because its process identity is incomplete"
                 )
             }
-            let installation = try installationInspector.validatedLegacySimulator(
+            let applicationURL = try installationInspector.validatedLegacySimulatorApplicationForTermination(
                 at: bundleURL
             )
-            urls.insert(installation.applicationURL)
+            urls.insert(applicationURL)
         }
         return urls.sorted { $0.path < $1.path }
     }

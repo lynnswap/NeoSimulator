@@ -708,7 +708,8 @@ struct ControllerFixture {
         includeHiddenKey: Bool = true,
         includeNeoHost: Bool = true,
         neoHostRuntimeValidationStatus: Int32 = 0,
-        effectiveUserID: uid_t = 501
+        effectiveUserID: uid_t = 501,
+        signatureValidator: CodeSignatureValidator = .acceptingTestFixtures
     ) throws {
         installations = try InstallationFixture(
             targetVersion: targetVersion,
@@ -746,7 +747,7 @@ struct ControllerFixture {
             commandExecutableURL: installations.commandExecutableURL,
             coreSimulatorFrameworkURL: installations.coreSimulatorFrameworkURL,
             coreDeviceFrameworkURL: installations.coreDeviceFrameworkURL,
-            signatureValidator: .acceptingTestFixtures
+            signatureValidator: signatureValidator
         )
         controller = HostModeController(
             defaultsStore: DefaultsStore(runner: runner),

@@ -142,19 +142,26 @@ This prevents their mismatch path from implicitly running
 An unknown later Xcode that changes a private symbol or component version is
 unavailable. It is never guessed compatible and never falls back to Device Hub.
 
-Legacy instead validates:
+Selecting a Legacy installation to launch validates:
 
 - an outer `com.apple.dt.Xcode` application whose version is exactly generation
   26 and whose application signature is intact and Apple-anchored;
 - its nested `Contents/Developer/Applications/Simulator.app` bundle identifier,
   executable, version metadata, generation-26 `DTXcode`, and Apple application
-  signature;
-- the exact bundle URL of every running legacy Simulator process before the
-  process can be terminated.
+  signature.
+
+An already-running legacy Simulator is validated separately for termination.
+The same Simulator bundle metadata, executable, and Apple application signature
+checks apply, along with the supported Xcode 26 directory layout and parent
+metadata. Its parent Xcode is not used as a launch source by termination, so
+unrelated resources outside `Simulator.app` do not block switching hosts.
+The workspace client rechecks the running process's bundle identifier and exact
+normalized bundle URL before sending a termination request.
 
 An explicitly selected legacy Xcode may live outside `/Applications`. A copied
-or substituted `Simulator.app` outside its validated owning Xcode is never
-managed.
+or substituted `Simulator.app` outside the supported Xcode 26 layout is never
+managed. Full parent-Xcode integrity remains required when selecting that
+installation to launch.
 
 ## Managed preferences
 
@@ -212,7 +219,8 @@ exists, status always uses that lock and never performs recovery or mutation.
 
 1. Validate the selected Xcode, packaged NeoSimulator app, private frameworks,
    tools, plugin, and runtime contract.
-2. Validate the owning Xcode 26 bundle for every running legacy Simulator.
+2. Validate each running legacy Simulator's application signature and exact
+   Xcode 26 location for termination.
 3. Reject receipt conflicts, then close those legacy Simulators and restart the
    exact Neo bundle.
 4. Commit the CoreSimulator preference state if it is not already active.
