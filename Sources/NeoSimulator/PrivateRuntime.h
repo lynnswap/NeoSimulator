@@ -13,6 +13,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) Class legacyHIDClientClass;
 @property (nonatomic, readonly) XSHIndigoHIDMessageForButtonFunction messageForButton;
 @property (nonatomic, readonly) void *showDeviceChromeFunction;
+@property (nonatomic, readonly) void *digitizerViewGetterFunction;
 @property (nonatomic, readonly) void *renderScaleGetterFunction;
 @property (nonatomic, readonly) void *deviceRotationSetterFunction;
 @property (nonatomic, readonly) void *disconnectDisplayFunction;

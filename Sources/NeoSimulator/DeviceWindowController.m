@@ -198,6 +198,7 @@ static BOOL XSHAtomicallyReplaceURL(NSURL *temporaryURL,
 @property (nonatomic) XSHLegacyHIDClient *hidClient;
 @property (nonatomic) XSHDeviceToolRunner *toolRunner;
 @property (nonatomic) NSView *displayView;
+@property (nonatomic) NSView *inputView;
 @property (nonatomic) XSHDeviceContentView *deviceContentView;
 @property (nonatomic, nullable) NSSavePanel *savePanel;
 @property (nonatomic) NSArray<NSButton *> *toolOperationButtons;
@@ -300,6 +301,21 @@ static BOOL XSHAtomicallyReplaceURL(NSURL *temporaryURL,
         return nil;
     }
 
+    NSView *inputView = XSHSwiftCallObjectGetter(
+        runtime.digitizerViewGetterFunction,
+        displayView
+    );
+    if (inputView == nil) {
+        XSHSwiftDisconnect(runtime.disconnectDisplayFunction, displayView);
+        if (error != NULL) {
+            *error = XSHNeoHostError(
+                XSHNeoHostErrorDeviceConnection,
+                @"display view has no simulator input view"
+            );
+        }
+        return nil;
+    }
+
     XSHSwiftCallBoolMethod(runtime.showDeviceChromeFunction, displayView, YES);
 
     NSSize naturalSize = displayView.intrinsicContentSize;
@@ -330,6 +346,7 @@ static BOOL XSHAtomicallyReplaceURL(NSURL *temporaryURL,
     _hidClient = hidClient;
     _toolRunner = toolRunner;
     _displayView = displayView;
+    _inputView = inputView;
     _deviceIdentifier = deviceIdentifier.copy;
     _deviceChromeVisible = YES;
     _closeHandler = [closeHandler copy];
@@ -526,7 +543,11 @@ static BOOL XSHAtomicallyReplaceURL(NSURL *temporaryURL,
 - (void)showAndActivate {
     [self showWindow:nil];
     [self.window makeKeyAndOrderFront:nil];
-    [self.window makeFirstResponder:self.displayView];
+    // SimulatorKit explicitly focuses its digitizer when a touch begins. It is
+    // not a key-view-loop candidate, so initialFirstResponder would be ignored.
+    // Focus the same view before the first click so it receives modifier events;
+    // unhandled keyboard events continue up to SimDisplayView.
+    [self.window makeFirstResponder:self.inputView];
     if (!self.requestedInitialOrientation) {
         self.requestedInitialOrientation = YES;
         [self synchronizeDeviceRotationPresentingError:NO];

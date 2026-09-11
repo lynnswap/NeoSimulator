@@ -11,6 +11,8 @@ FOUNDATION_EXPORT void XSHSwiftCallBoolMethod(
     id object,
     BOOL value
 );
+FOUNDATION_EXPORT id XSHSwiftCallObjectGetter(void *function, id object)
+    NS_RETURNS_RETAINED;
 FOUNDATION_EXPORT CGFloat XSHSwiftCallCGFloatGetter(void *function, id object);
 FOUNDATION_EXPORT void XSHSwiftSetAngleMeasurement(
     void *function,
