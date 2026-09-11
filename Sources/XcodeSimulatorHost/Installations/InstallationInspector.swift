@@ -134,9 +134,9 @@ struct InstallationInspector {
         legacySimulatorCandidates()
     }
 
-    func validatedLegacySimulator(
+    func validatedLegacySimulatorApplicationForTermination(
         at applicationURL: URL
-    ) throws -> SimulatorInstallation {
+    ) throws -> URL {
         let normalizedApplicationURL = applicationURL
             .resolvingSymlinksInPath()
             .standardizedFileURL
@@ -152,17 +152,24 @@ struct InstallationInspector {
             xcodeURL.deleteLastPathComponent()
         }
 
-        let installation = try inspectLegacySimulator(in: xcodeURL)
-        guard installation.applicationURL
+        let xcode = try inspectLegacyXcode(at: xcodeURL)
+        let expectedApplicationURL = xcode.applicationURL.appendingPathComponent(
+            ToolConstants.simulatorPath,
+            isDirectory: true
+        )
+        guard expectedApplicationURL
                 .resolvingSymlinksInPath()
                 .standardizedFileURL == normalizedApplicationURL
         else {
             throw CLIError.configuration(
                 "legacy-simulator-location",
-                "running Simulator did not resolve to its validated Xcode application"
+                "running Simulator did not resolve to its expected Xcode location"
             )
         }
-        return installation
+        // Termination does not load the parent Xcode. Reusing the launch gate
+        // would let unrelated parent resources block a host switch.
+        _ = try validatedLegacySimulatorApplication(at: normalizedApplicationURL)
+        return normalizedApplicationURL
     }
 
     func validatedNeoHost(
@@ -301,9 +308,7 @@ struct InstallationInspector {
         }
     }
 
-    private func inspectLegacySimulator(
-        in xcodeURL: URL
-    ) throws -> SimulatorInstallation {
+    private func inspectLegacyXcode(at xcodeURL: URL) throws -> XcodeInstallation {
         let xcode = try inspectXcode(at: xcodeURL.standardizedFileURL)
         guard xcode.version.major == ToolConstants.legacyXcodeMajorVersion else {
             throw CLIError.unavailable(
@@ -311,6 +316,13 @@ struct InstallationInspector {
                 "legacy Simulator must come from Xcode 26, found Xcode \(xcode.version)"
             )
         }
+        return xcode
+    }
+
+    private func inspectLegacySimulator(
+        in xcodeURL: URL
+    ) throws -> SimulatorInstallation {
+        let xcode = try inspectLegacyXcode(at: xcodeURL)
         try signatureValidator.validateAppleApplication(
             xcode.applicationURL,
             ToolConstants.xcodeBundleIdentifier
@@ -320,6 +332,18 @@ struct InstallationInspector {
             ToolConstants.simulatorPath,
             isDirectory: true
         )
+        let simulator = try validatedLegacySimulatorApplication(at: simulatorURL)
+        return SimulatorInstallation(
+            applicationURL: simulatorURL,
+            xcode: xcode,
+            version: simulator.version,
+            buildVersion: simulator.buildVersion
+        )
+    }
+
+    private func validatedLegacySimulatorApplication(
+        at simulatorURL: URL
+    ) throws -> (version: String, buildVersion: String) {
         let info = try propertyList(
             at: simulatorURL.appendingPathComponent("Contents/Info.plist")
         )
@@ -349,12 +373,7 @@ struct InstallationInspector {
             simulatorURL,
             ToolConstants.simulatorBundleIdentifier
         )
-        return SimulatorInstallation(
-            applicationURL: simulatorURL,
-            xcode: xcode,
-            version: version,
-            buildVersion: buildVersion
-        )
+        return (version: version, buildVersion: buildVersion)
     }
 
     func neoHostApplicationURL() throws -> URL {

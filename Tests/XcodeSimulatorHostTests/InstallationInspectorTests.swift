@@ -139,7 +139,8 @@ struct InstallationInspectorTests {
         }
     }
 
-    @Test func legacySimulatorMustPassApplicationSignatureValidation() throws {
+    @Test(arguments: [false, true])
+    func legacySimulatorMustPassApplicationSignatureValidation(forTermination: Bool) throws {
         let fixture = try InstallationFixture()
         let inspector = InstallationInspector(
             runner: FakeSystemCommandRunner(),
@@ -172,9 +173,15 @@ struct InstallationInspectorTests {
         )
 
         do {
-            _ = try inspector.legacySimulator(
-                explicitXcodeURL: fixture.legacyXcodeURLs[0]
-            )
+            if forTermination {
+                _ = try inspector.validatedLegacySimulatorApplicationForTermination(
+                    at: fixture.legacySimulatorURLs[0]
+                )
+            } else {
+                _ = try inspector.legacySimulator(
+                    explicitXcodeURL: fixture.legacyXcodeURLs[0]
+                )
+            }
             Issue.record("expected invalid legacy Simulator signature to fail")
         } catch let error as CLIError {
             #expect(error.identifier == "legacy-simulator-signature")
@@ -231,12 +238,47 @@ struct InstallationInspectorTests {
 
         #expect(inspector.legacySimulatorApplications().isEmpty)
 
-        let simulator = try inspector.validatedLegacySimulator(at: simulatorURL)
+        let validatedURL = try inspector.validatedLegacySimulatorApplicationForTermination(
+            at: simulatorURL
+        )
 
-        #expect(simulator.applicationURL == simulatorURL)
-        #expect(simulator.xcode.applicationURL == externalXcodeURL)
-        #expect(simulator.xcode.version == (try ToolVersion("26.6")))
-        #expect(simulator.xcode.buildVersion == "17F109")
+        #expect(validatedURL == simulatorURL)
+    }
+
+    @Test func terminationChecksOnlyTheSimulatorApplicationSignature() throws {
+        let fixture = try InstallationFixture()
+        let simulatorURL = fixture.legacySimulatorURLs[0]
+        let inspector = InstallationInspector(
+            runner: FakeSystemCommandRunner(),
+            signatureValidator: CodeSignatureValidator(
+                { _, _ in
+                    throw CLIError.software("unexpected-code-validation", "expected application validation")
+                },
+                validateAppleApplication: { url, identifier in
+                    guard url == simulatorURL,
+                          identifier == ToolConstants.simulatorBundleIdentifier else {
+                        throw CLIError.software("unexpected-signature-target", "termination must validate the Simulator application")
+                    }
+                }
+            )
+        )
+
+        let result = try inspector.validatedLegacySimulatorApplicationForTermination(at: simulatorURL)
+
+        #expect(result == simulatorURL)
+    }
+
+    @Test func terminationRejectsACopiedSimulatorOutsideItsXcodeLocation() throws {
+        let fixture = try InstallationFixture()
+        let copiedURL = fixture.directory.url.appendingPathComponent("Simulator.app")
+        try FileManager.default.copyItem(at: fixture.legacySimulatorURLs[0], to: copiedURL)
+
+        do {
+            _ = try makeInspector(fixture).validatedLegacySimulatorApplicationForTermination(at: copiedURL)
+            Issue.record("expected the copied Simulator to be rejected")
+        } catch let error as CLIError {
+            #expect(error.identifier == "legacy-simulator-location")
+        }
     }
 
     @Test func selectedXcodeMustBeIntactAppleSignedCode() throws {

@@ -249,6 +249,149 @@ struct HostModeControllerTests {
         #expect(try fixture.receiptStore.load() == nil)
     }
 
+    private static let rejectingLegacyParentSignature = CodeSignatureValidator { url, identifier in
+        if identifier == ToolConstants.xcodeBundleIdentifier,
+           url.lastPathComponent == "Xcode_26.app" {
+            throw CLIError.unavailable("legacy-parent-signature", "unrelated parent resource changed")
+        }
+    }
+
+    @Test(arguments: [HostRequest.neo, .deviceHub])
+    func switchingAwayDoesNotRequireTheRunningSimulatorsParentSignature(request: HostRequest) async throws {
+        let fixture = try ControllerFixture(
+            initialState: .coreSimulator,
+            signatureValidator: Self.rejectingLegacyParentSignature
+        )
+        let simulatorURL = try #require(fixture.installations.legacySimulatorURLs.first)
+        fixture.workspace.runningLegacySimulators = [
+            RunningApplication(
+                processIdentifier: 42,
+                bundleURL: simulatorURL,
+                bundleIdentifier: ToolConstants.simulatorBundleIdentifier
+            ),
+        ]
+        fixture.workspace.legacySimulatorCount = 1
+
+        let report = try await fixture.controller.use(request)
+
+        #expect(report.terminatedLegacySimulatorCount == 1)
+        #expect(fixture.workspace.requestedLegacySimulatorURLSets == [[simulatorURL]])
+        #expect(report.host.mode == (request == .neo ? .neo : .deviceHub))
+    }
+
+    @Test(arguments: [false, true])
+    func restoringDeviceHubDoesNotRequireTheRunningSimulatorsParentSignature(force: Bool) async throws {
+        let fixture = try ControllerFixture(signatureValidator: Self.rejectingLegacyParentSignature)
+        _ = try await fixture.controller.use(.neo)
+        let simulatorURL = try #require(fixture.installations.legacySimulatorURLs.first)
+        fixture.workspace.runningLegacySimulators = [
+            RunningApplication(
+                processIdentifier: 42,
+                bundleURL: simulatorURL,
+                bundleIdentifier: ToolConstants.simulatorBundleIdentifier
+            ),
+        ]
+        fixture.workspace.legacySimulatorCount = 1
+
+        let report = try await fixture.controller.restore(force: force)
+
+        #expect(report.didRestore)
+        #expect(report.terminatedLegacySimulatorCount == 1)
+        #expect(fixture.workspace.requestedLegacySimulatorURLSets.last == [simulatorURL])
+        #expect(try fixture.receiptStore.load() == nil)
+    }
+
+    @Test func switchingToAnotherLegacyInstallationDoesNotValidateTheRunningHostsParentSignature() async throws {
+        let fixture = try ControllerFixture(
+            initialState: .coreSimulator,
+            signatureValidator: Self.rejectingLegacyParentSignature
+        )
+        let simulatorURL = try #require(fixture.installations.legacySimulatorURLs.first)
+        let destinationXcodeURL = fixture.installations.applicationsURL.appendingPathComponent("HealthyXcode.app")
+        try InstallationFixture.makeLegacyXcode(at: destinationXcodeURL, version: "26.6", build: "17F109")
+        fixture.workspace.runningLegacySimulators = [
+            RunningApplication(
+                processIdentifier: 42,
+                bundleURL: simulatorURL,
+                bundleIdentifier: ToolConstants.simulatorBundleIdentifier
+            ),
+        ]
+        fixture.workspace.legacySimulatorCount = 1
+
+        let report = try await fixture.controller.use(.legacy(xcodeURL: destinationXcodeURL))
+
+        #expect(report.terminatedLegacySimulatorCount == 1)
+        #expect(fixture.workspace.requestedLegacySimulatorURLSets == [[simulatorURL]])
+        #expect(fixture.workspace.openedLegacySimulators == [destinationXcodeURL.appendingPathComponent(ToolConstants.simulatorPath)])
+    }
+
+    @Test func invalidRunningSimulatorSignatureFailsBeforeMutation() async throws {
+        let fixture = try ControllerFixture(
+            initialState: .coreSimulator,
+            signatureValidator: CodeSignatureValidator { _, identifier in
+                if identifier == ToolConstants.simulatorBundleIdentifier {
+                    throw CLIError.unavailable("running-simulator-signature", "invalid Simulator signature")
+                }
+            }
+        )
+        let simulatorURL = try #require(fixture.installations.legacySimulatorURLs.first)
+        fixture.workspace.runningLegacySimulators = [
+            RunningApplication(
+                processIdentifier: 42,
+                bundleURL: simulatorURL,
+                bundleIdentifier: ToolConstants.simulatorBundleIdentifier
+            ),
+        ]
+
+        do {
+            _ = try await fixture.controller.use(.neo)
+            Issue.record("expected the invalid Simulator signature to fail")
+        } catch let error as CLIError {
+            #expect(error.identifier == "running-simulator-signature")
+        }
+        #expect(fixture.workspace.events.isEmpty)
+        #expect(fixture.runner.mutationCount == 0)
+        #expect(try fixture.receiptStore.load() == nil)
+    }
+
+    @Test(arguments: [nil, "com.example.forged-simulator"] as [String?])
+    func unexpectedRunningSimulatorIdentityFailsBeforeMutation(bundleIdentifier: String?) async throws {
+        let fixture = try ControllerFixture(initialState: .coreSimulator)
+        let simulatorURL = try #require(fixture.installations.legacySimulatorURLs.first)
+        fixture.workspace.runningLegacySimulators = [
+            RunningApplication(
+                processIdentifier: 42,
+                bundleURL: simulatorURL,
+                bundleIdentifier: bundleIdentifier
+            ),
+        ]
+
+        do {
+            _ = try await fixture.controller.use(.neo)
+            Issue.record("expected the unexpected process identity to fail")
+        } catch let error as CLIError {
+            #expect(error.identifier == "legacy-simulator-identity")
+        }
+        #expect(fixture.workspace.events.isEmpty)
+        #expect(fixture.runner.mutationCount == 0)
+        #expect(try fixture.receiptStore.load() == nil)
+    }
+
+    @Test func selectingAnInvalidLegacyParentStillFailsBeforeMutation() async throws {
+        let fixture = try ControllerFixture(signatureValidator: Self.rejectingLegacyParentSignature)
+        let xcodeURL = try #require(fixture.installations.legacyXcodeURLs.first)
+
+        do {
+            _ = try await fixture.controller.use(.legacy(xcodeURL: xcodeURL))
+            Issue.record("expected launch to require an intact parent Xcode")
+        } catch let error as CLIError {
+            #expect(error.identifier == "legacy-parent-signature")
+        }
+        #expect(fixture.workspace.events.isEmpty)
+        #expect(fixture.runner.mutationCount == 0)
+        #expect(try fixture.receiptStore.load() == nil)
+    }
+
     @Test func unvalidatedRunningSimulatorIsRejectedBeforeProcessOrPreferenceMutation() async throws {
         let fixture = try ControllerFixture(initialState: .coreSimulator)
         fixture.workspace.runningLegacySimulators = [
