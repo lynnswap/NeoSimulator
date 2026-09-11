@@ -543,11 +543,6 @@ static BOOL XSHAtomicallyReplaceURL(NSURL *temporaryURL,
 - (void)showAndActivate {
     [self showWindow:nil];
     [self.window makeKeyAndOrderFront:nil];
-    // SimulatorKit explicitly focuses its digitizer when a touch begins. It is
-    // not a key-view-loop candidate, so initialFirstResponder would be ignored.
-    // Focus the same view before the first click so it receives modifier events;
-    // unhandled keyboard events continue up to SimDisplayView.
-    [self.window makeFirstResponder:self.inputView];
     if (!self.requestedInitialOrientation) {
         self.requestedInitialOrientation = YES;
         [self synchronizeDeviceRotationPresentingError:NO];
@@ -954,6 +949,36 @@ static BOOL XSHAtomicallyReplaceURL(NSURL *temporaryURL,
     [self.deviceContentView layoutSubtreeIfNeeded];
     [self.window invalidateShadow];
     self.applyingResize = NO;
+}
+
+- (void)windowDidBecomeKey:(NSNotification *)notification {
+    (void)notification;
+    if (self.invalidated) {
+        return;
+    }
+
+    // SimulatorKit explicitly focuses its digitizer when a touch begins. It is
+    // not a key-view-loop candidate, so initialFirstResponder would be ignored.
+    // Unhandled keyboard events continue up to SimDisplayView.
+    [self.window makeFirstResponder:self.inputView];
+    if (self.window.firstResponder != self.inputView) {
+        XSHLog(@"could not focus simulator input view for %@", self.deviceIdentifier);
+        return;
+    }
+
+    // Modifier releases can go to another window while this one is inactive.
+    // Let the digitizer reconcile its own gesture state before the next click.
+    NSEvent *modifiers = [NSEvent keyEventWithType:NSEventTypeFlagsChanged
+                                       location:self.window.mouseLocationOutsideOfEventStream
+                                  modifierFlags:NSEvent.modifierFlags
+                                      timestamp:NSProcessInfo.processInfo.systemUptime
+                                   windowNumber:self.window.windowNumber
+                                        context:nil
+                                     characters:@""
+                    charactersIgnoringModifiers:@""
+                                      isARepeat:NO
+                                        keyCode:0];
+    [self.inputView flagsChanged:modifiers];
 }
 
 - (void)windowWillClose:(NSNotification *)notification {
