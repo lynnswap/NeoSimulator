@@ -11,6 +11,9 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
 
     private let runtime: SimulatorRuntime
     private let deviceSet: XSHDeviceSetHandle
+    private let recordings = RecordingStore()
+    private var isTerminating = false
+    private var recordingTerminationErrors: [Error] = []
     private var notificationToken: UInt64?
     private var workspaceObserver: (any NSObjectProtocol)?
     private var sessions: [String: DeviceWindowController] = [:]
@@ -30,6 +33,11 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         self.runtime = runtime
         deviceSet = try runtime.openDeviceSet()
         super.init()
+        recordings.onError = { [weak self] error in
+            guard let self else { return }
+            if self.isTerminating { self.recordingTerminationErrors.append(error) }
+            else { self.report(error) }
+        }
     }
 
     func start() throws {
@@ -127,7 +135,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                         let connection = try SimulatorConnection(device: device, screenID: screen.uint32Value, runtime: runtime)
                         let controller = try DeviceWindowController(
                             device: Self.describe(device), display: connection,
-                            tools: DeviceTools(identifier: identifier, xcodeURL: runtime.xcodeURL)
+                            tools: DeviceTools(identifier: identifier, xcodeURL: runtime.xcodeURL),
+                            recordings: recordings
                         ) { [weak self] identifier in
                             self?.sessions.removeValue(forKey: identifier)
                             self?.suppressed.insert(identifier)
@@ -176,6 +185,18 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         return true
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard !isTerminating else { return .terminateLater }
+        guard recordings.hasActiveRecordings else { return .terminateNow }
+        isTerminating = true
+        Task {
+            await recordings.finishAll()
+            for error in recordingTerminationErrors { NSAlert(error: error).runModal() }
+            recordingTerminationErrors.removeAll()
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
     func applicationWillTerminate(_ notification: Notification) { shutdown() }
 
     func shutdown() {

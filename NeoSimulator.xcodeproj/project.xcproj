@@ -87,6 +87,18 @@
             "NeoSimulator/compile-sources",
             "NeoSimulatorHostTests/compile-sources",
           ],
+        }, {
+          "path": "VideoRecording.swift",
+          "target-membership": [
+            "NeoSimulator/compile-sources",
+            "NeoSimulatorHostTests/compile-sources",
+          ],
+        }, {
+          "path": "FileImport.swift",
+          "target-membership": [
+            "NeoSimulator/compile-sources",
+            "NeoSimulatorHostTests/compile-sources",
+          ],
         },
       ],
     },

@@ -67,6 +67,7 @@ NeoSimulator.app
 | Window, toolbar, focus, and scaling | standalone host AppKit window controller |
 | Menu construction and active-window routing | standalone host menu controller |
 | Device commands and subprocesses | Swift `DeviceTools` and `DeviceToolRunner` |
+| Recording processes and final saves | app-owned Swift `RecordingStore` and `VideoRecording` |
 | Private Objective-C calls and exceptions | `SimulatorBridge` |
 | Device selection and previews | SwiftUI `DeviceBrowserView` and `DeviceToolbar` |
 | Clipboard synchronization | deliberately no owner |
@@ -119,6 +120,18 @@ Rotate Left/Right runs the direct, compatibility-checked CoreDevice
 and after every relative rotation before updating the display chrome. Both
 operations are typed and single-flight, with drained output, a bounded timeout,
 and cancellation on window close.
+
+App and media imports use the same bounded direct `simctl` runner. Each chosen
+file is processed independently, and a partial failure reports both completed
+imports and failed files. Opening URLs also uses `simctl`, scoped to the active
+device.
+
+Recording has a separate process because it can run alongside ordinary device
+commands. Stop waits for `simctl`'s documented first-frame acknowledgement before
+sending SIGINT, then waits for process exit and checks that the MP4 contains
+video. The app owns pending recordings after a device window closes and waits
+for final saves before quitting. Destination replacement is atomic; a failed
+final move preserves the completed temporary recording and reports its path.
 
 ### Modifier input
 

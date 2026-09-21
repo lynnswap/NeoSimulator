@@ -3,12 +3,14 @@ import SwiftUI
 enum DeviceCommand: String {
     case home, lock, keyboard, screenshot, rotateLeft, rotateRight
     case shake, appearance, bezel, stayOnTop, fit, shutdown
+    case recording, importFiles, openURL
 }
 
 @MainActor @Observable
 final class DeviceToolbarState {
     var isBusy = false
     var isConnected = true
+    var recording: VideoRecording?
 }
 
 struct DeviceToolbar: View {
@@ -31,9 +33,17 @@ struct DeviceToolbar: View {
             HStack(spacing: 4) {
                 control("Home", symbol: "house", command: .home)
                 control("Save Screen", symbol: "camera.on.rectangle", command: .screenshot, usesTool: true)
+                control(state.recording == nil ? "Record Video" : "Stop Recording",
+                    symbol: state.recording == nil ? "record.circle" : "stop.circle.fill",
+                    command: .recording, usesTool: state.recording == nil)
+                    .foregroundStyle(state.recording == nil ? Color.primary : Color.red)
+                    .disabled(state.recording?.isStopping == true)
                 control("Rotate Right", symbol: "rotate.right", command: .rotateRight, usesTool: true)
                 control("Software Keyboard", symbol: "keyboard", command: .keyboard)
                 Menu {
+                    Button("Install App or Import Media…") { perform(.importFiles) }.disabled(state.isBusy)
+                    Button("Open URL…") { perform(.openURL) }.disabled(state.isBusy)
+                    Divider()
                     Button("Lock") { perform(.lock) }
                     Button("Shake") { perform(.shake) }
                     Button("Toggle Appearance") { perform(.appearance) }
@@ -42,7 +52,7 @@ struct DeviceToolbar: View {
                     Button("Stay On Top") { perform(.stayOnTop) }
                     Button("Fit Screen") { perform(.fit) }
                     Divider()
-                    Button("Shut Down") { perform(.shutdown) }.disabled(state.isBusy)
+                    Button("Shut Down") { perform(.shutdown) }.disabled(state.isBusy || state.recording != nil)
                 } label: {
                     Image(systemName: "ellipsis").frame(width: 28, height: 24)
                 }

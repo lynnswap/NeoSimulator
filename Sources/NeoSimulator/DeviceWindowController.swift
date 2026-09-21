@@ -10,7 +10,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     let toolbarState = DeviceToolbarState()
     private(set) var showsDeviceBezel = true
     private var operation: Task<Void, Never>?
-    private var savePanel: NSSavePanel?
+    private let recordings: RecordingStore
     private var closed = false
     private var didReadOrientation = false
     private let onClose: (String) -> Void
@@ -20,10 +20,11 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     var staysOnTop: Bool { window?.level == .floating }
 
     init(device: AvailableDevice, display: any SimulatorDisplay, tools: DeviceTools,
-         onClose: @escaping (String) -> Void) throws {
+         recordings: RecordingStore = RecordingStore(), onClose: @escaping (String) -> Void) throws {
         self.device = device
         self.display = display
         self.tools = tools
+        self.recordings = recordings
         self.onClose = onClose
         content = DeviceContentView(display: display.view)
         let natural = display.naturalSize
@@ -50,6 +51,8 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         })
         toolbar.sizingOptions = []
         content.header = toolbar
+        content.canImport = { [weak self] in self?.canPerformToolOperation == true }
+        content.importFiles = { [weak self] in self?.importFiles($0) }
         window.contentView = content
         window.contentMinSize = NSSize(width: 320, height: 300)
         fitScreen()
@@ -92,7 +95,12 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
                     try Task.checkCancellation()
                     applyRotation(angle)
                 }
-            case .shutdown: runTool { [self] in try await tools.shutdown() }
+            case .shutdown:
+                guard toolbarState.recording == nil else { return }
+                runTool { [self] in try await tools.shutdown() }
+            case .recording: toggleRecording()
+            case .importFiles: chooseFiles()
+            case .openURL: openURL()
             }
         } catch { present(error) }
         focusInput()
@@ -119,10 +127,8 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         panel.allowedContentTypes = [.png]
         panel.canCreateDirectories = true
         panel.nameFieldStringValue = "Simulator Screenshot.png"
-        savePanel = panel
         panel.beginSheetModal(for: window) { [weak self] response in
             guard let self else { return }
-            self.savePanel = nil
             self.toolbarState.isBusy = false
             guard response == .OK, let destination = panel.url, !self.closed else { return }
             self.runTool { [self] in
@@ -135,6 +141,79 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
                     }
                 }
             }
+        }
+    }
+
+    private func toggleRecording() {
+        if let recording = toolbarState.recording { recording.stop(); return }
+        guard canPerformToolOperation, let window else { return }
+        toolbarState.isBusy = true
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.mpeg4Movie]
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = "Simulator Recording.mp4"
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard let self else { return }
+            self.toolbarState.isBusy = false
+            guard response == .OK, let destination = panel.url, !self.closed else { return }
+            do {
+                self.toolbarState.recording = try self.recordings.start(to: destination,
+                    process: self.tools.recordingProcess) { [weak self] in
+                        self?.toolbarState.recording = nil
+                    }
+            } catch { self.present(error) }
+        }
+    }
+
+    private func chooseFiles() {
+        guard canPerformToolOperation, let window else { return }
+        toolbarState.isBusy = true
+        let panel = NSOpenPanel()
+        panel.title = "Install App or Import Media"
+        panel.prompt = "Import"
+        panel.allowedContentTypes = [.applicationBundle, .image, .movie, .vCard]
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard let self else { return }
+            self.toolbarState.isBusy = false
+            if response == .OK, !self.closed { self.importFiles(panel.urls) }
+        }
+    }
+
+    private func importFiles(_ urls: [URL]) {
+        runTool { [self] in
+            try await SimulatorFileImport.perform(urls) { url, kind in
+                switch kind {
+                case .application: try await tools.installApplication(at: url)
+                case .media: try await tools.importMedia(at: url)
+                }
+            }
+        }
+    }
+
+    private func openURL() {
+        guard canPerformToolOperation, let window else { return }
+        toolbarState.isBusy = true
+        let alert = NSAlert()
+        alert.messageText = "Open URL in Simulator"
+        alert.informativeText = "Enter a web address or an app's URL scheme."
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 380, height: 24))
+        field.placeholderString = "https://example.com"
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Open")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard let self else { return }
+            self.toolbarState.isBusy = false
+            guard response == .alertFirstButtonReturn, !self.closed else { return }
+            let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let url = URL(string: text), url.scheme != nil else {
+                self.present(HostError.operation("Enter a URL with a scheme, such as https://example.com"))
+                return
+            }
+            self.runTool { [self] in try await tools.openURL(url) }
         }
     }
 
@@ -208,10 +287,10 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         toolbarState.isConnected = false
         operation?.cancel()
         tools.cancel()
-        if let savePanel, let parent = savePanel.sheetParent {
-            parent.endSheet(savePanel, returnCode: .cancel)
+        toolbarState.recording?.stop()
+        if let window, let sheet = window.attachedSheet {
+            window.endSheet(sheet, returnCode: .cancel)
         }
-        savePanel = nil
         display.disconnect()
     }
     isolated deinit { disconnect() }
@@ -221,6 +300,8 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
 private final class DeviceContentView: NSView {
     static let headerHeight: CGFloat = 74
     let display: NSView
+    var canImport: () -> Bool = { false }
+    var importFiles: ([URL]) -> Void = { _ in }
     var header: NSView? {
         didSet { oldValue?.removeFromSuperview(); if let header { addSubview(header) } }
     }
@@ -229,6 +310,16 @@ private final class DeviceContentView: NSView {
         super.init(frame: .zero)
         wantsLayer = true
         addSubview(display)
+        registerForDraggedTypes([.fileURL])
+    }
+    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        canImport() ? .copy : []
+    }
+    override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        guard canImport(), let urls = sender.draggingPasteboard.readObjects(
+            forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], !urls.isEmpty else { return false }
+        importFiles(urls)
+        return true
     }
     required init?(coder: NSCoder) { nil }
 

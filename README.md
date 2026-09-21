@@ -89,6 +89,10 @@ Neo currently provides:
 - device bezel, touch, accessibility, and focused keyboard input;
 - Home, Save Screen, Rotate Right, and Software Keyboard controls in the
   window header;
+- MP4 recording, including finalization when a window closes or the app quits;
+- simulator app installation and image, video, and vCard import through a file
+  picker or drag and drop;
+- opening web addresses and custom app URL schemes on the selected device;
 - File, Device, I/O, Features, and Window menus modeled after Simulator.app;
 - Home, Lock, Shake, rotation, appearance, bezel, Stay on Top, Fit Screen, and
   standard window commands.
@@ -97,6 +101,17 @@ Use **File → Open Simulator…** (Command-N) to choose a device and
 **Device → Shut Down** to stop it. Closing a window leaves the simulator
 running; it can be reopened from the device browser. Neo requires no
 `Simulator.app` installation.
+
+Choose **File → Record Video…** (Command-R) and a destination to begin recording.
+Use the red stop control or Command-R to finish. Neo waits for the video to be
+finalized before replacing an existing destination file. If the final save
+fails, the error includes the temporary recording's location for recovery.
+
+Drop simulator `.app` bundles or media onto a device, or choose
+**File → Install App or Import Media…**. If only some files succeed, Neo lists
+the completed imports and individual failures. **I/O → Open URL…** opens a web
+address or a custom URL scheme in the active simulator. Device and runtime
+creation remain in Xcode.
 
 Later Xcode versions are accepted only when their private CoreSimulator,
 SimulatorKit, CoreDevice, and command-tool surfaces pass the compatibility gate.

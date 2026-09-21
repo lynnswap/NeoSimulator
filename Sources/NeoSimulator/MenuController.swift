@@ -22,6 +22,9 @@ final class MenuController: NSObject, NSMenuItemValidation {
         item("Open Simulator…", action: #selector(showBrowser(_:)), key: "n", in: file)
         file.addItem(.separator())
         command("Save Screen…", .screenshot, key: "s", in: file)
+        command("Record Video…", .recording, key: "r", in: file)
+        file.addItem(.separator())
+        command("Install App or Import Media…", .importFiles, key: "i", modifiers: [.command, .shift], in: file)
         file.addItem(.separator())
         item("Close Window", action: #selector(closeWindow(_:)), key: "w", in: file)
 
@@ -37,6 +40,7 @@ final class MenuController: NSObject, NSMenuItemValidation {
 
         let io = menu("I/O", in: main)
         command("Toggle Software Keyboard", .keyboard, key: "k", in: io)
+        command("Open URL…", .openURL, key: "u", modifiers: [.command, .shift], in: io)
         let features = menu("Features", in: main)
         command("Toggle Appearance", .appearance, key: "a", modifiers: [.command, .shift], in: features)
 
@@ -89,7 +93,11 @@ final class MenuController: NSObject, NSMenuItemValidation {
         }
         guard let session = activeSession else { item.state = .off; return false }
         switch command {
-        case .screenshot, .rotateLeft, .rotateRight, .shutdown: return session.canPerformToolOperation
+        case .screenshot, .rotateLeft, .rotateRight, .importFiles, .openURL: return session.canPerformToolOperation
+        case .shutdown: return session.canPerformToolOperation && session.toolbarState.recording == nil
+        case .recording:
+            item.title = session.toolbarState.recording == nil ? "Record Video…" : "Stop Recording"
+            return session.toolbarState.recording.map { !$0.isStopping } ?? session.canPerformToolOperation
         case .bezel: item.state = session.showsDeviceBezel ? .on : .off
         case .stayOnTop: item.state = session.staysOnTop ? .on : .off
         case .fit: return session.canPerformCommands && session.window?.inLiveResize == false
