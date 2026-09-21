@@ -113,6 +113,7 @@ final class VideoRecording {
 final class RecordingStore {
     private struct Entry {
         let recording: VideoRecording
+        let destination: URL
         let completion: Task<Void, Never>
     }
     private var entries: [UUID: Entry] = [:]
@@ -123,6 +124,10 @@ final class RecordingStore {
     func start(to destination: URL, process: (URL) -> Process,
                onFinished: @escaping @MainActor () -> Void) throws -> VideoRecording {
         guard !isFinishing else { throw HostError.operation("Recordings are finishing before NeoSimulator quits") }
+        let canonicalDestination = destination.standardizedFileURL.resolvingSymlinksInPath()
+        guard !entries.values.contains(where: { $0.destination == canonicalDestination }) else {
+            throw HostError.operation("Another recording is saving to \(destination.path). Choose a different filename.")
+        }
         let identifier = UUID()
         let temporary = destination.deletingLastPathComponent()
             .appendingPathComponent(".neo-simulator-\(identifier.uuidString).mp4")
@@ -166,7 +171,7 @@ final class RecordingStore {
             entries.removeValue(forKey: identifier)
             onFinished()
         }
-        entries[identifier] = Entry(recording: recording, completion: completion)
+        entries[identifier] = Entry(recording: recording, destination: canonicalDestination, completion: completion)
         return recording
     }
 

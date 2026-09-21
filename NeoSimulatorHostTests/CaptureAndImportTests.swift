@@ -56,6 +56,35 @@ struct CaptureAndImportTests {
         #expect(imported == ["First.app", "Photo.png"])
     }
 
+    @Test func concurrentRecordingsCannotOverwriteTheSameDestination() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let alias = directory.appendingPathComponent("alias")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: directory)
+        let destination = directory.appendingPathComponent("movie.mp4")
+        let store = RecordingStore()
+        store.onError = { _ in }
+        func process(_ url: URL) -> Process {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/sh")
+            process.arguments = ["-c", "exit 1"]
+            return process
+        }
+        _ = try store.start(to: destination, process: process, onFinished: {})
+        var secondProcessCreated = false
+        #expect(throws: (any Error).self) {
+            try store.start(to: alias.appendingPathComponent("movie.mp4"), process: { url in
+                secondProcessCreated = true
+                return process(url)
+            }, onFinished: {})
+        }
+        #expect(!secondProcessCreated)
+        await store.finishAll()
+        #expect(!store.hasActiveRecordings)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path) == ["alias"])
+    }
+
     @Test func finishingRecordingsWaitsForCleanupAndKeepsDestination() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
