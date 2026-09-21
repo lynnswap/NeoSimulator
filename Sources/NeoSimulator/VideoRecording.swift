@@ -113,7 +113,7 @@ final class VideoRecording {
 final class RecordingStore {
     private struct Entry {
         let recording: VideoRecording
-        let destination: URL
+        let destinationKey: String
         let completion: Task<Void, Never>
     }
     private var entries: [UUID: Entry] = [:]
@@ -127,7 +127,11 @@ final class RecordingStore {
         let canonicalDestination = destination.deletingLastPathComponent()
             .standardizedFileURL.resolvingSymlinksInPath()
             .appendingPathComponent(destination.lastPathComponent)
-        guard !entries.values.contains(where: { $0.destination == canonicalDestination }) else {
+        let caseSensitive = try canonicalDestination.deletingLastPathComponent()
+            .resourceValues(forKeys: [.volumeSupportsCaseSensitiveNamesKey]).volumeSupportsCaseSensitiveNames ?? true
+        let path = canonicalDestination.path.precomposedStringWithCanonicalMapping
+        let destinationKey = caseSensitive ? path : path.folding(options: .caseInsensitive, locale: Locale(identifier: "en_US_POSIX"))
+        guard !entries.values.contains(where: { $0.destinationKey == destinationKey }) else {
             throw HostError.operation("Another recording is saving to \(destination.path). Choose a different filename.")
         }
         let identifier = UUID()
@@ -173,7 +177,7 @@ final class RecordingStore {
             entries.removeValue(forKey: identifier)
             onFinished()
         }
-        entries[identifier] = Entry(recording: recording, destination: canonicalDestination, completion: completion)
+        entries[identifier] = Entry(recording: recording, destinationKey: destinationKey, completion: completion)
         return recording
     }
 

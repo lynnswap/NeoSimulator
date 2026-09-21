@@ -36,7 +36,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         super.init()
         recordings.onError = { [weak self] error in
             guard let self else { return }
-            if self.isTerminating { self.recordingTerminationErrors.append(error) }
+            if self.isTerminating || self.stopped { self.recordingTerminationErrors.append(error) }
             else { self.report(error) }
         }
     }
@@ -201,7 +201,15 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         guard !stopped, let name = observedConflict ?? Self.conflictingHostName else { return }
         hostLog("\(name) appeared; disconnecting simulators and exiting")
         shutdown()
-        NSApp.terminate(nil)
+        // A conflict can arrive on the main dispatch queue. Finish recordings
+        // before terminate() enters AppKit's termination run loop from that queue.
+        Task {
+            await recordings.finishAll()
+            guard !isTerminating else { return }
+            for error in recordingTerminationErrors { NSAlert(error: error).runModal() }
+            recordingTerminationErrors.removeAll()
+            NSApp.terminate(nil)
+        }
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -211,8 +219,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard !isTerminating else { return .terminateLater }
         guard recordings.hasActiveRecordings else { return .terminateNow }
+        guard !isTerminating else { return .terminateLater }
         isTerminating = true
         Task {
             await recordings.finishAll()

@@ -80,6 +80,16 @@ struct CaptureAndImportTests {
             }, onFinished: {})
         }
         #expect(!secondProcessCreated)
+        let caseSensitive = try directory.resourceValues(forKeys: [.volumeSupportsCaseSensitiveNamesKey])
+            .volumeSupportsCaseSensitiveNames ?? true
+        let differentlyCased = directory.appendingPathComponent("Movie.mp4")
+        if caseSensitive {
+            _ = try store.start(to: differentlyCased, process: process, onFinished: {})
+        } else {
+            #expect(throws: (any Error).self) {
+                try store.start(to: differentlyCased, process: process, onFinished: {})
+            }
+        }
         await store.finishAll()
         #expect(!store.hasActiveRecordings)
         #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path) == ["alias"])
