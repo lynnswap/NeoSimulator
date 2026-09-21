@@ -22,6 +22,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     private var menu: MenuController?
     private var stopped = false
     private var nextWindowPosition = NSPoint.zero
+    private var observedConflict: String?
 
     init(runtime: SimulatorRuntime) throws {
         if let name = Self.conflictingHostName {
@@ -41,16 +42,29 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         }.uint64Value
         workspaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didLaunchApplicationNotification, object: nil, queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.handleHostConflict() }
+        ) { [weak self] notification in
+            guard let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+                  let name = Self.conflictName(for: application.bundleIdentifier) else { return }
+            MainActor.assumeIsolated {
+                self?.observedConflict = name
+                self?.handleHostConflict()
+            }
         }
         try checkForConflict()
         rescan()
         if sessions.isEmpty { showDeviceBrowser() }
     }
 
+    nonisolated private static func conflictName(for identifier: String?) -> String? {
+        switch identifier {
+        case "com.apple.dt.Devices": "Device Hub"
+        case "com.apple.iphonesimulator": "Simulator"
+        default: nil
+        }
+    }
+
     private func checkForConflict() throws {
-        if let name = Self.conflictingHostName {
+        if let name = observedConflict ?? Self.conflictingHostName {
             throw HostError.conflict("\(name) is running; close it before opening NeoSimulator")
         }
     }
@@ -91,6 +105,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             try checkForConflict()
             let booted = try readDevices().filter { $0.state == 3 }
             let identifiers = Set(booted.map(\.identifier))
+            let hadDeviceWindows = !sessions.isEmpty
             for identifier in sessions.keys where !identifiers.contains(identifier) {
                 sessions.removeValue(forKey: identifier)?.invalidate()
             }
@@ -105,6 +120,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                 && !reportedFailures.contains(device.identifier) {
                 connect(device)
             }
+            if hadDeviceWindows && sessions.isEmpty { showDeviceBrowser() }
             browser?.refresh()
         } catch let error as HostError {
             if case .conflict = error { handleHostConflict() }
@@ -131,6 +147,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                         ) { [weak self] identifier in
                             self?.sessions.removeValue(forKey: identifier)
                             self?.suppressed.insert(identifier)
+                            if self?.sessions.isEmpty == true { self?.showDeviceBrowser() }
                         }
                         try checkForConflict()
                         sessions[identifier] = controller
@@ -164,7 +181,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     }
 
     private func handleHostConflict() {
-        guard !stopped, let name = Self.conflictingHostName else { return }
+        guard !stopped, let name = observedConflict ?? Self.conflictingHostName else { return }
         hostLog("\(name) appeared; disconnecting simulators and exiting")
         shutdown()
         NSApp.terminate(nil)

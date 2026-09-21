@@ -153,8 +153,10 @@ imports DeviceKit, loads a DeviceKit plugin, or opens a `devices:` URL.
 
 CoreSimulator transitively maps `SimPasteboardPlus.framework`; merely mapping
 that dependency is not a synchronization session. The standalone host does not
-instantiate or call any pasteboard type, and validation checks that neither
-DeviceKit nor Device Hub is loaded.
+instantiate private simulator pasteboard types or start clipboard synchronization,
+and validation checks that neither DeviceKit nor Device Hub is loaded. The
+browser's explicit Copy Device Identifier action writes only to the Mac's
+`NSPasteboard`; it neither reads nor changes the simulator clipboard.
 
 ### Lifecycle
 

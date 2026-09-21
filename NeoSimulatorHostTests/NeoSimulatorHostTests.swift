@@ -25,6 +25,18 @@ struct InputFocusTests {
         #expect(display.disconnectCount == 1)
     }
 
+    @Test func shutdownStatePreventsFurtherDeviceCommands() throws {
+        let display = TestDisplay()
+        let controller = try makeController(display)
+        display.isBooted = false
+        controller.perform(.home)
+        controller.perform(.lock)
+        #expect(!controller.canPerformCommands)
+        #expect(!controller.canPerformToolOperation)
+        #expect(display.buttons.isEmpty)
+        controller.invalidate()
+    }
+
     @Test func refusedFocusDoesNotSendModifierEvents() throws {
         let display = TestDisplay()
         let controller = try makeController(display)
@@ -86,6 +98,7 @@ private final class TestDisplay: SimulatorDisplay {
     let input = InputView()
     var inputView: NSView { input }
     var naturalSize: NSSize { NSSize(width: 390, height: 844) }
+    var isBooted = true
     var buttons: [DeviceButton] = []
     var disconnectCount = 0
     init() { view.addSubview(input) }

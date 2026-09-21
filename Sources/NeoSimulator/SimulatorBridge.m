@@ -28,10 +28,11 @@ static void XSHRecordException(NSException *exception, NSError **error) {
         _name = device.name ?: @"iOS Simulator";
         _runtimeName = device.runtime.name ?: @"iOS";
         _platformIdentifier = device.runtime.platformIdentifier ?: @"";
-        _state = device.state;
     }
     return self;
 }
+
+- (NSUInteger)state { return self.device.state; }
 
 - (BOOL)toggleAppearanceWithError:(NSError **)error {
     @try {
