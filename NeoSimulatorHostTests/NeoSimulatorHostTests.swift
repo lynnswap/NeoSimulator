@@ -124,10 +124,13 @@ struct HostBehaviorTests {
     @Test func launchConflictIsRetainedBeforeTheMainActorCanHandleIt() {
         let center = NotificationCenter()
         let monitor = HostConflictMonitor(notificationCenter: center)
+        // AppKit fixture initialization is outside the blocked-main-actor
+        // interval; only notification delivery is being tested.
+        let application = FixtureRunningApplication()
         let posted = DispatchSemaphore(value: 0)
         DispatchQueue.global().async {
             center.post(name: NSWorkspace.didLaunchApplicationNotification, object: nil,
-                userInfo: [NSWorkspace.applicationUserInfoKey: FixtureRunningApplication()])
+                userInfo: [NSWorkspace.applicationUserInfoKey: application])
             posted.signal()
         }
         // Startup occupies the main actor until readiness is checked.
