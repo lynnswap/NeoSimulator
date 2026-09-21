@@ -1,0 +1,276 @@
+import AppKit
+import SwiftUI
+import UniformTypeIdentifiers
+
+@MainActor
+final class DeviceWindowController: NSWindowController, NSWindowDelegate {
+    let device: AvailableDevice
+    let display: any SimulatorDisplay
+    let tools: DeviceTools
+    let toolbarState = DeviceToolbarState()
+    private(set) var showsDeviceBezel = true
+    private var operation: Task<Void, Never>?
+    private var savePanel: NSSavePanel?
+    private var closed = false
+    private var didReadOrientation = false
+    private let onClose: (String) -> Void
+    private let content: DeviceContentView
+    var canPerformCommands: Bool { !closed }
+    var canPerformToolOperation: Bool { !closed && !toolbarState.isBusy }
+    var staysOnTop: Bool { window?.level == .floating }
+
+    init(device: AvailableDevice, display: any SimulatorDisplay, tools: DeviceTools,
+         onClose: @escaping (String) -> Void) throws {
+        self.device = device
+        self.display = display
+        self.tools = tools
+        self.onClose = onClose
+        content = DeviceContentView(display: display.view)
+        let natural = display.naturalSize
+        guard natural.width > 0, natural.height > 0 else {
+            display.disconnect()
+            throw HostError.unavailable("Simulator display has no usable size")
+        }
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 360, height: 700),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+            backing: .buffered, defer: false)
+        super.init(window: window)
+        window.title = "\(device.name) – \(device.runtimeName)"
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.titlebarSeparatorStyle = .none
+        window.tabbingMode = .disallowed
+        window.backgroundColor = .clear
+        window.isOpaque = false
+        window.hasShadow = true
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+        let toolbar = NSHostingView(rootView: DeviceToolbar(title: window.title, state: toolbarState) { [weak self] in
+            self?.perform($0)
+        })
+        toolbar.sizingOptions = []
+        content.header = toolbar
+        window.contentView = content
+        window.contentMinSize = NSSize(width: 320, height: 300)
+        fitScreen()
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    func showAndActivate() {
+        showWindow(nil)
+        window?.makeKeyAndOrderFront(nil)
+        if !didReadOrientation {
+            didReadOrientation = true
+            runTool(presentError: false) { [self] in
+                let angle = try await tools.orientation()
+                try Task.checkCancellation()
+                applyRotation(angle)
+            }
+        }
+    }
+
+    func perform(_ command: DeviceCommand) {
+        guard canPerformCommands else { return }
+        do {
+            switch command {
+            case .home: try display.press(.home)
+            case .lock: try display.press(.lock)
+            case .keyboard: try display.press(.softwareKeyboard)
+            case .shake: try display.shake()
+            case .appearance: try display.toggleAppearance()
+            case .bezel:
+                showsDeviceBezel.toggle()
+                display.setChromeVisible(showsDeviceBezel)
+                resizeDisplay()
+            case .stayOnTop: window?.level = staysOnTop ? .normal : .floating
+            case .fit: fitScreen()
+            case .screenshot: saveScreenshot()
+            case .rotateLeft, .rotateRight:
+                runTool { [self] in
+                    let angle = try await tools.rotate(left: command == .rotateLeft)
+                    try Task.checkCancellation()
+                    applyRotation(angle)
+                }
+            case .shutdown: runTool { [self] in try await tools.shutdown() }
+            }
+        } catch { present(error) }
+        focusInput()
+    }
+
+    private func runTool(presentError: Bool = true, _ action: @escaping @MainActor () async throws -> Void) {
+        guard canPerformToolOperation else { return }
+        toolbarState.isBusy = true
+        operation = Task { [weak self] in
+            defer { self?.toolbarState.isBusy = false; self?.operation = nil }
+            do { try await action() }
+            catch is CancellationError {}
+            catch {
+                if presentError { self?.present(error) }
+                else { hostLog(error.localizedDescription) }
+            }
+        }
+    }
+
+    private func saveScreenshot() {
+        guard canPerformToolOperation, let window else { return }
+        toolbarState.isBusy = true
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.png]
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = "Simulator Screenshot.png"
+        savePanel = panel
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard let self else { return }
+            self.savePanel = nil
+            self.toolbarState.isBusy = false
+            guard response == .OK, let destination = panel.url, !self.closed else { return }
+            self.runTool { [self] in
+                try await CaptureFile.write(to: destination, extension: "png") { temporary in
+                    try await tools.screenshot(to: temporary)
+                    let handle = try FileHandle(forReadingFrom: temporary)
+                    defer { try? handle.close() }
+                    guard try handle.read(upToCount: 8) == Data([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) else {
+                        throw HostError.operation("The screenshot tool did not produce a PNG file")
+                    }
+                }
+            }
+        }
+    }
+
+    private func applyRotation(_ angle: Double) {
+        display.setRotation(degrees: angle)
+        fitScreen()
+        resizeDisplay()
+    }
+
+    func fitScreen() {
+        guard let window, !window.inLiveResize, !window.styleMask.contains(.fullScreen) else { return }
+        let natural = display.naturalSize
+        guard natural.width > 0, natural.height > 0 else { return }
+        let visible = (window.screen ?? NSScreen.main)?.visibleFrame.size ?? NSSize(width: 1440, height: 900)
+        let scale = min(1, (visible.width * 0.8 - 16) / natural.width,
+                        (visible.height * 0.8 - DeviceContentView.headerHeight - 22) / natural.height)
+        window.setContentSize(NSSize(width: max(320, natural.width * scale + 16),
+            height: natural.height * scale + DeviceContentView.headerHeight + 22))
+        resizeDisplay()
+    }
+
+    private func resizeDisplay() {
+        guard !closed else { return }
+        display.resize(to: content.availableDisplaySize)
+        content.needsLayout = true
+        content.layoutSubtreeIfNeeded()
+        window?.invalidateShadow()
+    }
+
+    func focusInput() {
+        guard !closed, let window else { return }
+        window.makeFirstResponder(display.inputView)
+        guard window.firstResponder === display.inputView else {
+            hostLog("Could not focus simulator input for \(device.id)")
+            return
+        }
+        // Reconcile modifier releases received while another window owned focus.
+        if let event = NSEvent.keyEvent(with: .flagsChanged, location: window.mouseLocationOutsideOfEventStream,
+            modifierFlags: NSEvent.modifierFlags, timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber, context: nil, characters: "",
+            charactersIgnoringModifiers: "", isARepeat: false, keyCode: 0) {
+            display.inputView.flagsChanged(with: event)
+        }
+    }
+
+    func present(_ error: Error) {
+        guard !closed, let window else { return }
+        let alert = NSAlert(error: error)
+        alert.beginSheetModal(for: window)
+    }
+
+    func windowDidBecomeKey(_ notification: Notification) { focusInput() }
+    func windowWillStartLiveResize(_ notification: Notification) { if !closed { display.beginResize() } }
+    func windowDidResize(_ notification: Notification) { resizeDisplay() }
+    func windowDidEndLiveResize(_ notification: Notification) {
+        if !closed { resizeDisplay(); display.endResize() }
+    }
+    func windowWillClose(_ notification: Notification) {
+        guard !closed else { return }
+        disconnect()
+        onClose(device.id)
+    }
+    func invalidate() {
+        disconnect()
+        window?.delegate = nil
+        window?.close()
+    }
+    private func disconnect() {
+        guard !closed else { return }
+        closed = true
+        toolbarState.isConnected = false
+        operation?.cancel()
+        tools.cancel()
+        if let savePanel, let parent = savePanel.sheetParent {
+            parent.endSheet(savePanel, returnCode: .cancel)
+        }
+        savePanel = nil
+        display.disconnect()
+    }
+    isolated deinit { disconnect() }
+}
+
+@MainActor
+private final class DeviceContentView: NSView {
+    static let headerHeight: CGFloat = 74
+    let display: NSView
+    var header: NSView? {
+        didSet { oldValue?.removeFromSuperview(); if let header { addSubview(header) } }
+    }
+    init(display: NSView) {
+        self.display = display
+        super.init(frame: .zero)
+        wantsLayer = true
+        addSubview(display)
+    }
+    required init?(coder: NSCoder) { nil }
+
+    var availableDisplaySize: NSSize {
+        NSSize(width: max(1, bounds.width - 16), height: max(1, bounds.height - Self.headerHeight - 22))
+    }
+
+    override func layout() {
+        super.layout()
+        header?.frame = NSRect(x: 0, y: max(0, bounds.height - Self.headerHeight),
+                               width: bounds.width, height: Self.headerHeight)
+        let intrinsic = display.intrinsicContentSize
+        let size = intrinsic.width > 0 && intrinsic.height > 0 ? intrinsic : display.frame.size
+        let available = NSRect(origin: NSPoint(x: 8, y: 8), size: availableDisplaySize)
+        display.frame = NSRect(x: available.midX - size.width / 2, y: available.midY - size.height / 2,
+                               width: size.width, height: size.height)
+    }
+}
+
+enum CaptureFile {
+    @MainActor
+    static func write(to destination: URL, extension suffix: String,
+                      produce: (URL) async throws -> Void) async throws {
+        let temporary = destination.deletingLastPathComponent()
+            .appendingPathComponent(".neo-simulator-\(UUID().uuidString).\(suffix)")
+        let descriptor = open(temporary.path, O_WRONLY | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR)
+        guard descriptor >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        close(descriptor)
+        do {
+            try await produce(temporary)
+            try Task.checkCancellation()
+            guard rename(temporary.path, destination.path) == 0 else {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+        } catch {
+            if FileManager.default.fileExists(atPath: temporary.path) {
+                do { try FileManager.default.removeItem(at: temporary) }
+                catch let cleanup {
+                    throw HostError.operation("\(error.localizedDescription) Temporary file remains at \(temporary.path): \(cleanup.localizedDescription)")
+                }
+            }
+            throw error
+        }
+    }
+}

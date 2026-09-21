@@ -84,6 +84,7 @@ xcode-simulator-host use neo
 
 Neo currently provides:
 
+- a searchable device browser to start simulators or reopen their windows;
 - one resizable window for each booted iOS simulator;
 - device bezel, touch, accessibility, and focused keyboard input;
 - Home, Save Screen, Rotate Right, and Software Keyboard controls in the
@@ -91,6 +92,11 @@ Neo currently provides:
 - File, Device, I/O, Features, and Window menus modeled after Simulator.app;
 - Home, Lock, Shake, rotation, appearance, bezel, Stay on Top, Fit Screen, and
   standard window commands.
+
+Use **File → Open Simulator…** (Command-N) to choose a device and
+**Device → Shut Down** to stop it. Closing a window leaves the simulator
+running; it can be reopened from the device browser. Neo requires no
+`Simulator.app` installation.
 
 Later Xcode versions are accepted only when their private CoreSimulator,
 SimulatorKit, CoreDevice, and command-tool surfaces pass the compatibility gate.
@@ -229,6 +235,12 @@ CLI, tests, build-info tool, and plugin. Select `NeoSimulator` to build the app,
 package tests. The app project uses Xcode's JSON `project.xcproj` format and
 requires Xcode 27 or later to open.
 
+The host application is written in Swift. Its Objective-C bridge and ARM64
+assembly are limited to dynamically loaded private interfaces and SimulatorKit
+dispatch thunks. Open `DeviceBrowser.swift` or `DeviceToolbar.swift` with the
+`NeoSimulator` scheme to use the `#Preview` canvas. These previews use the same
+UI as the app, with sample devices and no CoreSimulator connection.
+
 Build and switch to the recommended Legacy host in one command:
 
 ```bash
@@ -244,7 +256,8 @@ Run the isolated test suite with:
 swift test
 ```
 
-Check the native input focus contract and the selected Xcode's digitizer getter
+Run the Swift host tests, including native input focus, the selected Xcode's
+digitizer getter, device browsing, command cancellation, and capture failures,
 without booting or connecting to a simulator:
 
 ```bash
