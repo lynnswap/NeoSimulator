@@ -70,18 +70,20 @@ enum NeoSimulatorApp {
         do {
             let options = try HostLaunchOptions(arguments: arguments)
             try options.validateInstallation()
-            if !options.validatesRuntime, let name = HostApplication.conflictingHostName {
-                throw HostError.conflict("\(name) is running; close it before opening NeoSimulator")
+            if options.validatesRuntime {
+                _ = try SimulatorRuntime(xcodeURL: options.xcodeURL)
+                return
             }
+            let conflicts = HostConflictMonitor()
+            try conflicts.check()
             let runtime = try SimulatorRuntime(xcodeURL: options.xcodeURL)
-            if options.validatesRuntime { return }
             let app = NSApplication.shared
             app.setActivationPolicy(.regular)
-            let controller = try HostApplication(runtime: runtime)
+            let controller = try HostApplication(runtime: runtime, conflicts: conflicts)
             app.delegate = controller
             app.finishLaunching()
             try controller.start()
-            do { try controller.checkForConflict() }
+            do { try conflicts.check() }
             catch {
                 controller.shutdown()
                 throw error

@@ -121,6 +121,21 @@ private final class TestDisplay: SimulatorDisplay {
 
 @Suite @MainActor
 struct HostBehaviorTests {
+    @Test func launchConflictIsRetainedBeforeTheMainActorCanHandleIt() {
+        let center = NotificationCenter()
+        let monitor = HostConflictMonitor(notificationCenter: center)
+        let posted = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            center.post(name: NSWorkspace.didLaunchApplicationNotification, object: nil,
+                userInfo: [NSWorkspace.applicationUserInfoKey: FixtureRunningApplication()])
+            posted.signal()
+        }
+        // Startup occupies the main actor until readiness is checked.
+        #expect(posted.wait(timeout: .now() + 3) == .success)
+        #expect(monitor.conflictingHostName == "Device Hub")
+        #expect(throws: HostError.self) { try monitor.check() }
+    }
+
     @Test func browserReflectsCatalogChangesAndReportsBootErrors() async throws {
         let source = TestCatalog()
         let model = DeviceBrowserModel(source: source)
@@ -215,4 +230,9 @@ struct DeviceToolTests {
         await #expect(throws: CancellationError.self) { try await task.value }
         #expect(runner.process == nil)
     }
+}
+
+// The fixture adds no mutable state to NSRunningApplication's Sendable contract.
+private final class FixtureRunningApplication: NSRunningApplication, @unchecked Sendable {
+    override var bundleIdentifier: String? { "com.apple.dt.Devices" }
 }

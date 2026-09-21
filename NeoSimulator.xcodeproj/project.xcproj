@@ -87,6 +87,12 @@
             "NeoSimulator/compile-sources",
             "NeoSimulatorHostTests/compile-sources",
           ],
+        }, {
+          "path": "HostConflictMonitor.swift",
+          "target-membership": [
+            "NeoSimulator/compile-sources",
+            "NeoSimulatorHostTests/compile-sources",
+          ],
         },
       ],
     },

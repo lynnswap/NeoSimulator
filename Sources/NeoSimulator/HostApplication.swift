@@ -1,19 +1,11 @@
 import AppKit
-import os
 
 @MainActor
 final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSource {
-    static var conflictingHostName: String? {
-        for (identifier, name) in [("com.apple.dt.Devices", "Device Hub"), ("com.apple.iphonesimulator", "Simulator")] {
-            if !NSRunningApplication.runningApplications(withBundleIdentifier: identifier).isEmpty { return name }
-        }
-        return nil
-    }
-
     private let runtime: SimulatorRuntime
+    private let conflicts: HostConflictMonitor
     private let deviceSet: XSHDeviceSetHandle
     private var notificationToken: UInt64?
-    private var workspaceObserver: (any NSObjectProtocol)?
     private var sessions: [String: DeviceWindowController] = [:]
     private var connections: [String: Task<Void, Never>] = [:]
     private var bootOperations: [String: DeviceTools] = [:]
@@ -23,52 +15,26 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     private var menu: MenuController?
     private var stopped = false
     private var nextWindowPosition = NSPoint.zero
-    private let observedConflict = OSAllocatedUnfairLock<String?>(initialState: nil)
 
-    init(runtime: SimulatorRuntime) throws {
-        if let name = Self.conflictingHostName {
-            throw HostError.conflict("\(name) is running; close it before opening NeoSimulator")
-        }
+    init(runtime: SimulatorRuntime, conflicts: HostConflictMonitor) throws {
+        try conflicts.check()
         self.runtime = runtime
+        self.conflicts = conflicts
         deviceSet = try runtime.openDeviceSet()
         super.init()
+        conflicts.onConflict = { [weak self] in self?.handleHostConflict() }
     }
 
     func start() throws {
-        try checkForConflict()
+        try conflicts.check()
         menu = MenuController(application: self)
         menu?.install()
         notificationToken = try deviceSet.observe { [weak self] in
             MainActor.assumeIsolated { self?.rescan() }
         }.uint64Value
-        let observedConflict = observedConflict
-        workspaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.didLaunchApplicationNotification, object: nil, queue: nil
-        ) { [weak self, observedConflict] notification in
-            guard let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
-                  let name = Self.conflictName(for: application.bundleIdentifier) else { return }
-            // Record synchronously, including while the main actor is still
-            // preparing startup. UI teardown is deferred to the main actor.
-            observedConflict.withLock { $0 = name }
-            Task { @MainActor [weak self] in self?.handleHostConflict() }
-        }
-        try checkForConflict()
+        try conflicts.check()
         try scanDevices()
         if sessions.isEmpty { showDeviceBrowser() }
-    }
-
-    nonisolated private static func conflictName(for identifier: String?) -> String? {
-        switch identifier {
-        case "com.apple.dt.Devices": "Device Hub"
-        case "com.apple.iphonesimulator": "Simulator"
-        default: nil
-        }
-    }
-
-    func checkForConflict() throws {
-        if let name = observedConflict.withLock({ $0 }) ?? Self.conflictingHostName {
-            throw HostError.conflict("\(name) is running; close it before opening NeoSimulator")
-        }
     }
 
     func availableSimulatorDevices() throws -> [AvailableDevice] {
@@ -85,7 +51,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
 
     func openSimulator(withIdentifier identifier: String) async throws {
         guard !stopped else { throw HostError.operation("NeoSimulator is shutting down") }
-        try checkForConflict()
+        try conflicts.check()
         guard let device = try readDevices().first(where: { $0.identifier == identifier }) else {
             throw HostError.operation("The selected simulator is no longer available")
         }
@@ -111,7 +77,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
 
     private func scanDevices() throws {
         guard !stopped else { return }
-        try checkForConflict()
+        try conflicts.check()
         let booted = try readDevices().filter { $0.state == 3 }
         let identifiers = Set(booted.map(\.identifier))
         let hadDeviceWindows = !sessions.isEmpty
@@ -148,7 +114,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                 for _ in 0..<40 {
                     try Task.checkCancellation()
                     guard !stopped, !suppressed.contains(identifier) else { return }
-                    try checkForConflict()
+                    try conflicts.check()
                     if let screen = XSHFindDefaultScreen(runtime.screenClass, device) {
                         let connection = try SimulatorConnection(device: device, screenID: screen.uint32Value, runtime: runtime)
                         let controller = try DeviceWindowController(
@@ -159,7 +125,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                             self?.suppressed.insert(identifier)
                             if self?.sessions.isEmpty == true { self?.showDeviceBrowser() }
                         }
-                        try checkForConflict()
+                        try conflicts.check()
                         sessions[identifier] = controller
                         if let window = controller.window {
                             nextWindowPosition = window.cascadeTopLeft(from: nextWindowPosition)
@@ -191,7 +157,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     }
 
     private func handleHostConflict() {
-        guard !stopped, let name = observedConflict.withLock({ $0 }) ?? Self.conflictingHostName else { return }
+        guard !stopped, let name = conflicts.conflictingHostName else { return }
         hostLog("\(name) appeared; disconnecting simulators and exiting")
         shutdown()
         NSApp.terminate(nil)
@@ -208,8 +174,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     func shutdown() {
         guard !stopped else { return }
         stopped = true
-        if let workspaceObserver { NSWorkspace.shared.notificationCenter.removeObserver(workspaceObserver) }
-        workspaceObserver = nil
+        conflicts.onConflict = nil
         if let notificationToken {
             do { try deviceSet.stopObserving(notificationToken) }
             catch { hostLog("Could not unregister simulator notifications: \(error.localizedDescription)") }
