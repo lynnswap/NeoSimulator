@@ -90,7 +90,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         suppressed.remove(identifier)
         reportedFailures.remove(identifier)
         if device.state != 3 {
-            let tools = DeviceTools(identifier: identifier, xcodeURL: runtime.xcodeURL)
+            let tools = try DeviceTools(identifier: identifier, xcodeURL: runtime.xcodeURL)
             bootOperations[identifier] = tools
             defer { bootOperations.removeValue(forKey: identifier) }
             try await tools.boot()
@@ -143,7 +143,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                         let connection = try SimulatorConnection(device: device, screenID: screen.uint32Value, runtime: runtime)
                         let controller = try DeviceWindowController(
                             device: Self.describe(device), display: connection,
-                            tools: DeviceTools(identifier: identifier, xcodeURL: runtime.xcodeURL)
+                            tools: try DeviceTools(identifier: identifier, xcodeURL: runtime.xcodeURL)
                         ) { [weak self] identifier in
                             self?.sessions.removeValue(forKey: identifier)
                             self?.suppressed.insert(identifier)

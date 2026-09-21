@@ -25,6 +25,12 @@ struct InputFocusTests {
         #expect(display.disconnectCount == 1)
     }
 
+    @Test func deviceToolPathsAreValidatedBeforeOperations() throws {
+        #expect(FileManager.default.isExecutableFile(atPath: DeviceTools.simctl.path))
+        #expect(FileManager.default.isExecutableFile(atPath: DeviceTools.devicectl.path))
+        _ = try DeviceTools(identifier: "test-device", xcodeURL: URL(fileURLWithPath: "/Applications/Xcode.app"))
+    }
+
     @Test func shutdownStatePreventsFurtherDeviceCommands() throws {
         let display = TestDisplay()
         let controller = try makeController(display)
@@ -77,7 +83,7 @@ struct InputFocusTests {
         try DeviceWindowController(
             device: AvailableDevice(identifier: "test-device", name: "Test iPhone", runtimeName: "iOS", state: 3),
             display: display,
-            tools: DeviceTools(identifier: "test-device", xcodeURL: URL(fileURLWithPath: "/Applications/Xcode.app")),
+            tools: try DeviceTools(identifier: "test-device", xcodeURL: URL(fileURLWithPath: "/Applications/Xcode.app")),
             onClose: { _ in })
     }
 }
