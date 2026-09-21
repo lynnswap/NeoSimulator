@@ -25,6 +25,24 @@ struct InputFocusTests {
         #expect(display.disconnectCount == 1)
     }
 
+    @Test func deviceToolPathsAreValidatedBeforeOperations() throws {
+        #expect(FileManager.default.isExecutableFile(atPath: DeviceTools.simctl.path))
+        #expect(FileManager.default.isExecutableFile(atPath: DeviceTools.devicectl.path))
+        _ = try DeviceTools(identifier: "test-device", xcodeURL: URL(fileURLWithPath: "/Applications/Xcode.app"))
+    }
+
+    @Test func shutdownStatePreventsFurtherDeviceCommands() throws {
+        let display = TestDisplay()
+        let controller = try makeController(display)
+        display.isBooted = false
+        controller.perform(.home)
+        controller.perform(.lock)
+        #expect(!controller.canPerformCommands)
+        #expect(!controller.canPerformToolOperation)
+        #expect(display.buttons.isEmpty)
+        controller.invalidate()
+    }
+
     @Test func refusedFocusDoesNotSendModifierEvents() throws {
         let display = TestDisplay()
         let controller = try makeController(display)
@@ -65,7 +83,7 @@ struct InputFocusTests {
         try DeviceWindowController(
             device: AvailableDevice(identifier: "test-device", name: "Test iPhone", runtimeName: "iOS", state: 3),
             display: display,
-            tools: DeviceTools(identifier: "test-device", xcodeURL: URL(fileURLWithPath: "/Applications/Xcode.app")),
+            tools: try DeviceTools(identifier: "test-device", xcodeURL: URL(fileURLWithPath: "/Applications/Xcode.app")),
             onClose: { _ in })
     }
 }
@@ -86,6 +104,7 @@ private final class TestDisplay: SimulatorDisplay {
     let input = InputView()
     var inputView: NSView { input }
     var naturalSize: NSSize { NSSize(width: 390, height: 844) }
+    var isBooted = true
     var buttons: [DeviceButton] = []
     var disconnectCount = 0
     init() { view.addSubview(input) }

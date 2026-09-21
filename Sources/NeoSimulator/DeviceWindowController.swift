@@ -15,8 +15,8 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     private var didReadOrientation = false
     private let onClose: (String) -> Void
     private let content: DeviceContentView
-    var canPerformCommands: Bool { !closed }
-    var canPerformToolOperation: Bool { !closed && !toolbarState.isBusy }
+    var canPerformCommands: Bool { !closed && toolbarState.isConnected && display.isBooted }
+    var canPerformToolOperation: Bool { canPerformCommands && !toolbarState.isBusy }
     var staysOnTop: Bool { window?.level == .floating }
 
     init(device: AvailableDevice, display: any SimulatorDisplay, tools: DeviceTools,
@@ -96,8 +96,9 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
                     applyRotation(angle)
                 }
             case .shutdown:
-                guard toolbarState.recording == nil else { return }
+                guard canPerformToolOperation, toolbarState.recording == nil else { return }
                 runTool { [self] in try await tools.shutdown() }
+                toolbarState.isConnected = false
             case .recording: toggleRecording()
             case .importFiles: chooseFiles()
             case .openURL: openURL()
@@ -110,7 +111,13 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         guard canPerformToolOperation else { return }
         toolbarState.isBusy = true
         operation = Task { [weak self] in
-            defer { self?.toolbarState.isBusy = false; self?.operation = nil }
+            defer {
+                if let self {
+                    self.toolbarState.isBusy = false
+                    self.toolbarState.isConnected = !self.closed && self.display.isBooted
+                    self.operation = nil
+                }
+            }
             do { try await action() }
             catch is CancellationError {}
             catch {
@@ -244,7 +251,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func focusInput() {
-        guard !closed, let window else { return }
+        guard canPerformCommands, let window else { return }
         window.makeFirstResponder(display.inputView)
         guard window.firstResponder === display.inputView else {
             hostLog("Could not focus simulator input for \(device.id)")

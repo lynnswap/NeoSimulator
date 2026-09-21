@@ -93,9 +93,15 @@ final class DeviceTools {
     let environment: [String: String]
     private let runner = DeviceToolRunner()
 
-    init(identifier: String, xcodeURL: URL) {
+    init(identifier: String, xcodeURL: URL) throws {
+        let developerDirectory = xcodeURL.appendingPathComponent("Contents/Developer").path
+        for tool in [Self.simctl, Self.devicectl] {
+            guard FileManager.default.isExecutableFile(atPath: tool.path) else {
+                throw HostError.unavailable("Required device tool is unavailable: \(tool.path)")
+            }
+        }
         self.identifier = identifier
-        environment = ["DEVELOPER_DIR": xcodeURL.appendingPathComponent("Contents/Developer").path]
+        environment = ["DEVELOPER_DIR": developerDirectory]
     }
 
     func boot() async throws { _ = try await simctl(["boot", identifier]) }

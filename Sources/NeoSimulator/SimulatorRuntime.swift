@@ -118,6 +118,7 @@ enum DeviceButton: UInt32 {
 
 @MainActor
 protocol SimulatorDisplay: AnyObject {
+    var isBooted: Bool { get }
     var view: NSView { get }
     var inputView: NSView { get }
     var naturalSize: NSSize { get }
@@ -165,6 +166,8 @@ final class SimulatorConnection: SimulatorDisplay {
         }
         setChromeVisible(true)
     }
+
+    var isBooted: Bool { !disconnected && device.state == 3 }
 
     var naturalSize: NSSize {
         let scale = XSHSwiftCallCGFloatGetter(runtime.renderScale, view)
