@@ -15,24 +15,89 @@
       "kind": "group",
       "path": "Sources/NeoSimulator",
       "children": [
-        { "path": "DeviceToolRunner.h" },
-        { "path": "DeviceToolRunner.m", "target-membership": [ "NeoSimulator/compile-sources" ] },
-        { "path": "DeviceWindowController.h" },
-        { "path": "DeviceWindowController.m", "target-membership": [ "NeoSimulator/compile-sources" ] },
-        { "path": "HostLogging.h" },
-        { "path": "HostLogging.m", "target-membership": [ "NeoSimulator/compile-sources" ] },
-        { "path": "NeoHostApplication.h" },
-        { "path": "NeoHostApplication.m", "target-membership": [ "NeoSimulator/compile-sources" ] },
-        { "path": "main.m", "target-membership": [ "NeoSimulator/compile-sources" ] },
-        { "path": "MenuController.h" },
-        { "path": "MenuController.m", "target-membership": [ "NeoSimulator/compile-sources" ] },
         { "path": "PrivateInterfaces.h" },
-        { "path": "PrivateRuntime.h" },
-        { "path": "PrivateRuntime.m", "target-membership": [ "NeoSimulator/compile-sources" ] },
         { "path": "SwiftABI.h" },
-        { "path": "SwiftABI.S", "target-membership": [ "NeoSimulator/compile-sources" ] },
+        {
+          "path": "SwiftABI.S",
+          "target-membership": [
+            "NeoSimulator/compile-sources",
+            "NeoSimulatorHostTests/compile-sources",
+          ],
+        },
+        { "path": "NeoSimulator-Bridging-Header.h" },
+        {
+          "path": "DeviceBrowser.swift",
+          "target-membership": [
+            "NeoSimulator/compile-sources",
+            "NeoSimulatorHostTests/compile-sources",
+          ],
+        },
+        { "path": "SimulatorBridge.h" },
+        {
+          "path": "SimulatorBridge.m",
+          "target-membership": [
+            "NeoSimulator/compile-sources",
+            "NeoSimulatorHostTests/compile-sources",
+          ],
+        }, {
+          "path": "HostError.swift",
+          "target-membership": [
+            "NeoSimulator/compile-sources",
+            "NeoSimulatorHostTests/compile-sources",
+          ],
+        }, {
+          "path": "SimulatorRuntime.swift",
+          "target-membership": [
+            "NeoSimulator/compile-sources",
+            "NeoSimulatorHostTests/compile-sources",
+          ],
+        }, {
+          "path": "DeviceToolRunner.swift",
+          "target-membership": [
+            "NeoSimulator/compile-sources",
+            "NeoSimulatorHostTests/compile-sources",
+          ],
+        }, {
+          "path": "DeviceToolbar.swift",
+          "target-membership": [
+            "NeoSimulator/compile-sources",
+            "NeoSimulatorHostTests/compile-sources",
+          ],
+        }, {
+          "path": "DeviceWindowController.swift",
+          "target-membership": [
+            "NeoSimulator/compile-sources",
+            "NeoSimulatorHostTests/compile-sources",
+          ],
+        }, {
+          "path": "HostApplication.swift",
+          "target-membership": [
+            "NeoSimulator/compile-sources",
+            "NeoSimulatorHostTests/compile-sources",
+          ],
+        }, {
+          "path": "MenuController.swift",
+          "target-membership": [
+            "NeoSimulator/compile-sources",
+            "NeoSimulatorHostTests/compile-sources",
+          ],
+        }, {
+          "path": "NeoSimulatorApp.swift",
+          "target-membership": [
+            "NeoSimulator/compile-sources",
+            "NeoSimulatorHostTests/compile-sources",
+          ],
+        }, {
+          "path": "HostConflictMonitor.swift",
+          "target-membership": [
+            "NeoSimulator/compile-sources",
+            "NeoSimulatorHostTests/compile-sources",
+          ],
+        },
       ],
-    }, {
+    },
+    { "kind": "folder", "path": "NeoSimulatorHostTests", "target-membership": [ "NeoSimulatorHostTests" ] },
+    {
       "kind": "group",
       "name": "Frameworks",
       "children": [
@@ -44,6 +109,7 @@
       "name": "Products",
       "children": [
         { "path": "<PRODUCTS>/NeoSimulator.app", "id": "52678CF6A775A386BE4B4373", "type": "wrapper.application", "index": false },
+        { "path": "<PRODUCTS>/NeoSimulatorHostTests.xctest", "id": "AB6705CF3060FBFC007E9CFA", "type": "wrapper.cfbundle", "index": false },
       ],
     },
   ],
@@ -75,6 +141,50 @@
         "PRODUCT_BUNDLE_IDENTIFIER": "dev.lynnswap.NeoSimulator",
         "PRODUCT_NAME": "NeoSimulator",
         "SDKROOT": "macosx",
+        "SWIFT_OBJC_BRIDGING_HEADER": "Sources/NeoSimulator/NeoSimulator-Bridging-Header.h",
+        "SWIFT_VERSION": "6.0",
+      },
+    }, {
+      "name": "NeoSimulatorHostTests",
+      "id": "AB6705CE3060FBFC007E9CFA",
+      "product": "Products/NeoSimulatorHostTests.xctest",
+      "product-type": "bundle.unit-test",
+      "build-phases": [
+        "compile-sources",
+        "frameworks",
+        "resources",
+      ],
+      "build-settings": {
+        "ARCHS": "arm64",
+        "ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS": "YES",
+        "CLANG_CXX_LANGUAGE_STANDARD": "gnu++20",
+        "CODE_SIGN_IDENTITY": "-",
+        "CODE_SIGN_STYLE": "Manual",
+        "CURRENT_PROJECT_VERSION": "1",
+        "ENABLE_USER_SCRIPT_SANDBOXING": "YES",
+        "GCC_C_LANGUAGE_STANDARD": "gnu17",
+        "GCC_PREPROCESSOR_DEFINITIONS[config=Debug]": [
+          "DEBUG=1",
+          "$(inherited)",
+        ],
+        "GENERATE_INFOPLIST_FILE": "YES",
+        "IPHONEOS_DEPLOYMENT_TARGET": "27.0",
+        "LOCALIZATION_PREFERS_STRING_CATALOGS": "YES",
+        "MACOSX_DEPLOYMENT_TARGET": "26.4",
+        "MARKETING_VERSION": "1.0",
+        "PRODUCT_BUNDLE_IDENTIFIER": "dev.lynnswap.NeoSimulatorHostTests",
+        "PRODUCT_NAME": "$(TARGET_NAME)",
+        "SDKROOT": "macosx",
+        "STRING_CATALOG_GENERATE_SYMBOLS": "NO",
+        "SUPPORTED_PLATFORMS": "macosx",
+        "SWIFT_ACTIVE_COMPILATION_CONDITIONS": "DEBUG NEOSIMULATOR_TESTS",
+        "SWIFT_APPROACHABLE_CONCURRENCY": "YES",
+        "SWIFT_EMIT_LOC_STRINGS": "NO",
+        "SWIFT_OBJC_BRIDGING_HEADER": "Sources/NeoSimulator/NeoSimulator-Bridging-Header.h",
+        "SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY": "YES",
+        "SWIFT_VERSION": "6.0",
+        "TARGETED_DEVICE_FAMILY": "1,2,7",
+        "XROS_DEPLOYMENT_TARGET": "27.0",
       },
     },
   ],
@@ -144,4 +254,5 @@
     "SWIFT_VERSION": "5.0",
   },
   "last-upgrade": "27.0",
+  "last-swift-update": "27.0",
 }

@@ -13,7 +13,7 @@ adds its own chrome and scaling. It does not use DeviceKit or launch Device Hub.
 
 ## What
 
-Neo mode provides a dedicated AppKit host with these guarantees:
+Neo mode provides a dedicated Swift application with AppKit windows and SwiftUI controls with these guarantees:
 
 - it uses only the selected Xcode 27 or later installation and the matching
   CoreSimulator system resources installed with Xcode;
@@ -61,12 +61,14 @@ NeoSimulator.app
 | Route preferences and restoration | `HostModeController` |
 | Exact Neo, Legacy Simulator, and Device Hub lifecycle | `WorkspaceClient` |
 | Xcode and private-component compatibility gate | `InstallationInspector` |
-| Private runtime classes, selectors, and Swift thunks | `XSHPrivateRuntime` |
+| Private runtime classes, selectors, and Swift thunks | `SimulatorRuntime` |
 | Booted-device membership | standalone host device-set observer |
 | One display connection and HID session | standalone host device session |
 | Window, toolbar, focus, and scaling | standalone host AppKit window controller |
 | Menu construction and active-window routing | standalone host menu controller |
-| Screenshot and rotation subprocesses | per-window typed device-tool runner |
+| Device commands and subprocesses | Swift `DeviceTools` and `DeviceToolRunner` |
+| Private Objective-C calls and exceptions | `SimulatorBridge` |
+| Device selection and previews | SwiftUI `DeviceBrowserView` and `DeviceToolbar` |
 | Clipboard synchronization | deliberately no owner |
 
 The CLI and GUI host exchange only the selected Xcode application path. Private
@@ -83,7 +85,7 @@ required symbols:
 
 Before any preference or process change, the CLI runs the exact packaged host
 in its non-UI `--validate-runtime` mode. That mode constructs
-`XSHPrivateRuntime`, exercising the same `dlopen`, `dlsym`, private-class,
+`SimulatorRuntime`, exercising the same `dlopen`, `dlsym`, private-class,
 selector, and loaded-image checks used by the GUI launch, then exits without
 creating `NSApplication`, a device set, or a display session. It deliberately
 does not inspect running UI hosts; `HostModeController` validates and closes
@@ -151,8 +153,10 @@ imports DeviceKit, loads a DeviceKit plugin, or opens a `devices:` URL.
 
 CoreSimulator transitively maps `SimPasteboardPlus.framework`; merely mapping
 that dependency is not a synchronization session. The standalone host does not
-instantiate or call any pasteboard type, and validation checks that neither
-DeviceKit nor Device Hub is loaded.
+instantiate private simulator pasteboard types or start clipboard synchronization,
+and validation checks that neither DeviceKit nor Device Hub is loaded. The
+browser's explicit Copy Device Identifier action writes only to the Mac's
+`NSPasteboard`; it neither reads nor changes the simulator clipboard.
 
 ### Lifecycle
 
@@ -166,9 +170,10 @@ DeviceKit nor Device Hub is loaded.
   started by a later Xcode Run.
 - Device-set notifications add windows for newly booted iOS devices and remove
   their sessions after shutdown.
-- Closing a device window suppresses reopening it until that device leaves the
-  booted state. Running `use neo` again restarts the exact packaged host and
-  reconstructs windows for currently booted devices.
+- Closing a device window leaves its simulator running and suppresses automatic
+  reopening until it leaves the booted state. File > Open Simulator can reopen
+  it immediately or start a shut-down simulator through the selected Xcode's
+  direct `simctl` tool. The browser also appears when there are no device windows.
 - Switching to Device Hub, or restoring a Device Hub route, closes the standalone
   host before enabling that route.
 

@@ -39,6 +39,15 @@
          </BuildableReference>
       </MacroExpansion>
       <Testables>
+         <TestableReference skipped = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "AB6705CE3060FBFC007E9CFA"
+               BuildableName = "NeoSimulatorHostTests.xctest"
+               BlueprintName = "NeoSimulatorHostTests"
+               ReferencedContainer = "container:NeoSimulator.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
       </Testables>
    </TestAction>
    <LaunchAction
