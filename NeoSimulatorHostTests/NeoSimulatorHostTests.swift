@@ -121,20 +121,31 @@ private final class TestDisplay: SimulatorDisplay {
 
 @Suite @MainActor
 struct HostBehaviorTests {
-    @Test func launchConflictIsRetainedBeforeTheMainActorCanHandleIt() {
+    @Test func launchConflictIsRetainedBeforeDeferredTeardown() {
         let center = NotificationCenter()
         let monitor = HostConflictMonitor(notificationCenter: center)
-        // AppKit fixture initialization is outside the blocked-main-actor
-        // interval; only notification delivery is being tested.
+        var teardownCalled = false
+        monitor.onConflict = { teardownCalled = true }
+        center.post(name: NSWorkspace.didLaunchApplicationNotification, object: nil,
+            userInfo: [NSWorkspace.applicationUserInfoKey: FixtureRunningApplication()])
+
+        #expect(monitor.conflictingHostName == "Device Hub")
+        #expect(throws: HostError.self) { try monitor.check() }
+        #expect(!teardownCalled)
+    }
+
+    @Test func launchConflictFromBackgroundThreadIsRetained() async {
+        let center = NotificationCenter()
+        let monitor = HostConflictMonitor(notificationCenter: center)
         let application = FixtureRunningApplication()
-        let posted = DispatchSemaphore(value: 0)
-        DispatchQueue.global().async {
-            center.post(name: NSWorkspace.didLaunchApplicationNotification, object: nil,
-                userInfo: [NSWorkspace.applicationUserInfoKey: application])
-            posted.signal()
+        await withCheckedContinuation { (posted: CheckedContinuation<Void, Never>) in
+            DispatchQueue.global().async {
+                center.post(name: NSWorkspace.didLaunchApplicationNotification, object: nil,
+                    userInfo: [NSWorkspace.applicationUserInfoKey: application])
+                posted.resume()
+            }
         }
-        // Startup occupies the main actor until readiness is checked.
-        #expect(posted.wait(timeout: .now() + 3) == .success)
+
         #expect(monitor.conflictingHostName == "Device Hub")
         #expect(throws: HostError.self) { try monitor.check() }
     }
