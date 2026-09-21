@@ -134,17 +134,19 @@ struct HostBehaviorTests {
         #expect(!teardownCalled)
     }
 
-    @Test func launchConflictFromBackgroundThreadIsRetained() async {
+    @Test func launchConflictFromBackgroundThreadIsRetainedDuringStartup() throws {
         let center = NotificationCenter()
         let monitor = HostConflictMonitor(notificationCenter: center)
         let application = FixtureRunningApplication()
-        await withCheckedContinuation { (posted: CheckedContinuation<Void, Never>) in
-            DispatchQueue.global().async {
-                center.post(name: NSWorkspace.didLaunchApplicationNotification, object: nil,
-                    userInfo: [NSWorkspace.applicationUserInfoKey: application])
-                posted.resume()
-            }
+        let posted = DispatchSemaphore(value: 0)
+        // Keep the posting thread independent of shared dispatch workers while
+        // the main actor is deliberately unavailable, as during startup.
+        Thread.detachNewThread {
+            center.post(name: NSWorkspace.didLaunchApplicationNotification, object: nil,
+                userInfo: [NSWorkspace.applicationUserInfoKey: application])
+            posted.signal()
         }
+        try #require(posted.wait(timeout: .now() + 3) == .success)
 
         #expect(monitor.conflictingHostName == "Device Hub")
         #expect(throws: HostError.self) { try monitor.check() }
