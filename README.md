@@ -223,6 +223,12 @@ The source build uses SwiftPM for the CLI and the beta `NeoSimulator` app
 target in `NeoSimulator.xcworkspace`. The staging script puts both
 products in the same relative layout used by releases.
 
+Open `NeoSimulator.xcworkspace` to edit the app alongside the Swift package's
+CLI, tests, build-info tool, and plugin. Select `NeoSimulator` to build the app,
+`xcode-simulator-host` to build the CLI, or `XcodeSimulatorHostTests` to run the
+package tests. The app project uses Xcode's JSON `project.xcproj` format and
+requires Xcode 27 or later to open.
+
 Build and switch to the recommended Legacy host in one command:
 
 ```bash
