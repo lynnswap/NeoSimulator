@@ -25,6 +25,19 @@ final class MenuController: NSObject, NSMenuItemValidation {
         file.addItem(.separator())
         item("Close Window", action: #selector(closeWindow(_:)), key: "w", in: file)
 
+        let edit = menu("Edit", in: main)
+        let editingActions: [(String, Selector, String, NSEvent.ModifierFlags)] = [
+            ("Undo", Selector(("undo:")), "z", .command),
+            ("Redo", Selector(("redo:")), "z", [.command, .shift]),
+            ("Cut", #selector(NSText.cut(_:)), "x", .command),
+            ("Copy", #selector(NSText.copy(_:)), "c", .command),
+            ("Paste", #selector(NSText.paste(_:)), "v", .command),
+            ("Select All", #selector(NSText.selectAll(_:)), "a", .command),
+        ]
+        for (title, action, key, modifiers) in editingActions {
+            item(title, action: action, key: key, modifiers: modifiers, in: edit).target = nil
+        }
+
         let device = menu("Device", in: main)
         command("Rotate Left", .rotateLeft, key: String(UnicodeScalar(NSLeftArrowFunctionKey)!), in: device)
         command("Rotate Right", .rotateRight, key: String(UnicodeScalar(NSRightArrowFunctionKey)!), in: device)
