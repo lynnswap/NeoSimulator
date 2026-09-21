@@ -5,6 +5,9 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     private let runtime: SimulatorRuntime
     private let conflicts: HostConflictMonitor
     private let deviceSet: XSHDeviceSetHandle
+    private let recordings = RecordingStore()
+    private var isTerminating = false
+    private var recordingTerminationErrors: [Error] = []
     private var notificationToken: UInt64?
     private var sessions: [String: DeviceWindowController] = [:]
     private var connections: [String: Task<Void, Never>] = [:]
@@ -22,6 +25,11 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         self.conflicts = conflicts
         deviceSet = try runtime.openDeviceSet()
         super.init()
+        recordings.onError = { [weak self] error in
+            guard let self else { return }
+            if self.isTerminating || self.stopped { self.recordingTerminationErrors.append(error) }
+            else { self.report(error) }
+        }
         conflicts.onConflict = { [weak self] in self?.handleHostConflict() }
     }
 
@@ -119,7 +127,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                         let connection = try SimulatorConnection(device: device, screenID: screen.uint32Value, runtime: runtime)
                         let controller = try DeviceWindowController(
                             device: Self.describe(device), display: connection,
-                            tools: try DeviceTools(identifier: identifier, xcodeURL: runtime.xcodeURL)
+                            tools: try DeviceTools(identifier: identifier, xcodeURL: runtime.xcodeURL),
+                            recordings: recordings
                         ) { [weak self] identifier in
                             self?.sessions.removeValue(forKey: identifier)
                             self?.suppressed.insert(identifier)
@@ -160,7 +169,15 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         guard !stopped, let name = conflicts.conflictingHostName else { return }
         hostLog("\(name) appeared; disconnecting simulators and exiting")
         shutdown()
-        NSApp.terminate(nil)
+        // A conflict can arrive on the main dispatch queue. Finish recordings
+        // before terminate() enters AppKit's termination run loop from that queue.
+        Task {
+            await recordings.finishAll()
+            guard !isTerminating else { return }
+            for error in recordingTerminationErrors { NSAlert(error: error).runModal() }
+            recordingTerminationErrors.removeAll()
+            NSApp.terminate(nil)
+        }
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -169,6 +186,18 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         return true
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard recordings.hasActiveRecordings else { return .terminateNow }
+        guard !isTerminating else { return .terminateLater }
+        isTerminating = true
+        Task {
+            await recordings.finishAll()
+            for error in recordingTerminationErrors { NSAlert(error: error).runModal() }
+            recordingTerminationErrors.removeAll()
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
     func applicationWillTerminate(_ notification: Notification) { shutdown() }
 
     func shutdown() {

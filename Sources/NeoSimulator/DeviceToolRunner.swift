@@ -128,6 +128,22 @@ final class DeviceTools {
         guard let angle = angles[orientation] else { throw HostError.operation("Unsupported orientation: \(orientation)") }
         return angle
     }
+    func installApplication(at url: URL) async throws {
+        _ = try await simctl(["install", identifier, url.path])
+    }
+    func importMedia(at url: URL) async throws {
+        _ = try await simctl(["addmedia", identifier, url.path])
+    }
+    func openURL(_ url: URL) async throws {
+        _ = try await simctl(["openurl", identifier, url.absoluteString])
+    }
+    func recordingProcess(to url: URL) -> Process {
+        let process = Process()
+        process.executableURL = Self.simctl
+        process.arguments = ["io", identifier, "recordVideo", "--codec=h264", "--mask=black", "--force", url.path]
+        process.environment = ProcessInfo.processInfo.environment.merging(environment) { _, new in new }
+        return process
+    }
     func cancel() { runner.cancel() }
     private func simctl(_ arguments: [String]) async throws -> Data {
         try await runner.run(Self.simctl, arguments: arguments, environment: environment)
