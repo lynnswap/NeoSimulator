@@ -124,7 +124,9 @@ final class RecordingStore {
     func start(to destination: URL, process: (URL) -> Process,
                onFinished: @escaping @MainActor () -> Void) throws -> VideoRecording {
         guard !isFinishing else { throw HostError.operation("Recordings are finishing before NeoSimulator quits") }
-        let canonicalDestination = destination.standardizedFileURL.resolvingSymlinksInPath()
+        let canonicalDestination = destination.deletingLastPathComponent()
+            .standardizedFileURL.resolvingSymlinksInPath()
+            .appendingPathComponent(destination.lastPathComponent)
         guard !entries.values.contains(where: { $0.destination == canonicalDestination }) else {
             throw HostError.operation("Another recording is saving to \(destination.path). Choose a different filename.")
         }
