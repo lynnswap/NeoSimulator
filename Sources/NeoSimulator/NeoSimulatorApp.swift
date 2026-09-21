@@ -81,9 +81,10 @@ enum NeoSimulatorApp {
             app.delegate = controller
             app.finishLaunching()
             try controller.start()
-            if let name = HostApplication.conflictingHostName {
+            do { try controller.checkForConflict() }
+            catch {
                 controller.shutdown()
-                throw HostError.conflict("\(name) launched before startup completed")
+                throw error
             }
             if let result = options.startupResultURL {
                 do { try Data("ready\n".utf8).write(to: result, options: .atomic) }

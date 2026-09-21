@@ -1,4 +1,5 @@
 import AppKit
+import os
 
 @MainActor
 final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSource {
@@ -22,7 +23,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     private var menu: MenuController?
     private var stopped = false
     private var nextWindowPosition = NSPoint.zero
-    private var observedConflict: String?
+    private let observedConflict = OSAllocatedUnfairLock<String?>(initialState: nil)
 
     init(runtime: SimulatorRuntime) throws {
         if let name = Self.conflictingHostName {
@@ -40,15 +41,16 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         notificationToken = try deviceSet.observe { [weak self] in
             MainActor.assumeIsolated { self?.rescan() }
         }.uint64Value
+        let observedConflict = observedConflict
         workspaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.didLaunchApplicationNotification, object: nil, queue: .main
-        ) { [weak self] notification in
+            forName: NSWorkspace.didLaunchApplicationNotification, object: nil, queue: nil
+        ) { [weak self, observedConflict] notification in
             guard let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
                   let name = Self.conflictName(for: application.bundleIdentifier) else { return }
-            MainActor.assumeIsolated {
-                self?.observedConflict = name
-                self?.handleHostConflict()
-            }
+            // Record synchronously, including while the main actor is still
+            // preparing startup. UI teardown is deferred to the main actor.
+            observedConflict.withLock { $0 = name }
+            Task { @MainActor [weak self] in self?.handleHostConflict() }
         }
         try checkForConflict()
         try scanDevices()
@@ -63,8 +65,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         }
     }
 
-    private func checkForConflict() throws {
-        if let name = observedConflict ?? Self.conflictingHostName {
+    func checkForConflict() throws {
+        if let name = observedConflict.withLock({ $0 }) ?? Self.conflictingHostName {
             throw HostError.conflict("\(name) is running; close it before opening NeoSimulator")
         }
     }
@@ -189,7 +191,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     }
 
     private func handleHostConflict() {
-        guard !stopped, let name = observedConflict ?? Self.conflictingHostName else { return }
+        guard !stopped, let name = observedConflict.withLock({ $0 }) ?? Self.conflictingHostName else { return }
         hostLog("\(name) appeared; disconnecting simulators and exiting")
         shutdown()
         NSApp.terminate(nil)
