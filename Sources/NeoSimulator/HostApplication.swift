@@ -51,7 +51,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             }
         }
         try checkForConflict()
-        rescan()
+        try scanDevices()
         if sessions.isEmpty { showDeviceBrowser() }
     }
 
@@ -100,39 +100,47 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     }
 
     private func rescan() {
-        guard !stopped else { return }
-        do {
-            try checkForConflict()
-            let booted = try readDevices().filter { $0.state == 3 }
-            let identifiers = Set(booted.map(\.identifier))
-            let hadDeviceWindows = !sessions.isEmpty
-            for identifier in sessions.keys where !identifiers.contains(identifier) {
-                sessions.removeValue(forKey: identifier)?.invalidate()
-            }
-            for identifier in connections.keys where !identifiers.contains(identifier) {
-                connections.removeValue(forKey: identifier)?.cancel()
-            }
-            suppressed.formIntersection(identifiers)
-            reportedFailures.formIntersection(identifiers)
-            for device in booted where sessions[device.identifier] == nil
-                && connections[device.identifier] == nil
-                && !suppressed.contains(device.identifier)
-                && !reportedFailures.contains(device.identifier) {
-                connect(device)
-            }
-            if hadDeviceWindows && sessions.isEmpty { showDeviceBrowser() }
-            browser?.refresh()
-        } catch let error as HostError {
+        do { try scanDevices() }
+        catch let error as HostError {
             if case .conflict = error { handleHostConflict() }
             else { report(error) }
         } catch { report(error) }
+    }
+
+    private func scanDevices() throws {
+        guard !stopped else { return }
+        try checkForConflict()
+        let booted = try readDevices().filter { $0.state == 3 }
+        let identifiers = Set(booted.map(\.identifier))
+        let hadDeviceWindows = !sessions.isEmpty
+        for identifier in sessions.keys where !identifiers.contains(identifier) {
+            sessions.removeValue(forKey: identifier)?.invalidate()
+        }
+        for identifier in connections.keys where !identifiers.contains(identifier) {
+            connections[identifier]?.cancel()
+        }
+        suppressed.formIntersection(identifiers)
+        reportedFailures.formIntersection(identifiers)
+        for device in booted where sessions[device.identifier] == nil
+            && connections[device.identifier] == nil
+            && !suppressed.contains(device.identifier)
+            && !reportedFailures.contains(device.identifier) {
+            connect(device)
+        }
+        if hadDeviceWindows && sessions.isEmpty { showDeviceBrowser() }
+        browser?.refresh()
     }
 
     private func connect(_ device: XSHDeviceHandle) {
         let identifier = device.identifier
         connections[identifier] = Task { [weak self] in
             guard let self else { return }
-            defer { connections.removeValue(forKey: identifier) }
+            defer {
+                // Keep cancellation tracked until this task unwinds, so a new
+                // boot cannot replace its entry before cleanup.
+                connections.removeValue(forKey: identifier)
+                rescan()
+            }
             do {
                 // CoreSimulator reports Booted before its integrated screen is ready.
                 for _ in 0..<40 {
