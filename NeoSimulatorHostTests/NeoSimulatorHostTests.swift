@@ -19,10 +19,84 @@ struct InputFocusTests {
         }
         #expect(display.buttons == [.home, .lock, .softwareKeyboard])
         #expect(display.input.modifiers.count == 4)
+        controller.windowDidResignKey(Notification(name: NSWindow.didResignKeyNotification, object: window))
+        #expect(display.activations == [true, false])
         controller.invalidate()
         controller.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification))
+        controller.windowDidResignKey(Notification(name: NSWindow.didResignKeyNotification))
+        #expect(display.activations == [true, false])
         #expect(display.input.modifiers.count == 4)
         #expect(display.disconnectCount == 1)
+    }
+
+    @Test func nativeToolbarPreservesDeviceCommandsAndBusyState() async throws {
+        let display = TestDisplay()
+        let controller = try makeController(display)
+        defer { controller.invalidate() }
+        let window = try #require(controller.window)
+        #expect(window.title == "Test iPhone")
+        #expect(window.subtitle == "iOS")
+        #expect(window.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua)
+        let toolbar = try #require(window.toolbar)
+        let commands = toolbar.items.filter { DeviceCommand(rawValue: $0.itemIdentifier.rawValue) != nil }
+        #expect(commands.filter { !$0.isHidden }.map(\.itemIdentifier.rawValue) ==
+            ["home", "screenshot", "rotateRight"])
+        let home = try #require(commands.first { $0.itemIdentifier.rawValue == "home" })
+        #expect(NSApp.sendAction(try #require(home.action), to: home.target, from: home))
+        #expect(display.buttons == [.home])
+        controller.toolbarState.isBusy = true
+        await Task.yield()
+        #expect(home.isEnabled)
+        #expect(commands.filter { ["screenshot", "rotateRight"].contains($0.itemIdentifier.rawValue) }
+            .allSatisfy { !$0.isEnabled })
+        controller.toolbarState.isConnected = false
+        await Task.yield()
+        #expect(commands.allSatisfy { !$0.isEnabled })
+    }
+
+    @Test func toolbarShowsRecordingStopAndHidesItAfterCompletion() async throws {
+        let controller = try makeController(TestDisplay())
+        defer { controller.invalidate() }
+        let toolbar = try #require(controller.window?.toolbar)
+        let item = try #require(toolbar.items.first { $0.itemIdentifier.rawValue == "recording" })
+        #expect(item.isHidden)
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", """
+            trap 'exit 0' INT
+            echo 'Recording started' >&2
+            while :; do sleep 0.05; done
+            """]
+        let recording = try VideoRecording(process: process, startupTimeout: .seconds(3))
+        controller.toolbarState.recording = recording
+        for _ in 0..<100 where item.isHidden { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(!item.isHidden)
+        #expect(item.isEnabled)
+        #expect(NSApp.sendAction(try #require(item.action), to: item.target, from: item))
+        for _ in 0..<100 where item.isEnabled { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(recording.isStopping)
+        #expect(!item.isEnabled)
+        try await recording.waitUntilFinished()
+        controller.toolbarState.recording = nil
+        for _ in 0..<100 where !item.isHidden { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(item.isHidden)
+    }
+
+    @Test func displayStaysBelowTheNativeToolbarWhenResized() throws {
+        let controller = try makeController(TestDisplay())
+        defer { controller.invalidate() }
+        let window = try #require(controller.window)
+        for size in [NSSize(width: 360, height: 780), NSSize(width: 800, height: 420)] {
+            window.setContentSize(size)
+            controller.windowDidResize(Notification(name: NSWindow.didResizeNotification, object: window))
+            let content = try #require(window.contentView)
+            #expect(controller.display.view.frame.minX >= 0)
+            #expect(controller.display.view.frame.minY >= 0)
+            #expect(controller.display.view.frame.maxX <= content.bounds.maxX)
+            #expect(controller.display.view.frame.maxY <= window.contentLayoutRect.maxY - 12)
+            #expect(try #require(window.standardWindowButton(.closeButton)).isHidden == false)
+        }
     }
 
     @Test func deviceToolPathsAreValidatedBeforeOperations() throws {
@@ -54,7 +128,7 @@ struct InputFocusTests {
         controller.invalidate()
     }
 
-    @Test func nativeDigitizerGetterKeepsIdentityAndResponderChain() throws {
+    @Test func nativeDisplayKeepsInputIdentityAndChromeActivation() throws {
         _ = NSApplication.shared
         let selection = Process()
         let output = Pipe()
@@ -75,6 +149,15 @@ struct InputFocusTests {
         #expect(input.nextResponder === view)
         for _ in 0..<100 {
             #expect(XSHSwiftCallObjectGetter(runtime.digitizer, view) as? NSView === input)
+        }
+        let chrome = try #require(XSHSwiftCallObjectGetter(runtime.chromeView, view) as? NSView)
+        let renderView = try #require(chrome.subviews.first {
+            String(describing: Swift.type(of: $0)) == "SimDisplayChromeRenderView"
+        })
+        for active in [true, false, true] {
+            XSHSwiftSetChromeActive(runtime.chromeState, chrome, active)
+            let state = try #require(Mirror(reflecting: renderView).children.first { $0.label == "state" })
+            #expect(String(describing: state.value) == (active ? "active" : "inactive"))
         }
         XSHSwiftDisconnect(runtime.disconnect, view)
     }
@@ -106,12 +189,14 @@ private final class TestDisplay: SimulatorDisplay {
     var naturalSize: NSSize { NSSize(width: 390, height: 844) }
     var isBooted = true
     var buttons: [DeviceButton] = []
+    var activations: [Bool] = []
     var disconnectCount = 0
     init() { view.addSubview(input) }
     func press(_ button: DeviceButton) throws { buttons.append(button) }
     func shake() throws {}
     func toggleAppearance() throws {}
     func setChromeVisible(_ visible: Bool) {}
+    func setActive(_ active: Bool) { activations.append(active) }
     func setRotation(degrees: Double) {}
     func beginResize() {}
     func resize(to size: NSSize) { view.setFrameSize(size) }

@@ -5,7 +5,8 @@ depending on Simulator.app at runtime.
 
 ## Scope
 
-The reference binary is Simulator.app 16.0 (1063.4) from Xcode 26.5. The target
+The binary analysis below uses Simulator.app 16.0 (1063.4) from Xcode 26.5;
+the window appearance was also compared with Simulator.app from Xcode 26.6. The target
 runtime is Xcode 27 or later, where Simulator.app is absent. No resource, class,
 or binary from the reference app is loaded by the packaged host.
 
@@ -28,12 +29,19 @@ source of behavioral assumptions.
 | `DeviceWindow.awakeFromNib` at `0x100035B28` | DarkAqua, clear non-opaque window, disabled tabbing, titlebar separator setup, layer-backed content, shadow invalidation | public AppKit window with full-size transparent titlebar, native traffic lights, DarkAqua, clear background, explicit shadow invalidation |
 | `DeviceWindowController.setShowChrome:` at `0x100048374` | calls SimulatorKit `SimDisplayView.showDeviceChrome` setter | dlsym the same thunk from the selected Xcode 27+ and set it explicitly |
 | `windowDidResize:` at `0x10004BEF4` | derives display scale and invalidates the shadow | existing `beginResize` / `resizeTo` / `endResize` bridge, excluding the detached header area |
-| `WindowTitleHelper` around `0x10005AE20` | owns title/subtitle and Window menu naming | session owns `device.name – runtime.name` for the visible header and `NSWindow.title` |
+| `WindowTitleHelper` around `0x10005AE20` | owns title/subtitle and Window menu naming | device name in `NSWindow.title`, runtime in `NSWindow.subtitle` |
 
 The reference app's toolbar is app-local (`SimToolbar`,
 `IndigoiPhoneToolbar.nib`) and cannot be reused on Xcode 27+. The standalone
-host therefore uses public `NSVisualEffectView` and `NSButton` components while
-preserving the underlying action owners.
+host uses a public `NSToolbar` with `NSToolbarItem` controls, the unified window
+toolbar style, and a capsule background while preserving the underlying action
+owners. Native titlebar layout positions the traffic lights, title, and subtitle.
+
+The Xcode 27 display factory already selects the device's chrome identifier and
+leaves `preferSimpleChrome` false. Its chrome state starts inactive, whose tint
+flattens the device artwork to gray. Simulator.app imports both active/inactive
+chrome states and the state setter. Neo forwards window key-state changes to
+that setter instead of overriding the profile or drawing replacement bezels.
 
 ## Menu archive
 
@@ -98,8 +106,9 @@ semantics:
 - Window: Minimize, Zoom, Full Screen, Show Device Bezels, Stay on Top, Fit
   Screen, Bring All to Front.
 
-The detached window header exposes Home, Save Screen, Rotate Right, and Software
-Keyboard using the same session actions as the menus.
+The detached window header exposes Home, Save Screen, and Rotate Right using
+the same session actions as the menus. A red stop control appears while a video
+is recording; Software Keyboard is available from I/O and Command-K.
 
 Menu commands are validated against the active device window at dispatch time.
 Rotation and screenshot work is single-flight and cancelled when the owning

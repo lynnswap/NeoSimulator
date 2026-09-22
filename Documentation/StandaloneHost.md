@@ -13,7 +13,8 @@ adds its own chrome and scaling. It does not use DeviceKit or launch Device Hub.
 
 ## What
 
-Neo mode provides a dedicated Swift application with AppKit windows and SwiftUI controls with these guarantees:
+Neo mode provides a dedicated Swift application with AppKit device windows and
+a SwiftUI device browser with these guarantees:
 
 - it uses only the selected Xcode 27 or later installation and the matching
   CoreSimulator system resources installed with Xcode;
@@ -22,8 +23,8 @@ Neo mode provides a dedicated Swift application with AppKit windows and SwiftUI 
 - it does not create a clipboard synchronization owner;
 - it displays each booted iOS simulator and forwards touch, accessibility, and
   focused keyboard input;
-- it provides Home, Save Screen, Rotate Right, and Software Keyboard controls
-  in the header, plus validated Simulator-style menus;
+- it provides Home, Save Screen, and Rotate Right controls in the header, plus
+  validated Simulator-style menus including Software Keyboard;
 - its windows resize the hosted display without changing the simulated
   device's logical screen size;
 - it fails closed if Device Hub or a legacy `Simulator.app` is already running
@@ -69,7 +70,7 @@ NeoSimulator.app
 | Device commands and subprocesses | Swift `DeviceTools` and `DeviceToolRunner` |
 | Recording processes and final saves | app-owned Swift `RecordingStore` and `VideoRecording` |
 | Private Objective-C calls and exceptions | `SimulatorBridge` |
-| Device selection and previews | SwiftUI `DeviceBrowserView` and `DeviceToolbar` |
+| Device selection and previews | SwiftUI `DeviceBrowserView` |
 | Clipboard synchronization | deliberately no owner |
 
 The CLI and GUI host exchange only the selected Xcode application path. Private
@@ -102,6 +103,12 @@ The display factory is
 `IDEPlaygroundSimulator.IDESimulatorPlaygroundUntil`
 `createSimDisplayViewWithDevice:simScreenID:`. The host discovers the default
 integrated `SimDeviceScreen`; it must not assume screen ID zero.
+
+SimulatorKit selects the device artwork from the connected device's profile.
+The window controller updates `SimDisplayChromeView.state` when its window
+becomes or resigns key, so the active device shows its artwork and an inactive
+device uses SimulatorKit's dimmed chrome. The chrome getter and state setter
+are part of the runtime symbol validation. No artwork is copied from Xcode 26.
 
 Home, Lock, and Software Keyboard use one `SimDeviceLegacyHIDClient` per
 displayed device and `IndigoHIDMessageForButton` with values verified on the

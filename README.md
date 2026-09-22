@@ -87,8 +87,8 @@ Neo currently provides:
 - a searchable device browser to start simulators or reopen their windows;
 - one resizable window for each booted iOS simulator;
 - device bezel, touch, accessibility, and focused keyboard input;
-- Home, Save Screen, Rotate Right, and Software Keyboard controls in the
-  window header;
+- a Simulator-style window header with the device name, runtime, Home,
+  Save Screen, and Rotate Right controls;
 - MP4 recording, including finalization when a window closes or the app quits;
 - simulator app installation and image, video, and vCard import through a file
   picker or drag and drop;
@@ -106,6 +106,8 @@ Choose **File → Record Video…** (Command-R) and a destination to begin recor
 Use the red stop control or Command-R to finish. Neo waits for the video to be
 finalized before replacing an existing destination file. If the final save
 fails, the error includes the temporary recording's location for recovery.
+The stop control appears in the header while recording. Toggle the software
+keyboard through **I/O → Toggle Software Keyboard** (Command-K).
 
 Drop simulator `.app` bundles or media onto a device, or choose
 **File → Install App or Import Media…**. If only some files succeed, Neo lists
@@ -252,9 +254,10 @@ requires Xcode 27 or later to open.
 
 The host application is written in Swift. Its Objective-C bridge and ARM64
 assembly are limited to dynamically loaded private interfaces and SimulatorKit
-dispatch thunks. Open `DeviceBrowser.swift` or `DeviceToolbar.swift` with the
-`NeoSimulator` scheme to use the `#Preview` canvas. These previews use the same
-UI as the app, with sample devices and no CoreSimulator connection.
+dispatch thunks. Open `DeviceBrowser.swift` with the `NeoSimulator` scheme to
+use the `#Preview` canvas. These previews use the same browser UI as the app,
+with sample devices and no CoreSimulator connection. Device windows use an
+AppKit toolbar and the selected Xcode's native device artwork.
 
 Build and switch to the recommended Legacy host in one command:
 
