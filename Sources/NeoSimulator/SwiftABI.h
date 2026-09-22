@@ -14,6 +14,7 @@ FOUNDATION_EXPORT void XSHSwiftCallBoolMethod(
 FOUNDATION_EXPORT id XSHSwiftCallObjectGetter(void *function, id object)
     NS_RETURNS_RETAINED;
 FOUNDATION_EXPORT CGFloat XSHSwiftCallCGFloatGetter(void *function, id object);
+FOUNDATION_EXPORT void XSHSwiftSetChromeActive(void *function, id object, BOOL active);
 FOUNDATION_EXPORT void XSHSwiftSetAngleMeasurement(
     void *function,
     id object,

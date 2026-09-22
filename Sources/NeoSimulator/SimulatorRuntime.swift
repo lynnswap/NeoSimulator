@@ -12,6 +12,8 @@ final class SimulatorRuntime {
     let hidClass: AnyClass
     let messageForButton: UnsafeMutableRawPointer
     let showChrome: UnsafeMutableRawPointer
+    let chromeView: UnsafeMutableRawPointer
+    let chromeState: UnsafeMutableRawPointer
     let digitizer: UnsafeMutableRawPointer
     let renderScale: UnsafeMutableRawPointer
     let rotation: UnsafeMutableRawPointer
@@ -35,6 +37,8 @@ final class SimulatorRuntime {
         }
         messageForButton = try symbol("IndigoHIDMessageForButton")
         showChrome = try symbol("$s12SimulatorKit14SimDisplayViewC16showDeviceChromeSbvsTj")
+        chromeView = try symbol("$s12SimulatorKit14SimDisplayViewC06chromeE0AA0cd6ChromeE0CvgTj")
+        chromeState = try symbol("$s12SimulatorKit20SimDisplayChromeViewC5stateAC5StateOvsTj")
         digitizer = try symbol("$s12SimulatorKit14SimDisplayViewC09digitizerE0AA0c14DigitizerInputE0CvgTj")
         renderScale = try symbol("$s12SimulatorKit14SimDisplayViewC11renderScale12CoreGraphics7CGFloatVvgTj")
         rotation = try symbol("$s12SimulatorKit14SimDisplayViewC14deviceRotation10Foundation11MeasurementVySo11NSUnitAngleCGvsTj")
@@ -126,6 +130,7 @@ protocol SimulatorDisplay: AnyObject {
     func shake() throws
     func toggleAppearance() throws
     func setChromeVisible(_ visible: Bool)
+    func setActive(_ active: Bool)
     func setRotation(degrees: Double)
     func beginResize()
     func resize(to size: NSSize)
@@ -138,6 +143,7 @@ final class SimulatorConnection: SimulatorDisplay {
     let view: NSView
     let inputView: NSView
     private let runtime: SimulatorRuntime
+    private let chromeView: NSView
     private let device: XSHDeviceHandle
     private var hidClient: AnyObject?
     private var disconnected = false
@@ -160,6 +166,10 @@ final class SimulatorConnection: SimulatorDisplay {
                 throw HostError.unavailable("Simulator display has no input view")
             }
             inputView = input
+            guard let chrome = XSHSwiftCallObjectGetter(runtime.chromeView, view) as? NSView else {
+                throw HostError.unavailable("Simulator display has no device chrome view")
+            }
+            chromeView = chrome
         } catch {
             XSHSwiftDisconnect(runtime.disconnect, view)
             throw error
@@ -189,6 +199,10 @@ final class SimulatorConnection: SimulatorDisplay {
     func setChromeVisible(_ visible: Bool) {
         XSHSwiftCallBoolMethod(runtime.showChrome, view, visible)
         view.invalidateIntrinsicContentSize()
+    }
+    func setActive(_ active: Bool) {
+        guard !disconnected else { return }
+        XSHSwiftSetChromeActive(runtime.chromeState, chromeView, active)
     }
     func setRotation(degrees: Double) {
         XSHSwiftSetAngleMeasurement(runtime.rotation, view, degrees, .degrees)

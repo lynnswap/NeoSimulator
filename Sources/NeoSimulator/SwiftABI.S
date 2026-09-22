@@ -54,6 +54,22 @@ _XSHSwiftCallCGFloatGetter:
     ldp x29, x30, [sp], #32
     ret
 
+.globl _XSHSwiftSetChromeActive
+_XSHSwiftSetChromeActive:
+    stp x29, x30, [sp, #-48]!
+    stp x20, x19, [sp, #16]
+    mov x29, sp
+    mov x19, x0
+    mov x20, x1
+    // SimDisplayChromeView.State is passed indirectly: active = 0, inactive = 1.
+    eor w8, w2, #1
+    strb w8, [sp, #32]
+    add x0, sp, #32
+    blr x19
+    ldp x20, x19, [sp, #16]
+    ldp x29, x30, [sp], #48
+    ret
+
 .globl _XSHSwiftSetAngleMeasurement
 _XSHSwiftSetAngleMeasurement:
     stp x29, x30, [sp, #-48]!

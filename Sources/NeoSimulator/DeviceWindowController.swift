@@ -1,5 +1,4 @@
 import AppKit
-import SwiftUI
 import UniformTypeIdentifiers
 
 @MainActor
@@ -15,6 +14,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     private var didReadOrientation = false
     private let onClose: (String) -> Void
     private let content: DeviceContentView
+    private var deviceToolbar: DeviceToolbar?
     var canPerformCommands: Bool { !closed && toolbarState.isConnected && display.isBooted }
     var canPerformToolOperation: Bool { canPerformCommands && !toolbarState.isBusy }
     var staysOnTop: Bool { window?.level == .floating }
@@ -36,8 +36,10 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered, defer: false)
         super.init(window: window)
-        window.title = "\(device.name) – \(device.runtimeName)"
-        window.titleVisibility = .hidden
+        window.title = device.name
+        window.subtitle = device.runtimeName
+        window.appearance = NSAppearance(named: .darkAqua)
+        window.toolbarStyle = .unified
         window.titlebarAppearsTransparent = true
         window.titlebarSeparatorStyle = .none
         window.tabbingMode = .disallowed
@@ -46,11 +48,9 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         window.hasShadow = true
         window.isReleasedWhenClosed = false
         window.delegate = self
-        let toolbar = NSHostingView(rootView: DeviceToolbar(title: window.title, state: toolbarState) { [weak self] in
-            self?.perform($0)
-        })
-        toolbar.sizingOptions = []
-        content.header = toolbar
+        let toolbar = DeviceToolbar(state: toolbarState) { [weak self] in self?.perform($0) }
+        deviceToolbar = toolbar
+        window.toolbar = toolbar.toolbar
         content.canImport = { [weak self] in self?.canPerformToolOperation == true }
         content.importFiles = { [weak self] in self?.importFiles($0) }
         window.contentView = content
@@ -235,10 +235,10 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         let natural = display.naturalSize
         guard natural.width > 0, natural.height > 0 else { return }
         let visible = (window.screen ?? NSScreen.main)?.visibleFrame.size ?? NSSize(width: 1440, height: 900)
-        let scale = min(1, (visible.width * 0.8 - 16) / natural.width,
-                        (visible.height * 0.8 - DeviceContentView.headerHeight - 22) / natural.height)
-        window.setContentSize(NSSize(width: max(320, natural.width * scale + 16),
-            height: natural.height * scale + DeviceContentView.headerHeight + 22))
+        let scale = min(1, (visible.width - 20) / natural.width,
+                        (visible.height - 20 - content.headerHeight - DeviceContentView.displayGap) / natural.height)
+        window.setContentSize(NSSize(width: max(320, natural.width * scale),
+            height: natural.height * scale + content.headerHeight + DeviceContentView.displayGap))
         resizeDisplay()
     }
 
@@ -272,7 +272,14 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         alert.beginSheetModal(for: window)
     }
 
-    func windowDidBecomeKey(_ notification: Notification) { focusInput() }
+    func windowDidBecomeKey(_ notification: Notification) {
+        guard !closed else { return }
+        display.setActive(true)
+        focusInput()
+    }
+    func windowDidResignKey(_ notification: Notification) {
+        if !closed { display.setActive(false) }
+    }
     func windowWillStartLiveResize(_ notification: Notification) { if !closed { display.beginResize() } }
     func windowDidResize(_ notification: Notification) { resizeDisplay() }
     func windowDidEndLiveResize(_ notification: Notification) {
@@ -305,12 +312,13 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
 
 @MainActor
 private final class DeviceContentView: NSView {
-    static let headerHeight: CGFloat = 74
+    static let displayGap: CGFloat = 12
     let display: NSView
     var canImport: () -> Bool = { false }
     var importFiles: ([URL]) -> Void = { _ in }
-    var header: NSView? {
-        didSet { oldValue?.removeFromSuperview(); if let header { addSubview(header) } }
+    var headerHeight: CGFloat {
+        guard let window else { return 52 }
+        return max(0, bounds.height - window.contentLayoutRect.height)
     }
     init(display: NSView) {
         self.display = display
@@ -331,18 +339,30 @@ private final class DeviceContentView: NSView {
     required init?(coder: NSCoder) { nil }
 
     var availableDisplaySize: NSSize {
-        NSSize(width: max(1, bounds.width - 16), height: max(1, bounds.height - Self.headerHeight - 22))
+        NSSize(width: max(1, bounds.width),
+               height: max(1, bounds.height - headerHeight - Self.displayGap))
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        let header = NSRect(x: 0, y: bounds.height - headerHeight, width: bounds.width, height: headerHeight)
+            .insetBy(dx: 0.5, dy: 0.5)
+        let path = NSBezierPath(roundedRect: header, xRadius: headerHeight / 2, yRadius: headerHeight / 2)
+        NSColor(calibratedWhite: 0.12, alpha: 1).setFill()
+        path.fill()
+        NSColor(calibratedWhite: 0.28, alpha: 1).setStroke()
+        path.lineWidth = 1
+        path.stroke()
     }
 
     override func layout() {
         super.layout()
-        header?.frame = NSRect(x: 0, y: max(0, bounds.height - Self.headerHeight),
-                               width: bounds.width, height: Self.headerHeight)
         let intrinsic = display.intrinsicContentSize
         let size = intrinsic.width > 0 && intrinsic.height > 0 ? intrinsic : display.frame.size
-        let available = NSRect(origin: NSPoint(x: 8, y: 8), size: availableDisplaySize)
+        let available = NSRect(origin: .zero, size: availableDisplaySize)
         display.frame = NSRect(x: available.midX - size.width / 2, y: available.midY - size.height / 2,
                                width: size.width, height: size.height)
+        needsDisplay = true
     }
 }
 

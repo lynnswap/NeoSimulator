@@ -1,4 +1,5 @@
-import SwiftUI
+import AppKit
+import Observation
 
 enum DeviceCommand: String {
     case home, lock, keyboard, screenshot, rotateLeft, rotateRight
@@ -13,82 +14,83 @@ final class DeviceToolbarState {
     var recording: VideoRecording?
 }
 
-struct DeviceToolbar: View {
-    let title: String
-    let state: DeviceToolbarState
-    let perform: (DeviceCommand) -> Void
+@MainActor
+final class DeviceToolbar: NSObject, NSToolbarDelegate {
+    let toolbar = NSToolbar(identifier: "DeviceToolbar")
+    private let state: DeviceToolbarState
+    private let perform: (DeviceCommand) -> Void
 
-    var body: some View {
-        VStack(spacing: 6) {
-            Text(title)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .padding(.leading, 80)
-                .padding(.trailing, 16)
-                .frame(maxWidth: .infinity)
-                .gesture(WindowDragGesture())
-                .allowsWindowActivationEvents()
-            HStack(spacing: 4) {
-                control("Home", symbol: "house", command: .home)
-                control("Save Screen", symbol: "camera.on.rectangle", command: .screenshot, usesTool: true)
-                control(state.recording == nil ? "Record Video" : "Stop Recording",
-                    symbol: state.recording == nil ? "record.circle" : "stop.circle.fill",
-                    command: .recording, usesTool: state.recording == nil)
-                    .foregroundStyle(state.recording == nil ? Color.primary : Color.red)
-                    .disabled(state.recording?.isStopping == true)
-                control("Rotate Right", symbol: "rotate.right", command: .rotateRight, usesTool: true)
-                control("Software Keyboard", symbol: "keyboard", command: .keyboard)
-                Menu {
-                    Button("Install App or Import Media…") { perform(.importFiles) }.disabled(state.isBusy)
-                    Button("Open URL…") { perform(.openURL) }.disabled(state.isBusy)
-                    Divider()
-                    Button("Lock") { perform(.lock) }
-                    Button("Shake") { perform(.shake) }
-                    Button("Toggle Appearance") { perform(.appearance) }
-                    Divider()
-                    Button("Show or Hide Device Bezels") { perform(.bezel) }
-                    Button("Stay On Top") { perform(.stayOnTop) }
-                    Button("Fit Screen") { perform(.fit) }
-                    Divider()
-                    Button("Shut Down") { perform(.shutdown) }.disabled(state.isBusy || state.recording != nil)
-                } label: {
-                    Image(systemName: "ellipsis").frame(width: 28, height: 24)
+    init(state: DeviceToolbarState, perform: @escaping (DeviceCommand) -> Void) {
+        self.state = state
+        self.perform = perform
+        super.init()
+        toolbar.delegate = self
+        toolbar.displayMode = .iconOnly
+        toolbar.allowsUserCustomization = false
+        updateItems()
+    }
+
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        [.flexibleSpace, identifier(.home), identifier(.screenshot), identifier(.rotateRight), identifier(.recording)]
+    }
+
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        toolbarDefaultItemIdentifiers(toolbar)
+    }
+
+    func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
+                 willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
+        guard let command = DeviceCommand(rawValue: itemIdentifier.rawValue) else { return nil }
+        let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+        let title: String
+        let symbol: String
+        switch command {
+        case .home: (title, symbol) = ("Home", "house")
+        case .screenshot: (title, symbol) = ("Save Screen", "camera.on.rectangle")
+        case .rotateRight: (title, symbol) = ("Rotate Right", "rotate.right")
+        case .recording: (title, symbol) = ("Stop Recording", "stop.circle.fill")
+        default: return nil
+        }
+        item.label = title
+        item.toolTip = title
+        item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)
+        item.target = self
+        item.action = #selector(activate(_:))
+        item.autovalidates = false
+        configure(item, command: command)
+        return item
+    }
+
+    private func identifier(_ command: DeviceCommand) -> NSToolbarItem.Identifier {
+        NSToolbarItem.Identifier(command.rawValue)
+    }
+
+    private func configure(_ item: NSToolbarItem, command: DeviceCommand) {
+        item.isEnabled = state.isConnected && (command == .home || !state.isBusy)
+        if command == .recording {
+            item.isHidden = state.recording == nil
+            item.isEnabled = state.isConnected && (state.recording.map { !$0.isStopping } ?? false)
+            item.image = item.image?.withSymbolConfiguration(.init(paletteColors: [.systemRed]))
+        }
+    }
+
+    private func updateItems() {
+        withObservationTracking {
+            // Read these even before AppKit has asked the delegate to create items.
+            _ = state.isBusy
+            _ = state.isConnected
+            _ = state.recording?.isStopping
+            for item in toolbar.items {
+                if let command = DeviceCommand(rawValue: item.itemIdentifier.rawValue) {
+                    configure(item, command: command)
                 }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .help("More Device Controls")
             }
-            .buttonStyle(.borderless)
-            .controlSize(.large)
-            .disabled(!state.isConnected)
+        } onChange: { [weak self] in
+            Task { @MainActor [weak self] in self?.updateItems() }
         }
-        .padding(.top, 9)
-        .padding(.bottom, 8)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
     }
 
-    private func control(_ title: String, symbol: String, command: DeviceCommand, usesTool: Bool = false) -> some View {
-        Button { perform(command) } label: {
-            Image(systemName: symbol).frame(width: 32, height: 26)
-        }
-        .help(title)
-        .accessibilityLabel(title)
-        .disabled(usesTool && state.isBusy)
+    @objc private func activate(_ sender: NSToolbarItem) {
+        if let command = DeviceCommand(rawValue: sender.itemIdentifier.rawValue) { perform(command) }
     }
-}
-
-#Preview("Device Controls") {
-    DeviceToolbar(title: "iPhone 17 Pro – iOS 27.0", state: DeviceToolbarState(), perform: { _ in })
-        .frame(width: 360, height: 74)
-}
-
-#Preview("Busy Device") {
-    let state = DeviceToolbarState()
-    state.isBusy = true
-    return DeviceToolbar(title: "iPad Pro – iPadOS 27.0", state: state, perform: { _ in })
-        .frame(width: 360, height: 74)
 }
