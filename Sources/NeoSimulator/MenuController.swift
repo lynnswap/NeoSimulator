@@ -5,7 +5,7 @@ final class MenuController: NSObject, NSMenuItemValidation {
     private weak var application: HostApplication?
     private var activeSession: DeviceWindowController? { NSApp.keyWindow?.windowController as? DeviceWindowController }
 
-    init(application: HostApplication) { self.application = application }
+    init(application: HostApplication?) { self.application = application }
 
     func install() {
         let main = NSMenu()
@@ -28,7 +28,8 @@ final class MenuController: NSObject, NSMenuItemValidation {
         file.addItem(.separator())
         item("Close Window", action: #selector(closeWindow(_:)), key: "w", in: file)
 
-        let edit = menu("Edit", in: main)
+        let edit = EditMenu(title: "Edit")
+        main.addItem(withTitle: "Edit", action: nil, keyEquivalent: "").submenu = edit
         let editingActions: [(String, Selector, String, NSEvent.ModifierFlags)] = [
             ("Undo", Selector(("undo:")), "z", .command),
             ("Redo", Selector(("redo:")), "z", [.command, .shift]),
@@ -129,5 +130,18 @@ final class MenuController: NSObject, NSMenuItemValidation {
         if let raw = sender.representedObject as? String, let command = DeviceCommand(rawValue: raw) {
             activeSession?.perform(command)
         }
+    }
+}
+
+// AppKit consumes a matching key equivalent even when its item is disabled, so
+// leave the standard editing shortcuts to the simulator while it has keyboard focus.
+private final class EditMenu: NSMenu {
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let window = event.window
+        let simulatorHasFocus = MainActor.assumeIsolated {
+            guard let window, let session = window.windowController as? DeviceWindowController else { return false }
+            return window.firstResponder === session.display.inputView
+        }
+        return !simulatorHasFocus && super.performKeyEquivalent(with: event)
     }
 }
