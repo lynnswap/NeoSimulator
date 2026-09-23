@@ -266,6 +266,16 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    // SimulatorKit applies modifier changes to every display with keyboard input and releases
+    // them only on displays that keep it. Sync them when this display gains keyboard input,
+    // and release them before it loses it.
+    private func sendModifiers(_ flags: NSEvent.ModifierFlags) {
+        guard let event = NSEvent.keyEvent(with: .flagsChanged, location: .zero, modifierFlags: flags,
+            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: 0, context: nil,
+            characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: 0) else { return }
+        NSApp.sendEvent(event)
+    }
+
     func present(_ error: Error) {
         guard !closed, let window else { return }
         let alert = NSAlert(error: error)
@@ -275,10 +285,15 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     func windowDidBecomeKey(_ notification: Notification) {
         guard !closed else { return }
         display.setActive(true)
+        display.setKeyboardEnabled(true)
+        sendModifiers(NSEvent.modifierFlags)
         focusInput()
     }
     func windowDidResignKey(_ notification: Notification) {
-        if !closed { display.setActive(false) }
+        guard !closed else { return }
+        sendModifiers([])
+        display.setKeyboardEnabled(false)
+        display.setActive(false)
     }
     func windowWillStartLiveResize(_ notification: Notification) { if !closed { display.beginResize() } }
     func windowDidResize(_ notification: Notification) { resizeDisplay() }
