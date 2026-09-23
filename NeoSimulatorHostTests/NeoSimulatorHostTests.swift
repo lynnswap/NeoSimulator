@@ -128,6 +128,28 @@ struct InputFocusTests {
         controller.invalidate()
     }
 
+    @Test func editMenuLeavesEditingKeysToTheFocusedSimulator() throws {
+        _ = NSApplication.shared
+        MenuController(application: nil).install()
+        defer { NSApp.mainMenu = nil }
+        let display = TestDisplay()
+        let controller = try makeController(display)
+        defer { controller.invalidate() }
+        let window = try #require(controller.window)
+        window.makeKeyAndOrderFront(nil)
+        controller.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification, object: window))
+        #expect(window.firstResponder === display.inputView)
+        let editing = try [("z", 6), ("x", 7), ("c", 8), ("v", 9)].map { key, code in
+            try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil,
+                characters: key, charactersIgnoringModifiers: key, isARepeat: false, keyCode: UInt16(code)))
+        }
+        for event in editing { NSApp.sendEvent(event) }
+        #expect(display.input.keyDowns.map(\.keyCode) == [6, 7, 8, 9])
+        window.makeFirstResponder(window)
+        #expect(NSApp.mainMenu?.performKeyEquivalent(with: editing[3]) == true)
+    }
+
     @Test func nativeDisplayKeepsInputIdentityAndChromeActivation() throws {
         _ = NSApplication.shared
         let selection = Process()
@@ -173,8 +195,10 @@ struct InputFocusTests {
 
 @MainActor
 private final class InputView: NSView {
+    var keyDowns: [NSEvent] = []
     var modifiers: [NSEvent] = []
     override var acceptsFirstResponder: Bool { true }
+    override func keyDown(with event: NSEvent) { keyDowns.append(event) }
     override func flagsChanged(with event: NSEvent) { modifiers.append(event) }
 }
 @MainActor
