@@ -128,6 +128,34 @@ struct InputFocusTests {
         controller.invalidate()
     }
 
+    @Test func keyboardInputAndModifiersFollowTheKeyWindow() throws {
+        _ = NSApplication.shared
+        let first = TestDisplay()
+        let second = TestDisplay()
+        let a = try makeController(first)
+        let b = try makeController(second)
+        defer { a.invalidate(); b.invalidate() }
+        var events: [(flags: NSEvent.ModifierFlags, keyboards: [[Bool]])] = []
+        let monitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { event in
+            events.append((event.modifierFlags, [first.keyboard, second.keyboard]))
+            return event
+        }
+        defer { if let monitor { NSEvent.removeMonitor(monitor) } }
+        let flags = NSEvent.modifierFlags
+        a.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification, object: a.window))
+        a.windowDidResignKey(Notification(name: NSWindow.didResignKeyNotification, object: a.window))
+        b.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification, object: b.window))
+        #expect(first.keyboard == [true, false])
+        #expect(second.keyboard == [true])
+        #expect(events.map(\.flags) == [flags, [], flags])
+        #expect(events.map(\.keyboards) == [[[true], []], [[true], []], [[true, false], [true]]])
+        a.invalidate()
+        a.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification))
+        a.windowDidResignKey(Notification(name: NSWindow.didResignKeyNotification))
+        #expect(first.keyboard == [true, false])
+        #expect(events.count == 3)
+    }
+
     @Test func nativeDisplayKeepsInputIdentityAndChromeActivation() throws {
         _ = NSApplication.shared
         let selection = Process()
@@ -144,6 +172,7 @@ struct InputFocusTests {
         let runtime = try SimulatorRuntime(xcodeURL: xcode)
         let type = try #require(NSClassFromString("SimulatorKit.SimDisplayView") as? NSView.Type)
         let view = type.init(frame: .zero)
+        #expect(object_getIvar(view, runtime.keyboardInput) == nil)
         let input = try #require(XSHSwiftCallObjectGetter(runtime.digitizer, view) as? NSView)
         #expect(input.isDescendant(of: view))
         #expect(input.nextResponder === view)
@@ -190,6 +219,7 @@ private final class TestDisplay: SimulatorDisplay {
     var isBooted = true
     var buttons: [DeviceButton] = []
     var activations: [Bool] = []
+    var keyboard: [Bool] = []
     var disconnectCount = 0
     init() { view.addSubview(input) }
     func press(_ button: DeviceButton) throws { buttons.append(button) }
@@ -197,6 +227,7 @@ private final class TestDisplay: SimulatorDisplay {
     func toggleAppearance() throws {}
     func setChromeVisible(_ visible: Bool) {}
     func setActive(_ active: Bool) { activations.append(active) }
+    func setKeyboardEnabled(_ enabled: Bool) { keyboard.append(enabled) }
     func setRotation(degrees: Double) {}
     func beginResize() {}
     func resize(to size: NSSize) { view.setFrameSize(size) }
