@@ -15,6 +15,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     private let onClose: (String) -> Void
     private let content: DeviceContentView
     private var deviceToolbar: DeviceToolbar?
+    private var commandKeyUpMonitor: Any?
     var canPerformCommands: Bool { !closed && toolbarState.isConnected && display.isBooted }
     var canPerformToolOperation: Bool { canPerformCommands && !toolbarState.isBusy }
     var staysOnTop: Bool { window?.level == .floating }
@@ -55,6 +56,14 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         content.importFiles = { [weak self] in self?.importFiles($0) }
         window.contentView = content
         window.contentMinSize = NSSize(width: 320, height: 300)
+        // AppKit never dispatches key-ups while Command is held; forward them
+        // so the simulator does not keep the key pressed.
+        commandKeyUpMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyUp) { [weak self] event in
+            guard let self, event.modifierFlags.contains(.command), event.window === self.window,
+                self.window?.firstResponder === self.display.inputView else { return event }
+            self.display.inputView.keyUp(with: event)
+            return nil
+        }
         fitScreen()
     }
 
@@ -298,6 +307,8 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     private func disconnect() {
         guard !closed else { return }
         closed = true
+        if let commandKeyUpMonitor { NSEvent.removeMonitor(commandKeyUpMonitor) }
+        commandKeyUpMonitor = nil
         toolbarState.isConnected = false
         operation?.cancel()
         tools.cancel()
