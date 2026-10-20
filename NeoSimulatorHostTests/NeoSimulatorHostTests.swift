@@ -12,7 +12,7 @@ struct InputFocusTests {
         #expect(window.firstResponder === display.inputView)
         #expect(display.input.modifiers.count == 1)
         #expect(display.input.modifiers.last?.modifierFlags == NSEvent.modifierFlags)
-        for command in [DeviceCommand.home, .lock, .keyboard] {
+        for command in [DeviceCommand.ID.home, .lock, .toggleSoftwareKeyboard] {
             window.makeFirstResponder(window)
             controller.perform(command)
             #expect(window.firstResponder === display.inputView)
@@ -38,38 +38,43 @@ struct InputFocusTests {
         #expect(window.subtitle == "iOS")
         #expect(window.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua)
         let toolbar = try #require(window.toolbar)
-        let commands = toolbar.items.filter { DeviceCommand(rawValue: $0.itemIdentifier.rawValue) != nil }
+        let commands = toolbar.items.filter { DeviceCommand.ID(rawValue: $0.itemIdentifier.rawValue) != nil }
         #expect(commands.filter { !$0.isHidden }.map(\.itemIdentifier.rawValue) ==
-            ["home", "screenshot", "rotateRight"])
+            ["home", "saveScreen", "rotateRight"])
         let home = try #require(commands.first { $0.itemIdentifier.rawValue == "home" })
         #expect(NSApp.sendAction(try #require(home.action), to: home.target, from: home))
         #expect(display.buttons == [.home])
-        controller.toolbarState.isBusy = true
+        #expect(controller.session.reserve())
         await Task.yield()
         #expect(home.isEnabled)
-        #expect(commands.filter { ["screenshot", "rotateRight"].contains($0.itemIdentifier.rawValue) }
+        #expect(commands.filter { ["saveScreen", "rotateRight"].contains($0.itemIdentifier.rawValue) }
             .allSatisfy { !$0.isEnabled })
-        controller.toolbarState.isConnected = false
+        controller.session.disconnect()
         await Task.yield()
         #expect(commands.allSatisfy { !$0.isEnabled })
     }
 
     @Test func toolbarShowsRecordingStopAndHidesItAfterCompletion() async throws {
-        let controller = try makeController(TestDisplay())
+        let controller = try makeController(TestDisplay()) { _ in
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/sh")
+            process.arguments = ["-c", """
+                trap 'exit 0' INT
+                echo 'Recording started' >&2
+                while :; do sleep 0.05; done
+                """]
+            return process
+        }
         defer { controller.invalidate() }
         let toolbar = try #require(controller.window?.toolbar)
-        let item = try #require(toolbar.items.first { $0.itemIdentifier.rawValue == "recording" })
+        let item = try #require(toolbar.items.first { $0.itemIdentifier.rawValue == "stopRecording" })
         #expect(item.isHidden)
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = ["-c", """
-            trap 'exit 0' INT
-            echo 'Recording started' >&2
-            while :; do sleep 0.05; done
-            """]
-        let recording = try VideoRecording(process: process, startupTimeout: .seconds(3))
-        controller.toolbarState.recording = recording
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try controller.session.startRecording(to: directory.appendingPathComponent("Recording.mp4"))
+        let recording = try #require(controller.session.recording)
         for _ in 0..<100 where item.isHidden { try await Task.sleep(for: .milliseconds(10)) }
         #expect(!item.isHidden)
         #expect(item.isEnabled)
@@ -78,7 +83,6 @@ struct InputFocusTests {
         #expect(recording.isStopping)
         #expect(!item.isEnabled)
         try await recording.waitUntilFinished()
-        controller.toolbarState.recording = nil
         for _ in 0..<100 where !item.isHidden { try await Task.sleep(for: .milliseconds(10)) }
         #expect(item.isHidden)
     }
@@ -91,10 +95,11 @@ struct InputFocusTests {
             window.setContentSize(size)
             controller.windowDidResize(Notification(name: NSWindow.didResizeNotification, object: window))
             let content = try #require(window.contentView)
-            #expect(controller.display.view.frame.minX >= 0)
-            #expect(controller.display.view.frame.minY >= 0)
-            #expect(controller.display.view.frame.maxX <= content.bounds.maxX)
-            #expect(controller.display.view.frame.maxY <= window.contentLayoutRect.maxY - 12)
+            let frame = controller.session.display.view.frame
+            #expect(frame.minX >= 0)
+            #expect(frame.minY >= 0)
+            #expect(frame.maxX <= content.bounds.maxX)
+            #expect(frame.maxY <= window.contentLayoutRect.maxY - 12)
             #expect(try #require(window.standardWindowButton(.closeButton)).isHidden == false)
         }
     }
@@ -111,10 +116,20 @@ struct InputFocusTests {
         display.isBooted = false
         controller.perform(.home)
         controller.perform(.lock)
-        #expect(!controller.canPerformCommands)
-        #expect(!controller.canPerformToolOperation)
+        #expect(!controller.session.canPerformCommands)
+        #expect(!controller.session.canPerformToolOperation)
         #expect(display.buttons.isEmpty)
         controller.invalidate()
+    }
+
+    @Test func failedShutdownLeavesTheBootedDeviceUsable() async throws {
+        let controller = try makeController(TestDisplay())
+        defer { controller.invalidate() }
+        var failure: Error?
+        controller.session.run({ try await controller.session.shutDown() }, failure: { failure = $0 })
+        for _ in 0..<3000 where controller.session.isBusy { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(failure != nil)
+        #expect(controller.session.canPerformCommands)
     }
 
     @Test func refusedFocusDoesNotSendModifierEvents() throws {
@@ -229,12 +244,35 @@ struct InputFocusTests {
         XSHSwiftDisconnect(runtime.disconnect, view)
     }
 
-    private func makeController(_ display: TestDisplay) throws -> DeviceWindowController {
-        try DeviceWindowController(
+    @Test func unsupportedCommandsAreHiddenFromMenusAndToolbar() throws {
+        _ = NSApplication.shared
+        let menus = MenuController(application: nil)
+        menus.install()
+        defer { NSApp.mainMenu = nil }
+        let controller = try makeController(TestDisplay(), features: [])
+        defer { controller.invalidate() }
+        let toolbar = try #require(controller.window?.toolbar)
+        #expect(toolbar.items.compactMap { DeviceCommand.ID(rawValue: $0.itemIdentifier.rawValue) } ==
+            [.home, .saveScreen, .stopRecording])
+        let device = try #require(NSApp.mainMenu?.items.first { $0.title == "Device" }?.submenu)
+        menus.updateVisibility(in: device, for: controller.session.capabilities)
+        let visible = device.items.filter { !$0.isHidden }
+        #expect(visible.map { $0.isSeparatorItem ? "-" : $0.title } == ["Shut Down", "-", "Home", "Lock", "Shake"])
+        controller.perform(.rotateRight)
+        #expect(!controller.session.isBusy)
+    }
+
+    private func makeController(_ display: TestDisplay,
+                                features: Set<String> = [DeviceCapabilities.displayRotation],
+                                recordingProcess: ((URL) -> Process)? = nil) throws -> DeviceWindowController {
+        let session = DeviceSession(
             device: AvailableDevice(identifier: "test-device", name: "Test iPhone", runtimeName: "iOS", state: 3),
+            capabilities: DeviceCapabilities(family: .iPhone, runtimeVersion: 0x1B_00_00,
+                                             supportsFeature: { features.contains($0) }),
             display: display,
             tools: try DeviceTools(identifier: "test-device", xcodeURL: URL(fileURLWithPath: "/Applications/Xcode.app")),
-            onClose: { _ in })
+            recordingProcess: recordingProcess)
+        return try DeviceWindowController(session: session, onClose: { _ in })
     }
 }
 
@@ -279,6 +317,13 @@ private final class TestDisplay: SimulatorDisplay {
 
 @Suite @MainActor
 struct HostBehaviorTests {
+    @Test func windowTitlesFollowSimulatorNaming() {
+        #expect(deviceWindowTitles(name: "iPad Pro 11-inch (M5) (16GB)", runtimeName: "iOS 27.0")
+            == ("iPad Pro 11-inch (M5)", "16GB – iOS 27.0"))
+        #expect(deviceWindowTitles(name: "iPhone 17", runtimeName: "iOS 26.5") == ("iPhone 17", "iOS 26.5"))
+        #expect(deviceWindowTitles(name: "My iPad (16GB)", runtimeName: "iOS 27.0") == ("My iPad (16GB)", "iOS 27.0"))
+    }
+
     @Test func launchConflictIsRetainedBeforeDeferredTeardown() {
         let center = NotificationCenter()
         let monitor = HostConflictMonitor(notificationCenter: center)

@@ -93,7 +93,8 @@ Neo currently provides:
 - simulator app installation and image, video, and vCard import through a file
   picker or drag and drop;
 - opening web addresses and custom app URL schemes on the selected device;
-- File, Device, I/O, Features, and Window menus modeled after Simulator.app;
+- File, Edit, Device, I/O, Features, Window, and Help menus in Simulator.app's
+  order, showing only the commands the active device supports;
 - Home, Lock, Shake, rotation, appearance, bezel, Stay on Top, Fit Screen, and
   standard window commands.
 
@@ -102,12 +103,13 @@ Use **File → Open Simulator…** (Command-N) to choose a device and
 running; it can be reopened from the device browser. Neo requires no
 `Simulator.app` installation.
 
-Choose **File → Record Video…** (Command-R) and a destination to begin recording.
-Use the red stop control or Command-R to finish. Neo waits for the video to be
-finalized before replacing an existing destination file. If the final save
-fails, the error includes the temporary recording's location for recovery.
-The stop control appears in the header while recording. Toggle the software
-keyboard through **I/O → Toggle Software Keyboard** (Command-K).
+Choose **File → Record Screen…** (Command-R) and a destination to begin
+recording. Use the red stop control or **File → Stop Recording** to finish. Neo
+waits for the video to be finalized before replacing an existing destination
+file. If the final save fails, the error includes the temporary recording's
+location for recovery. The stop control appears in the header while recording.
+Toggle the software keyboard through **I/O → Keyboard → Toggle Software
+Keyboard** (Command-K).
 
 Drop simulator `.app` bundles or media onto a device, or choose
 **File → Install App or Import Media…**. If only some files succeed, Neo lists

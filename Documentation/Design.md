@@ -93,11 +93,13 @@ signal cannot land between a move and a separate bookkeeping update.
 | Validate Xcode 27+ and private components | `InstallationInspector` |
 | Serialize route and process transitions | `HostModeController` |
 | Observe and terminate exact app identities | `WorkspaceClient` |
-| Observe booted iOS simulator membership | `XSHNeoHostApplication` |
-| Load and validate the private runtime | `XSHPrivateRuntime` |
-| Own one display, HID client, and window | `XSHDeviceWindowController` |
-| Build and validate active-window menus | `XSHMenuController` |
-| Run screenshot and rotation operations | `XSHDeviceToolRunner` |
+| Observe booted iOS simulator membership | `HostApplication` |
+| Load and validate the private runtime | `SimulatorRuntime` |
+| Own one device's display, HID client, tools, and operations | `DeviceSession` |
+| Present one device window | `DeviceWindowController` |
+| Define commands, their availability, and state | `DeviceCommand` |
+| Build and validate active-window menus | `MenuController` |
+| Run device tool subprocesses | `DeviceToolRunner` |
 | Clipboard synchronization | deliberately no owner |
 
 The active simulator for a menu command is derived from `NSApp.keyWindow` each

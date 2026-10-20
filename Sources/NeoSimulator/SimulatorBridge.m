@@ -28,11 +28,15 @@ static void XSHRecordException(NSException *exception, NSError **error) {
         _name = device.name ?: @"iOS Simulator";
         _runtimeName = device.runtime.name ?: @"iOS";
         _platformIdentifier = device.runtime.platformIdentifier ?: @"";
+        _productFamily = device.deviceType.productFamilyID;
+        _runtimeVersion = device.runtime.version;
     }
     return self;
 }
 
 - (NSUInteger)state { return self.device.state; }
+
+- (BOOL)supportsFeature:(NSString *)feature { return [self.device supportsFeature:feature]; }
 
 - (BOOL)toggleAppearanceWithError:(NSError **)error {
     @try {

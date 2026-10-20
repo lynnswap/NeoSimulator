@@ -35,6 +35,11 @@ static const uint32_t XSHButtonStateUp = 2;
 @interface XSHSimRuntime : NSObject
 - (nullable NSString *)name;
 - (nullable NSString *)platformIdentifier;
+- (uint32_t)version;
+@end
+
+@interface XSHSimDeviceType : NSObject
+- (int)productFamilyID;
 @end
 
 @interface XSHSimDevice : NSObject
@@ -42,6 +47,8 @@ static const uint32_t XSHButtonStateUp = 2;
 - (nullable NSString *)name;
 - (nullable NSUUID *)UDID;
 - (nullable XSHSimRuntime *)runtime;
+- (nullable XSHSimDeviceType *)deviceType;
+- (BOOL)supportsFeature:(NSString *)feature;
 - (NSUInteger)currentUIInterfaceStyle;
 - (BOOL)setUIInterfaceStyle:(NSUInteger)style error:(NSError **)error;
 - (BOOL)postDarwinNotification:(NSString *)notificationName error:(NSError **)error;

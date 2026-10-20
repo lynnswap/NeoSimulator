@@ -1,9 +1,13 @@
 import AppKit
 
+/// Builds the main menu in Simulator.app's order and routes device commands to
+/// the key device window.
 @MainActor
-final class MenuController: NSObject, NSMenuItemValidation {
+final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
     private weak var application: HostApplication?
-    private var activeSession: DeviceWindowController? { NSApp.keyWindow?.windowController as? DeviceWindowController }
+    private var activeWindow: DeviceWindowController? {
+        NSApp.keyWindow?.windowController as? DeviceWindowController
+    }
 
     init(application: HostApplication?) { self.application = application }
 
@@ -21,10 +25,9 @@ final class MenuController: NSObject, NSMenuItemValidation {
         let file = menu("File", in: main)
         item("Open Simulator…", action: #selector(showBrowser(_:)), key: "n", in: file)
         file.addItem(.separator())
-        command("Save Screen…", .screenshot, key: "s", in: file)
-        command("Record Video…", .recording, key: "r", in: file)
+        commands([.saveScreen, .recordScreen, .stopRecording], in: file)
         file.addItem(.separator())
-        command("Install App or Import Media…", .importFiles, key: "i", modifiers: [.command, .shift], in: file)
+        commands([.importFiles], in: file)
         file.addItem(.separator())
         item("Close Window", action: #selector(closeWindow(_:)), key: "w", in: file)
 
@@ -38,43 +41,48 @@ final class MenuController: NSObject, NSMenuItemValidation {
             ("Paste", #selector(NSText.paste(_:)), "v", .command),
             ("Select All", #selector(NSText.selectAll(_:)), "a", .command),
         ]
-        for (title, action, key, modifiers) in editingActions {
+        for (index, (title, action, key, modifiers)) in editingActions.enumerated() {
+            if index == 2 { edit.addItem(.separator()) }
             item(title, action: action, key: key, modifiers: modifiers, in: edit).target = nil
         }
 
         let device = menu("Device", in: main)
-        command("Rotate Left", .rotateLeft, key: String(UnicodeScalar(NSLeftArrowFunctionKey)!), in: device)
-        command("Rotate Right", .rotateRight, key: String(UnicodeScalar(NSRightArrowFunctionKey)!), in: device)
+        commands([.shutDown], in: device)
         device.addItem(.separator())
-        command("Home", .home, key: "h", modifiers: [.command, .shift], in: device)
-        command("Lock", .lock, key: "l", in: device)
-        command("Shake", .shake, key: "z", modifiers: [.command, .control], in: device)
+        commands([.rotateLeft, .rotateRight], in: device)
         device.addItem(.separator())
-        command("Shut Down", .shutdown, in: device)
+        commands([.home, .lock, .shake], in: device)
 
         let io = menu("I/O", in: main)
-        command("Toggle Software Keyboard", .keyboard, key: "k", in: io)
-        command("Open URL…", .openURL, key: "u", modifiers: [.command, .shift], in: io)
+        let keyboard = menu("Keyboard", in: io)
+        commands([.toggleSoftwareKeyboard], in: keyboard)
+        io.addItem(.separator())
+        commands([.openURL], in: io)
+
         let features = menu("Features", in: main)
-        command("Toggle Appearance", .appearance, key: "a", modifiers: [.command, .shift], in: features)
+        commands([.toggleAppearance], in: features)
 
         let window = menu("Window", in: main)
         item("Minimize", action: #selector(minimizeWindow(_:)), key: "m", in: window)
-        item("Zoom", action: #selector(zoomWindow(_:)), in: window)
         item("Enter Full Screen", action: #selector(fullScreen(_:)), key: "f", modifiers: [.command, .control], in: window)
-        command("Show Device Bezels", .bezel, in: window)
-        command("Stay On Top", .stayOnTop, in: window)
+        commands([.showDeviceBezels, .stayOnTop], in: window)
         window.addItem(.separator())
-        command("Fit Screen", .fit, key: "4", in: window)
+        commands([.fitScreen], in: window)
         window.addItem(.separator())
         item("Bring All to Front", action: #selector(NSApplication.arrangeInFront(_:)), in: window, target: NSApp)
+
+        let help = menu("Help", in: main)
+        item("NeoSimulator Help", action: #selector(showHelp(_:)), key: "?", in: help)
+
         NSApp.mainMenu = main
         NSApp.windowsMenu = window
+        NSApp.helpMenu = help
     }
 
     private func menu(_ title: String, in parent: NSMenu) -> NSMenu {
         let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
         let menu = NSMenu(title: title)
+        menu.delegate = self
         item.submenu = menu
         parent.addItem(item)
         return menu
@@ -91,44 +99,66 @@ final class MenuController: NSObject, NSMenuItemValidation {
         return item
     }
 
-    private func command(_ title: String, _ command: DeviceCommand, key: String = "",
-                         modifiers: NSEvent.ModifierFlags = .command, in menu: NSMenu) {
-        item(title, action: #selector(performCommand(_:)), key: key, modifiers: modifiers, in: menu)
-            .representedObject = command.rawValue
+    private func commands(_ ids: [DeviceCommand.ID], in menu: NSMenu) {
+        for id in ids {
+            let command = DeviceCommand.command(id)
+            item(command.title, action: #selector(performCommand(_:)), key: command.key,
+                 modifiers: command.modifiers, in: menu).representedObject = id.rawValue
+        }
+    }
+
+    // Simulator.app hides commands the key device does not support. Without a
+    // device window, commands stay visible and disabled.
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        updateVisibility(in: menu, for: activeWindow?.session.capabilities)
+    }
+
+    func updateVisibility(in menu: NSMenu, for capabilities: DeviceCapabilities?) {
+        var previousVisible: NSMenuItem?
+        for item in menu.items {
+            if let raw = item.representedObject as? String, let id = DeviceCommand.ID(rawValue: raw) {
+                item.isHidden = capabilities.map { !DeviceCommand.command(id).isSupported($0) } ?? false
+            } else if let submenu = item.submenu {
+                updateVisibility(in: submenu, for: capabilities)
+                item.isHidden = submenu.items.allSatisfy { $0.isHidden || $0.isSeparatorItem }
+            }
+            if item.isSeparatorItem {
+                // A separator needs a visible item before it and is hidden again
+                // below when nothing visible follows.
+                item.isHidden = previousVisible == nil || previousVisible?.isSeparatorItem == true
+            }
+            if !item.isHidden { previousVisible = item }
+        }
+        if previousVisible?.isSeparatorItem == true { previousVisible?.isHidden = true }
     }
 
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
-        if item.action == #selector(showBrowser(_:)) { return true }
+        if item.action == #selector(showBrowser(_:)) || item.action == #selector(showHelp(_:)) { return true }
         if item.action == #selector(fullScreen(_:)) {
             item.title = NSApp.keyWindow?.styleMask.contains(.fullScreen) == true ? "Exit Full Screen" : "Enter Full Screen"
         }
-        guard let value = item.representedObject as? String, let command = DeviceCommand(rawValue: value) else {
+        guard let raw = item.representedObject as? String, let id = DeviceCommand.ID(rawValue: raw) else {
             return NSApp.keyWindow != nil
         }
-        guard let session = activeSession else { item.state = .off; return false }
-        switch command {
-        case .screenshot, .rotateLeft, .rotateRight, .importFiles, .openURL: return session.canPerformToolOperation
-        case .shutdown: return session.canPerformToolOperation && session.toolbarState.recording == nil
-        case .recording:
-            item.title = session.toolbarState.recording == nil ? "Record Video…" : "Stop Recording"
-            return session.toolbarState.recording.map { !$0.isStopping } ?? session.canPerformToolOperation
-        case .bezel: item.state = session.showsDeviceBezel ? .on : .off
-        case .stayOnTop: item.state = session.staysOnTop ? .on : .off
-        case .fit: return session.canPerformCommands && session.window?.inLiveResize == false
-            && session.window?.styleMask.contains(.fullScreen) == false
-        default: break
+        let command = DeviceCommand.command(id)
+        guard let window = activeWindow else {
+            item.state = .off
+            return false
         }
-        return session.canPerformCommands
+        item.state = command.state?(window) ?? .off
+        return command.isEnabled(window)
     }
 
     @objc private func showBrowser(_ sender: Any?) { application?.showDeviceBrowser() }
     @objc private func closeWindow(_ sender: Any?) { NSApp.keyWindow?.performClose(sender) }
     @objc private func minimizeWindow(_ sender: Any?) { NSApp.keyWindow?.performMiniaturize(sender) }
-    @objc private func zoomWindow(_ sender: Any?) { NSApp.keyWindow?.performZoom(sender) }
     @objc private func fullScreen(_ sender: Any?) { NSApp.keyWindow?.toggleFullScreen(sender) }
+    @objc private func showHelp(_ sender: Any?) {
+        NSWorkspace.shared.open(URL(string: "https://github.com/lynnswap/NeoSimulator#readme")!)
+    }
     @objc private func performCommand(_ sender: NSMenuItem) {
-        if let raw = sender.representedObject as? String, let command = DeviceCommand(rawValue: raw) {
-            activeSession?.perform(command)
+        if let raw = sender.representedObject as? String, let id = DeviceCommand.ID(rawValue: raw) {
+            activeWindow?.perform(id)
         }
     }
 }
@@ -139,8 +169,8 @@ private final class EditMenu: NSMenu {
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let window = event.window
         let simulatorHasFocus = MainActor.assumeIsolated {
-            guard let window, let session = window.windowController as? DeviceWindowController else { return false }
-            return window.firstResponder === session.display.inputView
+            guard let window, let controller = window.windowController as? DeviceWindowController else { return false }
+            return window.firstResponder === controller.session.display.inputView
         }
         return !simulatorHasFocus && super.performKeyEquivalent(with: event)
     }

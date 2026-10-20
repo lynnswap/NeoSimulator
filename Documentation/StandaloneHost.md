@@ -63,11 +63,12 @@ NeoSimulator.app
 | Exact Neo, Legacy Simulator, and Device Hub lifecycle | `WorkspaceClient` |
 | Xcode and private-component compatibility gate | `InstallationInspector` |
 | Private runtime classes, selectors, and Swift thunks | `SimulatorRuntime` |
-| Booted-device membership | standalone host device-set observer |
-| One display connection and HID session | standalone host device session |
-| Window, toolbar, focus, and scaling | standalone host AppKit window controller |
-| Menu construction and active-window routing | standalone host menu controller |
-| Device commands and subprocesses | Swift `DeviceTools` and `DeviceToolRunner` |
+| Booted-device membership | `HostApplication` |
+| One device's display, HID, capabilities, and device operations | `DeviceSession` |
+| Window, toolbar, focus, sheets, and scaling | `DeviceWindowController` |
+| Command titles, shortcuts, availability, state, and actions | `DeviceCommand` catalog |
+| Menu construction, visibility, and active-window routing | `MenuController` |
+| Device tool subprocesses | `DeviceTools` and `DeviceToolRunner` |
 | Recording processes and final saves | app-owned Swift `RecordingStore` and `VideoRecording` |
 | Private Objective-C calls and exceptions | `SimulatorBridge` |
 | Device selection and previews | SwiftUI `DeviceBrowserView` |
