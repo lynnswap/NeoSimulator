@@ -122,6 +122,16 @@ struct InputFocusTests {
         controller.invalidate()
     }
 
+    @Test func failedShutdownLeavesTheBootedDeviceUsable() async throws {
+        let controller = try makeController(TestDisplay())
+        defer { controller.invalidate() }
+        var failure: Error?
+        controller.session.run({ try await controller.session.shutDown() }, failure: { failure = $0 })
+        for _ in 0..<3000 where controller.session.isBusy { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(failure != nil)
+        #expect(controller.session.canPerformCommands)
+    }
+
     @Test func refusedFocusDoesNotSendModifierEvents() throws {
         let display = TestDisplay()
         let controller = try makeController(display)

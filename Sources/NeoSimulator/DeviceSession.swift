@@ -94,7 +94,8 @@ final class DeviceSession {
                 if let self {
                     self.operation = nil
                     self.isBusy = false
-                    self.isConnected = self.isConnected && self.display.isBooted
+                    // A failed shutdown leaves a booted device usable again.
+                    self.isConnected = !self.isDisconnected && self.display.isBooted
                 }
             }
             do { try await body() }
