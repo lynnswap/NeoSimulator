@@ -21,6 +21,8 @@ final class SimulatorRuntime {
     let beginResize: UnsafeMutableRawPointer
     let resize: UnsafeMutableRawPointer
     let endResize: UnsafeMutableRawPointer
+    let keyboardEnabled: UnsafeMutableRawPointer
+    let keyboardInput: Ivar
 
     init(xcodeURL: URL) throws {
         self.xcodeURL = xcodeURL.resolvingSymlinksInPath()
@@ -46,6 +48,7 @@ final class SimulatorRuntime {
         beginResize = try symbol("$s12SimulatorKit14SimDisplayViewC11beginResizeyyFTj")
         resize = try symbol("$s12SimulatorKit14SimDisplayViewC8resizeTo4sizeySo6CGSizeV_tFTj")
         endResize = try symbol("$s12SimulatorKit14SimDisplayViewC9endResizeyyFTj")
+        keyboardEnabled = try symbol("$s12SimulatorKit31SimKeyboardInputDefaultDelegateC9isEnabledSbvs")
 
         serviceClass = try Self.requireClass("SimServiceContext",
             classMethods: ["sharedServiceContextForDeveloperDir:error:"],
@@ -65,6 +68,11 @@ final class SimulatorRuntime {
             classMethods: ["createSimDisplayViewWithDevice:simScreenID:"])
         hidClass = try Self.requireClass("SimulatorKit.SimDeviceLegacyHIDClient",
             methods: ["initWithDevice:error:", "sendWithMessage:freeWhenDone:completionQueue:completion:"])
+        let displayClass: AnyClass = try Self.requireClass("SimulatorKit.SimDisplayView")
+        guard let keyboardInput = class_getInstanceVariable(displayClass, "_defaultKeyboardDelegate") else {
+            throw HostError.unavailable("\(displayClass) does not provide _defaultKeyboardDelegate")
+        }
+        self.keyboardInput = keyboardInput
         try validateLoadedImages()
     }
 
@@ -131,6 +139,7 @@ protocol SimulatorDisplay: AnyObject {
     func toggleAppearance() throws
     func setChromeVisible(_ visible: Bool)
     func setActive(_ active: Bool)
+    func setKeyboardEnabled(_ enabled: Bool)
     func setRotation(degrees: Double)
     func beginResize()
     func resize(to size: NSSize)
@@ -175,6 +184,9 @@ final class SimulatorConnection: SimulatorDisplay {
             throw error
         }
         setChromeVisible(true)
+        // SimulatorKit connects keyboard input on every display and sends each modifier
+        // change to all of them; the window controller enables it only while the window is key.
+        setKeyboardEnabled(false)
     }
 
     var isBooted: Bool { !disconnected && device.state == 3 }
@@ -203,6 +215,10 @@ final class SimulatorConnection: SimulatorDisplay {
     func setActive(_ active: Bool) {
         guard !disconnected else { return }
         XSHSwiftSetChromeActive(runtime.chromeState, chromeView, active)
+    }
+    func setKeyboardEnabled(_ enabled: Bool) {
+        guard !disconnected, let keyboard = object_getIvar(view, runtime.keyboardInput) else { return }
+        XSHSwiftCallBoolMethod(runtime.keyboardEnabled, keyboard, enabled)
     }
     func setRotation(degrees: Double) {
         XSHSwiftSetAngleMeasurement(runtime.rotation, view, degrees, .degrees)
