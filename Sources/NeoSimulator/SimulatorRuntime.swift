@@ -58,10 +58,11 @@ final class SimulatorRuntime {
             "registerNotificationHandlerOnQueue:handler:", "unregisterNotificationHandler:error:",
         ])
         _ = try Self.requireClass("SimDevice", methods: [
-            "state", "name", "UDID", "runtime", "currentUIInterfaceStyle",
+            "state", "name", "UDID", "runtime", "deviceType", "supportsFeature:", "currentUIInterfaceStyle",
             "setUIInterfaceStyle:error:", "postDarwinNotification:error:",
         ])
-        _ = try Self.requireClass("SimRuntime", methods: ["name", "platformIdentifier"])
+        _ = try Self.requireClass("SimRuntime", methods: ["name", "platformIdentifier", "version"])
+        _ = try Self.requireClass("SimDeviceType", methods: ["productFamilyID"])
         screenClass = try Self.requireClass("SimulatorKit.SimDeviceScreen",
             methods: ["initWithDevice:screenID:", "screen", "isDefault", "isCarPlay"])
         factoryClass = try Self.requireClass("IDEPlaygroundSimulator.IDESimulatorPlaygroundUntil",

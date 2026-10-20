@@ -3,42 +3,33 @@ import UniformTypeIdentifiers
 
 @MainActor
 final class DeviceWindowController: NSWindowController, NSWindowDelegate {
-    let device: AvailableDevice
-    let display: any SimulatorDisplay
-    let tools: DeviceTools
-    let toolbarState = DeviceToolbarState()
+    let session: DeviceSession
     private(set) var showsDeviceBezel = true
-    private var operation: Task<Void, Never>?
-    private let recordings: RecordingStore
     private var closed = false
     private var didReadOrientation = false
     private let onClose: (String) -> Void
     private let content: DeviceContentView
     private var deviceToolbar: DeviceToolbar?
     private var commandKeyUpMonitor: Any?
-    var canPerformCommands: Bool { !closed && toolbarState.isConnected && display.isBooted }
-    var canPerformToolOperation: Bool { canPerformCommands && !toolbarState.isBusy }
     var staysOnTop: Bool { window?.level == .floating }
+    var canFitScreen: Bool {
+        session.canPerformCommands && window?.inLiveResize == false && window?.styleMask.contains(.fullScreen) == false
+    }
 
-    init(device: AvailableDevice, display: any SimulatorDisplay, tools: DeviceTools,
-         recordings: RecordingStore = RecordingStore(), onClose: @escaping (String) -> Void) throws {
-        self.device = device
-        self.display = display
-        self.tools = tools
-        self.recordings = recordings
+    init(session: DeviceSession, onClose: @escaping (String) -> Void) throws {
+        self.session = session
         self.onClose = onClose
-        content = DeviceContentView(display: display.view)
-        let natural = display.naturalSize
+        content = DeviceContentView(display: session.display.view)
+        let natural = session.display.naturalSize
         guard natural.width > 0, natural.height > 0 else {
-            display.disconnect()
+            session.disconnect()
             throw HostError.unavailable("Simulator display has no usable size")
         }
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 360, height: 700),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered, defer: false)
         super.init(window: window)
-        window.title = device.name
-        window.subtitle = device.runtimeName
+        (window.title, window.subtitle) = deviceWindowTitles(name: session.device.name, runtimeName: session.device.runtimeName)
         window.appearance = NSAppearance(named: .darkAqua)
         window.toolbarStyle = .unified
         window.titlebarAppearsTransparent = true
@@ -49,10 +40,10 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         window.hasShadow = true
         window.isReleasedWhenClosed = false
         window.delegate = self
-        let toolbar = DeviceToolbar(state: toolbarState) { [weak self] in self?.perform($0) }
+        let toolbar = DeviceToolbar(controller: self)
         deviceToolbar = toolbar
         window.toolbar = toolbar.toolbar
-        content.canImport = { [weak self] in self?.canPerformToolOperation == true }
+        content.canImport = { [weak self] in self?.session.canPerformToolOperation == true }
         content.importFiles = { [weak self] in self?.importFiles($0) }
         window.contentView = content
         window.contentMinSize = NSSize(width: 320, height: 300)
@@ -60,8 +51,8 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         // so the simulator does not keep the key pressed.
         commandKeyUpMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyUp) { [weak self] event in
             guard let self, event.modifierFlags.contains(.command), event.window === self.window,
-                self.window?.firstResponder === self.display.inputView else { return event }
-            self.display.inputView.keyUp(with: event)
+                self.window?.firstResponder === self.session.display.inputView else { return event }
+            self.session.display.inputView.keyUp(with: event)
             return nil
         }
         fitScreen()
@@ -74,116 +65,82 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         window?.makeKeyAndOrderFront(nil)
         if !didReadOrientation {
             didReadOrientation = true
-            runTool(presentError: false) { [self] in
-                let angle = try await tools.orientation()
-                try Task.checkCancellation()
-                applyRotation(angle)
-            }
+            session.run({ [weak self] in
+                guard let self else { return }
+                _ = try await self.session.readOrientation()
+                self.didRotate()
+            }, failure: { hostLog($0.localizedDescription) })
         }
     }
 
-    func perform(_ command: DeviceCommand) {
-        guard canPerformCommands else { return }
-        do {
-            switch command {
-            case .home: try display.press(.home)
-            case .lock: try display.press(.lock)
-            case .keyboard: try display.press(.softwareKeyboard)
-            case .shake: try display.shake()
-            case .appearance: try display.toggleAppearance()
-            case .bezel:
-                showsDeviceBezel.toggle()
-                display.setChromeVisible(showsDeviceBezel)
-                resizeDisplay()
-            case .stayOnTop: window?.level = staysOnTop ? .normal : .floating
-            case .fit: fitScreen()
-            case .screenshot: saveScreenshot()
-            case .rotateLeft, .rotateRight:
-                runTool { [self] in
-                    let angle = try await tools.rotate(left: command == .rotateLeft)
-                    try Task.checkCancellation()
-                    applyRotation(angle)
-                }
-            case .shutdown:
-                guard canPerformToolOperation, toolbarState.recording == nil else { return }
-                runTool { [self] in try await tools.shutdown() }
-                toolbarState.isConnected = false
-            case .recording: toggleRecording()
-            case .importFiles: chooseFiles()
-            case .openURL: openURL()
-            }
-        } catch { present(error) }
+    // MARK: Commands
+
+    func perform(_ id: DeviceCommand.ID) {
+        let command = DeviceCommand.command(id)
+        guard !closed, command.isSupported(session.capabilities), command.isEnabled(self) else { return }
+        command.perform(self)
         focusInput()
     }
 
-    private func runTool(presentError: Bool = true, _ action: @escaping @MainActor () async throws -> Void) {
-        guard canPerformToolOperation else { return }
-        toolbarState.isBusy = true
-        operation = Task { [weak self] in
-            defer {
-                if let self {
-                    self.toolbarState.isBusy = false
-                    self.toolbarState.isConnected = !self.closed && self.display.isBooted
-                    self.operation = nil
-                }
-            }
-            do { try await action() }
-            catch is CancellationError {}
-            catch {
-                if presentError { self?.present(error) }
-                else { hostLog(error.localizedDescription) }
-            }
-        }
+    func press(_ button: DeviceButton) { run { try session.press(button) } }
+
+    /// Runs an immediate device action and presents its failure on this window.
+    func run(_ action: () throws -> Void) {
+        do { try action() } catch { present(error) }
     }
 
-    private func saveScreenshot() {
-        guard canPerformToolOperation, let window else { return }
-        toolbarState.isBusy = true
+    func rotate(left: Bool) {
+        session.run({ [weak self] in
+            guard let self else { return }
+            try await self.session.rotate(left: left)
+            self.didRotate()
+        }, failure: { [weak self] in self?.present($0) })
+    }
+
+    func shutDown() {
+        session.run({ [session] in try await session.shutDown() }, failure: { [weak self] in self?.present($0) })
+    }
+
+    func toggleDeviceBezel() {
+        showsDeviceBezel.toggle()
+        session.display.setChromeVisible(showsDeviceBezel)
+        resizeDisplay()
+    }
+
+    func toggleStayOnTop() { window?.level = staysOnTop ? .normal : .floating }
+
+    func saveScreenshot() {
+        guard let window, session.reserve() else { return }
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.png]
         panel.canCreateDirectories = true
         panel.nameFieldStringValue = "Simulator Screenshot.png"
         panel.beginSheetModal(for: window) { [weak self] response in
             guard let self else { return }
-            self.toolbarState.isBusy = false
+            self.session.release()
             guard response == .OK, let destination = panel.url, !self.closed else { return }
-            self.runTool { [self] in
-                try await CaptureFile.write(to: destination, extension: "png") { temporary in
-                    try await tools.screenshot(to: temporary)
-                    let handle = try FileHandle(forReadingFrom: temporary)
-                    defer { try? handle.close() }
-                    guard try handle.read(upToCount: 8) == Data([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) else {
-                        throw HostError.operation("The screenshot tool did not produce a PNG file")
-                    }
-                }
-            }
+            self.session.run({ [session] in try await session.saveScreenshot(to: destination) },
+                             failure: { [weak self] in self?.present($0) })
         }
     }
 
-    private func toggleRecording() {
-        if let recording = toolbarState.recording { recording.stop(); return }
-        guard canPerformToolOperation, let window else { return }
-        toolbarState.isBusy = true
+    func chooseRecordingDestination() {
+        guard let window, session.reserve() else { return }
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.mpeg4Movie]
         panel.canCreateDirectories = true
         panel.nameFieldStringValue = "Simulator Recording.mp4"
         panel.beginSheetModal(for: window) { [weak self] response in
             guard let self else { return }
-            self.toolbarState.isBusy = false
+            self.session.release()
             guard response == .OK, let destination = panel.url, !self.closed else { return }
-            do {
-                self.toolbarState.recording = try self.recordings.start(to: destination,
-                    process: self.tools.recordingProcess) { [weak self] in
-                        self?.toolbarState.recording = nil
-                    }
-            } catch { self.present(error) }
+            do { try self.session.startRecording(to: destination) }
+            catch { self.present(error) }
         }
     }
 
-    private func chooseFiles() {
-        guard canPerformToolOperation, let window else { return }
-        toolbarState.isBusy = true
+    func chooseFilesToImport() {
+        guard let window, session.reserve() else { return }
         let panel = NSOpenPanel()
         panel.title = "Install App or Import Media"
         panel.prompt = "Import"
@@ -192,25 +149,17 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         panel.canChooseDirectories = false
         panel.beginSheetModal(for: window) { [weak self] response in
             guard let self else { return }
-            self.toolbarState.isBusy = false
+            self.session.release()
             if response == .OK, !self.closed { self.importFiles(panel.urls) }
         }
     }
 
     private func importFiles(_ urls: [URL]) {
-        runTool { [self] in
-            try await SimulatorFileImport.perform(urls) { url, kind in
-                switch kind {
-                case .application: try await tools.installApplication(at: url)
-                case .media: try await tools.importMedia(at: url)
-                }
-            }
-        }
+        session.run({ [session] in try await session.importFiles(urls) }, failure: { [weak self] in self?.present($0) })
     }
 
-    private func openURL() {
-        guard canPerformToolOperation, let window else { return }
-        toolbarState.isBusy = true
+    func chooseURLToOpen() {
+        guard let window, session.reserve() else { return }
         let alert = NSAlert()
         alert.messageText = "Open URL in Simulator"
         alert.informativeText = "Enter a web address or an app's URL scheme."
@@ -222,26 +171,27 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         alert.window.initialFirstResponder = field
         alert.beginSheetModal(for: window) { [weak self] response in
             guard let self else { return }
-            self.toolbarState.isBusy = false
+            self.session.release()
             guard response == .alertFirstButtonReturn, !self.closed else { return }
             let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
             guard let url = URL(string: text), url.scheme != nil else {
                 self.present(HostError.operation("Enter a URL with a scheme, such as https://example.com"))
                 return
             }
-            self.runTool { [self] in try await tools.openURL(url) }
+            self.session.run({ [session] in try await session.openURL(url) }, failure: { [weak self] in self?.present($0) })
         }
     }
 
-    private func applyRotation(_ angle: Double) {
-        display.setRotation(degrees: angle)
+    // MARK: Presentation
+
+    private func didRotate() {
         fitScreen()
         resizeDisplay()
     }
 
     func fitScreen() {
         guard let window, !window.inLiveResize, !window.styleMask.contains(.fullScreen) else { return }
-        let natural = display.naturalSize
+        let natural = session.display.naturalSize
         guard natural.width > 0, natural.height > 0 else { return }
         let visible = (window.screen ?? NSScreen.main)?.visibleFrame.size ?? NSSize(width: 1440, height: 900)
         let scale = min(1, (visible.width - 20) / natural.width,
@@ -253,17 +203,18 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
 
     private func resizeDisplay() {
         guard !closed else { return }
-        display.resize(to: content.availableDisplaySize)
+        session.display.resize(to: content.availableDisplaySize)
         content.needsLayout = true
         content.layoutSubtreeIfNeeded()
         window?.invalidateShadow()
     }
 
     func focusInput() {
-        guard canPerformCommands, let window else { return }
-        window.makeFirstResponder(display.inputView)
-        guard window.firstResponder === display.inputView else {
-            hostLog("Could not focus simulator input for \(device.id)")
+        guard session.canPerformCommands, let window else { return }
+        let input = session.display.inputView
+        window.makeFirstResponder(input)
+        guard window.firstResponder === input else {
+            hostLog("Could not focus simulator input for \(session.device.id)")
             return
         }
         // Reconcile modifier releases received while another window owned focus.
@@ -271,7 +222,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
             modifierFlags: NSEvent.modifierFlags, timestamp: ProcessInfo.processInfo.systemUptime,
             windowNumber: window.windowNumber, context: nil, characters: "",
             charactersIgnoringModifiers: "", isARepeat: false, keyCode: 0) {
-            display.inputView.flagsChanged(with: event)
+            input.flagsChanged(with: event)
         }
     }
 
@@ -293,26 +244,26 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
 
     func windowDidBecomeKey(_ notification: Notification) {
         guard !closed else { return }
-        display.setActive(true)
-        display.setKeyboardEnabled(true)
+        session.display.setActive(true)
+        session.display.setKeyboardEnabled(true)
         sendModifiers(NSEvent.modifierFlags)
         focusInput()
     }
     func windowDidResignKey(_ notification: Notification) {
         guard !closed else { return }
         sendModifiers([])
-        display.setKeyboardEnabled(false)
-        display.setActive(false)
+        session.display.setKeyboardEnabled(false)
+        session.display.setActive(false)
     }
-    func windowWillStartLiveResize(_ notification: Notification) { if !closed { display.beginResize() } }
+    func windowWillStartLiveResize(_ notification: Notification) { if !closed { session.display.beginResize() } }
     func windowDidResize(_ notification: Notification) { resizeDisplay() }
     func windowDidEndLiveResize(_ notification: Notification) {
-        if !closed { resizeDisplay(); display.endResize() }
+        if !closed { resizeDisplay(); session.display.endResize() }
     }
     func windowWillClose(_ notification: Notification) {
         guard !closed else { return }
         disconnect()
-        onClose(device.id)
+        onClose(session.device.id)
     }
     func invalidate() {
         disconnect()
@@ -324,14 +275,10 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         closed = true
         if let commandKeyUpMonitor { NSEvent.removeMonitor(commandKeyUpMonitor) }
         commandKeyUpMonitor = nil
-        toolbarState.isConnected = false
-        operation?.cancel()
-        tools.cancel()
-        toolbarState.recording?.stop()
         if let window, let sheet = window.attachedSheet {
             window.endSheet(sheet, returnCode: .cancel)
         }
-        display.disconnect()
+        session.disconnect()
     }
     isolated deinit { disconnect() }
 }

@@ -103,8 +103,8 @@ semantics:
 - Device: Rotate Left, Rotate Right, Home, Lock, Shake;
 - I/O: Toggle Software Keyboard;
 - Features: Toggle Appearance;
-- Window: Minimize, Zoom, Full Screen, Show Device Bezels, Stay on Top, Fit
-  Screen, Bring All to Front.
+- Window: Minimize, Full Screen, Show Device Bezels, Stay on Top, Fit
+  Screen, Bring All to Front. Simulator.app hides Zoom.
 
 The detached window header exposes Home, Save Screen, and Rotate Right using
 the same session actions as the menus. A red stop control appears while a video

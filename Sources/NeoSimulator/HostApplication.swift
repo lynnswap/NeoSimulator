@@ -57,6 +57,12 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         AvailableDevice(identifier: device.identifier, name: device.name, runtimeName: device.runtimeName, state: device.state)
     }
 
+    private static func capabilities(of device: XSHDeviceHandle) -> DeviceCapabilities {
+        DeviceCapabilities(family: DeviceCapabilities.Family(rawValue: device.productFamily),
+                           runtimeVersion: device.runtimeVersion,
+                           supportsFeature: { [device] in device.supportsFeature($0) })
+    }
+
     func openSimulator(withIdentifier identifier: String) async throws {
         guard !stopped else { throw HostError.operation("NeoSimulator is shutting down") }
         try conflicts.check()
@@ -125,11 +131,12 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                     try conflicts.check()
                     if let screen = XSHFindDefaultScreen(runtime.screenClass, device) {
                         let connection = try SimulatorConnection(device: device, screenID: screen.uint32Value, runtime: runtime)
-                        let controller = try DeviceWindowController(
-                            device: Self.describe(device), display: connection,
+                        let session = DeviceSession(
+                            device: Self.describe(device), capabilities: Self.capabilities(of: device),
+                            display: connection,
                             tools: try DeviceTools(identifier: identifier, xcodeURL: runtime.xcodeURL),
-                            recordings: recordings
-                        ) { [weak self] identifier in
+                            recordings: recordings)
+                        let controller = try DeviceWindowController(session: session) { [weak self] identifier in
                             self?.sessions.removeValue(forKey: identifier)
                             self?.suppressed.insert(identifier)
                             if self?.sessions.isEmpty == true { self?.showDeviceBrowser() }

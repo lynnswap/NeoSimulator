@@ -10,6 +10,11 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) NSString *runtimeName;
 @property (nonatomic, readonly) NSString *platformIdentifier;
 @property (nonatomic, readonly) NSUInteger state;
+/// `SimDeviceType.productFamilyID`: 1 iPhone, 2 iPad, 3 TV, 4 Watch, 7 Vision.
+@property (nonatomic, readonly) NSInteger productFamily;
+/// `SimRuntime.version`, packed as major << 16 | minor << 8 | patch.
+@property (nonatomic, readonly) uint32_t runtimeVersion;
+- (BOOL)supportsFeature:(NSString *)feature;
 - (BOOL)toggleAppearanceWithError:(NSError **)error;
 - (BOOL)shakeWithError:(NSError **)error;
 @end
