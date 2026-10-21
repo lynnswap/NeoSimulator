@@ -342,6 +342,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                         if let controller = awaitingReconnect.removeValue(forKey: identifier) {
                             try conflicts.check()
                             controller.reconnect(session)
+                            restoreLocation(of: session)
                             return
                         }
                         let controller = try DeviceWindowController(session: session, onClose: { [weak self] in
@@ -353,6 +354,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                             nextWindowPosition = window.cascadeTopLeft(from: nextWindowPosition)
                         }
                         controller.showAndActivate()
+                        restoreLocation(of: session)
                         return
                     }
                     try await Task.sleep(for: .milliseconds(250))
@@ -362,6 +364,17 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             } catch {
                 reportedFailures.insert(identifier)
                 report(error)
+            }
+        }
+    }
+
+    /// Applies the saved Features ▸ Location choice to a new connection, also
+    /// after a restart, without waiting for it. Like Simulator.app, which
+    /// ignores the result, a failure is not shown; it is logged.
+    private func restoreLocation(of session: DeviceSession) {
+        Task {
+            do { try await session.restoreLocation() } catch {
+                hostLog("Could not restore the simulated location of \(session.device.name): \(error.localizedDescription)")
             }
         }
     }

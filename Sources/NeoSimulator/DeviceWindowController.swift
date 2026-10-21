@@ -17,6 +17,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     private var content: DeviceContentView
     private var deviceToolbar: DeviceToolbar?
     private var commandKeyUpMonitor: Any?
+    private var customLocation: CustomLocationWindowController?
     var staysOnTop: Bool { window?.level == .floating }
     var canFitScreen: Bool {
         session.canPerformCommands && window?.inLiveResize == false && window?.styleMask.contains(.fullScreen) == false
@@ -83,6 +84,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         await session.finishRecording()
         guard !closed else { return }
         if let window, let sheet = window.attachedSheet { window.endSheet(sheet, returnCode: .cancel) }
+        customLocation?.close()
         session.disconnect()
         window?.subtitle = "Restarting…"
     }
@@ -181,7 +183,39 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         resizeDisplay()
     }
 
-    func toggleStayOnTop() { window?.level = staysOnTop ? .normal : .floating }
+    func toggleStayOnTop() {
+        window?.level = staysOnTop ? .normal : .floating
+        customLocation?.window?.level = window?.level ?? .normal
+    }
+
+    /// Features ▸ Location: Custom Location… asks for a coordinate first.
+    func selectLocation(_ selection: LocationSelection) {
+        guard !closed, session.canPerformCommands else { return }
+        guard selection == .custom else {
+            changeLocation { [session] in try await session.selectLocation(selection) }
+            focusInput()
+            return
+        }
+        let customLocation = customLocation ?? CustomLocationWindowController { [weak self] latitude, longitude in
+            guard let self else { return }
+            changeLocation { [session] in try await session.setCustomLocation(latitude: latitude, longitude: longitude) }
+        }
+        self.customLocation = customLocation
+        // The window takes its device window's level, also when Stay on Top
+        // changes, so that the device window cannot hide it.
+        customLocation.window?.level = window?.level ?? .normal
+        let defaults = UserDefaults.standard
+        customLocation.show(latitude: defaults.double(forKey: HostPreferences.locationLatitude),
+                            longitude: defaults.double(forKey: HostPreferences.locationLongitude))
+    }
+
+    /// Starts a location change before returning, so that changes reach the
+    /// device in the order they are chosen, and presents its failure on this window.
+    private func changeLocation(_ change: @escaping @MainActor () async throws -> Void) {
+        Task.immediate { [weak self] in
+            do { try await change() } catch { self?.present(error) }
+        }
+    }
 
     /// Whether captures apply the device's mask by default: the device has
     /// one and `ScreenShotUseMask` is on.
@@ -494,6 +528,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         if let window, let sheet = window.attachedSheet {
             window.endSheet(sheet, returnCode: .cancel)
         }
+        customLocation?.close()
         session.disconnect()
     }
     isolated deinit { disconnect() }

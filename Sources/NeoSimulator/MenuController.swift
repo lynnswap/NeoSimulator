@@ -6,6 +6,7 @@ import AppKit
 final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
     private weak var application: HostApplication?
     private let openSimulator: OpenSimulatorMenu
+    private let locationMenu = LocationMenu()
     /// Items whose shortcut depends on the key device.
     private var keyedItems: [NSMenuItem] = []
     private var keyWindowObserver: (any NSObjectProtocol)?
@@ -99,6 +100,11 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
         commands([.increaseTextSize, .decreaseTextSize, .toggleIncreaseContrast], in: features)
         features.addItem(.separator())
         commands([.triggerCloudSync], in: features)
+        features.addItem(.separator())
+        let location = NSMenuItem(title: "Location", action: nil, keyEquivalent: "")
+        location.submenu = NSMenu(title: "Location")
+        location.submenu?.delegate = locationMenu
+        features.addItem(location)
 
         let debug = menu("Debug", in: main)
         item("Show Parallel Testing Devices", action: #selector(toggleShowTestingDevices(_:)), in: debug)
@@ -306,6 +312,40 @@ final class OpenSimulatorMenu: NSObject, NSMenuDelegate {
             catch is CancellationError {}
             catch { NSAlert(error: error).runModal() }
         }
+    }
+}
+
+/// Features ▸ Location, rebuilt each time it opens: None, Custom Location…, and
+/// the key device's scenarios in its runtime's order, without separators, as
+/// in Simulator.app. Simulator.app lists the scenarios of the device that
+/// connected last; NeoSimulator lists the key device's own, because another
+/// runtime's scenario names do not apply to it.
+@MainActor
+final class LocationMenu: NSObject, NSMenuDelegate {
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        update(menu, for: NSApp.keyWindow?.windowController as? DeviceWindowController)
+    }
+
+    /// Lists `window`'s choices, checking its selection. They are enabled
+    /// while its device is connected and booted.
+    func update(_ menu: NSMenu, for window: DeviceWindowController?) {
+        let session = window?.session
+        let choices = [("None", LocationSelection.none), ("Custom Location…", .custom)]
+            + (session?.locationScenarios ?? []).map { ($0.localizedName, .scenario($0.name)) }
+        menu.autoenablesItems = false
+        menu.items = choices.map { title, selection in
+            let item = NSMenuItem(title: title, action: #selector(select(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = selection
+            item.state = session?.location == selection ? .on : .off
+            item.isEnabled = session?.canPerformCommands == true
+            return item
+        }
+    }
+
+    @objc private func select(_ sender: NSMenuItem) {
+        guard let selection = sender.representedObject as? LocationSelection else { return }
+        (NSApp.keyWindow?.windowController as? DeviceWindowController)?.selectLocation(selection)
     }
 }
 

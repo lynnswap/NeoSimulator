@@ -66,6 +66,13 @@ enum HostPreferences {
     static let gifMaxFrameSize = "GifMaxFrameSize"
     static let gifUseDither = "GifUseDither"
     static let gifDitherDepth = "GifDitherDepth"
+    /// The last Features ▸ Location choice, which each connection restores:
+    /// see `LocationSelection`.
+    static let locationMode = "LocationMode"
+    static let locationScenario = "LocationScenario"
+    /// The coordinate Custom Location… last set.
+    static let locationLatitude = "LocationLatitude"
+    static let locationLongitude = "LocationLongitude"
 
     /// Registers Simulator.app's defaults for these preferences.
     static func registerDefaults() {
@@ -74,6 +81,7 @@ enum HostPreferences {
             attachBootedOnStart: true, sessionOnLaunch: true, startLastDeviceOnLaunch: true,
             terminationTimeout: 60.0, screenShotSaveLocation: defaultScreenshotLocation(), screenShotUseMask: false,
             gifMaxFramerate: 10, gifMaxFrameSize: 640, gifUseDither: true, gifDitherDepth: 4.0,
+            locationMode: LocationSelection.customMode, locationLatitude: 37.785834, locationLongitude: -122.406417,
         ])
     }
 
@@ -87,6 +95,43 @@ enum HostPreferences {
             return location
         }
         return CaptureFile.desktop?.path ?? NSString(string: "~/Desktop").expandingTildeInPath
+    }
+}
+
+/// A device's Features ▸ Location choice. Simulator.app keeps it per device
+/// and saves the last choice app-wide, as its menu tag in `LocationMode` and a
+/// scenario's name in `LocationScenario`.
+enum LocationSelection: Equatable {
+    case none, custom
+    /// A runtime scenario, by its `LocationScenario.name`.
+    case scenario(String)
+
+    static let noneMode = 5101, customMode = 5102
+    /// Simulator.app saves a scenario's menu tag, which is above Custom's.
+    static let scenarioMode = 5103
+
+    /// The saved choice for a device with `scenarios`. A saved scenario the
+    /// device does not have, and a mode Simulator.app does not use, are None.
+    static func saved(among scenarios: [LocationScenario]) -> Self {
+        let defaults = UserDefaults.standard
+        let mode = defaults.integer(forKey: HostPreferences.locationMode)
+        guard mode > customMode else { return mode == customMode ? .custom : .none }
+        guard let name = defaults.string(forKey: HostPreferences.locationScenario),
+              scenarios.contains(where: { $0.name == name }) else { return .none }
+        return .scenario(name)
+    }
+
+    /// Saves this choice for the next connection. Choosing None keeps the
+    /// saved scenario name, as in Simulator.app.
+    func save() {
+        let defaults = UserDefaults.standard
+        switch self {
+        case .none: defaults.set(Self.noneMode, forKey: HostPreferences.locationMode)
+        case .custom: defaults.set(Self.customMode, forKey: HostPreferences.locationMode)
+        case .scenario(let name):
+            defaults.set(name, forKey: HostPreferences.locationScenario)
+            defaults.set(Self.scenarioMode, forKey: HostPreferences.locationMode)
+        }
     }
 }
 
@@ -180,6 +225,12 @@ final class DeviceSession {
     /// The guest's interface orientation angle last observed, so that only its
     /// changes rotate the display. A manual rotation does not change it.
     @ObservationIgnored private var guestAngle: Double?
+    /// The location routes the device's runtime listed when this session connected.
+    private(set) var locationScenarios: [LocationScenario] = []
+    /// The Features ▸ Location choice for this device, which its checkmark
+    /// shows. CoreSimulator does not report the guest's location, so this is
+    /// what the host last applied.
+    private(set) var location: LocationSelection?
 
     /// - Parameter recordingProcess: Creates the recording process for a
     ///   destination and mask. Defaults to the device's direct `simctl` recorder.
@@ -386,6 +437,51 @@ final class DeviceSession {
     }
 
     func triggerCloudSync() async throws { try await display.triggerCloudSync() }
+
+    // MARK: Location
+
+    /// Restores the saved Location choice when the session connects, as
+    /// Simulator.app does when it lists the runtime's scenarios: a device that
+    /// lists none gets no choice and no location.
+    func restoreLocation() async throws {
+        let scenarios = try await display.locationScenarios()
+        // Right after a boot, listing takes up to a second. The session can
+        // end meanwhile, and a choice made meanwhile is kept.
+        guard !isDisconnected else { return }
+        locationScenarios = scenarios
+        guard !scenarios.isEmpty, location == nil else { return }
+        try await use(.saved(among: scenarios))
+    }
+
+    /// Features ▸ Location ▸ None or a scenario, for this device only; the
+    /// choice is also saved for later connections.
+    func selectLocation(_ selection: LocationSelection) async throws {
+        guard canPerformCommands else { return }
+        try await use(selection)
+    }
+
+    /// Custom Location…'s OK: saves the coordinate and selects it.
+    func setCustomLocation(latitude: Double, longitude: Double) async throws {
+        guard canPerformCommands else { return }
+        UserDefaults.standard.set(latitude, forKey: HostPreferences.locationLatitude)
+        UserDefaults.standard.set(longitude, forKey: HostPreferences.locationLongitude)
+        try await use(.custom)
+    }
+
+    // Like Simulator.app, the choice is kept and saved before it is applied,
+    // so it stays when applying fails, and choosing it again retries.
+    private func use(_ selection: LocationSelection) async throws {
+        location = selection
+        selection.save()
+        switch selection {
+        case .none: try await display.clearSimulatedLocation()
+        case .custom:
+            try await display.setLocation(
+                latitude: UserDefaults.standard.double(forKey: HostPreferences.locationLatitude),
+                longitude: UserDefaults.standard.double(forKey: HostPreferences.locationLongitude))
+        case .scenario(let name): try await display.setLocationScenario(name)
+        }
+    }
 
     // MARK: Device tool operations
 
