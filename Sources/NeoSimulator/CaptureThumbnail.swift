@@ -47,6 +47,14 @@ final class CapturedContent {
     @discardableResult
     func saveToDefaultLocation() throws -> URL { try save(into: defaultFolder) }
 
+    /// Settles a capture a drop took through its file URL, which moved the
+    /// temporary file away, and returns whether it did.
+    func settleIfTaken() -> Bool {
+        guard !isResolved, !FileManager.default.fileExists(atPath: file.path) else { return isResolved }
+        isResolved = true
+        return true
+    }
+
     func delete() throws {
         guard !isResolved else { return }
         try FileManager.default.removeItem(at: file)
@@ -279,7 +287,8 @@ final class CaptureThumbnail: NSObject {
     /// Ends the thumbnail. Unless the user dismissed it through its menu or a
     /// drag, the capture is saved to its default location.
     func hide(animated: Bool) {
-        guard !finished, !hiding else { return }
+        // Ending at once also ends a hide in progress.
+        guard !finished, !hiding || !animated else { return }
         hiding = true
         timer?.cancel()
         guard animated, shown, let parent, parent.isVisible else { finish(); return }
@@ -337,7 +346,7 @@ final class CaptureThumbnail: NSObject {
     @discardableResult
     static func finishAll() -> [Error] {
         var failures = active.compactMap { $0.finish(reporting: false) }
-        for content in pending where !content.isResolved {
+        for content in pending where !content.settleIfTaken() {
             do { try content.saveToDefaultLocation() } catch { failures.append(error) }
         }
         pending.removeAll()
@@ -541,7 +550,7 @@ final class CaptureThumbnail: NSObject {
             Task {
                 try? await Task.sleep(for: .seconds(5))
                 Self.pending.removeAll { $0 === content }
-                guard !content.isResolved else { return }
+                guard !content.settleIfTaken() else { return }
                 do { try content.saveToDefaultLocation() } catch { report(error) }
             }
         }

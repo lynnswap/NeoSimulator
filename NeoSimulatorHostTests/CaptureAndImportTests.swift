@@ -444,9 +444,13 @@ struct CaptureThumbnailTests {
         let delivered = try capture(named: "Dragged.png", in: directory)
         CaptureThumbnail(delivered, image: nil, parent: window, source: .zero, spacing: .zero) { _ in }.dragEnded(.copy)
         #expect(try savedNames(in: directory).isEmpty)
-        // Quitting saves captures whose promises are still unfulfilled.
+        // Quitting saves captures whose promises are still unfulfilled, but
+        // not one a drop moved away through its file URL.
         let unclaimed = try capture(named: "Unclaimed.png", in: directory)
         CaptureThumbnail(unclaimed, image: nil, parent: window, source: .zero, spacing: .zero) { _ in }.dragEnded(.copy)
+        let taken = try capture(named: "Taken.png", in: directory)
+        CaptureThumbnail(taken, image: nil, parent: window, source: .zero, spacing: .zero) { _ in }.dragEnded(.move)
+        try FileManager.default.moveItem(at: taken.file, to: directory.appendingPathComponent("Taken.png"))
         #expect(CaptureThumbnail.finishAll().isEmpty)
         #expect(try savedNames(in: directory) == ["Dragged.png", "Unclaimed.png"])
         let destination = directory.appendingPathComponent("Dragged.png")
@@ -514,6 +518,23 @@ struct CaptureThumbnailTests {
         for _ in 0..<50 where !CaptureThumbnail.active.isEmpty { try await Task.sleep(for: .milliseconds(20)) }
         #expect(CaptureThumbnail.active.isEmpty)
         #expect(try savedNames(in: directory).isEmpty)
+    }
+
+    @Test func aNewCaptureEndsAThumbnailThatIsHiding() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (previous, window, _) = try await shownThumbnail(named: "Previous.png", in: directory)
+        defer { window.close() }
+        previous.hide(animated: true)
+        let next = CaptureThumbnail(try capture(named: "Next.png", in: directory), image: nil, parent: window,
+                                    source: window.frame.insetBy(dx: 20, dy: 40), spacing: .zero) { _ in }
+        next.show()
+        #expect(try savedNames(in: directory) == ["Previous.png"])
+        #expect(CaptureThumbnail.active.map(ObjectIdentifier.init) == [ObjectIdentifier(next)])
+        previous.pause()
+        #expect(CaptureThumbnail.active.count == 1)
+        CaptureThumbnail.finishAll()
     }
 
     @Test func quittingSavesAThumbnailThatIsHiding() async throws {
