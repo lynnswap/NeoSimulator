@@ -268,6 +268,7 @@ final class OpenSimulatorMenu: NSObject, NSMenuDelegate {
         guard let application, let identifier = sender.representedObject as? String else { return }
         Task {
             do { try await application.openSimulator(withIdentifier: identifier) }
+            catch is CancellationError {}
             catch { NSAlert(error: error).runModal() }
         }
     }

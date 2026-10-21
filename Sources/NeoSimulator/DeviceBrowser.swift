@@ -73,6 +73,7 @@ final class DeviceBrowserModel {
         return Task {
             defer { opening.remove(device.id); refresh() }
             do { try await source.openSimulator(withIdentifier: device.id) }
+            catch is CancellationError {}
             catch { errorMessage = error.localizedDescription }
         }
     }

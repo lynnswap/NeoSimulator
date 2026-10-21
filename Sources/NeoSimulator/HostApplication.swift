@@ -99,7 +99,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
            let device = Self.initialDevice(in: try availableSimulatorDevices(),
                                            current: defaults.string(forKey: HostPreferences.currentDeviceUDID)) {
             Task {
-                do { try await openSimulator(withIdentifier: device.identifier) } catch {
+                do { try await openSimulator(withIdentifier: device.identifier) } catch is CancellationError {
+                } catch {
                     NSAlert(error: error).runModal()
                     showDeviceBrowser()
                 }
@@ -245,7 +246,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         // A restart boots the device itself, and a closed window shuts it
         // down; opening waits for either instead of acting on the device meanwhile.
         while let pending = restarting[identifier] ?? closingShutdowns[identifier] { await pending.value }
-        guard !stopped, !isTerminating else { throw HostError.operation("NeoSimulator is shutting down") }
+        // A quitting host opens nothing; callers do not report the cancellation.
+        guard !stopped, !isTerminating else { throw CancellationError() }
         try conflicts.check()
         guard let device = try readDevices().first(where: { $0.identifier == identifier }) else {
             throw HostError.operation("The selected simulator is no longer available")
