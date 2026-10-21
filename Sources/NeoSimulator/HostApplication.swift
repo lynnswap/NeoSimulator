@@ -25,6 +25,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     private var suppressed: Set<String> = []
     /// Shutdowns of devices whose windows closed, which quitting waits for.
     private var closingShutdowns: [String: Task<Void, Never>] = [:]
+    /// Whether another simulator host took over, which leaves devices running.
+    private var yieldedToAnotherHost = false
     /// The choice Quit NeoSimulator… made, which takes precedence over the
     /// default quit action.
     private var quitChoice: DeviceLifetimeChoice?
@@ -57,7 +59,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         notificationToken = try deviceSet.observe { [weak self] in self?.rescan() }
         openTestingSet()
         // Like Simulator.app, devices already booted get windows only with
-        // AttachBootedOnStart; those booted later always do.
+        // AttachBootedOnStart; those booted later always do. Booted testing
+        // devices follow only Show Parallel Testing Devices, as there.
         let defaults = UserDefaults.standard
         let attachesBooted = defaults.bool(forKey: HostPreferences.attachBootedOnStart)
         if !attachesBooted { suppressed.formUnion(try readDevices().filter { $0.state == 3 }.map(\.identifier)) }
@@ -347,8 +350,10 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     /// abandoning a restart in progress.
     private func shutDownClosedDevice(_ session: DeviceSession) {
         let identifier = session.device.id
-        restarting.removeValue(forKey: identifier)?.cancel()
-        bootOperations.removeValue(forKey: identifier)?.cancel()
+        // The restart stays tracked until it unwinds, so opening waits for it.
+        let restart = restarting[identifier]
+        restart?.cancel()
+        bootOperations[identifier]?.cancel()
         guard closingShutdowns[identifier] == nil else { return }
         let tools: DeviceTools
         do {
@@ -359,8 +364,10 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             return
         }
         closingShutdowns[identifier] = Task { [weak self] in
+            await restart?.value
             await session.finishRecording()
-            guard self?.isRunning(identifier, deviceSetPath: tools.deviceSetPath) == true else {
+            guard let self, !self.yieldedToAnotherHost,
+                  self.isRunning(identifier, deviceSetPath: tools.deviceSetPath) else {
                 self?.closingShutdowns.removeValue(forKey: identifier)
                 return
             }
@@ -504,6 +511,9 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     private func handleHostConflict() {
         guard !stopped, let name = conflicts.conflictingHostName else { return }
         hostLog("\(name) appeared; disconnecting simulators and exiting")
+        // The other host owns the devices now, so they keep running.
+        yieldedToAnotherHost = true
+        for shutdown in closingShutdowns.values { shutdown.cancel() }
         shutdown()
         // A conflict can arrive on the main dispatch queue. Finish recordings
         // before terminate() enters AppKit's termination run loop from that queue.
@@ -527,7 +537,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     /// `DetachOnAppQuit` is on. A host stopped by a conflict leaves them running.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !isTerminating else { return .terminateLater }
-        let keepsRunning = stopped || (quitChoice.map { $0 == .keepRunning }
+        let keepsRunning = yieldedToAnotherHost || (quitChoice.map { $0 == .keepRunning }
             ?? UserDefaults.standard.bool(forKey: HostPreferences.detachOnAppQuit))
         let devices = keepsRunning ? [] : sessions.values.map {
             (identifier: $0.session.device.id, deviceSetPath: $0.session.tools.deviceSetPath)
@@ -541,7 +551,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             for error in recordingTerminationErrors { NSAlert(error: error).runModal() }
             recordingTerminationErrors.removeAll()
             // A host that appeared meanwhile stopped this one; its devices stay.
-            let devices = stopped ? [] : devices
+            let devices = yieldedToAnotherHost ? [] : devices
             // Windows disconnect before their devices shut down.
             shutdown()
             let failures = await shutDownForTermination(devices)
