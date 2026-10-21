@@ -1,107 +1,48 @@
+import ABIBridge
 import AppKit
 import Darwin
 import MachO
 import ObjectiveC
 
+// SimulatorKit passes rotations as Measurement<UnitAngle>, whose layout only
+// its metadata establishes.
+extension Measurement: @retroactive ABIBridgeSwiftValue where UnitType == UnitAngle {
+    public static var swiftABIType: NativeType { try! .opaque(named: "Measurement") }
+}
+
+/// The private simulator interfaces of one Xcode.
+///
+/// Every interface the host uses is resolved during startup, so an
+/// incompatible Xcode fails before the host changes any state.
 @MainActor
 final class SimulatorRuntime {
     let xcodeURL: URL
-    let serviceClass: AnyClass
-    let screenClass: AnyClass
-    let factoryClass: AnyClass
-    let hidClass: AnyClass
-    let messageForButton: UnsafeMutableRawPointer
-    let showChrome: UnsafeMutableRawPointer
-    let chromeView: UnsafeMutableRawPointer
-    let chromeState: UnsafeMutableRawPointer
-    let digitizer: UnsafeMutableRawPointer
-    let renderScale: UnsafeMutableRawPointer
-    let rotation: UnsafeMutableRawPointer
-    let disconnect: UnsafeMutableRawPointer
-    let beginResize: UnsafeMutableRawPointer
-    let resize: UnsafeMutableRawPointer
-    let endResize: UnsafeMutableRawPointer
-    let keyboardEnabled: UnsafeMutableRawPointer
-    let keyboardInput: Ivar
+    let coreSimulator: CoreSimulatorInterface
+    let display: SimulatorDisplayInterface
+    let input: SimulatorInputInterface
 
     init(xcodeURL: URL) throws {
         self.xcodeURL = xcodeURL.resolvingSymlinksInPath()
-        _ = try Self.load(URL(fileURLWithPath: "/Library/Developer/PrivateFrameworks/CoreSimulator.framework"))
-        let simulatorKit = try Self.load(self.xcodeURL.appendingPathComponent("Contents/SharedFrameworks/SimulatorKit.framework"))
-        _ = try Self.load(self.xcodeURL.appendingPathComponent("Contents/Frameworks/IDEPlaygroundSimulator.framework"))
-
-        func symbol(_ name: String) throws -> UnsafeMutableRawPointer {
-            dlerror()
-            guard let pointer = dlsym(simulatorKit, name) else {
-                throw HostError.unavailable("Required private symbol \(name) is unavailable")
-            }
-            return pointer
-        }
-        messageForButton = try symbol("IndigoHIDMessageForButton")
-        showChrome = try symbol("$s12SimulatorKit14SimDisplayViewC16showDeviceChromeSbvsTj")
-        chromeView = try symbol("$s12SimulatorKit14SimDisplayViewC06chromeE0AA0cd6ChromeE0CvgTj")
-        chromeState = try symbol("$s12SimulatorKit20SimDisplayChromeViewC5stateAC5StateOvsTj")
-        digitizer = try symbol("$s12SimulatorKit14SimDisplayViewC09digitizerE0AA0c14DigitizerInputE0CvgTj")
-        renderScale = try symbol("$s12SimulatorKit14SimDisplayViewC11renderScale12CoreGraphics7CGFloatVvgTj")
-        rotation = try symbol("$s12SimulatorKit14SimDisplayViewC14deviceRotation10Foundation11MeasurementVySo11NSUnitAngleCGvsTj")
-        disconnect = try symbol("$s12SimulatorKit14SimDisplayViewC10disconnect10completionyyycSg_tFTj")
-        beginResize = try symbol("$s12SimulatorKit14SimDisplayViewC11beginResizeyyFTj")
-        resize = try symbol("$s12SimulatorKit14SimDisplayViewC8resizeTo4sizeySo6CGSizeV_tFTj")
-        endResize = try symbol("$s12SimulatorKit14SimDisplayViewC9endResizeyyFTj")
-        keyboardEnabled = try symbol("$s12SimulatorKit31SimKeyboardInputDefaultDelegateC9isEnabledSbvs")
-
-        serviceClass = try Self.requireClass("SimServiceContext",
-            classMethods: ["sharedServiceContextForDeveloperDir:error:"],
-            methods: ["defaultDeviceSetWithError:"])
-        _ = try Self.requireClass("SimDeviceSet", methods: [
-            "subscribeToNotificationsWithError:", "availableDevices",
-            "registerNotificationHandlerOnQueue:handler:", "unregisterNotificationHandler:error:",
-        ])
-        _ = try Self.requireClass("SimDevice", methods: [
-            "state", "name", "UDID", "runtime", "deviceType", "supportsFeature:", "currentUIInterfaceStyle",
-            "setUIInterfaceStyle:error:", "postDarwinNotification:error:",
-        ])
-        _ = try Self.requireClass("SimRuntime", methods: ["name", "platformIdentifier", "version"])
-        _ = try Self.requireClass("SimDeviceType", methods: ["productFamilyID"])
-        screenClass = try Self.requireClass("SimulatorKit.SimDeviceScreen",
-            methods: ["initWithDevice:screenID:", "screen", "isDefault", "isCarPlay"])
-        factoryClass = try Self.requireClass("IDEPlaygroundSimulator.IDESimulatorPlaygroundUntil",
-            classMethods: ["createSimDisplayViewWithDevice:simScreenID:"])
-        hidClass = try Self.requireClass("SimulatorKit.SimDeviceLegacyHIDClient",
-            methods: ["initWithDevice:error:", "sendWithMessage:freeWhenDone:completionQueue:completion:"])
-        let displayClass: AnyClass = try Self.requireClass("SimulatorKit.SimDisplayView")
-        guard let keyboardInput = class_getInstanceVariable(displayClass, "_defaultKeyboardDelegate") else {
-            throw HostError.unavailable("\(displayClass) does not provide _defaultKeyboardDelegate")
-        }
-        self.keyboardInput = keyboardInput
+        try Self.load(URL(fileURLWithPath: "/Library/Developer/PrivateFrameworks/CoreSimulator.framework"))
+        try Self.load(self.xcodeURL.appendingPathComponent("Contents/SharedFrameworks/SimulatorKit.framework"))
+        try Self.load(self.xcodeURL.appendingPathComponent("Contents/Frameworks/IDEPlaygroundSimulator.framework"))
+        let runtime = ABIRuntime.shared
+        coreSimulator = try CoreSimulatorInterface(runtime: runtime)
+        display = try SimulatorDisplayInterface(runtime: runtime)
+        input = try SimulatorInputInterface(runtime: runtime)
         try validateLoadedImages()
     }
 
-    private static func load(_ url: URL) throws -> UnsafeMutableRawPointer {
+    private static func load(_ url: URL) throws {
         guard let executable = Bundle(url: url)?.executableURL else {
             throw HostError.unavailable("Missing framework at \(url.path)")
         }
-        guard let handle = dlopen(executable.path, RTLD_NOW | RTLD_LOCAL) else {
+        // Objective-C class registration outlives the handle. Loaded Apple
+        // frameworks stay mapped for the lifetime of the host process.
+        guard dlopen(executable.path, RTLD_NOW | RTLD_LOCAL) != nil else {
             let detail = dlerror().map { String(cString: $0) } ?? "Unknown loader error"
             throw HostError.unavailable("Could not load \(executable.path): \(detail)")
         }
-        // Objective-C class registration outlives these handles. Loaded Apple
-        // frameworks stay mapped for the lifetime of the host process.
-        return handle
-    }
-
-    private static func requireClass(_ name: String, classMethods: [String] = [],
-                                     methods: [String] = []) throws -> AnyClass {
-        guard let type = NSClassFromString(name) else {
-            throw HostError.unavailable("Required private class \(name) is unavailable")
-        }
-        for name in classMethods where class_getClassMethod(type, NSSelectorFromString(name)) == nil {
-            throw HostError.unavailable("\(type) does not provide +\(name)")
-        }
-        for name in methods where class_getInstanceMethod(type, NSSelectorFromString(name)) == nil {
-            throw HostError.unavailable("\(type) does not provide -\(name)")
-        }
-        return type
     }
 
     func validateLoadedImages() throws {
@@ -119,10 +60,158 @@ final class SimulatorRuntime {
         }
     }
 
-    func openDeviceSet() throws -> XSHDeviceSetHandle {
-        try XSHDeviceSetHandle(serviceClass: serviceClass,
+    func openDeviceSet() throws -> SimulatorDeviceSet {
+        try SimulatorDeviceSet(
+            interface: coreSimulator,
             developerDirectory: xcodeURL.appendingPathComponent("Contents/Developer").path)
     }
+}
+
+/// SimulatorKit display members and the IDEPlaygroundSimulator display factory.
+@MainActor
+struct SimulatorDisplayInterface {
+    let screenClass: AnyClass
+    let makeScreen: NativeObjCMethod<AnyObject?, AnyObject, UInt32>
+    let screen: NativeObjCMethod<AnyObject?>
+    let isDefault: NativeObjCMethod<Bool>
+    let isCarPlay: NativeObjCMethod<Bool>
+    let buttonTarget: NativeSwiftMethod<() -> UInt32>
+    let factoryClass: AnyClass
+    let createDisplay: NativeObjCMethod<NSView?, AnyObject, UInt32>
+    let showChrome: NativeSwiftMethod<(Bool) -> Void>
+    let chromeView: NativeSwiftMethod<() -> NSView>
+    let digitizerView: NativeSwiftMethod<() -> NSView>
+    let renderScale: NativeSwiftMethod<() -> CGFloat>
+    let rotation: NativeSwiftMethod<(Measurement<UnitAngle>) -> Void>
+    let disconnect: NativeSwiftMethod<(NativeSwiftClosure<() -> Void>) -> Void>
+    let beginResize: NativeSwiftMethod<() -> Void>
+    let resize: NativeSwiftMethod<(CGSize) -> Void>
+    let endResize: NativeSwiftMethod<() -> Void>
+    let chromeState: NativeSwiftType
+    let setChromeState: NativeSwiftMethod<(NativeSwiftValue) -> Void>
+    let setKeyboardEnabled: NativeSwiftMethod<(Bool) -> Void>
+    let keyboardDelegate: Ivar
+
+    init(runtime: ABIRuntime) throws {
+        guard let screenClass = NSClassFromString("SimulatorKit.SimDeviceScreen"),
+            let factoryClass = NSClassFromString("IDEPlaygroundSimulator.IDESimulatorPlaygroundUntil"),
+            let displayClass = NSClassFromString("SimulatorKit.SimDisplayView")
+        else {
+            throw HostError.unavailable("SimulatorKit display classes are unavailable")
+        }
+        self.screenClass = screenClass
+        self.factoryClass = factoryClass
+        makeScreen = try runtime.resolveObjCMethodAndWait(
+            on: screenClass, selector: "initWithDevice:screenID:", as: ((AnyObject, UInt32) -> AnyObject?).self)
+        screen = try runtime.resolveObjCMethodAndWait(on: screenClass, selector: "screen", as: (() -> AnyObject?).self)
+        isDefault = try runtime.resolveObjCMethodAndWait(on: screenClass, selector: "isDefault", as: (() -> Bool).self)
+        isCarPlay = try runtime.resolveObjCMethodAndWait(on: screenClass, selector: "isCarPlay", as: (() -> Bool).self)
+        buttonTarget = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimDeviceScreen")
+            .resolveGetterAndWait(named: "buttonTarget.getter : __C.IndigoHIDTarget", as: (() -> UInt32).self)
+        createDisplay = try runtime.resolveObjCMethodAndWait(
+            on: factoryClass, selector: "createSimDisplayViewWithDevice:simScreenID:",
+            as: ((AnyObject, UInt32) -> NSView?).self, classMethod: true)
+
+        // SimDisplayView members are exported only through dispatch thunks.
+        let view = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimDisplayView")
+        showChrome = try view.resolveSetterAndWait(named: "showDeviceChrome", as: Bool.self)
+        chromeView = try view.resolveGetterAndWait(
+            named: "chromeView.getter : SimulatorKit.SimDisplayChromeView", as: (() -> NSView).self)
+        digitizerView = try view.resolveGetterAndWait(
+            named: "digitizerView.getter : SimulatorKit.SimDigitizerInputView", as: (() -> NSView).self)
+        renderScale = try view.resolveGetterAndWait(named: "renderScale", as: (() -> CGFloat).self)
+        rotation = try view.resolveSetterAndWait(named: "deviceRotation", as: Measurement<UnitAngle>.self)
+        disconnect = try view.resolveMethodAndWait(
+            named: "disconnect(completion: (() -> ())?) -> ()",
+            as: ((NativeSwiftClosure<() -> Void>) -> Void).self)
+        beginResize = try view.resolveMethodAndWait(named: "beginResize()", as: (() -> Void).self)
+        resize = try view.resolveMethodAndWait(named: "resizeTo(size:)", as: ((CGSize) -> Void).self)
+        endResize = try view.resolveMethodAndWait(named: "endResize()", as: (() -> Void).self)
+
+        chromeState = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimDisplayChromeView.State")
+        setChromeState = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimDisplayChromeView")
+            .resolveSetterAndWait(
+                named: "state.setter : SimulatorKit.SimDisplayChromeView.State",
+                as: NativeSwiftValue.self,
+                valueABIs: [chromeState: try .opaque(named: chromeState.name)])
+        setKeyboardEnabled = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimKeyboardInputDefaultDelegate")
+            .resolveSetterAndWait(named: "isEnabled", as: Bool.self)
+        guard let keyboardDelegate = class_getInstanceVariable(displayClass, "_defaultKeyboardDelegate") else {
+            throw HostError.unavailable("\(displayClass) does not provide _defaultKeyboardDelegate")
+        }
+        self.keyboardDelegate = keyboardDelegate
+    }
+
+    /// The device's default non-CarPlay screen, or nil while it is not ready.
+    func defaultScreen(of device: SimulatorDevice) -> (identifier: UInt32, object: AnyObject)? {
+        for identifier: UInt32 in 0...63 {
+            // Invalid screen IDs raise exceptions, which arrive as errors;
+            // absence is retried during boot.
+            guard let allocated = allocate(screenClass),
+                let screen = try? unsafe makeScreen.unsafeInvoke(on: allocated, device.object, identifier),
+                let _ = try? unsafe self.screen.unsafeInvoke(on: screen),
+                (try? unsafe isDefault.unsafeInvoke(on: screen)) == true,
+                (try? unsafe isCarPlay.unsafeInvoke(on: screen)) == false
+            else { continue }
+            return (identifier, screen)
+        }
+        return nil
+    }
+}
+
+/// The SimulatorKit HID client used for hardware buttons.
+@MainActor
+struct SimulatorInputInterface {
+    typealias Completion = @convention(block) (NSError?) -> Void
+
+    let clientClass: AnyClass
+    let makeClient: NativeObjCMethod<AnyObject, AnyObject>
+    let send: NativeObjCMethod<Void, OpaquePointer, Bool, DispatchQueue?, Completion?>
+    let messageForButton: NativeFunction<OpaquePointer?, UInt32, UInt32, UInt32>
+
+    init(runtime: ABIRuntime) throws {
+        guard let clientClass = NSClassFromString("SimulatorKit.SimDeviceLegacyHIDClient") else {
+            throw HostError.unavailable("Required private class SimulatorKit.SimDeviceLegacyHIDClient is unavailable")
+        }
+        self.clientClass = clientClass
+        makeClient = try runtime.resolveObjCMethodAndWait(
+            on: clientClass, selector: "initWithDevice:error:", as: ((AnyObject) throws -> AnyObject).self)
+        send = try runtime.resolveObjCMethodAndWait(
+            on: clientClass, selector: "sendWithMessage:freeWhenDone:completionQueue:completion:",
+            as: ((OpaquePointer, Bool, DispatchQueue?, Completion?) -> Void).self)
+        messageForButton = try runtime.resolveCFunctionAndWait(
+            named: "IndigoHIDMessageForButton", as: ((UInt32, UInt32, UInt32) -> OpaquePointer?).self)
+    }
+
+    func connect(to device: SimulatorDevice) throws -> AnyObject {
+        guard let allocated = allocate(clientClass) else {
+            throw HostError.unavailable("Could not allocate simulator input")
+        }
+        return try unsafe makeClient.unsafeInvoke(on: allocated, device.object)
+    }
+
+    /// Sends a button press and release to `target`.
+    func press(_ button: DeviceButton, target: UInt32, client: AnyObject) throws {
+        let down = try unsafe messageForButton.unsafeInvoke(button.rawValue, Self.down, target)
+        let up = try unsafe messageForButton.unsafeInvoke(button.rawValue, Self.up, target)
+        guard let down, let up else {
+            free(UnsafeMutableRawPointer(down))
+            free(UnsafeMutableRawPointer(up))
+            throw HostError.operation("Could not allocate simulator button input")
+        }
+        // Each send transfers ownership of its message to SimulatorKit.
+        try unsafe send.unsafeInvoke(on: client, down, true, nil, nil)
+        try unsafe send.unsafeInvoke(on: client, up, true, nil, nil)
+    }
+
+    private static let down: UInt32 = 1
+    private static let up: UInt32 = 2
+}
+
+/// An uninitialized instance for an Objective-C initializer, which consumes it.
+@MainActor
+private func allocate(_ type: AnyClass) -> AnyObject? {
+    (type as? NSObject.Type)?.perform(NSSelectorFromString("alloc"))?.takeRetainedValue()
 }
 
 enum DeviceButton: UInt32 {
@@ -154,34 +243,29 @@ final class SimulatorConnection: SimulatorDisplay {
     let inputView: NSView
     private let runtime: SimulatorRuntime
     private let chromeView: NSView
-    private let device: XSHDeviceHandle
+    private let device: SimulatorDevice
+    private let buttonTarget: UInt32
     private var hidClient: AnyObject?
     private var disconnected = false
 
-    init(device: XSHDeviceHandle, screenID: UInt32, runtime: SimulatorRuntime) throws {
+    init(device: SimulatorDevice, screen: (identifier: UInt32, object: AnyObject), runtime: SimulatorRuntime) throws {
         self.device = device
         self.runtime = runtime
-        var error: NSError?
-        guard let client = XSHCreateHIDClient(runtime.hidClass, device, &error) else {
-            throw error ?? HostError.unavailable("Could not connect simulator input") as NSError
-        }
-        hidClient = client as AnyObject
-        guard let view = XSHCreateDisplay(runtime.factoryClass, device, screenID, &error) else {
-            throw error ?? HostError.unavailable("Could not connect simulator display") as NSError
+        let display = runtime.display
+        buttonTarget = try unsafe display.buttonTarget.unsafeInvoke(on: screen.object)
+        hidClient = try runtime.input.connect(to: device)
+        guard let view = try unsafe display.createDisplay.unsafeInvoke(
+            on: display.factoryClass as AnyObject, device.object, screen.identifier)
+        else {
+            throw HostError.unavailable("SimulatorKit returned no display")
         }
         self.view = view
         do {
             try runtime.validateLoadedImages()
-            guard let input = XSHSwiftCallObjectGetter(runtime.digitizer, view) as? NSView else {
-                throw HostError.unavailable("Simulator display has no input view")
-            }
-            inputView = input
-            guard let chrome = XSHSwiftCallObjectGetter(runtime.chromeView, view) as? NSView else {
-                throw HostError.unavailable("Simulator display has no device chrome view")
-            }
-            chromeView = chrome
+            inputView = try unsafe display.digitizerView.unsafeInvoke(on: view)
+            chromeView = try unsafe display.chromeView.unsafeInvoke(on: view)
         } catch {
-            XSHSwiftDisconnect(runtime.disconnect, view)
+            try? unsafe display.disconnect.unsafeInvoke(on: view, NativeSwiftClosure {})
             throw error
         }
         setChromeVisible(true)
@@ -193,7 +277,7 @@ final class SimulatorConnection: SimulatorDisplay {
     var isBooted: Bool { !disconnected && device.state == 3 }
 
     var naturalSize: NSSize {
-        let scale = XSHSwiftCallCGFloatGetter(runtime.renderScale, view)
+        let scale = (try? unsafe runtime.display.renderScale.unsafeInvoke(on: view)) ?? 0
         let size = view.intrinsicContentSize
         let actual = size.width > 0 && size.height > 0 ? size : view.frame.size
         return scale > 0 ? NSSize(width: actual.width / scale, height: actual.height / scale) : actual
@@ -201,41 +285,54 @@ final class SimulatorConnection: SimulatorDisplay {
 
     func press(_ button: DeviceButton) throws {
         guard let hidClient else { throw HostError.operation("Simulator input is disconnected") }
-        var error: NSError?
-        if !XSHSendButton(hidClient, runtime.messageForButton, button.rawValue, &error) {
-            throw error ?? HostError.operation("Simulator input failed") as NSError
-        }
+        try runtime.input.press(button, target: buttonTarget, client: hidClient)
     }
 
     func shake() throws { try device.shake() }
     func toggleAppearance() throws { try device.toggleAppearance() }
     func setChromeVisible(_ visible: Bool) {
-        XSHSwiftCallBoolMethod(runtime.showChrome, view, visible)
+        perform("show device chrome") { try unsafe runtime.display.showChrome.unsafeInvoke(on: view, visible) }
         view.invalidateIntrinsicContentSize()
     }
     func setActive(_ active: Bool) {
         guard !disconnected else { return }
-        XSHSwiftSetChromeActive(runtime.chromeState, chromeView, active)
+        let display = runtime.display
+        perform("activate device chrome") {
+            let state = try display.chromeState.makeEnumCase(named: active ? "active" : "inactive")
+            try unsafe display.setChromeState.unsafeInvoke(on: chromeView, state)
+        }
     }
     func setKeyboardEnabled(_ enabled: Bool) {
-        guard !disconnected, let keyboard = object_getIvar(view, runtime.keyboardInput) else { return }
-        XSHSwiftCallBoolMethod(runtime.keyboardEnabled, keyboard, enabled)
+        guard !disconnected, let keyboard = object_getIvar(view, runtime.display.keyboardDelegate) else { return }
+        perform("enable keyboard input") {
+            try unsafe runtime.display.setKeyboardEnabled.unsafeInvoke(on: keyboard as AnyObject, enabled)
+        }
     }
     func setRotation(degrees: Double) {
-        XSHSwiftSetAngleMeasurement(runtime.rotation, view, degrees, .degrees)
+        perform("rotate the display") {
+            try unsafe runtime.display.rotation.unsafeInvoke(on: view, Measurement(value: degrees, unit: .degrees))
+        }
         view.invalidateIntrinsicContentSize()
     }
-    func beginResize() { XSHSwiftCallVoidMethod(runtime.beginResize, view) }
+    func beginResize() { perform("begin resizing") { try unsafe runtime.display.beginResize.unsafeInvoke(on: view) } }
     func resize(to size: NSSize) {
-        XSHSwiftCallCGSizeMethod(runtime.resize, view, size)
+        perform("resize the display") { try unsafe runtime.display.resize.unsafeInvoke(on: view, size) }
         view.invalidateIntrinsicContentSize()
     }
-    func endResize() { XSHSwiftCallVoidMethod(runtime.endResize, view) }
+    func endResize() { perform("end resizing") { try unsafe runtime.display.endResize.unsafeInvoke(on: view) } }
     func disconnect() {
         guard !disconnected else { return }
         disconnected = true
-        XSHSwiftDisconnect(runtime.disconnect, view)
+        perform("disconnect the display") {
+            try unsafe runtime.display.disconnect.unsafeInvoke(on: view, NativeSwiftClosure {})
+        }
         hidClient = nil
     }
     isolated deinit { disconnect() }
+
+    // These members were prepared during startup; a failure here means
+    // SimulatorKit rejected the value, which the display cannot recover from.
+    private func perform(_ operation: String, _ body: () throws -> Void) {
+        do { try body() } catch { hostLog("Could not \(operation): \(error.localizedDescription)") }
+    }
 }

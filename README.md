@@ -254,9 +254,10 @@ CLI, tests, build-info tool, and plugin. Select `NeoSimulator` to build the app,
 package tests. The app project uses Xcode's JSON `project.xcproj` format and
 requires Xcode 27 or later to open.
 
-The host application is written in Swift. Its Objective-C bridge and ARM64
-assembly are limited to dynamically loaded private interfaces and SimulatorKit
-dispatch thunks. Open `DeviceBrowser.swift` with the `NeoSimulator` scheme to
+The host application is written in Swift. It calls the dynamically loaded
+CoreSimulator, SimulatorKit, and IDEPlaygroundSimulator interfaces through
+[ABIBridge](https://github.com/lynnswap/ABIBridge) by their source-level names,
+including SimulatorKit members exported only as dispatch thunks. Open `DeviceBrowser.swift` with the `NeoSimulator` scheme to
 use the `#Preview` canvas. These previews use the same browser UI as the app,
 with sample devices and no CoreSimulator connection. Device windows use an
 AppKit toolbar and the selected Xcode's native device artwork.

@@ -10,31 +10,22 @@
       "Base",
     ],
   },
+  "packages": [
+    {
+      "kind": "remote",
+      "repository": "https://github.com/lynnswap/ABIBridge.git",
+      "version": {
+        "revision": "73424ca35da61bdf59ae34babe4b6f092d5f50ae",
+      },
+    },
+  ],
   "files": [
     {
       "kind": "group",
       "path": "Sources/NeoSimulator",
       "children": [
-        { "path": "PrivateInterfaces.h" },
-        { "path": "SwiftABI.h" },
-        {
-          "path": "SwiftABI.S",
-          "target-membership": [
-            "NeoSimulator/compile-sources",
-            "NeoSimulatorHostTests/compile-sources",
-          ],
-        },
-        { "path": "NeoSimulator-Bridging-Header.h" },
         {
           "path": "DeviceBrowser.swift",
-          "target-membership": [
-            "NeoSimulator/compile-sources",
-            "NeoSimulatorHostTests/compile-sources",
-          ],
-        },
-        { "path": "SimulatorBridge.h" },
-        {
-          "path": "SimulatorBridge.m",
           "target-membership": [
             "NeoSimulator/compile-sources",
             "NeoSimulatorHostTests/compile-sources",
@@ -117,6 +108,12 @@
             "NeoSimulator/compile-sources",
             "NeoSimulatorHostTests/compile-sources",
           ],
+        }, {
+          "path": "CoreSimulator.swift",
+          "target-membership": [
+            "NeoSimulator/compile-sources",
+            "NeoSimulatorHostTests/compile-sources",
+          ],
         },
       ],
     },
@@ -148,6 +145,13 @@
         "compile-sources",
         "frameworks",
       ],
+      "package-product-members": [
+        {
+          "package": "ABIBridge",
+          "product-name": "ABIBridge",
+          "build-phase": { "build-phase": "frameworks" },
+        },
+      ],
       "build-settings": {
         "ASSETCATALOG_COMPILER_APPICON_NAME": "AppIcon",
         "CODE_SIGN_IDENTITY": "-",
@@ -165,7 +169,6 @@
         "PRODUCT_BUNDLE_IDENTIFIER": "dev.lynnswap.NeoSimulator",
         "PRODUCT_NAME": "NeoSimulator",
         "SDKROOT": "macosx",
-        "SWIFT_OBJC_BRIDGING_HEADER": "Sources/NeoSimulator/NeoSimulator-Bridging-Header.h",
         "SWIFT_VERSION": "6.0",
       },
     }, {
@@ -177,6 +180,13 @@
         "compile-sources",
         "frameworks",
         "resources",
+      ],
+      "package-product-members": [
+        {
+          "package": "ABIBridge",
+          "product-name": "ABIBridge",
+          "build-phase": { "build-phase": "frameworks" },
+        },
       ],
       "build-settings": {
         "ARCHS": "arm64",
@@ -204,7 +214,6 @@
         "SWIFT_ACTIVE_COMPILATION_CONDITIONS": "DEBUG NEOSIMULATOR_TESTS",
         "SWIFT_APPROACHABLE_CONCURRENCY": "YES",
         "SWIFT_EMIT_LOC_STRINGS": "NO",
-        "SWIFT_OBJC_BRIDGING_HEADER": "Sources/NeoSimulator/NeoSimulator-Bridging-Header.h",
         "SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY": "YES",
         "SWIFT_VERSION": "6.0",
         "TARGETED_DEVICE_FAMILY": "1,2,7",
