@@ -553,12 +553,14 @@ enum CaptureFile {
     }
 
     /// Moves a capture into `folder` under `name`, adding " #2" through
-    /// " #99" before the extension when the name is taken. A failure leaves
-    /// the capture where it is and names that location.
-    static func move(_ capture: URL, into folder: URL, named name: String) throws -> URL {
+    /// " #99" before the extension when the name is taken or `isReserved`.
+    /// A failure leaves the capture where it is and names that location.
+    static func move(_ capture: URL, into folder: URL, named name: String,
+                     isReserved: (URL) -> Bool = { _ in false }) throws -> URL {
         let base = (name as NSString).deletingPathExtension, suffix = (name as NSString).pathExtension
         for number in 1...99 {
             let candidate = folder.appendingPathComponent(number == 1 ? name : "\(base) #\(number).\(suffix)")
+            if isReserved(candidate) { continue }
             do {
                 try FileManager.default.moveItem(at: capture, to: candidate)
                 return candidate

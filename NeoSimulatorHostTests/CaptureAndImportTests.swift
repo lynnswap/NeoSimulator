@@ -155,6 +155,13 @@ struct CaptureAndImportTests {
         let store = RecordingStore()
         var errors: [Error] = []
         store.onError = { errors.append($0) }
+        // A recording to a chosen file reserves that name until it finishes.
+        _ = try store.start(to: .file(directory.appendingPathComponent("Recording #2.mov")), process: { _ in
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/sh")
+            process.arguments = ["-c", "trap 'exit 0' INT; echo 'Recording started' >&2; while :; do sleep 0.05; done"]
+            return process
+        }, onFinished: {})
         var namedAfterStop: [Bool] = []
         var stopped = false, finished = false
         let recording = try store.start(to: .folder(directory, name: {
@@ -179,7 +186,8 @@ struct CaptureAndImportTests {
         for _ in 0..<200 where !finished { try await Task.sleep(for: .milliseconds(10)) }
         #expect(errors.isEmpty)
         #expect(namedAfterStop == [true])
-        #expect(try Data(contentsOf: directory.appendingPathComponent("Recording #2.mov")) == Data(contentsOf: movie))
+        #expect(try Data(contentsOf: directory.appendingPathComponent("Recording #3.mov")) == Data(contentsOf: movie))
+        await store.finishAll()
     }
 
     /// Writes a short H.264 QuickTime movie.

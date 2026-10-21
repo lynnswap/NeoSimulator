@@ -138,13 +138,7 @@ final class RecordingStore {
         let temporary: URL, destinationKey: String?
         switch destination {
         case .file(let file):
-            let canonicalDestination = file.deletingLastPathComponent()
-                .standardizedFileURL.resolvingSymlinksInPath()
-                .appendingPathComponent(file.lastPathComponent)
-            let caseSensitive = try canonicalDestination.deletingLastPathComponent()
-                .resourceValues(forKeys: [.volumeSupportsCaseSensitiveNamesKey]).volumeSupportsCaseSensitiveNames ?? true
-            let path = canonicalDestination.path.precomposedStringWithCanonicalMapping
-            let key = caseSensitive ? path : path.folding(options: .caseInsensitive, locale: Locale(identifier: "en_US_POSIX"))
+            let key = try Self.destinationKey(for: file)
             guard !entries.values.contains(where: { $0.destinationKey == key }) else {
                 throw HostError.operation("Another recording is saving to \(file.path). Choose a different filename.")
             }
@@ -187,7 +181,11 @@ final class RecordingStore {
                         throw HostError.operation("Could not save \(file.lastPathComponent). The recording is available at \(temporary.path): \(String(cString: strerror(errno)))")
                     }
                 case .folder(let folder, let name):
-                    _ = try CaptureFile.move(temporary, into: folder, named: name())
+                    // A recording to a chosen file would replace this one when it finishes.
+                    let reserved = Set(entries.values.compactMap(\.destinationKey))
+                    _ = try CaptureFile.move(temporary, into: folder, named: name()) {
+                        (try? Self.destinationKey(for: $0)).map(reserved.contains) ?? false
+                    }
                 }
             } catch {
                 var reported: Error = error
@@ -204,6 +202,18 @@ final class RecordingStore {
         }
         entries[identifier] = Entry(recording: recording, destinationKey: destinationKey, completion: completion)
         return recording
+    }
+
+    /// Identifies a file however its folder is spelled, and ignoring case on
+    /// a case-insensitive volume.
+    nonisolated private static func destinationKey(for file: URL) throws -> String {
+        let canonical = file.deletingLastPathComponent()
+            .standardizedFileURL.resolvingSymlinksInPath()
+            .appendingPathComponent(file.lastPathComponent)
+        let caseSensitive = try canonical.deletingLastPathComponent()
+            .resourceValues(forKeys: [.volumeSupportsCaseSensitiveNamesKey]).volumeSupportsCaseSensitiveNames ?? true
+        let path = canonical.path.precomposedStringWithCanonicalMapping
+        return caseSensitive ? path : path.folding(options: .caseInsensitive, locale: Locale(identifier: "en_US_POSIX"))
     }
 
     func finishAll() async {
