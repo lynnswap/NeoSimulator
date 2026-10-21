@@ -84,12 +84,14 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                 suppressed.subtract(devices.map(\.identifier))
             }
         } else {
+            let hadDeviceWindows = !sessions.isEmpty
             // A restart keeps running without its window.
             for (identifier, controller) in sessions where controller.session.tools.deviceSetPath != nil {
                 sessions.removeValue(forKey: identifier)
                 awaitingReconnect.removeValue(forKey: identifier)
                 controller.invalidate()
             }
+            if hadDeviceWindows && sessions.isEmpty { showDeviceBrowser() }
         }
         rescan()
     }
