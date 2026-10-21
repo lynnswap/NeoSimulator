@@ -43,6 +43,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         let toolbar = DeviceToolbar(controller: self)
         deviceToolbar = toolbar
         window.toolbar = toolbar.toolbar
+        session.display.onPropertiesChange = { [weak self] in self?.displayPropertiesChanged() }
         content.canImport = { [weak self] in self?.session.canPerformToolOperation == true }
         content.importFiles = { [weak self] in self?.importFiles($0) }
         window.contentView = content
@@ -191,6 +192,17 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     }
 
     // MARK: Presentation
+
+    // With Rotate Device Automatically on, SimulatorKit rotates the display
+    // when the guest changes its interface orientation. The window follows the
+    // display's new size once SimulatorKit has applied the rotation.
+    private func displayPropertiesChanged() {
+        guard !closed, UserDefaults.standard.bool(forKey: HostPreferences.rotateWindowWhenSignaledByGuest) else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, !self.closed else { return }
+            self.didRotate()
+        }
+    }
 
     private func didRotate() {
         fitScreen()

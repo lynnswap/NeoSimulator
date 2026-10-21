@@ -299,6 +299,28 @@ struct InputFocusTests {
         ])
     }
 
+    @Test func theWindowFollowsGuestRotationWhenEnabled() async throws {
+        let display = TestDisplay()
+        let controller = try makeController(display)
+        defer { controller.invalidate() }
+        let key = HostPreferences.rotateWindowWhenSignaledByGuest
+        let saved = UserDefaults.standard.object(forKey: key)
+        defer { UserDefaults.standard.set(saved, forKey: key) }
+        let window = try #require(controller.window)
+        func isLandscape() -> Bool { window.contentLayoutRect.width > window.contentLayoutRect.height }
+        UserDefaults.standard.set(false, forKey: key)
+        display.naturalSize = NSSize(width: 844, height: 390)
+        display.onPropertiesChange?()
+        await Task.yield()
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(!isLandscape())
+        controller.perform(.rotateDeviceAutomatically)
+        #expect(UserDefaults.standard.bool(forKey: key))
+        display.onPropertiesChange?()
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(isLandscape())
+    }
+
     @Test func hardwareCommandsFollowDeviceFeatures() throws {
         _ = NSApplication.shared
         let menus = MenuController(application: nil)
@@ -448,7 +470,8 @@ private final class TestDisplay: SimulatorDisplay {
     let view = NSView(frame: NSRect(x: 0, y: 0, width: 390, height: 844))
     let input = InputView()
     var inputView: NSView { input }
-    var naturalSize: NSSize { NSSize(width: 390, height: 844) }
+    var naturalSize = NSSize(width: 390, height: 844)
+    var onPropertiesChange: (() -> Void)?
     var isBooted = true
     var events: [(input: HIDInput, state: HIDState)] = []
     /// Called for each sent event, before it is recorded.

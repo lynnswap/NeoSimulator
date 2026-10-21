@@ -290,7 +290,8 @@ analysis source only and is not a runtime dependency.
 The first parity set contains only commands with an available, validated owner:
 
 - File: Save Screen, Close Window;
-- Device: Rotate Left/Right, Home, Lock, Side Button, Action Button, Siri,
+- Device: Rotate Left/Right, Orientation, Rotate Device Automatically, Home,
+  Lock, Side Button, Action Button, Siri,
   Shake, App Switcher, Trigger Screenshot;
 - I/O: Toggle Software Keyboard, Increase Volume, Decrease Volume;
 - Features: Authorize Apple Pay, Toggle Appearance;
@@ -311,9 +312,23 @@ fail-loud CoreSimulator Darwin-notification call. Appearance uses the current
 and target UI style selectors.
 
 Rotation uses direct Apple `devicectl`. On initial attachment and after each
-relative rotation, the session reads the versioned JSON orientation result and
-sets `SimDisplayView.deviceRotation` from that actual value; no local counter is
-the orientation source of truth. Save Screen uses direct Apple `simctl` and a
+relative rotation or Device ▸ Orientation choice, the session reads the
+versioned JSON orientation result and sets `SimDisplayView.deviceRotation` from
+that actual value; no local counter is the orientation source of truth. The
+physical orientation drives the Orientation checkmark, and the last upright
+orientation drives the display angle, so Face Up and Face Down keep it. A device
+turned counterclockwise (landscape left) is shown at +90°, matching
+SimulatorKit's touch mapping and Simulator.app.
+
+Rotate Device Automatically stores Simulator.app's
+`RotateWindowWhenSignaledByGuest` key in the app's standard defaults.
+SimulatorKit's display view reads that key and sets `deviceRotation` itself
+when the guest changes its interface orientation. Each connection registers for
+`SimDeviceScreen` property events (`register(types:queue:handler:)` with
+`.properties`), and the window refits to the display's new size when the
+preference is on. Releasing the registration on disconnect ends the events. The
+Orientation checkmark keeps showing the physical orientation that `devicectl`
+reports, which a guest-initiated rotation does not change. Save Screen uses direct Apple `simctl` and a
 same-directory temporary PNG. The file is signature-checked and then atomically
 renamed, so cancellation or failure preserves an existing destination.
 Device-tool operations are single-flight, drain both output pipes, have a

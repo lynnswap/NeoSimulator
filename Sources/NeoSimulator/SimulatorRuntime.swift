@@ -76,6 +76,12 @@ struct SimulatorDisplayInterface {
     let isDefault: NativeObjCMethod<Bool>
     let isCarPlay: NativeObjCMethod<Bool>
     let buttonTarget: NativeSwiftMethod<() -> UInt32>
+    typealias ScreenEventHandler = NativeSwiftClosure<(NativeSwiftBorrowedValue, NativeSwiftBorrowedValue) -> Void>
+    /// `SimDeviceScreen.register(types:queue:handler:)`. Releasing the
+    /// returned registration ends it.
+    let registerScreenEvents: NativeSwiftMethod<(NativeSwiftValue, DispatchQueue, ScreenEventHandler) -> NativeSwiftValue>
+    /// `SimDeviceScreen.ScreenEventTypes.properties`.
+    let screenPropertyEvents: NativeSwiftValue
     let factoryClass: AnyClass
     let createDisplay: NativeObjCMethod<NSView?, AnyObject, UInt32>
     let showChrome: NativeSwiftMethod<(Bool) -> Void>
@@ -106,8 +112,22 @@ struct SimulatorDisplayInterface {
         screen = try runtime.resolveObjCMethodAndWait(on: screenClass, selector: "screen", as: (() -> AnyObject?).self)
         isDefault = try runtime.resolveObjCMethodAndWait(on: screenClass, selector: "isDefault", as: (() -> Bool).self)
         isCarPlay = try runtime.resolveObjCMethodAndWait(on: screenClass, selector: "isCarPlay", as: (() -> Bool).self)
-        buttonTarget = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimDeviceScreen")
+        let deviceScreen = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimDeviceScreen")
+        buttonTarget = try deviceScreen
             .resolveGetterAndWait(named: "buttonTarget.getter : __C.IndigoHIDTarget", as: (() -> UInt32).self)
+        // The event types and events are resilient, so they are passed indirectly.
+        let eventTypes = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimDeviceScreen.ScreenEventTypes")
+        let event = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimDeviceScreen.ScreenEvent")
+        let eventABIs: [NativeSwiftType: NativeType] = [
+            eventTypes: try .opaque(named: eventTypes.name), event: try .opaque(named: event.name),
+        ]
+        screenPropertyEvents = try unsafe eventTypes
+            .resolveStaticGetterAndWait(named: "properties", as: (() -> NativeSwiftValue).self, valueABIs: eventABIs)
+            .unsafeInvoke()
+        registerScreenEvents = try deviceScreen.resolveMethodAndWait(
+            named: "register(types:queue:handler:)",
+            as: ((NativeSwiftValue, DispatchQueue, ScreenEventHandler) -> NativeSwiftValue).self,
+            valueABIs: eventABIs)
         createDisplay = try runtime.resolveObjCMethodAndWait(
             on: factoryClass, selector: "createSimDisplayViewWithDevice:simScreenID:",
             as: ((AnyObject, UInt32) -> NSView?).self, classMethod: true)
@@ -255,6 +275,9 @@ protocol SimulatorDisplay: AnyObject {
     var view: NSView { get }
     var inputView: NSView { get }
     var naturalSize: NSSize { get }
+    /// Called on the main actor when the screen's properties change, such as
+    /// the interface orientation of the guest.
+    var onPropertiesChange: (() -> Void)? { get set }
     /// Sends one HID event. `completion`, when present, receives SimulatorKit's
     /// delivery result; a thrown error means the event was not sent.
     func send(_ input: HIDInput, _ state: HIDState, completion: (@MainActor (Error?) -> Void)?) throws
@@ -280,6 +303,8 @@ final class SimulatorConnection: SimulatorDisplay {
     private let buttonTarget: UInt32
     private var hidClient: AnyObject?
     private var disconnected = false
+    var onPropertiesChange: (() -> Void)?
+    private var screenEvents: NativeSwiftValue?
 
     init(device: SimulatorDevice, screen: (identifier: UInt32, object: AnyObject), runtime: SimulatorRuntime) throws {
         self.device = device
@@ -302,6 +327,11 @@ final class SimulatorConnection: SimulatorDisplay {
             throw error
         }
         setChromeVisible(true)
+        let handler = try SimulatorDisplayInterface.ScreenEventHandler { [weak self] _, _ in
+            MainActor.assumeIsolated { self?.onPropertiesChange?() }
+        }
+        screenEvents = try unsafe display.registerScreenEvents.unsafeInvoke(
+            on: screen.object, display.screenPropertyEvents, .main, handler)
         // SimulatorKit connects keyboard input on every display and sends each modifier
         // change to all of them; the window controller enables it only while the window is key.
         setKeyboardEnabled(false)
@@ -359,6 +389,9 @@ final class SimulatorConnection: SimulatorDisplay {
         perform("disconnect the display") {
             try unsafe runtime.display.disconnect.unsafeInvoke(on: view, NativeSwiftClosure {})
         }
+        // Releasing the registration ends the screen events.
+        screenEvents = nil
+        onPropertiesChange = nil
         hidClient = nil
     }
     isolated deinit { disconnect() }

@@ -11,6 +11,7 @@ struct DeviceCommand {
         case saveScreen, recordScreen, stopRecording, importFiles
         case shutDown, rotateLeft, rotateRight
         case portrait, landscapeRight, portraitUpsideDown, landscapeLeft, faceUp, faceDown
+        case rotateDeviceAutomatically
         case home, lock, sideButton, actionButtonSting
         case actionButtonStaccato, siri, shake, appSwitcher, triggerScreenshot
         case toggleSoftwareKeyboard, increaseVolume, decreaseVolume, openURL
@@ -65,6 +66,16 @@ struct DeviceCommand {
         orientation(.landscapeLeft, title: "Landscape Left"),
         orientation(.faceUp, title: "Face Up"),
         orientation(.faceDown, title: "Face Down"),
+        // An app preference, so it does not need a booted device.
+        DeviceCommand(id: .rotateDeviceAutomatically, title: "Rotate Device Automatically",
+                      isSupported: { $0.supportsFeature(DeviceCapabilities.displayRotation) },
+                      isEnabled: { _ in true },
+                      state: { _ in
+                          UserDefaults.standard.bool(forKey: HostPreferences.rotateWindowWhenSignaledByGuest) ? .on : .off
+                      }) { _ in
+            let key = HostPreferences.rotateWindowWhenSignaledByGuest
+            UserDefaults.standard.set(!UserDefaults.standard.bool(forKey: key), forKey: key)
+        },
         DeviceCommand(id: .home, title: "Home", key: "h", modifiers: [.command, .shift],
                       toolbar: Toolbar(label: "Home", symbol: "house")) { $0.send(.press(.button(.home))) },
         DeviceCommand(id: .lock, title: "Lock", key: "l") { $0.send(.press(.button(.lock))) },

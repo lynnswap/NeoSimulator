@@ -22,6 +22,14 @@ struct DeviceCapabilities {
     static let applePayAuthorization = "com.apple.hid.applepay.authorize"
 }
 
+/// Preferences Simulator.app keeps in its standard user defaults.
+enum HostPreferences {
+    /// Device ▸ Rotate Device Automatically. SimulatorKit reads this key from
+    /// the host's standard defaults and rotates the display when the guest
+    /// changes its interface orientation.
+    static let rotateWindowWhenSignaledByGuest = "RotateWindowWhenSignaledByGuest"
+}
+
 /// A physical device orientation, named as `devicectl` names it.
 enum DeviceOrientation: String, CaseIterable {
     case portrait, landscapeRight, portraitUpsideDown, landscapeLeft, faceUp, faceDown
