@@ -59,6 +59,11 @@ enum HostPreferences {
     static let screenShotSaveLocation = "ScreenShotSaveLocation"
     /// Whether Save Screen and Record Screen apply the device's mask.
     static let screenShotUseMask = "ScreenShotUseMask"
+    /// Animated GIF export from a recording's thumbnail.
+    static let gifMaxFramerate = "GifMaxFramerate"
+    static let gifMaxFrameSize = "GifMaxFrameSize"
+    static let gifUseDither = "GifUseDither"
+    static let gifDitherDepth = "GifDitherDepth"
 
     /// Registers Simulator.app's defaults for these preferences.
     static func registerDefaults() {
@@ -66,6 +71,7 @@ enum HostPreferences {
             showTestingDevices: true, detachOnWindowClose: false, detachOnAppQuit: false,
             attachBootedOnStart: true, sessionOnLaunch: true, startLastDeviceOnLaunch: true,
             terminationTimeout: 60.0, screenShotSaveLocation: defaultScreenshotLocation(), screenShotUseMask: false,
+            gifMaxFramerate: 10, gifMaxFrameSize: 640, gifUseDither: true, gifDitherDepth: 4.0,
         ])
     }
 
@@ -464,10 +470,6 @@ final class DeviceSession {
 
     /// Saves the screen into `folder` under `name`, numbering the name when
     /// it is taken, and returns the saved file.
-    func saveScreenshot(into folder: URL, named name: String, mask: DeviceTools.ScreenMask) async throws -> URL {
-        let temporary = try await screenshot(mask: mask)
-        return try CaptureFile.move(temporary, into: folder, named: name)
-    }
 
     /// The screen as a PNG, without the device's mask, for Edit ▸ Copy Screen.
     func screenPNG() async throws -> Data {
@@ -477,7 +479,7 @@ final class DeviceSession {
     }
 
     /// Takes a screenshot into a new temporary PNG, which the caller owns.
-    private func screenshot(mask: DeviceTools.ScreenMask) async throws -> URL {
+    func screenshot(mask: DeviceTools.ScreenMask) async throws -> URL {
         let temporary = FileManager.default.temporaryDirectory
             .appendingPathComponent("simulator_screenshot_\(UUID().uuidString).png")
         do {
@@ -497,6 +499,9 @@ final class DeviceSession {
             throw HostError.operation("The screenshot tool did not produce a PNG file")
         }
     }
+
+    /// Whether a recording to a chosen file will replace `file` when it finishes.
+    func isRecordingDestination(_ file: URL) -> Bool { recordings.isReserved(file) }
 
     func startRecording(to destination: RecordingStore.Destination, mask: DeviceTools.ScreenMask) throws {
         guard canPerformCommands, recording == nil else { return }

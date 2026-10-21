@@ -634,7 +634,10 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         }
         return .terminateLater
     }
-    func applicationWillTerminate(_ notification: Notification) { shutdown() }
+    func applicationWillTerminate(_ notification: Notification) {
+        CaptureThumbnail.finishAll()
+        shutdown()
+    }
 
     func shutdown() {
         guard !stopped else { return }

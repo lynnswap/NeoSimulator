@@ -374,9 +374,14 @@ change. Screenshots and recordings use direct Apple `simctl io` with a
 device mask applies, and `ignored` otherwise. Save Screen and Record Screen
 follow Simulator.app's names (`Simulator Screenshot - <device> - <date>.png`,
 `Simulator Screen Recording - <device> - <date>.mov`) and capture to a
-temporary file first; `CaptureFile.move` then saves it into the screenshot
-folder or the Desktop, numbering a taken name and keeping the capture when
-the move fails. A quick recording is named when it stops, as in Simulator.app.
+temporary file first. A `CapturedContent` holds the temporary file and its
+default folder while a `CaptureThumbnail` shows it beside the device window;
+dismissing the thumbnail saves it with `CaptureFile.move`, which numbers a
+taken name and keeps the capture when the move fails. Like Simulator.app, one
+app-wide list holds the thumbnails, so a new capture ends and saves the
+previous one. Unlike Simulator.app, closing the device window or quitting
+saves a pending capture at once instead of leaving it in the temporary folder.
+A quick recording is named when it stops, as in Simulator.app.
 A destination chosen in a save panel is written through a same-directory
 temporary file that is checked and then atomically renamed, so cancellation
 or failure preserves an existing destination.

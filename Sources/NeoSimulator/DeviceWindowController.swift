@@ -189,13 +189,42 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         session.capabilities.hasFramebufferMask && UserDefaults.standard.bool(forKey: HostPreferences.screenShotUseMask)
     }
 
-    /// File ▸ Save Screen: saves the screen to the screenshot folder without asking.
+    /// File ▸ Save Screen: captures the screen without asking and shows its
+    /// thumbnail, which saves it to the screenshot folder when dismissed.
     func saveScreen() {
         let name = CaptureFile.screenshotName(device: session.device.name, date: Date())
+        let folder = CaptureFile.screenshotFolder()
         let mask: DeviceTools.ScreenMask = usesDeviceMask ? .alpha : .ignored
-        session.run({ [session] in
-            _ = try await session.saveScreenshot(into: CaptureFile.screenshotFolder(), named: name, mask: mask)
+        session.run({ [weak self, session] in
+            let file = try await session.screenshot(mask: mask)
+            let capture = CapturedContent(.screenshot, file: file, name: name, defaultFolder: folder)
+            guard let self else {
+                try capture.saveToDefaultLocation()
+                return
+            }
+            self.showThumbnail(of: capture, image: NSImage(contentsOf: file))
         }, failure: { [weak self] in self?.present($0) })
+    }
+
+    /// Shows a capture's thumbnail beside this window, or saves the capture
+    /// when the window has closed.
+    private func showThumbnail(of capture: CapturedContent, image: NSImage?) {
+        guard !closed, let window, window.isVisible else {
+            do { try capture.saveToDefaultLocation() } catch { hostLog(error.localizedDescription) }
+            return
+        }
+        let display = session.display.view
+        let source = window.convertToScreen(display.convert(display.bounds, to: nil))
+        // Simulator.app spaces a screenshot's thumbnail by the window's scale,
+        // twice as far for a landscape device, a TV, or a watch.
+        let scale = session.display.naturalSize.width > 0 ? display.bounds.width / session.display.naturalSize.width : 1
+        let landscape = session.orientation == .landscapeLeft || session.orientation == .landscapeRight
+        let base: CGFloat = landscape || session.capabilities.family == .tv || session.capabilities.family == .watch ? 20 : 10
+        let thumbnail = CaptureThumbnail(capture, image: image, parent: window, source: source,
+                                         spacing: NSSize(width: 10, height: ceil(scale * base))) { [weak self] error in
+            if let self, !self.closed { self.present(error) } else { hostLog(error.localizedDescription) }
+        }
+        thumbnail.show()
     }
 
     /// File ▸ Save Screen…: asks where to save, starting in the screenshot
@@ -235,17 +264,23 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         }, failure: { [weak self] in self?.present($0) })
     }
 
-    /// File ▸ Record Screen: starts recording without asking. Stopping saves
-    /// the movie to the Desktop, named when it stops.
+    /// File ▸ Record Screen: starts recording without asking. Stopping shows
+    /// the movie's thumbnail, which saves it to the Desktop when dismissed;
+    /// the movie is named when the recording stops.
     func recordScreen() {
         guard let desktop = CaptureFile.desktop else {
             present(HostError.operation("Could not find the Desktop folder to save the recording in."))
             return
         }
         let device = session.device.name
+        let isReserved = session.isRecordingDestination
         run {
-            try session.startRecording(to: .folder(desktop, name: { CaptureFile.recordingName(device: device, date: Date()) }),
-                                       mask: usesDeviceMask ? .black : .ignored)
+            try session.startRecording(to: .capture { [weak self] file in
+                let capture = CapturedContent(.movie, file: file, name: CaptureFile.recordingName(device: device, date: Date()),
+                                              defaultFolder: desktop, isReserved: isReserved)
+                if let self { self.showThumbnail(of: capture, image: nil) }
+                else { do { try capture.saveToDefaultLocation() } catch { hostLog(error.localizedDescription) } }
+            }, mask: usesDeviceMask ? .black : .ignored)
         }
     }
 

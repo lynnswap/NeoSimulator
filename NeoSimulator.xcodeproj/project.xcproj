@@ -114,6 +114,12 @@
             "NeoSimulator/compile-sources",
             "NeoSimulatorHostTests/compile-sources",
           ],
+        }, {
+          "path": "CaptureThumbnail.swift",
+          "target-membership": [
+            "NeoSimulator/compile-sources",
+            "NeoSimulatorHostTests/compile-sources",
+          ],
         },
       ],
     },

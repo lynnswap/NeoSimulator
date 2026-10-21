@@ -1,5 +1,7 @@
+import AppKit
 import AVFoundation
 import Foundation
+import ImageIO
 import Testing
 
 @Suite @MainActor
@@ -145,7 +147,7 @@ struct CaptureAndImportTests {
         #expect(FileManager.default.fileExists(atPath: kept.path))
     }
 
-    @Test func aFolderRecordingIsNamedWhenItStops() async throws {
+    @Test func aQuickRecordingIsHandedOverWhenItStopsAndSavedAroundReservedNames() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -162,12 +164,9 @@ struct CaptureAndImportTests {
             process.arguments = ["-c", "trap 'exit 0' INT; echo 'Recording started' >&2; while :; do sleep 0.05; done"]
             return process
         }, onFinished: {})
-        var namedAfterStop: [Bool] = []
+        var handedOver: [(url: URL, afterStop: Bool)] = []
         var stopped = false, finished = false
-        let recording = try store.start(to: .folder(directory, name: {
-            namedAfterStop.append(stopped)
-            return "Recording.mov"
-        }), process: { url in
+        let recording = try store.start(to: .capture { handedOver.append(($0, stopped)) }, process: { url in
             // Writes the movie when stopped, as simctl finalizes it on SIGINT.
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/bin/sh")
@@ -179,15 +178,48 @@ struct CaptureAndImportTests {
             return process
         }, onFinished: { finished = true })
         for _ in 0..<100 where !recording.hasStarted { try await Task.sleep(for: .milliseconds(10)) }
-        #expect(namedAfterStop.isEmpty)
+        #expect(handedOver.isEmpty)
         stopped = true
         recording.stop()
         try await recording.waitUntilFinished()
         for _ in 0..<200 where !finished { try await Task.sleep(for: .milliseconds(10)) }
         #expect(errors.isEmpty)
-        #expect(namedAfterStop == [true])
+        let temporary = try #require(handedOver.first)
+        #expect(handedOver.count == 1 && temporary.afterStop)
+        let capture = CapturedContent(.movie, file: temporary.url, name: "Recording.mov", defaultFolder: directory,
+                                      isReserved: store.isReserved)
+        #expect(try capture.saveToDefaultLocation().lastPathComponent == "Recording #3.mov")
         #expect(try Data(contentsOf: directory.appendingPathComponent("Recording #3.mov")) == Data(contentsOf: movie))
         await store.finishAll()
+    }
+
+    @Test func animatedGIFsKeepTheMoviesFrameTimesUpToTheFrameRate() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let movie = directory.appendingPathComponent("movie.mov")
+        try await writeMovie(to: movie)
+        func export(frameRate: Double) async throws -> (count: Int, delays: [Double], loop: Int?) {
+            let gif = directory.appendingPathComponent("\(frameRate).gif")
+            try await AnimatedGIF.export(movie, to: gif, options: .init(maximumFrameRate: frameRate, maximumFrameSize: 640,
+                                                                        dithers: true, ditherDepth: 4))
+            let source = try #require(CGImageSourceCreateWithURL(gif as CFURL, nil))
+            func gifProperties(_ properties: CFDictionary?) -> [CFString: Any]? {
+                (properties as? [CFString: Any])?[kCGImagePropertyGIFDictionary] as? [CFString: Any]
+            }
+            let count = CGImageSourceGetCount(source)
+            let delays = (0..<count).compactMap {
+                gifProperties(CGImageSourceCopyPropertiesAtIndex(source, $0, nil))?[kCGImagePropertyGIFUnclampedDelayTime] as? Double
+            }
+            return (count, delays, gifProperties(CGImageSourceCopyProperties(source, nil))?[kCGImagePropertyGIFLoopCount] as? Int)
+        }
+        // The fixture's frames are 0.1 seconds apart.
+        let every = try await export(frameRate: 10)
+        #expect(every.count == 3 && every.loop == 0)
+        #expect(Array(every.delays.prefix(2)) == [0.1, 0.1])
+        let thinned = try await export(frameRate: 5)
+        #expect(thinned.count == 2)
+        #expect(thinned.delays.first == 0.2)
     }
 
     /// Writes a short H.264 QuickTime movie.
@@ -235,4 +267,173 @@ struct CaptureAndImportTests {
         #expect(try Data(contentsOf: destination) == original)
         #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path) == ["movie.mov"])
     }
+}
+
+/// Thumbnails share one app-wide list, so their tests run one at a time.
+@Suite(.serialized) @MainActor
+struct CaptureThumbnailTests {
+    @Test func thumbnailsArePlacedLikeSimulatorApp() {
+        let source = NSRect(x: 100, y: 200, width: 400, height: 800)
+        let screen = NSRect(x: 0, y: 0, width: 1600, height: 1200)
+        let visible = NSRect(x: 0, y: 80, width: 1600, height: 1100)
+        let spacing = NSSize(width: 10, height: 20)
+        func place(_ window: NSRect, fullScreen: Bool = false) -> (NSRect, CaptureThumbnail.Position) {
+            let placement = CaptureThumbnail.placement(source: source, window: window, fullScreen: fullScreen,
+                                                       screen: screen, visible: visible, spacing: spacing)
+            return (placement.frame, placement.position)
+        }
+        // A quarter of the screen plus 10 points, beside the window's bottom.
+        #expect(place(NSRect(x: 80, y: 100, width: 440, height: 980)) == (NSRect(x: 530, y: 120, width: 110, height: 210), .right))
+        #expect(place(NSRect(x: 1400, y: 100, width: 190, height: 980)) == (NSRect(x: 1280, y: 120, width: 110, height: 210), .left))
+        #expect(place(NSRect(x: 20, y: 100, width: 1560, height: 980)) == (NSRect(x: 1470, y: 100, width: 110, height: 210), .over))
+        // Kept above the Dock by the horizontal spacing.
+        #expect(place(NSRect(x: 80, y: 40, width: 440, height: 980)).0.minY == 90)
+        // Full screen: right of the device screen, else the lower right corner.
+        #expect(place(screen, fullScreen: true) == (NSRect(x: 510, y: 200, width: 110, height: 210), .over))
+    }
+
+    /// A temporary capture file and a folder to save it in.
+    private func capture(_ kind: CapturedContent.Kind = .screenshot, named name: String = "Shot.png",
+                         in directory: URL) throws -> CapturedContent {
+        let file = directory.appendingPathComponent(UUID().uuidString)
+        try Data(name.utf8).write(to: file)
+        let folder = directory.appendingPathComponent("Saved", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        return CapturedContent(kind, file: file, name: name, defaultFolder: folder)
+    }
+
+    private func savedNames(in directory: URL) throws -> [String] {
+        try FileManager.default.contentsOfDirectory(atPath: directory.appendingPathComponent("Saved").path).sorted()
+    }
+
+    @Test func aNewCaptureEndsTheShownThumbnailAndSavesIt() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        _ = NSApplication.shared
+        let window = NSWindow(contentRect: NSRect(x: 200, y: 200, width: 300, height: 600), styleMask: .titled,
+                              backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.orderFront(nil)
+        defer { window.close() }
+        let source = NSRect(x: 220, y: 220, width: 260, height: 560)
+        let first = CaptureThumbnail(try capture(named: "First.png", in: directory), image: nil, parent: window,
+                                     source: source, spacing: .zero) { _ in }
+        first.show()
+        #expect(CaptureThumbnail.active.map(ObjectIdentifier.init) == [ObjectIdentifier(first)])
+        // Another window's capture also ends it, as Simulator.app keeps one app-wide list.
+        let other = NSWindow(contentRect: NSRect(x: 600, y: 200, width: 300, height: 600), styleMask: .titled,
+                             backing: .buffered, defer: false)
+        other.isReleasedWhenClosed = false
+        other.orderFront(nil)
+        defer { other.close() }
+        let second = CaptureThumbnail(try capture(named: "Second.png", in: directory), image: nil, parent: other,
+                                      source: source, spacing: .zero) { _ in }
+        second.show()
+        #expect(try savedNames(in: directory) == ["First.png"])
+        #expect(CaptureThumbnail.active.map(ObjectIdentifier.init) == [ObjectIdentifier(second)])
+        // Resizing the device window ends its thumbnail.
+        other.setFrame(other.frame.insetBy(dx: -20, dy: -20), display: false)
+        #expect(try savedNames(in: directory) == ["First.png", "Second.png"])
+        #expect(CaptureThumbnail.active.isEmpty)
+
+        let third = CaptureThumbnail(try capture(named: "Third.png", in: directory), image: nil, parent: window,
+                                     source: source, spacing: .zero) { _ in }
+        third.show()
+        CaptureThumbnail.finishAll()
+        #expect(try savedNames(in: directory) == ["First.png", "Second.png", "Third.png"])
+        #expect(CaptureThumbnail.active.isEmpty)
+    }
+
+    @Test func thumbnailMenusOfferSimulatorAppsActions() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        _ = NSApplication.shared
+        let shots = directory.appendingPathComponent("Shots", isDirectory: true)
+        try FileManager.default.createDirectory(at: shots, withIntermediateDirectories: true)
+        let key = HostPreferences.screenShotSaveLocation
+        let saved = UserDefaults.standard.object(forKey: key)
+        defer { UserDefaults.standard.set(saved, forKey: key) }
+        UserDefaults.standard.set(shots.path, forKey: key)
+        let window = NSWindow(contentRect: NSRect(x: 200, y: 200, width: 300, height: 600), styleMask: .titled,
+                              backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        func thumbnail(_ capture: CapturedContent) -> CaptureThumbnail {
+            CaptureThumbnail(capture, image: nil, parent: window, source: .zero, spacing: .zero) { _ in }
+        }
+        func titles(_ menu: NSMenu) -> [String] { menu.items.map { $0.isSeparatorItem ? "-" : $0.title } }
+        let screenshot = thumbnail(try capture(in: directory))
+        #expect(titles(screenshot.menu()) == [
+            "Save to Shots", "Save to Desktop", "Save to Documents", "Copy to Clipboard", "-",
+            "Open in Mail", "Open in Preview", "Open in Photos", "-", "Show in Finder", "Delete", "-", "Close",
+        ])
+        let movie = thumbnail(try capture(.movie, named: "Movie.mov", in: directory)).menu()
+        #expect(titles(movie) == [
+            "Save to Shots", "Save to Desktop", "Save to Documents", "Save as Animated GIF",
+            "Save Copy as Animated GIF", "-", "Show in Finder", "Delete", "-", "Close",
+        ])
+        #expect(movie.items.filter(\.isAlternate).map(\.keyEquivalentModifierMask) == [.option])
+        // The Desktop has its own item, so a Desktop screenshot folder adds none.
+        UserDefaults.standard.set(CaptureFile.desktop?.path, forKey: key)
+        #expect(!titles(screenshot.menu()).contains { $0.hasPrefix("Save to Shots") })
+        UserDefaults.standard.set(shots.path, forKey: key)
+
+        func choose(_ title: String, in thumbnail: CaptureThumbnail) throws {
+            let item = try #require(thumbnail.menu().items.first { $0.title == title })
+            #expect(NSApp.sendAction(try #require(item.action), to: item.target, from: item))
+        }
+        let deleted = try capture(in: directory)
+        try choose("Delete", in: thumbnail(deleted))
+        #expect(!FileManager.default.fileExists(atPath: deleted.file.path))
+        try choose("Save to Shots", in: thumbnail(try capture(named: "Custom.png", in: directory)))
+        #expect(FileManager.default.fileExists(atPath: shots.appendingPathComponent("Custom.png").path))
+        try choose("Close", in: thumbnail(try capture(named: "Closed.png", in: directory)))
+        #expect(try savedNames(in: directory) == ["Closed.png"])
+    }
+
+    @Test func aCompletedDragDeliversTheCaptureAndACancelledOneSavesIt() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        _ = NSApplication.shared
+        let window = NSWindow(contentRect: NSRect(x: 200, y: 200, width: 300, height: 600), styleMask: .titled,
+                              backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let delivered = try capture(named: "Dragged.png", in: directory)
+        let destination = directory.appendingPathComponent("Dragged.png")
+        try delivered.deliver(to: destination)
+        CaptureThumbnail(delivered, image: nil, parent: window, source: .zero, spacing: .zero) { _ in }.dragEnded(.copy)
+        #expect(FileManager.default.fileExists(atPath: destination.path))
+        #expect(try savedNames(in: directory).isEmpty)
+        let cancelled = try capture(named: "Cancelled.png", in: directory)
+        CaptureThumbnail(cancelled, image: nil, parent: window, source: .zero, spacing: .zero) { _ in }.dragEnded([])
+        #expect(try savedNames(in: directory) == ["Cancelled.png"])
+    }
+
+    @Test func aShownScreenshotShrinksBesideItsWindowAndSavesItselfWhenItsTimerEnds() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        _ = NSApplication.shared
+        let window = NSWindow(contentRect: NSRect(x: 200, y: 300, width: 300, height: 600), styleMask: .titled,
+                              backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.orderFront(nil)
+        defer { window.close() }
+        let source = NSRect(x: 220, y: 320, width: 260, height: 560)
+        let thumbnail = CaptureThumbnail(try capture(named: "Timed.png", in: directory), image: nil, parent: window,
+                                         source: source, spacing: NSSize(width: 10, height: 10)) { _ in }
+        thumbnail.show()
+        let shown = try #require(window.childWindows?.last)
+        // It starts over the device screen and shrinks beside the window.
+        #expect(shown.frame == source.insetBy(dx: -5, dy: -5))
+        for _ in 0..<100 where shown.frame.width != 75 { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(shown.frame == NSRect(x: window.frame.maxX + 10, y: window.frame.minY + 10, width: 75, height: 150))
+        #expect(try savedNames(in: directory).isEmpty)
+        for _ in 0..<400 where !CaptureThumbnail.active.isEmpty { try await Task.sleep(for: .milliseconds(25)) }
+        #expect(CaptureThumbnail.active.isEmpty)
+        #expect(try savedNames(in: directory) == ["Timed.png"])
+    }
+
 }
