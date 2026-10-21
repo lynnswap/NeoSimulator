@@ -103,7 +103,10 @@ Neo currently provides:
 - the hardware inputs the active device supports: Action Button, Siri, App
   Switcher, Trigger Screenshot, Increase and Decrease Volume, and Authorize
   Apple Pay. The Side Button command is defined for watchOS devices, which Neo
-  does not host yet.
+  does not host yet;
+- Features menu controls: Touch ID and Face ID enrollment and matching or
+  non-matching events, the in-call status bar, StandBy, preferred text size,
+  Increase Contrast, and Trigger iCloud Sync (Shift-Command-I).
 
 Use **File → Open Simulator** to choose a device, **File → New Simulator…**
 to create one, and **Device → Shut Down** to stop it. As in Simulator.app, Open

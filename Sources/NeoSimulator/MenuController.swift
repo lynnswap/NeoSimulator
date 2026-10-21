@@ -6,6 +6,9 @@ import AppKit
 final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
     private weak var application: HostApplication?
     private let openSimulator: OpenSimulatorMenu
+    /// Items whose shortcut depends on the key device.
+    private var keyedItems: [NSMenuItem] = []
+    private var keyWindowObserver: (any NSObjectProtocol)?
     private var activeWindow: DeviceWindowController? {
         NSApp.keyWindow?.windowController as? DeviceWindowController
     }
@@ -13,6 +16,10 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
     init(application: HostApplication?) {
         self.application = application
         openSimulator = OpenSimulatorMenu(application: application)
+    }
+
+    isolated deinit {
+        if let keyWindowObserver { NotificationCenter.default.removeObserver(keyWindowObserver) }
     }
 
     func install() {
@@ -83,9 +90,15 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
         commands([.openURL], in: io)
 
         let features = menu("Features", in: main)
+        commands([.touchIDEnrolled, .touchIDMatching, .touchIDNonMatching], in: menu("Touch ID", in: features))
+        commands([.faceIDEnrolled, .faceIDMatching, .faceIDNonMatching], in: menu("Face ID", in: features))
         commands([.authorizeApplePay], in: features)
         features.addItem(.separator())
-        commands([.toggleAppearance], in: features)
+        commands([.toggleAppearance, .toggleInCallStatusBar, .toggleStandBy], in: features)
+        features.addItem(.separator())
+        commands([.increaseTextSize, .decreaseTextSize, .toggleIncreaseContrast], in: features)
+        features.addItem(.separator())
+        commands([.triggerCloudSync], in: features)
 
         let debug = menu("Debug", in: main)
         item("Show Parallel Testing Devices", action: #selector(toggleShowTestingDevices(_:)), in: debug)
@@ -107,6 +120,22 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
         NSApp.mainMenu = main
         NSApp.windowsMenu = window
         NSApp.helpMenu = help
+        updateKeyEquivalents(for: nil)
+        keyWindowObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.updateKeyEquivalents(for: self?.activeWindow?.session.capabilities) }
+        }
+    }
+
+    /// Gives shared shortcuts to the commands of the key device, as
+    /// Simulator.app does when a device window becomes key. A hidden menu item
+    /// still takes its shortcut, so the others lose theirs.
+    func updateKeyEquivalents(for capabilities: DeviceCapabilities?) {
+        for item in keyedItems {
+            guard let raw = item.representedObject as? String, let id = DeviceCommand.ID(rawValue: raw) else { continue }
+            let command = DeviceCommand.command(id)
+            item.keyEquivalent = command.hasKey?(capabilities) == false ? "" : command.key
+        }
     }
 
     private func menu(_ title: String, in parent: NSMenu) -> NSMenu {
@@ -136,6 +165,7 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
                             modifiers: command.modifiers, in: menu)
             item.representedObject = id.rawValue
             item.isAlternate = command.isAlternate
+            if command.hasKey != nil { keyedItems.append(item) }
         }
     }
 
@@ -185,9 +215,11 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
         let command = DeviceCommand.command(id)
         guard let window = activeWindow else {
             item.state = .off
+            item.title = command.title
             return false
         }
         item.state = command.state?(window) ?? .off
+        item.title = command.stateTitle?(window) ?? command.title
         return command.isEnabled(window)
     }
 

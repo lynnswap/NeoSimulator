@@ -333,8 +333,19 @@ protocol SimulatorDisplay: AnyObject {
     /// Sends a message. `completion`, when present, receives SimulatorKit's
     /// delivery result; a thrown error means the message was not sent.
     func send(_ message: HIDMessage, completion: (@MainActor (Error?) -> Void)?) throws
-    func shake() throws
     func toggleAppearance() throws
+    /// Posts a Darwin notification in the guest.
+    func postNotification(_ name: String) throws
+    /// The guest's state of a Darwin notification.
+    func notificationState(_ name: String) throws -> UInt64
+    func setNotificationState(_ name: String, to state: UInt64) throws
+    /// The guest's preferred text size, numbered as `SimulatorDevice` numbers it.
+    func contentSizeCategory() throws -> Int
+    func setContentSizeCategory(_ category: Int) throws
+    /// 1 when Increase Contrast is off and 2 when it is on; 0 when unknown.
+    func increaseContrastMode() throws -> Int
+    func setIncreaseContrast(_ enabled: Bool) throws
+    func triggerCloudSync() async throws
     func setChromeVisible(_ visible: Bool)
     func setActive(_ active: Bool)
     func setKeyboardEnabled(_ enabled: Bool)
@@ -418,8 +429,15 @@ final class SimulatorConnection: SimulatorDisplay {
         try runtime.input.send(message, client: hidClient, completion: completion)
     }
 
-    func shake() throws { try device.shake() }
     func toggleAppearance() throws { try device.toggleAppearance() }
+    func postNotification(_ name: String) throws { try device.postNotification(name) }
+    func notificationState(_ name: String) throws -> UInt64 { try device.notificationState(name) }
+    func setNotificationState(_ name: String, to state: UInt64) throws { try device.setNotificationState(name, to: state) }
+    func contentSizeCategory() throws -> Int { try device.contentSizeCategory() }
+    func setContentSizeCategory(_ category: Int) throws { try device.setContentSizeCategory(category) }
+    func increaseContrastMode() throws -> Int { try device.increaseContrastMode() }
+    func setIncreaseContrast(_ enabled: Bool) throws { try device.setIncreaseContrast(enabled) }
+    func triggerCloudSync() async throws { try await device.triggerCloudSync() }
     func setChromeVisible(_ visible: Bool) {
         perform("show device chrome") { try unsafe runtime.display.showChrome.unsafeInvoke(on: view, visible) }
         view.invalidateIntrinsicContentSize()

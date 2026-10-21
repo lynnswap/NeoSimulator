@@ -30,6 +30,13 @@ struct CoreSimulatorInterface {
     let interfaceStyle: NativeObjCMethod<Int>
     let setInterfaceStyle: NativeObjCMethod<Void, Int>
     let postDarwinNotification: NativeObjCMethod<Void, String>
+    let darwinNotificationState: NativeObjCMethod<Void, UnsafeMutablePointer<UInt64>, String>
+    let setDarwinNotificationState: NativeObjCMethod<Void, UInt64, String>
+    let contentSizeCategory: NativeObjCMethod<Int>
+    let setContentSizeCategory: NativeObjCMethod<Void, Int>
+    let increaseContrastMode: NativeObjCMethod<Int>
+    let setIncreaseContrast: NativeObjCMethod<Void, Bool>
+    let triggerCloudSync: NativeObjCMethod<Void, DispatchQueue, CloudSyncCompletion>
     let runtimeName: NativeObjCMethod<String?>
     let runtimeIdentifier: NativeObjCMethod<String?>
     let runtimeAvailable: NativeObjCMethod<Bool>
@@ -42,6 +49,7 @@ struct CoreSimulatorInterface {
     let deviceTypeIdentifier: NativeObjCMethod<String?>
 
     typealias NotificationHandler = @convention(block) (NSDictionary) -> Void
+    typealias CloudSyncCompletion = @convention(block) (NSError?) -> Void
 
     init(runtime: ABIRuntime) throws {
         func requireClass(_ name: String) throws -> AnyClass {
@@ -95,6 +103,22 @@ struct CoreSimulatorInterface {
             on: device, selector: "setUIInterfaceStyle:error:", as: ((Int) throws -> Void).self)
         postDarwinNotification = try runtime.resolveObjCMethodAndWait(
             on: device, selector: "postDarwinNotification:error:", as: ((String) throws -> Void).self)
+        darwinNotificationState = try runtime.resolveObjCMethodAndWait(
+            on: device, selector: "darwinNotificationGetState:name:error:",
+            as: ((UnsafeMutablePointer<UInt64>, String) throws -> Void).self)
+        setDarwinNotificationState = try runtime.resolveObjCMethodAndWait(
+            on: device, selector: "darwinNotificationSetState:name:error:", as: ((UInt64, String) throws -> Void).self)
+        contentSizeCategory = try runtime.resolveObjCMethodAndWait(
+            on: device, selector: "currentContentSizeCategory", as: (() -> Int).self)
+        setContentSizeCategory = try runtime.resolveObjCMethodAndWait(
+            on: device, selector: "setContentSizeCategory:error:", as: ((Int) throws -> Void).self)
+        increaseContrastMode = try runtime.resolveObjCMethodAndWait(
+            on: device, selector: "currentIncreaseContrastMode", as: (() -> Int).self)
+        setIncreaseContrast = try runtime.resolveObjCMethodAndWait(
+            on: device, selector: "setIncreaseContrastEnabled:error:", as: ((Bool) throws -> Void).self)
+        triggerCloudSync = try runtime.resolveObjCMethodAndWait(
+            on: device, selector: "triggerCloudSyncWithCompletionQueue:completionHandler:",
+            as: ((DispatchQueue, @escaping CloudSyncCompletion) -> Void).self)
         runtimeName = try runtime.resolveObjCMethodAndWait(
             on: simRuntime, selector: "name", as: (() -> String?).self)
         runtimeIdentifier = try runtime.resolveObjCMethodAndWait(
@@ -176,8 +200,45 @@ final class SimulatorDevice {
         try unsafe interface.setInterfaceStyle.unsafeInvoke(on: object, style == 2 ? 1 : 2)
     }
 
-    func shake() throws {
-        try unsafe interface.postDarwinNotification.unsafeInvoke(on: object, "com.apple.UIKit.SimulatorShake")
+    func postNotification(_ name: String) throws {
+        try unsafe interface.postDarwinNotification.unsafeInvoke(on: object, name)
+    }
+
+    func notificationState(_ name: String) throws -> UInt64 {
+        var state: UInt64 = 0
+        try unsafe withUnsafeMutablePointer(to: &state) {
+            try unsafe interface.darwinNotificationState.unsafeInvoke(on: object, $0, name)
+        }
+        return state
+    }
+
+    func setNotificationState(_ name: String, to state: UInt64) throws {
+        try unsafe interface.setDarwinNotificationState.unsafeInvoke(on: object, state, name)
+    }
+
+    /// `UIContentSizeCategory` as CoreSimulator numbers it: 1 through 12 from
+    /// Extra Small to Accessibility XXXL, other values when unknown or unsupported.
+    func contentSizeCategory() throws -> Int { try unsafe interface.contentSizeCategory.unsafeInvoke(on: object) }
+
+    func setContentSizeCategory(_ category: Int) throws {
+        try unsafe interface.setContentSizeCategory.unsafeInvoke(on: object, category)
+    }
+
+    /// 1 when Increase Contrast is off and 2 when it is on; 0 when unknown.
+    func increaseContrastMode() throws -> Int { try unsafe interface.increaseContrastMode.unsafeInvoke(on: object) }
+
+    func setIncreaseContrast(_ enabled: Bool) throws {
+        try unsafe interface.setIncreaseContrast.unsafeInvoke(on: object, enabled)
+    }
+
+    func triggerCloudSync() async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            let completion: CoreSimulatorInterface.CloudSyncCompletion = { error in
+                if let error { continuation.resume(throwing: error) } else { continuation.resume() }
+            }
+            do { try unsafe interface.triggerCloudSync.unsafeInvoke(on: object, .main, completion) }
+            catch { continuation.resume(throwing: error) }
+        }
     }
 }
 

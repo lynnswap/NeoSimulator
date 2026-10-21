@@ -304,7 +304,10 @@ The first parity set contains only commands with an available, validated owner:
   Lock, Side Button (watchOS devices only, so hidden until Neo hosts them),
   Action Button, Siri, Shake, App Switcher, Trigger Screenshot;
 - I/O: Toggle Software Keyboard, Increase Volume, Decrease Volume;
-- Features: Authorize Apple Pay, Toggle Appearance;
+- Features: Touch ID and Face ID (Enrolled, Matching, Non-matching),
+  Authorize Apple Pay, Toggle Appearance, Toggle In-call Status Bar,
+  Show/Hide StandBy, Increase and Decrease Preferred Text Size, Toggle
+  Increase Contrast, Trigger iCloud Sync;
 - Debug: Show Parallel Testing Devices;
 - Window: standard minimize/zoom/full screen, Show Device Bezels, Stay on Top,
   Fit Screen, Simulators, Bring All to Front.

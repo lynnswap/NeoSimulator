@@ -26,6 +26,9 @@ struct DeviceCapabilities {
     static let siri = "com.apple.siri"
     static let routableAudio = "com.apple.CoreSimulator.audio.routable"
     static let applePayAuthorization = "com.apple.hid.applepay.authorize"
+    static let touchID = "com.apple.touch-id"
+    static let faceID = "com.apple.pearl-id"
+    static let standBy = "com.apple.display.ambient-overlay"
 }
 
 /// Preferences Simulator.app keeps in its standard user defaults.
@@ -296,13 +299,82 @@ final class DeviceSession {
 
     func shake() throws {
         guard canPerformCommands else { return }
-        try display.shake()
+        try display.postNotification("com.apple.UIKit.SimulatorShake")
     }
 
     func toggleAppearance() throws {
         guard canPerformCommands else { return }
         try display.toggleAppearance()
     }
+
+    // MARK: Guest features
+
+    enum Biometric { case touchID, faceID }
+
+    private static let biometricEnrollment = "com.apple.BiometricKit.enrollmentChanged"
+    private static let standBy = "com.apple.springboard.ambient.presentation"
+
+    /// Whether biometrics are enrolled. Touch ID and Face ID share this guest state.
+    var isBiometricEnrolled: Bool {
+        canPerformCommands && (try? display.notificationState(Self.biometricEnrollment)) == 1
+    }
+
+    func toggleBiometricEnrollment() throws {
+        guard canPerformCommands else { return }
+        try toggleState(of: Self.biometricEnrollment)
+    }
+
+    /// Presents a matching or non-matching finger or face to the guest.
+    func sendBiometric(_ biometric: Biometric, matching: Bool) throws {
+        guard canPerformCommands else { return }
+        let source = biometric == .touchID ? "fingerTouch" : "pearl"
+        try display.postNotification("com.apple.BiometricKit_Sim.\(source).\(matching ? "match" : "nomatch")")
+    }
+
+    func toggleInCallStatusBar() throws {
+        guard canPerformCommands else { return }
+        try display.postNotification("com.apple.iphonesimulator.toggleincallstatusbar")
+    }
+
+    var showsStandBy: Bool { canPerformCommands && (try? display.notificationState(Self.standBy)) == 1 }
+
+    func toggleStandBy() throws {
+        guard canPerformCommands else { return }
+        try toggleState(of: Self.standBy)
+    }
+
+    /// Flips a guest notification's state between 0 and 1 and posts it.
+    private func toggleState(of name: String) throws {
+        let state: UInt64 = try display.notificationState(name) == 1 ? 0 : 1
+        try display.setNotificationState(name, to: state)
+        do { try display.postNotification(name) } catch {
+            throw HostError.operation("The device's state changed, but it was not notified: \(error.localizedDescription)")
+        }
+    }
+
+    /// Moves the preferred text size `delta` steps. Like Simulator.app, it
+    /// stops at the smallest and the largest accessibility size.
+    func changeTextSize(by delta: Int) throws {
+        guard canPerformCommands else { return }
+        let sizes = 1...12
+        let category = try display.contentSizeCategory()
+        guard sizes.contains(category) else {
+            throw HostError.operation("The device did not report its preferred text size.")
+        }
+        guard sizes.contains(category + delta) else { return }
+        try display.setContentSizeCategory(category + delta)
+    }
+
+    func toggleIncreaseContrast() throws {
+        guard canPerformCommands else { return }
+        switch try display.increaseContrastMode() {
+        case 1: try display.setIncreaseContrast(true)
+        case 2: try display.setIncreaseContrast(false)
+        default: throw HostError.operation("The device did not report whether Increase Contrast is on.")
+        }
+    }
+
+    func triggerCloudSync() async throws { try await display.triggerCloudSync() }
 
     // MARK: Device tool operations
 
