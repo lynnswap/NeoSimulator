@@ -82,7 +82,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         focusInput()
     }
 
-    func press(_ button: DeviceButton) { run { try session.press(button) } }
+    func send(_ input: HardwareInput) { session.send(input) { [weak self] in self?.present($0) } }
 
     /// Runs an immediate device action and presents its failure on this window.
     func run(_ action: () throws -> Void) {

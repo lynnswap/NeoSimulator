@@ -15,6 +15,21 @@ struct DeviceCapabilities {
     var isPhoneOrPad: Bool { family == .iPhone || family == .iPad }
 
     static let displayRotation = "com.apple.CoreSimulator.display.rotation"
+    static let actionButtonSting = "com.apple.hid.sting"
+    static let actionButtonStaccato = "com.apple.hid.staccato"
+    static let siri = "com.apple.siri"
+    static let routableAudio = "com.apple.CoreSimulator.audio.routable"
+    static let applePayAuthorization = "com.apple.hid.applepay.authorize"
+}
+
+/// How Simulator.app times the events of a hardware input.
+enum HardwareInput {
+    /// Pressed and released at once.
+    case press(HIDInput)
+    /// Pressed, then released after a delay.
+    case hold(HIDInput, for: Duration)
+    /// Pressed and released twice, the second time after a delay.
+    case pressTwice(HIDInput, interval: Duration)
 }
 
 /// One connected simulator: its display and input, its device tools, and every
@@ -29,6 +44,11 @@ final class DeviceSession {
     @ObservationIgnored private let recordings: RecordingStore
     @ObservationIgnored private let makeRecordingProcess: (URL) -> Process
     @ObservationIgnored private var operation: Task<Void, Never>?
+    /// The delayed steps of hardware inputs, which a disconnect cancels.
+    @ObservationIgnored private var inputSteps: [Int: Task<Void, Never>] = [:]
+    @ObservationIgnored private var nextInputStep = 0
+    /// How many times each input is pressed and not yet released.
+    @ObservationIgnored private var heldInputs: [HIDInput: Int] = [:]
     @ObservationIgnored private var isDisconnected = false
     /// A tool operation or a modal step that leads to one is in progress.
     private(set) var isBusy = false
@@ -53,9 +73,54 @@ final class DeviceSession {
 
     // MARK: Immediate device input
 
-    func press(_ button: DeviceButton) throws {
+    /// Sends a hardware input. The first failure of its events, including a
+    /// delivery failure SimulatorKit reports later, goes to `failure`.
+    func send(_ input: HardwareInput, failure: @escaping @MainActor (Error) -> Void) {
         guard canPerformCommands else { return }
-        try display.press(button)
+        let report = FirstFailure(failure)
+        switch input {
+        case .press(let event):
+            press(event, report)
+        case .hold(let event, let delay):
+            guard send(event, .down, report) else { return }
+            heldInputs[event, default: 0] += 1
+            after(delay) { session in
+                session.heldInputs[event] = session.heldInputs[event].flatMap { $0 > 1 ? $0 - 1 : nil }
+                session.send(event, .up, report)
+            }
+        case .pressTwice(let event, let interval):
+            press(event, report)
+            after(interval) { session in session.press(event, report) }
+        }
+    }
+
+    private func press(_ event: HIDInput, _ report: FirstFailure) {
+        if send(event, .down, report) { send(event, .up, report) }
+    }
+
+    @discardableResult
+    private func send(_ event: HIDInput, _ state: HIDState, _ report: FirstFailure) -> Bool {
+        guard canPerformCommands else { return false }
+        do {
+            try display.send(event, state) { error in
+                if let error { report(error) }
+            }
+            return true
+        } catch {
+            report(error)
+            return false
+        }
+    }
+
+    private func after(_ delay: Duration, _ step: @escaping @MainActor (DeviceSession) -> Void) {
+        let id = nextInputStep
+        nextInputStep += 1
+        inputSteps[id] = Task { [weak self] in
+            try? await Task.sleep(for: delay)
+            guard let self, !Task.isCancelled else { return }
+            self.inputSteps[id] = nil
+            step(self)
+        }
     }
 
     func shake() throws {
@@ -158,6 +223,13 @@ final class DeviceSession {
 
     func disconnect() {
         guard !isDisconnected else { return }
+        // Release held inputs while the input client can still send.
+        for (event, count) in heldInputs {
+            for _ in 0..<count { try? display.send(event, .up, completion: nil) }
+        }
+        heldInputs.removeAll()
+        inputSteps.values.forEach { $0.cancel() }
+        inputSteps.removeAll()
         isDisconnected = true
         isConnected = false
         operation?.cancel()
@@ -167,4 +239,15 @@ final class DeviceSession {
     }
 
     isolated deinit { disconnect() }
+}
+
+/// Forwards only the first failure of an input whose events fail together.
+@MainActor
+private final class FirstFailure {
+    private var failure: ((Error) -> Void)?
+    init(_ failure: @escaping @MainActor (Error) -> Void) { self.failure = failure }
+    func callAsFunction(_ error: Error) {
+        failure?(error)
+        failure = nil
+    }
 }

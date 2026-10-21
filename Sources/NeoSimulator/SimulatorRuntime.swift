@@ -159,7 +159,7 @@ struct SimulatorDisplayInterface {
     }
 }
 
-/// The SimulatorKit HID client used for hardware buttons.
+/// The SimulatorKit HID client used for hardware buttons and HID usages.
 @MainActor
 struct SimulatorInputInterface {
     typealias Completion = @convention(block) (NSError?) -> Void
@@ -167,7 +167,10 @@ struct SimulatorInputInterface {
     let clientClass: AnyClass
     let makeClient: NativeObjCMethod<AnyObject, AnyObject>
     let send: NativeObjCMethod<Void, OpaquePointer, Bool, DispatchQueue?, Completion?>
+    /// `IndigoHIDMessageForButton(button, state, target)`.
     let messageForButton: NativeFunction<OpaquePointer?, UInt32, UInt32, UInt32>
+    /// `IndigoHIDMessageForHIDArbitrary(target, usagePage, usage, state)`.
+    let messageForUsage: NativeFunction<OpaquePointer?, UInt32, UInt32, UInt32, UInt32>
 
     init(runtime: ABIRuntime) throws {
         guard let clientClass = NSClassFromString("SimulatorKit.SimDeviceLegacyHIDClient") else {
@@ -181,6 +184,9 @@ struct SimulatorInputInterface {
             as: ((OpaquePointer, Bool, DispatchQueue?, Completion?) -> Void).self)
         messageForButton = try runtime.resolveCFunctionAndWait(
             named: "IndigoHIDMessageForButton", as: ((UInt32, UInt32, UInt32) -> OpaquePointer?).self)
+        messageForUsage = try runtime.resolveCFunctionAndWait(
+            named: "IndigoHIDMessageForHIDArbitrary",
+            as: ((UInt32, UInt32, UInt32, UInt32) -> OpaquePointer?).self)
     }
 
     func connect(to device: SimulatorDevice) throws -> AnyObject {
@@ -190,22 +196,27 @@ struct SimulatorInputInterface {
         return try unsafe makeClient.unsafeInvoke(on: allocated, device.object)
     }
 
-    /// Sends a button press and release to `target`.
-    func press(_ button: DeviceButton, target: UInt32, client: AnyObject) throws {
-        let down = try unsafe messageForButton.unsafeInvoke(button.rawValue, Self.down, target)
-        let up = try unsafe messageForButton.unsafeInvoke(button.rawValue, Self.up, target)
-        guard let down, let up else {
-            free(UnsafeMutableRawPointer(down))
-            free(UnsafeMutableRawPointer(up))
-            throw HostError.operation("Could not allocate simulator button input")
+    /// Sends one event of `input` to `target`. SimulatorKit reports delivery
+    /// to `completion` on the main queue.
+    func send(_ input: HIDInput, _ state: HIDState, target: UInt32, client: AnyObject,
+              completion: (@MainActor (Error?) -> Void)?) throws {
+        let message = switch input {
+        case .button(let button): try unsafe messageForButton.unsafeInvoke(button.rawValue, state.rawValue, target)
+        case .usage(let page, let usage): try unsafe messageForUsage.unsafeInvoke(target, page, usage, state.rawValue)
         }
-        // Each send transfers ownership of its message to SimulatorKit.
-        try unsafe send.unsafeInvoke(on: client, down, true, nil, nil)
-        try unsafe send.unsafeInvoke(on: client, up, true, nil, nil)
+        guard let message else { throw HostError.operation("Could not allocate simulator input") }
+        // The send transfers ownership of the message to SimulatorKit.
+        if let completion {
+            // Build the block from a closure literal. Converting it inside
+            // `Optional.map` makes Swift 6.3 emit a reabstraction thunk under
+            // the block invoke function's mangled name, and the linker can pick
+            // that thunk as the invoke of every such block, which then crashes.
+            let handler: Completion = { error in MainActor.assumeIsolated { completion(error) } }
+            try unsafe send.unsafeInvoke(on: client, message, true, .main, handler)
+        } else {
+            try unsafe send.unsafeInvoke(on: client, message, true, nil, nil)
+        }
     }
-
-    private static let down: UInt32 = 1
-    private static let up: UInt32 = 2
 }
 
 /// An uninitialized instance for an Objective-C initializer, which consumes it.
@@ -214,9 +225,29 @@ private func allocate(_ type: AnyClass) -> AnyObject? {
     (type as? NSObject.Type)?.perform(NSSelectorFromString("alloc"))?.takeRetainedValue()
 }
 
+/// A hardware button, by its Indigo HID button number.
 enum DeviceButton: UInt32 {
-    case home = 0, lock = 1, softwareKeyboard = 0x3f0
+    case home = 0, lock = 1, applePay = 500, softwareKeyboard = 1008, siri = 1010
+    /// The watch side button.
+    case side = 3000
+    /// The Action button on devices with the `com.apple.hid.sting` feature.
+    case actionSting = 3001
+    /// The Action button on devices with the `com.apple.hid.staccato` feature.
+    case actionStaccato = 3002
 }
+
+/// An input Simulator.app sends as a down event and an up event.
+enum HIDInput: Hashable {
+    case button(DeviceButton)
+    /// A HID usage, such as a key on the consumer usage page.
+    case usage(page: UInt32, usage: UInt32)
+
+    static let screenshot = HIDInput.usage(page: 0x0c, usage: 0x65)
+    static let volumeUp = HIDInput.usage(page: 0x0c, usage: 0xe9)
+    static let volumeDown = HIDInput.usage(page: 0x0c, usage: 0xea)
+}
+
+enum HIDState: UInt32 { case down = 1, up = 2 }
 
 @MainActor
 protocol SimulatorDisplay: AnyObject {
@@ -224,7 +255,9 @@ protocol SimulatorDisplay: AnyObject {
     var view: NSView { get }
     var inputView: NSView { get }
     var naturalSize: NSSize { get }
-    func press(_ button: DeviceButton) throws
+    /// Sends one HID event. `completion`, when present, receives SimulatorKit's
+    /// delivery result; a thrown error means the event was not sent.
+    func send(_ input: HIDInput, _ state: HIDState, completion: (@MainActor (Error?) -> Void)?) throws
     func shake() throws
     func toggleAppearance() throws
     func setChromeVisible(_ visible: Bool)
@@ -283,9 +316,9 @@ final class SimulatorConnection: SimulatorDisplay {
         return scale > 0 ? NSSize(width: actual.width / scale, height: actual.height / scale) : actual
     }
 
-    func press(_ button: DeviceButton) throws {
+    func send(_ input: HIDInput, _ state: HIDState, completion: (@MainActor (Error?) -> Void)?) throws {
         guard let hidClient else { throw HostError.operation("Simulator input is disconnected") }
-        try runtime.input.press(button, target: buttonTarget, client: hidClient)
+        try runtime.input.send(input, state, target: buttonTarget, client: hidClient, completion: completion)
     }
 
     func shake() throws { try device.shake() }

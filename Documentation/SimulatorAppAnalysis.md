@@ -100,9 +100,10 @@ semantics:
 
 - Application: About, Hide, Hide Others, Show All, Quit;
 - File: Save Screen, Close Window;
-- Device: Rotate Left, Rotate Right, Home, Lock, Shake;
-- I/O: Toggle Software Keyboard;
-- Features: Toggle Appearance;
+- Device: Rotate Left, Rotate Right, Home, Lock, Side Button, Action Button,
+  Siri, Shake, App Switcher, Trigger Screenshot;
+- I/O: Toggle Software Keyboard, Increase Volume, Decrease Volume;
+- Features: Authorize Apple Pay, Toggle Appearance;
 - Window: Minimize, Full Screen, Show Device Bezels, Stay on Top, Fit
   Screen, Bring All to Front. Simulator.app hides Zoom.
 
