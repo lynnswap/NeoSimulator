@@ -474,6 +474,31 @@ struct InputFocusTests {
         #expect(session.canPerformCommands)
     }
 
+    @Test func aPressWhoseReleaseCannotBeCreatedSendsNothing() async throws {
+        let display = TestDisplay()
+        display.unavailableStates = [.up]
+        let controller = try makeController(display)
+        defer { controller.invalidate() }
+        var failures = 0
+        controller.session.send(.press(.button(.siri))) { _ in failures += 1 }
+        controller.session.send(.pressTwice(.button(.home), interval: .milliseconds(10))) { _ in failures += 1 }
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(display.events.isEmpty)
+        #expect(failures == 2)
+    }
+
+    @Test func anUndeliveredReleaseIsRetriedWhenTheWindowCloses() async throws {
+        let display = TestDisplay()
+        display.undeliveredStates = [.up]
+        let controller = try makeController(display)
+        var failures = 0
+        controller.session.send(.hold(.button(.actionStaccato), for: .milliseconds(10))) { _ in failures += 1 }
+        for _ in 0..<300 where display.events.count < 2 { try await Task.sleep(for: .milliseconds(10)) }
+        controller.invalidate()
+        #expect(display.events.map(\.state) == [.down, .up, .up])
+        #expect(failures == 1)
+    }
+
     @Test func aFailedInputReportsOneError() throws {
         let display = TestDisplay()
         display.deliveryError = HostError.operation("delivery failed")
@@ -529,6 +554,10 @@ private final class TestDisplay: SimulatorDisplay {
     var onSend: () -> Void = {}
     /// Completes each sent event with this error.
     var deliveryError: Error?
+    /// Completes sent events of these states with an error.
+    var undeliveredStates: Set<HIDState> = []
+    /// Fails to create messages for events of these states.
+    var unavailableStates: Set<HIDState> = []
     var buttons: [DeviceButton] {
         events.compactMap { if case .button(let button) = $0.input, $0.state == .down { button } else { nil } }
     }
@@ -536,10 +565,15 @@ private final class TestDisplay: SimulatorDisplay {
     var keyboard: [Bool] = []
     var disconnectCount = 0
     init() { view.addSubview(input) }
-    func send(_ input: HIDInput, _ state: HIDState, completion: (@MainActor (Error?) -> Void)?) throws {
+    func message(for input: HIDInput, _ state: HIDState) throws -> HIDMessage {
+        guard !unavailableStates.contains(state) else { throw HostError.operation("No message") }
+        return HIDMessage(input: input, state: state, pointer: OpaquePointer(malloc(1)!))
+    }
+    func send(_ message: HIDMessage, completion: (@MainActor (Error?) -> Void)?) throws {
         onSend()
-        events.append((input, state))
-        completion?(deliveryError)
+        free(UnsafeMutableRawPointer(message.take()))
+        events.append((message.input, message.state))
+        completion?(undeliveredStates.contains(message.state) ? HostError.operation("Undelivered") : deliveryError)
     }
     func shake() throws {}
     func toggleAppearance() throws {}
