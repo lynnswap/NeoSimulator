@@ -199,7 +199,7 @@ struct CaptureAndImportTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let movie = directory.appendingPathComponent("movie.mov")
         try await writeMovie(to: movie)
-        func export(frameRate: Double) async throws -> (count: Int, delays: [Double], loop: Int?) {
+        func export(frameRate: Double) async throws -> (count: Int, delays: [Double], loop: Int?, brightest: UInt8) {
             let gif = directory.appendingPathComponent("\(frameRate).gif")
             try await AnimatedGIF.export(movie, to: gif, options: .init(maximumFrameRate: frameRate, maximumFrameSize: 640,
                                                                         dithers: true, ditherDepth: 4))
@@ -211,11 +211,25 @@ struct CaptureAndImportTests {
             let delays = (0..<count).compactMap {
                 gifProperties(CGImageSourceCopyPropertiesAtIndex(source, $0, nil))?[kCGImagePropertyGIFUnclampedDelayTime] as? Double
             }
-            return (count, delays, gifProperties(CGImageSourceCopyProperties(source, nil))?[kCGImagePropertyGIFLoopCount] as? Int)
+            // The brightest color channel of the first frame, which is black.
+            let image = try #require(CGImageSourceCreateImageAtIndex(source, 0, nil))
+            let rgba = NSBitmapImageRep(cgImage: image)
+            var brightest: UInt8 = 0
+            for x in 0..<rgba.pixelsWide {
+                for y in 0..<rgba.pixelsHigh {
+                    let color = try #require(rgba.colorAt(x: x, y: y)?.usingColorSpace(.sRGB))
+                    brightest = max(brightest, UInt8(max(color.redComponent, color.greenComponent, color.blueComponent) * 255))
+                }
+            }
+            return (count, delays, gifProperties(CGImageSourceCopyProperties(source, nil))?[kCGImagePropertyGIFLoopCount] as? Int,
+                    brightest)
         }
         // The fixture's frames are 0.1 seconds apart.
         let every = try await export(frameRate: 10)
         #expect(every.count == 3 && every.loop == 0)
+        // Dithered in the movie's color space, black stays nearly black; a
+        // linear working space lifts it to about 48.
+        #expect(every.brightest <= 12)
         #expect(Array(every.delays.prefix(2)) == [0.1, 0.1])
         let thinned = try await export(frameRate: 5)
         #expect(thinned.count == 2)
@@ -223,10 +237,16 @@ struct CaptureAndImportTests {
     }
 
     /// Writes a short H.264 QuickTime movie.
+    /// Writes a short H.264 QuickTime movie of black frames tagged BT.709.
     private func writeMovie(to url: URL) async throws {
         let writer = try AVAssetWriter(outputURL: url, fileType: .mov)
         let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
             AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: 64, AVVideoHeightKey: 64,
+            AVVideoColorPropertiesKey: [
+                AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_709_2,
+                AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_709_2,
+                AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_709_2,
+            ],
         ])
         let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: nil)
         writer.add(input)
@@ -235,6 +255,13 @@ struct CaptureAndImportTests {
         for frame in 0..<3 {
             var buffer: CVPixelBuffer?
             CVPixelBufferCreate(nil, 64, 64, kCVPixelFormatType_32BGRA, nil, &buffer)
+            let pixels = try #require(buffer)
+            CVPixelBufferLockBaseAddress(pixels, [])
+            for row in 0..<64 {
+                (CVPixelBufferGetBaseAddress(pixels)! + row * CVPixelBufferGetBytesPerRow(pixels))
+                    .assumingMemoryBound(to: UInt32.self).update(repeating: 0xFF00_0000, count: 64)
+            }
+            CVPixelBufferUnlockBaseAddress(pixels, [])
             while !input.isReadyForMoreMediaData { try await Task.sleep(for: .milliseconds(10)) }
             #expect(adaptor.append(try #require(buffer), withPresentationTime: CMTime(value: CMTimeValue(frame), timescale: 10)))
         }
@@ -376,7 +403,7 @@ struct CaptureThumbnailTests {
         #expect(movie.items.filter(\.isAlternate).map(\.keyEquivalentModifierMask) == [.option])
         // The Desktop has its own item, so a Desktop screenshot folder adds none.
         UserDefaults.standard.set(CaptureFile.desktop?.path, forKey: key)
-        #expect(!titles(screenshot.menu()).contains { $0.hasPrefix("Save to Shots") })
+        #expect(Array(titles(screenshot.menu()).prefix(3)) == ["Save to Desktop", "Save to Documents", "Copy to Clipboard"])
         UserDefaults.standard.set(shots.path, forKey: key)
 
         func choose(_ title: String, in thumbnail: CaptureThumbnail) throws {
@@ -400,15 +427,65 @@ struct CaptureThumbnailTests {
         let window = NSWindow(contentRect: NSRect(x: 200, y: 200, width: 300, height: 600), styleMask: .titled,
                               backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
+        // The destination may fulfil the promise after the drag ends.
         let delivered = try capture(named: "Dragged.png", in: directory)
+        CaptureThumbnail(delivered, image: nil, parent: window, source: .zero, spacing: .zero) { _ in }.dragEnded(.copy)
+        #expect(try savedNames(in: directory).isEmpty)
         let destination = directory.appendingPathComponent("Dragged.png")
         try delivered.deliver(to: destination)
-        CaptureThumbnail(delivered, image: nil, parent: window, source: .zero, spacing: .zero) { _ in }.dragEnded(.copy)
         #expect(FileManager.default.fileExists(atPath: destination.path))
-        #expect(try savedNames(in: directory).isEmpty)
         let cancelled = try capture(named: "Cancelled.png", in: directory)
         CaptureThumbnail(cancelled, image: nil, parent: window, source: .zero, spacing: .zero) { _ in }.dragEnded([])
         #expect(try savedNames(in: directory) == ["Cancelled.png"])
+    }
+
+    /// A shown thumbnail beside a visible window, once its appearance ended.
+    private func shownThumbnail(named name: String, in directory: URL) async throws -> (CaptureThumbnail, NSWindow, NSWindow) {
+        _ = NSApplication.shared
+        let window = NSWindow(contentRect: NSRect(x: 200, y: 300, width: 300, height: 600), styleMask: .titled,
+                              backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.orderFront(nil)
+        let thumbnail = CaptureThumbnail(try capture(named: name, in: directory), image: nil, parent: window,
+                                         source: NSRect(x: 220, y: 320, width: 260, height: 560),
+                                         spacing: NSSize(width: 10, height: 10)) { _ in }
+        thumbnail.show()
+        let shown = try #require(window.childWindows?.last)
+        for _ in 0..<100 where !thumbnail.shown { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(thumbnail.shown)
+        return (thumbnail, window, shown)
+    }
+
+    @Test func aThumbnailStaysWithItsWindowWhenTheWindowMoves() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (thumbnail, window, shown) = try await shownThumbnail(named: "Moved.png", in: directory)
+        defer { window.close() }
+        window.setFrameOrigin(NSPoint(x: window.frame.minX + 100, y: window.frame.minY + 50))
+        let expected = NSRect(x: window.frame.maxX + 10, y: window.frame.minY + 10, width: 75, height: 150)
+        #expect(shown.frame == expected)
+        // A hover during the hide brings it back beside the moved window.
+        thumbnail.hide(animated: true)
+        try await Task.sleep(for: .milliseconds(100))
+        thumbnail.pause()
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(shown.frame == expected)
+        thumbnail.resume()
+        CaptureThumbnail.finishAll()
+        #expect(try savedNames(in: directory) == ["Moved.png"])
+    }
+
+    @Test func quittingSavesAThumbnailThatIsHiding() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (thumbnail, window, _) = try await shownThumbnail(named: "Hiding.png", in: directory)
+        defer { window.close() }
+        thumbnail.hide(animated: true)
+        #expect(CaptureThumbnail.finishAll().isEmpty)
+        #expect(try savedNames(in: directory) == ["Hiding.png"])
+        #expect(CaptureThumbnail.active.isEmpty)
     }
 
     @Test func aShownScreenshotShrinksBesideItsWindowAndSavesItselfWhenItsTimerEnds() async throws {

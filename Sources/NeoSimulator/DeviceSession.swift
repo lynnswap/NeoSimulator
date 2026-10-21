@@ -16,6 +16,8 @@ struct DeviceCapabilities {
     var controlsOrientation = true
     /// Whether the device type has a framebuffer mask that captures can apply.
     var hasFramebufferMask = false
+    /// The screen's corner radius in points; 0 for a square screen.
+    var screenCornerRadius = 0.0
 
     var isPhoneOrPad: Bool { family == .iPhone || family == .iPad }
     var rotates: Bool { controlsOrientation && supportsFeature(Self.displayRotation) }
@@ -172,6 +174,9 @@ final class DeviceSession {
     private(set) var recording: VideoRecording?
     /// The orientation last read from the device.
     private(set) var orientation: DeviceOrientation?
+    /// The angle the display is shown at, which a guest-initiated rotation
+    /// can set without changing `orientation`.
+    @ObservationIgnored private(set) var displayAngle: Double = 0
     /// The guest's interface orientation angle last observed, so that only its
     /// changes rotate the display. A manual rotation does not change it.
     @ObservationIgnored private var guestAngle: Double?
@@ -427,7 +432,7 @@ final class DeviceSession {
         orientation = reading.physical
         guestAngle = display.guestInterfaceAngle
         let followsGuest = UserDefaults.standard.bool(forKey: HostPreferences.rotateWindowWhenSignaledByGuest)
-        display.setRotation(degrees: followsGuest ? guestAngle ?? reading.displayAngle : reading.displayAngle)
+        rotateDisplay(followsGuest ? guestAngle ?? reading.displayAngle : reading.displayAngle)
     }
 
     /// Shows the display at the guest's interface orientation when that
@@ -442,7 +447,7 @@ final class DeviceSession {
         }
         guard canPerformCommands, let angle = display.guestInterfaceAngle, angle != guestAngle else { return false }
         guestAngle = angle
-        display.setRotation(degrees: angle)
+        rotateDisplay(angle)
         return true
     }
 
@@ -457,7 +462,12 @@ final class DeviceSession {
     private func apply(_ reading: OrientationReading) throws {
         try Task.checkCancellation()
         orientation = reading.physical
-        display.setRotation(degrees: reading.displayAngle)
+        rotateDisplay(reading.displayAngle)
+    }
+
+    private func rotateDisplay(_ degrees: Double) {
+        displayAngle = degrees
+        display.setRotation(degrees: degrees)
     }
 
     /// Saves the screen to a file chosen in a save panel, replacing it.
@@ -467,9 +477,6 @@ final class DeviceSession {
             try Self.checkPNG(at: temporary)
         }
     }
-
-    /// Saves the screen into `folder` under `name`, numbering the name when
-    /// it is taken, and returns the saved file.
 
     /// The screen as a PNG, without the device's mask, for Edit ▸ Copy Screen.
     func screenPNG() async throws -> Data {

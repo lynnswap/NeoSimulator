@@ -128,7 +128,8 @@ final class RecordingStore {
         case file(URL)
         /// A temporary movie, handed over once it is finalized, like
         /// Simulator.app's quick recording, which is named only when it stops.
-        case capture(@MainActor (URL) -> Void)
+        /// A failure to take it over is reported like a failure to save.
+        case capture(@MainActor (URL) throws -> Void)
     }
 
     /// Whether a recording to a chosen file will replace `file` when it finishes.
@@ -186,7 +187,7 @@ final class RecordingStore {
                         throw HostError.operation("Could not save \(file.lastPathComponent). The recording is available at \(temporary.path): \(String(cString: strerror(errno)))")
                     }
                 case .capture(let handOver):
-                    handOver(temporary)
+                    try handOver(temporary)
                 }
             } catch {
                 var reported: Error = error

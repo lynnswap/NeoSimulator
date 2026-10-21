@@ -202,27 +202,34 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
                 try capture.saveToDefaultLocation()
                 return
             }
-            self.showThumbnail(of: capture, image: NSImage(contentsOf: file))
+            try self.showThumbnail(of: capture, image: NSImage(contentsOf: file))
         }, failure: { [weak self] in self?.present($0) })
     }
 
     /// Shows a capture's thumbnail beside this window, or saves the capture
     /// when the window has closed.
-    private func showThumbnail(of capture: CapturedContent, image: NSImage?) {
-        guard !closed, let window, window.isVisible else {
-            do { try capture.saveToDefaultLocation() } catch { hostLog(error.localizedDescription) }
+    private func showThumbnail(of capture: CapturedContent, image: NSImage?) throws {
+        guard !closed, let window, window.isVisible, !CaptureThumbnail.savesImmediately else {
+            try capture.saveToDefaultLocation()
             return
         }
-        let display = session.display.view
-        let source = window.convertToScreen(display.convert(display.bounds, to: nil))
+        let display = session.display.view, screen = session.display.inputView
+        // The thumbnail shrinks from the device screen, without the bezel.
+        let source = window.convertToScreen(screen.convert(screen.bounds, to: nil))
+        let displayFrame = window.convertToScreen(display.convert(display.bounds, to: nil))
         // Simulator.app spaces a screenshot's thumbnail by the window's scale,
-        // twice as far for a landscape device, a TV, or a watch.
+        // twice as far for a landscape display, a TV, or a watch; in full
+        // screen, from the display's right edge.
         let scale = session.display.naturalSize.width > 0 ? display.bounds.width / session.display.naturalSize.width : 1
-        let landscape = session.orientation == .landscapeLeft || session.orientation == .landscapeRight
-        let base: CGFloat = landscape || session.capabilities.family == .tv || session.capabilities.family == .watch ? 20 : 10
+        let landscape = abs(session.displayAngle.truncatingRemainder(dividingBy: 180)) == 90
+        let family = session.capabilities.family
+        let base: CGFloat = landscape || family == .tv || family == .watch ? 20 : 10
+        let horizontal = window.styleMask.contains(.fullScreen) ? displayFrame.maxX - source.maxX + 10 : 10
         let thumbnail = CaptureThumbnail(capture, image: image, parent: window, source: source,
-                                         spacing: NSSize(width: 10, height: ceil(scale * base))) { [weak self] error in
-            if let self, !self.closed { self.present(error) } else { hostLog(error.localizedDescription) }
+                                         rotation: session.displayAngle,
+                                         cornerRadius: session.capabilities.screenCornerRadius * scale,
+                                         spacing: NSSize(width: horizontal, height: ceil(scale * base))) { [weak self] error in
+            if let self, !self.closed { self.present(error) } else { CaptureThumbnail.reportDetached(error) }
         }
         thumbnail.show()
     }
@@ -278,8 +285,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
             try session.startRecording(to: .capture { [weak self] file in
                 let capture = CapturedContent(.movie, file: file, name: CaptureFile.recordingName(device: device, date: Date()),
                                               defaultFolder: desktop, isReserved: isReserved)
-                if let self { self.showThumbnail(of: capture, image: nil) }
-                else { do { try capture.saveToDefaultLocation() } catch { hostLog(error.localizedDescription) } }
+                if let self { try self.showThumbnail(of: capture, image: nil) } else { try capture.saveToDefaultLocation() }
             }, mask: usesDeviceMask ? .black : .ignored)
         }
     }

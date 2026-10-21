@@ -380,7 +380,9 @@ dismissing the thumbnail saves it with `CaptureFile.move`, which numbers a
 taken name and keeps the capture when the move fails. Like Simulator.app, one
 app-wide list holds the thumbnails, so a new capture ends and saves the
 previous one. Unlike Simulator.app, closing the device window or quitting
-saves a pending capture at once instead of leaving it in the temporary folder.
+saves a pending capture at once instead of leaving it in the temporary folder,
+including a recording whose animated GIF is still being written; captures that
+cannot be saved while quitting are listed in an alert with their locations.
 A quick recording is named when it stops, as in Simulator.app.
 A destination chosen in a save panel is written through a same-directory
 temporary file that is checked and then atomically renamed, so cancellation

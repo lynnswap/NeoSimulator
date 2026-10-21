@@ -78,6 +78,12 @@ final class CapturedContent {
 final class CaptureThumbnail: NSObject {
     /// Simulator.app keeps one app-wide list; a new capture dismisses the others.
     private(set) static var active: [CaptureThumbnail] = []
+    /// Recordings whose animated GIF is being written, which quitting saves.
+    private static var exporting: [CapturedContent] = []
+    /// Reports a failure of a thumbnail whose device window has closed.
+    static var reportDetached: (Error) -> Void = { hostLog($0.localizedDescription) }
+    /// Set while NeoSimulator quits: captures are saved instead of shown.
+    static var savesImmediately = false
 
     enum Position { case right, left, over }
 
@@ -87,13 +93,19 @@ final class CaptureThumbnail: NSObject {
     private let view: CaptureThumbnailView
     private let source: NSRect
     private let spacing: NSSize
+    /// The device screen's corner radius in points, which the thumbnail
+    /// shrinks with and slides past when it hides.
+    private let cornerRadius: CGFloat
     private var position = Position.right
     private var destination = NSRect.zero
+    /// The destination relative to the device window, which can move.
+    private var parentOffset = NSPoint.zero
     private let report: (Error) -> Void
     private var timer: Task<Void, Never>?
     private var pauses = 0
     private var hiding = false
-    private var shown = false
+    /// Whether it has appeared and its timer runs.
+    private(set) var shown = false
     private var dismissedExplicitly = false
     private var finished = false
     private var observers: [any NSObjectProtocol] = []
@@ -103,18 +115,22 @@ final class CaptureThumbnail: NSObject {
     /// - Parameters:
     ///   - source: The device screen in screen coordinates; the thumbnail
     ///     shrinks from it to a quarter of its size plus 10 points.
+    ///   - rotation: The angle the device screen is shown at, which the
+    ///     screenshot, taken from the unrotated framebuffer, is turned by.
+    ///   - cornerRadius: The device screen's corner radius in points.
     ///   - spacing: Its distance from the device window. Simulator.app uses
     ///     (10, ceil(scale × 10 or 20)) for screenshots and none for movies.
     ///   - report: Shows a failure to save or use the capture.
-    init(_ content: CapturedContent, image: NSImage?, parent: NSWindow, source: NSRect, spacing: NSSize,
-         report: @escaping (Error) -> Void) {
+    init(_ content: CapturedContent, image: NSImage?, parent: NSWindow, source: NSRect, rotation: Double = 0,
+         cornerRadius: CGFloat = 0, spacing: NSSize, report: @escaping (Error) -> Void) {
         self.content = content
         self.parent = parent
         self.source = source
+        self.cornerRadius = cornerRadius
         self.spacing = content.kind == .movie ? .zero : spacing
         self.report = report
         window = NSWindow(contentRect: source, styleMask: .borderless, backing: .buffered, defer: false)
-        view = CaptureThumbnailView(content: content, image: image)
+        view = CaptureThumbnailView(content: content, image: image, rotation: rotation, cornerRadius: cornerRadius)
         super.init()
         window.animationBehavior = .none
         window.isMovableByWindowBackground = false
@@ -130,8 +146,9 @@ final class CaptureThumbnail: NSObject {
     func show() {
         for other in Self.active { other.hide(animated: false) }
         Self.active.append(self)
-        guard let parent else { return finish() }
+        guard let parent else { finish(); return }
         destination = placement(in: parent)
+        parentOffset = NSPoint(x: destination.minX - parent.frame.minX, y: destination.minY - parent.frame.minY)
         observeParent(parent)
         parent.addChildWindow(window, ordered: .above)
         switch content.kind {
@@ -143,7 +160,7 @@ final class CaptureThumbnail: NSObject {
                 NSAnimationContext.runAnimationGroup({ context in
                     context.duration = 0.3
                     context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-                    self.window.animator().setFrame(self.destination, display: true)
+                    self.window.animator().setFrame(self.currentDestination, display: true)
                     self.view.showAsThumbnail()
                 }, completionHandler: { [weak self] in self?.didShow() })
             }
@@ -153,6 +170,13 @@ final class CaptureThumbnail: NSObject {
             window.orderFront(nil)
             view.fadeIn(duration: 1) { [weak self] in self?.didShow() }
         }
+    }
+
+    /// The destination, following the device window when it moved.
+    private var currentDestination: NSRect {
+        guard let parent, position != .over || !parent.styleMask.contains(.fullScreen) else { return destination }
+        return NSRect(origin: NSPoint(x: parent.frame.minX + parentOffset.x, y: parent.frame.minY + parentOffset.y),
+                      size: destination.size)
     }
 
     private func placement(in parent: NSWindow) -> NSRect {
@@ -238,7 +262,7 @@ final class CaptureThumbnail: NSObject {
         hiding = false
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.1
-            window.animator().setFrame(destination, display: true)
+            window.animator().setFrame(currentDestination, display: true)
             window.animator().alphaValue = 1
         }
     }
@@ -249,13 +273,16 @@ final class CaptureThumbnail: NSObject {
         guard !finished, !hiding else { return }
         hiding = true
         timer?.cancel()
-        guard animated, shown, let parent, parent.isVisible else { return finish() }
+        guard animated, shown, let parent, parent.isVisible else { finish(); return }
+        // Beside the window, it slides under it from where it is now.
+        let frame = window.frame
+        let distance = frame.width + spacing.width + cornerRadius
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = 0.35
             context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             switch position {
-            case .right: window.animator().setFrame(destination.offsetBy(dx: -(destination.width + spacing.width), dy: 0), display: true)
-            case .left: window.animator().setFrame(destination.offsetBy(dx: destination.width + spacing.width, dy: 0), display: true)
+            case .right: window.animator().setFrame(frame.offsetBy(dx: -distance, dy: 0), display: true)
+            case .left: window.animator().setFrame(frame.offsetBy(dx: distance, dy: 0), display: true)
             case .over: window.animator().alphaValue = 0
             }
         }, completionHandler: { [weak self] in
@@ -270,8 +297,9 @@ final class CaptureThumbnail: NSObject {
         hide(animated: true)
     }
 
-    private func finish() {
-        guard !finished else { return }
+    @discardableResult
+    private func finish(reporting: Bool = true) -> Error? {
+        guard !finished else { return nil }
         finished = true
         hiding = true
         timer?.cancel()
@@ -283,14 +311,28 @@ final class CaptureThumbnail: NSObject {
         window.orderOut(nil)
         window.close()
         Self.active.removeAll { $0 === self }
-        guard !dismissedExplicitly, !content.isResolved else { return }
-        do { try content.saveToDefaultLocation() } catch { report(error) }
+        guard !dismissedExplicitly, !content.isResolved else { return nil }
+        do {
+            try content.saveToDefaultLocation()
+            return nil
+        } catch {
+            hostLog(error.localizedDescription)
+            if reporting { report(error) }
+            return error
+        }
     }
 
-    /// Saves every pending capture before NeoSimulator quits. Simulator.app
-    /// leaves them in the temporary folder.
-    static func finishAll() {
-        for thumbnail in active { thumbnail.hide(animated: false) }
+    /// Saves every pending capture, including recordings whose GIF is still
+    /// being written, before NeoSimulator quits, and returns the failures.
+    /// Simulator.app leaves them in the temporary folder.
+    @discardableResult
+    static func finishAll() -> [Error] {
+        var failures = active.compactMap { $0.finish(reporting: false) }
+        for content in exporting where !content.isResolved {
+            do { try content.saveToDefaultLocation() } catch { failures.append(error) }
+        }
+        exporting.removeAll()
+        return failures
     }
 
     // MARK: Device window
@@ -425,14 +467,16 @@ final class CaptureThumbnail: NSObject {
             gif = content.defaultFolder.appendingPathComponent(content.name).deletingPathExtension().appendingPathExtension("gif")
         }
         let report = report
+        if !keepingMovie { Self.exporting.append(content) }
         Task {
+            defer { Self.exporting.removeAll { $0 === content } }
             do {
                 try await AnimatedGIF.export(movie, to: gif, options: .preferred)
                 if !keepingMovie { try content.delete() }
             } catch {
                 hostLog("Could not save an animated GIF: \(error.localizedDescription)")
                 var failure = error
-                if !keepingMovie {
+                if !keepingMovie, !content.isResolved {
                     do { try content.saveToDefaultLocation() }
                     catch { failure = HostError.operation("\(failure.localizedDescription) \(error.localizedDescription)") }
                 }
@@ -481,11 +525,18 @@ private final class CaptureThumbnailView: NSView, NSMenuDelegate, NSDraggingSour
     private let mediaLayer: CALayer
     private let whiteLayer = CALayer()
     private let player: AVPlayer?
+    private let rotation: Double
+    private let cornerRadius: CGFloat
+    /// A frame of the movie, which dragging shows; AVPlayerLayer does not draw
+    /// into a cached display.
+    private var movieFrame: NSImage?
     private var mouseDownLocation: NSPoint?
 
-    init(content: CapturedContent, image: NSImage?) {
+    init(content: CapturedContent, image: NSImage?, rotation: Double, cornerRadius: CGFloat) {
         self.content = content
         self.image = image
+        self.rotation = rotation
+        self.cornerRadius = cornerRadius
         if content.kind == .movie {
             let player = AVPlayer(url: content.file)
             let layer = AVPlayerLayer(player: player)
@@ -512,13 +563,29 @@ private final class CaptureThumbnailView: NSView, NSMenuDelegate, NSDraggingSour
         whiteLayer.opacity = 0
         contentLayer.addSublayer(whiteLayer)
         root.addSublayer(contentLayer)
-        if content.kind == .movie { root.backgroundColor = NSColor.black.cgColor }
+        // The flash starts with the device screen's shape.
+        root.cornerRadius = cornerRadius
+        contentLayer.cornerRadius = cornerRadius
+        if content.kind == .movie {
+            root.backgroundColor = NSColor.black.cgColor
+            let movie = content.file
+            Task { [weak self] in
+                guard let frame = await Self.firstFrame(of: movie) else { return }
+                self?.movieFrame = NSImage(cgImage: frame, size: .zero)
+            }
+        }
         addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
                                        owner: self, userInfo: nil))
         player?.play()
     }
 
     required init?(coder: NSCoder) { nil }
+
+    nonisolated private static func firstFrame(of movie: URL) async -> CGImage? {
+        let generator = AVAssetImageGenerator(asset: AVURLAsset(url: movie))
+        generator.appliesPreferredTrackTransform = true
+        return try? await generator.image(at: .zero).image
+    }
 
     var movieDuration: Double? {
         guard let seconds = player?.currentItem?.duration.seconds, seconds.isFinite else { return nil }
@@ -530,8 +597,16 @@ private final class CaptureThumbnailView: NSView, NSMenuDelegate, NSDraggingSour
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         contentLayer.frame = bounds.insetBy(dx: 5, dy: 5)
-        mediaLayer.frame = contentLayer.bounds
-        whiteLayer.frame = contentLayer.bounds
+        let area = contentLayer.bounds
+        // A screenshot is the framebuffer as the device holds it upright; it
+        // is turned the way the display shows it, like Simulator.app.
+        let quarterTurn = abs(rotation.truncatingRemainder(dividingBy: 180)) == 90
+        mediaLayer.setAffineTransform(.identity)
+        mediaLayer.bounds = quarterTurn && content.kind == .screenshot
+            ? CGRect(x: 0, y: 0, width: area.height, height: area.width) : area
+        mediaLayer.position = CGPoint(x: area.midX, y: area.midY)
+        if content.kind == .screenshot { mediaLayer.setAffineTransform(CGAffineTransform(rotationAngle: rotation * .pi / 180)) }
+        whiteLayer.frame = area
         CATransaction.commit()
     }
 
@@ -554,14 +629,16 @@ private final class CaptureThumbnailView: NSView, NSMenuDelegate, NSDraggingSour
         CATransaction.commit()
     }
 
-    /// The thumbnail's black 4-point frame with rounded corners.
+    /// The thumbnail's black 4-point frame. Its corners are a quarter of the
+    /// screen's, or 4 points for a square screen.
     func showAsThumbnail() {
         let root = layer!
         root.backgroundColor = NSColor.black.cgColor
         root.borderColor = NSColor.black.cgColor
         root.borderWidth = 4
-        root.cornerRadius = 9
-        contentLayer.cornerRadius = 4
+        let inner = cornerRadius > 0 ? cornerRadius * 0.25 : 4
+        contentLayer.cornerRadius = inner
+        root.cornerRadius = inner + 5
     }
 
     func fadeIn(duration: Double, then completion: @escaping @MainActor () -> Void) {
@@ -601,9 +678,12 @@ private final class CaptureThumbnailView: NSView, NSMenuDelegate, NSDraggingSour
         guard abs(location.x - start.x) > 3 || abs(location.y - start.y) > 3 else { return }
         mouseDownLocation = nil
         let type: UTType = content.kind == .screenshot ? .png : .quickTimeMovie
-        let provider = NSFilePromiseProvider(fileType: type.identifier, delegate: self)
+        let provider = CaptureFilePromiseProvider(fileType: type.identifier, delegate: self)
+        // Like Simulator.app, the drag also offers the file and a screenshot's PNG.
+        provider.file = content.file
+        if content.kind == .screenshot { provider.png = try? Data(contentsOf: content.file) }
         let item = NSDraggingItem(pasteboardWriter: provider)
-        item.setDraggingFrame(bounds, contents: image ?? snapshot())
+        item.setDraggingFrame(bounds, contents: image ?? movieFrame ?? snapshot())
         owner.dragBegan()
         let session = beginDraggingSession(with: [item], event: event, source: self)
         session.animatesToStartingPositionsOnCancelOrFail = false
@@ -641,6 +721,27 @@ private final class CaptureThumbnailView: NSView, NSMenuDelegate, NSDraggingSour
             return nil
         }
         completionHandler(failure)
+    }
+}
+
+/// A file promise that also offers the capture's file URL and PNG data.
+private final class CaptureFilePromiseProvider: NSFilePromiseProvider {
+    var file: URL?
+    var png: Data?
+
+    override func writableTypes(for pasteboard: NSPasteboard) -> [NSPasteboard.PasteboardType] {
+        var types = super.writableTypes(for: pasteboard)
+        if file != nil { types.append(.fileURL) }
+        if png != nil { types.append(.png) }
+        return types
+    }
+
+    override func pasteboardPropertyList(forType type: NSPasteboard.PasteboardType) -> Any? {
+        switch type {
+        case .fileURL: (file as NSURL?)?.pasteboardPropertyList(forType: .fileURL)
+        case .png: png
+        default: super.pasteboardPropertyList(forType: type)
+        }
     }
 }
 
@@ -688,7 +789,9 @@ enum AnimatedGIF {
         CGImageDestinationSetProperties(destination, [
             kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFLoopCount: 0],
         ] as CFDictionary)
-        let context = CIContext()
+        // Like Simulator.app, frames are dithered in the movie's own color
+        // space; a linear working space would roughen dark areas.
+        var context: CIContext?
         let interval = 1 / options.maximumFrameRate
         var held: (image: CGImage, time: Double)?
         func add(_ image: CGImage, delay: Double) {
@@ -703,7 +806,10 @@ enum AnimatedGIF {
                 guard time - current.time + 0.001 >= interval else { continue }
                 add(current.image, delay: time - current.time)
             }
-            held = (try frame(buffer, options: options, context: context), time)
+            let image = CIImage(cvPixelBuffer: buffer)
+            let renderer = context ?? CIContext(options: image.colorSpace.map { [.workingColorSpace: $0] } ?? [:])
+            context = renderer
+            held = (try frame(image, options: options, context: renderer), time)
         }
         if let last = held { add(last.image, delay: max(duration - last.time, interval)) }
         if reader.status == .failed { throw reader.error ?? HostError.operation("The recording could not be read") }
@@ -712,8 +818,8 @@ enum AnimatedGIF {
         }
     }
 
-    private static func frame(_ buffer: CVPixelBuffer, options: Options, context: CIContext) throws -> CGImage {
-        var image = CIImage(cvPixelBuffer: buffer)
+    private static func frame(_ source: CIImage, options: Options, context: CIContext) throws -> CGImage {
+        var image = source
         let scale = options.maximumFrameSize / max(image.extent.width, image.extent.height)
         if scale < 1 {
             let filter = CIFilter(name: "CILanczosScaleTransform")!
@@ -724,9 +830,12 @@ enum AnimatedGIF {
         }
         let intensity = exp2(-options.ditherDepth)
         if options.dithers, intensity > 1.0 / 1024, let dither = CIFilter(name: "CIDither") {
-            dither.setValue(image, forKey: kCIInputImageKey)
+            let colorSpace = source.colorSpace
+            dither.setValue(colorSpace.flatMap { image.matchedFromWorkingSpace(to: $0) } ?? image, forKey: kCIInputImageKey)
             dither.setValue(intensity, forKey: kCIInputIntensityKey)
-            image = dither.outputImage?.cropped(to: image.extent) ?? image
+            if let dithered = dither.outputImage?.cropped(to: image.extent) {
+                image = colorSpace.flatMap { dithered.matchedToWorkingSpace(from: $0) } ?? dithered
+            }
         }
         guard let srgb = CGColorSpace(name: CGColorSpace.sRGB),
               let cgImage = context.createCGImage(image, from: image.extent, format: .RGBA8, colorSpace: srgb)

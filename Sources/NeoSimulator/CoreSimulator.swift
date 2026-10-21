@@ -46,6 +46,7 @@ struct CoreSimulatorInterface {
     let productFamily: NativeObjCMethod<Int32>
     let deviceTypeName: NativeObjCMethod<String?>
     let framebufferMaskURL: NativeObjCMethod<NSURL?>
+    let deviceTypeCapabilities: NativeObjCMethod<NSDictionary?>
     let deviceTypeIdentifier: NativeObjCMethod<String?>
 
     typealias NotificationHandler = @convention(block) (NSDictionary) -> Void
@@ -137,6 +138,8 @@ struct CoreSimulatorInterface {
             on: simDeviceType, selector: "name", as: (() -> String?).self)
         framebufferMaskURL = try runtime.resolveObjCMethodAndWait(
             on: simDeviceType, selector: "framebufferMaskURL", as: (() -> NSURL?).self)
+        deviceTypeCapabilities = try runtime.resolveObjCMethodAndWait(
+            on: simDeviceType, selector: "capabilities", as: (() -> NSDictionary?).self)
         deviceTypeIdentifier = try runtime.resolveObjCMethodAndWait(
             on: simDeviceType, selector: "identifier", as: (() -> String?).self)
     }
@@ -161,6 +164,9 @@ final class SimulatorDevice {
     let deviceTypeName: String
     /// Whether the device type has a framebuffer mask, the screen's shape.
     let hasFramebufferMask: Bool
+    /// The screen's corner radius in points, from the device type's
+    /// `DeviceCornerRadius` capability; 0 for a square screen.
+    let screenCornerRadius: Double
     /// `SimRuntime.version`, packed as major << 16 | minor << 8 | patch.
     let runtimeVersion: UInt32
     /// The path of the device's set, or nil for the default set.
@@ -185,6 +191,8 @@ final class SimulatorDevice {
         productFamily = Int(try deviceType.map { try unsafe interface.productFamily.unsafeInvoke(on: $0) } ?? 0)
         deviceTypeName = try deviceType.flatMap { try unsafe interface.deviceTypeName.unsafeInvoke(on: $0) } ?? ""
         hasFramebufferMask = try deviceType.flatMap { try unsafe interface.framebufferMaskURL.unsafeInvoke(on: $0) } != nil
+        let capabilities = try deviceType.flatMap { try unsafe interface.deviceTypeCapabilities.unsafeInvoke(on: $0) }
+        screenCornerRadius = ((capabilities?["capabilities"] as? NSDictionary)?["DeviceCornerRadius"] as? NSNumber)?.doubleValue ?? 0
     }
 
     /// `SimDeviceState`; 3 is Booted. A device whose state cannot be read is
