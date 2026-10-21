@@ -258,7 +258,8 @@ final class CaptureThumbnail: NSObject {
     func pause() {
         pauses += 1
         timer?.cancel()
-        if hiding, !finished { cancelHide() }
+        // Only the timer's hide can be taken back; a capture the user used is done.
+        if hiding, !finished, !dismissedExplicitly, !content.isResolved { cancelHide() }
     }
 
     func resume() {

@@ -502,6 +502,20 @@ struct CaptureThumbnailTests {
         #expect(try savedNames(in: directory) == ["Moved.png"])
     }
 
+    @Test func aHoverDoesNotBringBackAThumbnailTheUserDismissed() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (thumbnail, window, _) = try await shownThumbnail(named: "Deleted.png", in: directory)
+        defer { window.close() }
+        let delete = try #require(thumbnail.menu().items.first { $0.title == "Delete" })
+        #expect(NSApp.sendAction(try #require(delete.action), to: delete.target, from: delete))
+        thumbnail.pause()
+        for _ in 0..<50 where !CaptureThumbnail.active.isEmpty { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(CaptureThumbnail.active.isEmpty)
+        #expect(try savedNames(in: directory).isEmpty)
+    }
+
     @Test func quittingSavesAThumbnailThatIsHiding() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
