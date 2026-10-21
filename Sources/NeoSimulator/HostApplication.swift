@@ -315,7 +315,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                 // CoreSimulator reports Booted before its integrated screen is ready.
                 for _ in 0..<40 {
                     try Task.checkCancellation()
-                    guard !stopped, !suppressed.contains(identifier) else { return }
+                    guard !stopped, !isTerminating, !suppressed.contains(identifier) else { return }
                     try conflicts.check()
                     if let screen = runtime.display.defaultScreen(of: device) {
                         let connection = try SimulatorConnection(device: device, screen: screen, runtime: runtime)
@@ -596,6 +596,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             return .terminateNow
         }
         isTerminating = true
+        // No window opens while quitting; its device would not be shut down.
+        for connection in connections.values { connection.cancel() }
         Task {
             await recordings.finishAll()
             for error in recordingTerminationErrors { NSAlert(error: error).runModal() }
