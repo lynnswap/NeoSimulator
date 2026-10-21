@@ -23,6 +23,10 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     /// Whether the window is in full screen or moving into or out of it,
     /// where Simulator.app's scale commands are unavailable.
     private var isFullScreen = false
+    /// The display's scale and the window's origin when the window entered
+    /// full screen, which Simulator.app restores when the window leaves it.
+    private var geometryBeforeFullScreen: (scale: CGFloat, origin: NSPoint)?
+    private var screenParametersObserver: (any NSObjectProtocol)?
     /// Set while the window takes the size of a chosen display scale, which
     /// the resize must not change.
     private var isSizingWindow = false
@@ -71,6 +75,12 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
             self.session.display.inputView.keyUp(with: event)
             return nil
         }
+        // Like Simulator.app, a change to the screens, such as a display
+        // removed or the Dock resized, moves the window back inside its screen.
+        screenParametersObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.moveWindowOntoScreen() }
+        }
         // Like Simulator.app, the window opens at the saved scale or Point
         // Accurate, reduced to Fit Screen's.
         showDisplay(at: min(scale(for: .fitScreen) ?? .infinity,
@@ -81,17 +91,27 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     /// device's window last closed, or else cascading from `cascadePoint`,
     /// which the first window takes from the center of the screen. The
     /// window then moves back inside the screen where it crosses an edge.
+    ///
+    /// Simulator.app turns the display to the device's orientation before
+    /// placing the window. NeoSimulator reads the orientation afterwards, so
+    /// that reading places a centered window again in its new shape, unless
+    /// the window has moved or changed size in the meantime. A window that
+    /// cascades from another keeps its top-left corner, as there.
     func showNewWindow(cascadingFrom cascadePoint: inout NSPoint) {
         guard let window else { return }
+        let place: ((NSWindow) -> Void)?
         if let center = preferences.windowCenter(forDevice: session.device.id) {
-            window.setFrameOrigin(NSPoint(x: center.x - window.frame.width * 0.5,
-                                          y: center.y - window.frame.height * 0.5))
+            place = { $0.setFrameOrigin(NSPoint(x: center.x - $0.frame.width * 0.5, y: center.y - $0.frame.height * 0.5)) }
+            place?(window)
         } else {
-            if cascadePoint == .zero { window.center() }
+            place = cascadePoint == .zero ? { $0.center() } : nil
+            place?(window)
             cascadePoint = window.cascadeTopLeft(from: cascadePoint)
         }
-        showAndActivate()
+        showWindow(nil)
+        window.makeKeyAndOrderFront(nil)
         moveWindowOntoScreen()
+        readInitialOrientation(placing: place.map { (place: $0, frame: window.frame) })
     }
 
     required init?(coder: NSCoder) { nil }
@@ -149,14 +169,24 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     func showAndActivate() {
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
-        if !didReadOrientation, session.capabilities.controlsOrientation {
-            didReadOrientation = true
-            session.run({ [weak self] in
-                guard let self else { return }
-                try await self.session.readOrientation()
+        readInitialOrientation()
+    }
+
+    /// Reads the orientation once for each connection and turns the window
+    /// to it, placing it again with `placement.place` while the window still
+    /// has `placement.frame`.
+    private func readInitialOrientation(placing placement: (place: (NSWindow) -> Void, frame: NSRect)? = nil) {
+        guard !didReadOrientation, session.capabilities.controlsOrientation else { return }
+        didReadOrientation = true
+        session.run({ [weak self] in
+            guard let self else { return }
+            try await self.session.readOrientation()
+            if let placement, self.window?.frame == placement.frame {
+                self.didRotate(placing: placement.place)
+            } else {
                 self.didRotate()
-            }, failure: { hostLog($0.localizedDescription) })
-        }
+            }
+        }, failure: { hostLog($0.localizedDescription) })
     }
 
     // MARK: Commands
@@ -224,11 +254,13 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
 
     /// Follows the bezel the display shows, as Simulator.app's chrome refresh
     /// does: a window with a bezel is not resizable, and the bezel's top
-    /// padding lets the window extend above the screen.
+    /// padding lets the window extend above the screen. In full screen the
+    /// window stays resizable until it leaves full screen.
     private func bezelChanged() {
         guard let window = window as? DeviceWindow else { return }
         let padding = session.display.chromePadding
         window.chromeTopPadding = padding?.height ?? 0
+        guard !isFullScreen else { return }
         if padding == nil { window.styleMask.insert(.resizable) } else { window.styleMask.remove(.resizable) }
     }
 
@@ -462,18 +494,24 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
 
     /// Like Simulator.app, the rotated display keeps its scale, and the
     /// window takes its new shape below its top edge, moving down when that
-    /// edge would be above the screen.
-    private func didRotate() {
+    /// edge would be above the screen, or is placed by `place`. The window
+    /// then moves back inside the screen where it crosses an edge.
+    private func didRotate(placing place: ((NSWindow) -> Void)? = nil) {
         guard !closed, let window, !window.inLiveResize, !isFullScreen else {
             resizeDisplay()
             return
         }
         let previous = window.frame
         updateWindowSize()
-        let height = window.frame.height
-        var y = previous.maxY - height
-        if let visible = window.screen?.visibleFrame, visible.maxY < height + y { y -= height + y - visible.maxY }
-        window.setFrameOrigin(NSPoint(x: previous.minX.rounded(.toNearestOrEven), y: y.rounded(.toNearestOrEven)))
+        if let place {
+            place(window)
+        } else {
+            let height = window.frame.height
+            var y = previous.maxY - height
+            if let visible = window.screen?.visibleFrame, visible.maxY < height + y { y -= height + y - visible.maxY }
+            window.setFrameOrigin(NSPoint(x: previous.minX.rounded(.toNearestOrEven), y: y.rounded(.toNearestOrEven)))
+        }
+        moveWindowOntoScreen()
     }
 
     // MARK: Window scale
@@ -549,8 +587,9 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// Moves the window inside its screen's visible frame along each axis
-    /// where it crosses an edge, as Simulator.app does after a fixed scale and
-    /// for a new window; not in full screen.
+    /// where it crosses an edge, as Simulator.app does after a fixed scale, a
+    /// rotation, or a change to the screens, and for a new window; not in
+    /// full screen.
     private func moveWindowOntoScreen() {
         guard let window, !window.styleMask.contains(.fullScreen),
               let visible = (window.screen ?? NSScreen.main)?.visibleFrame else { return }
@@ -649,9 +688,31 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     }
     func windowWillStartLiveResize(_ notification: Notification) { if !closed { session.display.beginResize() } }
     func windowDidResize(_ notification: Notification) { if !isSizingWindow { resizeDisplay() } }
-    func windowWillEnterFullScreen(_ notification: Notification) { isFullScreen = true }
-    func windowDidFailToEnterFullScreen(_ window: NSWindow) { isFullScreen = false }
-    func windowDidExitFullScreen(_ notification: Notification) { isFullScreen = false }
+    // Simulator.app animates a window with a bezel, which is not resizable,
+    // into full screen and back itself. AppKit's transition fills the screen
+    // only with a resizable window, so the window is resizable in full screen.
+    func windowWillEnterFullScreen(_ notification: Notification) {
+        isFullScreen = true
+        guard let window else { return }
+        geometryBeforeFullScreen = (session.display.renderScale, window.frame.origin)
+        window.styleMask.insert(.resizable)
+    }
+    func windowDidFailToEnterFullScreen(_ window: NSWindow) {
+        isFullScreen = false
+        geometryBeforeFullScreen = nil
+        bezelChanged()
+    }
+    /// Like Simulator.app, the window returns to the display's scale and the
+    /// window's origin from before full screen, which AppKit's own return does
+    /// not keep for a window taller than the screen.
+    func windowDidExitFullScreen(_ notification: Notification) {
+        isFullScreen = false
+        bezelChanged()
+        guard let geometry = geometryBeforeFullScreen else { return }
+        geometryBeforeFullScreen = nil
+        showDisplay(at: geometry.scale)
+        window?.setFrameOrigin(geometry.origin)
+    }
     func windowDidEndLiveResize(_ notification: Notification) {
         if !closed { resizeDisplay(); session.display.endResize() }
     }
@@ -698,6 +759,8 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         }
         if let commandKeyUpMonitor { NSEvent.removeMonitor(commandKeyUpMonitor) }
         commandKeyUpMonitor = nil
+        if let screenParametersObserver { NotificationCenter.default.removeObserver(screenParametersObserver) }
+        screenParametersObserver = nil
         if let window, let sheet = window.attachedSheet {
             window.endSheet(sheet, returnCode: .cancel)
         }

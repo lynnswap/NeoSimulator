@@ -433,7 +433,13 @@ window does:
 - While the display shows a bezel, the window is not resizable, so AppKit
   keeps the window's top edge on the screen without shrinking a window taller
   than the screen. Without a bezel, the window is resizable. Full screen stays
-  available through the `fullScreenPrimary` collection behavior.
+  available through the `fullScreenPrimary` collection behavior. AppKit's full
+  screen transition fills the screen only with a resizable window, so the
+  window is resizable from `windowWillEnterFullScreen(_:)` until it leaves
+  full screen, also when the bezel changes there. Like Simulator.app, leaving
+  full screen restores the display's scale and the window's origin from
+  before it entered, which AppKit's own return does not keep for a window
+  taller than the screen.
 - When the bezel's images have top padding (`SimDeviceChrome.images.padding.height`
   in the bezel's `chrome.json`: 9 points for the iPad bezels, 0 for the bezels
   of most iPhones, including the iPhone 17 Pro), `constrainFrameRect(_:to:)` keeps the frame's size and
@@ -445,7 +451,14 @@ window does:
   down when its top would be above the visible frame, as Simulator.app's
   geometry update does. A scale command then puts the top edge back where it
   was, and a rotation keeps the top edge, moving the window down only when that
-  edge would be above the visible frame.
+  edge would be above the visible frame. After a rotation, as after a fixed
+  scale, the window moves back inside the visible frame along each axis where
+  it crosses an edge.
+- A change to the screens (`NSApplication.didChangeScreenParametersNotification`),
+  such as a display removed or the Dock resized, moves the window back inside
+  its screen's visible frame the same way, as Simulator.app's
+  `screenParametersChanged` does for every device window. No scale is
+  reapplied.
 
 A rotation, Show Device Bezels, and a restart keep the display's scale and
 resize the window, even when the window no longer fits the screen, as in
@@ -462,7 +475,18 @@ center, or at the zero point, which is also what an unreadable value gives,
 it cascades as in Simulator.app: the first such window is centered on its
 screen with `center()`, and each takes `cascadeTopLeft(from:)` from the
 app-wide point the previous one returned. A new window then moves back inside
-the visible frame where it crosses an edge. These differ from Simulator.app:
+the visible frame where it crosses an edge.
+
+Simulator.app turns the display to the device's orientation before it places
+a new window. NeoSimulator reads the orientation with `devicectl` after the
+window shows, so when that first reading arrives, a window that is still where
+it was placed takes the new shape and is placed again: centered at the saved
+center, or with `center()` for the first cascading window, then moved back
+inside the visible frame. A window moved or resized before the reading, and a
+window that cascades from another, keep their top-left corner, as after any
+rotation.
+
+These differ from Simulator.app:
 
 - Physical Size also uses the default densities for a zero or non-finite value,
   where Simulator.app divides by zero.
@@ -475,6 +499,12 @@ the visible frame where it crosses an edge. These differ from Simulator.app:
   centers the display.
 - Simulator.app's minimum for a tvOS or visionOS display with a bezel, 240
   points over the screen's pixel height, is not reproduced.
+- Simulator.app animates the window into and out of full screen itself.
+  NeoSimulator uses AppKit's transition, so the window is resizable in full
+  screen.
+- Because the first window that cascades is placed before the orientation is
+  read, the point the next window cascades from follows that window's shape
+  before the reading.
 
 Features ▸ Location follows Simulator.app's split between a per-device
 selection and app-wide saved settings. Each `DeviceSession` owns its device's
