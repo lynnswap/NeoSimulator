@@ -67,7 +67,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         handover.setEventHandler { [weak self] in
             MainActor.assumeIsolated {
                 self?.yieldedToAnotherHost = true
-                NSApp.terminate(nil)
+                Self.requestTermination()
             }
         }
         handover.resume()
@@ -394,6 +394,13 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         }
     }
 
+    /// Terminates from a run-loop callback rather than a main-queue block:
+    /// while AppKit's termination loop runs inside a main-queue block, the
+    /// main-actor work that termination waits for cannot run.
+    private static func requestTermination() {
+        RunLoop.main.perform(inModes: [.default]) { NSApp.terminate(nil) }
+    }
+
     /// Whether a device still needs shutting down. Like Simulator.app's close,
     /// a device that is shut down or shutting down is left alone, for example
     /// one a restart had shut down for erasing.
@@ -533,13 +540,13 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         for shutdown in terminationShutdowns { shutdown.cancel() }
         shutdown()
         // A conflict can arrive on the main dispatch queue. Finish recordings
-        // before terminate() enters AppKit's termination run loop from that queue.
+        // before terminating.
         Task {
             await recordings.finishAll()
             guard !isTerminating else { return }
             for error in recordingTerminationErrors { NSAlert(error: error).runModal() }
             recordingTerminationErrors.removeAll()
-            NSApp.terminate(nil)
+            Self.requestTermination()
         }
     }
 
@@ -569,6 +576,11 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             recordingTerminationErrors.removeAll()
             // A host that appeared meanwhile stopped this one; its devices stay.
             let devices = yieldedToAnotherHost ? [] : devices
+            // A restart could boot its device again, so it ends first.
+            let restarts = Array(restarting.values)
+            for restart in restarts { restart.cancel() }
+            for tools in bootOperations.values { tools.cancel() }
+            for restart in restarts { await restart.value }
             // Windows disconnect before their devices shut down. Host conflicts
             // are still handled meanwhile and cancel the shutdowns.
             for session in sessions.values { session.invalidate() }
