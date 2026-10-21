@@ -593,6 +593,16 @@ enum CaptureFile {
         return desktop ?? URL(fileURLWithPath: "/private/tmp", isDirectory: true)
     }
 
+    /// The first of `name`, "name #2" through "name #99" that is free in `folder`.
+    static func unusedFile(in folder: URL, named name: String) throws -> URL {
+        let base = (name as NSString).deletingPathExtension, suffix = (name as NSString).pathExtension
+        for number in 1...99 {
+            let candidate = folder.appendingPathComponent(number == 1 ? name : "\(base) #\(number).\(suffix)")
+            if !FileManager.default.fileExists(atPath: candidate.path) { return candidate }
+        }
+        throw HostError.operation("Could not save \(name): \(folder.path) already has files of that name through #99.")
+    }
+
     /// Moves a capture into `folder` under `name`, adding " #2" through
     /// " #99" before the extension when the name is taken or `isReserved`.
     /// A failure leaves the capture where it is and names that location.

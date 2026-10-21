@@ -315,8 +315,14 @@ struct CaptureThumbnailTests {
         #expect(place(NSRect(x: 20, y: 100, width: 1560, height: 980)) == (NSRect(x: 1470, y: 100, width: 110, height: 210), .over))
         // Kept above the Dock by the horizontal spacing.
         #expect(place(NSRect(x: 80, y: 40, width: 440, height: 980)).0.minY == 90)
-        // Full screen: right of the device screen, else the lower right corner.
+        // Full screen: right of the device screen, else the lower right corner
+        // of that screen, which can be below the main screen.
         #expect(place(screen, fullScreen: true) == (NSRect(x: 510, y: 200, width: 110, height: 210), .over))
+        let lower = CaptureThumbnail.placement(source: NSRect(x: 1200, y: -1000, width: 400, height: 800),
+                                               window: NSRect(x: 0, y: -1200, width: 1600, height: 1200), fullScreen: true,
+                                               screen: NSRect(x: 0, y: -1200, width: 1600, height: 1200),
+                                               visible: NSRect(x: 0, y: -1200, width: 1600, height: 1200), spacing: spacing)
+        #expect(lower.frame.origin == NSPoint(x: 1486, y: -1196))
     }
 
     /// A temporary capture file and a folder to save it in.
@@ -434,9 +440,19 @@ struct CaptureThumbnailTests {
         let destination = directory.appendingPathComponent("Dragged.png")
         try delivered.deliver(to: destination)
         #expect(FileManager.default.fileExists(atPath: destination.path))
+        // A delivery after the capture was saved copies the saved file.
+        let late = try capture(named: "Late.png", in: directory)
+        try late.saveToDefaultLocation()
+        try late.deliver(to: directory.appendingPathComponent("Late.png"))
+        #expect(FileManager.default.fileExists(atPath: directory.appendingPathComponent("Late.png").path))
+        #expect(try savedNames(in: directory) == ["Late.png"])
+        // An animated GIF takes the next free name.
+        try Data().write(to: directory.appendingPathComponent("Saved/Movie.gif"))
+        #expect(try CaptureFile.unusedFile(in: directory.appendingPathComponent("Saved"), named: "Movie.gif").lastPathComponent
+                == "Movie #2.gif")
         let cancelled = try capture(named: "Cancelled.png", in: directory)
         CaptureThumbnail(cancelled, image: nil, parent: window, source: .zero, spacing: .zero) { _ in }.dragEnded([])
-        #expect(try savedNames(in: directory) == ["Cancelled.png"])
+        #expect(try savedNames(in: directory) == ["Cancelled.png", "Late.png", "Movie.gif"])
     }
 
     /// A shown thumbnail beside a visible window, once its appearance ended.

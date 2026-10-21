@@ -22,6 +22,8 @@ final class CapturedContent {
     private let isReserved: (URL) -> Bool
     /// Whether the capture has been saved, deleted, or handed to another app.
     private(set) var isResolved = false
+    /// Where it was saved, from which a late drag delivery copies it.
+    private var saved: URL?
 
     init(_ kind: Kind, file: URL, name: String, defaultFolder: URL, isReserved: @escaping (URL) -> Bool = { _ in false }) {
         self.kind = kind
@@ -38,6 +40,7 @@ final class CapturedContent {
         guard !isResolved else { throw HostError.operation("\(name) was already saved or deleted.") }
         let saved = try CaptureFile.move(file, into: folder, named: name, isReserved: isReserved)
         isResolved = true
+        self.saved = saved
         return saved
     }
 
@@ -53,6 +56,7 @@ final class CapturedContent {
     /// Writes the capture to `destination`, which a drag or another app asked
     /// for, and gives up the temporary file.
     func deliver(to destination: URL) throws {
+        if let saved { return try FileManager.default.copyItem(at: saved, to: destination) }
         guard !isResolved else { throw HostError.operation("\(name) was already saved or deleted.") }
         try FileManager.default.moveItem(at: file, to: destination)
         isResolved = true
@@ -130,7 +134,8 @@ final class CaptureThumbnail: NSObject {
         self.spacing = content.kind == .movie ? .zero : spacing
         self.report = report
         window = NSWindow(contentRect: source, styleMask: .borderless, backing: .buffered, defer: false)
-        view = CaptureThumbnailView(content: content, image: image, rotation: rotation, cornerRadius: cornerRadius)
+        view = CaptureThumbnailView(content: content, image: image, rotation: rotation, cornerRadius: cornerRadius,
+                                    report: report)
         super.init()
         window.animationBehavior = .none
         window.isMovableByWindowBackground = false
@@ -201,7 +206,7 @@ final class CaptureThumbnail: NSObject {
             position = .over
             origin = source.maxX + spacing.width + size.width < bounds.maxX
                 ? NSPoint(x: source.maxX + spacing.width, y: source.minY)
-                : NSPoint(x: frame.maxX - size.width - 4, y: 4)
+                : NSPoint(x: frame.maxX - size.width - 4, y: bounds.minY + 4)
         } else if frame.maxX + spacing.width + size.width < bounds.maxX {
             position = .right
             origin = NSPoint(x: frame.maxX + spacing.width, y: frame.minY + spacing.height)
@@ -442,15 +447,21 @@ final class CaptureThumbnail: NSObject {
     }
 
     private func open(handingOffTo bundleIdentifier: String) throws {
-        let copy = try content.handOff()
-        try open(copy, with: bundleIdentifier)
+        let application = try Self.application(bundleIdentifier, toOpen: content.name)
+        NSWorkspace.shared.open([try content.handOff()], withApplicationAt: application,
+                                configuration: NSWorkspace.OpenConfiguration())
     }
 
     private func open(_ file: URL, with bundleIdentifier: String) throws {
+        NSWorkspace.shared.open([file], withApplicationAt: try Self.application(bundleIdentifier, toOpen: file.lastPathComponent),
+                                configuration: NSWorkspace.OpenConfiguration())
+    }
+
+    private static func application(_ bundleIdentifier: String, toOpen name: String) throws -> URL {
         guard let application = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier) else {
-            throw HostError.unavailable("The app to open \(file.lastPathComponent) is not installed.")
+            throw HostError.unavailable("The app to open \(name) is not installed.")
         }
-        NSWorkspace.shared.open([file], withApplicationAt: application, configuration: NSWorkspace.OpenConfiguration())
+        return application
     }
 
     /// Writes an animated GIF of the movie next to where the movie would be
@@ -461,10 +472,12 @@ final class CaptureThumbnail: NSObject {
         let movie: URL, gif: URL
         if keepingMovie {
             movie = try content.saveToDefaultLocation()
-            gif = movie.deletingPathExtension().appendingPathExtension("gif")
+            gif = try CaptureFile.unusedFile(in: movie.deletingLastPathComponent(),
+                                             named: movie.deletingPathExtension().appendingPathExtension("gif").lastPathComponent)
         } else {
             movie = content.file
-            gif = content.defaultFolder.appendingPathComponent(content.name).deletingPathExtension().appendingPathExtension("gif")
+            gif = try CaptureFile.unusedFile(in: content.defaultFolder,
+                                             named: (content.name as NSString).deletingPathExtension + ".gif")
         }
         let report = report
         if !keepingMovie { Self.exporting.append(content) }
@@ -496,12 +509,14 @@ final class CaptureThumbnail: NSObject {
     func dragEnded(_ operation: NSDragOperation) {
         if !operation.isEmpty { dismissedExplicitly = true }
         if !operation.isEmpty, !content.isResolved {
-            // The destination fulfils the promise shortly; Simulator.app then
-            // removes an unclaimed capture after five seconds.
-            let content = content
+            // The destination fulfils the promise shortly. Simulator.app then
+            // deletes an unclaimed capture after five seconds; NeoSimulator
+            // saves it instead, and a later delivery copies the saved file.
+            let content = content, report = report
             Task {
                 try? await Task.sleep(for: .seconds(5))
-                try? content.delete()
+                guard !content.isResolved else { return }
+                do { try content.saveToDefaultLocation() } catch { report(error) }
             }
         }
         finish()
@@ -527,16 +542,19 @@ private final class CaptureThumbnailView: NSView, NSMenuDelegate, NSDraggingSour
     private let player: AVPlayer?
     private let rotation: Double
     private let cornerRadius: CGFloat
+    private let report: (Error) -> Void
     /// A frame of the movie, which dragging shows; AVPlayerLayer does not draw
     /// into a cached display.
     private var movieFrame: NSImage?
     private var mouseDownLocation: NSPoint?
 
-    init(content: CapturedContent, image: NSImage?, rotation: Double, cornerRadius: CGFloat) {
+    init(content: CapturedContent, image: NSImage?, rotation: Double, cornerRadius: CGFloat,
+         report: @escaping (Error) -> Void) {
         self.content = content
         self.image = image
         self.rotation = rotation
         self.cornerRadius = cornerRadius
+        self.report = report
         if content.kind == .movie {
             let player = AVPlayer(url: content.file)
             let layer = AVPlayerLayer(player: player)
@@ -716,8 +734,14 @@ private final class CaptureThumbnailView: NSView, NSMenuDelegate, NSDraggingSour
 
     nonisolated func filePromiseProvider(_ provider: NSFilePromiseProvider, writePromiseTo url: URL,
                                          completionHandler: @escaping ((any Error)?) -> Void) {
+        // A failed delivery keeps the capture by saving it where dismissing would.
         let failure: (any Error)? = MainActor.assumeIsolated {
-            do { try content.deliver(to: url) } catch { return error }
+            do { try content.deliver(to: url) } catch {
+                if !content.isResolved {
+                    do { try content.saveToDefaultLocation() } catch { report(error) }
+                }
+                return error
+            }
             return nil
         }
         completionHandler(failure)
