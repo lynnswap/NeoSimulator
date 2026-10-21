@@ -114,7 +114,7 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
         item("Enter Full Screen", action: #selector(fullScreen(_:)), key: "f", modifiers: [.command, .control], in: window)
         commands([.showDeviceBezels, .stayOnTop], in: window)
         window.addItem(.separator())
-        commands([.fitScreen], in: window)
+        commands([.physicalSize, .pointAccurate, .pixelAccurate, .fitScreen], in: window)
         window.addItem(.separator())
         // NeoSimulator's own list of devices; Simulator.app has no such window.
         item("Simulators", action: #selector(showBrowser(_:)), in: window)

@@ -246,7 +246,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                            supportsFeature: { [device] in device.supportsFeature($0) },
                            controlsOrientation: device.deviceSetPath == nil,
                            hasFramebufferMask: device.hasFramebufferMask,
-                           screenCornerRadius: device.screenCornerRadius)
+                           screenCornerRadius: device.screenCornerRadius,
+                           screenPointsPerInch: device.screenPointsPerInch)
     }
 
     func openSimulator(withIdentifier identifier: String) async throws {

@@ -18,6 +18,8 @@ struct DeviceCapabilities {
     var hasFramebufferMask = false
     /// The screen's corner radius in points; 0 for a square screen.
     var screenCornerRadius = 0.0
+    /// The screen's points per inch, for Physical Size; nil when unknown.
+    var screenPointsPerInch: Double?
 
     var isPhoneOrPad: Bool { family == .iPhone || family == .iPad }
     var rotates: Bool { controlsOrientation && supportsFeature(Self.displayRotation) }
@@ -73,6 +75,9 @@ enum HostPreferences {
     /// The coordinate Custom Location… last set.
     static let locationLatitude = "LocationLatitude"
     static let locationLongitude = "LocationLongitude"
+    /// A dictionary of each device's own preferences, by UDID: see
+    /// `PreferenceStore.windowScale(forDevice:)`.
+    static let devicePreferences = "DevicePreferences"
 
     /// Registers Simulator.app's defaults for these preferences.
     static func registerDefaults() {

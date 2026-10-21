@@ -84,7 +84,7 @@ Representative per-window actions in the reference binary:
 | Copy Screen | `0x100053A68` | `simctl io … screenshot --mask=ignored`, written to the general pasteboard as PNG only |
 | Capture thumbnail | `0x100063CD8` / `0x1000637A8` | AppKit child window: white flash and shrink to a quarter size plus 10 points, 5-second or movie-length timer paused by hover, menus, and window moves; dismissal saves to the default folder; file-promise drag; GIF export at up to `GifMaxFramerate` 10 fps and `GifMaxFrameSize` 640 px with `CIDither` |
 | Volume Up / Down | `0x100058224` / `0x10005823C` | `IndigoHIDMessageForHIDArbitrary`, consumer page `0x0c`, usages `0xe9` / `0xea`, shown with `com.apple.CoreSimulator.audio.routable` |
-| Window scale | `0x100054BBC` | SimulatorKit render scale and resize owner |
+| Window scale | `0x100054BBC` | `SimDisplayView.renderScale`, `size(for:)`, and `scale(for:)`; see [Window scale modes](#window-scale-modes) |
 
 Representative coordinator actions:
 
@@ -118,8 +118,9 @@ semantics:
   Increase Contrast, Trigger iCloud Sync, Location (None, Custom Location…,
   and the runtime's scenarios);
 - Debug: Show Parallel Testing Devices;
-- Window: Minimize, Full Screen, Show Device Bezels, Stay on Top, Fit
-  Screen, Bring All to Front. Simulator.app hides Zoom.
+- Window: Minimize, Full Screen, Show Device Bezels, Stay on Top, Physical
+  Size, Point Accurate, Pixel Accurate, Fit Screen, Bring All to Front.
+  Simulator.app hides Zoom.
 
 The detached window header exposes Home, Save Screen, and Rotate Right using
 the same session actions as the menus. A red stop control appears while a video
@@ -129,6 +130,35 @@ Menu commands are validated against the active device window at dispatch time.
 Rotation and screenshot work is single-flight and cancelled when the owning
 window closes.
 
+## Window scale modes
+
+The evidence is Simulator.app 16.0 (1063.4) from Xcode 26.6. `DWC` is
+`Simulator.DeviceWindowController`.
+
+| Reference owner | Observed behavior |
+| --- | --- |
+| `DWC.windowScaleChanged:` `0x100054BBC`, body `0x1000548B0` | Menu tags 4108 Physical Size, 4109 Pixel Accurate, 4110 Point Accurate, 4111 Fit Screen. Sets `renderScale`, updates the window geometry (`0x10005B4A0`), and keeps the window's top edge. Fit Screen then centers the window in the visible frame (`0x10003872C`); the others move it back inside (`0x100038840`). |
+| Physical Size helper `0x100038260` | `NSDeviceSize.width / (CGDisplayScreenSize(NSScreenNumber).width / 25.4)` over `mainScreenDPI.width / mainScreenScale`. 110 replaces the Mac's value only without a window screen, `NSScreenNumber`, or `NSDeviceSize`; 163 replaces the device's only without a device type. A zero size is divided by as is. |
+| Pixel Accurate helper `0x100038488` | `SimDeviceScreen.scale / window.screen.backingScaleFactor`, each 1 when missing. |
+| Fit Screen helper `0x100037E08` | `scale(for:)` of the visible frame less the window's chrome (`window.frame − displayView.frame`) and 20 points; 1000 without any screen. Not clamped to 1. |
+| `DWC.validateMenuItem:` scale branch `0x100051D4C` | Needs `connectedScreen` and `DeviceWindow.fullScreenState == 3`. The `FullScreenState` cases are `entering`, `fullScreen`, `exiting`, and `none`, so 3 is `none`. Fit Screen is then enabled with its state untouched. A fixed scale sets its checkmark from `CGFloat.isAlmost(_:precision:)`, `abs(a − b) < 0.001`, then requires the minimum (`0x100047884`). Physical Size needs `displayClass & 0xFFFF == 0`. The fit check runs only when `chromeView.chrome` is nil, that is without a bezel (`getEnumTagSinglePayload == 1` at `0x100051FD0`); it compares `size(for:)` with the visible frame less the title bar. |
+| Minimum scale `0x100047884` | iOS on display class 0: 0.4 for an iPhone, 0.25 otherwise; watchOS 0.6; otherwise `scale(for: 240×240)`, or 240 over the screen's pixel height for a display with chrome on other platforms. |
+| Connection `0x10004E24C` … `0x10004EDFC` | Opens at `min(fit, WindowScale ?? 1)` from `DevicePreferences[UDID].SimulatorWindowGeometry` (1 also for a value ≤ 0), at `WindowCenter` when saved. |
+| Disconnect `0x10004FDB8` → `0x100050D84` | Saves `WindowCenter` (`NSStringFromPoint`) and `WindowScale` (`renderScale`) when the window exists and the device is not rebooting. |
+| Rotation `0x10005BA50` | Keeps `renderScale`, updates the geometry, and keeps the top edge inside the visible frame. |
+| `DeviceWindow.constrainFrameRect:toScreen:` `0x100037A20` | While the window has chrome insets, moves it vertically instead of calling `super`, so a window with a bezel is not shrunk to the screen. |
+
+Neither `windowDidChangeScreen:` nor `windowDidChangeBackingProperties:` is
+implemented. A screen parameter change only calls each window's
+`ensureWindowIsEntirelyOnScreenIfPossible`; no scale is reapplied, and the
+checkmarks follow the window's screen at the next validation.
+`NSUserDefaults(Indigo)` also implements `windowLastScaleForDevice:` and
+`setWindowLastScale:forDevice:` (`SimulatorWindowLastScale`), but nothing in
+Simulator.app 16.0 calls them.
+
+NeoSimulator reproduces these commands; its differences are listed in the
+[design](Design.md#commands-and-menus).
+
 ## Deferred features
 
 These have viable Xcode 27+ primitives but need a dedicated state/capability
@@ -136,7 +166,6 @@ contract before being user-visible:
 
 - Connect Hardware Keyboard and keyboard-language sync;
 - status-bar overrides;
-- physical, point-accurate, and pixel-accurate scale modes;
 - external displays and CarPlay.
 
 ## Excluded features

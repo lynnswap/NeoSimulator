@@ -311,7 +311,8 @@ The first parity set contains only commands with an available, validated owner:
   and the runtime's scenarios);
 - Debug: Show Parallel Testing Devices;
 - Window: standard minimize/zoom/full screen, Show Device Bezels, Stay on Top,
-  Fit Screen, Simulators, Bring All to Front.
+  Physical Size, Point Accurate, Pixel Accurate, Fit Screen, Simulators, Bring
+  All to Front.
 
 File ▸ Open Simulator follows Simulator.app's menu delegate: CoreSimulator's
 available-device order, a submenu per runtime (none for a single runtime), the
@@ -365,7 +366,8 @@ when the guest changes its interface orientation. Each connection registers for
 `SimDeviceScreen` property events (`register(types:queue:handler:)` with
 `.properties`). When the preference is on and the guest's interface orientation
 (`SimScreenProperties.uiOrientation`) changes, the session shows the display at
-that orientation's angle and the window refits. Other property changes, such as
+that orientation's angle and the window takes its new shape at the display's
+scale (see window scale below). Other property changes, such as
 the backlight, keep the window size. A window opened while the preference is on
 also starts at the guest's interface orientation. Releasing the registration on
 disconnect ends the events. The Orientation checkmark keeps showing the physical
@@ -390,6 +392,55 @@ temporary file that is checked and then atomically renamed, so cancellation
 or failure preserves an existing destination.
 Device-tool operations are single-flight, drain both output pipes, have a
 bounded timeout, and are cancelled when their window closes.
+
+Window ▸ Physical Size (Command-1), Point Accurate (Command-2), Pixel Accurate
+(Command-3), and Fit Screen (Command-4) follow Simulator.app's
+`windowScaleChanged:`. Each sets `SimDisplayView.renderScale` and sizes the
+window to `SimDisplayView.size(for:)` at that scale, keeping the window's top
+edge; the device's screen does not change.
+
+- Physical Size divides the Mac screen's points per inch (`NSDeviceSize` width
+  over the `CGDisplayScreenSize` width in inches of the window's screen) by the
+  device's (`SimDeviceType.mainScreenDPI` width over `mainScreenScale`). An
+  unknown value counts as 110 for the Mac and 163 for the device.
+- Point Accurate is 1.
+- Pixel Accurate is `SimDeviceScreen.scale` over the window screen's
+  `backingScaleFactor`, each 1 when unknown.
+- Fit Screen asks `SimDisplayView.scale(for:)` for the visible frame less the
+  window header and 20 points, so it can exceed 1.
+
+Fit Screen then centers the window on its screen, and the fixed scales move it
+back inside the visible frame. The commands need a connected display outside
+full screen, including the full screen transitions. Physical Size also needs `SimDeviceScreen.displayClass` 0,
+the device's own screen. A fixed scale needs at least the device's minimum
+(0.4 for an iPhone and 0.25 for an iPad on its own screen, 0.6 for a watch,
+otherwise the scale at which the display fits 240 by 240 points) and a window
+that fits the visible frame. A fixed scale is checked while `renderScale` is
+within 0.001 of it. The menu computes the target from the window's current
+screen each time it validates, so a manual resize, or a move to a screen with
+another resolution or size, clears the checkmark without changing the scale.
+Fit Screen has no checkmark.
+
+Closing a window saves its scale in
+`DevicePreferences[UDID].SimulatorWindowGeometry.WindowScale`, Simulator.app's
+keys, in NeoSimulator's own defaults. The device's next window opens at the
+saved scale, or at Point Accurate, reduced to fit the screen, as in
+Simulator.app. A rotation keeps the scale. These differ from Simulator.app:
+
+- Simulator.app checks that a fixed scale fits only for a display without a
+  bezel, and its window's `constrainFrameRect:toScreen:` lets a window with a
+  bezel extend past the screen. AppKit keeps NeoSimulator's window on the
+  screen, which would cut the display off, so the fit is always required.
+- A restart keeps the window's scale; Simulator.app reconnects at the saved one.
+- A rotated window that would not fit the screen gets a smaller scale.
+- Physical Size also uses the default densities for a zero or non-finite value,
+  where Simulator.app divides by zero.
+- Only `WindowScale` is saved; new windows keep cascading instead of returning
+  to Simulator.app's `WindowCenter`.
+- The window does not lock the display's aspect ratio or limit its minimum
+  size to the minimum scale; a manual resize centers the display.
+- Simulator.app's minimum for a tvOS or visionOS display with a bezel, 240
+  points over the screen's pixel height, is not reproduced.
 
 Features ▸ Location follows Simulator.app's split between a per-device
 selection and app-wide saved settings. Each `DeviceSession` owns its device's

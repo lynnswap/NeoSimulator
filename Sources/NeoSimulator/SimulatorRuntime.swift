@@ -85,12 +85,21 @@ struct SimulatorDisplayInterface {
     let screenPropertyEvents: NativeSwiftValue
     /// `SimDeviceScreen.properties`, an `id<SimScreenProperties>`.
     let screenProperties: NativeSwiftMethod<() -> AnyObject>
+    /// `SimDeviceScreen.scale`, the screen's pixels per point.
+    let screenScale: NativeSwiftMethod<() -> CGFloat>
+    /// `SimDeviceScreen.displayClass`.
+    let displayClass: NativeSwiftMethod<() -> UInt16>
     let factoryClass: AnyClass
     let createDisplay: NativeObjCMethod<NSView?, AnyObject, UInt32>
     let showChrome: NativeSwiftMethod<(Bool) -> Void>
     let chromeView: NativeSwiftMethod<() -> NSView>
     let digitizerView: NativeSwiftMethod<() -> NSView>
     let renderScale: NativeSwiftMethod<() -> CGFloat>
+    let setRenderScale: NativeSwiftMethod<(CGFloat) -> Void>
+    /// `SimDisplayView.size(for:)`.
+    let sizeForScale: NativeSwiftMethod<(CGFloat) -> CGSize>
+    /// `SimDisplayView.scale(for:)`.
+    let scaleForSize: NativeSwiftMethod<(CGSize) -> CGFloat>
     let rotation: NativeSwiftMethod<(Measurement<UnitAngle>) -> Void>
     let disconnect: NativeSwiftMethod<(NativeSwiftClosure<() -> Void>) -> Void>
     let beginResize: NativeSwiftMethod<() -> Void>
@@ -104,7 +113,7 @@ struct SimulatorDisplayInterface {
     init(runtime: ABIRuntime) throws {
         guard let screenClass = NSClassFromString("SimulatorKit.SimDeviceScreen"),
             let factoryClass = NSClassFromString("IDEPlaygroundSimulator.IDESimulatorPlaygroundUntil"),
-            let displayClass = NSClassFromString("SimulatorKit.SimDisplayView")
+            let displayViewClass = NSClassFromString("SimulatorKit.SimDisplayView")
         else {
             throw HostError.unavailable("SimulatorKit display classes are unavailable")
         }
@@ -129,6 +138,11 @@ struct SimulatorDisplayInterface {
             .unsafeInvoke()
         screenProperties = try deviceScreen.resolveGetterAndWait(
             named: "properties.getter : __C.SimScreenProperties", as: (() -> AnyObject).self)
+        screenScale = try deviceScreen.resolveGetterAndWait(
+            named: "scale.getter : CoreGraphics.CGFloat", as: (() -> CGFloat).self)
+        // CoreSimulator declares `SimDisplayClass` as an unsigned short.
+        displayClass = try deviceScreen.resolveGetterAndWait(
+            named: "displayClass.getter : __C.SimDisplayClass", as: (() -> UInt16).self)
         registerScreenEvents = try deviceScreen.resolveMethodAndWait(
             named: "register(types:queue:handler:)",
             as: ((NativeSwiftValue, DispatchQueue, ScreenEventHandler) -> NativeSwiftValue).self,
@@ -145,6 +159,9 @@ struct SimulatorDisplayInterface {
         digitizerView = try view.resolveGetterAndWait(
             named: "digitizerView.getter : SimulatorKit.SimDigitizerInputView", as: (() -> NSView).self)
         renderScale = try view.resolveGetterAndWait(named: "renderScale", as: (() -> CGFloat).self)
+        setRenderScale = try view.resolveSetterAndWait(named: "renderScale", as: CGFloat.self)
+        sizeForScale = try view.resolveMethodAndWait(named: "size(for:)", as: ((CGFloat) -> CGSize).self)
+        scaleForSize = try view.resolveMethodAndWait(named: "scale(for:)", as: ((CGSize) -> CGFloat).self)
         rotation = try view.resolveSetterAndWait(named: "deviceRotation", as: Measurement<UnitAngle>.self)
         disconnect = try view.resolveMethodAndWait(
             named: "disconnect(completion: (() -> ())?) -> ()",
@@ -161,8 +178,8 @@ struct SimulatorDisplayInterface {
                 valueABIs: [chromeState: try .opaque(named: chromeState.name)])
         setKeyboardEnabled = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimKeyboardInputDefaultDelegate")
             .resolveSetterAndWait(named: "isEnabled", as: Bool.self)
-        guard let keyboardDelegate = class_getInstanceVariable(displayClass, "_defaultKeyboardDelegate") else {
-            throw HostError.unavailable("\(displayClass) does not provide _defaultKeyboardDelegate")
+        guard let keyboardDelegate = class_getInstanceVariable(displayViewClass, "_defaultKeyboardDelegate") else {
+            throw HostError.unavailable("\(displayViewClass) does not provide _defaultKeyboardDelegate")
         }
         self.keyboardDelegate = keyboardDelegate
     }
@@ -320,7 +337,18 @@ protocol SimulatorDisplay: AnyObject {
     var isBooted: Bool { get }
     var view: NSView { get }
     var inputView: NSView { get }
-    var naturalSize: NSSize { get }
+    /// `SimDisplayView.renderScale`: the display's size relative to the
+    /// device's screen in points, which the screen's resolution does not change.
+    var renderScale: CGFloat { get }
+    func setRenderScale(_ scale: CGFloat)
+    /// The display's size at `scale`, with the bezel when it is shown.
+    func size(for scale: CGFloat) -> NSSize
+    /// The largest scale at which the display fits `size`.
+    func scale(for size: NSSize) -> CGFloat
+    /// `SimDeviceScreen.scale`, the screen's pixels per point, or nil when unknown.
+    var screenScale: CGFloat? { get }
+    /// `SimDeviceScreen.displayClass`, or nil when unknown; 0 is a device's own screen.
+    var displayClass: UInt16? { get }
     /// Called on the main actor when the screen's properties change, such as
     /// the interface orientation of the guest.
     var onPropertiesChange: (() -> Void)? { get set }
@@ -412,11 +440,29 @@ final class SimulatorConnection: SimulatorDisplay {
 
     var isBooted: Bool { !disconnected && device.state == 3 }
 
-    var naturalSize: NSSize {
-        let scale = (try? unsafe runtime.display.renderScale.unsafeInvoke(on: view)) ?? 0
-        let size = view.intrinsicContentSize
-        let actual = size.width > 0 && size.height > 0 ? size : view.frame.size
-        return scale > 0 ? NSSize(width: actual.width / scale, height: actual.height / scale) : actual
+    var renderScale: CGFloat {
+        read("read the display scale", otherwise: 0) { try unsafe runtime.display.renderScale.unsafeInvoke(on: view) }
+    }
+
+    func setRenderScale(_ scale: CGFloat) {
+        perform("scale the display") { try unsafe runtime.display.setRenderScale.unsafeInvoke(on: view, scale) }
+        view.invalidateIntrinsicContentSize()
+    }
+
+    func size(for scale: CGFloat) -> NSSize {
+        read("measure the display", otherwise: .zero) { try unsafe runtime.display.sizeForScale.unsafeInvoke(on: view, scale) }
+    }
+
+    func scale(for size: NSSize) -> CGFloat {
+        read("measure the display", otherwise: 0) { try unsafe runtime.display.scaleForSize.unsafeInvoke(on: view, size) }
+    }
+
+    var screenScale: CGFloat? {
+        read("read the screen scale", otherwise: nil) { try unsafe runtime.display.screenScale.unsafeInvoke(on: screen) }
+    }
+
+    var displayClass: UInt16? {
+        read("read the display class", otherwise: nil) { try unsafe runtime.display.displayClass.unsafeInvoke(on: screen) }
     }
 
     var guestInterfaceAngle: Double? {
@@ -498,6 +544,13 @@ final class SimulatorConnection: SimulatorDisplay {
     // These members were prepared during startup; a failure here means
     // SimulatorKit rejected the value, which the display cannot recover from.
     private func perform(_ operation: String, _ body: () throws -> Void) {
-        do { try body() } catch { hostLog("Could not \(operation): \(error.localizedDescription)") }
+        read(operation, otherwise: (), body)
+    }
+
+    private func read<Value>(_ operation: String, otherwise fallback: Value, _ body: () throws -> Value) -> Value {
+        do { return try body() } catch {
+            hostLog("Could not \(operation): \(error.localizedDescription)")
+            return fallback
+        }
     }
 }

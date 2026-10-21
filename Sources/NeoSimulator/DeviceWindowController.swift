@@ -18,18 +18,25 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     private var deviceToolbar: DeviceToolbar?
     private var commandKeyUpMonitor: Any?
     private var customLocation: CustomLocationWindowController?
+    /// Keeps the display scale each device's window closes at.
+    private let preferences: any PreferenceStore
+    /// Whether the window is in full screen or moving into or out of it,
+    /// where Simulator.app's scale commands are unavailable.
+    private var isFullScreen = false
+    /// Set while the window takes the size of a chosen display scale, which
+    /// the resize must not change.
+    private var isSizingWindow = false
     var staysOnTop: Bool { window?.level == .floating }
-    var canFitScreen: Bool {
-        session.canPerformCommands && window?.inLiveResize == false && window?.styleMask.contains(.fullScreen) == false
-    }
 
-    init(session: DeviceSession, onClose: @escaping (DeviceWindowController, DeviceLifetimeChoice?) -> Void,
+    init(session: DeviceSession, preferences: any PreferenceStore = UserDefaults.standard,
+         onClose: @escaping (DeviceWindowController, DeviceLifetimeChoice?) -> Void,
          onRestart: @escaping (DeviceWindowController, _ erasing: Bool) -> Void = { _, _ in }) throws {
         self.session = session
+        self.preferences = preferences
         self.onClose = onClose
         self.onRestart = onRestart
         content = DeviceContentView(display: session.display.view)
-        let natural = session.display.naturalSize
+        let natural = session.display.size(for: 1)
         guard natural.width > 0, natural.height > 0 else {
             session.disconnect()
             throw HostError.unavailable("Simulator display has no usable size")
@@ -59,7 +66,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
             self.session.display.inputView.keyUp(with: event)
             return nil
         }
-        fitScreen()
+        showDisplay(at: fittingScale(preferences.windowScale(forDevice: session.device.id)))
     }
 
     required init?(coder: NSCoder) { nil }
@@ -95,6 +102,9 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
             session.disconnect()
             return
         }
+        // The window keeps its scale across a restart; Simulator.app returns to
+        // the scale saved when the device's window last closed.
+        let scale = WindowScale.usable(self.session.display.renderScale)
         self.session = session
         content = DeviceContentView(display: session.display.view)
         attachSession()
@@ -104,7 +114,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         }
         session.display.setChromeVisible(showsDeviceBezel)
         didReadOrientation = false
-        fitScreen()
+        showDisplay(at: fittingScale(scale))
         showAndActivate()
         // A window that stayed key gets no new key notification.
         if window?.isKeyWindow == true { activateDisplay() }
@@ -254,7 +264,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         // Simulator.app spaces a screenshot's thumbnail by the window's scale,
         // twice as far for a landscape display, a TV, or a watch; in full
         // screen, from the display's right edge.
-        let scale = session.display.naturalSize.width > 0 ? display.bounds.width / session.display.naturalSize.width : 1
+        let scale = session.display.renderScale
         let landscape = abs(session.displayAngle.truncatingRemainder(dividingBy: 180)) == 90
         let family = session.capabilities.family
         let base: CGFloat = landscape || family == .tv || family == .watch ? 20 : 10
@@ -411,26 +421,107 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         didRotate()
     }
 
-    private func didRotate() {
-        fitScreen()
-        resizeDisplay()
+    // Like Simulator.app, the rotated display keeps its scale and the window
+    // takes its new shape. Unlike it, the scale is reduced when the window
+    // would not fit the screen.
+    private func didRotate() { showDisplay(at: fittingScale(session.display.renderScale)) }
+
+    // MARK: Window scale
+
+    /// The scale `mode` shows the display at in this window, as Simulator.app
+    /// computes it, or nil for Fit Screen without a screen.
+    func scale(for mode: WindowScaleMode) -> CGFloat? {
+        let screen = window?.screen
+        switch mode {
+        case .physicalSize:
+            return WindowScale.physicalSize(hostDensity: screen.flatMap(WindowScale.density(of:)),
+                                            deviceDensity: session.capabilities.screenPointsPerInch.map { CGFloat($0) })
+        case .pointAccurate:
+            return 1
+        case .pixelAccurate:
+            return WindowScale.pixelAccurate(screenScale: session.display.screenScale,
+                                             backingScaleFactor: screen?.backingScaleFactor)
+        case .fitScreen:
+            // The window keeps 10 points from each edge of the screen.
+            guard let visible = (screen ?? NSScreen.main)?.visibleFrame else { return nil }
+            return session.display.scale(for: NSSize(width: visible.width - 20,
+                                                     height: visible.height - content.heightAboveDisplay - 20))
+        }
     }
 
-    func fitScreen() {
-        guard let window, !window.inLiveResize, !window.styleMask.contains(.fullScreen) else { return }
-        let natural = session.display.naturalSize
-        guard natural.width > 0, natural.height > 0 else { return }
-        let visible = (window.screen ?? NSScreen.main)?.visibleFrame.size ?? NSSize(width: 1440, height: 900)
-        let scale = min(1, (visible.width - 20) / natural.width,
-                        (visible.height - 20 - content.headerHeight - DeviceContentView.displayGap) / natural.height)
-        window.setContentSize(NSSize(width: max(320, natural.width * scale),
-            height: natural.height * scale + content.headerHeight + DeviceContentView.displayGap))
-        resizeDisplay()
+    /// Whether a scale command can run, as Simulator.app validates it: on a
+    /// connected display outside full screen, Physical Size only on the
+    /// device's own screen, and a fixed scale only from the device's minimum
+    /// and when the window fits its screen. Simulator.app checks the fit only
+    /// for a display without a bezel and lets a window with a bezel extend
+    /// past the screen; AppKit keeps this window on the screen, which would
+    /// cut the display off.
+    func canSetScale(_ mode: WindowScaleMode) -> Bool {
+        guard session.canPerformCommands, !isFullScreen, let window else { return false }
+        guard mode != .fitScreen else { return true }
+        let displayClass = session.display.displayClass
+        guard let scale = scale(for: mode), mode != .physicalSize || displayClass == 0,
+              scale >= WindowScale.minimum(family: session.capabilities.family, displayClass: displayClass,
+                                           fitting240: session.display.scale(for: NSSize(width: 240, height: 240)))
+        else { return false }
+        guard let visible = window.screen?.visibleFrame else { return true }
+        let size = session.display.size(for: scale)
+        return size.width <= visible.width && size.height <= visible.height - content.heightAboveDisplay
+    }
+
+    /// The checkmark of a fixed scale: on while the display is at that scale.
+    /// It follows the window's screen, so moving the window to a screen with
+    /// another resolution or size can clear it.
+    func scaleState(_ mode: WindowScaleMode) -> NSControl.StateValue {
+        guard let scale = scale(for: mode) else { return .off }
+        return WindowScale.matches(session.display.renderScale, scale) ? .on : .off
+    }
+
+    /// Shows the display at `mode`'s scale and sizes the window to it. Fit
+    /// Screen then centers the window on its screen; the fixed scales move it
+    /// back onto its screen.
+    func setScale(_ mode: WindowScaleMode) {
+        guard let window, let scale = scale(for: mode) else { return }
+        showDisplay(at: scale)
+        guard let visible = (window.screen ?? NSScreen.main)?.visibleFrame else { return }
+        let frame = window.frame
+        window.setFrameOrigin(mode == .fitScreen
+            ? NSPoint(x: visible.midX - frame.width / 2, y: visible.midY - frame.height / 2)
+            : WindowScale.origin(of: frame, within: visible))
+    }
+
+    /// `scale`, or Point Accurate, reduced to fit the screen: the scale
+    /// Simulator.app shows a new connection at.
+    private func fittingScale(_ scale: CGFloat?) -> CGFloat {
+        min(self.scale(for: .fitScreen) ?? .infinity, scale ?? 1)
+    }
+
+    /// Shows the display at `scale` and sizes the window to it, keeping the
+    /// window's top edge. In full screen and during a live resize, the
+    /// display fits the window instead.
+    private func showDisplay(at scale: CGFloat) {
+        guard !closed, let window, !window.inLiveResize, !isFullScreen else {
+            resizeDisplay()
+            return
+        }
+        let size = session.display.size(for: scale)
+        var frame = window.frameRect(forContentRect: NSRect(x: 0, y: 0,
+            width: max(window.contentMinSize.width, size.width), height: size.height + content.heightAboveDisplay))
+        frame.origin = NSPoint(x: window.frame.minX, y: window.frame.maxY - frame.height)
+        isSizingWindow = true
+        window.setFrame(frame, display: true)
+        isSizingWindow = false
+        session.display.setRenderScale(scale)
+        layoutDisplay()
     }
 
     private func resizeDisplay() {
         guard !closed else { return }
         session.display.resize(to: content.availableDisplaySize)
+        layoutDisplay()
+    }
+
+    private func layoutDisplay() {
         content.needsLayout = true
         content.layoutSubtreeIfNeeded()
         window?.invalidateShadow()
@@ -485,7 +576,10 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         session.display.setActive(false)
     }
     func windowWillStartLiveResize(_ notification: Notification) { if !closed { session.display.beginResize() } }
-    func windowDidResize(_ notification: Notification) { resizeDisplay() }
+    func windowDidResize(_ notification: Notification) { if !isSizingWindow { resizeDisplay() } }
+    func windowWillEnterFullScreen(_ notification: Notification) { isFullScreen = true }
+    func windowDidFailToEnterFullScreen(_ window: NSWindow) { isFullScreen = false }
+    func windowDidExitFullScreen(_ notification: Notification) { isFullScreen = false }
     func windowDidEndLiveResize(_ notification: Notification) {
         if !closed { resizeDisplay(); session.display.endResize() }
     }
@@ -523,6 +617,11 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     private func disconnect() {
         guard !closed else { return }
         closed = true
+        // Like Simulator.app, the device's next window opens at this scale. A
+        // restart keeps the window and saves nothing.
+        if let scale = WindowScale.usable(session.display.renderScale) {
+            preferences.setWindowScale(scale, forDevice: session.device.id)
+        }
         if let commandKeyUpMonitor { NSEvent.removeMonitor(commandKeyUpMonitor) }
         commandKeyUpMonitor = nil
         if let window, let sheet = window.attachedSheet {
@@ -544,6 +643,8 @@ private final class DeviceContentView: NSView {
         guard let window else { return 52 }
         return max(0, bounds.height - window.contentLayoutRect.height)
     }
+    /// The window's height above the display: the header and the gap below it.
+    var heightAboveDisplay: CGFloat { headerHeight + Self.displayGap }
     init(display: NSView) {
         self.display = display
         super.init(frame: .zero)
@@ -563,8 +664,7 @@ private final class DeviceContentView: NSView {
     required init?(coder: NSCoder) { nil }
 
     var availableDisplaySize: NSSize {
-        NSSize(width: max(1, bounds.width),
-               height: max(1, bounds.height - headerHeight - Self.displayGap))
+        NSSize(width: max(1, bounds.width), height: max(1, bounds.height - heightAboveDisplay))
     }
 
     override func draw(_ dirtyRect: NSRect) {

@@ -19,7 +19,7 @@ struct DeviceCommand {
         case faceIDEnrolled, faceIDMatching, faceIDNonMatching
         case authorizeApplePay, toggleAppearance, toggleInCallStatusBar, toggleStandBy
         case increaseTextSize, decreaseTextSize, toggleIncreaseContrast, triggerCloudSync
-        case showDeviceBezels, stayOnTop, fitScreen
+        case showDeviceBezels, stayOnTop, physicalSize, pointAccurate, pixelAccurate, fitScreen
     }
 
     struct Toolbar {
@@ -176,9 +176,18 @@ struct DeviceCommand {
                       state: { $0.showsDeviceBezel ? .on : .off }) { $0.toggleDeviceBezel() },
         DeviceCommand(id: .stayOnTop, title: "Stay On Top",
                       state: { $0.staysOnTop ? .on : .off }) { $0.toggleStayOnTop() },
-        DeviceCommand(id: .fitScreen, title: "Fit Screen", key: "4",
-                      isEnabled: { $0.canFitScreen }) { $0.fitScreen() },
+        scale(.physicalSize, title: "Physical Size", key: "1"),
+        scale(.pointAccurate, title: "Point Accurate", key: "2"),
+        scale(.pixelAccurate, title: "Pixel Accurate", key: "3"),
+        scale(.fitScreen, title: "Fit Screen", key: "4"),
     ].map { ($0.id, $0) })
+
+    /// A window scale command. Like Simulator.app, Fit Screen has no checkmark.
+    private static func scale(_ mode: WindowScaleMode, title: String, key: String) -> DeviceCommand {
+        DeviceCommand(id: ID(rawValue: mode.rawValue)!, title: title, key: key,
+                      isEnabled: { $0.canSetScale(mode) },
+                      state: mode == .fitScreen ? nil : { $0.scaleState(mode) }) { $0.setScale(mode) }
+    }
 
     /// Touch ID ▸ Enrolled or Face ID ▸ Enrolled. The two share one guest state.
     private static func biometricEnrollment(_ id: ID, feature: String) -> DeviceCommand {
