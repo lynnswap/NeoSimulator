@@ -192,9 +192,10 @@ browser's explicit Copy Device Identifier action writes only to the Mac's
 - Device-set notifications add windows for newly booted iOS devices and remove
   their sessions after shutdown.
 - Closing a device window leaves its simulator running and suppresses automatic
-  reopening until it leaves the booted state. File > Open Simulator can reopen
-  it immediately or start a shut-down simulator through the selected Xcode's
-  direct `simctl` tool. The browser also appears when there are no device windows.
+  reopening until it leaves the booted state. File > Open Simulator, or the
+  Simulators window, can reopen it immediately or start a shut-down simulator
+  through the selected Xcode's direct `simctl` tool. The Simulators window also
+  appears when there are no device windows.
 - Switching to Device Hub, or restoring a Device Hub route, closes the standalone
   host before enabling that route.
 

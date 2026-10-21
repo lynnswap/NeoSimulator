@@ -112,6 +112,15 @@ final class DeviceTools {
         environment = ["DEVELOPER_DIR": developerDirectory]
     }
 
+    /// Creates a device in the default device set.
+    static func createDevice(named name: String, deviceType: String, runtime: String, xcodeURL: URL,
+                             simctl: URL = DeviceTools.simctl) async throws {
+        _ = try await DeviceToolRunner().run(
+            simctl, arguments: ["create", name, deviceType, runtime],
+            environment: ["DEVELOPER_DIR": xcodeURL.appendingPathComponent("Contents/Developer").path],
+            timeout: .seconds(300))
+    }
+
     // Booting can migrate data first, and erasing removes the whole device.
     func boot() async throws { _ = try await simctl(["boot", identifier], timeout: .seconds(300)) }
     func shutdown() async throws { _ = try await simctl(["shutdown", identifier], timeout: .seconds(300)) }
