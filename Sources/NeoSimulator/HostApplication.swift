@@ -34,6 +34,9 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     /// exits, so a handover also ends a quit that waits on an alert.
     private var handoverSignal: DispatchSourceSignal?
     private static weak var handoverTarget: HostApplication?
+    /// Whether the command-line tool asked for a handover; the host then
+    /// ends without waiting on alerts.
+    private var handoverRequested = false
     /// The choice Quit NeoSimulator… made, which takes precedence over the
     /// default quit action.
     private var quitChoice: DeviceLifetimeChoice?
@@ -72,6 +75,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             // but its modal loop still runs main run-loop blocks.
             CFRunLoopPerformBlock(CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue) {
                 MainActor.assumeIsolated {
+                    Self.handoverTarget?.handoverRequested = true
                     Self.handoverTarget?.yieldToAnotherHost()
                     Self.requestTermination()
                 }
@@ -570,7 +574,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         Task {
             await recordings.finishAll()
             guard !isTerminating else { return }
-            for error in recordingTerminationErrors { NSAlert(error: error).runModal() }
+            // A handover ends the host without waiting on alerts.
+            for error in recordingTerminationErrors where !handoverRequested { NSAlert(error: error).runModal() }
             recordingTerminationErrors.removeAll()
             Self.requestTermination()
         }
@@ -600,7 +605,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         for connection in connections.values { connection.cancel() }
         Task {
             await recordings.finishAll()
-            for error in recordingTerminationErrors { NSAlert(error: error).runModal() }
+            // A handover ends the host without waiting on alerts.
+            for error in recordingTerminationErrors where !handoverRequested { NSAlert(error: error).runModal() }
             recordingTerminationErrors.removeAll()
             // A restart could boot its device again, so it ends first.
             let restarts = Array(restarting.values)
@@ -614,7 +620,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             awaitingReconnect.removeAll()
             let failures = await shutDownForTermination(devices)
             shutdown()
-            if !failures.isEmpty {
+            if !failures.isEmpty, !handoverRequested {
                 let alert = NSAlert()
                 alert.messageText = "Some simulated devices could not be shut down."
                 alert.informativeText = failures.joined(separator: "\n")
