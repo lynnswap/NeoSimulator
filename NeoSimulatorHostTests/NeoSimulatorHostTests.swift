@@ -1933,7 +1933,22 @@ struct InputFocusTests {
 private final class MemoryPreferences: PreferenceStore {
     var values: [String: Any] = [:]
     func object(forKey defaultName: String) -> Any? { values[defaultName] }
+    func bool(forKey defaultName: String) -> Bool { values[defaultName] as? Bool ?? false }
     func set(_ value: Any?, forKey defaultName: String) { values[defaultName] = value }
+}
+
+/// The app's user defaults under keys of one store, which keeps its values in
+/// the registration domain, so that they are read as `UserDefaults` reads
+/// them but never saved.
+private final class RegisteredDefaults: PreferenceStore {
+    private let prefix = "NeoSimulatorTests.\(UUID().uuidString)."
+    func object(forKey defaultName: String) -> Any? { UserDefaults.standard.object(forKey: prefix + defaultName) }
+    func bool(forKey defaultName: String) -> Bool { UserDefaults.standard.bool(forKey: prefix + defaultName) }
+    /// Registers `value`; nil, which the registration domain cannot remove,
+    /// leaves the key as it is.
+    func set(_ value: Any?, forKey defaultName: String) {
+        if let value { UserDefaults.standard.register(defaults: [prefix + defaultName: value]) }
+    }
 }
 
 @MainActor
@@ -2130,6 +2145,20 @@ struct HostBehaviorTests {
         // A window larger than the screen lines up with the edge opposite the one it crossed.
         #expect(origin(-50, -100, 1200, 1000) == NSPoint(x: -200, y: -200))
         #expect(origin(100, 100, 1200, 1000) == NSPoint(x: 0, y: 0))
+    }
+
+    @Test func showDeviceBezelsReadsShowChromeAsSimulatorDoes() {
+        // Simulator.app reads ShowChrome with boolForKey:, which reads a
+        // value that `defaults write` saved as a string by its text.
+        let defaults = RegisteredDefaults()
+        let values: [(Any, Bool)] = [("NO", false), ("0", false), ("false", false), ("YES", true), ("1", true),
+                                     (false, false), (true, true)]
+        for (value, shows) in values {
+            defaults.set(value, forKey: HostPreferences.showChrome)
+            #expect(defaults.showsDeviceBezels == shows)
+        }
+        // Without a value, as before the app registers its default, it is on.
+        #expect(RegisteredDefaults().showsDeviceBezels)
     }
 
     @Test func windowGeometryIsSavedForEachArrangementOfScreens() throws {

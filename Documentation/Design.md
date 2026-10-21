@@ -434,12 +434,14 @@ validation returns before setting it or does not run. Fit Screen has no
 checkmark.
 
 Show Device Bezels is Simulator.app's app-wide `ShowChrome` preference,
-registered on, which NeoSimulator keeps in its own defaults. As in
-Simulator.app, changing it applies to every open device window, including one
-whose device is restarting, and a window shows the bezel as the preference says
-when it opens, before it takes its first scale, and when it reconnects after a
-restart. The menu's checkmark shows the preference, also without a device
-window.
+registered on, which NeoSimulator keeps in its own defaults. Like
+Simulator.app's `boolForKey:`, NeoSimulator reads it with
+`UserDefaults.bool(forKey:)`, so a string that `defaults write` saves, such as
+`NO`, turns the bezels off. As in Simulator.app, changing it applies to every
+open device window, including one whose device is restarting, and a window
+shows the bezel as the preference says when it opens, before it takes its
+first scale, and when it reconnects after a restart. The menu's checkmark
+shows the preference, also without a device window.
 
 The device window is a `DeviceWindow`, which follows its bezel as Simulator.app's
 window does:

@@ -89,6 +89,8 @@ enum WindowScale {
 /// Where preferences are kept: the app's user defaults, or a test's own store.
 protocol PreferenceStore: AnyObject {
     func object(forKey defaultName: String) -> Any?
+    /// The value as `UserDefaults.bool(forKey:)` reads it.
+    func bool(forKey defaultName: String) -> Bool
     func set(_ value: Any?, forKey defaultName: String)
 }
 
@@ -97,9 +99,13 @@ extension UserDefaults: PreferenceStore {}
 extension PreferenceStore {
     /// Window ▸ Show Device Bezels: Simulator.app's app-wide `ShowChrome`,
     /// which each device window follows when it opens or reconnects and when
-    /// the command changes it. It is on unless it was turned off, as its
+    /// the command changes it. Like Simulator.app's `boolForKey:`, a value
+    /// that `defaults write` saves as a string, such as `NO`, reads as
+    /// `UserDefaults` reads it. It is on unless it was turned off, as its
     /// registered default says.
-    var showsDeviceBezels: Bool { object(forKey: HostPreferences.showChrome) as? Bool ?? true }
+    var showsDeviceBezels: Bool {
+        object(forKey: HostPreferences.showChrome) == nil || bool(forKey: HostPreferences.showChrome)
+    }
 }
 
 private let windowGeometryKey = "SimulatorWindowGeometry"
