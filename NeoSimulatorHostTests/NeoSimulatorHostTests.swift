@@ -431,6 +431,19 @@ struct InputFocusTests {
         #expect(display.events.map(\.state) == [.down, .up, .up])
     }
 
+    @Test func anEarlierDeliveryKeepsALaterPressTracked() async throws {
+        let display = TestDisplay()
+        display.deferCompletions = true
+        // The second Home release is not delivered.
+        display.undeliveredEvents = [3]
+        let controller = try makeController(display)
+        controller.session.send(.pressTwice(.button(.home), interval: .milliseconds(10))) { _ in }
+        for _ in 0..<300 where display.events.count < 4 { try await Task.sleep(for: .milliseconds(10)) }
+        display.pendingCompletions.forEach { $0() }
+        controller.invalidate()
+        #expect(display.events.map(\.state) == [.down, .up, .down, .up, .up])
+    }
+
     @Test func aFailedInputReportsOneError() throws {
         let display = TestDisplay()
         display.deliveryError = HostError.operation("delivery failed")
@@ -484,6 +497,8 @@ private final class TestDisplay: SimulatorDisplay {
     var deliveryError: Error?
     /// Completes sent events of these states with an error.
     var undeliveredStates: Set<HIDState> = []
+    /// Completes the sent events at these positions with an error.
+    var undeliveredEvents: Set<Int> = []
     /// Fails to create messages for events of these states.
     var unavailableStates: Set<HIDState> = []
     /// Holds completions until the test runs them, as SimulatorKit delivers later.
@@ -506,7 +521,8 @@ private final class TestDisplay: SimulatorDisplay {
         onSend()
         free(UnsafeMutableRawPointer(message.take()))
         events.append((message.input, message.state))
-        let error = undeliveredStates.contains(message.state) ? HostError.operation("Undelivered") : deliveryError
+        let undelivered = undeliveredStates.contains(message.state) || undeliveredEvents.contains(events.count - 1)
+        let error = undelivered ? HostError.operation("Undelivered") : deliveryError
         if deferCompletions {
             pendingCompletions.append { completion?(error) }
         } else {

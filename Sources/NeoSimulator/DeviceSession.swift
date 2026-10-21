@@ -50,9 +50,10 @@ final class DeviceSession {
     /// How many holds of each input are still pending. HID button state is
     /// not counted, so overlapping holds keep the input down until the last ends.
     @ObservationIgnored private var pendingHolds: [HIDInput: Int] = [:]
-    /// Inputs sent down whose release SimulatorKit has not yet delivered.
-    /// Closing the window releases them.
-    @ObservationIgnored private var downInputs: Set<HIDInput> = []
+    /// Inputs sent down whose release SimulatorKit has not yet delivered, with
+    /// the generation of their latest down event. Closing the window releases them.
+    @ObservationIgnored private var downInputs: [HIDInput: Int] = [:]
+    @ObservationIgnored private var lastDownGeneration = 0
     @ObservationIgnored private var isDisconnected = false
     /// A tool operation or a modal step that leads to one is in progress.
     private(set) var isBusy = false
@@ -87,7 +88,7 @@ final class DeviceSession {
             press(event, report)
         case .hold(let event, let delay):
             guard let down = message(event, .down, report), send(down, report) else { return }
-            downInputs.insert(event)
+            markDown(event)
             pendingHolds[event, default: 0] += 1
             after(delay) { session in session.release(event, report) }
         case .pressTwice(let event, let interval):
@@ -103,8 +104,7 @@ final class DeviceSession {
     private func press(_ event: HIDInput, _ report: FirstFailure) -> Bool {
         guard canPerformCommands, let down = message(event, .down, report),
               let up = message(event, .up, report), send(down, report) else { return false }
-        downInputs.insert(event)
-        return sendRelease(up, report)
+        return sendRelease(up, generation: markDown(event), report)
     }
 
     // A held input is released while the device is booted, even when a
@@ -118,24 +118,32 @@ final class DeviceSession {
             return
         }
         pendingHolds[event] = nil
-        guard !isDisconnected, display.isBooted else {
-            downInputs.remove(event)
+        guard !isDisconnected, display.isBooted, let generation = downInputs[event] else {
+            downInputs[event] = nil
             return
         }
-        if let up = message(event, .up, report) { sendRelease(up, report) }
+        if let up = message(event, .up, report) { sendRelease(up, generation: generation, report) }
     }
 
-    /// Sends a release. The input stays down until SimulatorKit delivers the
-    /// release and no hold of it is pending.
     @discardableResult
-    private func sendRelease(_ up: HIDMessage, _ report: FirstFailure) -> Bool {
+    private func markDown(_ event: HIDInput) -> Int {
+        lastDownGeneration += 1
+        downInputs[event] = lastDownGeneration
+        return lastDownGeneration
+    }
+
+    /// Sends the release of the down event with `generation`. The input stays
+    /// down until SimulatorKit delivers that release, unless a later down event
+    /// or a pending hold keeps it down anyway.
+    @discardableResult
+    private func sendRelease(_ up: HIDMessage, generation: Int, _ report: FirstFailure) -> Bool {
         let event = up.input
         do {
             try display.send(up) { [weak self] error in
                 if let error {
                     report(error)
-                } else if let self, self.pendingHolds[event] == nil {
-                    self.downInputs.remove(event)
+                } else if let self, self.downInputs[event] == generation, self.pendingHolds[event] == nil {
+                    self.downInputs[event] = nil
                 }
             }
             return true
@@ -278,7 +286,7 @@ final class DeviceSession {
     func disconnect() {
         guard !isDisconnected else { return }
         // Release held inputs while the input client can still send.
-        for event in downInputs {
+        for event in downInputs.keys {
             if let up = try? display.message(for: event, .up) { try? display.send(up, completion: nil) }
         }
         pendingHolds.removeAll()
