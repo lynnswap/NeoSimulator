@@ -360,12 +360,25 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         }
         closingShutdowns[identifier] = Task { [weak self] in
             await session.finishRecording()
+            guard self?.isRunning(identifier, deviceSetPath: tools.deviceSetPath) == true else {
+                self?.closingShutdowns.removeValue(forKey: identifier)
+                return
+            }
             do { try await tools.shutdown() } catch is CancellationError {
             } catch {
                 hostLog("Could not shut down \(identifier): \(error.localizedDescription)")
             }
             self?.closingShutdowns.removeValue(forKey: identifier)
         }
+    }
+
+    /// Whether a device still needs shutting down. Like Simulator.app's close,
+    /// a device that is shut down or shutting down is left alone, for example
+    /// one a restart had shut down for erasing.
+    private func isRunning(_ identifier: String, deviceSetPath: String?) -> Bool {
+        guard let set = deviceSetPath == nil ? deviceSet : testingSet,
+              let device = try? set.readDevices().first(where: { $0.identifier == identifier }) else { return false }
+        return device.state != 1 && device.state != 4
     }
 
     /// Quit NeoSimulator…: asks whether to shut the devices down, and quits
@@ -387,7 +400,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         var shutdowns = Array(closingShutdowns.values).map { shutdown in
             Task { () -> String? in await shutdown.value; return nil }
         }
-        for device in devices {
+        for device in devices where isRunning(device.identifier, deviceSetPath: device.deviceSetPath) {
             do {
                 let tools = try DeviceTools(identifier: device.identifier, xcodeURL: runtime.xcodeURL,
                                             deviceSetPath: device.deviceSetPath)
