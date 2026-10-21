@@ -388,13 +388,19 @@ Features ▸ Location follows Simulator.app's split between a per-device
 selection and app-wide saved settings. Each `DeviceSession` owns its device's
 selection (None, Custom, or a scenario by name) and the scenario list that
 `SimDevice availableLocationScenarios` returned when it connected. On every
-new connection and every reconnection after a restart, `HostApplication` asks
-the session to restore. When the list is empty or nil, nothing happens.
+new connection and every reconnection after a restart, `HostApplication` starts
+the session's restore without waiting for it. When the list is empty or nil,
+nothing happens.
 Otherwise `LocationMode` 5101 restores None, 5102 Custom, and a value above
 5102 the `LocationScenario` name, which falls back to None (saved as 5101)
 when the runtime lacks it. The restored choice is applied at once, so the
 registered default (5102 at 37.785834, -122.406417) reaches every device with
-scenarios.
+scenarios. Right after a boot, CoreSimulator takes up to a second to list the
+scenarios and to apply a location, so `SimulatorDevice` makes the location
+calls on a serial queue of its own, as Simulator.app makes them on a global
+queue. The main actor stays responsive, and changes reach the device in the
+order they are made. A choice made while the restore waits for the list is
+kept, and a session that ends meanwhile is left alone.
 
 Choosing an item saves the choice and applies it to the key device only, with
 `clearSimulatedLocationWithError:`,
@@ -410,8 +416,9 @@ device's runtime.
 Custom Location… opens a titled window for the device window, with
 Simulator.app's text and number formatters (up to six fraction digits, within
 ±90 and ±180). OK is enabled only while both fields parse; it saves the
-coordinate and selects Custom. The window closes with its device window and
-before a restart. Simulator.app's `com.apple.iphonesimulator.simulateLocation`
+coordinate and selects Custom. The window takes its device window's level, also
+when Stay on Top changes, and closes with its device window and before a
+restart. Simulator.app's `com.apple.iphonesimulator.simulateLocation`
 distributed notification, through which another process sets a scenario file
 or a coordinate, is not handled.
 

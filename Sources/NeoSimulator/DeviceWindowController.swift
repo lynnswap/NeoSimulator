@@ -183,26 +183,38 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         resizeDisplay()
     }
 
-    func toggleStayOnTop() { window?.level = staysOnTop ? .normal : .floating }
+    func toggleStayOnTop() {
+        window?.level = staysOnTop ? .normal : .floating
+        customLocation?.window?.level = window?.level ?? .normal
+    }
 
     /// Features ▸ Location: Custom Location… asks for a coordinate first.
     func selectLocation(_ selection: LocationSelection) {
         guard !closed, session.canPerformCommands else { return }
         guard selection == .custom else {
-            run { try session.selectLocation(selection) }
+            changeLocation { [session] in try await session.selectLocation(selection) }
             focusInput()
             return
         }
         let customLocation = customLocation ?? CustomLocationWindowController { [weak self] latitude, longitude in
             guard let self else { return }
-            run { try session.setCustomLocation(latitude: latitude, longitude: longitude) }
+            changeLocation { [session] in try await session.setCustomLocation(latitude: latitude, longitude: longitude) }
         }
         self.customLocation = customLocation
-        // A device window that stays on top would otherwise hide it.
+        // The window takes its device window's level, also when Stay on Top
+        // changes, so that the device window cannot hide it.
         customLocation.window?.level = window?.level ?? .normal
         let defaults = UserDefaults.standard
         customLocation.show(latitude: defaults.double(forKey: HostPreferences.locationLatitude),
                             longitude: defaults.double(forKey: HostPreferences.locationLongitude))
+    }
+
+    /// Starts a location change before returning, so that changes reach the
+    /// device in the order they are chosen, and presents its failure on this window.
+    private func changeLocation(_ change: @escaping @MainActor () async throws -> Void) {
+        Task.immediate { [weak self] in
+            do { try await change() } catch { self?.present(error) }
+        }
     }
 
     /// Whether captures apply the device's mask by default: the device has

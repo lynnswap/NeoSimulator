@@ -363,11 +363,13 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     }
 
     /// Applies the saved Features ▸ Location choice to a new connection, also
-    /// after a restart. Like Simulator.app, which ignores the result, a failure
-    /// is not shown; it is logged.
+    /// after a restart, without waiting for it. Like Simulator.app, which
+    /// ignores the result, a failure is not shown; it is logged.
     private func restoreLocation(of session: DeviceSession) {
-        do { try session.restoreLocation() } catch {
-            hostLog("Could not restore the simulated location of \(session.device.name): \(error.localizedDescription)")
+        Task {
+            do { try await session.restoreLocation() } catch {
+                hostLog("Could not restore the simulated location of \(session.device.name): \(error.localizedDescription)")
+            }
         }
     }
 

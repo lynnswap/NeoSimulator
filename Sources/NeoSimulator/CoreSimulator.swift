@@ -255,23 +255,44 @@ final class SimulatorDevice {
         }
     }
 
+    // Right after a boot, CoreSimulator takes up to a second to answer
+    // location calls, so they run on this queue, as Simulator.app runs them on
+    // a global queue. Being serial, it applies changes in the order they are made.
+    private lazy var locationQueue = DispatchQueue(label: "dev.lynnswap.NeoSimulator.location")
+
     /// The runtime's recorded location routes in CoreSimulator's order, empty
     /// when the device lists none.
-    func locationScenarios() throws -> [LocationScenario] {
-        try unsafe interface.availableLocationScenarios.unsafeInvoke(on: object)?.compactMap { scenario in
-            guard let name = scenario["name"] as? String else { return nil }
-            return LocationScenario(name: name, localizedName: scenario["localizedName"] as? String ?? name)
-        } ?? []
+    func locationScenarios() async throws -> [LocationScenario] {
+        try await onLocationQueue(interface.availableLocationScenarios) { method, device in
+            try unsafe method.unsafeInvoke(on: device)?.compactMap { scenario in
+                guard let name = scenario["name"] as? String else { return nil }
+                return LocationScenario(name: name, localizedName: scenario["localizedName"] as? String ?? name)
+            } ?? []
+        }
     }
 
-    func clearSimulatedLocation() throws { try unsafe interface.clearSimulatedLocation.unsafeInvoke(on: object) }
-
-    func setLocation(latitude: Double, longitude: Double) throws {
-        try unsafe interface.setLocation.unsafeInvoke(on: object, latitude, longitude)
+    func clearSimulatedLocation() async throws {
+        try await onLocationQueue(interface.clearSimulatedLocation) { try unsafe $0.unsafeInvoke(on: $1) }
     }
 
-    func setLocationScenario(_ name: String) throws {
-        try unsafe interface.setLocationScenario.unsafeInvoke(on: object, name)
+    func setLocation(latitude: Double, longitude: Double) async throws {
+        try await onLocationQueue(interface.setLocation) { try unsafe $0.unsafeInvoke(on: $1, latitude, longitude) }
+    }
+
+    func setLocationScenario(_ name: String) async throws {
+        try await onLocationQueue(interface.setLocationScenario) { try unsafe $0.unsafeInvoke(on: $1, name) }
+    }
+
+    /// Sends `method` to the device on `locationQueue`, queued before this
+    /// suspends. SimDevice takes these calls on any thread, as Simulator.app
+    /// makes them, and a prepared message can be sent from any thread.
+    private func onLocationQueue<Method, Value: Sendable>(
+        _ method: Method, _ call: @escaping @Sendable (Method, AnyObject) throws -> Value
+    ) async throws -> Value {
+        nonisolated(unsafe) let method = method, device = object
+        return try await withCheckedThrowingContinuation { continuation in
+            locationQueue.async { continuation.resume(with: Result { try call(method, device) }) }
+        }
     }
 }
 

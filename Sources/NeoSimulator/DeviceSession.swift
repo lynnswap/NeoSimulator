@@ -432,38 +432,43 @@ final class DeviceSession {
     /// Restores the saved Location choice when the session connects, as
     /// Simulator.app does when it lists the runtime's scenarios: a device that
     /// lists none gets no choice and no location.
-    func restoreLocation() throws {
-        locationScenarios = try display.locationScenarios()
-        guard !locationScenarios.isEmpty else { return }
-        try use(.saved(among: locationScenarios))
+    func restoreLocation() async throws {
+        let scenarios = try await display.locationScenarios()
+        // Right after a boot, listing takes up to a second. The session can
+        // end meanwhile, and a choice made meanwhile is kept.
+        guard !isDisconnected else { return }
+        locationScenarios = scenarios
+        guard !scenarios.isEmpty, location == nil else { return }
+        try await use(.saved(among: scenarios))
     }
 
     /// Features ▸ Location ▸ None or a scenario, for this device only; the
     /// choice is also saved for later connections.
-    func selectLocation(_ selection: LocationSelection) throws {
+    func selectLocation(_ selection: LocationSelection) async throws {
         guard canPerformCommands else { return }
-        try use(selection)
+        try await use(selection)
     }
 
     /// Custom Location…'s OK: saves the coordinate and selects it.
-    func setCustomLocation(latitude: Double, longitude: Double) throws {
+    func setCustomLocation(latitude: Double, longitude: Double) async throws {
         guard canPerformCommands else { return }
         UserDefaults.standard.set(latitude, forKey: HostPreferences.locationLatitude)
         UserDefaults.standard.set(longitude, forKey: HostPreferences.locationLongitude)
-        try use(.custom)
+        try await use(.custom)
     }
 
     // Like Simulator.app, the choice is kept and saved before it is applied,
     // so it stays when applying fails, and choosing it again retries.
-    private func use(_ selection: LocationSelection) throws {
+    private func use(_ selection: LocationSelection) async throws {
         location = selection
         selection.save()
         switch selection {
-        case .none: try display.clearSimulatedLocation()
+        case .none: try await display.clearSimulatedLocation()
         case .custom:
-            try display.setLocation(latitude: UserDefaults.standard.double(forKey: HostPreferences.locationLatitude),
-                                    longitude: UserDefaults.standard.double(forKey: HostPreferences.locationLongitude))
-        case .scenario(let name): try display.setLocationScenario(name)
+            try await display.setLocation(
+                latitude: UserDefaults.standard.double(forKey: HostPreferences.locationLatitude),
+                longitude: UserDefaults.standard.double(forKey: HostPreferences.locationLongitude))
+        case .scenario(let name): try await display.setLocationScenario(name)
         }
     }
 
