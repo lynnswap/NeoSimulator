@@ -290,9 +290,9 @@ analysis source only and is not a runtime dependency.
 The first parity set contains only commands with an available, validated owner:
 
 - File: Save Screen, Close Window;
-- Device: Rotate Left/Right, Home, Lock, Side Button (watchOS devices only, so
-  hidden until Neo hosts them), Action Button, Siri, Shake, App Switcher,
-  Trigger Screenshot;
+- Device: Rotate Left/Right, Orientation, Rotate Device Automatically, Home,
+  Lock, Side Button (watchOS devices only, so hidden until Neo hosts them),
+  Action Button, Siri, Shake, App Switcher, Trigger Screenshot;
 - I/O: Toggle Software Keyboard, Increase Volume, Decrease Volume;
 - Features: Authorize Apple Pay, Toggle Appearance;
 - Window: standard minimize/zoom/full screen, Show Device Bezels, Stay on Top,
@@ -312,9 +312,27 @@ fail-loud CoreSimulator Darwin-notification call. Appearance uses the current
 and target UI style selectors.
 
 Rotation uses direct Apple `devicectl`. On initial attachment and after each
-relative rotation, the session reads the versioned JSON orientation result and
-sets `SimDisplayView.deviceRotation` from that actual value; no local counter is
-the orientation source of truth. Save Screen uses direct Apple `simctl` and a
+relative rotation or Device ▸ Orientation choice, the session reads the
+versioned JSON orientation result and sets `SimDisplayView.deviceRotation` from
+that actual value; no local counter is the orientation source of truth. The
+physical orientation drives the Orientation checkmark, and the last upright
+orientation drives the display angle, so Face Up and Face Down keep it. A device
+turned counterclockwise (landscape left) is shown at +90°, matching
+SimulatorKit's touch mapping and Simulator.app.
+
+Rotate Device Automatically stores Simulator.app's
+`RotateWindowWhenSignaledByGuest` key in the app's standard defaults.
+SimulatorKit's display view reads that key and sets `deviceRotation` itself
+when the guest changes its interface orientation. Each connection registers for
+`SimDeviceScreen` property events (`register(types:queue:handler:)` with
+`.properties`). When the preference is on and the guest's interface orientation
+(`SimScreenProperties.uiOrientation`) changes, the session shows the display at
+that orientation's angle and the window refits. Other property changes, such as
+the backlight, keep the window size. A window opened while the preference is on
+also starts at the guest's interface orientation. Releasing the registration on
+disconnect ends the events. The Orientation checkmark keeps showing the physical
+orientation that `devicectl` reports, which a guest-initiated rotation does not
+change. Save Screen uses direct Apple `simctl` and a
 same-directory temporary PNG. The file is signature-checked and then atomically
 renamed, so cancellation or failure preserves an existing destination.
 Device-tool operations are single-flight, drain both output pipes, have a

@@ -76,6 +76,14 @@ struct SimulatorDisplayInterface {
     let isDefault: NativeObjCMethod<Bool>
     let isCarPlay: NativeObjCMethod<Bool>
     let buttonTarget: NativeSwiftMethod<() -> UInt32>
+    typealias ScreenEventHandler = NativeSwiftClosure<(NativeSwiftBorrowedValue, NativeSwiftBorrowedValue) -> Void>
+    /// `SimDeviceScreen.register(types:queue:handler:)`. Releasing the
+    /// returned registration ends it.
+    let registerScreenEvents: NativeSwiftMethod<(NativeSwiftValue, DispatchQueue, ScreenEventHandler) -> NativeSwiftValue>
+    /// `SimDeviceScreen.ScreenEventTypes.properties`.
+    let screenPropertyEvents: NativeSwiftValue
+    /// `SimDeviceScreen.properties`, an `id<SimScreenProperties>`.
+    let screenProperties: NativeSwiftMethod<() -> AnyObject>
     let factoryClass: AnyClass
     let createDisplay: NativeObjCMethod<NSView?, AnyObject, UInt32>
     let showChrome: NativeSwiftMethod<(Bool) -> Void>
@@ -106,8 +114,24 @@ struct SimulatorDisplayInterface {
         screen = try runtime.resolveObjCMethodAndWait(on: screenClass, selector: "screen", as: (() -> AnyObject?).self)
         isDefault = try runtime.resolveObjCMethodAndWait(on: screenClass, selector: "isDefault", as: (() -> Bool).self)
         isCarPlay = try runtime.resolveObjCMethodAndWait(on: screenClass, selector: "isCarPlay", as: (() -> Bool).self)
-        buttonTarget = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimDeviceScreen")
+        let deviceScreen = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimDeviceScreen")
+        buttonTarget = try deviceScreen
             .resolveGetterAndWait(named: "buttonTarget.getter : __C.IndigoHIDTarget", as: (() -> UInt32).self)
+        // The event types and events are resilient, so they are passed indirectly.
+        let eventTypes = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimDeviceScreen.ScreenEventTypes")
+        let event = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimDeviceScreen.ScreenEvent")
+        let eventABIs: [NativeSwiftType: NativeType] = [
+            eventTypes: try .opaque(named: eventTypes.name), event: try .opaque(named: event.name),
+        ]
+        screenPropertyEvents = try unsafe eventTypes
+            .resolveStaticGetterAndWait(named: "properties", as: (() -> NativeSwiftValue).self, valueABIs: eventABIs)
+            .unsafeInvoke()
+        screenProperties = try deviceScreen.resolveGetterAndWait(
+            named: "properties.getter : __C.SimScreenProperties", as: (() -> AnyObject).self)
+        registerScreenEvents = try deviceScreen.resolveMethodAndWait(
+            named: "register(types:queue:handler:)",
+            as: ((NativeSwiftValue, DispatchQueue, ScreenEventHandler) -> NativeSwiftValue).self,
+            valueABIs: eventABIs)
         createDisplay = try runtime.resolveObjCMethodAndWait(
             on: factoryClass, selector: "createSimDisplayViewWithDevice:simScreenID:",
             as: ((AnyObject, UInt32) -> NSView?).self, classMethod: true)
@@ -254,6 +278,20 @@ enum HIDInput: Hashable {
 
 enum HIDState: UInt32 { case down = 1, up = 2 }
 
+/// `SimScreenUIOrientation`, the guest's interface orientation.
+enum SimScreenUIOrientation {
+    /// The angle SimulatorKit's `SimScreenUIOrientation.toAngle()` gives a
+    /// raw orientation: landscape 4 is shown at +90° and landscape 3 at -90°.
+    static func displayAngle(_ rawValue: UInt32) -> Double {
+        switch rawValue {
+        case 2: 180
+        case 3: -90
+        case 4: 90
+        default: 0
+        }
+    }
+}
+
 /// An Indigo HID message for one event. Sending transfers it to SimulatorKit;
 /// a message that is not sent is freed.
 final class HIDMessage {
@@ -282,6 +320,12 @@ protocol SimulatorDisplay: AnyObject {
     var view: NSView { get }
     var inputView: NSView { get }
     var naturalSize: NSSize { get }
+    /// Called on the main actor when the screen's properties change, such as
+    /// the interface orientation of the guest.
+    var onPropertiesChange: (() -> Void)? { get set }
+    /// The display angle for the guest's interface orientation, as SimulatorKit
+    /// applies it when Rotate Device Automatically is on.
+    var guestInterfaceAngle: Double? { get }
     /// Creates the message for one event of `input`, so that a command can
     /// prepare all of its events before it sends any.
     func message(for input: HIDInput, _ state: HIDState) throws -> HIDMessage
@@ -310,10 +354,14 @@ final class SimulatorConnection: SimulatorDisplay {
     private let buttonTarget: UInt32
     private var hidClient: AnyObject?
     private var disconnected = false
+    var onPropertiesChange: (() -> Void)?
+    private var screenEvents: NativeSwiftValue?
+    private let screen: AnyObject
 
     init(device: SimulatorDevice, screen: (identifier: UInt32, object: AnyObject), runtime: SimulatorRuntime) throws {
         self.device = device
         self.runtime = runtime
+        self.screen = screen.object
         let display = runtime.display
         buttonTarget = try unsafe display.buttonTarget.unsafeInvoke(on: screen.object)
         hidClient = try runtime.input.connect(to: device)
@@ -332,6 +380,11 @@ final class SimulatorConnection: SimulatorDisplay {
             throw error
         }
         setChromeVisible(true)
+        let handler = try SimulatorDisplayInterface.ScreenEventHandler { [weak self] _, _ in
+            MainActor.assumeIsolated { self?.onPropertiesChange?() }
+        }
+        screenEvents = try unsafe display.registerScreenEvents.unsafeInvoke(
+            on: screen.object, display.screenPropertyEvents, .main, handler)
         // SimulatorKit connects keyboard input on every display and sends each modifier
         // change to all of them; the window controller enables it only while the window is key.
         setKeyboardEnabled(false)
@@ -344,6 +397,15 @@ final class SimulatorConnection: SimulatorDisplay {
         let size = view.intrinsicContentSize
         let actual = size.width > 0 && size.height > 0 ? size : view.frame.size
         return scale > 0 ? NSSize(width: actual.width / scale, height: actual.height / scale) : actual
+    }
+
+    var guestInterfaceAngle: Double? {
+        guard !disconnected,
+              let properties = try? unsafe runtime.display.screenProperties.unsafeInvoke(on: screen),
+              let orientation = try? unsafe ABIRuntime.shared.object(properties)
+                .resolveMethodAndWait(selector: "uiOrientation", as: (() -> UInt32).self).unsafeInvoke()
+        else { return nil }
+        return SimScreenUIOrientation.displayAngle(orientation)
     }
 
     func message(for input: HIDInput, _ state: HIDState) throws -> HIDMessage {
@@ -393,6 +455,9 @@ final class SimulatorConnection: SimulatorDisplay {
         perform("disconnect the display") {
             try unsafe runtime.display.disconnect.unsafeInvoke(on: view, NativeSwiftClosure {})
         }
+        // Releasing the registration ends the screen events.
+        screenEvents = nil
+        onPropertiesChange = nil
         hidClient = nil
     }
     isolated deinit { disconnect() }

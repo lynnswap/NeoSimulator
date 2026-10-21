@@ -100,7 +100,8 @@ semantics:
 
 - Application: About, Hide, Hide Others, Show All, Quit;
 - File: Save Screen, Close Window;
-- Device: Rotate Left, Rotate Right, Home, Lock, Side Button, Action Button,
+- Device: Rotate Left, Rotate Right, Orientation, Rotate Device Automatically,
+  Home, Lock, Side Button, Action Button,
   Siri, Shake, App Switcher, Trigger Screenshot;
 - I/O: Toggle Software Keyboard, Increase Volume, Decrease Volume;
 - Features: Authorize Apple Pay, Toggle Appearance;

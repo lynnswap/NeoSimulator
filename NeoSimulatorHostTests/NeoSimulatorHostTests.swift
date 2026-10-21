@@ -266,6 +266,140 @@ struct InputFocusTests {
         #expect(!controller.session.isBusy)
     }
 
+    @Test func orientationReadingsKeepTheUprightAngleWhileFlat() throws {
+        func reading(_ physical: String, _ nonFlat: String) throws -> (DeviceOrientation, Double) {
+            let reading = try OrientationReading(devicectlOutput: Data("""
+                {"info": {"outcome": "success"}, "result": {"deviceIdentifier": "test-device",
+                 "deviceIsOrientationLocked": false, "deviceOrientation": "\(physical)",
+                 "deviceOrientationNonFlat": "\(nonFlat)"}}
+                """.utf8))
+            return (reading.physical, reading.displayAngle)
+        }
+        #expect(try reading("unknown", "portrait") == (.portrait, 0))
+        // A device turned counterclockwise is shown turned counterclockwise.
+        #expect(try reading("landscapeLeft", "landscapeLeft") == (.landscapeLeft, 90))
+        #expect(try reading("landscapeRight", "landscapeRight") == (.landscapeRight, -90))
+        #expect(try reading("faceUp", "landscapeLeft") == (.faceUp, 90))
+        #expect(throws: HostError.self) { try reading("faceDown", "faceDown") }
+    }
+
+    @Test func orientationCommandsAreShownWithDisplayRotation() throws {
+        _ = NSApplication.shared
+        let menus = MenuController(application: nil)
+        menus.install()
+        defer { NSApp.mainMenu = nil }
+        let controller = try makeController(TestDisplay())
+        defer { controller.invalidate() }
+        let device = try #require(NSApp.mainMenu?.items.first { $0.title == "Device" }?.submenu)
+        menus.updateVisibility(in: device, for: controller.session.capabilities)
+        let orientation = try #require(device.items.first { $0.title == "Orientation" })
+        #expect(!orientation.isHidden)
+        #expect(orientation.submenu?.items.map { $0.isSeparatorItem ? "-" : $0.title } == [
+            "Portrait", "Landscape Right", "Portrait Upside Down", "Landscape Left", "-", "Face Up", "Face Down",
+        ])
+    }
+
+    @Test func theWindowFollowsGuestRotationWhenEnabled() throws {
+        let display = TestDisplay()
+        let controller = try makeController(display)
+        defer { controller.invalidate() }
+        let key = HostPreferences.rotateWindowWhenSignaledByGuest
+        let saved = UserDefaults.standard.object(forKey: key)
+        defer { UserDefaults.standard.set(saved, forKey: key) }
+        let window = try #require(controller.window)
+        func isLandscape() -> Bool { window.contentLayoutRect.width > window.contentLayoutRect.height }
+        UserDefaults.standard.set(false, forKey: key)
+        display.guestInterfaceAngle = 90
+        display.naturalSize = NSSize(width: 844, height: 390)
+        display.onPropertiesChange?()
+        #expect(!isLandscape())
+        #expect(display.rotations.isEmpty)
+        controller.perform(.rotateDeviceAutomatically)
+        #expect(UserDefaults.standard.bool(forKey: key))
+        display.onPropertiesChange?()
+        #expect(isLandscape())
+        #expect(display.rotations == [90])
+        // Other property changes, after a resize or a bezel change, keep the window size.
+        window.setContentSize(NSSize(width: 600, height: 400))
+        controller.toggleDeviceBezel()
+        let chosen = window.frame.size
+        display.onPropertiesChange?()
+        #expect(window.frame.size == chosen)
+        #expect(display.rotations == [90])
+    }
+
+    @Test func resumingGuestFollowAppliesTheNextGuestRotation() throws {
+        let display = TestDisplay()
+        let controller = try makeController(display)
+        defer { controller.invalidate() }
+        let key = HostPreferences.rotateWindowWhenSignaledByGuest
+        let saved = UserDefaults.standard.object(forKey: key)
+        defer { UserDefaults.standard.set(saved, forKey: key) }
+        let window = try #require(controller.window)
+        func isLandscape() -> Bool { window.contentLayoutRect.width > window.contentLayoutRect.height }
+        let portrait = display.naturalSize
+        let landscape = NSSize(width: portrait.height, height: portrait.width)
+        UserDefaults.standard.set(true, forKey: key)
+        display.guestInterfaceAngle = 0
+        display.onPropertiesChange?()
+        #expect(display.rotations == [0])
+        // With following off, the guest and the window turn to landscape.
+        controller.perform(.rotateDeviceAutomatically)
+        display.guestInterfaceAngle = 90
+        display.naturalSize = landscape
+        display.onPropertiesChange?()
+        controller.fitScreen()
+        #expect(isLandscape())
+        // After following resumes, the guest's return to portrait is applied.
+        controller.perform(.rotateDeviceAutomatically)
+        display.guestInterfaceAngle = 0
+        display.naturalSize = portrait
+        display.onPropertiesChange?()
+        #expect(display.rotations == [0, 0])
+        #expect(!isLandscape())
+    }
+
+    @Test func orientationCommandsSetTheDeviceAndKeepManualRotation() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        // A devicectl stand-in that remembers the orientation it was set to.
+        let state = directory.appendingPathComponent("orientation")
+        try "portrait".write(to: state, atomically: true, encoding: .utf8)
+        let devicectl = directory.appendingPathComponent("devicectl")
+        try """
+            #!/bin/sh
+            case "$3" in
+            set) printf %s "$6" > "\(state.path)" ;;
+            get) o=$(cat "\(state.path)")
+                 printf '{"result":{"deviceOrientation":"%s","deviceOrientationNonFlat":"%s"}}' "$o" "$o" ;;
+            esac
+            """.write(to: devicectl, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: devicectl.path)
+        let display = TestDisplay()
+        let controller = try makeController(display, devicectl: devicectl)
+        defer { controller.invalidate() }
+        let session = controller.session
+        let key = HostPreferences.rotateWindowWhenSignaledByGuest
+        let saved = UserDefaults.standard.object(forKey: key)
+        defer { UserDefaults.standard.set(saved, forKey: key) }
+        UserDefaults.standard.set(true, forKey: key)
+        display.guestInterfaceAngle = 0
+        try await session.readOrientation()
+        #expect(session.orientation == .portrait)
+        // The guest stays in portrait, as a portrait-only app does.
+        controller.perform(.landscapeLeft)
+        for _ in 0..<300 where session.isBusy { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(session.orientation == .landscapeLeft)
+        #expect(display.rotations == [0, 90])
+        display.onPropertiesChange?()
+        #expect(display.rotations == [0, 90])
+    }
+
+    @Test func guestInterfaceOrientationsUseSimulatorKitAngles() {
+        #expect([1, 2, 3, 4, 0].map(SimScreenUIOrientation.displayAngle) == [0, 180, -90, 90, 0])
+    }
+
     @Test func hardwareCommandsFollowDeviceFeatures() throws {
         _ = NSApplication.shared
         let menus = MenuController(application: nil)
@@ -342,20 +476,28 @@ struct InputFocusTests {
         defer { controller.invalidate() }
         let clock = ContinuousClock()
         let start = clock.now
-        controller.send(.hold(.button(.actionStaccato), for: .milliseconds(100)))
+        // The second hold starts well before the first ends, even on a busy runner.
+        controller.send(.hold(.button(.actionStaccato), for: .milliseconds(1000)))
         try await Task.sleep(for: .milliseconds(50))
-        controller.send(.hold(.button(.actionStaccato), for: .milliseconds(100)))
-        while display.events.count < 3, clock.now - start < .seconds(5) {
+        controller.send(.hold(.button(.actionStaccato), for: .milliseconds(1000)))
+        while display.events.count < 3, clock.now - start < .seconds(10) {
             try await Task.sleep(for: .milliseconds(10))
         }
-        #expect(clock.now - start >= .milliseconds(150))
+        #expect(clock.now - start >= .milliseconds(1050))
         try await Task.sleep(for: .milliseconds(100))
         #expect(display.events.map(\.state) == [.down, .down, .up])
     }
 
     @Test func aHeldInputIsReleasedDuringAShutdown() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        // A simctl stand-in whose shutdown outlasts the hold, then fails.
+        let simctl = directory.appendingPathComponent("simctl")
+        try "#!/bin/sh\nsleep 1\nexit 1\n".write(to: simctl, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: simctl.path)
         let display = TestDisplay()
-        let controller = try makeController(display)
+        let controller = try makeController(display, simctl: simctl)
         defer { controller.invalidate() }
         let session = controller.session
         var releasedDuringShutdown = false
@@ -363,7 +505,6 @@ struct InputFocusTests {
             if session?.canPerformCommands == false { releasedDuringShutdown = true }
         }
         controller.send(.hold(.button(.actionStaccato), for: .milliseconds(10)))
-        // The shutdown fails because the test device does not exist.
         session.run({ try await session.shutDown() }, failure: { _ in })
         for _ in 0..<3000 where session.isBusy { try await Task.sleep(for: .milliseconds(10)) }
         #expect(releasedDuringShutdown)
@@ -457,13 +598,16 @@ struct InputFocusTests {
 
     private func makeController(_ display: TestDisplay,
                                 features: Set<String> = [DeviceCapabilities.displayRotation],
+                                simctl: URL = DeviceTools.simctl,
+                                devicectl: URL = DeviceTools.devicectl,
                                 recordingProcess: ((URL) -> Process)? = nil) throws -> DeviceWindowController {
         let session = DeviceSession(
             device: AvailableDevice(identifier: "test-device", name: "Test iPhone", runtimeName: "iOS", state: 3),
             capabilities: DeviceCapabilities(family: .iPhone, runtimeVersion: 0x1B_00_00,
                                              supportsFeature: { features.contains($0) }),
             display: display,
-            tools: try DeviceTools(identifier: "test-device", xcodeURL: URL(fileURLWithPath: "/Applications/Xcode.app")),
+            tools: try DeviceTools(identifier: "test-device", xcodeURL: URL(fileURLWithPath: "/Applications/Xcode.app"),
+                                   simctl: simctl, devicectl: devicectl),
             recordingProcess: recordingProcess)
         return try DeviceWindowController(session: session, onClose: { _ in })
     }
@@ -488,7 +632,9 @@ private final class TestDisplay: SimulatorDisplay {
     let view = NSView(frame: NSRect(x: 0, y: 0, width: 390, height: 844))
     let input = InputView()
     var inputView: NSView { input }
-    var naturalSize: NSSize { NSSize(width: 390, height: 844) }
+    var naturalSize = NSSize(width: 390, height: 844)
+    var onPropertiesChange: (() -> Void)?
+    var guestInterfaceAngle: Double?
     var isBooted = true
     var events: [(input: HIDInput, state: HIDState)] = []
     /// Called for each sent event, before it is recorded.
@@ -534,7 +680,8 @@ private final class TestDisplay: SimulatorDisplay {
     func setChromeVisible(_ visible: Bool) {}
     func setActive(_ active: Bool) { activations.append(active) }
     func setKeyboardEnabled(_ enabled: Bool) { keyboard.append(enabled) }
-    func setRotation(degrees: Double) {}
+    var rotations: [Double] = []
+    func setRotation(degrees: Double) { rotations.append(degrees) }
     func beginResize() {}
     func resize(to size: NSSize) { view.setFrameSize(size) }
     func endResize() {}

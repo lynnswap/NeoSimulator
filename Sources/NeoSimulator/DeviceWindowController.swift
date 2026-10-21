@@ -43,6 +43,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         let toolbar = DeviceToolbar(controller: self)
         deviceToolbar = toolbar
         window.toolbar = toolbar.toolbar
+        session.display.onPropertiesChange = { [weak self] in self?.displayPropertiesChanged() }
         content.canImport = { [weak self] in self?.session.canPerformToolOperation == true }
         content.importFiles = { [weak self] in self?.importFiles($0) }
         window.contentView = content
@@ -67,7 +68,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
             didReadOrientation = true
             session.run({ [weak self] in
                 guard let self else { return }
-                _ = try await self.session.readOrientation()
+                try await self.session.readOrientation()
                 self.didRotate()
             }, failure: { hostLog($0.localizedDescription) })
         }
@@ -93,6 +94,14 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         session.run({ [weak self] in
             guard let self else { return }
             try await self.session.rotate(left: left)
+            self.didRotate()
+        }, failure: { [weak self] in self?.present($0) })
+    }
+
+    func setOrientation(_ orientation: DeviceOrientation) {
+        session.run({ [weak self] in
+            guard let self else { return }
+            try await self.session.setOrientation(orientation)
             self.didRotate()
         }, failure: { [weak self] in self?.present($0) })
     }
@@ -183,6 +192,15 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     }
 
     // MARK: Presentation
+
+    // With Rotate Device Automatically on, the display follows the guest's
+    // interface orientation and the window follows the display. Other
+    // property changes, such as the backlight, keep the window size.
+    private func displayPropertiesChanged() {
+        let enabled = UserDefaults.standard.bool(forKey: HostPreferences.rotateWindowWhenSignaledByGuest)
+        guard !closed, session.followGuestInterfaceOrientation(enabled: enabled) else { return }
+        didRotate()
+    }
 
     private func didRotate() {
         fitScreen()
