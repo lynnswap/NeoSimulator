@@ -587,10 +587,12 @@ struct InputFocusTests {
         #expect(display.renderScale == 1)
         display.screenScale = 1.5 * (first.window?.screen?.backingScaleFactor ?? 1)
         first.perform(.pixelAccurate)
+        first.showWindow(nil)
         let frame = try #require(first.window?.frame)
-        first.invalidate()
-        // The window's center and scale are saved for the current arrangement
-        // of screens, beside what was saved for another one.
+        // Closed as the user closes it, through the window's delegate, the
+        // window saves its center and scale for the current arrangement of
+        // screens, beside what was saved for another one.
+        first.window?.close()
         let device = (preferences.values[HostPreferences.devicePreferences] as? [String: Any])?["test-device"]
             as? [String: Any]
         #expect(device?["ChromeTint"] as? String == "#FFFFFF")
@@ -746,8 +748,9 @@ struct InputFocusTests {
         // Like Simulator.app, a window that closes while its device restarts
         // keeps the geometry its device's window saved last.
         let restarting = try makeController(TestDisplay(), device: "A", preferences: preferences)
+        restarting.showWindow(nil)
         await restarting.prepareForRestart()
-        restarting.invalidate()
+        restarting.window?.close()
         let kept = preferences.windowGeometry(forDevice: "A", screens: screens)
         #expect(kept.center == NSPoint(x: 100, y: 200) && kept.scale == 2)
         // Once the device reconnects, closing saves again.
@@ -1158,6 +1161,39 @@ struct InputFocusTests {
         controller.perform(.home)
         #expect(second.events.map(\.input) == [.button(.home), .button(.home)])
         #expect(first.events.isEmpty)
+    }
+
+    @Test func aRestartShowsTheBezelAsShowDeviceBezelsSays() async throws {
+        let preferences = MemoryPreferences()
+        preferences.set(false, forKey: HostPreferences.showChrome)
+        func display(showingBezel shows: Bool) -> TestDisplay {
+            let display = TestDisplay()
+            display.naturalSize = NSSize(width: 200, height: 300)
+            display.bezel = NSSize(width: 20, height: 20)
+            display.bezelPadding = NSSize(width: 9, height: 0)
+            display.showsBezel = shows
+            return display
+        }
+        let controller = try makeController(display(showingBezel: true), preferences: preferences)
+        defer { controller.invalidate() }
+        controller.showWindow(nil)
+        let window = try #require(controller.window)
+        // Like Simulator.app, the device's next display after a restart shows
+        // the bezel as Show Device Bezels says, whatever it shows when it is
+        // created, and the window follows it.
+        await controller.prepareForRestart()
+        let hidden = display(showingBezel: true)
+        controller.reconnect(try makeSession(hidden))
+        #expect(hidden.chromePadding == nil)
+        #expect(window.styleMask.contains(.resizable))
+        #expect(hidden.view.frame.size == NSSize(width: 200, height: 300))
+        preferences.set(true, forKey: HostPreferences.showChrome)
+        await controller.prepareForRestart()
+        let shown = display(showingBezel: false)
+        controller.reconnect(try makeSession(shown))
+        #expect(shown.chromePadding == NSSize(width: 9, height: 0))
+        #expect(!window.styleMask.contains(.resizable))
+        #expect(shown.view.frame.size == NSSize(width: 220, height: 320))
     }
 
     @Test func aRestartFinishesTheRecordingBeforeDisconnecting() async throws {
@@ -2080,7 +2116,9 @@ private final class TestDisplay: SimulatorDisplay {
     /// The padding of the bezel's images, or nil for a device type without a bezel.
     var bezelPadding: NSSize?
     var chromePadding: NSSize? { showsBezel ? bezelPadding : nil }
-    private var showsBezel = true
+    /// Whether the display shows its bezel, as SimDisplayView's
+    /// showDeviceChrome says; a new display shows it.
+    var showsBezel = true
     private var outerSize: NSSize {
         showsBezel ? NSSize(width: naturalSize.width + bezel.width, height: naturalSize.height + bezel.height) : naturalSize
     }
