@@ -561,9 +561,10 @@ struct InputFocusTests {
 
     @Test func aDevicesWindowReopensWhereItClosedOrCascades() throws {
         let preferences = MemoryPreferences()
-        func open(_ device: String) throws -> DeviceWindowController {
+        func open(_ device: String, topPadding: CGFloat? = nil) throws -> DeviceWindowController {
             let display = TestDisplay()
             display.naturalSize = NSSize(width: 160, height: 320)
+            display.bezelPadding = topPadding.map { NSSize(width: 10, height: $0) }
             return try makeController(display, device: device, preferences: preferences)
         }
         // Without a saved center, the first window takes the center of the
@@ -595,10 +596,11 @@ struct InputFocusTests {
         #expect(reopenedWindow.frame == closed)
         #expect(cascade == afterSecond)
         // A window whose saved center leaves it across the edge of the screen
-        // moves back inside the screen.
+        // moves back inside the screen, also with an iPad's bezel, whose top
+        // padding keeps AppKit from moving the window.
         preferences.setWindowGeometry(center: NSPoint(x: visible.maxX - 10, y: visible.midY), scale: nil,
                                       forDevice: "C")
-        let moved = try open("C")
+        let moved = try open("C", topPadding: 9)
         defer { moved.invalidate() }
         moved.showNewWindow(cascadingFrom: &cascade)
         let movedWindow = try #require(moved.window)
@@ -868,6 +870,17 @@ struct InputFocusTests {
         #expect(showsDisplay(NSSize(width: 400, height: 460)))
         #expect(window.frame.origin == origin)
         #expect(!window.styleMask.contains(.resizable))
+        // The window may rise above the screen by the bezel's top padding at
+        // the display's scale, and no further once the bezel is hidden.
+        let visible = try #require(window.screen?.visibleFrame)
+        display.screenScale = 2 * (window.screen?.backingScaleFactor ?? 1)
+        controller.perform(.pixelAccurate)
+        #expect(display.renderScale == 2)
+        window.setFrameOrigin(NSPoint(x: window.frame.minX, y: visible.maxY - window.frame.height + 100))
+        #expect(window.frame.maxY == visible.maxY + 18)
+        controller.perform(.showDeviceBezels)
+        window.setFrameOrigin(NSPoint(x: window.frame.minX, y: visible.maxY - window.frame.height + 100))
+        #expect(window.frame.maxY <= visible.maxY)
     }
 
     @Test func orientationCommandsSetTheDeviceAndKeepManualRotation() async throws {
@@ -1979,9 +1992,10 @@ struct HostBehaviorTests {
         let reaching = NSRect(x: 0, y: visible.maxY + 18 - 1000, width: 900, height: 1000)
         #expect(WindowScale.frame(reaching, constrainedBelow: visible, topInset: 18) == reaching)
         // A device window applies it while its bezel has top padding, and
-        // otherwise leaves the frame to AppKit.
+        // otherwise leaves the frame to AppKit, which shrinks a resizable
+        // window taller than the screen.
         let screen = try #require(NSScreen.screens.first)
-        let mask: NSWindow.StyleMask = [.titled, .closable, .miniaturizable]
+        let mask: NSWindow.StyleMask = [.titled, .closable, .miniaturizable, .resizable]
         let window = DeviceWindow(contentRect: NSRect(x: 0, y: 0, width: 100, height: 100), styleMask: mask,
                                   backing: .buffered, defer: true)
         let plain = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 100, height: 100), styleMask: mask,
