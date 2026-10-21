@@ -67,6 +67,9 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     }
 
     func openSimulator(withIdentifier identifier: String) async throws {
+        // A restart boots the device itself; opening waits instead of booting
+        // during its shutdown or erase.
+        while let restart = restarting[identifier] { await restart.value }
         guard !stopped else { throw HostError.operation("NeoSimulator is shutting down") }
         try conflicts.check()
         guard let device = try readDevices().first(where: { $0.identifier == identifier }) else {
@@ -105,7 +108,9 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         for identifier in connections.keys where !identifiers.contains(identifier) {
             connections[identifier]?.cancel()
         }
-        suppressed.formIntersection(identifiers)
+        // A restart's boot is not a new boot, so a window closed during the
+        // restart stays closed.
+        suppressed.formIntersection(identifiers.union(restarting.keys))
         reportedFailures.formIntersection(identifiers)
         for device in booted where (sessions[device.identifier] == nil
                 || (awaitingReconnect[device.identifier] != nil && restarting[device.identifier] == nil))
