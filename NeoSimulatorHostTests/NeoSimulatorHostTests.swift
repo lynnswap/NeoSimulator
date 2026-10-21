@@ -476,20 +476,28 @@ struct InputFocusTests {
         defer { controller.invalidate() }
         let clock = ContinuousClock()
         let start = clock.now
-        controller.send(.hold(.button(.actionStaccato), for: .milliseconds(100)))
+        // The second hold starts well before the first ends, even on a busy runner.
+        controller.send(.hold(.button(.actionStaccato), for: .milliseconds(1000)))
         try await Task.sleep(for: .milliseconds(50))
-        controller.send(.hold(.button(.actionStaccato), for: .milliseconds(100)))
-        while display.events.count < 3, clock.now - start < .seconds(5) {
+        controller.send(.hold(.button(.actionStaccato), for: .milliseconds(1000)))
+        while display.events.count < 3, clock.now - start < .seconds(10) {
             try await Task.sleep(for: .milliseconds(10))
         }
-        #expect(clock.now - start >= .milliseconds(150))
+        #expect(clock.now - start >= .milliseconds(1050))
         try await Task.sleep(for: .milliseconds(100))
         #expect(display.events.map(\.state) == [.down, .down, .up])
     }
 
     @Test func aHeldInputIsReleasedDuringAShutdown() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        // A simctl stand-in whose shutdown outlasts the hold, then fails.
+        let simctl = directory.appendingPathComponent("simctl")
+        try "#!/bin/sh\nsleep 1\nexit 1\n".write(to: simctl, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: simctl.path)
         let display = TestDisplay()
-        let controller = try makeController(display)
+        let controller = try makeController(display, simctl: simctl)
         defer { controller.invalidate() }
         let session = controller.session
         var releasedDuringShutdown = false
@@ -497,7 +505,6 @@ struct InputFocusTests {
             if session?.canPerformCommands == false { releasedDuringShutdown = true }
         }
         controller.send(.hold(.button(.actionStaccato), for: .milliseconds(10)))
-        // The shutdown fails because the test device does not exist.
         session.run({ try await session.shutDown() }, failure: { _ in })
         for _ in 0..<3000 where session.isBusy { try await Task.sleep(for: .milliseconds(10)) }
         #expect(releasedDuringShutdown)
@@ -591,6 +598,7 @@ struct InputFocusTests {
 
     private func makeController(_ display: TestDisplay,
                                 features: Set<String> = [DeviceCapabilities.displayRotation],
+                                simctl: URL = DeviceTools.simctl,
                                 devicectl: URL = DeviceTools.devicectl,
                                 recordingProcess: ((URL) -> Process)? = nil) throws -> DeviceWindowController {
         let session = DeviceSession(
@@ -599,7 +607,7 @@ struct InputFocusTests {
                                              supportsFeature: { features.contains($0) }),
             display: display,
             tools: try DeviceTools(identifier: "test-device", xcodeURL: URL(fileURLWithPath: "/Applications/Xcode.app"),
-                                   devicectl: devicectl),
+                                   simctl: simctl, devicectl: devicectl),
             recordingProcess: recordingProcess)
         return try DeviceWindowController(session: session, onClose: { _ in })
     }
