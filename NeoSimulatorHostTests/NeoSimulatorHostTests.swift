@@ -457,6 +457,33 @@ struct InputFocusTests {
         #expect(first.events.isEmpty)
     }
 
+    @Test func aRestartFinishesTheRecordingBeforeDisconnecting() async throws {
+        let display = TestDisplay()
+        var recorder: Process?
+        let controller = try makeController(display, recordingProcess: { _ in
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/sh")
+            process.arguments = ["-c", """
+                trap 'sleep 0.2; exit 0' INT
+                echo 'Recording started' >&2
+                while :; do sleep 0.05; done
+                """]
+            recorder = process
+            return process
+        })
+        defer { controller.invalidate() }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try controller.session.startRecording(to: directory.appendingPathComponent("Recording.mp4"))
+        // Wait for the first-frame acknowledgement, the safe point for SIGINT.
+        try await Task.sleep(for: .milliseconds(300))
+        var recordingAtDisconnect: Bool?
+        display.onDisconnect = { recordingAtDisconnect = recorder?.isRunning }
+        await controller.prepareForRestart()
+        #expect(recordingAtDisconnect == false)
+    }
+
     @Test func eraseAsksForConfirmationBeforeRestarting() async throws {
         var requests: [Bool] = []
         let controller = try makeController(TestDisplay(), onRestart: { _, erasing in requests.append(erasing) })
@@ -746,6 +773,7 @@ private final class TestDisplay: SimulatorDisplay {
     var activations: [Bool] = []
     var keyboard: [Bool] = []
     var disconnectCount = 0
+    var onDisconnect: () -> Void = {}
     init() { view.addSubview(input) }
     func message(for input: HIDInput, _ state: HIDState) throws -> HIDMessage {
         guard !unavailableStates.contains(state) else { throw HostError.operation("No message") }
@@ -774,7 +802,7 @@ private final class TestDisplay: SimulatorDisplay {
     func beginResize() {}
     func resize(to size: NSSize) { view.setFrameSize(size) }
     func endResize() {}
-    func disconnect() { disconnectCount += 1 }
+    func disconnect() { disconnectCount += 1; onDisconnect() }
 }
 
 @Suite @MainActor
