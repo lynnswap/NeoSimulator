@@ -528,9 +528,11 @@ These differ from Simulator.app:
   (`SimDisplayView.typedResizeRects`). NeoSimulator does not, so such a window
   changes size only through the scale commands, rotation, and Show Device
   Bezels.
-- The window does not lock the display's aspect ratio or limit its minimum
-  size to the minimum scale; a manual resize, possible without a bezel,
-  centers the display.
+- A manual resize, possible without a bezel, does not keep the display's
+  aspect ratio and stops at 320 by 300 points instead of the display's size at
+  the minimum scale; the display is centered in the window. The scale
+  commands, rotation, and Show Device Bezels make the window as wide as the
+  display, as in Simulator.app, also when that is narrower.
 - Simulator.app's minimum for a tvOS or visionOS display with a bezel, 240
   points over the screen's pixel height, is not reproduced.
 - Simulator.app animates the window into and out of full screen itself.

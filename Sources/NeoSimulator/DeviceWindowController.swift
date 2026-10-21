@@ -79,6 +79,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         // Show Device Bezels preference says, before it takes its scale.
         session.display.setChromeVisible(preferences.showsDeviceBezels)
         bezelChanged()
+        // The smallest size a manual resize leaves the window at.
         window.contentMinSize = NSSize(width: 320, height: 300)
         // AppKit never dispatches key-ups while Command is held; forward them
         // so the simulator does not keep the key pressed.
@@ -636,9 +637,10 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// Sizes the window to the display at its scale, as Simulator.app's
-    /// geometry update does: the window keeps its bottom-left corner and
-    /// moves down when its top would be above the screen. In full screen and
-    /// during a live resize, the display fits the window instead.
+    /// geometry update does: the window is as wide as the display, also
+    /// below `contentMinSize`, keeps its bottom-left corner, and moves down
+    /// when its top would be above the screen. In full screen and during a
+    /// live resize, the display fits the window instead.
     private func updateWindowSize() {
         guard !closed, let window, !window.inLiveResize, !isFullScreen else {
             resizeDisplay()
@@ -646,7 +648,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         }
         let size = session.display.size(for: session.display.renderScale)
         var frame = window.frameRect(forContentRect: NSRect(x: 0, y: 0,
-            width: max(window.contentMinSize.width, size.width), height: size.height + content.heightAboveDisplay))
+            width: size.width, height: size.height + content.heightAboveDisplay))
         frame.origin = window.frame.origin
         if let visible = window.screen?.visibleFrame, visible.maxY < frame.maxY {
             frame.origin.y = visible.maxY - frame.height

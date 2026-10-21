@@ -433,10 +433,13 @@ struct InputFocusTests {
                 DeviceCommand.command($0).state?(controller) == .on
             }
         }
-        // The window takes the display's size at the scale, 12 points below its header.
+        // The window takes the display's size at the scale, 12 points below
+        // its header, also when the display is narrower than a manual resize
+        // can make the window.
         func fitsDisplay() -> Bool {
             display.view.frame.size == display.size(for: display.renderScale)
-                && window.contentLayoutRect.height - 12 == display.view.frame.height
+                && window.contentLayoutRect.size == NSSize(width: display.view.frame.width,
+                                                           height: display.view.frame.height + 12)
         }
         controller.perform(.pointAccurate)
         #expect(display.renderScale == 1)
