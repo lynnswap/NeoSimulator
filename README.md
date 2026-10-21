@@ -89,7 +89,9 @@ Neo currently provides:
 - device bezel, touch, accessibility, and focused keyboard input;
 - a Simulator-style window header with the device name, runtime, Home,
   Save Screen, and Rotate Right controls;
-- MP4 recording, including finalization when a window closes or the app quits;
+- Simulator.app's Save Screen, Record Screen, and Copy Screen commands, with
+  its file names, save folders, and device-mask option; recordings are
+  finalized when a window closes or the app quits;
 - simulator app installation and image, video, and vCard import through a file
   picker or drag and drop;
 - opening web addresses and custom app URL schemes on the selected device;
@@ -134,11 +136,18 @@ starts the device last opened (`StartLastDeviceOnLaunch`, `CurrentDeviceUDID`).
 
 Neo requires no `Simulator.app` installation.
 
-Choose **File → Record Screen…** (Command-R) and a destination to begin
-recording. Use the red stop control or **File → Stop Recording** to finish. Neo
-waits for the video to be finalized before replacing an existing destination
-file. If the final save fails, the error includes the temporary recording's
-location for recovery. The stop control appears in the header while recording.
+**File → Save Screen** (Command-S) and the header's camera button save a PNG
+named like Simulator.app's to the screenshot folder: `ScreenShotSaveLocation`,
+which starts as the macOS screenshot location, or the Desktop.
+**File → Record Screen** (Command-R) starts recording at once; stopping it
+saves a QuickTime movie to the Desktop. A file of the same name gets " #2" and
+so on. Hold Option for **Save Screen…** and **Record Screen…**, which ask for a
+destination and whether to apply the device mask to a non-rectangular screen;
+Save Screen… remembers the folder and the choice (`ScreenShotUseMask`), which
+Save Screen and Record Screen then use. Use the red stop control or **File →
+Stop Recording** to finish a recording. If a save fails, the error includes the
+capture's location for recovery. **Edit → Copy Screen** (Control-Command-C)
+puts a PNG of the screen, without the mask, on the Mac pasteboard.
 Toggle the software keyboard through **I/O → Keyboard → Toggle Software
 Keyboard** (Command-K).
 

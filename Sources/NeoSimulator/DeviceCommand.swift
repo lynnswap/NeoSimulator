@@ -8,7 +8,7 @@ import AppKit
 @MainActor
 struct DeviceCommand {
     enum ID: String, CaseIterable {
-        case saveScreen, recordScreen, stopRecording, importFiles
+        case saveScreen, saveScreenAs, recordScreen, recordScreenAs, stopRecording, importFiles, copyScreen
         case restart, eraseAllContentAndSettings, shutDown, rotateLeft, rotateRight
         case portrait, landscapeRight, portraitUpsideDown, landscapeLeft, faceUp, faceDown
         case rotateDeviceAutomatically
@@ -28,6 +28,9 @@ struct DeviceCommand {
     let title: String
     var key = ""
     var modifiers: NSEvent.ModifierFlags = .command
+    /// Whether the menu shows the command in place of the one before it
+    /// while the extra modifier is held.
+    var isAlternate = false
     var toolbar: Toolbar?
     /// Whether the device supports the command. Unsupported commands are hidden.
     var isSupported: (DeviceCapabilities) -> Bool = { _ in true }
@@ -40,16 +43,25 @@ struct DeviceCommand {
 
     static let catalog: [ID: DeviceCommand] = Dictionary(uniqueKeysWithValues: [
         // File
-        DeviceCommand(id: .saveScreen, title: "Save Screen…", key: "s",
+        DeviceCommand(id: .saveScreen, title: "Save Screen", key: "s",
                       toolbar: Toolbar(label: "Save Screen", symbol: "camera.on.rectangle"),
-                      isEnabled: { $0.session.canPerformToolOperation }) { $0.saveScreenshot() },
-        DeviceCommand(id: .recordScreen, title: "Record Screen…", key: "r",
+                      isEnabled: { $0.session.canPerformToolOperation }) { $0.saveScreen() },
+        DeviceCommand(id: .saveScreenAs, title: "Save Screen…", key: "s", modifiers: [.command, .option],
+                      isAlternate: true,
+                      isEnabled: { $0.session.canPerformToolOperation }) { $0.chooseScreenshotDestination() },
+        DeviceCommand(id: .recordScreen, title: "Record Screen", key: "r",
+                      isEnabled: { $0.session.canPerformToolOperation && $0.session.recording == nil }) { $0.recordScreen() },
+        DeviceCommand(id: .recordScreenAs, title: "Record Screen…", key: "r", modifiers: [.command, .option],
+                      isAlternate: true,
                       isEnabled: { $0.session.canPerformToolOperation && $0.session.recording == nil }) { $0.chooseRecordingDestination() },
         DeviceCommand(id: .stopRecording, title: "Stop Recording",
                       toolbar: Toolbar(label: "Stop Recording", symbol: "stop.circle.fill"),
                       isEnabled: { $0.session.recording.map { !$0.isStopping } ?? false }) { $0.session.stopRecording() },
         DeviceCommand(id: .importFiles, title: "Install App or Import Media…", key: "i", modifiers: [.command, .shift],
                       isEnabled: { $0.session.canPerformToolOperation }) { $0.chooseFilesToImport() },
+        // Edit
+        DeviceCommand(id: .copyScreen, title: "Copy Screen", key: "c", modifiers: [.command, .control],
+                      isEnabled: { $0.session.canPerformToolOperation }) { $0.copyScreen() },
         // Device
         DeviceCommand(id: .restart, title: "Restart",
                       isEnabled: { $0.session.canPerformToolOperation }) { $0.restart() },

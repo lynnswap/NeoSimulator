@@ -56,7 +56,7 @@ struct InputFocusTests {
     }
 
     @Test func toolbarShowsRecordingStopAndHidesItAfterCompletion() async throws {
-        let controller = try makeController(TestDisplay()) { _ in
+        let controller = try makeController(TestDisplay()) { _, _ in
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/bin/sh")
             process.arguments = ["-c", """
@@ -74,7 +74,7 @@ struct InputFocusTests {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        try controller.session.startRecording(to: directory.appendingPathComponent("Recording.mp4"))
+        try controller.session.startRecording(to: .file(directory.appendingPathComponent("Recording.mov")), mask: .ignored)
         let recording = try #require(controller.session.recording)
         for _ in 0..<100 where item.isHidden { try await Task.sleep(for: .milliseconds(10)) }
         #expect(!item.isHidden)
@@ -86,6 +86,46 @@ struct InputFocusTests {
         try await recording.waitUntilFinished()
         for _ in 0..<100 where !item.isHidden { try await Task.sleep(for: .milliseconds(10)) }
         #expect(item.isHidden)
+    }
+
+    @Test func quickSaveScreenUsesTheScreenshotFolderAndMaskPreference() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        // A simctl stand-in that logs its arguments and writes a PNG signature to the last one.
+        let log = directory.appendingPathComponent("arguments"), simctl = directory.appendingPathComponent("simctl")
+        try """
+            #!/bin/sh
+            printf '%s\\n' "$*" >> "\(log.path)"
+            for last; do :; done
+            printf '\\211PNG\\r\\n\\032\\n' > "$last"
+            """.write(to: simctl, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: simctl.path)
+        let folder = directory.appendingPathComponent("Screenshots")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let keys = [HostPreferences.screenShotSaveLocation, HostPreferences.screenShotUseMask]
+        let saved = keys.map { UserDefaults.standard.object(forKey: $0) }
+        defer { for (key, value) in zip(keys, saved) { UserDefaults.standard.set(value, forKey: key) } }
+        UserDefaults.standard.set(folder.path, forKey: HostPreferences.screenShotSaveLocation)
+        UserDefaults.standard.set(true, forKey: HostPreferences.screenShotUseMask)
+
+        func lastScreenshot() throws -> String? {
+            try String(contentsOf: log, encoding: .utf8).split(separator: "\n").last.map(String.init)
+        }
+        for framebufferMask in [true, false] {
+            let controller = try makeController(TestDisplay(), framebufferMask: framebufferMask, simctl: simctl)
+            defer { controller.invalidate() }
+            controller.perform(.saveScreen)
+            for _ in 0..<200 where controller.session.isBusy { try await Task.sleep(for: .milliseconds(10)) }
+            // A device without a mask has nothing to apply.
+            #expect(try lastScreenshot()?.contains("--mask=\(framebufferMask ? "alpha" : "ignored")") == true)
+            // Copy Screen never applies the mask.
+            _ = try await controller.session.screenPNG()
+            #expect(try lastScreenshot()?.contains("--mask=ignored") == true)
+        }
+        let names = try FileManager.default.contentsOfDirectory(atPath: folder.path)
+        #expect(names.count == 2)
+        #expect(names.allSatisfy { $0.hasPrefix("Simulator Screenshot - Test iPhone - ") && $0.hasSuffix(".png") })
     }
 
     @Test func displayStaysBelowTheNativeToolbarWhenResized() throws {
@@ -460,7 +500,7 @@ struct InputFocusTests {
     @Test func aRestartFinishesTheRecordingBeforeDisconnecting() async throws {
         let display = TestDisplay()
         var recorder: Process?
-        let controller = try makeController(display, recordingProcess: { _ in
+        let controller = try makeController(display, recordingProcess: { _, _ in
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/bin/sh")
             process.arguments = ["-c", """
@@ -475,7 +515,7 @@ struct InputFocusTests {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        try controller.session.startRecording(to: directory.appendingPathComponent("Recording.mp4"))
+        try controller.session.startRecording(to: .file(directory.appendingPathComponent("Recording.mov")), mask: .ignored)
         // Wait for the first-frame acknowledgement, the safe point for SIGINT.
         try await Task.sleep(for: .milliseconds(300))
         var recordingAtDisconnect: Bool?
@@ -528,10 +568,11 @@ struct InputFocusTests {
         #expect(try visibleTitles("I/O") == ["Keyboard", "-", "Increase Volume", "Decrease Volume", "-", "Open URL…"])
         #expect(try visibleTitles("Features") == ["Authorize Apple Pay", "-", "Toggle Appearance"])
         #expect(try visibleTitles("Debug") == ["Show Parallel Testing Devices"])
-        // Option and Control alternates ask before quitting and closing.
+        // Option and Control alternates ask before quitting, capturing, and closing.
         let alternates = NSApp.mainMenu?.items.compactMap(\.submenu).flatMap(\.items).filter(\.isAlternate)
-        #expect(alternates?.map(\.title).filter { $0.hasPrefix("Quit") || $0.hasPrefix("Close") }
-                == ["Quit NeoSimulator…", "Close Window…"])
+        #expect(alternates?.map(\.title) == ["Quit NeoSimulator…", "Save Screen…", "Record Screen…", "Close Window…"])
+        #expect(alternates?.map(\.keyEquivalentModifierMask) == [[.command, .option], [.command, .option],
+                                                                  [.command, .option], [.command, .control]])
     }
 
     @Test func orientationCommandsNeedTheDefaultDeviceSet() throws {
@@ -881,26 +922,29 @@ struct InputFocusTests {
 
     private func makeController(_ display: TestDisplay,
                                 features: Set<String> = [DeviceCapabilities.displayRotation],
+                                framebufferMask: Bool = false,
                                 simctl: URL = DeviceTools.simctl,
                                 devicectl: URL = DeviceTools.devicectl,
-                                recordingProcess: ((URL) -> Process)? = nil,
+                                recordingProcess: ((URL, DeviceTools.ScreenMask) -> Process)? = nil,
                                 onClose: @escaping (DeviceWindowController, DeviceLifetimeChoice?) -> Void = { _, _ in },
                                 onRestart: @escaping (DeviceWindowController, Bool) -> Void = { _, _ in })
         throws -> DeviceWindowController {
-        let session = try makeSession(display, features: features, simctl: simctl, devicectl: devicectl,
-                                      recordingProcess: recordingProcess)
+        let session = try makeSession(display, features: features, framebufferMask: framebufferMask, simctl: simctl,
+                                      devicectl: devicectl, recordingProcess: recordingProcess)
         return try DeviceWindowController(session: session, onClose: onClose, onRestart: onRestart)
     }
 
     private func makeSession(_ display: TestDisplay,
                              features: Set<String> = [DeviceCapabilities.displayRotation],
+                             framebufferMask: Bool = false,
                              simctl: URL = DeviceTools.simctl,
                              devicectl: URL = DeviceTools.devicectl,
-                             recordingProcess: ((URL) -> Process)? = nil) throws -> DeviceSession {
+                             recordingProcess: ((URL, DeviceTools.ScreenMask) -> Process)? = nil) throws -> DeviceSession {
         DeviceSession(
             device: availableDevice("test-device", "Test iPhone", runtime: "iOS", state: 3),
             capabilities: DeviceCapabilities(family: .iPhone, runtimeVersion: 0x1B_00_00,
-                                             supportsFeature: { features.contains($0) }),
+                                             supportsFeature: { features.contains($0) },
+                                             hasFramebufferMask: framebufferMask),
             display: display,
             tools: try DeviceTools(identifier: "test-device", xcodeURL: URL(fileURLWithPath: "/Applications/Xcode.app"),
                                    simctl: simctl, devicectl: devicectl),
@@ -1131,7 +1175,7 @@ struct DeviceToolTests {
         try await tools.boot()
         #expect(try String(contentsOf: log, encoding: .utf8).split(separator: "\n")
                 == ["--set", "/tmp/XCTestDevices", "boot", "test-device"])
-        #expect(tools.recordingProcess(to: URL(fileURLWithPath: "/tmp/video.mp4")).arguments?.prefix(4)
+        #expect(tools.recordingProcess(to: URL(fileURLWithPath: "/tmp/video.mov"), mask: .ignored, codec: .h264).arguments?.prefix(4)
                 == ["--set", "/tmp/XCTestDevices", "io", "test-device"])
     }
 

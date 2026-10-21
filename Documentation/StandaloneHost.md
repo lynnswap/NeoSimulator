@@ -121,8 +121,9 @@ baseline Xcode 27 build:
 | Lock | `1` | `1` | `2` | `0x33` |
 | Software Keyboard | `0x3f0` | `1` | `2` | `0x33` |
 
-Save Screen runs the direct, compatibility-checked CoreSimulator `simctl`
-binary and atomically installs a validated PNG chosen through `NSSavePanel`.
+Save Screen and Copy Screen run the direct, compatibility-checked CoreSimulator
+`simctl` binary and validate its PNG before saving it or putting it on the
+pasteboard.
 Rotate Left/Right runs the direct, compatibility-checked CoreDevice
 `devicectl` binary. The session reads its actual JSON orientation on attachment
 and after every relative rotation before updating the display chrome. Both

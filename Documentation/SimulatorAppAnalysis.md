@@ -78,7 +78,10 @@ Representative per-window actions in the reference binary:
 | Home | `0x1000540EC` | `IndigoHIDMessageForButton`, button `0`, down/up, integrated target |
 | Lock | `0x10005411C` | same HID function, button `1` |
 | Hardware / Software Keyboard | `0x10005571C` / `0x10005574C` | CoreSimulator keyboard selector / HID button `0x3f0` |
-| Save Screen | `0x1000570D8` | typed direct `simctl io … screenshot` transaction |
+| Save Screen / Save Screen… | `0x1000570D8` | typed direct `simctl io … screenshot --mask=alpha\|ignored`; names from `0x100055758`, folder from `0x1000559C0` |
+| Record Screen / Record Screen… | `0x100058EC4` | `simctl io … recordVideo --mask=black\|ignored`, H.264 (HEVC for visionOS); names from `0x100058634` |
+| Stop Recording | `0x10005A014` | SIGINT after `Recording started`, then the movie is moved to the Desktop or the chosen file |
+| Copy Screen | `0x100053A68` | `simctl io … screenshot --mask=ignored`, written to the general pasteboard as PNG only |
 | Volume Up / Down | `0x100058224` / `0x10005823C` | `IndigoHIDMessageForHIDArbitrary`, consumer page `0x0c`, usages `0xe9` / `0xea`, shown with `com.apple.CoreSimulator.audio.routable` |
 | Window scale | `0x100054BBC` | SimulatorKit render scale and resize owner |
 
@@ -99,7 +102,9 @@ The first set contains only actions with a concrete owner and observable failure
 semantics:
 
 - Application: About, Hide, Hide Others, Show All, Quit, Quit…;
-- File: New Simulator…, Open Simulator, Save Screen, Close Window, Close Window…;
+- File: New Simulator…, Open Simulator, Save Screen, Save Screen…, Record
+  Screen, Record Screen…, Stop Recording, Close Window, Close Window…;
+- Edit: Copy Screen;
 - Device: Rotate Left, Rotate Right, Orientation, Rotate Device Automatically,
   Home, Lock, Side Button, Action Button,
   Siri, Shake, App Switcher, Trigger Screenshot;
@@ -127,14 +132,13 @@ contract before being user-visible:
 - location controls;
 - biometrics;
 - status-bar overrides;
-- screen recording and graceful finalization;
 - physical, point-accurate, and pixel-accurate scale modes;
 - external displays and CarPlay.
 
 ## Excluded features
 
 - Automatic, send, receive, or continuous pasteboard synchronization.
-- Copy Screen and standard Edit/Services clipboard routing.
+- Standard Edit/Services clipboard routing.
 - Global keyboard, pointer, and game-controller capture. The reference app has
   private HID event-filter/event-monitor and TCC entitlements that the companion
   does not have.

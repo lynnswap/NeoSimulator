@@ -38,6 +38,7 @@ struct CoreSimulatorInterface {
     let runtimeVersion: NativeObjCMethod<UInt32>
     let productFamily: NativeObjCMethod<Int32>
     let deviceTypeName: NativeObjCMethod<String?>
+    let framebufferMaskURL: NativeObjCMethod<NSURL?>
     let deviceTypeIdentifier: NativeObjCMethod<String?>
 
     typealias NotificationHandler = @convention(block) (NSDictionary) -> Void
@@ -110,6 +111,8 @@ struct CoreSimulatorInterface {
             on: simDeviceType, selector: "productFamilyID", as: (() -> Int32).self)
         deviceTypeName = try runtime.resolveObjCMethodAndWait(
             on: simDeviceType, selector: "name", as: (() -> String?).self)
+        framebufferMaskURL = try runtime.resolveObjCMethodAndWait(
+            on: simDeviceType, selector: "framebufferMaskURL", as: (() -> NSURL?).self)
         deviceTypeIdentifier = try runtime.resolveObjCMethodAndWait(
             on: simDeviceType, selector: "identifier", as: (() -> String?).self)
     }
@@ -132,6 +135,8 @@ final class SimulatorDevice {
     /// `SimDeviceType.productFamilyID`: 1 iPhone, 2 iPad, 3 TV, 4 Watch, 7 Vision.
     let productFamily: Int
     let deviceTypeName: String
+    /// Whether the device type has a framebuffer mask, the screen's shape.
+    let hasFramebufferMask: Bool
     /// `SimRuntime.version`, packed as major << 16 | minor << 8 | patch.
     let runtimeVersion: UInt32
     /// The path of the device's set, or nil for the default set.
@@ -155,6 +160,7 @@ final class SimulatorDevice {
         let deviceType = try unsafe interface.deviceType.unsafeInvoke(on: object)
         productFamily = Int(try deviceType.map { try unsafe interface.productFamily.unsafeInvoke(on: $0) } ?? 0)
         deviceTypeName = try deviceType.flatMap { try unsafe interface.deviceTypeName.unsafeInvoke(on: $0) } ?? ""
+        hasFramebufferMask = try deviceType.flatMap { try unsafe interface.framebufferMaskURL.unsafeInvoke(on: $0) } != nil
     }
 
     /// `SimDeviceState`; 3 is Booted. A device whose state cannot be read is

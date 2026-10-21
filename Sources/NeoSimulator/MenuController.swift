@@ -35,7 +35,7 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
         open.submenu?.delegate = openSimulator
         file.addItem(open)
         file.addItem(.separator())
-        commands([.saveScreen, .recordScreen, .stopRecording], in: file)
+        commands([.saveScreen, .saveScreenAs, .recordScreen, .recordScreenAs, .stopRecording], in: file)
         file.addItem(.separator())
         commands([.importFiles], in: file)
         file.addItem(.separator())
@@ -56,6 +56,7 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
         for (index, (title, action, key, modifiers)) in editingActions.enumerated() {
             if index == 2 { edit.addItem(.separator()) }
             item(title, action: action, key: key, modifiers: modifiers, in: edit).target = nil
+            if title == "Copy" { commands([.copyScreen], in: edit) }
         }
 
         let device = menu("Device", in: main)
@@ -131,8 +132,10 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
     private func commands(_ ids: [DeviceCommand.ID], in menu: NSMenu) {
         for id in ids {
             let command = DeviceCommand.command(id)
-            item(command.title, action: #selector(performCommand(_:)), key: command.key,
-                 modifiers: command.modifiers, in: menu).representedObject = id.rawValue
+            let item = item(command.title, action: #selector(performCommand(_:)), key: command.key,
+                            modifiers: command.modifiers, in: menu)
+            item.representedObject = id.rawValue
+            item.isAlternate = command.isAlternate
         }
     }
 
@@ -283,6 +286,7 @@ private final class EditMenu: NSMenu {
             guard let window, let controller = window.windowController as? DeviceWindowController else { return false }
             return window.firstResponder === controller.session.display.inputView
         }
-        return !simulatorHasFocus && super.performKeyEquivalent(with: event)
+        // Copy Screen's Control-Command-C is not an editing shortcut.
+        return (!simulatorHasFocus || event.modifierFlags.contains(.control)) && super.performKeyEquivalent(with: event)
     }
 }

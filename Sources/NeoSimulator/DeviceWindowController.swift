@@ -183,34 +183,103 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
 
     func toggleStayOnTop() { window?.level = staysOnTop ? .normal : .floating }
 
-    func saveScreenshot() {
+    /// Whether captures apply the device's mask by default: the device has
+    /// one and `ScreenShotUseMask` is on.
+    private var usesDeviceMask: Bool {
+        session.capabilities.hasFramebufferMask && UserDefaults.standard.bool(forKey: HostPreferences.screenShotUseMask)
+    }
+
+    /// File ▸ Save Screen: saves the screen to the screenshot folder without asking.
+    func saveScreen() {
+        let name = CaptureFile.screenshotName(device: session.device.name, date: Date())
+        let mask: DeviceTools.ScreenMask = usesDeviceMask ? .alpha : .ignored
+        session.run({ [session] in
+            _ = try await session.saveScreenshot(into: CaptureFile.screenshotFolder(), named: name, mask: mask)
+        }, failure: { [weak self] in self?.present($0) })
+    }
+
+    /// File ▸ Save Screen…: asks where to save, starting in the screenshot
+    /// folder, and whether to apply the device's mask. Saving remembers both.
+    func chooseScreenshotDestination() {
         guard let window, session.reserve() else { return }
+        let hasMask = session.capabilities.hasFramebufferMask
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.png]
         panel.canCreateDirectories = true
-        panel.nameFieldStringValue = "Simulator Screenshot.png"
+        panel.directoryURL = CaptureFile.screenshotFolder()
+        panel.nameFieldStringValue = CaptureFile.screenshotName(device: session.device.name, date: Date())
+        let applyMask = NSButton(checkboxWithTitle: "Apply device mask to screenshot", target: nil, action: nil)
+        applyMask.toolTip = "Apply device mask to non-rectangular screens when taking screenshots."
+        applyMask.state = UserDefaults.standard.bool(forKey: HostPreferences.screenShotUseMask) ? .on : .off
+        if hasMask { panel.accessoryView = Self.accessory(applyMask) }
         panel.beginSheetModal(for: window) { [weak self] response in
             guard let self else { return }
             self.session.release()
             guard response == .OK, let destination = panel.url, !self.closed else { return }
-            self.session.run({ [session] in try await session.saveScreenshot(to: destination) },
+            let useMask = hasMask && applyMask.state == .on
+            UserDefaults.standard.set(destination.deletingLastPathComponent().path,
+                                      forKey: HostPreferences.screenShotSaveLocation)
+            if hasMask { UserDefaults.standard.set(useMask, forKey: HostPreferences.screenShotUseMask) }
+            self.session.run({ [session] in try await session.saveScreenshot(to: destination, mask: useMask ? .alpha : .ignored) },
                              failure: { [weak self] in self?.present($0) })
         }
     }
 
+    /// Edit ▸ Copy Screen: puts a PNG of the screen on the Mac pasteboard,
+    /// leaving the simulator's pasteboard alone.
+    func copyScreen() {
+        session.run({ [session] in
+            let png = try await session.screenPNG()
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setData(png, forType: .png)
+        }, failure: { [weak self] in self?.present($0) })
+    }
+
+    /// File ▸ Record Screen: starts recording without asking. Stopping saves
+    /// the movie to the Desktop, named when it stops.
+    func recordScreen() {
+        guard let desktop = CaptureFile.desktop else {
+            present(HostError.operation("Could not find the Desktop folder to save the recording in."))
+            return
+        }
+        let device = session.device.name
+        run {
+            try session.startRecording(to: .folder(desktop, name: { CaptureFile.recordingName(device: device, date: Date()) }),
+                                       mask: usesDeviceMask ? .black : .ignored)
+        }
+    }
+
+    /// File ▸ Record Screen…: asks where to save the movie and whether to
+    /// apply the device's mask, then starts recording.
     func chooseRecordingDestination() {
         guard let window, session.reserve() else { return }
         let panel = NSSavePanel()
-        panel.allowedContentTypes = [.mpeg4Movie]
+        panel.allowedContentTypes = [.quickTimeMovie]
         panel.canCreateDirectories = true
-        panel.nameFieldStringValue = "Simulator Recording.mp4"
+        panel.nameFieldStringValue = CaptureFile.recordingName(device: session.device.name, date: Date())
+        // Simulator.app starts this option on and does not remember it.
+        let applyMask = NSButton(checkboxWithTitle: "Apply device mask to recording", target: nil, action: nil)
+        applyMask.state = .on
+        panel.accessoryView = Self.accessory(applyMask)
         panel.beginSheetModal(for: window) { [weak self] response in
             guard let self else { return }
             self.session.release()
             guard response == .OK, let destination = panel.url, !self.closed else { return }
-            do { try self.session.startRecording(to: destination) }
-            catch { self.present(error) }
+            self.run { try self.session.startRecording(to: .file(destination), mask: applyMask.state == .on ? .black : .ignored) }
         }
+    }
+
+    private static func accessory(_ option: NSButton) -> NSView {
+        let view = NSView()
+        option.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(option)
+        NSLayoutConstraint.activate([
+            option.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            option.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 20),
+            option.topAnchor.constraint(equalTo: view.topAnchor, constant: 12),
+            option.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -12),
+        ])
+        return view
     }
 
     func chooseFilesToImport() {
@@ -446,6 +515,62 @@ private final class DeviceContentView: NSView {
 }
 
 enum CaptureFile {
+    /// Simulator.app's screenshot name, dated in the local time zone.
+    static func screenshotName(device: String, date: Date) -> String {
+        name("Simulator Screenshot", device: device, date: date, extension: "png")
+    }
+
+    /// Simulator.app's screen recording name, dated in the local time zone.
+    static func recordingName(device: String, date: Date) -> String {
+        name("Simulator Screen Recording", device: device, date: date, extension: "mov")
+    }
+
+    // `:` and `/` become `.`, so a date reads `2026-10-21 at 23.17.05`.
+    private static func name(_ kind: String, device: String, date: Date, extension suffix: String) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd 'at' HH:mm:ss"
+        return "\(kind) - \(device) - \(formatter.string(from: date)).\(suffix)"
+            .replacingOccurrences(of: ":", with: ".")
+            .replacingOccurrences(of: "/", with: ".")
+    }
+
+    static var desktop: URL? { FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first }
+
+    /// The folder Save Screen saves into, as Simulator.app chooses it:
+    /// `ScreenShotSaveLocation` when it is an existing folder, else the
+    /// Desktop, else `/private/tmp`.
+    static func screenshotFolder() -> URL {
+        if let location = UserDefaults.standard.string(forKey: HostPreferences.screenShotSaveLocation) {
+            let path = NSString(string: location).expandingTildeInPath
+            var isDirectory: ObjCBool = false
+            if !path.isEmpty, FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
+               isDirectory.boolValue {
+                return URL(fileURLWithPath: path, isDirectory: true)
+            }
+        }
+        return desktop ?? URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+    }
+
+    /// Moves a capture into `folder` under `name`, adding " #2" through
+    /// " #99" before the extension when the name is taken. A failure leaves
+    /// the capture where it is and names that location.
+    static func move(_ capture: URL, into folder: URL, named name: String) throws -> URL {
+        let base = (name as NSString).deletingPathExtension, suffix = (name as NSString).pathExtension
+        for number in 1...99 {
+            let candidate = folder.appendingPathComponent(number == 1 ? name : "\(base) #\(number).\(suffix)")
+            do {
+                try FileManager.default.moveItem(at: capture, to: candidate)
+                return candidate
+            } catch CocoaError.fileWriteFileExists {
+                continue
+            } catch {
+                throw HostError.operation("Could not save \(name) in \(folder.path): \(error.localizedDescription) The capture is at \(capture.path).")
+            }
+        }
+        throw HostError.operation("Could not save \(name): \(folder.path) already has files of that name through #99. The capture is at \(capture.path).")
+    }
+
     @MainActor
     static func write(to destination: URL, extension suffix: String,
                       produce: (URL) async throws -> Void) async throws {

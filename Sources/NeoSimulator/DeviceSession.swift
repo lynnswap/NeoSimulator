@@ -14,6 +14,8 @@ struct DeviceCapabilities {
     /// Whether `devicectl` can read and set the physical orientation. It
     /// reaches only devices in the default device set.
     var controlsOrientation = true
+    /// Whether the device type has a framebuffer mask that captures can apply.
+    var hasFramebufferMask = false
 
     var isPhoneOrPad: Bool { family == .iPhone || family == .iPad }
     var rotates: Bool { controlsOrientation && supportsFeature(Self.displayRotation) }
@@ -50,14 +52,30 @@ enum HostPreferences {
     static let currentDeviceUDID = "CurrentDeviceUDID"
     /// How long quitting waits for devices to disconnect and shut down, in seconds.
     static let terminationTimeout = "TerminationTimeout"
+    /// The folder Save Screen saves into.
+    static let screenShotSaveLocation = "ScreenShotSaveLocation"
+    /// Whether Save Screen and Record Screen apply the device's mask.
+    static let screenShotUseMask = "ScreenShotUseMask"
 
     /// Registers Simulator.app's defaults for these preferences.
     static func registerDefaults() {
         UserDefaults.standard.register(defaults: [
             showTestingDevices: true, detachOnWindowClose: false, detachOnAppQuit: false,
             attachBootedOnStart: true, sessionOnLaunch: true, startLastDeviceOnLaunch: true,
-            terminationTimeout: 60.0,
+            terminationTimeout: 60.0, screenShotSaveLocation: defaultScreenshotLocation(), screenShotUseMask: false,
         ])
+    }
+
+    /// Like Simulator.app: the macOS screenshot location when it is an
+    /// existing folder, and otherwise the Desktop.
+    private static func defaultScreenshotLocation() -> String {
+        var isDirectory: ObjCBool = false
+        if let location = CFPreferencesCopyAppValue("location" as CFString, "com.apple.screencapture" as CFString)
+            as? String, FileManager.default.fileExists(atPath: NSString(string: location).expandingTildeInPath,
+                                                       isDirectory: &isDirectory), isDirectory.boolValue {
+            return location
+        }
+        return CaptureFile.desktop?.path ?? NSString(string: "~/Desktop").expandingTildeInPath
     }
 }
 
@@ -126,7 +144,7 @@ final class DeviceSession {
     @ObservationIgnored let display: any SimulatorDisplay
     @ObservationIgnored let tools: DeviceTools
     @ObservationIgnored private let recordings: RecordingStore
-    @ObservationIgnored private let makeRecordingProcess: (URL) -> Process
+    @ObservationIgnored private let makeRecordingProcess: (URL, DeviceTools.ScreenMask) -> Process
     @ObservationIgnored private var operation: Task<Void, Never>?
     /// The delayed steps of hardware inputs, which a disconnect cancels.
     @ObservationIgnored private var inputSteps: [Int: Task<Void, Never>] = [:]
@@ -150,16 +168,18 @@ final class DeviceSession {
     @ObservationIgnored private var guestAngle: Double?
 
     /// - Parameter recordingProcess: Creates the recording process for a
-    ///   destination. Defaults to the device's direct `simctl` recorder.
+    ///   destination and mask. Defaults to the device's direct `simctl` recorder.
     init(device: AvailableDevice, capabilities: DeviceCapabilities, display: any SimulatorDisplay,
          tools: DeviceTools, recordings: RecordingStore = RecordingStore(),
-         recordingProcess: ((URL) -> Process)? = nil) {
+         recordingProcess: ((URL, DeviceTools.ScreenMask) -> Process)? = nil) {
         self.device = device
         self.capabilities = capabilities
         self.display = display
         self.tools = tools
         self.recordings = recordings
-        makeRecordingProcess = recordingProcess ?? tools.recordingProcess(to:)
+        // Simulator.app records Apple Vision Pro in HEVC and other devices in H.264.
+        let codec: DeviceTools.VideoCodec = capabilities.family == .vision ? .hevc : .h264
+        makeRecordingProcess = recordingProcess ?? { tools.recordingProcess(to: $0, mask: $1, codec: codec) }
     }
 
     var canPerformCommands: Bool { isConnected && display.isBooted }
@@ -362,20 +382,55 @@ final class DeviceSession {
         display.setRotation(degrees: reading.displayAngle)
     }
 
-    func saveScreenshot(to destination: URL) async throws {
+    /// Saves the screen to a file chosen in a save panel, replacing it.
+    func saveScreenshot(to destination: URL, mask: DeviceTools.ScreenMask) async throws {
         try await CaptureFile.write(to: destination, extension: "png") { temporary in
-            try await tools.screenshot(to: temporary)
-            let handle = try FileHandle(forReadingFrom: temporary)
-            defer { try? handle.close() }
-            guard try handle.read(upToCount: 8) == Data([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) else {
-                throw HostError.operation("The screenshot tool did not produce a PNG file")
-            }
+            try await tools.screenshot(to: temporary, mask: mask)
+            try Self.checkPNG(at: temporary)
         }
     }
 
-    func startRecording(to destination: URL) throws {
+    /// Saves the screen into `folder` under `name`, numbering the name when
+    /// it is taken, and returns the saved file.
+    func saveScreenshot(into folder: URL, named name: String, mask: DeviceTools.ScreenMask) async throws -> URL {
+        let temporary = try await screenshot(mask: mask)
+        return try CaptureFile.move(temporary, into: folder, named: name)
+    }
+
+    /// The screen as a PNG, without the device's mask, for Edit ▸ Copy Screen.
+    func screenPNG() async throws -> Data {
+        let temporary = try await screenshot(mask: .ignored)
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        return try Data(contentsOf: temporary)
+    }
+
+    /// Takes a screenshot into a new temporary PNG, which the caller owns.
+    private func screenshot(mask: DeviceTools.ScreenMask) async throws -> URL {
+        let temporary = FileManager.default.temporaryDirectory
+            .appendingPathComponent("simulator_screenshot_\(UUID().uuidString).png")
+        do {
+            try await tools.screenshot(to: temporary, mask: mask)
+            try Self.checkPNG(at: temporary)
+            return temporary
+        } catch {
+            try? FileManager.default.removeItem(at: temporary)
+            throw error
+        }
+    }
+
+    private static func checkPNG(at url: URL) throws {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        guard try handle.read(upToCount: 8) == Data([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) else {
+            throw HostError.operation("The screenshot tool did not produce a PNG file")
+        }
+    }
+
+    func startRecording(to destination: RecordingStore.Destination, mask: DeviceTools.ScreenMask) throws {
         guard canPerformCommands, recording == nil else { return }
-        recording = try recordings.start(to: destination, process: makeRecordingProcess) { [weak self] in
+        recording = try recordings.start(to: destination, process: { [makeRecordingProcess] in
+            makeRecordingProcess($0, mask)
+        }) { [weak self] in
             self?.recording = nil
         }
     }
