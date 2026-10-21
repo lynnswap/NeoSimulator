@@ -103,11 +103,17 @@ Neo currently provides:
   Apple Pay. The Side Button command is defined for watchOS devices, which Neo
   does not host yet.
 
-Use **File → Open Simulator…** (Command-N) to choose a device and
-**Device → Shut Down** to stop it. **Device → Restart** and **Device → Erase
+Use **File → Open Simulator** to choose a device, **File → New Simulator…**
+to create one, and **Device → Shut Down** to stop it. As in Simulator.app, Open
+Simulator groups devices by runtime and marks booted devices: a checkmark when
+the device has a window, a dash when it does not; hold Option to see each
+device's runtime and type. Neo lists only iOS devices until it hosts other
+platforms. **Device → Restart** and **Device → Erase
 All Content and Settings…** keep the window open and reconnect it when the
 device boots again; an active recording is saved first. Closing a window
-leaves the simulator running; it can be reopened from the device browser. Neo requires no
+leaves the simulator running; it can be reopened from File → Open Simulator or
+from **Window → Simulators**, NeoSimulator's own device list, which also opens
+when no device window is open. Neo requires no
 `Simulator.app` installation.
 
 Choose **File → Record Screen…** (Command-R) and a destination to begin

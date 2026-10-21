@@ -99,7 +99,7 @@ The first set contains only actions with a concrete owner and observable failure
 semantics:
 
 - Application: About, Hide, Hide Others, Show All, Quit;
-- File: Save Screen, Close Window;
+- File: New Simulator…, Open Simulator, Save Screen, Close Window;
 - Device: Rotate Left, Rotate Right, Orientation, Rotate Device Automatically,
   Home, Lock, Side Button, Action Button,
   Siri, Shake, App Switcher, Trigger Screenshot;

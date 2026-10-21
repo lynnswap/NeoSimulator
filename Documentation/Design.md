@@ -289,7 +289,7 @@ analysis source only and is not a runtime dependency.
 
 The first parity set contains only commands with an available, validated owner:
 
-- File: Save Screen, Close Window;
+- File: New Simulator…, Open Simulator, Save Screen, Close Window;
 - Device: Restart, Erase All Content and Settings…, Shut Down, Rotate
   Left/Right, Orientation, Rotate Device Automatically, Home,
   Lock, Side Button (watchOS devices only, so hidden until Neo hosts them),
@@ -297,7 +297,19 @@ The first parity set contains only commands with an available, validated owner:
 - I/O: Toggle Software Keyboard, Increase Volume, Decrease Volume;
 - Features: Authorize Apple Pay, Toggle Appearance;
 - Window: standard minimize/zoom/full screen, Show Device Bezels, Stay on Top,
-  Fit Screen, Bring All to Front.
+  Fit Screen, Simulators, Bring All to Front.
+
+File ▸ Open Simulator follows Simulator.app's menu delegate: CoreSimulator's
+available-device order, a submenu per runtime (none for a single runtime), the
+device name with its `descriptiveName` as the Option alternate, and markers on
+for booting or booted devices with a visible window and mixed without one. Neo
+lists iOS devices only, because it hosts no other platform yet. File ▸ New
+Simulator… rebuilds Simulator.app's creation form: every supported device type
+and available runtime in CoreSimulator's order, selection corrected to the first
+compatible choice, the device type's name as the default name, and `simctl
+create` without booting. Its Paired Apple Watch page waits for watchOS hosting.
+Window ▸ Simulators is NeoSimulator's own device list; Simulator.app has no such
+window.
 
 Hardware inputs send Indigo HID messages to the connected screen's
 `buttonTarget` through `SimDeviceLegacyHIDClient`: button messages for Home,

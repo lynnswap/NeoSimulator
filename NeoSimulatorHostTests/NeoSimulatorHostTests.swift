@@ -520,11 +520,103 @@ struct InputFocusTests {
             menus.updateVisibility(in: menu, for: controller.session.capabilities)
             return menu.items.filter { !$0.isHidden }.map { $0.isSeparatorItem ? "-" : $0.title }
         }
+        // File ▸ Open Simulator is built when it opens, so its empty submenu stays visible.
+        #expect(try visibleTitles("File").prefix(3) == ["New Simulator…", "Open Simulator", "-"])
         #expect(try visibleTitles("Device") == ["Restart", "Erase All Content and Settings…", "Shut Down", "-",
                                                  "Home", "Lock", "Action Button", "Siri", "Shake",
                                                  "App Switcher", "-", "Trigger Screenshot"])
         #expect(try visibleTitles("I/O") == ["Keyboard", "-", "Increase Volume", "Decrease Volume", "-", "Open URL…"])
         #expect(try visibleTitles("Features") == ["Authorize Apple Pay", "-", "Toggle Appearance"])
+    }
+
+    @Test func openSimulatorListsDevicesBySimulatorAppRules() throws {
+        let devices = [
+            availableDevice("a", "iPhone 17", runtime: "iOS 27.0", state: 3),
+            availableDevice("b", "iPad", runtime: "iOS 27.0", state: 2),
+            availableDevice("c", "iPhone 16", runtime: "iOS 26.5", state: 1),
+        ]
+        func items(_ devices: [AvailableDevice]) -> [NSMenuItem] {
+            OpenSimulatorMenu.items(for: devices, hasWindow: { $0 == "a" }, action: #selector(NSText.copy(_:)),
+                                    target: nil)
+        }
+        let runtimes = items(devices)
+        #expect(runtimes.map(\.title) == ["iOS 27.0", "iOS 26.5"])
+        #expect(runtimes.map(\.state) == [.mixed, .off])
+        let first = try #require(runtimes[0].submenu?.items)
+        #expect(first.map(\.title) == ["iPhone 17", "iOS 27.0 - iPhone 17", "iPad", "iOS 27.0 - iPad"])
+        #expect(first.map(\.isAlternate) == [false, true, false, true])
+        #expect(first.map(\.keyEquivalentModifierMask) == [[], .option, [], .option])
+        #expect(first.map(\.state) == [.on, .on, .mixed, .mixed])
+        #expect(first.map { $0.representedObject as? String } == ["a", "a", "b", "b"])
+        // A single runtime lists its devices directly.
+        #expect(items(Array(devices.prefix(2))).map(\.title) == first.map(\.title))
+    }
+
+    @Test func newSimulatorKeepsDeviceTypeAndRuntimeCompatible() async throws {
+        _ = NSApplication.shared
+        let catalog = SimulatorCatalog(
+            deviceTypes: [.init(identifier: "a", name: "iPhone A", productFamily: 1),
+                          .init(identifier: "b", name: "iPhone B", productFamily: 1),
+                          .init(identifier: "x", name: "iPhone X", productFamily: 1),
+                          .init(identifier: "c", name: "iPad C", productFamily: 2)],
+            runtimes: [.init(identifier: "old", name: "iOS 26.0"), .init(identifier: "new", name: "iOS 27.0"),
+                       .init(identifier: "empty", name: "iOS 28.0")],
+            supportedDeviceTypes: ["old": ["b"], "new": ["a", "c"]])
+        var created: [[String]] = []
+        var failure: Error?
+        let form = NewSimulatorWindowController(catalog: catalog, create: { name, deviceType, runtime in
+            if let failure { throw failure }
+            created.append([name, deviceType, runtime])
+        })
+        defer { form.close() }
+        let window = try #require(form.window)
+        form.showWindow(nil)
+        func choose(_ title: String, in popUp: NSPopUpButton) {
+            popUp.selectItem(withTitle: title)
+            popUp.sendAction(popUp.action, to: popUp.target)
+        }
+        func selection() -> [String?] { [form.deviceTypes.titleOfSelectedItem, form.runtimes.titleOfSelectedItem] }
+        #expect(form.deviceTypes.itemArray.map { $0.isSeparatorItem ? "-" : $0.title }
+                == ["iPhone A", "iPhone B", "iPhone X", "-", "iPad C"])
+        #expect(form.runtimes.itemTitles == ["iOS 26.0", "iOS 27.0", "iOS 28.0"])
+        // The first runtime stays, and the device type becomes the first it supports.
+        #expect(selection() == ["iPhone B", "iOS 26.0"])
+        #expect(form.nameField.placeholderString == "iPhone B")
+        choose("iPad C", in: form.deviceTypes)
+        #expect(selection() == ["iPad C", "iOS 27.0"])
+        choose("iOS 26.0", in: form.runtimes)
+        #expect(selection() == ["iPhone B", "iOS 26.0"])
+        // Without a compatible choice the other selection empties, and the next
+        // compatible choice restores it.
+        choose("iPhone X", in: form.deviceTypes)
+        #expect(selection() == ["iPhone X", nil])
+        choose("iPad C", in: form.deviceTypes)
+        #expect(selection() == ["iPad C", "iOS 27.0"])
+        choose("iOS 28.0", in: form.runtimes)
+        #expect(selection() == [nil, "iOS 28.0"])
+        choose("iOS 26.0", in: form.runtimes)
+        #expect(selection() == ["iPhone B", "iOS 26.0"])
+
+        failure = HostError.operation("creation failed")
+        form.createButton.performClick(nil)
+        for _ in 0..<100 where window.attachedSheet == nil { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(window.isVisible && created.isEmpty)
+        window.endSheet(try #require(window.attachedSheet))
+        failure = nil
+        // An empty name uses the device type's name.
+        form.createButton.performClick(nil)
+        for _ in 0..<100 where window.isVisible { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(created == [["iPhone B", "b", "old"]])
+        #expect(!window.isVisible)
+    }
+
+    @Test func newSimulatorWithoutRuntimesCannotCreate() throws {
+        let form = NewSimulatorWindowController(
+            catalog: SimulatorCatalog(deviceTypes: [.init(identifier: "a", name: "iPhone A", productFamily: 1)],
+                                      runtimes: [], supportedDeviceTypes: [:]),
+            create: { _, _, _ in Issue.record("created without a runtime") })
+        #expect(form.runtimes.itemTitles == ["No Runtimes Available"])
+        #expect(!form.runtimes.isEnabled && !form.deviceTypes.isEnabled && !form.createButton.isEnabled)
     }
 
     @Test func hardwareCommandsSendSimulatorAppEvents() throws {
@@ -719,7 +811,7 @@ struct InputFocusTests {
                              devicectl: URL = DeviceTools.devicectl,
                              recordingProcess: ((URL) -> Process)? = nil) throws -> DeviceSession {
         DeviceSession(
-            device: AvailableDevice(identifier: "test-device", name: "Test iPhone", runtimeName: "iOS", state: 3),
+            device: availableDevice("test-device", "Test iPhone", runtime: "iOS", state: 3),
             capabilities: DeviceCapabilities(family: .iPhone, runtimeVersion: 0x1B_00_00,
                                              supportsFeature: { features.contains($0) }),
             display: display,
@@ -903,15 +995,24 @@ struct HostBehaviorTests {
 
 @MainActor
 private final class TestCatalog: DeviceBrowserSource {
-    var devices = [AvailableDevice(identifier: "phone", name: "Phone", runtimeName: "iOS 27", state: 1)]
+    var devices = [availableDevice("phone", "Phone", runtime: "iOS 27", state: 1)]
     var opened: [String] = []
     var failure: Error?
     func availableSimulatorDevices() -> [AvailableDevice] { devices }
     func openSimulator(withIdentifier identifier: String) async throws {
         if let failure { throw failure }
         opened.append(identifier)
-        devices = devices.map { AvailableDevice(identifier: $0.id, name: $0.name, runtimeName: $0.runtimeName, state: 3) }
+        devices = devices.map {
+            var device = $0
+            device.state = 3
+            return device
+        }
     }
+}
+
+private func availableDevice(_ identifier: String, _ name: String, runtime: String, state: UInt) -> AvailableDevice {
+    AvailableDevice(identifier: identifier, name: name, descriptiveName: "\(runtime) - \(name)",
+                    runtimeIdentifier: "runtime \(runtime)", runtimeName: runtime, state: state)
 }
 
 @Suite @MainActor
@@ -925,6 +1026,23 @@ struct DeviceToolTests {
             try await runner.run(URL(fileURLWithPath: "/bin/sh"), arguments: ["-c", "echo rejected >&2; exit 7"])
         }
         #expect(runner.process == nil)
+    }
+
+    @Test func createDevicePassesNameTypeAndRuntimeToSimctl() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let log = directory.appendingPathComponent("arguments"), simctl = directory.appendingPathComponent("simctl")
+        try """
+            #!/bin/sh
+            printf '%s\\n' "$DEVELOPER_DIR" "$@" > "\(log.path)"
+            """.write(to: simctl, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: simctl.path)
+        try await DeviceTools.createDevice(named: "My Phone", deviceType: "type", runtime: "runtime",
+                                           xcodeURL: URL(fileURLWithPath: "/Applications/Xcode.app"), simctl: simctl)
+        #expect(try String(contentsOf: log, encoding: .utf8).split(separator: "\n") == [
+            "/Applications/Xcode.app/Contents/Developer", "create", "My Phone", "type", "runtime",
+        ])
     }
 
     @Test func timeoutAndCancellationReapTheChildProcess() async throws {

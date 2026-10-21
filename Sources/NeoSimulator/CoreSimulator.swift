@@ -11,13 +11,17 @@ struct CoreSimulatorInterface {
     let serviceClass: AnyClass
     let sharedContext: NativeObjCMethod<AnyObject, String>
     let defaultDeviceSet: NativeObjCMethod<AnyObject>
+    let supportedDeviceTypes: NativeObjCMethod<[AnyObject]>
+    let supportedRuntimes: NativeObjCMethod<[AnyObject]>
     let subscribe: NativeObjCMethod<Void>
     let availableDevices: NativeObjCMethod<[AnyObject]>
     let registerHandler: NativeObjCMethod<UInt64, DispatchQueue, NotificationHandler>
     let unregisterHandler: NativeObjCMethod<Void, UInt64>
     let state: NativeObjCMethod<UInt>
     let name: NativeObjCMethod<String?>
+    let descriptiveName: NativeObjCMethod<String?>
     let identifier: NativeObjCMethod<NSUUID?>
+    let deviceRuntimeIdentifier: NativeObjCMethod<String?>
     let deviceRuntime: NativeObjCMethod<AnyObject?>
     let deviceType: NativeObjCMethod<AnyObject?>
     let supportsFeature: NativeObjCMethod<Bool, String>
@@ -25,9 +29,14 @@ struct CoreSimulatorInterface {
     let setInterfaceStyle: NativeObjCMethod<Void, Int>
     let postDarwinNotification: NativeObjCMethod<Void, String>
     let runtimeName: NativeObjCMethod<String?>
+    let runtimeIdentifier: NativeObjCMethod<String?>
+    let runtimeAvailable: NativeObjCMethod<Bool>
+    let runtimeSupportsDeviceType: NativeObjCMethod<Bool, AnyObject>
     let platformIdentifier: NativeObjCMethod<String?>
     let runtimeVersion: NativeObjCMethod<UInt32>
     let productFamily: NativeObjCMethod<Int32>
+    let deviceTypeName: NativeObjCMethod<String?>
+    let deviceTypeIdentifier: NativeObjCMethod<String?>
 
     typealias NotificationHandler = @convention(block) (NSDictionary) -> Void
 
@@ -48,6 +57,10 @@ struct CoreSimulatorInterface {
             as: ((String) throws -> AnyObject).self, classMethod: true)
         defaultDeviceSet = try runtime.resolveObjCMethodAndWait(
             on: serviceClass, selector: "defaultDeviceSetWithError:", as: (() throws -> AnyObject).self)
+        supportedDeviceTypes = try runtime.resolveObjCMethodAndWait(
+            on: serviceClass, selector: "supportedDeviceTypes", as: (() -> [AnyObject]).self)
+        supportedRuntimes = try runtime.resolveObjCMethodAndWait(
+            on: serviceClass, selector: "supportedRuntimes", as: (() -> [AnyObject]).self)
         subscribe = try runtime.resolveObjCMethodAndWait(
             on: deviceSet, selector: "subscribeToNotificationsWithError:", as: (() throws -> Void).self)
         availableDevices = try runtime.resolveObjCMethodAndWait(
@@ -59,7 +72,11 @@ struct CoreSimulatorInterface {
             on: deviceSet, selector: "unregisterNotificationHandler:error:", as: ((UInt64) throws -> Void).self)
         state = try runtime.resolveObjCMethodAndWait(on: device, selector: "state", as: (() -> UInt).self)
         name = try runtime.resolveObjCMethodAndWait(on: device, selector: "name", as: (() -> String?).self)
+        descriptiveName = try runtime.resolveObjCMethodAndWait(
+            on: device, selector: "descriptiveName", as: (() -> String?).self)
         identifier = try runtime.resolveObjCMethodAndWait(on: device, selector: "UDID", as: (() -> NSUUID?).self)
+        deviceRuntimeIdentifier = try runtime.resolveObjCMethodAndWait(
+            on: device, selector: "runtimeIdentifier", as: (() -> String?).self)
         deviceRuntime = try runtime.resolveObjCMethodAndWait(
             on: device, selector: "runtime", as: (() -> AnyObject?).self)
         deviceType = try runtime.resolveObjCMethodAndWait(
@@ -74,12 +91,22 @@ struct CoreSimulatorInterface {
             on: device, selector: "postDarwinNotification:error:", as: ((String) throws -> Void).self)
         runtimeName = try runtime.resolveObjCMethodAndWait(
             on: simRuntime, selector: "name", as: (() -> String?).self)
+        runtimeIdentifier = try runtime.resolveObjCMethodAndWait(
+            on: simRuntime, selector: "identifier", as: (() -> String?).self)
+        runtimeAvailable = try runtime.resolveObjCMethodAndWait(
+            on: simRuntime, selector: "available", as: (() -> Bool).self)
+        runtimeSupportsDeviceType = try runtime.resolveObjCMethodAndWait(
+            on: simRuntime, selector: "supportsDeviceType:", as: ((AnyObject) -> Bool).self)
         platformIdentifier = try runtime.resolveObjCMethodAndWait(
             on: simRuntime, selector: "platformIdentifier", as: (() -> String?).self)
         runtimeVersion = try runtime.resolveObjCMethodAndWait(
             on: simRuntime, selector: "version", as: (() -> UInt32).self)
         productFamily = try runtime.resolveObjCMethodAndWait(
             on: simDeviceType, selector: "productFamilyID", as: (() -> Int32).self)
+        deviceTypeName = try runtime.resolveObjCMethodAndWait(
+            on: simDeviceType, selector: "name", as: (() -> String?).self)
+        deviceTypeIdentifier = try runtime.resolveObjCMethodAndWait(
+            on: simDeviceType, selector: "identifier", as: (() -> String?).self)
     }
 }
 
@@ -90,6 +117,11 @@ final class SimulatorDevice {
     let object: AnyObject
     let identifier: String
     let name: String
+    /// The runtime, its build, and the device type, such as
+    /// "iOS 27.0 (24A434) - iPhone 17 Pro". Simulator.app shows it in File ▸
+    /// Open Simulator while Option is held.
+    let descriptiveName: String
+    let runtimeIdentifier: String
     let runtimeName: String
     let platformIdentifier: String
     /// `SimDeviceType.productFamilyID`: 1 iPhone, 2 iPad, 3 TV, 4 Watch, 7 Vision.
@@ -104,6 +136,8 @@ final class SimulatorDevice {
         self.interface = interface
         self.identifier = identifier.uuidString
         name = try unsafe interface.name.unsafeInvoke(on: object) ?? "iOS Simulator"
+        descriptiveName = try unsafe interface.descriptiveName.unsafeInvoke(on: object) ?? name
+        runtimeIdentifier = try unsafe interface.deviceRuntimeIdentifier.unsafeInvoke(on: object) ?? ""
         let runtime = try unsafe interface.deviceRuntime.unsafeInvoke(on: object)
         runtimeName = try runtime.flatMap { try unsafe interface.runtimeName.unsafeInvoke(on: $0) } ?? "iOS"
         platformIdentifier =
@@ -131,20 +165,73 @@ final class SimulatorDevice {
     }
 }
 
+/// The device types and runtimes that File ▸ New Simulator… offers, in
+/// CoreSimulator's order.
+struct SimulatorCatalog {
+    struct DeviceType: Equatable {
+        let identifier: String
+        let name: String
+        /// `productFamilyID`, as in `SimulatorDevice.productFamily`.
+        let productFamily: Int
+    }
+
+    struct Runtime: Equatable {
+        let identifier: String
+        let name: String
+    }
+
+    let deviceTypes: [DeviceType]
+    /// The available runtimes.
+    let runtimes: [Runtime]
+    /// The device types each runtime supports, by identifier.
+    let supportedDeviceTypes: [String: Set<String>]
+
+    func runtime(_ runtime: String, supports deviceType: String) -> Bool {
+        supportedDeviceTypes[runtime]?.contains(deviceType) == true
+    }
+}
+
 /// The default CoreSimulator device set of one developer directory.
 @MainActor
 final class SimulatorDeviceSet {
+    private let context: AnyObject
     private let object: AnyObject
     private let interface: CoreSimulatorInterface
 
     init(interface: CoreSimulatorInterface, developerDirectory: String) throws {
         self.interface = interface
-        let context = try unsafe interface.sharedContext.unsafeInvoke(
+        context = try unsafe interface.sharedContext.unsafeInvoke(
             on: interface.serviceClass as AnyObject, developerDirectory)
         object = try unsafe interface.defaultDeviceSet.unsafeInvoke(on: context)
         try unsafe interface.subscribe.unsafeInvoke(on: object)
     }
 
+    func readCatalog() throws -> SimulatorCatalog {
+        var deviceTypes: [(object: AnyObject, type: SimulatorCatalog.DeviceType)] = []
+        for object in try unsafe interface.supportedDeviceTypes.unsafeInvoke(on: context) {
+            guard let identifier = try unsafe interface.deviceTypeIdentifier.unsafeInvoke(on: object) else { continue }
+            deviceTypes.append((object, SimulatorCatalog.DeviceType(
+                identifier: identifier,
+                name: try unsafe interface.deviceTypeName.unsafeInvoke(on: object) ?? identifier,
+                productFamily: Int(try unsafe interface.productFamily.unsafeInvoke(on: object)))))
+        }
+        var runtimes: [SimulatorCatalog.Runtime] = []
+        var supported: [String: Set<String>] = [:]
+        for object in try unsafe interface.supportedRuntimes.unsafeInvoke(on: context) {
+            guard try unsafe interface.runtimeAvailable.unsafeInvoke(on: object),
+                  let identifier = try unsafe interface.runtimeIdentifier.unsafeInvoke(on: object) else { continue }
+            runtimes.append(SimulatorCatalog.Runtime(
+                identifier: identifier, name: try unsafe interface.runtimeName.unsafeInvoke(on: object) ?? identifier))
+            supported[identifier] = Set(try deviceTypes.filter {
+                try unsafe interface.runtimeSupportsDeviceType.unsafeInvoke(on: object, $0.object)
+            }.map(\.type.identifier))
+        }
+        return SimulatorCatalog(deviceTypes: deviceTypes.map(\.type), runtimes: runtimes,
+                                supportedDeviceTypes: supported)
+    }
+
+    /// The set's available devices in CoreSimulator's order: by runtime, then
+    /// device type, then name.
     func readDevices() throws -> [SimulatorDevice] {
         try unsafe interface.availableDevices.unsafeInvoke(on: object).compactMap {
             try SimulatorDevice($0, interface: interface)

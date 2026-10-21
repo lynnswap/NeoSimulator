@@ -20,6 +20,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     private var suppressed: Set<String> = []
     private var reportedFailures: Set<String> = []
     private var browser: DeviceBrowserWindowController?
+    private var newSimulator: NewSimulatorWindowController?
     private var menu: MenuController?
     private var stopped = false
     private var nextWindowPosition = NSPoint.zero
@@ -52,12 +53,18 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         try readDevices().map(Self.describe)
     }
 
+    func hasVisibleWindow(forDevice identifier: String) -> Bool {
+        sessions[identifier]?.window?.isVisible == true
+    }
+
     private func readDevices() throws -> [SimulatorDevice] {
         try deviceSet.readDevices().filter { $0.platformIdentifier == "com.apple.platform.iphonesimulator" }
     }
 
     private static func describe(_ device: SimulatorDevice) -> AvailableDevice {
-        AvailableDevice(identifier: device.identifier, name: device.name, runtimeName: device.runtimeName, state: device.state)
+        AvailableDevice(identifier: device.identifier, name: device.name, descriptiveName: device.descriptiveName,
+                        runtimeIdentifier: device.runtimeIdentifier, runtimeName: device.runtimeName,
+                        state: device.state)
     }
 
     private static func capabilities(of device: SimulatorDevice) -> DeviceCapabilities {
@@ -77,7 +84,9 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         }
         suppressed.remove(identifier)
         reportedFailures.remove(identifier)
-        if device.state != 3 {
+        // Like Simulator.app, a device that is already booting is attached
+        // once it boots instead of being booted again.
+        if device.state != 2, device.state != 3, bootOperations[identifier] == nil {
             let tools = try DeviceTools(identifier: identifier, xcodeURL: runtime.xcodeURL)
             bootOperations[identifier] = tools
             defer { bootOperations.removeValue(forKey: identifier) }
@@ -212,6 +221,27 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         }
     }
 
+    /// File ▸ New Simulator…. Like Simulator.app, an open form is brought to
+    /// the front instead of opening another.
+    func showNewSimulator() {
+        guard !stopped else { return }
+        if newSimulator == nil {
+            let catalog: SimulatorCatalog
+            do { catalog = try deviceSet.readCatalog() } catch {
+                report(error)
+                return
+            }
+            let xcodeURL = runtime.xcodeURL
+            newSimulator = NewSimulatorWindowController(catalog: catalog, create: { name, deviceType, runtime in
+                try await DeviceTools.createDevice(named: name, deviceType: deviceType, runtime: runtime,
+                                                   xcodeURL: xcodeURL)
+            }, onClose: { [weak self] in self?.newSimulator = nil })
+        }
+        newSimulator?.showWindow(nil)
+        newSimulator?.window?.makeKeyAndOrderFront(nil)
+        NSApp.activate()
+    }
+
     func showDeviceBrowser() {
         guard !stopped else { return }
         if browser == nil { browser = DeviceBrowserWindowController(source: self) }
@@ -278,6 +308,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         for session in sessions.values { session.invalidate() }
         sessions.removeAll()
         browser?.close()
+        newSimulator?.close()
         browser = nil
     }
 }
