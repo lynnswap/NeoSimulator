@@ -290,8 +290,9 @@ analysis source only and is not a runtime dependency.
 The first parity set contains only commands with an available, validated owner:
 
 - File: Save Screen, Close Window;
-- Device: Rotate Left/Right, Home, Lock, Side Button, Action Button, Siri,
-  Shake, App Switcher, Trigger Screenshot;
+- Device: Rotate Left/Right, Home, Lock, Side Button (watchOS devices only, so
+  hidden until Neo hosts them), Action Button, Siri, Shake, App Switcher,
+  Trigger Screenshot;
 - I/O: Toggle Software Keyboard, Increase Volume, Decrease Volume;
 - Features: Authorize Apple Pay, Toggle Appearance;
 - Window: standard minimize/zoom/full screen, Show Device Bezels, Stay on Top,
