@@ -299,7 +299,7 @@ struct InputFocusTests {
         ])
     }
 
-    @Test func theWindowFollowsGuestRotationWhenEnabled() async throws {
+    @Test func theWindowFollowsGuestRotationWhenEnabled() throws {
         let display = TestDisplay()
         let controller = try makeController(display)
         defer { controller.invalidate() }
@@ -309,22 +309,23 @@ struct InputFocusTests {
         let window = try #require(controller.window)
         func isLandscape() -> Bool { window.contentLayoutRect.width > window.contentLayoutRect.height }
         UserDefaults.standard.set(false, forKey: key)
+        display.guestInterfaceAngle = 90
         display.naturalSize = NSSize(width: 844, height: 390)
         display.onPropertiesChange?()
-        await Task.yield()
-        try await Task.sleep(for: .milliseconds(50))
         #expect(!isLandscape())
+        #expect(display.rotations.isEmpty)
         controller.perform(.rotateDeviceAutomatically)
         #expect(UserDefaults.standard.bool(forKey: key))
         display.onPropertiesChange?()
-        try await Task.sleep(for: .milliseconds(50))
         #expect(isLandscape())
-        // A property change that keeps the display size keeps the window size.
+        #expect(display.rotations == [90])
+        // Other property changes, after a resize or a bezel change, keep the window size.
         window.setContentSize(NSSize(width: 600, height: 400))
+        controller.toggleDeviceBezel()
         let chosen = window.frame.size
         display.onPropertiesChange?()
-        try await Task.sleep(for: .milliseconds(50))
         #expect(window.frame.size == chosen)
+        #expect(display.rotations == [90])
     }
 
     @Test func guestInterfaceOrientationsUseSimulatorKitAngles() {
@@ -506,7 +507,8 @@ private final class TestDisplay: SimulatorDisplay {
     func setChromeVisible(_ visible: Bool) {}
     func setActive(_ active: Bool) { activations.append(active) }
     func setKeyboardEnabled(_ enabled: Bool) { keyboard.append(enabled) }
-    func setRotation(degrees: Double) {}
+    var rotations: [Double] = []
+    func setRotation(degrees: Double) { rotations.append(degrees) }
     func beginResize() {}
     func resize(to size: NSSize) { view.setFrameSize(size) }
     func endResize() {}

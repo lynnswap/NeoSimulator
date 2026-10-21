@@ -325,10 +325,14 @@ Rotate Device Automatically stores Simulator.app's
 SimulatorKit's display view reads that key and sets `deviceRotation` itself
 when the guest changes its interface orientation. Each connection registers for
 `SimDeviceScreen` property events (`register(types:queue:handler:)` with
-`.properties`), and the window refits to the display's new size when the
-preference is on. Releasing the registration on disconnect ends the events. The
-Orientation checkmark keeps showing the physical orientation that `devicectl`
-reports, which a guest-initiated rotation does not change. Save Screen uses direct Apple `simctl` and a
+`.properties`). When the preference is on and the guest's interface orientation
+(`SimScreenProperties.uiOrientation`) changes, the session shows the display at
+that orientation's angle and the window refits. Other property changes, such as
+the backlight, keep the window size. A window opened while the preference is on
+also starts at the guest's interface orientation. Releasing the registration on
+disconnect ends the events. The Orientation checkmark keeps showing the physical
+orientation that `devicectl` reports, which a guest-initiated rotation does not
+change. Save Screen uses direct Apple `simctl` and a
 same-directory temporary PNG. The file is signature-checked and then atomically
 renamed, so cancellation or failure preserves an existing destination.
 Device-tool operations are single-flight, drain both output pipes, have a
