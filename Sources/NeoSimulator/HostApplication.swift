@@ -66,7 +66,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         let handover = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
         handover.setEventHandler { [weak self] in
             MainActor.assumeIsolated {
-                self?.yieldedToAnotherHost = true
+                self?.yieldToAnotherHost()
                 Self.requestTermination()
             }
         }
@@ -394,6 +394,14 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         }
     }
 
+    /// Another host owns the devices now, so they keep running: no pending or
+    /// later shutdown runs.
+    private func yieldToAnotherHost() {
+        yieldedToAnotherHost = true
+        for shutdown in closingShutdowns.values { shutdown.cancel() }
+        for shutdown in terminationShutdowns { shutdown.cancel() }
+    }
+
     /// Terminates from a run-loop callback rather than a main-queue block:
     /// while AppKit's termination loop runs inside a main-queue block, the
     /// main-actor work that termination waits for cannot run.
@@ -425,6 +433,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     /// quitting, and returns the failures. Each shutdown, and those of closed
     /// windows, must finish within `TerminationTimeout`.
     private func shutDownForTermination(_ devices: [(identifier: String, deviceSetPath: String?)]) async -> [String] {
+        // Ownership is checked when the shutdowns start, after any wait.
+        guard !yieldedToAnotherHost else { return [] }
         var failures: [String] = []
         var shutdowns = Array(closingShutdowns.values).map { shutdown in
             Task { () -> String? in await shutdown.value; return nil }
@@ -534,10 +544,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     private func handleHostConflict() {
         guard !stopped, let name = conflicts.conflictingHostName else { return }
         hostLog("\(name) appeared; disconnecting simulators and exiting")
-        // The other host owns the devices now, so they keep running.
-        yieldedToAnotherHost = true
-        for shutdown in closingShutdowns.values { shutdown.cancel() }
-        for shutdown in terminationShutdowns { shutdown.cancel() }
+        yieldToAnotherHost()
         shutdown()
         // A conflict can arrive on the main dispatch queue. Finish recordings
         // before terminating.
@@ -558,11 +565,11 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     /// Quitting finishes recordings, then, like Simulator.app, shuts down the
     /// devices that have windows unless the quit chose to keep them running or
-    /// `DetachOnAppQuit` is on. A host stopped by a conflict leaves them running.
+    /// `DetachOnAppQuit` is on. Devices another host takes over keep running.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !isTerminating else { return .terminateLater }
-        let keepsRunning = yieldedToAnotherHost || (quitChoice.map { $0 == .keepRunning }
-            ?? UserDefaults.standard.bool(forKey: HostPreferences.detachOnAppQuit))
+        let keepsRunning = quitChoice.map { $0 == .keepRunning }
+            ?? UserDefaults.standard.bool(forKey: HostPreferences.detachOnAppQuit)
         let devices = keepsRunning ? [] : sessions.values.map {
             (identifier: $0.session.device.id, deviceSetPath: $0.session.tools.deviceSetPath)
         }
@@ -574,8 +581,6 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             await recordings.finishAll()
             for error in recordingTerminationErrors { NSAlert(error: error).runModal() }
             recordingTerminationErrors.removeAll()
-            // A host that appeared meanwhile stopped this one; its devices stay.
-            let devices = yieldedToAnotherHost ? [] : devices
             // A restart could boot its device again, so it ends first.
             let restarts = Array(restarting.values)
             for restart in restarts { restart.cancel() }
