@@ -91,11 +91,19 @@ final class DeviceTools {
     static let devicectl = URL(fileURLWithPath: "/Library/Developer/PrivateFrameworks/CoreDevice.framework/Versions/A/Resources/bin/devicectl")
     let identifier: String
     let environment: [String: String]
+    private let simctlURL: URL
+    private let devicectlURL: URL
     private let runner = DeviceToolRunner()
 
-    init(identifier: String, xcodeURL: URL) throws {
+    /// - Parameters:
+    ///   - simctl: The `simctl` executable; tests substitute a stand-in.
+    ///   - devicectl: The `devicectl` executable; tests substitute a stand-in.
+    init(identifier: String, xcodeURL: URL, simctl: URL = DeviceTools.simctl,
+         devicectl: URL = DeviceTools.devicectl) throws {
         let developerDirectory = xcodeURL.appendingPathComponent("Contents/Developer").path
-        for tool in [Self.simctl, Self.devicectl] {
+        simctlURL = simctl
+        devicectlURL = devicectl
+        for tool in [simctl, devicectl] {
             guard FileManager.default.isExecutableFile(atPath: tool.path) else {
                 throw HostError.unavailable("Required device tool is unavailable: \(tool.path)")
             }
@@ -110,19 +118,19 @@ final class DeviceTools {
         _ = try await simctl(["io", identifier, "screenshot", "--type=png", "--mask=alpha", url.path])
     }
     func rotate(left: Bool) async throws -> OrientationReading {
-        _ = try await runner.run(Self.devicectl,
+        _ = try await runner.run(devicectlURL,
             arguments: ["device", "orientation", "rotate", "--device", identifier, left ? "left" : "right", "--quiet"],
             environment: environment)
         return try await orientation()
     }
     func setOrientation(_ orientation: DeviceOrientation) async throws -> OrientationReading {
-        _ = try await runner.run(Self.devicectl,
+        _ = try await runner.run(devicectlURL,
             arguments: ["device", "orientation", "set", "--device", identifier, orientation.rawValue, "--quiet"],
             environment: environment)
         return try await self.orientation()
     }
     func orientation() async throws -> OrientationReading {
-        try OrientationReading(devicectlOutput: await runner.run(Self.devicectl,
+        try OrientationReading(devicectlOutput: await runner.run(devicectlURL,
             arguments: ["device", "orientation", "get", "--device", identifier, "--json-output", "-", "--quiet"],
             environment: environment))
     }
@@ -137,13 +145,13 @@ final class DeviceTools {
     }
     func recordingProcess(to url: URL) -> Process {
         let process = Process()
-        process.executableURL = Self.simctl
+        process.executableURL = simctlURL
         process.arguments = ["io", identifier, "recordVideo", "--codec=h264", "--mask=black", "--force", url.path]
         process.environment = ProcessInfo.processInfo.environment.merging(environment) { _, new in new }
         return process
     }
     func cancel() { runner.cancel() }
     private func simctl(_ arguments: [String]) async throws -> Data {
-        try await runner.run(Self.simctl, arguments: arguments, environment: environment)
+        try await runner.run(simctlURL, arguments: arguments, environment: environment)
     }
 }

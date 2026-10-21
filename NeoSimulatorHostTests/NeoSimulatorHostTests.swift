@@ -328,6 +328,43 @@ struct InputFocusTests {
         #expect(display.rotations == [90])
     }
 
+    @Test func orientationCommandsSetTheDeviceAndKeepManualRotation() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        // A devicectl stand-in that remembers the orientation it was set to.
+        let state = directory.appendingPathComponent("orientation")
+        try "portrait".write(to: state, atomically: true, encoding: .utf8)
+        let devicectl = directory.appendingPathComponent("devicectl")
+        try """
+            #!/bin/sh
+            case "$3" in
+            set) printf %s "$6" > "\(state.path)" ;;
+            get) o=$(cat "\(state.path)")
+                 printf '{"result":{"deviceOrientation":"%s","deviceOrientationNonFlat":"%s"}}' "$o" "$o" ;;
+            esac
+            """.write(to: devicectl, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: devicectl.path)
+        let display = TestDisplay()
+        let controller = try makeController(display, devicectl: devicectl)
+        defer { controller.invalidate() }
+        let session = controller.session
+        let key = HostPreferences.rotateWindowWhenSignaledByGuest
+        let saved = UserDefaults.standard.object(forKey: key)
+        defer { UserDefaults.standard.set(saved, forKey: key) }
+        UserDefaults.standard.set(true, forKey: key)
+        display.guestInterfaceAngle = 0
+        try await session.readOrientation()
+        #expect(session.orientation == .portrait)
+        // The guest stays in portrait, as a portrait-only app does.
+        controller.perform(.landscapeLeft)
+        for _ in 0..<300 where session.isBusy { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(session.orientation == .landscapeLeft)
+        #expect(display.rotations == [0, 90])
+        display.onPropertiesChange?()
+        #expect(display.rotations == [0, 90])
+    }
+
     @Test func guestInterfaceOrientationsUseSimulatorKitAngles() {
         #expect([1, 2, 3, 4, 0].map(SimScreenUIOrientation.displayAngle) == [0, 180, -90, 90, 0])
     }
@@ -450,13 +487,15 @@ struct InputFocusTests {
 
     private func makeController(_ display: TestDisplay,
                                 features: Set<String> = [DeviceCapabilities.displayRotation],
+                                devicectl: URL = DeviceTools.devicectl,
                                 recordingProcess: ((URL) -> Process)? = nil) throws -> DeviceWindowController {
         let session = DeviceSession(
             device: AvailableDevice(identifier: "test-device", name: "Test iPhone", runtimeName: "iOS", state: 3),
             capabilities: DeviceCapabilities(family: .iPhone, runtimeVersion: 0x1B_00_00,
                                              supportsFeature: { features.contains($0) }),
             display: display,
-            tools: try DeviceTools(identifier: "test-device", xcodeURL: URL(fileURLWithPath: "/Applications/Xcode.app")),
+            tools: try DeviceTools(identifier: "test-device", xcodeURL: URL(fileURLWithPath: "/Applications/Xcode.app"),
+                                   devicectl: devicectl),
             recordingProcess: recordingProcess)
         return try DeviceWindowController(session: session, onClose: { _ in })
     }

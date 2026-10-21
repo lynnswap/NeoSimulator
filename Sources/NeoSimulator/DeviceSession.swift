@@ -110,8 +110,9 @@ final class DeviceSession {
     private(set) var recording: VideoRecording?
     /// The orientation last read from the device.
     private(set) var orientation: DeviceOrientation?
-    /// The angle the display is shown at.
-    @ObservationIgnored private var displayAngle = 0.0
+    /// The guest's interface orientation angle last observed, so that only its
+    /// changes rotate the display. A manual rotation does not change it.
+    @ObservationIgnored private var guestAngle: Double?
 
     /// - Parameter recordingProcess: Creates the recording process for a
     ///   destination. Defaults to the device's direct `simctl` recorder.
@@ -246,16 +247,19 @@ final class DeviceSession {
         let reading = try await tools.orientation()
         try Task.checkCancellation()
         orientation = reading.physical
+        guestAngle = display.guestInterfaceAngle
         let followsGuest = UserDefaults.standard.bool(forKey: HostPreferences.rotateWindowWhenSignaledByGuest)
-        rotateDisplay(to: followsGuest ? display.guestInterfaceAngle ?? reading.displayAngle : reading.displayAngle)
+        display.setRotation(degrees: followsGuest ? guestAngle ?? reading.displayAngle : reading.displayAngle)
     }
 
-    /// Shows the display at the guest's interface orientation if that changed,
-    /// and returns whether it did. SimulatorKit also applies it with Rotate
-    /// Device Automatically on; applying it here keeps the order deterministic.
+    /// Shows the display at the guest's interface orientation when that
+    /// changed, and returns whether it did. SimulatorKit also applies it with
+    /// Rotate Device Automatically on; applying it here keeps the order
+    /// deterministic.
     func followGuestInterfaceOrientation() -> Bool {
-        guard canPerformCommands, let angle = display.guestInterfaceAngle, angle != displayAngle else { return false }
-        rotateDisplay(to: angle)
+        guard canPerformCommands, let angle = display.guestInterfaceAngle, angle != guestAngle else { return false }
+        guestAngle = angle
+        display.setRotation(degrees: angle)
         return true
     }
 
@@ -270,12 +274,7 @@ final class DeviceSession {
     private func apply(_ reading: OrientationReading) throws {
         try Task.checkCancellation()
         orientation = reading.physical
-        rotateDisplay(to: reading.displayAngle)
-    }
-
-    private func rotateDisplay(to angle: Double) {
-        displayAngle = angle
-        display.setRotation(degrees: angle)
+        display.setRotation(degrees: reading.displayAngle)
     }
 
     func saveScreenshot(to destination: URL) async throws {
