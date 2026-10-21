@@ -318,15 +318,17 @@ final class NewSimulatorWindowController: NSWindowController, NSWindowDelegate {
     private var deviceType: String? { deviceTypes.selectedItem?.representedObject as? String }
     private var runtime: String? { runtimes.selectedItem?.representedObject as? String }
 
+    // An empty selection counts as incompatible, as a nil selection does in
+    // Simulator.app, so choosing again restores a compatible one.
     @objc private func deviceTypeChanged(_ sender: Any?) {
-        if let deviceType, let runtime, !catalog.runtime(runtime, supports: deviceType) {
+        if let deviceType, runtime.map({ catalog.runtime($0, supports: deviceType) }) != true {
             select(in: runtimes) { catalog.runtime($0, supports: deviceType) }
         }
         nameField.placeholderString = deviceTypes.selectedItem?.title
     }
 
     @objc private func runtimeChanged(_ sender: Any?) {
-        if let deviceType, let runtime, !catalog.runtime(runtime, supports: deviceType) {
+        if let runtime, deviceType.map({ catalog.runtime(runtime, supports: $0) }) != true {
             select(in: deviceTypes) { catalog.runtime(runtime, supports: $0) }
         }
         nameField.placeholderString = deviceTypes.selectedItem?.title

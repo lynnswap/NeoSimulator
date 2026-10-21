@@ -557,8 +557,10 @@ struct InputFocusTests {
         let catalog = SimulatorCatalog(
             deviceTypes: [.init(identifier: "a", name: "iPhone A", productFamily: 1),
                           .init(identifier: "b", name: "iPhone B", productFamily: 1),
+                          .init(identifier: "x", name: "iPhone X", productFamily: 1),
                           .init(identifier: "c", name: "iPad C", productFamily: 2)],
-            runtimes: [.init(identifier: "old", name: "iOS 26.0"), .init(identifier: "new", name: "iOS 27.0")],
+            runtimes: [.init(identifier: "old", name: "iOS 26.0"), .init(identifier: "new", name: "iOS 27.0"),
+                       .init(identifier: "empty", name: "iOS 28.0")],
             supportedDeviceTypes: ["old": ["b"], "new": ["a", "c"]])
         var created: [[String]] = []
         var failure: Error?
@@ -574,13 +576,24 @@ struct InputFocusTests {
             popUp.sendAction(popUp.action, to: popUp.target)
         }
         func selection() -> [String?] { [form.deviceTypes.titleOfSelectedItem, form.runtimes.titleOfSelectedItem] }
-        #expect(form.deviceTypes.itemArray.map { $0.isSeparatorItem ? "-" : $0.title } == ["iPhone A", "iPhone B", "-", "iPad C"])
-        #expect(form.runtimes.itemTitles == ["iOS 26.0", "iOS 27.0"])
+        #expect(form.deviceTypes.itemArray.map { $0.isSeparatorItem ? "-" : $0.title }
+                == ["iPhone A", "iPhone B", "iPhone X", "-", "iPad C"])
+        #expect(form.runtimes.itemTitles == ["iOS 26.0", "iOS 27.0", "iOS 28.0"])
         // The first runtime stays, and the device type becomes the first it supports.
         #expect(selection() == ["iPhone B", "iOS 26.0"])
         #expect(form.nameField.placeholderString == "iPhone B")
         choose("iPad C", in: form.deviceTypes)
         #expect(selection() == ["iPad C", "iOS 27.0"])
+        choose("iOS 26.0", in: form.runtimes)
+        #expect(selection() == ["iPhone B", "iOS 26.0"])
+        // Without a compatible choice the other selection empties, and the next
+        // compatible choice restores it.
+        choose("iPhone X", in: form.deviceTypes)
+        #expect(selection() == ["iPhone X", nil])
+        choose("iPad C", in: form.deviceTypes)
+        #expect(selection() == ["iPad C", "iOS 27.0"])
+        choose("iOS 28.0", in: form.runtimes)
+        #expect(selection() == [nil, "iOS 28.0"])
         choose("iOS 26.0", in: form.runtimes)
         #expect(selection() == ["iPhone B", "iOS 26.0"])
 
