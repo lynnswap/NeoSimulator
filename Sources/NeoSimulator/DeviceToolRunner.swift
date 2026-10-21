@@ -112,8 +112,10 @@ final class DeviceTools {
         environment = ["DEVELOPER_DIR": developerDirectory]
     }
 
-    func boot() async throws { _ = try await simctl(["boot", identifier]) }
-    func shutdown() async throws { _ = try await simctl(["shutdown", identifier]) }
+    // Booting can migrate data first, and erasing removes the whole device.
+    func boot() async throws { _ = try await simctl(["boot", identifier], timeout: .seconds(300)) }
+    func shutdown() async throws { _ = try await simctl(["shutdown", identifier], timeout: .seconds(300)) }
+    func erase() async throws { _ = try await simctl(["erase", identifier], timeout: .seconds(300)) }
     func screenshot(to url: URL) async throws {
         _ = try await simctl(["io", identifier, "screenshot", "--type=png", "--mask=alpha", url.path])
     }
@@ -151,7 +153,7 @@ final class DeviceTools {
         return process
     }
     func cancel() { runner.cancel() }
-    private func simctl(_ arguments: [String]) async throws -> Data {
-        try await runner.run(simctlURL, arguments: arguments, environment: environment)
+    private func simctl(_ arguments: [String], timeout: Duration = .seconds(30)) async throws -> Data {
+        try await runner.run(simctlURL, arguments: arguments, environment: environment, timeout: timeout)
     }
 }

@@ -261,7 +261,8 @@ struct InputFocusTests {
         menus.updateVisibility(in: device, for: controller.session.capabilities)
         let visible = device.items.filter { !$0.isHidden }
         #expect(visible.map { $0.isSeparatorItem ? "-" : $0.title } ==
-            ["Shut Down", "-", "Home", "Lock", "Shake", "App Switcher", "-", "Trigger Screenshot"])
+            ["Restart", "Erase All Content and Settings…", "Shut Down", "-", "Home", "Lock", "Shake",
+             "App Switcher", "-", "Trigger Screenshot"])
         controller.perform(.rotateRight)
         #expect(!controller.session.isBusy)
     }
@@ -396,6 +397,82 @@ struct InputFocusTests {
         #expect(display.rotations == [0, 90])
     }
 
+    @Test func restartRunsSimulatorAppStagesAndReportsTheFailedStage() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        // A simctl stand-in that logs each subcommand and fails the one named in `fail`.
+        let log = directory.appendingPathComponent("calls"), fail = directory.appendingPathComponent("fail")
+        let simctl = directory.appendingPathComponent("simctl")
+        try """
+            #!/bin/sh
+            echo "$1" >> "\(log.path)"
+            [ "$1" = "$(cat "\(fail.path)" 2>/dev/null)" ] && { echo "$1 failed" >&2; exit 1; }
+            exit 0
+            """.write(to: simctl, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: simctl.path)
+        let tools = try DeviceTools(identifier: "test-device", xcodeURL: URL(fileURLWithPath: "/Applications/Xcode.app"),
+                                    simctl: simctl)
+        func run(erasing: Bool, failing stage: String) async -> (calls: [String], error: String?) {
+            try? FileManager.default.removeItem(at: log)
+            try? stage.write(to: fail, atomically: true, encoding: .utf8)
+            var message: String?
+            do { try await HostApplication.restart(tools, erasing: erasing) } catch { message = error.localizedDescription }
+            let calls = (try? String(contentsOf: log, encoding: .utf8))?.split(separator: "\n").map(String.init) ?? []
+            return (calls, message)
+        }
+        #expect(await run(erasing: false, failing: "").calls == ["shutdown", "boot"])
+        #expect(await run(erasing: true, failing: "").calls == ["shutdown", "erase", "boot"])
+        let shutdown = await run(erasing: true, failing: "shutdown")
+        #expect(shutdown.calls == ["shutdown"])
+        #expect(shutdown.error?.hasPrefix("Erase All Content and Settings failed while shutting down") == true)
+        // A failed erase still boots the device.
+        let erase = await run(erasing: true, failing: "erase")
+        #expect(erase.calls == ["shutdown", "erase", "boot"])
+        #expect(erase.error?.contains("while erasing") == true)
+        #expect(erase.error?.hasSuffix("The device was shut down and booted again.") == true)
+        let boot = await run(erasing: false, failing: "boot")
+        #expect(boot.calls == ["shutdown", "boot"])
+        #expect(boot.error?.hasPrefix("Restart failed while booting") == true)
+        #expect(boot.error?.hasSuffix("The device was shut down.") == true)
+    }
+
+    @Test func aRestartKeepsTheWindowAndReconnectsItsNewSession() async throws {
+        let first = TestDisplay()
+        let controller = try makeController(first)
+        defer { controller.invalidate() }
+        let window = try #require(controller.window)
+        let title = window.subtitle
+        await controller.prepareForRestart()
+        #expect(!controller.session.canPerformCommands)
+        #expect(window.subtitle == "Restarting…")
+        let second = TestDisplay()
+        let session = try makeSession(second)
+        controller.reconnect(session)
+        #expect(controller.session === session)
+        #expect(controller.window === window && window.subtitle == title)
+        #expect(second.view.window === window && first.view.window == nil)
+        controller.perform(.home)
+        #expect(second.events.map(\.input) == [.button(.home), .button(.home)])
+        #expect(first.events.isEmpty)
+    }
+
+    @Test func eraseAsksForConfirmationBeforeRestarting() async throws {
+        var requests: [Bool] = []
+        let controller = try makeController(TestDisplay(), onRestart: { _, erasing in requests.append(erasing) })
+        defer { controller.invalidate() }
+        controller.showWindow(nil)
+        let window = try #require(controller.window)
+        controller.perform(.eraseAllContentAndSettings)
+        window.endSheet(try #require(window.attachedSheet), returnCode: .alertSecondButtonReturn)
+        #expect(requests.isEmpty)
+        controller.perform(.eraseAllContentAndSettings)
+        window.endSheet(try #require(window.attachedSheet), returnCode: .alertFirstButtonReturn)
+        #expect(requests == [true])
+        controller.perform(.restart)
+        #expect(requests == [true, false])
+    }
+
     @Test func guestInterfaceOrientationsUseSimulatorKitAngles() {
         #expect([1, 2, 3, 4, 0].map(SimScreenUIOrientation.displayAngle) == [0, 180, -90, 90, 0])
     }
@@ -416,7 +493,8 @@ struct InputFocusTests {
             menus.updateVisibility(in: menu, for: controller.session.capabilities)
             return menu.items.filter { !$0.isHidden }.map { $0.isSeparatorItem ? "-" : $0.title }
         }
-        #expect(try visibleTitles("Device") == ["Shut Down", "-", "Home", "Lock", "Action Button", "Siri", "Shake",
+        #expect(try visibleTitles("Device") == ["Restart", "Erase All Content and Settings…", "Shut Down", "-",
+                                                 "Home", "Lock", "Action Button", "Siri", "Shake",
                                                  "App Switcher", "-", "Trigger Screenshot"])
         #expect(try visibleTitles("I/O") == ["Keyboard", "-", "Increase Volume", "Decrease Volume", "-", "Open URL…"])
         #expect(try visibleTitles("Features") == ["Authorize Apple Pay", "-", "Toggle Appearance"])
@@ -600,8 +678,20 @@ struct InputFocusTests {
                                 features: Set<String> = [DeviceCapabilities.displayRotation],
                                 simctl: URL = DeviceTools.simctl,
                                 devicectl: URL = DeviceTools.devicectl,
-                                recordingProcess: ((URL) -> Process)? = nil) throws -> DeviceWindowController {
-        let session = DeviceSession(
+                                recordingProcess: ((URL) -> Process)? = nil,
+                                onRestart: @escaping (DeviceWindowController, Bool) -> Void = { _, _ in })
+        throws -> DeviceWindowController {
+        let session = try makeSession(display, features: features, simctl: simctl, devicectl: devicectl,
+                                      recordingProcess: recordingProcess)
+        return try DeviceWindowController(session: session, onClose: { _ in }, onRestart: onRestart)
+    }
+
+    private func makeSession(_ display: TestDisplay,
+                             features: Set<String> = [DeviceCapabilities.displayRotation],
+                             simctl: URL = DeviceTools.simctl,
+                             devicectl: URL = DeviceTools.devicectl,
+                             recordingProcess: ((URL) -> Process)? = nil) throws -> DeviceSession {
+        DeviceSession(
             device: AvailableDevice(identifier: "test-device", name: "Test iPhone", runtimeName: "iOS", state: 3),
             capabilities: DeviceCapabilities(family: .iPhone, runtimeVersion: 0x1B_00_00,
                                              supportsFeature: { features.contains($0) }),
@@ -609,7 +699,6 @@ struct InputFocusTests {
             tools: try DeviceTools(identifier: "test-device", xcodeURL: URL(fileURLWithPath: "/Applications/Xcode.app"),
                                    simctl: simctl, devicectl: devicectl),
             recordingProcess: recordingProcess)
-        return try DeviceWindowController(session: session, onClose: { _ in })
     }
 }
 

@@ -3,12 +3,15 @@ import UniformTypeIdentifiers
 
 @MainActor
 final class DeviceWindowController: NSWindowController, NSWindowDelegate {
-    let session: DeviceSession
+    /// The device's current connection. A restart replaces it after the
+    /// device boots again, keeping this window.
+    private(set) var session: DeviceSession
     private(set) var showsDeviceBezel = true
     private var closed = false
     private var didReadOrientation = false
     private let onClose: (String) -> Void
-    private let content: DeviceContentView
+    private let onRestart: (DeviceWindowController, _ erasing: Bool) -> Void
+    private var content: DeviceContentView
     private var deviceToolbar: DeviceToolbar?
     private var commandKeyUpMonitor: Any?
     var staysOnTop: Bool { window?.level == .floating }
@@ -16,9 +19,11 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         session.canPerformCommands && window?.inLiveResize == false && window?.styleMask.contains(.fullScreen) == false
     }
 
-    init(session: DeviceSession, onClose: @escaping (String) -> Void) throws {
+    init(session: DeviceSession, onClose: @escaping (String) -> Void,
+         onRestart: @escaping (DeviceWindowController, _ erasing: Bool) -> Void = { _, _ in }) throws {
         self.session = session
         self.onClose = onClose
+        self.onRestart = onRestart
         content = DeviceContentView(display: session.display.view)
         let natural = session.display.naturalSize
         guard natural.width > 0, natural.height > 0 else {
@@ -40,13 +45,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         window.hasShadow = true
         window.isReleasedWhenClosed = false
         window.delegate = self
-        let toolbar = DeviceToolbar(controller: self)
-        deviceToolbar = toolbar
-        window.toolbar = toolbar.toolbar
-        session.display.onPropertiesChange = { [weak self] in self?.displayPropertiesChanged() }
-        content.canImport = { [weak self] in self?.session.canPerformToolOperation == true }
-        content.importFiles = { [weak self] in self?.importFiles($0) }
-        window.contentView = content
+        attachSession()
         window.contentMinSize = NSSize(width: 320, height: 300)
         // AppKit never dispatches key-ups while Command is held; forward them
         // so the simulator does not keep the key pressed.
@@ -60,6 +59,50 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     }
 
     required init?(coder: NSCoder) { nil }
+
+    /// Connects the window's toolbar, content, and display events to `session`.
+    private func attachSession() {
+        guard let window else { return }
+        let toolbar = DeviceToolbar(controller: self)
+        deviceToolbar = toolbar
+        window.toolbar = toolbar.toolbar
+        session.display.onPropertiesChange = { [weak self] in self?.displayPropertiesChanged() }
+        content.canImport = { [weak self] in self?.session.canPerformToolOperation == true }
+        content.importFiles = { [weak self] in self?.importFiles($0) }
+        window.contentView = content
+    }
+
+    // MARK: Restart
+
+    /// Finishes an active recording, then disconnects from the device so that
+    /// it can shut down. The window stays open for `reconnect(_:)`.
+    func prepareForRestart() async {
+        await session.finishRecording()
+        guard !closed else { return }
+        if let window, let sheet = window.attachedSheet { window.endSheet(sheet, returnCode: .cancel) }
+        session.disconnect()
+        window?.subtitle = "Restarting…"
+    }
+
+    /// Shows the device again after a restart, through its new connection.
+    func reconnect(_ session: DeviceSession) {
+        guard !closed else {
+            session.disconnect()
+            return
+        }
+        self.session = session
+        content = DeviceContentView(display: session.display.view)
+        attachSession()
+        if let window {
+            (window.title, window.subtitle) = deviceWindowTitles(
+                name: session.device.name, runtimeName: session.device.runtimeName)
+        }
+        session.display.setChromeVisible(showsDeviceBezel)
+        didReadOrientation = false
+        fitScreen()
+        showAndActivate()
+        focusInput()
+    }
 
     func showAndActivate() {
         showWindow(nil)
@@ -108,6 +151,24 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
 
     func shutDown() {
         session.run({ [session] in try await session.shutDown() }, failure: { [weak self] in self?.present($0) })
+    }
+
+    func restart() { onRestart(self, false) }
+
+    func eraseAllContentAndSettings() {
+        guard let window, session.reserve() else { return }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Erase all content and settings on \(session.device.name)?"
+        alert.informativeText = "The device restarts, and all of its apps, data, and settings are removed."
+        alert.addButton(withTitle: "Erase")
+        alert.addButton(withTitle: "Cancel")
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard let self else { return }
+            self.session.release()
+            guard response == .alertFirstButtonReturn, !self.closed else { return }
+            self.onRestart(self, true)
+        }
     }
 
     func toggleDeviceBezel() {

@@ -351,6 +351,14 @@ final class DeviceSession {
 
     func stopRecording() { recording?.stop() }
 
+    /// Stops an active recording and waits until it is finalized, so that a
+    /// restart does not cut it off. The recording store reports its errors.
+    func finishRecording() async {
+        guard let recording else { return }
+        recording.stop()
+        try? await recording.waitUntilFinished()
+    }
+
     func importFiles(_ urls: [URL]) async throws {
         try await SimulatorFileImport.perform(urls) { url, kind in
             switch kind {

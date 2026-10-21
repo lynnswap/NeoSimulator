@@ -12,6 +12,11 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     private var sessions: [String: DeviceWindowController] = [:]
     private var connections: [String: Task<Void, Never>] = [:]
     private var bootOperations: [String: DeviceTools] = [:]
+    /// Devices whose restart is running. Their windows stay open while the
+    /// device is down.
+    private var restarting: Set<String> = []
+    /// Windows that reconnect when their restarted device boots.
+    private var awaitingReconnect: [String: DeviceWindowController] = [:]
     private var suppressed: Set<String> = []
     private var reportedFailures: Set<String> = []
     private var browser: DeviceBrowserWindowController?
@@ -93,15 +98,16 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         let booted = try readDevices().filter { $0.state == 3 }
         let identifiers = Set(booted.map(\.identifier))
         let hadDeviceWindows = !sessions.isEmpty
-        for identifier in sessions.keys where !identifiers.contains(identifier) {
+        for identifier in sessions.keys where !identifiers.contains(identifier) && !restarting.contains(identifier) {
             sessions.removeValue(forKey: identifier)?.invalidate()
+            awaitingReconnect.removeValue(forKey: identifier)
         }
         for identifier in connections.keys where !identifiers.contains(identifier) {
             connections[identifier]?.cancel()
         }
         suppressed.formIntersection(identifiers)
         reportedFailures.formIntersection(identifiers)
-        for device in booted where sessions[device.identifier] == nil
+        for device in booted where (sessions[device.identifier] == nil || awaitingReconnect[device.identifier] != nil)
             && connections[device.identifier] == nil
             && !suppressed.contains(device.identifier)
             && !reportedFailures.contains(device.identifier) {
@@ -134,11 +140,17 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                             display: connection,
                             tools: try DeviceTools(identifier: identifier, xcodeURL: runtime.xcodeURL),
                             recordings: recordings)
-                        let controller = try DeviceWindowController(session: session) { [weak self] identifier in
+                        if let controller = awaitingReconnect.removeValue(forKey: identifier) {
+                            try conflicts.check()
+                            controller.reconnect(session)
+                            return
+                        }
+                        let controller = try DeviceWindowController(session: session, onClose: { [weak self] identifier in
                             self?.sessions.removeValue(forKey: identifier)
+                            self?.awaitingReconnect.removeValue(forKey: identifier)
                             self?.suppressed.insert(identifier)
                             if self?.sessions.isEmpty == true { self?.showDeviceBrowser() }
-                        }
+                        }, onRestart: { [weak self] in self?.restartDevice($0, erasing: $1) })
                         try conflicts.check()
                         sessions[identifier] = controller
                         if let window = controller.window {
@@ -156,6 +168,64 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                 report(error)
             }
         }
+    }
+
+    // MARK: Restart
+
+    /// Restarts a device in Simulator.app's order, keeping its window: the
+    /// window disconnects, the device shuts down, is erased when requested,
+    /// and boots, and the window reconnects.
+    private func restartDevice(_ controller: DeviceWindowController, erasing: Bool) {
+        let identifier = controller.session.device.id
+        guard !stopped, sessions[identifier] === controller, !restarting.contains(identifier),
+              bootOperations[identifier] == nil else { return }
+        let tools: DeviceTools
+        do { tools = try DeviceTools(identifier: identifier, xcodeURL: runtime.xcodeURL) } catch {
+            controller.present(error)
+            return
+        }
+        restarting.insert(identifier)
+        awaitingReconnect[identifier] = controller
+        bootOperations[identifier] = tools
+        Task { [weak self] in
+            await controller.prepareForRestart()
+            var failure: Error?
+            do { try await Self.restart(tools, erasing: erasing) } catch { failure = error }
+            guard let self else { return }
+            self.bootOperations.removeValue(forKey: identifier)
+            self.restarting.remove(identifier)
+            // A window whose device is still down closes; a booted device reconnects.
+            self.rescan()
+            guard let failure, !(failure is CancellationError), !self.stopped else { return }
+            if self.sessions[identifier] === controller { controller.present(failure) } else { self.report(failure) }
+        }
+    }
+
+    /// Shuts the device down, erases it when asked, and boots it. Like
+    /// Simulator.app, a failed shutdown stops the restart, and a failed
+    /// erase still boots the device.
+    static func restart(_ tools: DeviceTools, erasing: Bool) async throws {
+        let operation = erasing ? "Erase All Content and Settings" : "Restart"
+        func failure(_ stage: String, completed: [String], _ error: Error) -> HostError {
+            let progress = completed.isEmpty ? "" : " The device was \(completed.joined(separator: " and "))."
+            return HostError.operation("\(operation) failed while \(stage): \(error.localizedDescription)\(progress)")
+        }
+        do { try await tools.shutdown() } catch {
+            if error is CancellationError { throw error }
+            throw failure("shutting down", completed: [], error)
+        }
+        var eraseFailure: Error?
+        if erasing {
+            do { try await tools.erase() } catch {
+                if error is CancellationError { throw error }
+                eraseFailure = error
+            }
+        }
+        do { try await tools.boot() } catch {
+            if error is CancellationError { throw error }
+            throw failure("booting", completed: erasing && eraseFailure == nil ? ["shut down", "erased"] : ["shut down"], error)
+        }
+        if let eraseFailure { throw failure("erasing", completed: ["shut down", "booted again"], eraseFailure) }
     }
 
     func showDeviceBrowser() {
