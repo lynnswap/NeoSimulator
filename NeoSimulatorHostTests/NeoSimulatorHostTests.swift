@@ -499,6 +499,54 @@ struct InputFocusTests {
         #expect(failures == 1)
     }
 
+    @Test func aLaterHoldReleasesAnInputWhoseReleaseFailed() async throws {
+        let display = TestDisplay()
+        display.undeliveredStates = [.up]
+        let controller = try makeController(display)
+        controller.session.send(.hold(.button(.actionStaccato), for: .milliseconds(10))) { _ in }
+        for _ in 0..<300 where display.events.count < 2 { try await Task.sleep(for: .milliseconds(10)) }
+        display.undeliveredStates = []
+        controller.session.send(.hold(.button(.actionStaccato), for: .milliseconds(10))) { _ in }
+        for _ in 0..<300 where display.events.count < 4 { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(display.events.map(\.state) == [.down, .up, .down, .up])
+        // Nothing is left to release when the window closes.
+        controller.invalidate()
+        #expect(display.events.count == 4)
+    }
+
+    @Test func aHoldCreatesItsReleaseWhenItEnds() async throws {
+        let display = TestDisplay()
+        let controller = try makeController(display)
+        defer { controller.invalidate() }
+        controller.session.send(.hold(.button(.actionStaccato), for: .milliseconds(50))) { _ in }
+        for _ in 0..<300 where display.events.count < 2 { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(display.created.map(\.state) == [.down, .up])
+        #expect(display.created[1].at - display.created[0].at >= .milliseconds(50))
+    }
+
+    @Test func aReleaseNotYetDeliveredIsSentAgainWhenTheWindowCloses() async throws {
+        let display = TestDisplay()
+        display.deferCompletions = true
+        let controller = try makeController(display)
+        controller.session.send(.hold(.button(.actionStaccato), for: .milliseconds(10))) { _ in }
+        for _ in 0..<300 where display.events.count < 2 { try await Task.sleep(for: .milliseconds(10)) }
+        controller.invalidate()
+        #expect(display.events.map(\.state) == [.down, .up, .up])
+    }
+
+    @Test func anEarlierDeliveryKeepsALaterPressTracked() async throws {
+        let display = TestDisplay()
+        display.deferCompletions = true
+        // The second Home release is not delivered.
+        display.undeliveredEvents = [3]
+        let controller = try makeController(display)
+        controller.session.send(.pressTwice(.button(.home), interval: .milliseconds(10))) { _ in }
+        for _ in 0..<300 where display.events.count < 4 { try await Task.sleep(for: .milliseconds(10)) }
+        display.pendingCompletions.forEach { $0() }
+        controller.invalidate()
+        #expect(display.events.map(\.state) == [.down, .up, .down, .up, .up])
+    }
+
     @Test func aFailedInputReportsOneError() throws {
         let display = TestDisplay()
         display.deliveryError = HostError.operation("delivery failed")
@@ -556,8 +604,14 @@ private final class TestDisplay: SimulatorDisplay {
     var deliveryError: Error?
     /// Completes sent events of these states with an error.
     var undeliveredStates: Set<HIDState> = []
+    /// Completes the sent events at these positions with an error.
+    var undeliveredEvents: Set<Int> = []
     /// Fails to create messages for events of these states.
     var unavailableStates: Set<HIDState> = []
+    /// Holds completions until the test runs them, as SimulatorKit delivers later.
+    var deferCompletions = false
+    var pendingCompletions: [() -> Void] = []
+    var created: [(state: HIDState, at: ContinuousClock.Instant)] = []
     var buttons: [DeviceButton] {
         events.compactMap { if case .button(let button) = $0.input, $0.state == .down { button } else { nil } }
     }
@@ -567,13 +621,20 @@ private final class TestDisplay: SimulatorDisplay {
     init() { view.addSubview(input) }
     func message(for input: HIDInput, _ state: HIDState) throws -> HIDMessage {
         guard !unavailableStates.contains(state) else { throw HostError.operation("No message") }
+        created.append((state, ContinuousClock.now))
         return HIDMessage(input: input, state: state, pointer: OpaquePointer(malloc(1)!))
     }
     func send(_ message: HIDMessage, completion: (@MainActor (Error?) -> Void)?) throws {
         onSend()
         free(UnsafeMutableRawPointer(message.take()))
         events.append((message.input, message.state))
-        completion?(undeliveredStates.contains(message.state) ? HostError.operation("Undelivered") : deliveryError)
+        let undelivered = undeliveredStates.contains(message.state) || undeliveredEvents.contains(events.count - 1)
+        let error = undelivered ? HostError.operation("Undelivered") : deliveryError
+        if deferCompletions {
+            pendingCompletions.append { completion?(error) }
+        } else {
+            completion?(error)
+        }
     }
     func shake() throws {}
     func toggleAppearance() throws {}
