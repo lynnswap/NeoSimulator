@@ -336,6 +336,19 @@ struct CaptureThumbnailTests {
         return CapturedContent(kind, file: file, name: name, defaultFolder: folder)
     }
 
+    /// A visible window that fits the screen, as the test machine's screen
+    /// can be small, and a device screen inside it.
+    private func deviceWindow(offset: CGFloat = 0) -> (window: NSWindow, screen: NSRect) {
+        _ = NSApplication.shared
+        let visible = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1024, height: 768)
+        let window = NSWindow(contentRect: NSRect(x: visible.minX + 100 + offset, y: visible.minY + 40, width: 200, height: 360),
+                              styleMask: .titled, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.orderFront(nil)
+        let frame = window.frame
+        return (window, NSRect(x: frame.minX + 20, y: frame.minY + 20, width: 160, height: 280))
+    }
+
     private func savedNames(in directory: URL) throws -> [String] {
         try FileManager.default.contentsOfDirectory(atPath: directory.appendingPathComponent("Saved").path).sorted()
     }
@@ -344,22 +357,14 @@ struct CaptureThumbnailTests {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        _ = NSApplication.shared
-        let window = NSWindow(contentRect: NSRect(x: 200, y: 200, width: 300, height: 600), styleMask: .titled,
-                              backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        window.orderFront(nil)
+        let (window, source) = deviceWindow()
         defer { window.close() }
-        let source = NSRect(x: 220, y: 220, width: 260, height: 560)
         let first = CaptureThumbnail(try capture(named: "First.png", in: directory), image: nil, parent: window,
                                      source: source, spacing: .zero) { _ in }
         first.show()
         #expect(CaptureThumbnail.active.map(ObjectIdentifier.init) == [ObjectIdentifier(first)])
         // Another window's capture also ends it, as Simulator.app keeps one app-wide list.
-        let other = NSWindow(contentRect: NSRect(x: 600, y: 200, width: 300, height: 600), styleMask: .titled,
-                             backing: .buffered, defer: false)
-        other.isReleasedWhenClosed = false
-        other.orderFront(nil)
+        let (other, _) = deviceWindow(offset: 300)
         defer { other.close() }
         let second = CaptureThumbnail(try capture(named: "Second.png", in: directory), image: nil, parent: other,
                                       source: source, spacing: .zero) { _ in }
@@ -467,14 +472,9 @@ struct CaptureThumbnailTests {
 
     /// A shown thumbnail beside a visible window, once its appearance ended.
     private func shownThumbnail(named name: String, in directory: URL) async throws -> (CaptureThumbnail, NSWindow, NSWindow) {
-        _ = NSApplication.shared
-        let window = NSWindow(contentRect: NSRect(x: 200, y: 300, width: 300, height: 600), styleMask: .titled,
-                              backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        window.orderFront(nil)
+        let (window, source) = deviceWindow()
         let thumbnail = CaptureThumbnail(try capture(named: name, in: directory), image: nil, parent: window,
-                                         source: NSRect(x: 220, y: 320, width: 260, height: 560),
-                                         spacing: NSSize(width: 10, height: 10)) { _ in }
+                                         source: source, spacing: NSSize(width: 10, height: 10)) { _ in }
         thumbnail.show()
         let shown = try #require(window.childWindows?.last)
         for _ in 0..<100 where !thumbnail.shown { try await Task.sleep(for: .milliseconds(20)) }
@@ -489,7 +489,7 @@ struct CaptureThumbnailTests {
         let (thumbnail, window, shown) = try await shownThumbnail(named: "Moved.png", in: directory)
         defer { window.close() }
         window.setFrameOrigin(NSPoint(x: window.frame.minX + 100, y: window.frame.minY + 50))
-        let expected = NSRect(x: window.frame.maxX + 10, y: window.frame.minY + 10, width: 75, height: 150)
+        let expected = NSRect(x: window.frame.maxX + 10, y: window.frame.minY + 10, width: 50, height: 80)
         #expect(shown.frame == expected)
         // A hover during the hide brings it back beside the moved window.
         thumbnail.hide(animated: true)
@@ -535,21 +535,16 @@ struct CaptureThumbnailTests {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        _ = NSApplication.shared
-        let window = NSWindow(contentRect: NSRect(x: 200, y: 300, width: 300, height: 600), styleMask: .titled,
-                              backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        window.orderFront(nil)
+        let (window, source) = deviceWindow()
         defer { window.close() }
-        let source = NSRect(x: 220, y: 320, width: 260, height: 560)
         let thumbnail = CaptureThumbnail(try capture(named: "Timed.png", in: directory), image: nil, parent: window,
                                          source: source, spacing: NSSize(width: 10, height: 10)) { _ in }
         thumbnail.show()
         let shown = try #require(window.childWindows?.last)
         // It starts over the device screen and shrinks beside the window.
         #expect(shown.frame == source.insetBy(dx: -5, dy: -5))
-        for _ in 0..<100 where shown.frame.width != 75 { try await Task.sleep(for: .milliseconds(20)) }
-        #expect(shown.frame == NSRect(x: window.frame.maxX + 10, y: window.frame.minY + 10, width: 75, height: 150))
+        for _ in 0..<100 where !thumbnail.shown { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(shown.frame == NSRect(x: window.frame.maxX + 10, y: window.frame.minY + 10, width: 50, height: 80))
         #expect(try savedNames(in: directory).isEmpty)
         for _ in 0..<400 where !CaptureThumbnail.active.isEmpty { try await Task.sleep(for: .milliseconds(25)) }
         #expect(CaptureThumbnail.active.isEmpty)
