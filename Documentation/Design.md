@@ -356,12 +356,16 @@ setting only after the guest accepts its state and reports a failed post as a
 partial change; Simulator.app saves first and discards both errors. On Apple
 TV, a quality change also stops PineBoard with `simctl spawn <UDID> launchctl
 stop com.apple.PineBoard`, which launchd restarts. Because that is a device-tool
-operation, the quality choices are disabled while another one runs.
+operation, an Apple TV's quality choices are disabled while another one runs,
+where Simulator.app keeps them enabled. On other devices the change is
+immediate and stays available during tool operations, as in Simulator.app.
 
 The color options call `SimDevice setCADebugOption:enabled:` with options 2
 (Color Blended Layers), 1 (Color Copied Images), 14 (Color Misaligned Images),
 and 17 (Color Off-screen Rendered). Their checkmarks come from
-`getCADebugOption:` instead of Simulator.app's per-window flags. Both selectors
+`getCADebugOption:` instead of Simulator.app's per-device `DeviceCoordinator`
+flags, which start off at each connection and only record what it last
+requested. Both selectors
 drop CoreSimulator's errors, so the session reads an option back after changing
 it and reports a mismatch; an option whose read fails shows as off.
 

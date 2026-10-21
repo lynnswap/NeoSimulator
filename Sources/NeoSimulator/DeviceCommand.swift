@@ -238,13 +238,23 @@ struct DeviceCommand {
     }
 
     /// A Graphics Quality Override choice, checked when it is the app's setting.
+    /// Like Simulator.app, the change is immediate, except that an Apple TV
+    /// then restarts its system UI, a device-tool operation, so the choice
+    /// waits there for the running one.
     private static func graphicsQuality(_ id: ID, title: String, _ quality: GraphicsQuality) -> DeviceCommand {
         DeviceCommand(id: id, title: title,
                       isSupported: { $0.supportsFeature(DeviceCapabilities.graphicsQualityOverride) },
-                      isEnabled: { $0.session.canPerformToolOperation },
+                      isEnabled: { $0.session.capabilities.family == .tv ? $0.session.canPerformToolOperation
+                                                                         : $0.session.canPerformCommands },
                       state: { $0.session.graphicsQuality == quality ? .on : .off }) { controller in
-            controller.session.run({ [session = controller.session] in try await session.setGraphicsQuality(quality) },
-                                   failure: { [weak controller] in controller?.present($0) })
+            let session = controller.session
+            guard session.capabilities.family == .tv else {
+                return controller.run { try session.setGraphicsQuality(quality) }
+            }
+            session.run({
+                try session.setGraphicsQuality(quality)
+                try await session.restartSystemUI()
+            }, failure: { [weak controller] in controller?.present($0) })
         }
     }
 

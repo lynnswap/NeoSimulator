@@ -676,7 +676,7 @@ struct InputFocusTests {
         #expect(shortcuts.map(\.keyEquivalentModifierMask) == [.command, [.command, .shift]])
     }
 
-    @Test func slowAnimationsAndGraphicsQualityFollowTheAppsSettings() async throws {
+    @Test func slowAnimationsAndGraphicsQualityFollowTheAppsSettings() throws {
         let keys = [HostPreferences.slowMotionAnimation, HostPreferences.graphicsQualityOverride]
         let saved = keys.map { UserDefaults.standard.object(forKey: $0) }
         defer { for (key, value) in zip(keys, saved) { UserDefaults.standard.set(value, forKey: key) } }
@@ -692,7 +692,6 @@ struct InputFocusTests {
         controller.perform(.toggleSlowAnimations)
         #expect(slow.state?(controller) == .on)
         controller.perform(.graphicsQualityLow)
-        for _ in 0..<200 where controller.session.isBusy { try await Task.sleep(for: .milliseconds(10)) }
         #expect(DeviceCommand.command(.graphicsQualityLow).state?(controller) == .on)
         #expect(DeviceCommand.command(.graphicsQualityDefault).state?(controller) == .off)
         #expect(display.notificationStates == [slowMotion: 1, quality: 10])
@@ -722,7 +721,7 @@ struct InputFocusTests {
         #expect(!UserDefaults.standard.bool(forKey: HostPreferences.slowMotionAnimation))
     }
 
-    @Test func graphicsQualityRestartsTheSystemUIOfAnAppleTV() async throws {
+    @Test func graphicsQualityAppliesAtOnceUnlessAnAppleTVRestartsItsSystemUI() async throws {
         let key = HostPreferences.graphicsQualityOverride
         let saved = UserDefaults.standard.object(forKey: key)
         defer { UserDefaults.standard.set(saved, forKey: key) }
@@ -735,12 +734,22 @@ struct InputFocusTests {
             printf '%s\\n' "$*" >> "\(log.path)"
             """.write(to: simctl, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: simctl.path)
+        let quality = "com.apple.UIKit.ForceGraphicsQuality"
         for family in [DeviceCapabilities.Family.tv, .iPhone] {
-            let controller = try makeController(TestDisplay(), family: family,
+            let display = TestDisplay()
+            let controller = try makeController(display, family: family,
                                                 features: [DeviceCapabilities.graphicsQualityOverride], simctl: simctl)
             defer { controller.invalidate() }
+            // While another device-tool operation runs, Simulator.app still
+            // applies the choice; only the Apple TV's restart has to wait.
+            #expect(controller.session.reserve())
+            #expect(DeviceCommand.command(.graphicsQualityHigh).isEnabled(controller) == (family != .tv))
             controller.perform(.graphicsQualityHigh)
+            #expect(display.notificationStates[quality] == (family == .tv ? nil : 100))
+            controller.session.release()
+            if family == .tv { controller.perform(.graphicsQualityHigh) }
             for _ in 0..<200 where controller.session.isBusy { try await Task.sleep(for: .milliseconds(10)) }
+            #expect(display.notificationStates[quality] == 100)
         }
         #expect(try String(contentsOf: log, encoding: .utf8) == "spawn test-device launchctl stop com.apple.PineBoard\n")
     }

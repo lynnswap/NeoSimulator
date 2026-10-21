@@ -432,14 +432,16 @@ final class DeviceSession {
     }
 
     /// Sends the quality to the guest and saves it as `GraphicsQualityOverride`.
-    /// Like Simulator.app, an Apple TV then stops PineBoard, its system UI,
-    /// which restarts with the new quality.
-    func setGraphicsQuality(_ quality: GraphicsQuality) async throws {
+    func setGraphicsQuality(_ quality: GraphicsQuality) throws {
+        guard canPerformCommands else { return }
         try send(UInt64(quality.rawValue), to: Self.forceGraphicsQuality) {
             UserDefaults.standard.set(quality.rawValue, forKey: HostPreferences.graphicsQualityOverride)
         }
-        if capabilities.family == .tv { try await tools.stopSystemUI() }
     }
+
+    /// Stops PineBoard, an Apple TV's system UI, which launchd restarts. After a
+    /// graphics-quality change, Simulator.app does this so that it takes effect.
+    func restartSystemUI() async throws { try await tools.stopSystemUI() }
 
     /// Applies the app's slow-animation and graphics-quality settings to a
     /// device that was just connected, as Simulator.app does: slow animations
