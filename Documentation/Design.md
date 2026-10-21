@@ -131,10 +131,10 @@ Neo additionally requires:
   bundle identifier and executable.
 
 After those provenance checks, the gate executes the exact packaged companion
-in non-UI `--validate-runtime` mode. `XSHPrivateRuntime` then performs the same
-framework loads, `dlsym`, class, selector, and loaded-image checks used by the
-GUI process, without creating an application, CoreSimulator device set, or
-display session. This keeps the runtime contract in one owner while still
+in non-UI `--validate-runtime` mode. `SimulatorRuntime` then performs the same
+framework loads, ABIBridge lookups of every private message and Swift member,
+and loaded-image checks used by the GUI process, without creating an
+application, CoreSimulator device set, or display session. This keeps the runtime contract in one owner while still
 rejecting a changed Xcode before preference mutation.
 
 Wrappers and direct private tools are inspected but never executed by the gate.

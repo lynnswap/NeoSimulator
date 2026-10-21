@@ -4,7 +4,7 @@ import AppKit
 final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSource {
     private let runtime: SimulatorRuntime
     private let conflicts: HostConflictMonitor
-    private let deviceSet: XSHDeviceSetHandle
+    private let deviceSet: SimulatorDeviceSet
     private let recordings = RecordingStore()
     private var isTerminating = false
     private var recordingTerminationErrors: [Error] = []
@@ -37,9 +37,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         try conflicts.check()
         menu = MenuController(application: self)
         menu?.install()
-        notificationToken = try deviceSet.observe { [weak self] in
-            MainActor.assumeIsolated { self?.rescan() }
-        }.uint64Value
+        notificationToken = try deviceSet.observe { [weak self] in self?.rescan() }
         try conflicts.check()
         try scanDevices()
         if sessions.isEmpty { showDeviceBrowser() }
@@ -49,15 +47,15 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         try readDevices().map(Self.describe)
     }
 
-    private func readDevices() throws -> [XSHDeviceHandle] {
+    private func readDevices() throws -> [SimulatorDevice] {
         try deviceSet.readDevices().filter { $0.platformIdentifier == "com.apple.platform.iphonesimulator" }
     }
 
-    private static func describe(_ device: XSHDeviceHandle) -> AvailableDevice {
+    private static func describe(_ device: SimulatorDevice) -> AvailableDevice {
         AvailableDevice(identifier: device.identifier, name: device.name, runtimeName: device.runtimeName, state: device.state)
     }
 
-    private static func capabilities(of device: XSHDeviceHandle) -> DeviceCapabilities {
+    private static func capabilities(of device: SimulatorDevice) -> DeviceCapabilities {
         DeviceCapabilities(family: DeviceCapabilities.Family(rawValue: device.productFamily),
                            runtimeVersion: device.runtimeVersion,
                            supportsFeature: { [device] in device.supportsFeature($0) })
@@ -113,7 +111,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         browser?.refresh()
     }
 
-    private func connect(_ device: XSHDeviceHandle) {
+    private func connect(_ device: SimulatorDevice) {
         let identifier = device.identifier
         connections[identifier] = Task { [weak self] in
             guard let self else { return }
@@ -129,8 +127,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                     try Task.checkCancellation()
                     guard !stopped, !suppressed.contains(identifier) else { return }
                     try conflicts.check()
-                    if let screen = XSHFindDefaultScreen(runtime.screenClass, device) {
-                        let connection = try SimulatorConnection(device: device, screenID: screen.uint32Value, runtime: runtime)
+                    if let screen = runtime.display.defaultScreen(of: device) {
+                        let connection = try SimulatorConnection(device: device, screen: screen, runtime: runtime)
                         let session = DeviceSession(
                             device: Self.describe(device), capabilities: Self.capabilities(of: device),
                             display: connection,

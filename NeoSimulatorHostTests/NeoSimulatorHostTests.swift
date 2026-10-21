@@ -1,3 +1,4 @@
+import ABIBridge
 import AppKit
 import Testing
 
@@ -223,25 +224,27 @@ struct InputFocusTests {
             ?? String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
         let xcode = URL(fileURLWithPath: developerPath).deletingLastPathComponent().deletingLastPathComponent()
         let runtime = try SimulatorRuntime(xcodeURL: xcode)
+        let display = runtime.display
         let type = try #require(NSClassFromString("SimulatorKit.SimDisplayView") as? NSView.Type)
         let view = type.init(frame: .zero)
-        #expect(object_getIvar(view, runtime.keyboardInput) == nil)
-        let input = try #require(XSHSwiftCallObjectGetter(runtime.digitizer, view) as? NSView)
+        #expect(object_getIvar(view, display.keyboardDelegate) == nil)
+        let input = try unsafe display.digitizerView.unsafeInvoke(on: view)
         #expect(input.isDescendant(of: view))
         #expect(input.nextResponder === view)
         for _ in 0..<100 {
-            #expect(XSHSwiftCallObjectGetter(runtime.digitizer, view) as? NSView === input)
+            #expect(try unsafe display.digitizerView.unsafeInvoke(on: view) === input)
         }
-        let chrome = try #require(XSHSwiftCallObjectGetter(runtime.chromeView, view) as? NSView)
+        let chrome = try unsafe display.chromeView.unsafeInvoke(on: view)
         let renderView = try #require(chrome.subviews.first {
             String(describing: Swift.type(of: $0)) == "SimDisplayChromeRenderView"
         })
         for active in [true, false, true] {
-            XSHSwiftSetChromeActive(runtime.chromeState, chrome, active)
+            let value = try display.chromeState.makeEnumCase(named: active ? "active" : "inactive")
+            try unsafe display.setChromeState.unsafeInvoke(on: chrome, value)
             let state = try #require(Mirror(reflecting: renderView).children.first { $0.label == "state" })
             #expect(String(describing: state.value) == (active ? "active" : "inactive"))
         }
-        XSHSwiftDisconnect(runtime.disconnect, view)
+        try unsafe display.disconnect.unsafeInvoke(on: view, NativeSwiftClosure {})
     }
 
     @Test func unsupportedCommandsAreHiddenFromMenusAndToolbar() throws {

@@ -62,7 +62,7 @@ NeoSimulator.app
 | Route preferences and restoration | `HostModeController` |
 | Exact Neo, Legacy Simulator, and Device Hub lifecycle | `WorkspaceClient` |
 | Xcode and private-component compatibility gate | `InstallationInspector` |
-| Private runtime classes, selectors, and Swift thunks | `SimulatorRuntime` |
+| Private runtime classes, messages, and Swift members, resolved through ABIBridge | `SimulatorRuntime` |
 | Booted-device membership | `HostApplication` |
 | One device's display, HID, capabilities, and device operations | `DeviceSession` |
 | Window, toolbar, focus, sheets, and scaling | `DeviceWindowController` |
@@ -70,7 +70,7 @@ NeoSimulator.app
 | Menu construction, visibility, and active-window routing | `MenuController` |
 | Device tool subprocesses | `DeviceTools` and `DeviceToolRunner` |
 | Recording processes and final saves | app-owned Swift `RecordingStore` and `VideoRecording` |
-| Private Objective-C calls and exceptions | `SimulatorBridge` |
+| CoreSimulator devices and device-set observation | `SimulatorDeviceSet` and `SimulatorDevice` |
 | Device selection and previews | SwiftUI `DeviceBrowserView` |
 | Clipboard synchronization | deliberately no owner |
 
