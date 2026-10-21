@@ -146,6 +146,7 @@ The evidence is Simulator.app 16.0 (1063.4) from Xcode 26.6. `DWC` is
 | Connection `0x10004E24C` … `0x10004EDFC` | Opens at `min(fit, WindowScale ?? 1)` from `DevicePreferences[UDID].SimulatorWindowGeometry` (1 also for a value ≤ 0), at `WindowCenter` when saved. |
 | Disconnect `0x10004FDB8` → `0x100050D84` | Saves `WindowCenter` (`NSStringFromPoint`) and `WindowScale` (`renderScale`) when the window exists and the device is not rebooting. |
 | Rotation `0x10005BA50` | Keeps `renderScale`, updates the geometry, and keeps the top edge inside the visible frame. |
+| `DWC.setShowChrome:` `0x100048374`, body `0x1000483A4` | Sets `showDeviceChrome`; the chrome refresh `0x10005AFFC` then updates the geometry when `fullScreenState == 3` (`0x10005B41C`). The geometry update sizes the window from the display and never sets `renderScale`, so the scale stays. |
 | `DeviceWindow.constrainFrameRect:toScreen:` `0x100037A20` | While the window has chrome insets, moves it vertically instead of calling `super`, so a window with a bezel is not shrunk to the screen. |
 
 Neither `windowDidChangeScreen:` nor `windowDidChangeBackingProperties:` is

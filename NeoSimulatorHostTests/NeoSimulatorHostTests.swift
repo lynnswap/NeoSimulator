@@ -479,11 +479,18 @@ struct InputFocusTests {
     @Test func scaleCommandsAreValidatedAsInSimulator() throws {
         let display = TestDisplay()
         display.naturalSize = NSSize(width: 200, height: 400)
-        let controller = try makeController(display)
+        // Every fixed scale is 1, which fits a small screen at any resolution:
+        // the device is as dense as the screen the window opens on.
+        let screen = try #require(NSScreen.screens.first)
+        let density = WindowScale.usable(WindowScale.density(of: screen)) ?? WindowScale.defaultHostDensity
+        let controller = try makeController(display, screenPointsPerInch: Double(density))
         defer { controller.invalidate() }
         controller.showWindow(nil)
         let window = try #require(controller.window)
-        let backing = window.screen?.backingScaleFactor ?? 1
+        try #require(window.screen == screen)
+        let backing = screen.backingScaleFactor
+        display.screenScale = backing
+        #expect(controller.scale(for: .physicalSize) == 1 && controller.scale(for: .pixelAccurate) == 1)
         func enabled() -> [DeviceCommand.ID] {
             [.physicalSize, .pointAccurate, .pixelAccurate, .fitScreen].filter {
                 DeviceCommand.command($0).isEnabled(controller)
@@ -574,6 +581,68 @@ struct InputFocusTests {
         #expect(second.renderScale == 1.5)
         #expect(second.view.frame.size == NSSize(width: 480, height: 240))
         #expect(window.contentLayoutRect.width == 480)
+    }
+
+    @Test func rotationsAndRestartsKeepAFixedScaleWithinFitScreensMargin() async throws {
+        let key = HostPreferences.rotateWindowWhenSignaledByGuest
+        let saved = UserDefaults.standard.object(forKey: key)
+        defer { UserDefaults.standard.set(saved, forKey: key) }
+        UserDefaults.standard.set(true, forKey: key)
+        let first = TestDisplay()
+        first.naturalSize = NSSize(width: 200, height: 400)
+        let controller = try makeController(first)
+        defer { controller.invalidate() }
+        controller.showWindow(nil)
+        let window = try #require(controller.window)
+        let visible = try #require(window.screen?.visibleFrame)
+        let above = window.frame.height - window.contentLayoutRect.height + 12
+        // At Point Accurate, the window fits the screen with less than Fit Screen's 20-point margin.
+        let portrait = NSSize(width: 200, height: visible.height - above - 10)
+        first.naturalSize = portrait
+        controller.perform(.pointAccurate)
+        #expect(first.renderScale == 1)
+        #expect(try #require(controller.scale(for: .fitScreen)) < 1)
+        first.guestInterfaceAngle = 90
+        first.naturalSize = NSSize(width: portrait.height, height: portrait.width)
+        first.onPropertiesChange?()
+        first.guestInterfaceAngle = 0
+        first.naturalSize = portrait
+        first.onPropertiesChange?()
+        #expect(first.rotations == [90, 0])
+        #expect(first.renderScale == 1)
+        await controller.prepareForRestart()
+        let second = TestDisplay()
+        second.naturalSize = portrait
+        controller.reconnect(try makeSession(second))
+        #expect(second.renderScale == 1)
+    }
+
+    @Test func showingOrHidingTheBezelKeepsTheScaleAndResizesTheWindow() throws {
+        let display = TestDisplay()
+        display.naturalSize = NSSize(width: 360, height: 400)
+        display.bezel = NSSize(width: 40, height: 60)
+        let controller = try makeController(display)
+        defer { controller.invalidate() }
+        let window = try #require(controller.window)
+        // The window takes the display's size, 12 points below its header.
+        func showsDisplay(_ size: NSSize) -> Bool {
+            display.view.frame.size == size
+                && window.contentLayoutRect.size == NSSize(width: size.width, height: size.height + 12)
+        }
+        controller.perform(.pointAccurate)
+        #expect(showsDisplay(NSSize(width: 400, height: 460)))
+        // Hiding the bezel keeps the scale and shrinks the window.
+        controller.perform(.showDeviceBezels)
+        #expect(!controller.showsDeviceBezel)
+        #expect(display.renderScale == 1)
+        #expect(DeviceCommand.command(.pointAccurate).state?(controller) == .on)
+        #expect(showsDisplay(NSSize(width: 360, height: 400)))
+        // Showing it keeps a scale chosen without the bezel and grows the window.
+        controller.perform(.pointAccurate)
+        controller.perform(.showDeviceBezels)
+        #expect(controller.showsDeviceBezel)
+        #expect(display.renderScale == 1)
+        #expect(showsDisplay(NSSize(width: 400, height: 460)))
     }
 
     @Test func orientationCommandsSetTheDeviceAndKeepManualRotation() async throws {
@@ -1411,12 +1480,14 @@ struct InputFocusTests {
                                 simctl: URL = DeviceTools.simctl,
                                 devicectl: URL = DeviceTools.devicectl,
                                 recordingProcess: ((URL, DeviceTools.ScreenMask) -> Process)? = nil,
+                                screenPointsPerInch: Double? = nil,
                                 preferences: MemoryPreferences = MemoryPreferences(),
                                 onClose: @escaping (DeviceWindowController, DeviceLifetimeChoice?) -> Void = { _, _ in },
                                 onRestart: @escaping (DeviceWindowController, Bool) -> Void = { _, _ in })
         throws -> DeviceWindowController {
         let session = try makeSession(display, features: features, framebufferMask: framebufferMask, simctl: simctl,
-                                      devicectl: devicectl, recordingProcess: recordingProcess)
+                                      devicectl: devicectl, recordingProcess: recordingProcess,
+                                      screenPointsPerInch: screenPointsPerInch)
         return try DeviceWindowController(session: session, preferences: preferences, onClose: onClose,
                                           onRestart: onRestart)
     }
@@ -1426,12 +1497,14 @@ struct InputFocusTests {
                              framebufferMask: Bool = false,
                              simctl: URL = DeviceTools.simctl,
                              devicectl: URL = DeviceTools.devicectl,
-                             recordingProcess: ((URL, DeviceTools.ScreenMask) -> Process)? = nil) throws -> DeviceSession {
+                             recordingProcess: ((URL, DeviceTools.ScreenMask) -> Process)? = nil,
+                             screenPointsPerInch: Double? = nil) throws -> DeviceSession {
         DeviceSession(
             device: availableDevice("test-device", "Test iPhone", runtime: "iOS", state: 3),
             capabilities: DeviceCapabilities(family: .iPhone, runtimeVersion: 0x1B_00_00,
                                              supportsFeature: { features.contains($0) },
-                                             hasFramebufferMask: framebufferMask),
+                                             hasFramebufferMask: framebufferMask,
+                                             screenPointsPerInch: screenPointsPerInch),
             display: display,
             tools: try DeviceTools(identifier: "test-device", xcodeURL: URL(fileURLWithPath: "/Applications/Xcode.app"),
                                    simctl: simctl, devicectl: devicectl),
@@ -1469,7 +1542,7 @@ private final class TestDisplay: SimulatorDisplay {
     let view = NSView(frame: NSRect(x: 0, y: 0, width: 390, height: 844))
     let input = InputView()
     var inputView: NSView { input }
-    /// The display's size at scale 1.
+    /// The display's size at scale 1, without the bezel.
     var naturalSize = NSSize(width: 390, height: 844)
     private(set) var renderScale: CGFloat = 1
     var screenScale: CGFloat? = 3
@@ -1557,13 +1630,19 @@ private final class TestDisplay: SimulatorDisplay {
         appliedLocations.append(location)
         if let locationError { throw locationError }
     }
-    func setChromeVisible(_ visible: Bool) {}
+    /// What the bezel adds to the display's size at scale 1 while it shows.
+    var bezel = NSSize.zero
+    private var showsBezel = true
+    private var outerSize: NSSize {
+        showsBezel ? NSSize(width: naturalSize.width + bezel.width, height: naturalSize.height + bezel.height) : naturalSize
+    }
+    func setChromeVisible(_ visible: Bool) { showsBezel = visible }
     func setRenderScale(_ scale: CGFloat) {
         renderScale = scale
         view.setFrameSize(size(for: scale))
     }
-    func size(for scale: CGFloat) -> NSSize { NSSize(width: naturalSize.width * scale, height: naturalSize.height * scale) }
-    func scale(for size: NSSize) -> CGFloat { min(size.width / naturalSize.width, size.height / naturalSize.height) }
+    func size(for scale: CGFloat) -> NSSize { NSSize(width: outerSize.width * scale, height: outerSize.height * scale) }
+    func scale(for size: NSSize) -> CGFloat { min(size.width / outerSize.width, size.height / outerSize.height) }
     func setActive(_ active: Bool) { activations.append(active) }
     func setKeyboardEnabled(_ enabled: Bool) { keyboard.append(enabled) }
     var rotations: [Double] = []

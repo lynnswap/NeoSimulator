@@ -66,7 +66,10 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
             self.session.display.inputView.keyUp(with: event)
             return nil
         }
-        showDisplay(at: fittingScale(preferences.windowScale(forDevice: session.device.id)))
+        // Like Simulator.app, the window opens at the saved scale or Point
+        // Accurate, reduced to Fit Screen's.
+        showDisplay(at: min(scale(for: .fitScreen) ?? .infinity,
+                            preferences.windowScale(forDevice: session.device.id) ?? 1))
     }
 
     required init?(coder: NSCoder) { nil }
@@ -104,7 +107,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         }
         // The window keeps its scale across a restart; Simulator.app returns to
         // the scale saved when the device's window last closed.
-        let scale = WindowScale.usable(self.session.display.renderScale)
+        let scale = WindowScale.usable(self.session.display.renderScale) ?? 1
         self.session = session
         content = DeviceContentView(display: session.display.view)
         attachSession()
@@ -114,7 +117,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         }
         session.display.setChromeVisible(showsDeviceBezel)
         didReadOrientation = false
-        showDisplay(at: fittingScale(scale))
+        showDisplay(at: scaleFittingScreen(scale))
         showAndActivate()
         // A window that stayed key gets no new key notification.
         if window?.isKeyWindow == true { activateDisplay() }
@@ -187,10 +190,14 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    /// Like Simulator.app, the display keeps its scale and the window takes
+    /// the display's new size. Unlike it, the scale is reduced when the
+    /// window would not fit the screen.
     func toggleDeviceBezel() {
+        let scale = session.display.renderScale
         showsDeviceBezel.toggle()
         session.display.setChromeVisible(showsDeviceBezel)
-        resizeDisplay()
+        showDisplay(at: scaleFittingScreen(scale))
     }
 
     func toggleStayOnTop() {
@@ -424,7 +431,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     // Like Simulator.app, the rotated display keeps its scale and the window
     // takes its new shape. Unlike it, the scale is reduced when the window
     // would not fit the screen.
-    private func didRotate() { showDisplay(at: fittingScale(session.display.renderScale)) }
+    private func didRotate() { showDisplay(at: scaleFittingScreen(session.display.renderScale)) }
 
     // MARK: Window scale
 
@@ -443,10 +450,16 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
                                              backingScaleFactor: screen?.backingScaleFactor)
         case .fitScreen:
             // The window keeps 10 points from each edge of the screen.
-            guard let visible = (screen ?? NSScreen.main)?.visibleFrame else { return nil }
-            return session.display.scale(for: NSSize(width: visible.width - 20,
-                                                     height: visible.height - content.heightAboveDisplay - 20))
+            guard let space = displaySpace(on: screen ?? NSScreen.main) else { return nil }
+            return session.display.scale(for: NSSize(width: space.width - 20, height: space.height - 20))
         }
+    }
+
+    /// The largest display that fits `screen` in this window: the visible
+    /// frame below the window's header.
+    private func displaySpace(on screen: NSScreen?) -> NSSize? {
+        guard let visible = screen?.visibleFrame else { return nil }
+        return NSSize(width: visible.width, height: visible.height - content.heightAboveDisplay)
     }
 
     /// Whether a scale command can run, as Simulator.app validates it: on a
@@ -464,9 +477,9 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
               scale >= WindowScale.minimum(family: session.capabilities.family, displayClass: displayClass,
                                            fitting240: session.display.scale(for: NSSize(width: 240, height: 240)))
         else { return false }
-        guard let visible = window.screen?.visibleFrame else { return true }
+        guard let space = displaySpace(on: window.screen) else { return true }
         let size = session.display.size(for: scale)
-        return size.width <= visible.width && size.height <= visible.height - content.heightAboveDisplay
+        return size.width <= space.width && size.height <= space.height
     }
 
     /// The checkmark of a fixed scale: on while the display is at that scale.
@@ -490,10 +503,12 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
             : WindowScale.origin(of: frame, within: visible))
     }
 
-    /// `scale`, or Point Accurate, reduced to fit the screen: the scale
-    /// Simulator.app shows a new connection at.
-    private func fittingScale(_ scale: CGFloat?) -> CGFloat {
-        min(self.scale(for: .fitScreen) ?? .infinity, scale ?? 1)
+    /// `scale`, reduced only as far as the window needs to fit its screen,
+    /// the bound a fixed scale must meet to be chosen. Fit Screen's margin
+    /// does not apply.
+    private func scaleFittingScreen(_ scale: CGFloat) -> CGFloat {
+        guard let space = displaySpace(on: window?.screen ?? NSScreen.main) else { return scale }
+        return min(scale, session.display.scale(for: space))
     }
 
     /// Shows the display at `scale` and sizes the window to it, keeping the

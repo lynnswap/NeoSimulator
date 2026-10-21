@@ -424,15 +424,17 @@ Fit Screen has no checkmark.
 Closing a window saves its scale in
 `DevicePreferences[UDID].SimulatorWindowGeometry.WindowScale`, Simulator.app's
 keys, in NeoSimulator's own defaults. The device's next window opens at the
-saved scale, or at Point Accurate, reduced to fit the screen, as in
-Simulator.app. A rotation keeps the scale. These differ from Simulator.app:
+saved scale, or at Point Accurate, reduced to Fit Screen's scale, as in
+Simulator.app. A rotation and Show Device Bezels keep the scale and resize the
+window to the display's new size. These differ from Simulator.app:
 
 - Simulator.app checks that a fixed scale fits only for a display without a
   bezel, and its window's `constrainFrameRect:toScreen:` lets a window with a
   bezel extend past the screen. AppKit keeps NeoSimulator's window on the
   screen, which would cut the display off, so the fit is always required.
 - A restart keeps the window's scale; Simulator.app reconnects at the saved one.
-- A rotated window that would not fit the screen gets a smaller scale.
+- After a rotation, a bezel change, or a restart, a window that would not fit
+  the screen gets the largest scale that fits, without Fit Screen's margin.
 - Physical Size also uses the default densities for a zero or non-finite value,
   where Simulator.app divides by zero.
 - Only `WindowScale` is saved; new windows keep cascading instead of returning
