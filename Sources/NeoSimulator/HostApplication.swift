@@ -23,6 +23,11 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     /// Windows that reconnect when their restarted device boots.
     private var awaitingReconnect: [String: DeviceWindowController] = [:]
     private var suppressed: Set<String> = []
+    /// Shutdowns of devices whose windows closed, which quitting waits for.
+    private var closingShutdowns: [String: Task<Void, Never>] = [:]
+    /// The choice Quit NeoSimulator… made, which takes precedence over the
+    /// default quit action.
+    private var quitChoice: DeviceLifetimeChoice?
     private var reportedFailures: Set<String> = []
     private var browser: DeviceBrowserWindowController?
     private var newSimulator: NewSimulatorWindowController?
@@ -51,9 +56,38 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         menu?.install()
         notificationToken = try deviceSet.observe { [weak self] in self?.rescan() }
         openTestingSet()
+        // Like Simulator.app, devices already booted get windows only with
+        // AttachBootedOnStart; those booted later always do.
+        let defaults = UserDefaults.standard
+        let attachesBooted = defaults.bool(forKey: HostPreferences.attachBootedOnStart)
+        if !attachesBooted { suppressed.formUnion(try readDevices().filter { $0.state == 3 }.map(\.identifier)) }
         try conflicts.check()
         try scanDevices()
-        if sessions.isEmpty { showDeviceBrowser() }
+        let attached = attachesBooted && !(sessions.isEmpty && connections.isEmpty)
+        if !attached, defaults.bool(forKey: HostPreferences.sessionOnLaunch),
+           defaults.bool(forKey: HostPreferences.startLastDeviceOnLaunch),
+           let device = Self.initialDevice(in: try availableSimulatorDevices(),
+                                           current: defaults.string(forKey: HostPreferences.currentDeviceUDID)) {
+            Task {
+                do { try await openSimulator(withIdentifier: device.identifier) } catch {
+                    NSAlert(error: error).runModal()
+                    showDeviceBrowser()
+                }
+            }
+        } else if sessions.isEmpty && connections.isEmpty {
+            showDeviceBrowser()
+        }
+    }
+
+    /// The device launching starts: the last chosen one when it is available,
+    /// otherwise, like Simulator.app, the last iPhone in CoreSimulator's order
+    /// or the first device.
+    static func initialDevice(in devices: [AvailableDevice], current: String?) -> AvailableDevice? {
+        if let current = current.flatMap(UUID.init(uuidString:)),
+           let device = devices.first(where: { UUID(uuidString: $0.identifier) == current }) {
+            return device
+        }
+        return devices.last { $0.productFamily == 1 && $0.deviceTypeName.contains("iPhone") } ?? devices.first
     }
 
     func availableSimulatorDevices() throws -> [AvailableDevice] {
@@ -165,6 +199,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     private static func describe(_ device: SimulatorDevice) -> AvailableDevice {
         AvailableDevice(identifier: device.identifier, name: device.name, descriptiveName: device.descriptiveName,
                         runtimeIdentifier: device.runtimeIdentifier, runtimeName: device.runtimeName,
+                        productFamily: device.productFamily, deviceTypeName: device.deviceTypeName,
                         state: device.state)
     }
 
@@ -186,6 +221,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         }
         suppressed.remove(identifier)
         reportedFailures.remove(identifier)
+        // Launching starts this device next time.
+        UserDefaults.standard.set(identifier, forKey: HostPreferences.currentDeviceUDID)
         // Like Simulator.app, a device that is already booting is attached
         // once it boots instead of being booted again.
         if device.state != 2, device.state != 3, bootOperations[identifier] == nil {
@@ -267,11 +304,9 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                             controller.reconnect(session)
                             return
                         }
-                        let controller = try DeviceWindowController(session: session, onClose: { [weak self] identifier in
-                            self?.sessions.removeValue(forKey: identifier)
-                            self?.awaitingReconnect.removeValue(forKey: identifier)
-                            self?.suppressed.insert(identifier)
-                            if self?.sessions.isEmpty == true { self?.showDeviceBrowser() }
+                        let deviceSetPath = device.deviceSetPath
+                        let controller = try DeviceWindowController(session: session, onClose: { [weak self] in
+                            self?.deviceWindowClosed($0, choice: $1, deviceSetPath: deviceSetPath)
                         }, onRestart: { [weak self] in self?.restartDevice($0, erasing: $1) })
                         try conflicts.check()
                         sessions[identifier] = controller
@@ -290,6 +325,91 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                 report(error)
             }
         }
+    }
+
+    // MARK: Closing and quitting
+
+    /// A user closed a device window. Like Simulator.app, the device shuts
+    /// down unless the close chose to keep it running or `DetachOnWindowClose`
+    /// is on, including a device Xcode booted.
+    private func deviceWindowClosed(_ identifier: String, choice: DeviceLifetimeChoice?, deviceSetPath: String?) {
+        sessions.removeValue(forKey: identifier)
+        awaitingReconnect.removeValue(forKey: identifier)
+        // A device left running keeps its window closed until it shuts down.
+        suppressed.insert(identifier)
+        let keepsRunning = choice.map { $0 == .keepRunning }
+            ?? UserDefaults.standard.bool(forKey: HostPreferences.detachOnWindowClose)
+        if !keepsRunning { shutDownClosedDevice(identifier, deviceSetPath: deviceSetPath) }
+        if sessions.isEmpty { showDeviceBrowser() }
+    }
+
+    /// Shuts down a device whose window closed, abandoning a restart in progress.
+    private func shutDownClosedDevice(_ identifier: String, deviceSetPath: String?) {
+        restarting.removeValue(forKey: identifier)?.cancel()
+        bootOperations.removeValue(forKey: identifier)?.cancel()
+        guard closingShutdowns[identifier] == nil else { return }
+        let tools: DeviceTools
+        do {
+            tools = try DeviceTools(identifier: identifier, xcodeURL: runtime.xcodeURL, deviceSetPath: deviceSetPath)
+        } catch {
+            hostLog("Could not shut down \(identifier): \(error.localizedDescription)")
+            return
+        }
+        closingShutdowns[identifier] = Task { [weak self] in
+            do { try await tools.shutdown() } catch is CancellationError {
+            } catch {
+                hostLog("Could not shut down \(identifier): \(error.localizedDescription)")
+            }
+            self?.closingShutdowns.removeValue(forKey: identifier)
+        }
+    }
+
+    /// Quit NeoSimulator…: asks whether to shut the devices down, and quits
+    /// unless the choice is Cancel.
+    func quitAsking() {
+        let alert = DeviceLifetimeChoice.alert(
+            quitting: true, keepsRunningByDefault: UserDefaults.standard.bool(forKey: HostPreferences.detachOnAppQuit))
+        guard let choice = DeviceLifetimeChoice.choice(
+            for: alert.runModal(), of: alert, rememberingAs: HostPreferences.detachOnAppQuit) else { return }
+        quitChoice = choice
+        NSApp.terminate(nil)
+    }
+
+    /// Shuts down the devices that have windows, as Simulator.app does when
+    /// quitting, and returns the failures. Each shutdown, and those of closed
+    /// windows, must finish within `TerminationTimeout`.
+    private func shutDownForTermination(_ devices: [(identifier: String, deviceSetPath: String?)]) async -> [String] {
+        var failures: [String] = []
+        var shutdowns = Array(closingShutdowns.values).map { shutdown in
+            Task { () -> String? in await shutdown.value; return nil }
+        }
+        for device in devices {
+            do {
+                let tools = try DeviceTools(identifier: device.identifier, xcodeURL: runtime.xcodeURL,
+                                            deviceSetPath: device.deviceSetPath)
+                shutdowns.append(Task {
+                    do { try await tools.shutdown() } catch is CancellationError {
+                    } catch { return error.localizedDescription }
+                    return nil
+                })
+            } catch {
+                failures.append(error.localizedDescription)
+            }
+        }
+        let timeout = UserDefaults.standard.double(forKey: HostPreferences.terminationTimeout)
+        let started = shutdowns
+        let deadline = Task { () -> Bool in
+            do { try await Task.sleep(for: .seconds(timeout)) } catch { return false }
+            for shutdown in started { shutdown.cancel() }
+            for shutdown in self.closingShutdowns.values { shutdown.cancel() }
+            return true
+        }
+        for shutdown in shutdowns { if let failure = await shutdown.value { failures.append(failure) } }
+        deadline.cancel()
+        if await deadline.value {
+            failures.insert("Devices did not shut down within \(Int(timeout)) seconds of quitting.", at: 0)
+        }
+        return failures
     }
 
     // MARK: Restart
@@ -385,14 +505,33 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         return true
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+    /// Quitting finishes recordings, then, like Simulator.app, shuts down the
+    /// devices that have windows unless the quit chose to keep them running or
+    /// `DetachOnAppQuit` is on. A host stopped by a conflict leaves them running.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard recordings.hasActiveRecordings else { return .terminateNow }
         guard !isTerminating else { return .terminateLater }
+        let keepsRunning = stopped || (quitChoice.map { $0 == .keepRunning }
+            ?? UserDefaults.standard.bool(forKey: HostPreferences.detachOnAppQuit))
+        let devices = keepsRunning ? [] : sessions.values.map {
+            (identifier: $0.session.device.id, deviceSetPath: $0.session.tools.deviceSetPath)
+        }
+        guard recordings.hasActiveRecordings || !devices.isEmpty || !closingShutdowns.isEmpty else {
+            return .terminateNow
+        }
         isTerminating = true
         Task {
             await recordings.finishAll()
             for error in recordingTerminationErrors { NSAlert(error: error).runModal() }
             recordingTerminationErrors.removeAll()
+            // Windows disconnect before their devices shut down.
+            shutdown()
+            let failures = await shutDownForTermination(devices)
+            if !failures.isEmpty {
+                let alert = NSAlert()
+                alert.messageText = "Some simulated devices could not be shut down."
+                alert.informativeText = failures.joined(separator: "\n")
+                alert.runModal()
+            }
             sender.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater

@@ -131,6 +131,7 @@ final class SimulatorDevice {
     let platformIdentifier: String
     /// `SimDeviceType.productFamilyID`: 1 iPhone, 2 iPad, 3 TV, 4 Watch, 7 Vision.
     let productFamily: Int
+    let deviceTypeName: String
     /// `SimRuntime.version`, packed as major << 16 | minor << 8 | patch.
     let runtimeVersion: UInt32
     /// The path of the device's set, or nil for the default set.
@@ -153,6 +154,7 @@ final class SimulatorDevice {
         runtimeVersion = try runtime.map { try unsafe interface.runtimeVersion.unsafeInvoke(on: $0) } ?? 0
         let deviceType = try unsafe interface.deviceType.unsafeInvoke(on: object)
         productFamily = Int(try deviceType.map { try unsafe interface.productFamily.unsafeInvoke(on: $0) } ?? 0)
+        deviceTypeName = try deviceType.flatMap { try unsafe interface.deviceTypeName.unsafeInvoke(on: $0) } ?? ""
     }
 
     /// `SimDeviceState`; 3 is Booted. A device whose state cannot be read is

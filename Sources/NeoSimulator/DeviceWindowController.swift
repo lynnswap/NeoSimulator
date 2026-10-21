@@ -9,7 +9,10 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     private(set) var showsDeviceBezel = true
     private var closed = false
     private var didReadOrientation = false
-    private let onClose: (String) -> Void
+    private let onClose: (String, DeviceLifetimeChoice?) -> Void
+    /// The choice File ▸ Close Window… made for this close, which takes
+    /// precedence over the default close action.
+    private var closeChoice: DeviceLifetimeChoice?
     private let onRestart: (DeviceWindowController, _ erasing: Bool) -> Void
     private var content: DeviceContentView
     private var deviceToolbar: DeviceToolbar?
@@ -19,7 +22,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         session.canPerformCommands && window?.inLiveResize == false && window?.styleMask.contains(.fullScreen) == false
     }
 
-    init(session: DeviceSession, onClose: @escaping (String) -> Void,
+    init(session: DeviceSession, onClose: @escaping (String, DeviceLifetimeChoice?) -> Void,
          onRestart: @escaping (DeviceWindowController, _ erasing: Bool) -> Void = { _, _ in }) throws {
         self.session = session
         self.onClose = onClose
@@ -342,10 +345,31 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     func windowDidEndLiveResize(_ notification: Notification) {
         if !closed { resizeDisplay(); session.display.endResize() }
     }
+    /// File ▸ Close Window…: asks whether to shut the device down, and closes
+    /// the window unless the choice is Cancel.
+    func closeAsking() {
+        guard let window, window.attachedSheet == nil, !closed else { return }
+        let alert = DeviceLifetimeChoice.alert(
+            quitting: false, keepsRunningByDefault: UserDefaults.standard.bool(forKey: HostPreferences.detachOnWindowClose))
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard let self, let choice = DeviceLifetimeChoice.choice(
+                for: response, of: alert, rememberingAs: HostPreferences.detachOnWindowClose) else { return }
+            self.closeChoice = choice
+            self.window?.close()
+        }
+    }
+
+    // Like Simulator.app, closing with Control held asks first.
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        guard NSEvent.modifierFlags.contains(.control) else { return true }
+        closeAsking()
+        return false
+    }
+
     func windowWillClose(_ notification: Notification) {
         guard !closed else { return }
         disconnect()
-        onClose(session.device.id)
+        onClose(session.device.id, closeChoice)
     }
     func invalidate() {
         disconnect()
@@ -445,5 +469,49 @@ enum CaptureFile {
             }
             throw error
         }
+    }
+}
+
+/// Simulator.app's choice between shutting devices down and leaving them
+/// running, which File ▸ Close Window… and Quit NeoSimulator… ask for.
+enum DeviceLifetimeChoice: Equatable {
+    case shutDown, keepRunning
+
+    /// The alert with Simulator.app's text. Return chooses the default action.
+    static func alert(quitting: Bool, keepsRunningByDefault: Bool) -> NSAlert {
+        let alert = NSAlert()
+        if quitting {
+            alert.messageText = "Do you want to shut down the simulated devices?"
+            alert.informativeText = "You may choose to shut down all running simulated devices or keep them running."
+            alert.alertStyle = .informational
+        } else {
+            alert.messageText = "Do you want to shutdown the simulated device?"
+            alert.informativeText = "When closing a window, you can either shut down the device or keep it running."
+        }
+        alert.addButton(withTitle: quitting ? "Shut Down" : "Shut down")
+        alert.addButton(withTitle: "Keep Running")
+        alert.addButton(withTitle: "Cancel")
+        alert.showsSuppressionButton = true
+        alert.suppressionButton?.title =
+            quitting ? "Remember as the default quit action." : "Remember as the default close action."
+        if keepsRunningByDefault {
+            alert.buttons[0].keyEquivalent = ""
+            alert.buttons[1].keyEquivalent = "\r"
+        }
+        return alert
+    }
+
+    /// The choice an alert response names, saved as the default under `key`
+    /// when the suppression box is checked. Cancel names none.
+    static func choice(for response: NSApplication.ModalResponse, of alert: NSAlert,
+                       rememberingAs key: String) -> Self? {
+        let choice: Self
+        switch response {
+        case .alertFirstButtonReturn: choice = .shutDown
+        case .alertSecondButtonReturn: choice = .keepRunning
+        default: return nil
+        }
+        if alert.suppressionButton?.state == .on { UserDefaults.standard.set(choice == .keepRunning, forKey: key) }
+        return choice
     }
 }
