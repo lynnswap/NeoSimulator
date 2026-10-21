@@ -112,7 +112,8 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
         let window = menu("Window", in: main)
         item("Minimize", action: #selector(minimizeWindow(_:)), key: "m", in: window)
         item("Enter Full Screen", action: #selector(fullScreen(_:)), key: "f", modifiers: [.command, .control], in: window)
-        commands([.showDeviceBezels, .stayOnTop], in: window)
+        item("Show Device Bezels", action: #selector(toggleShowDeviceBezels(_:)), in: window)
+        commands([.stayOnTop], in: window)
         window.addItem(.separator())
         commands([.physicalSize, .pointAccurate, .pixelAccurate, .fitScreen], in: window)
         window.addItem(.separator())
@@ -212,26 +213,25 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
             item.state = application?.showsTestingDevices == true ? .on : .off
             return application != nil
         }
+        // Like Simulator.app's app delegate, the checkmark shows the app-wide
+        // preference, also without a device window.
+        if item.action == #selector(toggleShowDeviceBezels(_:)) {
+            item.state = UserDefaults.standard.showsDeviceBezels ? .on : .off
+            return application != nil
+        }
         if item.action == #selector(fullScreen(_:)) {
             item.title = NSApp.keyWindow?.styleMask.contains(.fullScreen) == true ? "Exit Full Screen" : "Enter Full Screen"
         }
         guard let raw = item.representedObject as? String, let id = DeviceCommand.ID(rawValue: raw) else {
             return NSApp.keyWindow != nil
         }
-        let command = DeviceCommand.command(id)
-        guard let window = activeWindow else {
-            item.state = .off
-            item.title = command.title
-            return false
-        }
-        item.state = command.state?(window) ?? .off
-        item.title = command.stateTitle?(window) ?? command.title
-        return command.isEnabled(window)
+        return DeviceCommand.command(id).validate(item, for: activeWindow)
     }
 
     @objc private func showBrowser(_ sender: Any?) { application?.showDeviceBrowser() }
     @objc private func showNewSimulator(_ sender: Any?) { application?.showNewSimulator() }
     @objc private func toggleShowTestingDevices(_ sender: Any?) { application?.toggleShowTestingDevices() }
+    @objc private func toggleShowDeviceBezels(_ sender: Any?) { application?.toggleShowDeviceBezels() }
     @objc private func closeWindow(_ sender: Any?) { NSApp.keyWindow?.performClose(sender) }
     @objc private func closeAsking(_ sender: Any?) { activeWindow?.closeAsking() }
     @objc private func quitAsking(_ sender: Any?) { application?.quitAsking() }

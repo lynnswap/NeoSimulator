@@ -450,7 +450,6 @@ final class SimulatorConnection: SimulatorDisplay {
             try? unsafe display.disconnect.unsafeInvoke(on: view, NativeSwiftClosure {})
             throw error
         }
-        setChromeVisible(true)
         let handler = try SimulatorDisplayInterface.ScreenEventHandler { [weak self] _, _ in
             MainActor.assumeIsolated { self?.onPropertiesChange?() }
         }

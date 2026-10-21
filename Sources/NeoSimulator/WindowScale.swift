@@ -94,6 +94,14 @@ protocol PreferenceStore: AnyObject {
 
 extension UserDefaults: PreferenceStore {}
 
+extension PreferenceStore {
+    /// Window ▸ Show Device Bezels: Simulator.app's app-wide `ShowChrome`,
+    /// which each device window follows when it opens or reconnects and when
+    /// the command changes it. It is on unless it was turned off, as its
+    /// registered default says.
+    var showsDeviceBezels: Bool { object(forKey: HostPreferences.showChrome) as? Bool ?? true }
+}
+
 private let windowGeometryKey = "SimulatorWindowGeometry"
 private let windowScaleKey = "WindowScale"
 private let windowCenterKey = "WindowCenter"

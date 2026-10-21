@@ -43,6 +43,9 @@ enum HostPreferences {
     static let rotateWindowWhenSignaledByGuest = "RotateWindowWhenSignaledByGuest"
     /// Debug ▸ Show Parallel Testing Devices, on unless turned off.
     static let showTestingDevices = "ShowTestingDevices"
+    /// Window ▸ Show Device Bezels, on unless turned off. It applies to every
+    /// device window: see `PreferenceStore.showsDeviceBezels`.
+    static let showChrome = "ShowChrome"
     /// Overrides the path of Xcode's parallel testing device set.
     static let testingDeviceSetPath = "TestingDeviceSetPath"
     /// Whether closing a device window leaves the device running instead of
@@ -82,7 +85,7 @@ enum HostPreferences {
     /// Registers Simulator.app's defaults for these preferences.
     static func registerDefaults() {
         UserDefaults.standard.register(defaults: [
-            showTestingDevices: true, detachOnWindowClose: false, detachOnAppQuit: false,
+            showTestingDevices: true, showChrome: true, detachOnWindowClose: false, detachOnAppQuit: false,
             attachBootedOnStart: true, sessionOnLaunch: true, startLastDeviceOnLaunch: true,
             terminationTimeout: 60.0, screenShotSaveLocation: defaultScreenshotLocation(), screenShotUseMask: false,
             gifMaxFramerate: 10, gifMaxFrameSize: 640, gifUseDither: true, gifDitherDepth: 4.0,

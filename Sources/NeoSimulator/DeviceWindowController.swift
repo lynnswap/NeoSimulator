@@ -6,8 +6,11 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     /// The device's current connection. A restart replaces it after the
     /// device boots again, keeping this window.
     private(set) var session: DeviceSession
-    private(set) var showsDeviceBezel = true
     private var closed = false
+    /// Set from a restart's start until the device's next connection, like
+    /// Simulator.app's `isRebooting`. Closing the window meanwhile saves no
+    /// geometry.
+    private var isRestarting = false
     private var didReadOrientation = false
     private let onClose: (DeviceWindowController, DeviceLifetimeChoice?) -> Void
     /// The choice File ▸ Close Window… made for this close, which takes
@@ -65,6 +68,9 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         window.delegate = self
         window.displayScale = { [weak self] in self?.session.display.renderScale ?? 1 }
         attachSession()
+        // Like Simulator.app, each window shows the bezel as the app-wide
+        // Show Device Bezels preference says, before it takes its scale.
+        session.display.setChromeVisible(preferences.showsDeviceBezels)
         bezelChanged()
         window.contentMinSize = NSSize(width: 320, height: 300)
         // AppKit never dispatches key-ups while Command is held; forward them
@@ -133,6 +139,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     /// Finishes an active recording, then disconnects from the device so that
     /// it can shut down. The window stays open for `reconnect(_:)`.
     func prepareForRestart() async {
+        isRestarting = true
         await session.finishRecording()
         guard !closed else { return }
         if let window, let sheet = window.attachedSheet { window.endSheet(sheet, returnCode: .cancel) }
@@ -147,9 +154,12 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
             session.disconnect()
             return
         }
-        // Like Simulator.app, the window keeps its scale and place across a
-        // restart; the device's next connection shows a new display.
+        // The device's next connection shows a new display at the window's
+        // scale. Like Simulator.app, which turns its display upright after a
+        // restart, the window takes the display's shape as after a rotation:
+        // below its top edge, then moved back inside the screen.
         let scale = WindowScale.usable(self.session.display.renderScale) ?? 1
+        isRestarting = false
         self.session = session
         content = DeviceContentView(display: session.display.view)
         attachSession()
@@ -157,10 +167,11 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
             (window.title, window.subtitle) = deviceWindowTitles(
                 name: session.device.name, runtimeName: session.device.runtimeName)
         }
-        session.display.setChromeVisible(showsDeviceBezel)
+        session.display.setChromeVisible(preferences.showsDeviceBezels)
         bezelChanged()
         didReadOrientation = false
-        showDisplay(at: scale)
+        session.display.setRenderScale(scale)
+        didRotate()
         showAndActivate()
         // A window that stayed key gets no new key notification.
         if window?.isKeyWindow == true { activateDisplay() }
@@ -243,11 +254,11 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    /// Like Simulator.app, the display keeps its scale and the window takes
-    /// the display's new size.
-    func toggleDeviceBezel() {
-        showsDeviceBezel.toggle()
-        session.display.setChromeVisible(showsDeviceBezel)
+    /// Shows or hides the device's bezel for Window ▸ Show Device Bezels, as
+    /// Simulator.app's `setShowChrome:` does: the display keeps its scale and
+    /// the window takes the display's new size.
+    func setDeviceBezelVisible(_ visible: Bool) {
+        session.display.setChromeVisible(visible)
         bezelChanged()
         updateWindowSize()
     }
@@ -543,17 +554,24 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         return NSSize(width: visible.width, height: visible.height - content.heightAboveDisplay)
     }
 
+    /// Whether Simulator.app's validation of a scale command gets past its
+    /// first checks: a connected display outside full screen, and for
+    /// Physical Size, the device's own screen. Otherwise the command is
+    /// unavailable and its checkmark stays as it is.
+    private func validatesScale(_ mode: WindowScaleMode) -> Bool {
+        session.canPerformCommands && !isFullScreen && (mode != .physicalSize || session.display.displayClass == 0)
+    }
+
     /// Whether a scale command can run, as Simulator.app validates it: on a
     /// connected display outside full screen, Physical Size only on the
     /// device's own screen, and a fixed scale only from the device's minimum.
     /// A display without a bezel must also fit its screen; a window with a
     /// bezel may extend past it.
     func canSetScale(_ mode: WindowScaleMode) -> Bool {
-        guard session.canPerformCommands, !isFullScreen, let window else { return false }
+        guard validatesScale(mode), let window else { return false }
         guard mode != .fitScreen else { return true }
-        let displayClass = session.display.displayClass
-        guard let scale = scale(for: mode), mode != .physicalSize || displayClass == 0,
-              scale >= WindowScale.minimum(family: session.capabilities.family, displayClass: displayClass,
+        guard let scale = scale(for: mode),
+              scale >= WindowScale.minimum(family: session.capabilities.family, displayClass: session.display.displayClass,
                                            fitting240: session.display.scale(for: NSSize(width: 240, height: 240)))
         else { return false }
         guard session.display.chromePadding == nil, let space = displaySpace(on: window.screen) else { return true }
@@ -561,11 +579,13 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         return size.width <= space.width && size.height <= space.height
     }
 
-    /// The checkmark of a fixed scale: on while the display is at that scale.
-    /// It follows the window's screen, so moving the window to a screen with
-    /// another resolution or size can clear it.
-    func scaleState(_ mode: WindowScaleMode) -> NSControl.StateValue {
-        guard let scale = scale(for: mode) else { return .off }
+    /// The checkmark of a fixed scale: on while the display is at that scale,
+    /// also below the device's minimum or past the screen. It follows the
+    /// window's screen, so moving the window to a screen with another
+    /// resolution or size can clear it. Nil, which leaves the checkmark as it
+    /// is, where Simulator.app's validation returns before setting it.
+    func scaleState(_ mode: WindowScaleMode) -> NSControl.StateValue? {
+        guard validatesScale(mode), let scale = scale(for: mode) else { return nil }
         return WindowScale.matches(session.display.renderScale, scale) ? .on : .off
     }
 
@@ -739,24 +759,27 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         guard !closed else { return }
+        saveWindowGeometry()
         disconnect()
         onClose(self, closeChoice)
     }
     func invalidate() {
+        saveWindowGeometry()
         disconnect()
         window?.delegate = nil
         window?.close()
     }
+    /// Like Simulator.app, the device's next window opens at this center and
+    /// scale. A window that closes during a restart saves nothing.
+    private func saveWindowGeometry() {
+        guard !closed, !isRestarting, let window else { return }
+        preferences.setWindowGeometry(center: NSPoint(x: window.frame.midX, y: window.frame.midY),
+                                      scale: WindowScale.usable(session.display.renderScale),
+                                      forDevice: session.device.id)
+    }
     private func disconnect() {
         guard !closed else { return }
         closed = true
-        // Like Simulator.app, the device's next window opens at this center
-        // and scale. A restart keeps the window and saves nothing.
-        if let window {
-            preferences.setWindowGeometry(center: NSPoint(x: window.frame.midX, y: window.frame.midY),
-                                          scale: WindowScale.usable(session.display.renderScale),
-                                          forDevice: session.device.id)
-        }
         if let commandKeyUpMonitor { NSEvent.removeMonitor(commandKeyUpMonitor) }
         commandKeyUpMonitor = nil
         if let screenParametersObserver { NotificationCenter.default.removeObserver(screenParametersObserver) }
@@ -767,6 +790,9 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         customLocation?.close()
         session.disconnect()
     }
+    /// A controller released without closing its window, which
+    /// `HostApplication` discards when another host appears before the window
+    /// shows, disconnects without saving the window's geometry.
     isolated deinit { disconnect() }
 }
 

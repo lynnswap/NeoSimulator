@@ -275,9 +275,11 @@ subscribes to the default device set. It creates sessions only for booted iOS
 devices.
 
 A session discovers the default integrated `SimDeviceScreen`; screen ID zero is
-not assumed. It creates a connected `SimDisplayView`, enables device chrome,
-creates one `SimDeviceLegacyHIDClient`, and installs the view in a resizable
-transparent AppKit window. Shutdown removes the session. Closing a window
+not assumed. It creates a connected `SimDisplayView` and one
+`SimDeviceLegacyHIDClient`, and installs the view in a transparent AppKit
+window, which shows the device bezel as Window ▸ Show Device Bezels says and is
+resizable only while the display shows no bezel (see window scale below).
+Shutdown removes the session. Closing a window
 shuts the device down, as Simulator.app does with `DetachOnWindowClose` off;
 a close that keeps the device running suppresses reopening until the device
 leaves the booted state. File ▸ Close Window… (or Control-closing) asks with
@@ -421,11 +423,23 @@ extend past the screen. The bezel is the display's `SimDisplayChromeView.chrome`
 which NeoSimulator reads through ABIBridge with its `images.padding`. It is nil
 while Show Device Bezels is off, because SimulatorKit then clears the chrome
 view's device type, and for a device type whose chrome SimulatorKit cannot
-load. A fixed scale is checked while `renderScale` is within 0.001 of it. The
-menu computes the target from the window's current screen each time it
-validates, so a manual resize, or a move to a screen with another resolution
-or size, clears the checkmark without changing the scale. Fit Screen has no
+load. A fixed scale is checked while `renderScale` is within 0.001 of it, also
+when it is below the minimum or does not fit. The menu computes the target from
+the window's current screen each time it validates, so a manual resize, or a
+move to a screen with another resolution or size, clears the checkmark without
+changing the scale. A checkmark stays as it was without a connected display,
+in full screen and its transitions, for Physical Size on another screen than
+the device's own, and without a device window, where Simulator.app's
+validation returns before setting it or does not run. Fit Screen has no
 checkmark.
+
+Show Device Bezels is Simulator.app's app-wide `ShowChrome` preference,
+registered on, which NeoSimulator keeps in its own defaults. As in
+Simulator.app, changing it applies to every open device window, including one
+whose device is restarting, and a window shows the bezel as the preference says
+when it opens, before it takes its first scale, and when it reconnects after a
+restart. The menu's checkmark shows the preference, also without a device
+window.
 
 The device window is a `DeviceWindow`, which follows its bezel as Simulator.app's
 window does:
@@ -463,12 +477,18 @@ window does:
 A rotation, Show Device Bezels, and a restart keep the display's scale and
 resize the window, even when the window no longer fits the screen, as in
 Simulator.app. Without a bezel, AppKit then shrinks a window taller than the
-screen while the display keeps its scale.
+screen while the display keeps its scale. After a restart, the device's next
+connection shows a new, upright display; like Simulator.app, which turns its
+display upright then, the window takes that display's shape as after a
+rotation, below its top edge, and moves back inside the visible frame.
 
 Closing a window saves its center (`NSStringFromPoint`) and scale as
 `WindowCenter` and `WindowScale` in
 `DevicePreferences[UDID].SimulatorWindowGeometry`, Simulator.app's keys, in
-NeoSimulator's own defaults. A restart keeps the window and saves nothing. The
+NeoSimulator's own defaults. Like Simulator.app, which saves nothing while its
+device is rebooting, a window that closes from the start of a restart until the
+device reconnects saves nothing. Neither does a new window that `HostApplication`
+discards before it shows, when another simulator host appears first. The
 device's next window opens at the saved scale, or at Point Accurate, reduced to
 Fit Screen's scale, and is centered at the saved center. Without a saved
 center, or at the zero point, which is also what an unreadable value gives,

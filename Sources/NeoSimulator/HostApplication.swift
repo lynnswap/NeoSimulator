@@ -141,6 +141,15 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         try (set ?? deviceSet).readDevices().filter { $0.platformIdentifier == "com.apple.platform.iphonesimulator" }
     }
 
+    /// Window ▸ Show Device Bezels. Like Simulator.app, it changes the
+    /// app-wide preference and every open device window, including one whose
+    /// device is restarting; windows that open later follow the preference.
+    func toggleShowDeviceBezels() {
+        let shows = !UserDefaults.standard.showsDeviceBezels
+        UserDefaults.standard.set(shows, forKey: HostPreferences.showChrome)
+        for controller in sessions.values { controller.setDeviceBezelVisible(shows) }
+    }
+
     // MARK: Parallel testing devices
 
     var showsTestingDevices: Bool { UserDefaults.standard.bool(forKey: HostPreferences.showTestingDevices) }
