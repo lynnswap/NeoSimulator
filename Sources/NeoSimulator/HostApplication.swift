@@ -12,6 +12,11 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     private var sessions: [String: DeviceWindowController] = [:]
     private var connections: [String: Task<Void, Never>] = [:]
     private var bootOperations: [String: DeviceTools] = [:]
+    /// Running restarts. Their windows stay open while the device is down
+    /// and reconnect only after the restart finishes.
+    private var restarting: [String: Task<Void, Never>] = [:]
+    /// Windows that reconnect when their restarted device boots.
+    private var awaitingReconnect: [String: DeviceWindowController] = [:]
     private var suppressed: Set<String> = []
     private var reportedFailures: Set<String> = []
     private var browser: DeviceBrowserWindowController?
@@ -62,6 +67,9 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     }
 
     func openSimulator(withIdentifier identifier: String) async throws {
+        // A restart boots the device itself; opening waits instead of booting
+        // during its shutdown or erase.
+        while let restart = restarting[identifier] { await restart.value }
         guard !stopped else { throw HostError.operation("NeoSimulator is shutting down") }
         try conflicts.check()
         guard let device = try readDevices().first(where: { $0.identifier == identifier }) else {
@@ -93,15 +101,19 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         let booted = try readDevices().filter { $0.state == 3 }
         let identifiers = Set(booted.map(\.identifier))
         let hadDeviceWindows = !sessions.isEmpty
-        for identifier in sessions.keys where !identifiers.contains(identifier) {
+        for identifier in sessions.keys where !identifiers.contains(identifier) && restarting[identifier] == nil {
             sessions.removeValue(forKey: identifier)?.invalidate()
+            awaitingReconnect.removeValue(forKey: identifier)
         }
         for identifier in connections.keys where !identifiers.contains(identifier) {
             connections[identifier]?.cancel()
         }
-        suppressed.formIntersection(identifiers)
+        // A restart's boot is not a new boot, so a window closed during the
+        // restart stays closed.
+        suppressed.formIntersection(identifiers.union(restarting.keys))
         reportedFailures.formIntersection(identifiers)
-        for device in booted where sessions[device.identifier] == nil
+        for device in booted where (sessions[device.identifier] == nil
+                || (awaitingReconnect[device.identifier] != nil && restarting[device.identifier] == nil))
             && connections[device.identifier] == nil
             && !suppressed.contains(device.identifier)
             && !reportedFailures.contains(device.identifier) {
@@ -134,11 +146,17 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                             display: connection,
                             tools: try DeviceTools(identifier: identifier, xcodeURL: runtime.xcodeURL),
                             recordings: recordings)
-                        let controller = try DeviceWindowController(session: session) { [weak self] identifier in
+                        if let controller = awaitingReconnect.removeValue(forKey: identifier) {
+                            try conflicts.check()
+                            controller.reconnect(session)
+                            return
+                        }
+                        let controller = try DeviceWindowController(session: session, onClose: { [weak self] identifier in
                             self?.sessions.removeValue(forKey: identifier)
+                            self?.awaitingReconnect.removeValue(forKey: identifier)
                             self?.suppressed.insert(identifier)
                             if self?.sessions.isEmpty == true { self?.showDeviceBrowser() }
-                        }
+                        }, onRestart: { [weak self] in self?.restartDevice($0, erasing: $1) })
                         try conflicts.check()
                         sessions[identifier] = controller
                         if let window = controller.window {
@@ -155,6 +173,42 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                 reportedFailures.insert(identifier)
                 report(error)
             }
+        }
+    }
+
+    // MARK: Restart
+
+    /// Restarts a device in Simulator.app's order, keeping its window: the
+    /// window disconnects, the device shuts down, is erased when requested,
+    /// and boots, and the window reconnects.
+    private func restartDevice(_ controller: DeviceWindowController, erasing: Bool) {
+        let identifier = controller.session.device.id
+        guard !stopped, sessions[identifier] === controller, restarting[identifier] == nil,
+              bootOperations[identifier] == nil else { return }
+        let tools: DeviceTools
+        do { tools = try DeviceTools(identifier: identifier, xcodeURL: runtime.xcodeURL) } catch {
+            controller.present(error)
+            return
+        }
+        // Holding the operation slot disables other device commands while
+        // an active recording finishes.
+        guard controller.session.reserve() else { return }
+        awaitingReconnect[identifier] = controller
+        bootOperations[identifier] = tools
+        restarting[identifier] = Task { [weak self] in
+            await controller.prepareForRestart()
+            var failure: Error?
+            do {
+                try Task.checkCancellation()
+                try await tools.restart(erasing: erasing)
+            } catch { failure = error }
+            guard let self else { return }
+            self.bootOperations.removeValue(forKey: identifier)
+            self.restarting.removeValue(forKey: identifier)
+            // A window whose device is still down closes; a booted device reconnects.
+            self.rescan()
+            guard let failure, !(failure is CancellationError), !self.stopped else { return }
+            if self.sessions[identifier] === controller { controller.present(failure) } else { self.report(failure) }
         }
     }
 
@@ -218,6 +272,9 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         connections.removeAll()
         for tools in bootOperations.values { tools.cancel() }
         bootOperations.removeAll()
+        for task in restarting.values { task.cancel() }
+        restarting.removeAll()
+        awaitingReconnect.removeAll()
         for session in sessions.values { session.invalidate() }
         sessions.removeAll()
         browser?.close()

@@ -47,7 +47,7 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
         }
 
         let device = menu("Device", in: main)
-        commands([.shutDown], in: device)
+        commands([.restart, .eraseAllContentAndSettings, .shutDown], in: device)
         device.addItem(.separator())
         commands([.rotateLeft, .rotateRight], in: device)
         let orientation = menu("Orientation", in: device)

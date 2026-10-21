@@ -9,7 +9,7 @@ import AppKit
 struct DeviceCommand {
     enum ID: String, CaseIterable {
         case saveScreen, recordScreen, stopRecording, importFiles
-        case shutDown, rotateLeft, rotateRight
+        case restart, eraseAllContentAndSettings, shutDown, rotateLeft, rotateRight
         case portrait, landscapeRight, portraitUpsideDown, landscapeLeft, faceUp, faceDown
         case rotateDeviceAutomatically
         case home, lock, sideButton, actionButtonSting
@@ -51,6 +51,10 @@ struct DeviceCommand {
         DeviceCommand(id: .importFiles, title: "Install App or Import Media…", key: "i", modifiers: [.command, .shift],
                       isEnabled: { $0.session.canPerformToolOperation }) { $0.chooseFilesToImport() },
         // Device
+        DeviceCommand(id: .restart, title: "Restart",
+                      isEnabled: { $0.session.canPerformToolOperation }) { $0.restart() },
+        DeviceCommand(id: .eraseAllContentAndSettings, title: "Erase All Content and Settings…",
+                      isEnabled: { $0.session.canPerformToolOperation }) { $0.eraseAllContentAndSettings() },
         DeviceCommand(id: .shutDown, title: "Shut Down",
                       isEnabled: { $0.session.canPerformToolOperation && $0.session.recording == nil }) { $0.shutDown() },
         DeviceCommand(id: .rotateLeft, title: "Rotate Left", key: String(UnicodeScalar(NSLeftArrowFunctionKey)!),

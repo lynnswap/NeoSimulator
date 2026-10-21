@@ -112,8 +112,10 @@ final class DeviceTools {
         environment = ["DEVELOPER_DIR": developerDirectory]
     }
 
-    func boot() async throws { _ = try await simctl(["boot", identifier]) }
-    func shutdown() async throws { _ = try await simctl(["shutdown", identifier]) }
+    // Booting can migrate data first, and erasing removes the whole device.
+    func boot() async throws { _ = try await simctl(["boot", identifier], timeout: .seconds(300)) }
+    func shutdown() async throws { _ = try await simctl(["shutdown", identifier], timeout: .seconds(300)) }
+    func erase() async throws { _ = try await simctl(["erase", identifier], timeout: .seconds(300)) }
     func screenshot(to url: URL) async throws {
         _ = try await simctl(["io", identifier, "screenshot", "--type=png", "--mask=alpha", url.path])
     }
@@ -134,6 +136,33 @@ final class DeviceTools {
             arguments: ["device", "orientation", "get", "--device", identifier, "--json-output", "-", "--quiet"],
             environment: environment))
     }
+    /// Shuts the device down, erases it when asked, and boots it. Like
+    /// Simulator.app, a failed shutdown stops the restart, and a failed
+    /// erase still boots the device.
+    func restart(erasing: Bool) async throws {
+        let operation = erasing ? "Erase All Content and Settings" : "Restart"
+        func failure(_ stage: String, completed: [String], _ error: Error) -> HostError {
+            let progress = completed.isEmpty ? "" : " The device was \(completed.joined(separator: " and "))."
+            return HostError.operation("\(operation) failed while \(stage): \(error.localizedDescription)\(progress)")
+        }
+        do { try await shutdown() } catch {
+            if error is CancellationError { throw error }
+            throw failure("shutting down", completed: [], error)
+        }
+        var eraseFailure: Error?
+        if erasing {
+            do { try await erase() } catch {
+                if error is CancellationError { throw error }
+                eraseFailure = error
+            }
+        }
+        do { try await boot() } catch {
+            if error is CancellationError { throw error }
+            throw failure("booting", completed: erasing && eraseFailure == nil ? ["shut down", "erased"] : ["shut down"], error)
+        }
+        if let eraseFailure { throw failure("erasing", completed: ["shut down", "booted again"], eraseFailure) }
+    }
+
     func installApplication(at url: URL) async throws {
         _ = try await simctl(["install", identifier, url.path])
     }
@@ -151,7 +180,7 @@ final class DeviceTools {
         return process
     }
     func cancel() { runner.cancel() }
-    private func simctl(_ arguments: [String]) async throws -> Data {
-        try await runner.run(simctlURL, arguments: arguments, environment: environment)
+    private func simctl(_ arguments: [String], timeout: Duration = .seconds(30)) async throws -> Data {
+        try await runner.run(simctlURL, arguments: arguments, environment: environment, timeout: timeout)
     }
 }
