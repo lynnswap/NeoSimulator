@@ -9,7 +9,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     private(set) var showsDeviceBezel = true
     private var closed = false
     private var didReadOrientation = false
-    private let onClose: (String, DeviceLifetimeChoice?) -> Void
+    private let onClose: (DeviceWindowController, DeviceLifetimeChoice?) -> Void
     /// The choice File ▸ Close Window… made for this close, which takes
     /// precedence over the default close action.
     private var closeChoice: DeviceLifetimeChoice?
@@ -22,7 +22,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         session.canPerformCommands && window?.inLiveResize == false && window?.styleMask.contains(.fullScreen) == false
     }
 
-    init(session: DeviceSession, onClose: @escaping (String, DeviceLifetimeChoice?) -> Void,
+    init(session: DeviceSession, onClose: @escaping (DeviceWindowController, DeviceLifetimeChoice?) -> Void,
          onRestart: @escaping (DeviceWindowController, _ erasing: Bool) -> Void = { _, _ in }) throws {
         self.session = session
         self.onClose = onClose
@@ -369,7 +369,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         guard !closed else { return }
         disconnect()
-        onClose(session.device.id, closeChoice)
+        onClose(self, closeChoice)
     }
     func invalidate() {
         disconnect()

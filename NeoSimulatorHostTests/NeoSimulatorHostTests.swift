@@ -884,7 +884,7 @@ struct InputFocusTests {
                                 simctl: URL = DeviceTools.simctl,
                                 devicectl: URL = DeviceTools.devicectl,
                                 recordingProcess: ((URL) -> Process)? = nil,
-                                onClose: @escaping (String, DeviceLifetimeChoice?) -> Void = { _, _ in },
+                                onClose: @escaping (DeviceWindowController, DeviceLifetimeChoice?) -> Void = { _, _ in },
                                 onRestart: @escaping (DeviceWindowController, Bool) -> Void = { _, _ in })
         throws -> DeviceWindowController {
         let session = try makeSession(display, features: features, simctl: simctl, devicectl: devicectl,

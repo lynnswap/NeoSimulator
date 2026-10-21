@@ -211,9 +211,9 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     }
 
     func openSimulator(withIdentifier identifier: String) async throws {
-        // A restart boots the device itself; opening waits instead of booting
-        // during its shutdown or erase.
-        while let restart = restarting[identifier] { await restart.value }
+        // A restart boots the device itself, and a closed window shuts it
+        // down; opening waits for either instead of acting on the device meanwhile.
+        while let pending = restarting[identifier] ?? closingShutdowns[identifier] { await pending.value }
         guard !stopped else { throw HostError.operation("NeoSimulator is shutting down") }
         try conflicts.check()
         guard let device = try readDevices().first(where: { $0.identifier == identifier }) else {
@@ -304,9 +304,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                             controller.reconnect(session)
                             return
                         }
-                        let deviceSetPath = device.deviceSetPath
                         let controller = try DeviceWindowController(session: session, onClose: { [weak self] in
-                            self?.deviceWindowClosed($0, choice: $1, deviceSetPath: deviceSetPath)
+                            self?.deviceWindowClosed($0, choice: $1)
                         }, onRestart: { [weak self] in self?.restartDevice($0, erasing: $1) })
                         try conflicts.check()
                         sessions[identifier] = controller
@@ -332,30 +331,35 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     /// A user closed a device window. Like Simulator.app, the device shuts
     /// down unless the close chose to keep it running or `DetachOnWindowClose`
     /// is on, including a device Xcode booted.
-    private func deviceWindowClosed(_ identifier: String, choice: DeviceLifetimeChoice?, deviceSetPath: String?) {
+    private func deviceWindowClosed(_ controller: DeviceWindowController, choice: DeviceLifetimeChoice?) {
+        let identifier = controller.session.device.id
         sessions.removeValue(forKey: identifier)
         awaitingReconnect.removeValue(forKey: identifier)
         // A device left running keeps its window closed until it shuts down.
         suppressed.insert(identifier)
         let keepsRunning = choice.map { $0 == .keepRunning }
             ?? UserDefaults.standard.bool(forKey: HostPreferences.detachOnWindowClose)
-        if !keepsRunning { shutDownClosedDevice(identifier, deviceSetPath: deviceSetPath) }
+        if !keepsRunning { shutDownClosedDevice(controller.session) }
         if sessions.isEmpty { showDeviceBrowser() }
     }
 
-    /// Shuts down a device whose window closed, abandoning a restart in progress.
-    private func shutDownClosedDevice(_ identifier: String, deviceSetPath: String?) {
+    /// Shuts down a device whose window closed once its recording is saved,
+    /// abandoning a restart in progress.
+    private func shutDownClosedDevice(_ session: DeviceSession) {
+        let identifier = session.device.id
         restarting.removeValue(forKey: identifier)?.cancel()
         bootOperations.removeValue(forKey: identifier)?.cancel()
         guard closingShutdowns[identifier] == nil else { return }
         let tools: DeviceTools
         do {
-            tools = try DeviceTools(identifier: identifier, xcodeURL: runtime.xcodeURL, deviceSetPath: deviceSetPath)
+            tools = try DeviceTools(identifier: identifier, xcodeURL: runtime.xcodeURL,
+                                    deviceSetPath: session.tools.deviceSetPath)
         } catch {
             hostLog("Could not shut down \(identifier): \(error.localizedDescription)")
             return
         }
         closingShutdowns[identifier] = Task { [weak self] in
+            await session.finishRecording()
             do { try await tools.shutdown() } catch is CancellationError {
             } catch {
                 hostLog("Could not shut down \(identifier): \(error.localizedDescription)")
@@ -523,6 +527,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             await recordings.finishAll()
             for error in recordingTerminationErrors { NSAlert(error: error).runModal() }
             recordingTerminationErrors.removeAll()
+            // A host that appeared meanwhile stopped this one; its devices stay.
+            let devices = stopped ? [] : devices
             // Windows disconnect before their devices shut down.
             shutdown()
             let failures = await shutDownForTermination(devices)
