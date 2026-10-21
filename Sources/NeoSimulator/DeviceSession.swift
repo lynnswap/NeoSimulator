@@ -237,9 +237,15 @@ final class DeviceSession {
         }
     }
 
-    /// Reads the device orientation and shows the display at its angle.
+    /// Reads the device orientation and shows the display at its angle. With
+    /// Rotate Device Automatically on, the display keeps following the guest's
+    /// interface orientation, which can differ from the physical one.
     func readOrientation() async throws {
-        try apply(await tools.orientation())
+        let reading = try await tools.orientation()
+        try Task.checkCancellation()
+        orientation = reading.physical
+        let followsGuest = UserDefaults.standard.bool(forKey: HostPreferences.rotateWindowWhenSignaledByGuest)
+        display.setRotation(degrees: followsGuest ? display.guestInterfaceAngle ?? reading.displayAngle : reading.displayAngle)
     }
 
     func rotate(left: Bool) async throws {

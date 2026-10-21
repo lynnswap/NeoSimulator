@@ -6,6 +6,8 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     let session: DeviceSession
     private(set) var showsDeviceBezel = true
     private var closed = false
+    /// The display size the window was last fitted to after a rotation.
+    private var fittedNaturalSize = NSSize.zero
     private var didReadOrientation = false
     private let onClose: (String) -> Void
     private let content: DeviceContentView
@@ -56,6 +58,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
             self.session.display.inputView.keyUp(with: event)
             return nil
         }
+        fittedNaturalSize = session.display.naturalSize
         fitScreen()
     }
 
@@ -196,15 +199,18 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     // With Rotate Device Automatically on, SimulatorKit rotates the display
     // when the guest changes its interface orientation. The window follows the
     // display's new size once SimulatorKit has applied the rotation.
+    // Other properties, such as the backlight, change without resizing the
+    // display, and must not undo a window size the user chose.
     private func displayPropertiesChanged() {
         guard !closed, UserDefaults.standard.bool(forKey: HostPreferences.rotateWindowWhenSignaledByGuest) else { return }
         DispatchQueue.main.async { [weak self] in
-            guard let self, !self.closed else { return }
+            guard let self, !self.closed, self.session.display.naturalSize != self.fittedNaturalSize else { return }
             self.didRotate()
         }
     }
 
     private func didRotate() {
+        fittedNaturalSize = session.display.naturalSize
         fitScreen()
         resizeDisplay()
     }

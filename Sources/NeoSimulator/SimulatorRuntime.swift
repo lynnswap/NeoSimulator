@@ -82,6 +82,8 @@ struct SimulatorDisplayInterface {
     let registerScreenEvents: NativeSwiftMethod<(NativeSwiftValue, DispatchQueue, ScreenEventHandler) -> NativeSwiftValue>
     /// `SimDeviceScreen.ScreenEventTypes.properties`.
     let screenPropertyEvents: NativeSwiftValue
+    /// `SimDeviceScreen.properties`, an `id<SimScreenProperties>`.
+    let screenProperties: NativeSwiftMethod<() -> AnyObject>
     let factoryClass: AnyClass
     let createDisplay: NativeObjCMethod<NSView?, AnyObject, UInt32>
     let showChrome: NativeSwiftMethod<(Bool) -> Void>
@@ -124,6 +126,8 @@ struct SimulatorDisplayInterface {
         screenPropertyEvents = try unsafe eventTypes
             .resolveStaticGetterAndWait(named: "properties", as: (() -> NativeSwiftValue).self, valueABIs: eventABIs)
             .unsafeInvoke()
+        screenProperties = try deviceScreen.resolveGetterAndWait(
+            named: "properties.getter : __C.SimScreenProperties", as: (() -> AnyObject).self)
         registerScreenEvents = try deviceScreen.resolveMethodAndWait(
             named: "register(types:queue:handler:)",
             as: ((NativeSwiftValue, DispatchQueue, ScreenEventHandler) -> NativeSwiftValue).self,
@@ -269,6 +273,20 @@ enum HIDInput: Hashable {
 
 enum HIDState: UInt32 { case down = 1, up = 2 }
 
+/// `SimScreenUIOrientation`, the guest's interface orientation.
+enum SimScreenUIOrientation {
+    /// The angle SimulatorKit's `SimScreenUIOrientation.toAngle()` gives a
+    /// raw orientation: landscape 4 is shown at +90° and landscape 3 at -90°.
+    static func displayAngle(_ rawValue: UInt32) -> Double {
+        switch rawValue {
+        case 2: 180
+        case 3: -90
+        case 4: 90
+        default: 0
+        }
+    }
+}
+
 @MainActor
 protocol SimulatorDisplay: AnyObject {
     var isBooted: Bool { get }
@@ -278,6 +296,9 @@ protocol SimulatorDisplay: AnyObject {
     /// Called on the main actor when the screen's properties change, such as
     /// the interface orientation of the guest.
     var onPropertiesChange: (() -> Void)? { get set }
+    /// The display angle for the guest's interface orientation, as SimulatorKit
+    /// applies it when Rotate Device Automatically is on.
+    var guestInterfaceAngle: Double? { get }
     /// Sends one HID event. `completion`, when present, receives SimulatorKit's
     /// delivery result; a thrown error means the event was not sent.
     func send(_ input: HIDInput, _ state: HIDState, completion: (@MainActor (Error?) -> Void)?) throws
@@ -305,10 +326,12 @@ final class SimulatorConnection: SimulatorDisplay {
     private var disconnected = false
     var onPropertiesChange: (() -> Void)?
     private var screenEvents: NativeSwiftValue?
+    private let screen: AnyObject
 
     init(device: SimulatorDevice, screen: (identifier: UInt32, object: AnyObject), runtime: SimulatorRuntime) throws {
         self.device = device
         self.runtime = runtime
+        self.screen = screen.object
         let display = runtime.display
         buttonTarget = try unsafe display.buttonTarget.unsafeInvoke(on: screen.object)
         hidClient = try runtime.input.connect(to: device)
@@ -344,6 +367,15 @@ final class SimulatorConnection: SimulatorDisplay {
         let size = view.intrinsicContentSize
         let actual = size.width > 0 && size.height > 0 ? size : view.frame.size
         return scale > 0 ? NSSize(width: actual.width / scale, height: actual.height / scale) : actual
+    }
+
+    var guestInterfaceAngle: Double? {
+        guard !disconnected,
+              let properties = try? unsafe runtime.display.screenProperties.unsafeInvoke(on: screen),
+              let orientation = try? unsafe ABIRuntime.shared.object(properties)
+                .resolveMethodAndWait(selector: "uiOrientation", as: (() -> UInt32).self).unsafeInvoke()
+        else { return nil }
+        return SimScreenUIOrientation.displayAngle(orientation)
     }
 
     func send(_ input: HIDInput, _ state: HIDState, completion: (@MainActor (Error?) -> Void)?) throws {

@@ -319,6 +319,16 @@ struct InputFocusTests {
         display.onPropertiesChange?()
         try await Task.sleep(for: .milliseconds(50))
         #expect(isLandscape())
+        // A property change that keeps the display size keeps the window size.
+        window.setContentSize(NSSize(width: 600, height: 400))
+        let chosen = window.frame.size
+        display.onPropertiesChange?()
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(window.frame.size == chosen)
+    }
+
+    @Test func guestInterfaceOrientationsUseSimulatorKitAngles() {
+        #expect([1, 2, 3, 4, 0].map(SimScreenUIOrientation.displayAngle) == [0, 180, -90, 90, 0])
     }
 
     @Test func hardwareCommandsFollowDeviceFeatures() throws {
@@ -472,6 +482,7 @@ private final class TestDisplay: SimulatorDisplay {
     var inputView: NSView { input }
     var naturalSize = NSSize(width: 390, height: 844)
     var onPropertiesChange: (() -> Void)?
+    var guestInterfaceAngle: Double?
     var isBooted = true
     var events: [(input: HIDInput, state: HIDState)] = []
     /// Called for each sent event, before it is recorded.
