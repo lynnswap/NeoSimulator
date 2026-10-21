@@ -198,7 +198,7 @@ struct CaptureAndImportTests {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         let movie = directory.appendingPathComponent("movie.mov")
-        try await writeMovie(to: movie)
+        try await writeMovie(to: movie, frames: 12)
         func export(frameRate: Double) async throws -> (count: Int, delays: [Double], loop: Int?, brightest: UInt8) {
             let gif = directory.appendingPathComponent("\(frameRate).gif")
             try await AnimatedGIF.export(movie, to: gif, options: .init(maximumFrameRate: frameRate, maximumFrameSize: 640,
@@ -224,21 +224,22 @@ struct CaptureAndImportTests {
             return (count, delays, gifProperties(CGImageSourceCopyProperties(source, nil))?[kCGImagePropertyGIFLoopCount] as? Int,
                     brightest)
         }
-        // The fixture's frames are 0.1 seconds apart.
+        // The fixture's frames are 0.1 seconds apart, which floating-point
+        // differences of their times must not stretch to 0.11.
         let every = try await export(frameRate: 10)
-        #expect(every.count == 3 && every.loop == 0)
+        #expect(every.count == 12 && every.loop == 0)
         // Dithered in the movie's color space, black stays nearly black; a
         // linear working space lifts it to about 48.
         #expect(every.brightest <= 12)
-        #expect(Array(every.delays.prefix(2)) == [0.1, 0.1])
+        #expect(Array(every.delays.dropLast()) == Array(repeating: 0.1, count: 11))
         let thinned = try await export(frameRate: 5)
-        #expect(thinned.count == 2)
+        #expect(thinned.count == 6)
         #expect(thinned.delays.first == 0.2)
     }
 
     /// Writes a short H.264 QuickTime movie.
     /// Writes a short H.264 QuickTime movie of black frames tagged BT.709.
-    private func writeMovie(to url: URL) async throws {
+    private func writeMovie(to url: URL, frames: Int = 3) async throws {
         let writer = try AVAssetWriter(outputURL: url, fileType: .mov)
         let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
             AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: 64, AVVideoHeightKey: 64,
@@ -252,7 +253,7 @@ struct CaptureAndImportTests {
         writer.add(input)
         #expect(writer.startWriting())
         writer.startSession(atSourceTime: .zero)
-        for frame in 0..<3 {
+        for frame in 0..<frames {
             var buffer: CVPixelBuffer?
             CVPixelBufferCreate(nil, 64, 64, kCVPixelFormatType_32BGRA, nil, &buffer)
             let pixels = try #require(buffer)
@@ -433,10 +434,16 @@ struct CaptureThumbnailTests {
         let window = NSWindow(contentRect: NSRect(x: 200, y: 200, width: 300, height: 600), styleMask: .titled,
                               backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        // The destination may fulfil the promise after the drag ends.
+        // The destination may fulfil the promise after the drag ends, even
+        // after the capture was saved.
         let delivered = try capture(named: "Dragged.png", in: directory)
         CaptureThumbnail(delivered, image: nil, parent: window, source: .zero, spacing: .zero) { _ in }.dragEnded(.copy)
         #expect(try savedNames(in: directory).isEmpty)
+        // Quitting saves captures whose promises are still unfulfilled.
+        let unclaimed = try capture(named: "Unclaimed.png", in: directory)
+        CaptureThumbnail(unclaimed, image: nil, parent: window, source: .zero, spacing: .zero) { _ in }.dragEnded(.copy)
+        #expect(CaptureThumbnail.finishAll().isEmpty)
+        #expect(try savedNames(in: directory) == ["Dragged.png", "Unclaimed.png"])
         let destination = directory.appendingPathComponent("Dragged.png")
         try delivered.deliver(to: destination)
         #expect(FileManager.default.fileExists(atPath: destination.path))
@@ -445,14 +452,17 @@ struct CaptureThumbnailTests {
         try late.saveToDefaultLocation()
         try late.deliver(to: directory.appendingPathComponent("Late.png"))
         #expect(FileManager.default.fileExists(atPath: directory.appendingPathComponent("Late.png").path))
-        #expect(try savedNames(in: directory) == ["Late.png"])
+        #expect(try savedNames(in: directory) == ["Dragged.png", "Late.png", "Unclaimed.png"])
         // An animated GIF takes the next free name.
         try Data().write(to: directory.appendingPathComponent("Saved/Movie.gif"))
         #expect(try CaptureFile.unusedFile(in: directory.appendingPathComponent("Saved"), named: "Movie.gif").lastPathComponent
                 == "Movie #2.gif")
+        // A name another export is writing is taken too.
+        #expect(try CaptureFile.unusedFile(in: directory.appendingPathComponent("Saved"), named: "Movie.gif",
+                                           isReserved: { $0.lastPathComponent == "Movie #2.gif" }).lastPathComponent == "Movie #3.gif")
         let cancelled = try capture(named: "Cancelled.png", in: directory)
         CaptureThumbnail(cancelled, image: nil, parent: window, source: .zero, spacing: .zero) { _ in }.dragEnded([])
-        #expect(try savedNames(in: directory) == ["Cancelled.png", "Late.png", "Movie.gif"])
+        #expect(try savedNames(in: directory) == ["Cancelled.png", "Dragged.png", "Late.png", "Movie.gif", "Unclaimed.png"])
     }
 
     /// A shown thumbnail beside a visible window, once its appearance ended.

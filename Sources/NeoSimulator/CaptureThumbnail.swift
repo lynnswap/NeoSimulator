@@ -82,8 +82,11 @@ final class CapturedContent {
 final class CaptureThumbnail: NSObject {
     /// Simulator.app keeps one app-wide list; a new capture dismisses the others.
     private(set) static var active: [CaptureThumbnail] = []
-    /// Recordings whose animated GIF is being written, which quitting saves.
-    private static var exporting: [CapturedContent] = []
+    /// Captures whose thumbnail has ended but that wait for an animated GIF
+    /// or a drag's file promise; quitting saves those still unresolved.
+    private static var pending: [CapturedContent] = []
+    /// Animated GIFs being written, whose names other exports must not take.
+    private static var exportingGIFs: Set<URL> = []
     /// Reports a failure of a thumbnail whose device window has closed.
     static var reportDetached: (Error) -> Void = { hostLog($0.localizedDescription) }
     /// Set while NeoSimulator quits: captures are saved instead of shown.
@@ -333,10 +336,10 @@ final class CaptureThumbnail: NSObject {
     @discardableResult
     static func finishAll() -> [Error] {
         var failures = active.compactMap { $0.finish(reporting: false) }
-        for content in exporting where !content.isResolved {
+        for content in pending where !content.isResolved {
             do { try content.saveToDefaultLocation() } catch { failures.append(error) }
         }
-        exporting.removeAll()
+        pending.removeAll()
         return failures
     }
 
@@ -473,16 +476,22 @@ final class CaptureThumbnail: NSObject {
         if keepingMovie {
             movie = try content.saveToDefaultLocation()
             gif = try CaptureFile.unusedFile(in: movie.deletingLastPathComponent(),
-                                             named: movie.deletingPathExtension().appendingPathExtension("gif").lastPathComponent)
+                                             named: movie.deletingPathExtension().appendingPathExtension("gif").lastPathComponent,
+                                             isReserved: Self.exportingGIFs.contains)
         } else {
             movie = content.file
             gif = try CaptureFile.unusedFile(in: content.defaultFolder,
-                                             named: (content.name as NSString).deletingPathExtension + ".gif")
+                                             named: (content.name as NSString).deletingPathExtension + ".gif",
+                                             isReserved: Self.exportingGIFs.contains)
         }
+        Self.exportingGIFs.insert(gif)
         let report = report
-        if !keepingMovie { Self.exporting.append(content) }
+        if !keepingMovie { Self.pending.append(content) }
         Task {
-            defer { Self.exporting.removeAll { $0 === content } }
+            defer {
+                Self.pending.removeAll { $0 === content }
+                Self.exportingGIFs.remove(gif)
+            }
             do {
                 try await AnimatedGIF.export(movie, to: gif, options: .preferred)
                 if !keepingMovie { try content.delete() }
@@ -513,8 +522,10 @@ final class CaptureThumbnail: NSObject {
             // deletes an unclaimed capture after five seconds; NeoSimulator
             // saves it instead, and a later delivery copies the saved file.
             let content = content, report = report
+            Self.pending.append(content)
             Task {
                 try? await Task.sleep(for: .seconds(5))
+                Self.pending.removeAll { $0 === content }
                 guard !content.isResolved else { return }
                 do { try content.saveToDefaultLocation() } catch { report(error) }
             }
@@ -817,25 +828,28 @@ enum AnimatedGIF {
         // space; a linear working space would roughen dark areas.
         var context: CIContext?
         let interval = 1 / options.maximumFrameRate
-        var held: (image: CGImage, time: Double)?
+        var held: (image: CGImage, time: CMTime)?
+        // Delays are whole hundredths, rounded up as Simulator.app does; the
+        // tolerance keeps floating-point noise from adding a hundredth.
         func add(_ image: CGImage, delay: Double) {
             CGImageDestinationAddImage(destination, image, [
-                kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFUnclampedDelayTime: ceil(delay * 100) / 100],
+                kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFUnclampedDelayTime: (delay * 100 - 1e-6).rounded(.up) / 100],
             ] as CFDictionary)
         }
         while let sample = output.copyNextSampleBuffer() {
             guard let buffer = CMSampleBufferGetImageBuffer(sample) else { continue }
-            let time = CMSampleBufferGetOutputPresentationTimeStamp(sample).seconds
+            let time = CMSampleBufferGetOutputPresentationTimeStamp(sample)
             if let current = held {
-                guard time - current.time + 0.001 >= interval else { continue }
-                add(current.image, delay: time - current.time)
+                let elapsed = CMTimeSubtract(time, current.time).seconds
+                guard elapsed + 0.001 >= interval else { continue }
+                add(current.image, delay: elapsed)
             }
             let image = CIImage(cvPixelBuffer: buffer)
             let renderer = context ?? CIContext(options: image.colorSpace.map { [.workingColorSpace: $0] } ?? [:])
             context = renderer
             held = (try frame(image, options: options, context: renderer), time)
         }
-        if let last = held { add(last.image, delay: max(duration - last.time, interval)) }
+        if let last = held { add(last.image, delay: max(duration - last.time.seconds, interval)) }
         if reader.status == .failed { throw reader.error ?? HostError.operation("The recording could not be read") }
         guard CGImageDestinationFinalize(destination) else {
             throw HostError.operation("Could not write \(gif.lastPathComponent)")
