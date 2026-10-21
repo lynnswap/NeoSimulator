@@ -16,6 +16,8 @@ struct DeviceCapabilities {
     var controlsOrientation = true
     /// Whether the device type has a framebuffer mask that captures can apply.
     var hasFramebufferMask = false
+    /// The screen's corner radius in points; 0 for a square screen.
+    var screenCornerRadius = 0.0
 
     var isPhoneOrPad: Bool { family == .iPhone || family == .iPad }
     var rotates: Bool { controlsOrientation && supportsFeature(Self.displayRotation) }
@@ -59,6 +61,11 @@ enum HostPreferences {
     static let screenShotSaveLocation = "ScreenShotSaveLocation"
     /// Whether Save Screen and Record Screen apply the device's mask.
     static let screenShotUseMask = "ScreenShotUseMask"
+    /// Animated GIF export from a recording's thumbnail.
+    static let gifMaxFramerate = "GifMaxFramerate"
+    static let gifMaxFrameSize = "GifMaxFrameSize"
+    static let gifUseDither = "GifUseDither"
+    static let gifDitherDepth = "GifDitherDepth"
     /// The last Features ▸ Location choice, which each connection restores:
     /// see `LocationSelection`.
     static let locationMode = "LocationMode"
@@ -73,6 +80,7 @@ enum HostPreferences {
             showTestingDevices: true, detachOnWindowClose: false, detachOnAppQuit: false,
             attachBootedOnStart: true, sessionOnLaunch: true, startLastDeviceOnLaunch: true,
             terminationTimeout: 60.0, screenShotSaveLocation: defaultScreenshotLocation(), screenShotUseMask: false,
+            gifMaxFramerate: 10, gifMaxFrameSize: 640, gifUseDither: true, gifDitherDepth: 4.0,
             locationMode: LocationSelection.customMode, locationLatitude: 37.785834, locationLongitude: -122.406417,
         ])
     }
@@ -211,6 +219,9 @@ final class DeviceSession {
     private(set) var recording: VideoRecording?
     /// The orientation last read from the device.
     private(set) var orientation: DeviceOrientation?
+    /// The angle the display is shown at, which a guest-initiated rotation
+    /// can set without changing `orientation`.
+    @ObservationIgnored private(set) var displayAngle: Double = 0
     /// The guest's interface orientation angle last observed, so that only its
     /// changes rotate the display. A manual rotation does not change it.
     @ObservationIgnored private var guestAngle: Double?
@@ -517,7 +528,7 @@ final class DeviceSession {
         orientation = reading.physical
         guestAngle = display.guestInterfaceAngle
         let followsGuest = UserDefaults.standard.bool(forKey: HostPreferences.rotateWindowWhenSignaledByGuest)
-        display.setRotation(degrees: followsGuest ? guestAngle ?? reading.displayAngle : reading.displayAngle)
+        rotateDisplay(followsGuest ? guestAngle ?? reading.displayAngle : reading.displayAngle)
     }
 
     /// Shows the display at the guest's interface orientation when that
@@ -532,7 +543,7 @@ final class DeviceSession {
         }
         guard canPerformCommands, let angle = display.guestInterfaceAngle, angle != guestAngle else { return false }
         guestAngle = angle
-        display.setRotation(degrees: angle)
+        rotateDisplay(angle)
         return true
     }
 
@@ -547,7 +558,12 @@ final class DeviceSession {
     private func apply(_ reading: OrientationReading) throws {
         try Task.checkCancellation()
         orientation = reading.physical
-        display.setRotation(degrees: reading.displayAngle)
+        rotateDisplay(reading.displayAngle)
+    }
+
+    private func rotateDisplay(_ degrees: Double) {
+        displayAngle = degrees
+        display.setRotation(degrees: degrees)
     }
 
     /// Saves the screen to a file chosen in a save panel, replacing it.
@@ -558,13 +574,6 @@ final class DeviceSession {
         }
     }
 
-    /// Saves the screen into `folder` under `name`, numbering the name when
-    /// it is taken, and returns the saved file.
-    func saveScreenshot(into folder: URL, named name: String, mask: DeviceTools.ScreenMask) async throws -> URL {
-        let temporary = try await screenshot(mask: mask)
-        return try CaptureFile.move(temporary, into: folder, named: name)
-    }
-
     /// The screen as a PNG, without the device's mask, for Edit ▸ Copy Screen.
     func screenPNG() async throws -> Data {
         let temporary = try await screenshot(mask: .ignored)
@@ -573,7 +582,7 @@ final class DeviceSession {
     }
 
     /// Takes a screenshot into a new temporary PNG, which the caller owns.
-    private func screenshot(mask: DeviceTools.ScreenMask) async throws -> URL {
+    func screenshot(mask: DeviceTools.ScreenMask) async throws -> URL {
         let temporary = FileManager.default.temporaryDirectory
             .appendingPathComponent("simulator_screenshot_\(UUID().uuidString).png")
         do {
@@ -593,6 +602,9 @@ final class DeviceSession {
             throw HostError.operation("The screenshot tool did not produce a PNG file")
         }
     }
+
+    /// Whether a recording to a chosen file will replace `file` when it finishes.
+    func isRecordingDestination(_ file: URL) -> Bool { recordings.isReserved(file) }
 
     func startRecording(to destination: RecordingStore.Destination, mask: DeviceTools.ScreenMask) throws {
         guard canPerformCommands, recording == nil else { return }
