@@ -101,7 +101,8 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         didReadOrientation = false
         fitScreen()
         showAndActivate()
-        focusInput()
+        // A window that stayed key gets no new key notification.
+        if window?.isKeyWindow == true { activateDisplay() }
     }
 
     func showAndActivate() {
@@ -321,7 +322,9 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         alert.beginSheetModal(for: window)
     }
 
-    func windowDidBecomeKey(_ notification: Notification) {
+    func windowDidBecomeKey(_ notification: Notification) { activateDisplay() }
+
+    private func activateDisplay() {
         guard !closed else { return }
         session.display.setActive(true)
         session.display.setKeyboardEnabled(true)
