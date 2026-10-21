@@ -137,6 +137,14 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         do { try action() } catch { present(error) }
     }
 
+    /// Debug ▸ Open System Log…. Opening Console is not a device operation, so
+    /// it does not take the device-operation slot.
+    func openSystemLog() {
+        Task { [weak self, session] in
+            do { try await session.openSystemLog() } catch { self?.present(error) }
+        }
+    }
+
     func rotate(left: Bool) {
         session.run({ [weak self] in
             guard let self else { return }

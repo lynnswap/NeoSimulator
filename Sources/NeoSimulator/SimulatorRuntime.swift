@@ -279,6 +279,25 @@ enum HIDInput: Hashable {
 
 enum HIDState: UInt32 { case down = 1, up = 2 }
 
+/// A Core Animation debug option of the guest, numbered as
+/// `SimDevice setCADebugOption:enabled:` numbers it.
+enum CADebugOption: UInt32 {
+    case colorCopiedImages = 1
+    case colorBlendedLayers = 2
+    case colorMisalignedImages = 14
+    case colorOffscreenRendered = 17
+
+    /// The Debug menu's title for the option.
+    var title: String {
+        switch self {
+        case .colorCopiedImages: "Color Copied Images"
+        case .colorBlendedLayers: "Color Blended Layers"
+        case .colorMisalignedImages: "Color Misaligned Images"
+        case .colorOffscreenRendered: "Color Off-screen Rendered"
+        }
+    }
+}
+
 /// `SimScreenUIOrientation`, the guest's interface orientation.
 enum SimScreenUIOrientation {
     /// The angle SimulatorKit's `SimScreenUIOrientation.toAngle()` gives a
@@ -346,6 +365,15 @@ protocol SimulatorDisplay: AnyObject {
     func increaseContrastMode() throws -> Int
     func setIncreaseContrast(_ enabled: Bool) throws
     func triggerCloudSync() async throws
+    /// The folder of the device's logs.
+    func logDirectory() throws -> URL
+    /// The file whose write makes the guest simulate a memory warning.
+    func memoryWarningFile() throws -> URL
+    /// Whether a Core Animation debug option is on. CoreSimulator drops the
+    /// error of this read, so false can also mean that it failed.
+    func caDebugOption(_ option: CADebugOption) throws -> Bool
+    /// CoreSimulator drops the error of this change.
+    func setCADebugOption(_ option: CADebugOption, enabled: Bool) throws
     func setChromeVisible(_ visible: Bool)
     func setActive(_ active: Bool)
     func setKeyboardEnabled(_ enabled: Bool)
@@ -438,6 +466,12 @@ final class SimulatorConnection: SimulatorDisplay {
     func increaseContrastMode() throws -> Int { try device.increaseContrastMode() }
     func setIncreaseContrast(_ enabled: Bool) throws { try device.setIncreaseContrast(enabled) }
     func triggerCloudSync() async throws { try await device.triggerCloudSync() }
+    func logDirectory() throws -> URL { try device.logDirectory() }
+    func memoryWarningFile() throws -> URL { try device.memoryWarningFile() }
+    func caDebugOption(_ option: CADebugOption) throws -> Bool { try device.caDebugOption(option) }
+    func setCADebugOption(_ option: CADebugOption, enabled: Bool) throws {
+        try device.setCADebugOption(option, enabled: enabled)
+    }
     func setChromeVisible(_ visible: Bool) {
         perform("show device chrome") { try unsafe runtime.display.showChrome.unsafeInvoke(on: view, visible) }
         view.invalidateIntrinsicContentSize()

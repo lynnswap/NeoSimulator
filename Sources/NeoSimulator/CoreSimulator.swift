@@ -37,6 +37,10 @@ struct CoreSimulatorInterface {
     let increaseContrastMode: NativeObjCMethod<Int>
     let setIncreaseContrast: NativeObjCMethod<Void, Bool>
     let triggerCloudSync: NativeObjCMethod<Void, DispatchQueue, CloudSyncCompletion>
+    let logPath: NativeObjCMethod<String?>
+    let memoryWarningFilePath: NativeObjCMethod<String?>
+    let caDebugOption: NativeObjCMethod<Bool, UInt32>
+    let setCADebugOption: NativeObjCMethod<Void, UInt32, Bool>
     let runtimeName: NativeObjCMethod<String?>
     let runtimeIdentifier: NativeObjCMethod<String?>
     let runtimeAvailable: NativeObjCMethod<Bool>
@@ -119,6 +123,13 @@ struct CoreSimulatorInterface {
         triggerCloudSync = try runtime.resolveObjCMethodAndWait(
             on: device, selector: "triggerCloudSyncWithCompletionQueue:completionHandler:",
             as: ((DispatchQueue, @escaping CloudSyncCompletion) -> Void).self)
+        logPath = try runtime.resolveObjCMethodAndWait(on: device, selector: "logPath", as: (() -> String?).self)
+        memoryWarningFilePath = try runtime.resolveObjCMethodAndWait(
+            on: device, selector: "memoryWarningFilePath", as: (() -> String?).self)
+        caDebugOption = try runtime.resolveObjCMethodAndWait(
+            on: device, selector: "getCADebugOption:", as: ((UInt32) -> Bool).self)
+        setCADebugOption = try runtime.resolveObjCMethodAndWait(
+            on: device, selector: "setCADebugOption:enabled:", as: ((UInt32, Bool) -> Void).self)
         runtimeName = try runtime.resolveObjCMethodAndWait(
             on: simRuntime, selector: "name", as: (() -> String?).self)
         runtimeIdentifier = try runtime.resolveObjCMethodAndWait(
@@ -240,6 +251,34 @@ final class SimulatorDevice {
             catch { continuation.resume(throwing: error) }
         }
     }
+
+    /// The folder of the device's logs.
+    func logDirectory() throws -> URL {
+        guard let path = try unsafe interface.logPath.unsafeInvoke(on: object) else {
+            throw HostError.operation("The device did not report its log folder.")
+        }
+        return URL(fileURLWithPath: path, isDirectory: true)
+    }
+
+    /// The file that `SimDevice.simulateMemoryWarning` writes to make the
+    /// guest simulate a memory warning.
+    func memoryWarningFile() throws -> URL {
+        guard let path = try unsafe interface.memoryWarningFilePath.unsafeInvoke(on: object) else {
+            throw HostError.operation("The device did not report where to signal a memory warning.")
+        }
+        return URL(fileURLWithPath: path)
+    }
+
+    /// CoreSimulator drops the error of this read, so false can also mean that it failed.
+    func caDebugOption(_ option: CADebugOption) throws -> Bool {
+        try unsafe interface.caDebugOption.unsafeInvoke(on: object, option.rawValue)
+    }
+
+    /// CoreSimulator drops the error of this change; reading the option back
+    /// is the only way to learn whether it applied.
+    func setCADebugOption(_ option: CADebugOption, enabled: Bool) throws {
+        try unsafe interface.setCADebugOption.unsafeInvoke(on: object, option.rawValue, enabled)
+    }
 }
 
 /// The device types and runtimes that File ▸ New Simulator… offers, in
@@ -336,5 +375,57 @@ final class SimulatorDeviceSet {
 
     func stopObserving(_ token: UInt64) throws {
         try unsafe interface.unregisterHandler.unsafeInvoke(on: object, token)
+    }
+}
+
+/// CoreSimulator's GPU policy for rendering simulator displays: the
+/// `FramebufferServerGPUPolicy` array of GPU kinds in the `com.apple.CoreSimulator`
+/// defaults, in the order its render server tries them. File ▸ GPU Selection
+/// edits it as Simulator.app does.
+struct GPUPolicy {
+    /// The kind of GPU the policy prefers, apart from an external one.
+    enum Preference: String {
+        case automatic
+        case integrated = "lowPower"
+        case discrete
+    }
+
+    static let suiteName = "com.apple.CoreSimulator"
+    static let key = "FramebufferServerGPUPolicy"
+    /// The policy while the key is unset, as Simulator.app reads it.
+    static let defaultOrder = ["automatic", "external", "discrete", "lowPower", "headless"]
+    private static let external = "external"
+
+    let defaults: UserDefaults
+
+    /// The stored order. Like Simulator.app, a single string is an order of one.
+    var order: [String] {
+        defaults.stringArray(forKey: Self.key) ?? defaults.string(forKey: Self.key).map { [$0] } ?? Self.defaultOrder
+    }
+
+    /// Whether an external GPU comes first.
+    var prefersExternal: Bool { order.first == Self.external }
+
+    /// The kind that comes first, after an external GPU.
+    var preference: Preference? {
+        let order = order
+        return (prefersExternal ? order.dropFirst().first : order.first).flatMap(Preference.init(rawValue:))
+    }
+
+    func prefer(_ preference: Preference) { store(preference, external: prefersExternal) }
+
+    func togglePrefersExternal() { store(preference, external: !prefersExternal) }
+
+    /// Simulator.app replaces the whole order: the preferred kinds, with the
+    /// external GPU first when it is preferred and last otherwise. Other kinds,
+    /// such as `headless`, are dropped.
+    private func store(_ preference: Preference?, external: Bool) {
+        let kinds = switch preference {
+        case .automatic: ["automatic"]
+        case .integrated: ["lowPower", "discrete"]
+        case .discrete: ["discrete", "lowPower"]
+        case nil: [String]()
+        }
+        defaults.set(external ? [Self.external] + kinds : kinds + [Self.external], forKey: Self.key)
     }
 }

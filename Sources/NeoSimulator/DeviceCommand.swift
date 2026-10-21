@@ -19,6 +19,9 @@ struct DeviceCommand {
         case faceIDEnrolled, faceIDMatching, faceIDNonMatching
         case authorizeApplePay, toggleAppearance, toggleInCallStatusBar, toggleStandBy
         case increaseTextSize, decreaseTextSize, toggleIncreaseContrast, triggerCloudSync
+        case toggleSlowAnimations, graphicsQualityDefault, graphicsQualityLow, graphicsQualityHigh
+        case colorBlendedLayers, colorCopiedImages, colorMisalignedImages, colorOffscreenRendered
+        case openSystemLog, simulateMemoryWarning
         case showDeviceBezels, stayOnTop, fitScreen
     }
 
@@ -171,6 +174,25 @@ struct DeviceCommand {
             controller.session.run({ [session = controller.session] in try await session.triggerCloudSync() },
                                    failure: { [weak controller] in controller?.present($0) })
         },
+        // Debug
+        // Simulator.app shows the setting only for a guest that keeps it.
+        DeviceCommand(id: .toggleSlowAnimations, title: "Toggle Slow Animations in Frontmost App",
+                      state: { $0.session.keepsSlowAnimations && $0.session.slowAnimations ? .on : .off },
+                      stateTitle: { $0.session.keepsSlowAnimations ? "Slow Animations" : "Toggle Slow Animations in Frontmost App" }) { controller in
+            controller.run { try controller.session.toggleSlowAnimations() }
+        },
+        graphicsQuality(.graphicsQualityDefault, title: "Device Default", .deviceDefault),
+        graphicsQuality(.graphicsQualityLow, title: "Low Quality", .low),
+        graphicsQuality(.graphicsQualityHigh, title: "High Quality", .high),
+        caDebugOption(.colorBlendedLayers, .colorBlendedLayers),
+        caDebugOption(.colorCopiedImages, .colorCopiedImages),
+        caDebugOption(.colorMisalignedImages, .colorMisalignedImages),
+        caDebugOption(.colorOffscreenRendered, .colorOffscreenRendered),
+        DeviceCommand(id: .openSystemLog, title: "Open System Log…", key: "/") { $0.openSystemLog() },
+        DeviceCommand(id: .simulateMemoryWarning, title: "Simulate Memory Warning", key: "m",
+                      modifiers: [.command, .shift]) { controller in
+            controller.run { try controller.session.simulateMemoryWarning() }
+        },
         // Window
         DeviceCommand(id: .showDeviceBezels, title: "Show Device Bezels",
                       state: { $0.showsDeviceBezel ? .on : .off }) { $0.toggleDeviceBezel() },
@@ -212,6 +234,24 @@ struct DeviceCommand {
                       isEnabled: { $0.session.canPerformToolOperation },
                       state: { $0.session.orientation == orientation ? .on : .off }) {
             $0.setOrientation(orientation)
+        }
+    }
+
+    /// A Graphics Quality Override choice, checked when it is the app's setting.
+    private static func graphicsQuality(_ id: ID, title: String, _ quality: GraphicsQuality) -> DeviceCommand {
+        DeviceCommand(id: id, title: title,
+                      isSupported: { $0.supportsFeature(DeviceCapabilities.graphicsQualityOverride) },
+                      isEnabled: { $0.session.canPerformToolOperation },
+                      state: { $0.session.graphicsQuality == quality ? .on : .off }) { controller in
+            controller.session.run({ [session = controller.session] in try await session.setGraphicsQuality(quality) },
+                                   failure: { [weak controller] in controller?.present($0) })
+        }
+    }
+
+    /// A Core Animation debug option, checked as the device reports it.
+    private static func caDebugOption(_ id: ID, _ option: CADebugOption) -> DeviceCommand {
+        DeviceCommand(id: id, title: option.title, state: { $0.session.isOn(option) ? .on : .off }) { controller in
+            controller.run { try controller.session.toggle(option) }
         }
     }
 

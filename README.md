@@ -95,8 +95,8 @@ Neo currently provides:
 - simulator app installation and image, video, and vCard import through a file
   picker or drag and drop;
 - opening web addresses and custom app URL schemes on the selected device;
-- File, Edit, Device, I/O, Features, Window, and Help menus in Simulator.app's
-  order, showing only the commands the active device supports;
+- File, Edit, Device, I/O, Features, Debug, Window, and Help menus in
+  Simulator.app's order, showing only the commands the active device supports;
 - Home, Lock, Shake, rotation, the six device orientations, Rotate Device
   Automatically, appearance, bezel, Stay on Top, Fit Screen, and standard
   window commands;
@@ -106,7 +106,13 @@ Neo currently provides:
   does not host yet;
 - Features menu controls: Touch ID and Face ID enrollment and matching or
   non-matching events, the in-call status bar, StandBy, preferred text size,
-  Increase Contrast, and Trigger iCloud Sync (Shift-Command-I).
+  Increase Contrast, and Trigger iCloud Sync (Shift-Command-I);
+- Debug menu tools: Slow Animations, Graphics Quality Override, Color Blended
+  Layers, Color Copied Images, Color Misaligned Images, Color Off-screen
+  Rendered, Open System Log… (Command-/), and Simulate Memory Warning
+  (Shift-Command-M);
+- File → GPU Selection, the GPU that CoreSimulator prefers for rendering
+  simulators.
 
 Use **File → Open Simulator** to choose a device, **File → New Simulator…**
 to create one, and **Device → Shut Down** to stop it. As in Simulator.app, Open
@@ -120,6 +126,16 @@ Neo also shows the devices Xcode boots for parallel testing, from
 **Debug → Show Parallel Testing Devices** hides their windows without shutting
 the devices down. Rotation and orientation commands are unavailable for these
 devices, because `devicectl` reaches only the default device set.
+
+As in Simulator.app, Neo remembers **Debug → Slow Animations** and
+**Graphics Quality Override** (`SlowMotionAnimation`, `GraphicsQualityOverride`)
+and applies them to each device when it connects. The checkmarks of the color
+options show the device's own state. **Open System Log…** opens the device's
+`system.log` in Console. **File → GPU Selection** edits CoreSimulator's
+`FramebufferServerGPUPolicy` setting, which Simulator.app also edits and which
+applies to all simulators. Unlike Simulator.app, Neo reports when a device
+rejects a change, when the memory-warning signal cannot be written, and when
+the system log cannot be opened.
 
 **Device → Restart** and **Device → Erase All Content and Settings…** keep the
 window open and reconnect it when the device boots again; an active recording

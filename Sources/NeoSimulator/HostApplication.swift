@@ -64,7 +64,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
 
     func start() throws {
         try conflicts.check()
-        menu = MenuController(application: self)
+        menu = MenuController(application: self,
+                              gpuPolicy: UserDefaults(suiteName: GPUPolicy.suiteName).map(GPUPolicy.init))
         menu?.install()
         notificationToken = try deviceSet.observe { [weak self] in self?.rescan() }
         signal(SIGTERM, SIG_IGN)
@@ -333,6 +334,9 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                             tools: try DeviceTools(identifier: identifier, xcodeURL: runtime.xcodeURL,
                                                    deviceSetPath: device.deviceSetPath),
                             recordings: recordings)
+                        do { try session.applyDebugSettings() } catch {
+                            hostLog("Could not apply debug settings to \(device.name): \(error.localizedDescription)")
+                        }
                         if let controller = awaitingReconnect.removeValue(forKey: identifier) {
                             try conflicts.check()
                             controller.reconnect(session)

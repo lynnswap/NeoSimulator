@@ -191,6 +191,10 @@ final class DeviceTools {
     func openURL(_ url: URL) async throws {
         _ = try await simctl(["openurl", identifier, url.absoluteString])
     }
+    /// Stops PineBoard, an Apple TV's system UI, which launchd restarts.
+    func stopSystemUI() async throws {
+        _ = try await simctl(["spawn", identifier, "launchctl", "stop", "com.apple.PineBoard"])
+    }
     func recordingProcess(to url: URL, mask: ScreenMask, codec: VideoCodec) -> Process {
         let process = Process()
         process.executableURL = simctlURL
