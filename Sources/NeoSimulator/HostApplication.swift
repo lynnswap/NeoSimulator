@@ -125,10 +125,14 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     /// Watches the set's nearest existing ancestor, moving down as Xcode
     /// creates the directories, until the set exists.
     private func watchForTestingSet(at url: URL) {
-        var ancestor = url.deletingLastPathComponent()
-        while !FileManager.default.fileExists(atPath: ancestor.path), ancestor.path != "/" {
-            ancestor.deleteLastPathComponent()
+        func nearestAncestor() -> URL {
+            var ancestor = url.deletingLastPathComponent()
+            while !FileManager.default.fileExists(atPath: ancestor.path), ancestor.path != "/" {
+                ancestor.deleteLastPathComponent()
+            }
+            return ancestor
         }
+        let ancestor = nearestAncestor()
         testingSetWatcher?.cancel()
         testingSetWatcher = nil
         let descriptor = open(ancestor.path, O_EVTONLY)
@@ -139,15 +143,21 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         let watcher = DispatchSource.makeFileSystemObjectSource(fileDescriptor: descriptor, eventMask: .write,
                                                                 queue: .main)
         watcher.setEventHandler { [weak self] in
-            MainActor.assumeIsolated {
-                guard let self, self.testingSet == nil else { return }
-                self.openTestingSet()
-                if self.testingSet != nil { self.rescan() }
-            }
+            MainActor.assumeIsolated { self?.testingSetDirectoryChanged() }
         }
         watcher.setCancelHandler { close(descriptor) }
         testingSetWatcher = watcher
         watcher.resume()
+        // A directory created before the watcher started sends no event.
+        if FileManager.default.fileExists(atPath: url.path) || nearestAncestor() != ancestor {
+            testingSetDirectoryChanged()
+        }
+    }
+
+    private func testingSetDirectoryChanged() {
+        guard testingSet == nil else { return }
+        openTestingSet()
+        if testingSet != nil { rescan() }
     }
 
     private static func describe(_ device: SimulatorDevice) -> AvailableDevice {
@@ -213,8 +223,10 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         // restart stays closed.
         suppressed.formIntersection(identifiers.union(restarting.keys))
         reportedFailures.formIntersection(identifiers)
-        for device in booted where (sessions[device.identifier] == nil
-                || (awaitingReconnect[device.identifier] != nil && restarting[device.identifier] == nil))
+        // A restarting device connects only after its restart ends, also when
+        // its window was hidden meanwhile.
+        for device in booted where restarting[device.identifier] == nil
+            && (sessions[device.identifier] == nil || awaitingReconnect[device.identifier] != nil)
             && connections[device.identifier] == nil
             && !suppressed.contains(device.identifier)
             && !reportedFailures.contains(device.identifier) {
