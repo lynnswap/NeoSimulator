@@ -27,6 +27,11 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     private var closingShutdowns: [String: Task<Void, Never>] = [:]
     /// Whether another simulator host took over, which leaves devices running.
     private var yieldedToAnotherHost = false
+    /// Quitting's device shutdowns, which another host appearing cancels.
+    private var terminationShutdowns: [Task<String?, Never>] = []
+    /// SIGTERM is how `xcode-simulator-host` ends the host when it switches
+    /// simulator hosts, handing the devices over.
+    private var handoverSignal: DispatchSourceSignal?
     /// The choice Quit NeoSimulator… made, which takes precedence over the
     /// default quit action.
     private var quitChoice: DeviceLifetimeChoice?
@@ -57,6 +62,16 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         menu = MenuController(application: self)
         menu?.install()
         notificationToken = try deviceSet.observe { [weak self] in self?.rescan() }
+        signal(SIGTERM, SIG_IGN)
+        let handover = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+        handover.setEventHandler { [weak self] in
+            MainActor.assumeIsolated {
+                self?.yieldedToAnotherHost = true
+                NSApp.terminate(nil)
+            }
+        }
+        handover.resume()
+        handoverSignal = handover
         openTestingSet()
         // Like Simulator.app, devices already booted get windows only with
         // AttachBootedOnStart; those booted later always do. Booted testing
@@ -247,7 +262,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     }
 
     private func scanDevices() throws {
-        guard !stopped else { return }
+        guard !stopped, !isTerminating else { return }
         try conflicts.check()
         var devices = try readDevices()
         if showsTestingDevices, let testingSet { devices += try readDevices(in: testingSet) }
@@ -422,6 +437,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         }
         let timeout = UserDefaults.standard.double(forKey: HostPreferences.terminationTimeout)
         let started = shutdowns
+        terminationShutdowns = started
         let deadline = Task { () -> Bool in
             do { try await Task.sleep(for: .seconds(timeout)) } catch { return false }
             for shutdown in started { shutdown.cancel() }
@@ -514,6 +530,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         // The other host owns the devices now, so they keep running.
         yieldedToAnotherHost = true
         for shutdown in closingShutdowns.values { shutdown.cancel() }
+        for shutdown in terminationShutdowns { shutdown.cancel() }
         shutdown()
         // A conflict can arrive on the main dispatch queue. Finish recordings
         // before terminate() enters AppKit's termination run loop from that queue.
@@ -552,9 +569,13 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             recordingTerminationErrors.removeAll()
             // A host that appeared meanwhile stopped this one; its devices stay.
             let devices = yieldedToAnotherHost ? [] : devices
-            // Windows disconnect before their devices shut down.
-            shutdown()
+            // Windows disconnect before their devices shut down. Host conflicts
+            // are still handled meanwhile and cancel the shutdowns.
+            for session in sessions.values { session.invalidate() }
+            sessions.removeAll()
+            awaitingReconnect.removeAll()
             let failures = await shutDownForTermination(devices)
+            shutdown()
             if !failures.isEmpty {
                 let alert = NSAlert()
                 alert.messageText = "Some simulated devices could not be shut down."
@@ -576,6 +597,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             catch { hostLog("Could not unregister simulator notifications: \(error.localizedDescription)") }
         }
         notificationToken = nil
+        handoverSignal?.cancel()
+        handoverSignal = nil
         if let testingSet, let testingNotificationToken {
             do { try testingSet.stopObserving(testingNotificationToken) }
             catch { hostLog("Could not unregister testing device notifications: \(error.localizedDescription)") }

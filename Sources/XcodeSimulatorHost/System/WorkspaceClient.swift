@@ -22,6 +22,9 @@ private struct ManagedApplicationIdentity {
     let bundleIdentifier: String
     let expectedURLs: [URL]
     let errorIdentifier: String
+    /// NeoSimulator takes SIGTERM as a handover to another simulator host and
+    /// leaves its devices running; a normal quit can shut them down.
+    var terminatesWithSignal = false
 }
 
 private let neoHostStartupPayload = Data("ready\n".utf8)
@@ -98,7 +101,9 @@ private final class ApplicationTerminationWaiter {
                     return
                 }
 
-                if !application.terminate() {
+                let requested = identity.terminatesWithSignal
+                    ? kill(application.processIdentifier, SIGTERM) == 0 : application.terminate()
+                if !requested {
                     RunLoop.main.perform(inModes: [.common]) { [weak self] in
                         Task { @MainActor in
                             guard let self else {
@@ -188,7 +193,8 @@ struct WorkspaceClient {
                     displayName: "NeoSimulator",
                     bundleIdentifier: ToolConstants.neoHostBundleIdentifier,
                     expectedURLs: [expectedApplicationURL],
-                    errorIdentifier: "neo-host"
+                    errorIdentifier: "neo-host",
+                    terminatesWithSignal: true
                 )
             )
         },
