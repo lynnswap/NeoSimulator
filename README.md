@@ -106,7 +106,7 @@ Neo currently provides:
   does not host yet;
 - Features menu controls: Touch ID and Face ID enrollment and matching or
   non-matching events, the in-call status bar, StandBy, preferred text size,
-  Increase Contrast, and Trigger iCloud Sync (Shift-Command-I).
+  Increase Contrast, Trigger iCloud Sync (Shift-Command-I), and Location.
 
 Use **File → Open Simulator** to choose a device, **File → New Simulator…**
 to create one, and **Device → Shut Down** to stop it. As in Simulator.app, Open
@@ -153,6 +153,17 @@ capture's location for recovery. **Edit → Copy Screen** (Control-Command-C)
 puts a PNG of the screen, without the mask, on the Mac pasteboard.
 Toggle the software keyboard through **I/O → Keyboard → Toggle Software
 Keyboard** (Command-K).
+
+**Features → Location** simulates the active device's location: **None**
+clears it, **Custom Location…** asks for a latitude and longitude, and the
+other items run the routes the device's runtime provides, such as City Run or
+Freeway Drive. As in Simulator.app, a choice changes only the active device,
+and the last choice is saved (`LocationMode`, `LocationLatitude`,
+`LocationLongitude`, `LocationScenario`) and applied to each device that
+connects, including after a restart. A new installation therefore starts
+devices at Simulator.app's San Francisco coordinate. Devices whose runtime
+lists no routes are left alone. Unlike Simulator.app, which lists the routes
+of the device that connected last, the menu lists the active device's own.
 
 Drop simulator `.app` bundles or media onto a device, or choose
 **File → Install App or Import Media…**. If only some files succeed, Neo lists
