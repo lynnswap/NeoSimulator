@@ -36,9 +36,28 @@ enum HostPreferences {
     static let showTestingDevices = "ShowTestingDevices"
     /// Overrides the path of Xcode's parallel testing device set.
     static let testingDeviceSetPath = "TestingDeviceSetPath"
+    /// Whether closing a device window leaves the device running instead of
+    /// shutting it down.
+    static let detachOnWindowClose = "DetachOnWindowClose"
+    /// Whether quitting leaves devices running instead of shutting them down.
+    static let detachOnAppQuit = "DetachOnAppQuit"
+    /// Whether launching shows windows for devices that are already booted.
+    static let attachBootedOnStart = "AttachBootedOnStart"
+    /// Whether launching starts the last chosen device; both must be on.
+    static let sessionOnLaunch = "SessionOnLaunch"
+    static let startLastDeviceOnLaunch = "StartLastDeviceOnLaunch"
+    /// The device last chosen to open, which launching starts.
+    static let currentDeviceUDID = "CurrentDeviceUDID"
+    /// How long quitting waits for devices to disconnect and shut down, in seconds.
+    static let terminationTimeout = "TerminationTimeout"
 
+    /// Registers Simulator.app's defaults for these preferences.
     static func registerDefaults() {
-        UserDefaults.standard.register(defaults: [showTestingDevices: true])
+        UserDefaults.standard.register(defaults: [
+            showTestingDevices: true, detachOnWindowClose: false, detachOnAppQuit: false,
+            attachBootedOnStart: true, sessionOnLaunch: true, startLastDeviceOnLaunch: true,
+            terminationTimeout: 60.0,
+        ])
     }
 }
 

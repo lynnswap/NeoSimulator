@@ -8,6 +8,9 @@ struct AvailableDevice: Identifiable {
     let descriptiveName: String
     let runtimeIdentifier: String
     let runtimeName: String
+    /// `SimDeviceType.productFamilyID`, as in `SimulatorDevice.productFamily`.
+    let productFamily: Int
+    let deviceTypeName: String
     var state: UInt
     var id: String { identifier }
     var isBooted: Bool { state == 3 }
@@ -23,12 +26,14 @@ struct AvailableDevice: Identifiable {
     }
 
     init(identifier: String, name: String, descriptiveName: String, runtimeIdentifier: String,
-         runtimeName: String, state: UInt) {
+         runtimeName: String, productFamily: Int, deviceTypeName: String, state: UInt) {
         self.identifier = identifier
         self.name = name
         self.descriptiveName = descriptiveName
         self.runtimeIdentifier = runtimeIdentifier
         self.runtimeName = runtimeName
+        self.productFamily = productFamily
+        self.deviceTypeName = deviceTypeName
         self.state = state
     }
 }
@@ -68,6 +73,7 @@ final class DeviceBrowserModel {
         return Task {
             defer { opening.remove(device.id); refresh() }
             do { try await source.openSimulator(withIdentifier: device.id) }
+            catch is CancellationError {}
             catch { errorMessage = error.localizedDescription }
         }
     }
@@ -160,7 +166,7 @@ struct DeviceBrowserView: View {
             }
 
             Divider()
-            Text("Closing a device window keeps its simulator running.")
+            Text("Closing a device window shuts its simulator down. Hold Control to keep it running.")
                 .font(.caption).foregroundStyle(.secondary).padding(14)
         }
         .frame(minWidth: 440, minHeight: 380)
@@ -378,7 +384,8 @@ private final class PreviewDeviceCatalog: DeviceBrowserSource {
     static let empty = PreviewDeviceCatalog(devices: [])
     private static func device(_ id: String, _ name: String, runtime: String, state: UInt) -> AvailableDevice {
         AvailableDevice(identifier: id, name: name, descriptiveName: "\(runtime) - \(name)",
-                        runtimeIdentifier: runtime, runtimeName: runtime, state: state)
+                        runtimeIdentifier: runtime, runtimeName: runtime,
+                        productFamily: name.hasPrefix("iPad") ? 2 : 1, deviceTypeName: name, state: state)
     }
     var devices: [AvailableDevice]
     init(devices: [AvailableDevice]) { self.devices = devices }

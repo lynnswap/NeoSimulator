@@ -278,7 +278,14 @@ A session discovers the default integrated `SimDeviceScreen`; screen ID zero is
 not assumed. It creates a connected `SimDisplayView`, enables device chrome,
 creates one `SimDeviceLegacyHIDClient`, and installs the view in a resizable
 transparent AppKit window. Shutdown removes the session. Closing a window
-suppresses reopening until that device leaves the booted state.
+shuts the device down, as Simulator.app does with `DetachOnWindowClose` off;
+a close that keeps the device running suppresses reopening until the device
+leaves the booted state. File ▸ Close Window… (or Control-closing) asks with
+Simulator.app's sheet, and Quit NeoSimulator… asks the same for quitting. A
+shutdown on close abandons a restart in progress. Launch follows
+`AttachBootedOnStart`, then, when no window was attached, starts
+`CurrentDeviceUDID` or Simulator.app's fallback: the last iPhone in
+CoreSimulator's order, or the first device.
 
 The header and window shell follow the owner behavior found in Simulator.app:
 DarkAqua, transparent titlebar, native traffic lights, device chrome, render
@@ -289,7 +296,7 @@ analysis source only and is not a runtime dependency.
 
 The first parity set contains only commands with an available, validated owner:
 
-- File: New Simulator…, Open Simulator, Save Screen, Close Window;
+- File: New Simulator…, Open Simulator, Save Screen, Close Window, Close Window…;
 - Device: Restart, Erase All Content and Settings…, Shut Down, Rotate
   Left/Right, Orientation, Rotate Device Automatically, Home,
   Lock, Side Button (watchOS devices only, so hidden until Neo hosts them),

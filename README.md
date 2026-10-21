@@ -114,13 +114,25 @@ Neo also shows the devices Xcode boots for parallel testing, from
 `~/Library/Developer/XCTestDevices` (or the `TestingDeviceSetPath` default).
 **Debug → Show Parallel Testing Devices** hides their windows without shutting
 the devices down. Rotation and orientation commands are unavailable for these
-devices, because `devicectl` reaches only the default device set. **Device → Restart** and **Device → Erase
-All Content and Settings…** keep the window open and reconnect it when the
-device boots again; an active recording is saved first. Closing a window
-leaves the simulator running; it can be reopened from File → Open Simulator or
-from **Window → Simulators**, NeoSimulator's own device list, which also opens
-when no device window is open. Neo requires no
-`Simulator.app` installation.
+devices, because `devicectl` reaches only the default device set.
+
+**Device → Restart** and **Device → Erase All Content and Settings…** keep the
+window open and reconnect it when the device boots again; an active recording
+is saved first.
+
+Closing a device window shuts the device down, as Simulator.app does by
+default; earlier versions of Neo left it running. To keep it running, hold
+Control while closing, or choose **File → Close Window…** (Control-Command-W),
+and choose Keep Running. Checking "Remember as the default close action" makes
+that the default (`DetachOnWindowClose`). A device left running can be reopened
+from File → Open Simulator or from **Window → Simulators**, NeoSimulator's own
+device list, which also opens when no device window is open. Quitting shuts
+down the devices that have windows unless `DetachOnAppQuit` is on;
+**Quit NeoSimulator…** (Option-Command-Q) asks. When it launches, Neo shows
+windows for devices that are already booted (`AttachBootedOnStart`), or else
+starts the device last opened (`StartLastDeviceOnLaunch`, `CurrentDeviceUDID`).
+
+Neo requires no `Simulator.app` installation.
 
 Choose **File → Record Screen…** (Command-R) and a destination to begin
 recording. Use the red stop control or **File → Stop Recording** to finish. Neo

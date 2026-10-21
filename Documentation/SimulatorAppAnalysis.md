@@ -98,8 +98,8 @@ Representative coordinator actions:
 The first set contains only actions with a concrete owner and observable failure
 semantics:
 
-- Application: About, Hide, Hide Others, Show All, Quit;
-- File: New Simulator…, Open Simulator, Save Screen, Close Window;
+- Application: About, Hide, Hide Others, Show All, Quit, Quit…;
+- File: New Simulator…, Open Simulator, Save Screen, Close Window, Close Window…;
 - Device: Rotate Left, Rotate Right, Orientation, Rotate Device Automatically,
   Home, Lock, Side Button, Action Button,
   Siri, Shake, App Switcher, Trigger Screenshot;
@@ -128,7 +128,6 @@ contract before being user-visible:
 - biometrics;
 - status-bar overrides;
 - screen recording and graceful finalization;
-- restart, erase, and window-close shutdown choices;
 - physical, point-accurate, and pixel-accurate scale modes;
 - external displays and CarPlay.
 

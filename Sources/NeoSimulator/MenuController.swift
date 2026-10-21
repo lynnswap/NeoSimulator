@@ -25,6 +25,8 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
         item("Show All", action: #selector(NSApplication.unhideAllApplications(_:)), in: app, target: NSApp)
         app.addItem(.separator())
         item("Quit NeoSimulator", action: #selector(NSApplication.terminate(_:)), key: "q", in: app, target: NSApp)
+        item("Quit NeoSimulator…", action: #selector(quitAsking(_:)), key: "q", modifiers: [.command, .option],
+             in: app).isAlternate = true
 
         let file = menu("File", in: main)
         item("New Simulator…", action: #selector(showNewSimulator(_:)), in: file)
@@ -38,6 +40,8 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
         commands([.importFiles], in: file)
         file.addItem(.separator())
         item("Close Window", action: #selector(closeWindow(_:)), key: "w", in: file)
+        item("Close Window…", action: #selector(closeAsking(_:)), key: "w", modifiers: [.command, .control],
+             in: file).isAlternate = true
 
         let edit = EditMenu(title: "Edit")
         main.addItem(withTitle: "Edit", action: nil, keyEquivalent: "").submenu = edit
@@ -162,6 +166,9 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
            [#selector(showBrowser(_:)), #selector(showNewSimulator(_:)), #selector(showHelp(_:))].contains(action) {
             return true
         }
+        if item.action == #selector(quitAsking(_:)) { return application != nil }
+        // Asking applies to a connected device window.
+        if item.action == #selector(closeAsking(_:)) { return activeWindow?.session.canPerformCommands == true }
         if item.action == #selector(toggleShowTestingDevices(_:)) {
             item.state = application?.showsTestingDevices == true ? .on : .off
             return application != nil
@@ -185,6 +192,8 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
     @objc private func showNewSimulator(_ sender: Any?) { application?.showNewSimulator() }
     @objc private func toggleShowTestingDevices(_ sender: Any?) { application?.toggleShowTestingDevices() }
     @objc private func closeWindow(_ sender: Any?) { NSApp.keyWindow?.performClose(sender) }
+    @objc private func closeAsking(_ sender: Any?) { activeWindow?.closeAsking() }
+    @objc private func quitAsking(_ sender: Any?) { application?.quitAsking() }
     @objc private func minimizeWindow(_ sender: Any?) { NSApp.keyWindow?.performMiniaturize(sender) }
     @objc private func fullScreen(_ sender: Any?) { NSApp.keyWindow?.toggleFullScreen(sender) }
     @objc private func showHelp(_ sender: Any?) {
@@ -259,6 +268,7 @@ final class OpenSimulatorMenu: NSObject, NSMenuDelegate {
         guard let application, let identifier = sender.representedObject as? String else { return }
         Task {
             do { try await application.openSimulator(withIdentifier: identifier) }
+            catch is CancellationError {}
             catch { NSAlert(error: error).runModal() }
         }
     }

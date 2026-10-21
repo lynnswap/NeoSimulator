@@ -528,6 +528,10 @@ struct InputFocusTests {
         #expect(try visibleTitles("I/O") == ["Keyboard", "-", "Increase Volume", "Decrease Volume", "-", "Open URL…"])
         #expect(try visibleTitles("Features") == ["Authorize Apple Pay", "-", "Toggle Appearance"])
         #expect(try visibleTitles("Debug") == ["Show Parallel Testing Devices"])
+        // Option and Control alternates ask before quitting and closing.
+        let alternates = NSApp.mainMenu?.items.compactMap(\.submenu).flatMap(\.items).filter(\.isAlternate)
+        #expect(alternates?.map(\.title).filter { $0.hasPrefix("Quit") || $0.hasPrefix("Close") }
+                == ["Quit NeoSimulator…", "Close Window…"])
     }
 
     @Test func orientationCommandsNeedTheDefaultDeviceSet() throws {
@@ -572,6 +576,66 @@ struct InputFocusTests {
         #expect(first.map { $0.representedObject as? String } == ["a", "a", "b", "b"])
         // A single runtime lists its devices directly.
         #expect(items(Array(devices.prefix(2))).map(\.title) == first.map(\.title))
+    }
+
+    @Test func lifetimeAlertsUseSimulatorAppTextAndDefaults() throws {
+        _ = NSApplication.shared
+        let close = DeviceLifetimeChoice.alert(quitting: false, keepsRunningByDefault: false)
+        #expect(close.messageText == "Do you want to shutdown the simulated device?")
+        #expect(close.informativeText == "When closing a window, you can either shut down the device or keep it running.")
+        #expect(close.buttons.map(\.title) == ["Shut down", "Keep Running", "Cancel"])
+        #expect(close.suppressionButton?.title == "Remember as the default close action.")
+        #expect(close.buttons.map(\.keyEquivalent) == ["\r", "", "\u{1b}"])
+        let quit = DeviceLifetimeChoice.alert(quitting: true, keepsRunningByDefault: true)
+        #expect(quit.messageText == "Do you want to shut down the simulated devices?")
+        #expect(quit.buttons.map(\.title) == ["Shut Down", "Keep Running", "Cancel"])
+        #expect(quit.suppressionButton?.title == "Remember as the default quit action.")
+        // Return chooses the remembered action.
+        #expect(quit.buttons.map(\.keyEquivalent) == ["", "\r", "\u{1b}"])
+
+        let key = "NeoSimulatorTestDetach-\(UUID().uuidString)"
+        defer { UserDefaults.standard.removeObject(forKey: key) }
+        #expect(DeviceLifetimeChoice.choice(for: .alertThirdButtonReturn, of: quit, rememberingAs: key) == nil)
+        #expect(DeviceLifetimeChoice.choice(for: .alertSecondButtonReturn, of: quit, rememberingAs: key) == .keepRunning)
+        #expect(UserDefaults.standard.object(forKey: key) == nil)
+        quit.suppressionButton?.state = .on
+        #expect(DeviceLifetimeChoice.choice(for: .alertSecondButtonReturn, of: quit, rememberingAs: key) == .keepRunning)
+        #expect(UserDefaults.standard.bool(forKey: key))
+        #expect(DeviceLifetimeChoice.choice(for: .alertFirstButtonReturn, of: quit, rememberingAs: key) == .shutDown)
+        #expect(!UserDefaults.standard.bool(forKey: key))
+    }
+
+    @Test func closeWindowAsksBeforeClosing() throws {
+        _ = NSApplication.shared
+        var closes: [DeviceLifetimeChoice?] = []
+        let controller = try makeController(TestDisplay(), onClose: { _, choice in closes.append(choice) })
+        defer { controller.invalidate() }
+        controller.showWindow(nil)
+        let window = try #require(controller.window)
+        controller.closeAsking()
+        window.endSheet(try #require(window.attachedSheet), returnCode: .alertThirdButtonReturn)
+        #expect(window.isVisible && closes.isEmpty)
+        controller.closeAsking()
+        window.endSheet(try #require(window.attachedSheet), returnCode: .alertSecondButtonReturn)
+        #expect(!window.isVisible && closes == [.keepRunning])
+    }
+
+    @Test func launchStartsTheLastDeviceOrSimulatorAppsFallback() {
+        let devices = [
+            availableDevice("A", "iPad A", runtime: "iOS 27.0", state: 1),
+            availableDevice("B", "iPhone B", runtime: "iOS 27.0", state: 1),
+            availableDevice("C", "iPod touch C", runtime: "iOS 27.0", state: 1),
+            availableDevice("D", "iPhone D", runtime: "iOS 27.0", state: 1),
+            availableDevice("E", "iPad E", runtime: "iOS 27.0", state: 1),
+        ]
+        let identifier = UUID().uuidString
+        let current = AvailableDevice(identifier: identifier, name: "Mine", descriptiveName: "Mine", runtimeIdentifier: "",
+                                      runtimeName: "", productFamily: 2, deviceTypeName: "iPad", state: 1)
+        #expect(HostApplication.initialDevice(in: devices + [current], current: identifier.lowercased())?.id == identifier)
+        // The last iPhone, matched by device type, or else the first device.
+        #expect(HostApplication.initialDevice(in: devices, current: identifier)?.id == "D")
+        #expect(HostApplication.initialDevice(in: [devices[0], devices[4]], current: nil)?.id == "A")
+        #expect(HostApplication.initialDevice(in: [], current: nil) == nil)
     }
 
     @Test func newSimulatorKeepsDeviceTypeAndRuntimeCompatible() async throws {
@@ -820,11 +884,12 @@ struct InputFocusTests {
                                 simctl: URL = DeviceTools.simctl,
                                 devicectl: URL = DeviceTools.devicectl,
                                 recordingProcess: ((URL) -> Process)? = nil,
+                                onClose: @escaping (DeviceWindowController, DeviceLifetimeChoice?) -> Void = { _, _ in },
                                 onRestart: @escaping (DeviceWindowController, Bool) -> Void = { _, _ in })
         throws -> DeviceWindowController {
         let session = try makeSession(display, features: features, simctl: simctl, devicectl: devicectl,
                                       recordingProcess: recordingProcess)
-        return try DeviceWindowController(session: session, onClose: { _ in }, onRestart: onRestart)
+        return try DeviceWindowController(session: session, onClose: onClose, onRestart: onRestart)
     }
 
     private func makeSession(_ display: TestDisplay,
@@ -1034,7 +1099,8 @@ private final class TestCatalog: DeviceBrowserSource {
 
 private func availableDevice(_ identifier: String, _ name: String, runtime: String, state: UInt) -> AvailableDevice {
     AvailableDevice(identifier: identifier, name: name, descriptiveName: "\(runtime) - \(name)",
-                    runtimeIdentifier: "runtime \(runtime)", runtimeName: runtime, state: state)
+                    runtimeIdentifier: "runtime \(runtime)", runtimeName: runtime,
+                    productFamily: name.hasPrefix("iPad") ? 2 : 1, deviceTypeName: name, state: state)
 }
 
 @Suite @MainActor
