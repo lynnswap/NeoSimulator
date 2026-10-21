@@ -33,6 +33,11 @@ struct DeviceCapabilities {
     static let touchID = "com.apple.touch-id"
     static let faceID = "com.apple.pearl-id"
     static let standBy = "com.apple.display.ambient-overlay"
+    /// `SimFeatureUIKitSlowMotionStateful`: the guest keeps slow animations on
+    /// until they are turned off.
+    static let slowMotionStateful = "com.apple.UIKit.SimulatorSlowMotionStateful"
+    /// `SimFeatureUIKitGraphicsQualityOverride`.
+    static let graphicsQualityOverride = "com.apple.UIKit.SimulatorGraphicsQualityOverride"
 }
 
 /// Preferences Simulator.app keeps in its standard user defaults.
@@ -66,6 +71,12 @@ enum HostPreferences {
     static let screenShotSaveLocation = "ScreenShotSaveLocation"
     /// Whether Save Screen and Record Screen apply the device's mask.
     static let screenShotUseMask = "ScreenShotUseMask"
+    /// Debug ▸ Slow Animations, which connecting applies to each device that
+    /// keeps the setting.
+    static let slowMotionAnimation = "SlowMotionAnimation"
+    /// Debug ▸ Graphics Quality Override, a `GraphicsQuality` value, which
+    /// connecting applies to each device that supports it unless it is the default.
+    static let graphicsQualityOverride = "GraphicsQualityOverride"
     /// Animated GIF export from a recording's thumbnail.
     static let gifMaxFramerate = "GifMaxFramerate"
     static let gifMaxFrameSize = "GifMaxFrameSize"
@@ -91,6 +102,7 @@ enum HostPreferences {
             showTestingDevices: true, showChrome: true, detachOnWindowClose: false, detachOnAppQuit: false,
             attachBootedOnStart: true, sessionOnLaunch: true, startLastDeviceOnLaunch: true,
             terminationTimeout: 60.0, screenShotSaveLocation: defaultScreenshotLocation(), screenShotUseMask: false,
+            slowMotionAnimation: false, graphicsQualityOverride: GraphicsQuality.deviceDefault.rawValue,
             gifMaxFramerate: 10, gifMaxFrameSize: 640, gifUseDither: true, gifDitherDepth: 4.0,
             locationMode: LocationSelection.customMode, locationLatitude: 37.785834, locationLongitude: -122.406417,
         ])
@@ -191,6 +203,12 @@ struct OrientationReading: Equatable {
     }
 }
 
+/// Debug ▸ Graphics Quality Override, as the guest's
+/// `com.apple.UIKit.ForceGraphicsQuality` state numbers it.
+enum GraphicsQuality: Int {
+    case deviceDefault = 0, low = 10, high = 100
+}
+
 /// How Simulator.app times the events of a hardware input.
 enum HardwareInput {
     /// Pressed and released at once.
@@ -212,6 +230,7 @@ final class DeviceSession {
     @ObservationIgnored let tools: DeviceTools
     @ObservationIgnored private let recordings: RecordingStore
     @ObservationIgnored private let makeRecordingProcess: (URL, DeviceTools.ScreenMask) -> Process
+    @ObservationIgnored private let openLog: (URL) async throws -> Void
     @ObservationIgnored private var operation: Task<Void, Never>?
     /// The delayed steps of hardware inputs, which a disconnect cancels.
     @ObservationIgnored private var inputSteps: [Int: Task<Void, Never>] = [:]
@@ -243,11 +262,14 @@ final class DeviceSession {
     /// what the host last applied.
     private(set) var location: LocationSelection?
 
-    /// - Parameter recordingProcess: Creates the recording process for a
-    ///   destination and mask. Defaults to the device's direct `simctl` recorder.
+    /// - Parameters:
+    ///   - recordingProcess: Creates the recording process for a destination
+    ///     and mask. Defaults to the device's direct `simctl` recorder.
+    ///   - openLog: Opens the device's system log. Defaults to Console.
     init(device: AvailableDevice, capabilities: DeviceCapabilities, display: any SimulatorDisplay,
          tools: DeviceTools, recordings: RecordingStore = RecordingStore(),
-         recordingProcess: ((URL, DeviceTools.ScreenMask) -> Process)? = nil) {
+         recordingProcess: ((URL, DeviceTools.ScreenMask) -> Process)? = nil,
+         openLog: @escaping (URL) async throws -> Void = DeviceSession.openInConsole) {
         self.device = device
         self.capabilities = capabilities
         self.display = display
@@ -256,6 +278,7 @@ final class DeviceSession {
         // Simulator.app records Apple Vision Pro in HEVC and other devices in H.264.
         let codec: DeviceTools.VideoCodec = capabilities.family == .vision ? .hevc : .h264
         makeRecordingProcess = recordingProcess ?? { tools.recordingProcess(to: $0, mask: $1, codec: codec) }
+        self.openLog = openLog
     }
 
     var canPerformCommands: Bool { isConnected && display.isBooted }
@@ -418,8 +441,14 @@ final class DeviceSession {
 
     /// Flips a guest notification's state between 0 and 1 and posts it.
     private func toggleState(of name: String) throws {
-        let state: UInt64 = try display.notificationState(name) == 1 ? 0 : 1
+        try send(display.notificationState(name) == 1 ? 0 : 1, to: name)
+    }
+
+    /// Sets a guest notification's state and posts it. `didSet` runs once the
+    /// state is set, also when the post then fails.
+    private func send(_ state: UInt64, to name: String, didSet: () -> Void = {}) throws {
         try display.setNotificationState(name, to: state)
+        didSet()
         do { try display.postNotification(name) } catch {
             throw HostError.operation("The device's state changed, but it was not notified: \(error.localizedDescription)")
         }
@@ -448,6 +477,98 @@ final class DeviceSession {
     }
 
     func triggerCloudSync() async throws { try await display.triggerCloudSync() }
+
+    // MARK: Debug
+
+    private static let slowMotionAnimation = "com.apple.UIKit.SimulatorSlowMotionAnimationState"
+    private static let forceGraphicsQuality = "com.apple.UIKit.ForceGraphicsQuality"
+
+    /// Whether Debug ▸ Slow Animations shows its state: the guest keeps slow
+    /// animations on. Otherwise Simulator.app offers a toggle for the frontmost app.
+    var keepsSlowAnimations: Bool { capabilities.supportsFeature(DeviceCapabilities.slowMotionStateful) }
+
+    /// Like Simulator.app, the app's setting rather than the guest's state.
+    var slowAnimations: Bool { UserDefaults.standard.bool(forKey: HostPreferences.slowMotionAnimation) }
+
+    /// Flips `SlowMotionAnimation` and sends it to the guest, also when the
+    /// guest does not keep it, as Simulator.app does.
+    func toggleSlowAnimations() throws {
+        guard canPerformCommands else { return }
+        let enabled = !slowAnimations
+        try send(enabled ? 1 : 0, to: Self.slowMotionAnimation) {
+            UserDefaults.standard.set(enabled, forKey: HostPreferences.slowMotionAnimation)
+        }
+    }
+
+    var graphicsQuality: GraphicsQuality? {
+        GraphicsQuality(rawValue: UserDefaults.standard.integer(forKey: HostPreferences.graphicsQualityOverride))
+    }
+
+    /// Sends the quality to the guest and saves it as `GraphicsQualityOverride`.
+    func setGraphicsQuality(_ quality: GraphicsQuality) throws {
+        guard canPerformCommands else { return }
+        try send(UInt64(quality.rawValue), to: Self.forceGraphicsQuality) {
+            UserDefaults.standard.set(quality.rawValue, forKey: HostPreferences.graphicsQualityOverride)
+        }
+    }
+
+    /// Stops PineBoard, an Apple TV's system UI, which launchd restarts. After a
+    /// graphics-quality change, Simulator.app does this so that it takes effect.
+    func restartSystemUI() async throws { try await tools.stopSystemUI() }
+
+    /// Applies the app's slow-animation and graphics-quality settings to a
+    /// device that was just connected, as Simulator.app does: slow animations
+    /// when the guest keeps them, and a quality other than the default.
+    func applyDebugSettings() throws {
+        if keepsSlowAnimations { try send(slowAnimations ? 1 : 0, to: Self.slowMotionAnimation) }
+        if capabilities.supportsFeature(DeviceCapabilities.graphicsQualityOverride),
+           let quality = graphicsQuality, quality != .deviceDefault {
+            try send(UInt64(quality.rawValue), to: Self.forceGraphicsQuality)
+        }
+    }
+
+    /// Whether a Core Animation debug option is on, as the device reports it.
+    func isOn(_ option: CADebugOption) -> Bool {
+        canPerformCommands && (try? display.caDebugOption(option)) == true
+    }
+
+    /// Turns a Core Animation debug option on or off. CoreSimulator reports no
+    /// failure of the change, so the option is read back.
+    func toggle(_ option: CADebugOption) throws {
+        guard canPerformCommands else { return }
+        let enabled = try !display.caDebugOption(option)
+        try display.setCADebugOption(option, enabled: enabled)
+        guard try display.caDebugOption(option) == enabled else {
+            throw HostError.operation("The device did not turn \(enabled ? "on" : "off") \(option.title).")
+        }
+    }
+
+    /// Debug ▸ Open System Log…: opens the device's `system.log` with `openLog`.
+    func openSystemLog() async throws {
+        let log = try display.logDirectory().appendingPathComponent("system.log")
+        guard FileManager.default.fileExists(atPath: log.path) else {
+            throw HostError.operation("The device has no system log at \(log.path).")
+        }
+        try await openLog(log)
+    }
+
+    /// Opens a log in Console, as Simulator.app does.
+    static func openInConsole(_ log: URL) async throws {
+        guard let console = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Console") else {
+            throw HostError.unavailable("Console is not installed.")
+        }
+        _ = try await NSWorkspace.shared.open([log], withApplicationAt: console,
+                                              configuration: NSWorkspace.OpenConfiguration())
+    }
+
+    /// Debug ▸ Simulate Memory Warning: writes the empty trigger file that
+    /// `SimDevice.simulateMemoryWarning` writes, non-atomically like it, but
+    /// reports a failed write, which that method discards. A successful write
+    /// does not mean that an app handled the warning.
+    func simulateMemoryWarning() throws {
+        guard canPerformCommands else { return }
+        try Data().write(to: display.memoryWarningFile())
+    }
 
     // MARK: Location
 

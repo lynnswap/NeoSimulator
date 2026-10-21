@@ -299,7 +299,8 @@ analysis source only and is not a runtime dependency.
 The first parity set contains only commands with an available, validated owner:
 
 - File: New Simulator…, Open Simulator, Save Screen, Save Screen…, Record
-  Screen, Record Screen…, Stop Recording, Close Window, Close Window…;
+  Screen, Record Screen…, Stop Recording, GPU Selection, Close Window, Close
+  Window…;
 - Edit: Copy Screen;
 - Device: Restart, Erase All Content and Settings…, Shut Down, Rotate
   Left/Right, Orientation, Rotate Device Automatically, Home,
@@ -311,7 +312,9 @@ The first parity set contains only commands with an available, validated owner:
   Show/Hide StandBy, Increase and Decrease Preferred Text Size, Toggle
   Increase Contrast, Trigger iCloud Sync, Location (None, Custom Location…,
   and the runtime's scenarios);
-- Debug: Show Parallel Testing Devices;
+- Debug: Slow Animations, Graphics Quality Override, Color Blended Layers,
+  Color Copied Images, Color Misaligned Images, Color Off-screen Rendered, Open
+  System Log…, Simulate Memory Warning, Show Parallel Testing Devices;
 - Window: standard minimize/zoom/full screen, Show Device Bezels, Stay on Top,
   Physical Size, Point Accurate, Pixel Accurate, Fit Screen, Simulators, Bring
   All to Front.
@@ -338,6 +341,58 @@ the testing devices' windows without shutting them down, and turning it on
 attaches every booted testing device again. `simctl` reaches a testing device
 with `--set`; `devicectl` does not, so rotation and orientation commands are
 hidden for it.
+
+Debug ▸ Slow Animations and Graphics Quality Override use Simulator.app's guest
+notifications: the session sets the state of
+`com.apple.UIKit.SimulatorSlowMotionAnimationState` (0 or 1) or
+`com.apple.UIKit.ForceGraphicsQuality` (0, 10, or 100 for Device Default, Low
+Quality, and High Quality) with `darwinNotificationSetState:name:error:`, then
+posts it with `postDarwinNotification:error:`. As in Simulator.app, the
+checkmarks come from the app's `SlowMotionAnimation` and
+`GraphicsQualityOverride` defaults, and connecting a device applies them again:
+slow animations when the guest supports `SimFeatureUIKitSlowMotionStateful`,
+and a quality other than Device Default when it supports
+`SimFeatureUIKitGraphicsQualityOverride`. Without the first feature, the
+command is Simulator.app's "Toggle Slow Animations in Frontmost App", which
+still alternates the state but has no checkmark. Without the second, Graphics
+Quality Override is hidden, where Simulator.app disables it. Neo saves a
+setting only after the guest accepts its state and reports a failed post as a
+partial change; Simulator.app saves first and discards both errors. On Apple
+TV, a quality change also stops PineBoard with `simctl spawn <UDID> launchctl
+stop com.apple.PineBoard`, which launchd restarts. Because that is a device-tool
+operation, an Apple TV's quality choices are disabled while another one runs,
+where Simulator.app keeps them enabled. On other devices the change is
+immediate and stays available during tool operations, as in Simulator.app.
+
+The color options call `SimDevice setCADebugOption:enabled:` with options 2
+(Color Blended Layers), 1 (Color Copied Images), 14 (Color Misaligned Images),
+and 17 (Color Off-screen Rendered). Their checkmarks come from
+`getCADebugOption:` instead of Simulator.app's per-device `DeviceCoordinator`
+flags, which start off at each connection and only record what it last
+requested. Both selectors
+drop CoreSimulator's errors, so the session reads an option back after changing
+it and reports a mismatch; an option whose read fails shows as off.
+
+Open System Log… opens `<SimDevice.logPath>/system.log` in Console
+(`com.apple.Console`) with `NSWorkspace.open(_:withApplicationAt:configuration:)`
+and reports a missing file or a failed launch, where Simulator.app only logs
+the failure. Simulate Memory Warning writes the empty trigger file at
+`SimDevice.memoryWarningFilePath` (`<dataPath>/var/run/memory_warning_simulation`)
+in place, as `SimDevice.simulateMemoryWarning` does, but reports a failed
+write, which that method discards. A successful write does not confirm that an
+app handled the warning.
+
+File ▸ GPU Selection edits CoreSimulator's `FramebufferServerGPUPolicy` string
+array in the `com.apple.CoreSimulator` defaults, which its render server reads.
+Unset, the order is `automatic, external, discrete, lowPower, headless`, and a
+single string is an order of one. As in Simulator.app, each choice rewrites the
+whole order: Automatic gives `automatic`, Prefer Integrated GPU gives
+`lowPower, discrete`, and Prefer Discrete GPU gives `discrete, lowPower`, with
+`external` first while Use External GPU When Available is on and last
+otherwise. Toggling the external GPU keeps the current preference, and other
+kinds such as `headless` are dropped. The checkmarks follow the first entry
+after a leading `external`. The setting is global, so the menu does not need a
+device window; whether a running device changes GPU at once is not established.
 
 Hardware inputs send Indigo HID messages to the connected screen's
 `buttonTarget` through `SimDeviceLegacyHIDClient`: button messages for Home,
@@ -585,9 +640,10 @@ The following are intentionally absent:
 - continuous, send, receive, or automatic pasteboard synchronization;
 - Edit menu clipboard commands and Services;
 - global keyboard, pointer, or game-controller capture;
-- Device Manager, external-display, CarPlay, audio-routing, FaceTime, GPU, and
-  internal debug menus;
-- platform-specific watchOS, tvOS, and visionOS commands;
+- Device Manager, external-display, CarPlay, audio-routing, and FaceTime
+  menus;
+- platform-specific watchOS, tvOS, and visionOS commands, such as Debug ▸ Show
+  Gaze Target;
 - commands whose remaining private implementation silently discards failure.
 
 See [Simulator.app analysis](SimulatorAppAnalysis.md) for the complete menu
