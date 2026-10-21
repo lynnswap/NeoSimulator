@@ -104,8 +104,10 @@ Neo currently provides:
   does not host yet.
 
 Use **File → Open Simulator…** (Command-N) to choose a device and
-**Device → Shut Down** to stop it. Closing a window leaves the simulator
-running; it can be reopened from the device browser. Neo requires no
+**Device → Shut Down** to stop it. **Device → Restart** and **Device → Erase
+All Content and Settings…** keep the window open and reconnect it when the
+device boots again; an active recording is saved first. Closing a window
+leaves the simulator running; it can be reopened from the device browser. Neo requires no
 `Simulator.app` installation.
 
 Choose **File → Record Screen…** (Command-R) and a destination to begin

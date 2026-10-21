@@ -417,7 +417,7 @@ struct InputFocusTests {
             try? FileManager.default.removeItem(at: log)
             try? stage.write(to: fail, atomically: true, encoding: .utf8)
             var message: String?
-            do { try await HostApplication.restart(tools, erasing: erasing) } catch { message = error.localizedDescription }
+            do { try await tools.restart(erasing: erasing) } catch { message = error.localizedDescription }
             let calls = (try? String(contentsOf: log, encoding: .utf8))?.split(separator: "\n").map(String.init) ?? []
             return (calls, message)
         }

@@ -86,7 +86,7 @@ Representative coordinator actions:
 
 | Action | Address | Status |
 | --- | ---: | --- |
-| Restart | `0x10001FDBC` | available through CoreSimulator, deferred pending destructive lifecycle design |
+| Restart | `0x10001FDBC` | implemented with `simctl shutdown` and `boot` (plus `erase` for Erase All Content and Settings…), keeping the window and reconnecting after boot |
 | Memory Warning | `0x10001FE70` | omitted: private implementation discards its file-write result |
 | Hardware keyboard sync | `0x1000207D4` | available, deferred pending UI state ownership |
 | Graphics/debug options | `0x10002180C` onward | available, outside first parity |

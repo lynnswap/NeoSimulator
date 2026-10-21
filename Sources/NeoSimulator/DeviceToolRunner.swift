@@ -136,6 +136,33 @@ final class DeviceTools {
             arguments: ["device", "orientation", "get", "--device", identifier, "--json-output", "-", "--quiet"],
             environment: environment))
     }
+    /// Shuts the device down, erases it when asked, and boots it. Like
+    /// Simulator.app, a failed shutdown stops the restart, and a failed
+    /// erase still boots the device.
+    func restart(erasing: Bool) async throws {
+        let operation = erasing ? "Erase All Content and Settings" : "Restart"
+        func failure(_ stage: String, completed: [String], _ error: Error) -> HostError {
+            let progress = completed.isEmpty ? "" : " The device was \(completed.joined(separator: " and "))."
+            return HostError.operation("\(operation) failed while \(stage): \(error.localizedDescription)\(progress)")
+        }
+        do { try await shutdown() } catch {
+            if error is CancellationError { throw error }
+            throw failure("shutting down", completed: [], error)
+        }
+        var eraseFailure: Error?
+        if erasing {
+            do { try await erase() } catch {
+                if error is CancellationError { throw error }
+                eraseFailure = error
+            }
+        }
+        do { try await boot() } catch {
+            if error is CancellationError { throw error }
+            throw failure("booting", completed: erasing && eraseFailure == nil ? ["shut down", "erased"] : ["shut down"], error)
+        }
+        if let eraseFailure { throw failure("erasing", completed: ["shut down", "booted again"], eraseFailure) }
+    }
+
     func installApplication(at url: URL) async throws {
         _ = try await simctl(["install", identifier, url.path])
     }
