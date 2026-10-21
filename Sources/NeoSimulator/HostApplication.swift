@@ -45,6 +45,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     private var newSimulator: NewSimulatorWindowController?
     private var menu: MenuController?
     private var stopped = false
+    /// Where the next device window without a saved center cascades from,
+    /// app-wide as Simulator.app keeps it; zero until a window cascades.
     private var nextWindowPosition = NSPoint.zero
 
     init(runtime: SimulatorRuntime, conflicts: HostConflictMonitor) throws {
@@ -351,10 +353,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                         }, onRestart: { [weak self] in self?.restartDevice($0, erasing: $1) })
                         try conflicts.check()
                         sessions[identifier] = controller
-                        if let window = controller.window {
-                            nextWindowPosition = window.cascadeTopLeft(from: nextWindowPosition)
-                        }
-                        controller.showAndActivate()
+                        controller.showNewWindow(cascadingFrom: &nextWindowPosition)
                         restoreLocation(of: session)
                         return
                     }

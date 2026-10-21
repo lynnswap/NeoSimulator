@@ -396,7 +396,7 @@ bounded timeout, and are cancelled when their window closes.
 Window ▸ Physical Size (Command-1), Point Accurate (Command-2), Pixel Accurate
 (Command-3), and Fit Screen (Command-4) follow Simulator.app's
 `windowScaleChanged:`. Each sets `SimDisplayView.renderScale` and sizes the
-window to `SimDisplayView.size(for:)` at that scale, keeping the window's top
+window to `SimDisplayView.size(for:)` at that scale below the window's top
 edge; the device's screen does not change.
 
 - Physical Size divides the Mac screen's points per inch (`NSDeviceSize` width
@@ -411,36 +411,68 @@ edge; the device's screen does not change.
 
 Fit Screen then centers the window on its screen, and the fixed scales move it
 back inside the visible frame. The commands need a connected display outside
-full screen, including the full screen transitions. Physical Size also needs `SimDeviceScreen.displayClass` 0,
-the device's own screen. A fixed scale needs at least the device's minimum
-(0.4 for an iPhone and 0.25 for an iPad on its own screen, 0.6 for a watch,
-otherwise the scale at which the display fits 240 by 240 points) and a window
-that fits the visible frame. A fixed scale is checked while `renderScale` is
-within 0.001 of it. The menu computes the target from the window's current
-screen each time it validates, so a manual resize, or a move to a screen with
-another resolution or size, clears the checkmark without changing the scale.
-Fit Screen has no checkmark.
+full screen, including the full screen transitions. Physical Size also needs
+`SimDeviceScreen.displayClass` 0, the device's own screen. A fixed scale needs
+at least the device's minimum (0.4 for an iPhone and 0.25 for an iPad on its
+own screen, 0.6 for a watch, otherwise the scale at which the display fits 240
+by 240 points). Like Simulator.app, a display without a bezel must also fit
+the visible frame below the window's header, while a window with a bezel may
+extend past the screen. The bezel is the display's `SimDisplayChromeView.chrome`,
+which NeoSimulator reads through ABIBridge with its `images.padding`. It is nil
+while Show Device Bezels is off, because SimulatorKit then clears the chrome
+view's device type, and for a device type whose chrome SimulatorKit cannot
+load. A fixed scale is checked while `renderScale` is within 0.001 of it. The
+menu computes the target from the window's current screen each time it
+validates, so a manual resize, or a move to a screen with another resolution
+or size, clears the checkmark without changing the scale. Fit Screen has no
+checkmark.
 
-Closing a window saves its scale in
-`DevicePreferences[UDID].SimulatorWindowGeometry.WindowScale`, Simulator.app's
-keys, in NeoSimulator's own defaults. The device's next window opens at the
-saved scale, or at Point Accurate, reduced to Fit Screen's scale, as in
-Simulator.app. A rotation and Show Device Bezels keep the scale and resize the
-window to the display's new size. These differ from Simulator.app:
+The device window is a `DeviceWindow`, which follows its bezel as Simulator.app's
+window does:
 
-- Simulator.app checks that a fixed scale fits only for a display without a
-  bezel, and its window's `constrainFrameRect:toScreen:` lets a window with a
-  bezel extend past the screen. AppKit keeps NeoSimulator's window on the
-  screen, which would cut the display off, so the fit is always required.
-- A restart keeps the window's scale; Simulator.app reconnects at the saved one.
-- After a rotation, a bezel change, or a restart, a window that would not fit
-  the screen gets the largest scale that fits, without Fit Screen's margin.
+- While the display shows a bezel, the window is not resizable, so AppKit
+  keeps the window's top edge on the screen without shrinking a window taller
+  than the screen. Without a bezel, the window is resizable. Full screen stays
+  available through the `fullScreenPrimary` collection behavior.
+- When the bezel's images have top padding (`SimDeviceChrome.images.padding.height`
+  in the bezel's `chrome.json`: 9 points for the iPad bezels, 0 for the bezels
+  of most iPhones, including the iPhone 17 Pro), `constrainFrameRect(_:to:)` keeps the frame's size and
+  only moves it down, so that the window's top less the padding at the
+  display's scale stays below the top of the visible frame. Otherwise AppKit
+  constrains the frame. This applies to programmatic frame changes and to
+  moving the window.
+- Each size change keeps the window's bottom-left corner and moves the window
+  down when its top would be above the visible frame, as Simulator.app's
+  geometry update does. A scale command then puts the top edge back where it
+  was, and a rotation keeps the top edge, moving the window down only when that
+  edge would be above the visible frame.
+
+A rotation, Show Device Bezels, and a restart keep the display's scale and
+resize the window, even when the window no longer fits the screen, as in
+Simulator.app. Without a bezel, AppKit then shrinks a window taller than the
+screen while the display keeps its scale.
+
+Closing a window saves its center (`NSStringFromPoint`) and scale as
+`WindowCenter` and `WindowScale` in
+`DevicePreferences[UDID].SimulatorWindowGeometry`, Simulator.app's keys, in
+NeoSimulator's own defaults. A restart keeps the window and saves nothing. The
+device's next window opens at the saved scale, or at Point Accurate, reduced to
+Fit Screen's scale, and is centered at the saved center. Without a saved
+center, or at the zero point, which is also what an unreadable value gives,
+it cascades as in Simulator.app: the first such window is centered on its
+screen with `center()`, and each takes `cascadeTopLeft(from:)` from the
+app-wide point the previous one returned. A new window then moves back inside
+the visible frame where it crosses an edge. These differ from Simulator.app:
+
 - Physical Size also uses the default densities for a zero or non-finite value,
   where Simulator.app divides by zero.
-- Only `WindowScale` is saved; new windows keep cascading instead of returning
-  to Simulator.app's `WindowCenter`.
+- Simulator.app resizes a window with a bezel by dragging the bezel's corners
+  (`SimDisplayView.typedResizeRects`). NeoSimulator does not, so such a window
+  changes size only through the scale commands, rotation, and Show Device
+  Bezels.
 - The window does not lock the display's aspect ratio or limit its minimum
-  size to the minimum scale; a manual resize centers the display.
+  size to the minimum scale; a manual resize, possible without a bezel,
+  centers the display.
 - Simulator.app's minimum for a tvOS or visionOS display with a bezel, 240
   points over the screen's pixel height, is not reproduced.
 

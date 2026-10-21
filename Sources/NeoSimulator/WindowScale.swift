@@ -72,6 +72,18 @@ enum WindowScale {
         return NSPoint(x: position(frame.minX, frame.width, visible.minX, visible.maxX),
                        y: position(frame.minY, frame.height, visible.minY, visible.maxY))
     }
+
+    /// Simulator.app's `DeviceWindow.constrainFrameRect(_:to:)` for a window
+    /// whose bezel has top padding: `frame` keeps its size and moves down only
+    /// when its top, less `inset`, is above `visible`. The window may extend
+    /// past every other edge of the screen.
+    static func frame(_ frame: NSRect, constrainedBelow visible: NSRect, topInset inset: CGFloat) -> NSRect {
+        let height = frame.height - inset
+        guard visible.maxY < frame.minY + height else { return frame }
+        var constrained = frame
+        constrained.origin.y = visible.minY + (visible.height - height)
+        return constrained
+    }
 }
 
 /// Where preferences are kept: the app's user defaults, or a test's own store.
@@ -84,25 +96,43 @@ extension UserDefaults: PreferenceStore {}
 
 private let windowGeometryKey = "SimulatorWindowGeometry"
 private let windowScaleKey = "WindowScale"
+private let windowCenterKey = "WindowCenter"
 
+/// A device's window geometry under Simulator.app's keys:
+/// `DevicePreferences[UDID].SimulatorWindowGeometry`.
 extension PreferenceStore {
-    /// The display scale a device's window last closed at, under Simulator.app's
-    /// keys: `DevicePreferences[UDID].SimulatorWindowGeometry.WindowScale`.
+    /// The display scale the device's window last closed at, `WindowScale`.
     /// Nil when none was saved or it is not a positive number.
     func windowScale(forDevice identifier: String) -> CGFloat? {
-        let devices = object(forKey: HostPreferences.devicePreferences) as? [String: Any]
-        let geometry = (devices?[identifier] as? [String: Any])?[windowGeometryKey] as? [String: Any]
-        return WindowScale.usable((geometry?[windowScaleKey] as? NSNumber).map { CGFloat($0.doubleValue) })
+        WindowScale.usable((windowGeometry(forDevice: identifier)?[windowScaleKey] as? NSNumber)
+            .map { CGFloat($0.doubleValue) })
     }
 
-    /// Saves a device's display scale, keeping its other preferences.
-    func setWindowScale(_ scale: CGFloat, forDevice identifier: String) {
+    /// The center of the device's window when it last closed, `WindowCenter`
+    /// as `NSStringFromPoint` writes it. Like Simulator.app, the zero point
+    /// counts as none, which is also what `NSPointFromString` reads from an
+    /// unreadable string.
+    func windowCenter(forDevice identifier: String) -> NSPoint? {
+        guard let string = windowGeometry(forDevice: identifier)?[windowCenterKey] as? String else { return nil }
+        let center = NSPointFromString(string)
+        return center == .zero ? nil : center
+    }
+
+    /// Saves where the device's window closed and, when given, its display
+    /// scale, keeping the device's other preferences.
+    func setWindowGeometry(center: NSPoint, scale: CGFloat?, forDevice identifier: String) {
         var devices = object(forKey: HostPreferences.devicePreferences) as? [String: Any] ?? [:]
         var device = devices[identifier] as? [String: Any] ?? [:]
         var geometry = device[windowGeometryKey] as? [String: Any] ?? [:]
-        geometry[windowScaleKey] = Double(scale)
+        geometry[windowCenterKey] = NSStringFromPoint(center)
+        if let scale { geometry[windowScaleKey] = Double(scale) }
         device[windowGeometryKey] = geometry
         devices[identifier] = device
         set(devices, forKey: HostPreferences.devicePreferences)
+    }
+
+    private func windowGeometry(forDevice identifier: String) -> [String: Any]? {
+        let devices = object(forKey: HostPreferences.devicePreferences) as? [String: Any]
+        return (devices?[identifier] as? [String: Any])?[windowGeometryKey] as? [String: Any]
     }
 }

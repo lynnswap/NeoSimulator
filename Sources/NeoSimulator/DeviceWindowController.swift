@@ -18,7 +18,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     private var deviceToolbar: DeviceToolbar?
     private var commandKeyUpMonitor: Any?
     private var customLocation: CustomLocationWindowController?
-    /// Keeps the display scale each device's window closes at.
+    /// Keeps where each device's window closes and its display scale.
     private let preferences: any PreferenceStore
     /// Whether the window is in full screen or moving into or out of it,
     /// where Simulator.app's scale commands are unavailable.
@@ -41,7 +41,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
             session.disconnect()
             throw HostError.unavailable("Simulator display has no usable size")
         }
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 360, height: 700),
+        let window = DeviceWindow(contentRect: NSRect(x: 0, y: 0, width: 360, height: 700),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered, defer: false)
         super.init(window: window)
@@ -55,8 +55,13 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         window.isOpaque = false
         window.hasShadow = true
         window.isReleasedWhenClosed = false
+        // Like Simulator.app, full screen stays available while a bezel makes
+        // the window not resizable.
+        window.collectionBehavior = [.fullScreenPrimary, .fullScreenAllowsTiling]
         window.delegate = self
+        window.displayScale = { [weak self] in self?.session.display.renderScale ?? 1 }
         attachSession()
+        bezelChanged()
         window.contentMinSize = NSSize(width: 320, height: 300)
         // AppKit never dispatches key-ups while Command is held; forward them
         // so the simulator does not keep the key pressed.
@@ -70,6 +75,23 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         // Accurate, reduced to Fit Screen's.
         showDisplay(at: min(scale(for: .fitScreen) ?? .infinity,
                             preferences.windowScale(forDevice: session.device.id) ?? 1))
+    }
+
+    /// Shows a new window where Simulator.app places it: centered where the
+    /// device's window last closed, or else cascading from `cascadePoint`,
+    /// which the first window takes from the center of the screen. The
+    /// window then moves back inside the screen where it crosses an edge.
+    func showNewWindow(cascadingFrom cascadePoint: inout NSPoint) {
+        guard let window else { return }
+        if let center = preferences.windowCenter(forDevice: session.device.id) {
+            window.setFrameOrigin(NSPoint(x: center.x - window.frame.width * 0.5,
+                                          y: center.y - window.frame.height * 0.5))
+        } else {
+            if cascadePoint == .zero { window.center() }
+            cascadePoint = window.cascadeTopLeft(from: cascadePoint)
+        }
+        showAndActivate()
+        moveWindowOntoScreen()
     }
 
     required init?(coder: NSCoder) { nil }
@@ -105,8 +127,8 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
             session.disconnect()
             return
         }
-        // The window keeps its scale across a restart; Simulator.app returns to
-        // the scale saved when the device's window last closed.
+        // Like Simulator.app, the window keeps its scale and place across a
+        // restart; the device's next connection shows a new display.
         let scale = WindowScale.usable(self.session.display.renderScale) ?? 1
         self.session = session
         content = DeviceContentView(display: session.display.view)
@@ -116,8 +138,9 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
                 name: session.device.name, runtimeName: session.device.runtimeName)
         }
         session.display.setChromeVisible(showsDeviceBezel)
+        bezelChanged()
         didReadOrientation = false
-        showDisplay(at: scaleFittingScreen(scale))
+        showDisplay(at: scale)
         showAndActivate()
         // A window that stayed key gets no new key notification.
         if window?.isKeyWindow == true { activateDisplay() }
@@ -191,13 +214,22 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// Like Simulator.app, the display keeps its scale and the window takes
-    /// the display's new size. Unlike it, the scale is reduced when the
-    /// window would not fit the screen.
+    /// the display's new size.
     func toggleDeviceBezel() {
-        let scale = session.display.renderScale
         showsDeviceBezel.toggle()
         session.display.setChromeVisible(showsDeviceBezel)
-        showDisplay(at: scaleFittingScreen(scale))
+        bezelChanged()
+        updateWindowSize()
+    }
+
+    /// Follows the bezel the display shows, as Simulator.app's chrome refresh
+    /// does: a window with a bezel is not resizable, and the bezel's top
+    /// padding lets the window extend above the screen.
+    private func bezelChanged() {
+        guard let window = window as? DeviceWindow else { return }
+        let padding = session.display.chromePadding
+        window.chromeTopPadding = padding?.height ?? 0
+        if padding == nil { window.styleMask.insert(.resizable) } else { window.styleMask.remove(.resizable) }
     }
 
     func toggleStayOnTop() {
@@ -428,10 +460,21 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         didRotate()
     }
 
-    // Like Simulator.app, the rotated display keeps its scale and the window
-    // takes its new shape. Unlike it, the scale is reduced when the window
-    // would not fit the screen.
-    private func didRotate() { showDisplay(at: scaleFittingScreen(session.display.renderScale)) }
+    /// Like Simulator.app, the rotated display keeps its scale, and the
+    /// window takes its new shape below its top edge, moving down when that
+    /// edge would be above the screen.
+    private func didRotate() {
+        guard !closed, let window, !window.inLiveResize, !isFullScreen else {
+            resizeDisplay()
+            return
+        }
+        let previous = window.frame
+        updateWindowSize()
+        let height = window.frame.height
+        var y = previous.maxY - height
+        if let visible = window.screen?.visibleFrame, visible.maxY < height + y { y -= height + y - visible.maxY }
+        window.setFrameOrigin(NSPoint(x: previous.minX.rounded(.toNearestOrEven), y: y.rounded(.toNearestOrEven)))
+    }
 
     // MARK: Window scale
 
@@ -464,11 +507,9 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
 
     /// Whether a scale command can run, as Simulator.app validates it: on a
     /// connected display outside full screen, Physical Size only on the
-    /// device's own screen, and a fixed scale only from the device's minimum
-    /// and when the window fits its screen. Simulator.app checks the fit only
-    /// for a display without a bezel and lets a window with a bezel extend
-    /// past the screen; AppKit keeps this window on the screen, which would
-    /// cut the display off.
+    /// device's own screen, and a fixed scale only from the device's minimum.
+    /// A display without a bezel must also fit its screen; a window with a
+    /// bezel may extend past it.
     func canSetScale(_ mode: WindowScaleMode) -> Bool {
         guard session.canPerformCommands, !isFullScreen, let window else { return false }
         guard mode != .fitScreen else { return true }
@@ -477,7 +518,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
               scale >= WindowScale.minimum(family: session.capabilities.family, displayClass: displayClass,
                                            fitting240: session.display.scale(for: NSSize(width: 240, height: 240)))
         else { return false }
-        guard let space = displaySpace(on: window.screen) else { return true }
+        guard session.display.chromePadding == nil, let space = displaySpace(on: window.screen) else { return true }
         let size = session.display.size(for: scale)
         return size.width <= space.width && size.height <= space.height
     }
@@ -490,43 +531,59 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         return WindowScale.matches(session.display.renderScale, scale) ? .on : .off
     }
 
-    /// Shows the display at `mode`'s scale and sizes the window to it. Fit
-    /// Screen then centers the window on its screen; the fixed scales move it
-    /// back onto its screen.
+    /// Shows the display at `mode`'s scale and sizes the window to it below
+    /// its top edge. Fit Screen then centers the window on its screen; the
+    /// fixed scales move it back inside its screen.
     func setScale(_ mode: WindowScaleMode) {
         guard let window, let scale = scale(for: mode) else { return }
+        let previous = window.frame
         showDisplay(at: scale)
+        window.setFrameOrigin(NSPoint(x: previous.minX, y: previous.maxY - window.frame.height))
+        guard mode == .fitScreen else {
+            moveWindowOntoScreen()
+            return
+        }
         guard let visible = (window.screen ?? NSScreen.main)?.visibleFrame else { return }
         let frame = window.frame
-        window.setFrameOrigin(mode == .fitScreen
-            ? NSPoint(x: visible.midX - frame.width / 2, y: visible.midY - frame.height / 2)
-            : WindowScale.origin(of: frame, within: visible))
+        window.setFrameOrigin(NSPoint(x: visible.midX - frame.width / 2, y: visible.midY - frame.height / 2))
     }
 
-    /// `scale`, reduced only as far as the window needs to fit its screen,
-    /// the bound a fixed scale must meet to be chosen. Fit Screen's margin
-    /// does not apply.
-    private func scaleFittingScreen(_ scale: CGFloat) -> CGFloat {
-        guard let space = displaySpace(on: window?.screen ?? NSScreen.main) else { return scale }
-        return min(scale, session.display.scale(for: space))
+    /// Moves the window inside its screen's visible frame along each axis
+    /// where it crosses an edge, as Simulator.app does after a fixed scale and
+    /// for a new window; not in full screen.
+    private func moveWindowOntoScreen() {
+        guard let window, !window.styleMask.contains(.fullScreen),
+              let visible = (window.screen ?? NSScreen.main)?.visibleFrame else { return }
+        let origin = WindowScale.origin(of: window.frame, within: visible)
+        if origin != window.frame.origin { window.setFrameOrigin(origin) }
     }
 
-    /// Shows the display at `scale` and sizes the window to it, keeping the
-    /// window's top edge. In full screen and during a live resize, the
-    /// display fits the window instead.
+    /// Shows the display at `scale` and sizes the window to it.
     private func showDisplay(at scale: CGFloat) {
+        guard !closed else { return }
+        session.display.setRenderScale(scale)
+        updateWindowSize()
+    }
+
+    /// Sizes the window to the display at its scale, as Simulator.app's
+    /// geometry update does: the window keeps its bottom-left corner and
+    /// moves down when its top would be above the screen. In full screen and
+    /// during a live resize, the display fits the window instead.
+    private func updateWindowSize() {
         guard !closed, let window, !window.inLiveResize, !isFullScreen else {
             resizeDisplay()
             return
         }
-        let size = session.display.size(for: scale)
+        let size = session.display.size(for: session.display.renderScale)
         var frame = window.frameRect(forContentRect: NSRect(x: 0, y: 0,
             width: max(window.contentMinSize.width, size.width), height: size.height + content.heightAboveDisplay))
-        frame.origin = NSPoint(x: window.frame.minX, y: window.frame.maxY - frame.height)
+        frame.origin = window.frame.origin
+        if let visible = window.screen?.visibleFrame, visible.maxY < frame.maxY {
+            frame.origin.y = visible.maxY - frame.height
+        }
         isSizingWindow = true
         window.setFrame(frame, display: true)
         isSizingWindow = false
-        session.display.setRenderScale(scale)
         layoutDisplay()
     }
 
@@ -632,10 +689,12 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     private func disconnect() {
         guard !closed else { return }
         closed = true
-        // Like Simulator.app, the device's next window opens at this scale. A
-        // restart keeps the window and saves nothing.
-        if let scale = WindowScale.usable(session.display.renderScale) {
-            preferences.setWindowScale(scale, forDevice: session.device.id)
+        // Like Simulator.app, the device's next window opens at this center
+        // and scale. A restart keeps the window and saves nothing.
+        if let window {
+            preferences.setWindowGeometry(center: NSPoint(x: window.frame.midX, y: window.frame.midY),
+                                          scale: WindowScale.usable(session.display.renderScale),
+                                          forDevice: session.device.id)
         }
         if let commandKeyUpMonitor { NSEvent.removeMonitor(commandKeyUpMonitor) }
         commandKeyUpMonitor = nil
@@ -646,6 +705,29 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         session.disconnect()
     }
     isolated deinit { disconnect() }
+}
+
+/// Simulator.app's `DeviceWindow`, which lets a window whose bezel has top
+/// padding extend past the screen.
+@MainActor
+final class DeviceWindow: NSWindow {
+    /// The top padding of the display's bezel at scale 1,
+    /// `SimDeviceChrome.images.padding.height`; 0 without a bezel.
+    var chromeTopPadding: CGFloat = 0
+    /// The display's scale, which the padding scales with.
+    var displayScale: () -> CGFloat = { 1 }
+
+    /// Like Simulator.app, while the bezel has top padding, the frame keeps
+    /// its size and moves down only as far as the top of the bezel, below the
+    /// padding, needs to stay below the top of the screen's visible frame.
+    /// Otherwise AppKit constrains the frame.
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
+        guard let target = screen ?? self.screen, chromeTopPadding > 0 else {
+            return super.constrainFrameRect(frameRect, to: screen)
+        }
+        return WindowScale.frame(frameRect, constrainedBelow: target.visibleFrame,
+                                 topInset: chromeTopPadding * displayScale())
+    }
 }
 
 @MainActor

@@ -107,6 +107,12 @@ struct SimulatorDisplayInterface {
     let endResize: NativeSwiftMethod<() -> Void>
     let chromeState: NativeSwiftType
     let setChromeState: NativeSwiftMethod<(NativeSwiftValue) -> Void>
+    /// `SimDisplayChromeView.chrome`, an optional `SimDeviceChrome`.
+    let chrome: NativeSwiftMethod<() -> NativeSwiftValue>
+    /// `SimDeviceChrome.images`.
+    let chromeImages: NativeSwiftMethod<() -> NativeSwiftValue>
+    /// `SimDeviceChrome.Images.padding`.
+    let chromeImagesPadding: NativeSwiftMethod<() -> CGSize>
     let setKeyboardEnabled: NativeSwiftMethod<(Bool) -> Void>
     let keyboardDelegate: Ivar
 
@@ -171,11 +177,24 @@ struct SimulatorDisplayInterface {
         endResize = try view.resolveMethodAndWait(named: "endResize()", as: (() -> Void).self)
 
         chromeState = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimDisplayChromeView.State")
-        setChromeState = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimDisplayChromeView")
-            .resolveSetterAndWait(
-                named: "state.setter : SimulatorKit.SimDisplayChromeView.State",
-                as: NativeSwiftValue.self,
-                valueABIs: [chromeState: try .opaque(named: chromeState.name)])
+        let chromeViewType = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimDisplayChromeView")
+        setChromeState = try chromeViewType.resolveSetterAndWait(
+            named: "state.setter : SimulatorKit.SimDisplayChromeView.State",
+            as: NativeSwiftValue.self,
+            valueABIs: [chromeState: try .opaque(named: chromeState.name)])
+        // The chrome and its images are resilient, so they are passed indirectly.
+        let deviceChrome = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimDeviceChrome")
+        let optionalChrome = try runtime.resolveSwiftTypeAndWait(named: "Swift.Optional",
+                                                                 genericArguments: [.type(deviceChrome)])
+        let images = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimDeviceChrome.Images")
+        chrome = try chromeViewType.resolveGetterAndWait(
+            named: "chrome.getter : SimulatorKit.SimDeviceChrome?", as: (() -> NativeSwiftValue).self,
+            valueABIs: [optionalChrome: try .opaque(named: optionalChrome.name)])
+        chromeImages = try deviceChrome.resolveGetterAndWait(
+            named: "images.getter : SimulatorKit.SimDeviceChrome.Images", as: (() -> NativeSwiftValue).self,
+            valueABIs: [images: try .opaque(named: images.name)], receiverABI: .opaque(named: deviceChrome.name))
+        chromeImagesPadding = try images.resolveGetterAndWait(
+            named: "padding.getter : __C.CGSize", as: (() -> CGSize).self, receiverABI: .opaque(named: images.name))
         setKeyboardEnabled = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimKeyboardInputDefaultDelegate")
             .resolveSetterAndWait(named: "isEnabled", as: Bool.self)
         guard let keyboardDelegate = class_getInstanceVariable(displayViewClass, "_defaultKeyboardDelegate") else {
@@ -349,6 +368,10 @@ protocol SimulatorDisplay: AnyObject {
     var screenScale: CGFloat? { get }
     /// `SimDeviceScreen.displayClass`, or nil when unknown; 0 is a device's own screen.
     var displayClass: UInt16? { get }
+    /// The padding of the bezel the display shows, `SimDeviceChrome.images.padding`,
+    /// or nil when it shows none: `SimDisplayChromeView.chrome` is nil while the
+    /// bezel is hidden and for a device type without one.
+    var chromePadding: NSSize? { get }
     /// Called on the main actor when the screen's properties change, such as
     /// the interface orientation of the guest.
     var onPropertiesChange: (() -> Void)? { get set }
@@ -463,6 +486,15 @@ final class SimulatorConnection: SimulatorDisplay {
 
     var displayClass: UInt16? {
         read("read the display class", otherwise: nil) { try unsafe runtime.display.displayClass.unsafeInvoke(on: screen) }
+    }
+
+    var chromePadding: NSSize? {
+        let display = runtime.display
+        return read("read the device bezel", otherwise: nil) {
+            guard let chrome = try unsafe display.chrome.unsafeInvoke(on: chromeView)
+                .resolveEnumPayloadAndWait(forCase: "some") else { return nil }
+            return try unsafe display.chromeImagesPadding.unsafeInvoke(on: display.chromeImages.unsafeInvoke(on: chrome))
+        }
     }
 
     var guestInterfaceAngle: Double? {
