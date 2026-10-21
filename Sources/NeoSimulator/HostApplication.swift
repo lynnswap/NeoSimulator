@@ -104,7 +104,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                     showDeviceBrowser()
                 }
             }
-        } else if sessions.isEmpty && connections.isEmpty {
+        } else if sessions.isEmpty {
+            // A pending connection can still end without a window.
             showDeviceBrowser()
         }
     }
