@@ -121,10 +121,9 @@ These have viable Xcode 27+ primitives but need a dedicated state/capability
 contract before being user-visible:
 
 - Connect Hardware Keyboard and keyboard-language sync;
-- volume controls;
 - content size and increased contrast;
 - location controls;
-- biometrics and Apple Pay;
+- biometrics;
 - status-bar overrides;
 - screen recording and graceful finalization;
 - restart, erase, and window-close shutdown choices;

@@ -196,16 +196,21 @@ struct SimulatorInputInterface {
         return try unsafe makeClient.unsafeInvoke(on: allocated, device.object)
     }
 
-    /// Sends one event of `input` to `target`. SimulatorKit reports delivery
-    /// to `completion` on the main queue.
-    func send(_ input: HIDInput, _ state: HIDState, target: UInt32, client: AnyObject,
-              completion: (@MainActor (Error?) -> Void)?) throws {
+    /// Creates the message for one event of `input` sent to `target`.
+    func message(_ input: HIDInput, _ state: HIDState, target: UInt32) throws -> HIDMessage {
         let message = switch input {
         case .button(let button): try unsafe messageForButton.unsafeInvoke(button.rawValue, state.rawValue, target)
         case .usage(let page, let usage): try unsafe messageForUsage.unsafeInvoke(target, page, usage, state.rawValue)
         }
         guard let message else { throw HostError.operation("Could not allocate simulator input") }
+        return HIDMessage(input: input, state: state, pointer: message)
+    }
+
+    /// Sends a message. SimulatorKit reports delivery to `completion` on the
+    /// main queue.
+    func send(_ hidMessage: HIDMessage, client: AnyObject, completion: (@MainActor (Error?) -> Void)?) throws {
         // The send transfers ownership of the message to SimulatorKit.
+        let message = hidMessage.take()
         if let completion {
             // Build the block from a closure literal. Converting it inside
             // `Optional.map` makes Swift 6.3 emit a reabstraction thunk under
@@ -249,15 +254,40 @@ enum HIDInput: Hashable {
 
 enum HIDState: UInt32 { case down = 1, up = 2 }
 
+/// An Indigo HID message for one event. Sending transfers it to SimulatorKit;
+/// a message that is not sent is freed.
+final class HIDMessage {
+    let input: HIDInput
+    let state: HIDState
+    private var pointer: OpaquePointer?
+
+    init(input: HIDInput, state: HIDState, pointer: OpaquePointer) {
+        self.input = input
+        self.state = state
+        self.pointer = pointer
+    }
+
+    func take() -> OpaquePointer {
+        guard let pointer else { preconditionFailure("A HID message is sent once.") }
+        self.pointer = nil
+        return pointer
+    }
+
+    deinit { free(UnsafeMutableRawPointer(pointer)) }
+}
+
 @MainActor
 protocol SimulatorDisplay: AnyObject {
     var isBooted: Bool { get }
     var view: NSView { get }
     var inputView: NSView { get }
     var naturalSize: NSSize { get }
-    /// Sends one HID event. `completion`, when present, receives SimulatorKit's
-    /// delivery result; a thrown error means the event was not sent.
-    func send(_ input: HIDInput, _ state: HIDState, completion: (@MainActor (Error?) -> Void)?) throws
+    /// Creates the message for one event of `input`, so that a command can
+    /// prepare all of its events before it sends any.
+    func message(for input: HIDInput, _ state: HIDState) throws -> HIDMessage
+    /// Sends a message. `completion`, when present, receives SimulatorKit's
+    /// delivery result; a thrown error means the message was not sent.
+    func send(_ message: HIDMessage, completion: (@MainActor (Error?) -> Void)?) throws
     func shake() throws
     func toggleAppearance() throws
     func setChromeVisible(_ visible: Bool)
@@ -316,9 +346,13 @@ final class SimulatorConnection: SimulatorDisplay {
         return scale > 0 ? NSSize(width: actual.width / scale, height: actual.height / scale) : actual
     }
 
-    func send(_ input: HIDInput, _ state: HIDState, completion: (@MainActor (Error?) -> Void)?) throws {
+    func message(for input: HIDInput, _ state: HIDState) throws -> HIDMessage {
+        try runtime.input.message(input, state, target: buttonTarget)
+    }
+
+    func send(_ message: HIDMessage, completion: (@MainActor (Error?) -> Void)?) throws {
         guard let hidClient else { throw HostError.operation("Simulator input is disconnected") }
-        try runtime.input.send(input, state, target: buttonTarget, client: hidClient, completion: completion)
+        try runtime.input.send(message, client: hidClient, completion: completion)
     }
 
     func shake() throws { try device.shake() }
