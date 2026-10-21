@@ -79,8 +79,11 @@ enum HostPreferences {
     static let locationLatitude = "LocationLatitude"
     static let locationLongitude = "LocationLongitude"
     /// A dictionary of each device's own preferences, by UDID: see
-    /// `PreferenceStore.windowScale(forDevice:)`.
+    /// `PreferenceStore.windowGeometry(forDevice:screens:)`.
     static let devicePreferences = "DevicePreferences"
+    /// The arrangements of the Mac's screens that device windows were saved
+    /// in, by UUID: see `PreferenceStore.screenConfiguration(for:)`.
+    static let screenConfigurations = "ScreenConfigurations"
 
     /// Registers Simulator.app's defaults for these preferences.
     static func registerDefaults() {

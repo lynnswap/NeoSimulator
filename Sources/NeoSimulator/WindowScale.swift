@@ -106,41 +106,67 @@ private let windowGeometryKey = "SimulatorWindowGeometry"
 private let windowScaleKey = "WindowScale"
 private let windowCenterKey = "WindowCenter"
 
-/// A device's window geometry under Simulator.app's keys:
-/// `DevicePreferences[UDID].SimulatorWindowGeometry`.
+/// A device's window geometry under Simulator.app's keys, saved separately
+/// for each arrangement of the Mac's screens:
+/// `DevicePreferences[UDID].SimulatorWindowGeometry[configuration]`, where
+/// `configuration` names the arrangement in `ScreenConfigurations`.
 extension PreferenceStore {
-    /// The display scale the device's window last closed at, `WindowScale`.
-    /// Nil when none was saved or it is not a positive number.
-    func windowScale(forDevice identifier: String) -> CGFloat? {
-        WindowScale.usable((windowGeometry(forDevice: identifier)?[windowScaleKey] as? NSNumber)
-            .map { CGFloat($0.doubleValue) })
-    }
-
-    /// The center of the device's window when it last closed, `WindowCenter`
-    /// as `NSStringFromPoint` writes it. Like Simulator.app, the zero point
-    /// counts as none, which is also what `NSPointFromString` reads from an
-    /// unreadable string.
-    func windowCenter(forDevice identifier: String) -> NSPoint? {
-        guard let string = windowGeometry(forDevice: identifier)?[windowCenterKey] as? String else { return nil }
-        let center = NSPointFromString(string)
-        return center == .zero ? nil : center
+    /// Where the device's window last closed while the Mac's screens had
+    /// `screens` as their frames, and the display's scale then.
+    ///
+    /// `center` is `WindowCenter` as `NSStringFromPoint` writes it. Like
+    /// Simulator.app, the zero point counts as none, which is also what
+    /// `NSPointFromString` reads from an unreadable string. `scale` is
+    /// `WindowScale`, nil when it is not a positive number. Both are nil when
+    /// the window has not closed in this arrangement of screens. Like
+    /// Simulator.app, reading saves a new arrangement, as
+    /// `screenConfiguration(for:)` does.
+    func windowGeometry(forDevice identifier: String, screens: [NSRect]) -> (center: NSPoint?, scale: CGFloat?) {
+        let configuration = screenConfiguration(for: screens)
+        let devices = object(forKey: HostPreferences.devicePreferences) as? [String: Any]
+        let geometry = ((devices?[identifier] as? [String: Any])?[windowGeometryKey] as? [String: Any])?[configuration]
+            as? [String: Any]
+        let center = (geometry?[windowCenterKey] as? String).map(NSPointFromString)
+        let scale = (geometry?[windowScaleKey] as? NSNumber).map { CGFloat($0.doubleValue) }
+        return (center == .zero ? nil : center, WindowScale.usable(scale))
     }
 
     /// Saves where the device's window closed and, when given, its display
-    /// scale, keeping the device's other preferences.
-    func setWindowGeometry(center: NSPoint, scale: CGFloat?, forDevice identifier: String) {
+    /// scale, for the arrangement of screens with `screens` as their frames.
+    /// Like Simulator.app, this replaces what was saved for the arrangement
+    /// and keeps what was saved for others and the device's other preferences.
+    func setWindowGeometry(center: NSPoint, scale: CGFloat?, forDevice identifier: String, screens: [NSRect]) {
+        let configuration = screenConfiguration(for: screens)
         var devices = object(forKey: HostPreferences.devicePreferences) as? [String: Any] ?? [:]
         var device = devices[identifier] as? [String: Any] ?? [:]
         var geometry = device[windowGeometryKey] as? [String: Any] ?? [:]
-        geometry[windowCenterKey] = NSStringFromPoint(center)
-        if let scale { geometry[windowScaleKey] = Double(scale) }
+        var saved: [String: Any] = [windowCenterKey: NSStringFromPoint(center)]
+        if let scale { saved[windowScaleKey] = Double(scale) }
+        geometry[configuration] = saved
         device[windowGeometryKey] = geometry
         devices[identifier] = device
         set(devices, forKey: HostPreferences.devicePreferences)
     }
 
-    private func windowGeometry(forDevice identifier: String) -> [String: Any]? {
-        let devices = object(forKey: HostPreferences.devicePreferences) as? [String: Any]
-        return (devices?[identifier] as? [String: Any])?[windowGeometryKey] as? [String: Any]
+    /// The UUID string that names the arrangement of screens with `screens`
+    /// as their frames, as Simulator.app finds it in `ScreenConfigurations`:
+    /// an entry that lists as many frames, as `NSStringFromRect` strings,
+    /// with each of `screens` among them, in any order. Without one, a new
+    /// UUID is saved with the frames. Like Simulator.app, the entries are read
+    /// only when every one is a list of strings; otherwise the new UUID
+    /// replaces them. An entry whose name is not a UUID, where Simulator.app
+    /// stops, is skipped.
+    func screenConfiguration(for screens: [NSRect]) -> String {
+        var configurations = object(forKey: HostPreferences.screenConfigurations) as? [String: [String]] ?? [:]
+        for (name, frames) in configurations where frames.count == screens.count {
+            let saved = frames.map(NSRectFromString)
+            if screens.allSatisfy(saved.contains), let identifier = UUID(uuidString: name) {
+                return identifier.uuidString
+            }
+        }
+        let identifier = UUID().uuidString
+        configurations[identifier] = screens.map(NSStringFromRect)
+        set(configurations, forKey: HostPreferences.screenConfigurations)
+        return identifier
     }
 }

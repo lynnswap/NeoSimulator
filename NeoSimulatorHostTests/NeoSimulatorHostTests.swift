@@ -568,8 +568,11 @@ struct InputFocusTests {
 
     @Test func closingSavesTheScaleForTheDevicesNextWindow() throws {
         let preferences = MemoryPreferences()
+        let screens = NSScreen.screens.map(\.frame)
+        // What the device's window saved in another arrangement of screens.
+        let elsewhere = "0D7A6E4C-5F4B-4D0E-9C61-2B8C9D0A1E2F"
         preferences.values[HostPreferences.devicePreferences] = ["test-device": [
-            "ChromeTint": "#FFFFFF", "SimulatorWindowGeometry": ["WindowCenter": "{10, 20}"],
+            "ChromeTint": "#FFFFFF", "SimulatorWindowGeometry": [elsewhere: ["WindowCenter": "{10, 20}"]],
         ]]
         func open() throws -> (DeviceWindowController, TestDisplay) {
             let display = TestDisplay()
@@ -583,17 +586,22 @@ struct InputFocusTests {
         first.perform(.pixelAccurate)
         let frame = try #require(first.window?.frame)
         first.invalidate()
+        // The window's center and scale are saved for the current arrangement
+        // of screens, beside what was saved for another one.
         let device = (preferences.values[HostPreferences.devicePreferences] as? [String: Any])?["test-device"]
             as? [String: Any]
         #expect(device?["ChromeTint"] as? String == "#FFFFFF")
         let geometry = device?["SimulatorWindowGeometry"] as? [String: Any]
-        #expect(geometry?["WindowScale"] as? Double == 1.5)
-        #expect(geometry?["WindowCenter"] as? String == NSStringFromPoint(NSPoint(x: frame.midX, y: frame.midY)))
+        #expect((geometry?[elsewhere] as? [String: Any])?["WindowCenter"] as? String == "{10, 20}")
+        let saved = geometry?[preferences.screenConfiguration(for: screens)] as? [String: Any]
+        #expect(saved?["WindowScale"] as? Double == 1.5)
+        #expect(saved?["WindowCenter"] as? String == NSStringFromPoint(NSPoint(x: frame.midX, y: frame.midY)))
         let (second, reopened) = try open()
         #expect(reopened.renderScale == 1.5)
         second.invalidate()
         // A saved scale that does not fit the screen is reduced to fit it.
-        preferences.setWindowGeometry(center: NSPoint(x: frame.midX, y: frame.midY), scale: 100, forDevice: "test-device")
+        preferences.setWindowGeometry(center: NSPoint(x: frame.midX, y: frame.midY), scale: 100,
+                                      forDevice: "test-device", screens: screens)
         let (third, reduced) = try open()
         defer { third.invalidate() }
         #expect(reduced.renderScale < 100)
@@ -640,7 +648,7 @@ struct InputFocusTests {
         // moves back inside the screen, also with an iPad's bezel, whose top
         // padding keeps AppKit from moving the window.
         preferences.setWindowGeometry(center: NSPoint(x: visible.maxX - 10, y: visible.midY), scale: nil,
-                                      forDevice: "C")
+                                      forDevice: "C", screens: NSScreen.screens.map(\.frame))
         let moved = try open("C", topPadding: 9)
         defer { moved.invalidate() }
         moved.showNewWindow(cascadingFrom: &cascade)
@@ -648,6 +656,36 @@ struct InputFocusTests {
         let screen = try #require((movedWindow.screen ?? NSScreen.main)?.visibleFrame)
         #expect(screen.contains(movedWindow.frame))
         #expect(cascade == afterSecond)
+    }
+
+    @Test func aWindowSavedInAnotherArrangementOfScreensOpensAsANewOne() throws {
+        // Like Simulator.app, a device's window opens where it closed and at
+        // the scale it closed only in the arrangement of screens it closed in,
+        // here one with a screen that no Mac has.
+        let elsewhere = "0D7A6E4C-5F4B-4D0E-9C61-2B8C9D0A1E2F"
+        let preferences = MemoryPreferences()
+        preferences.values[HostPreferences.screenConfigurations] = [elsewhere: ["{{-9000, 9000}, {640, 480}}"]]
+        preferences.values[HostPreferences.devicePreferences] = ["A": ["SimulatorWindowGeometry": [
+            elsewhere: ["WindowCenter": "{-8700, 9200}", "WindowScale": 0.5],
+        ]]]
+        let display = TestDisplay()
+        display.naturalSize = NSSize(width: 160, height: 320)
+        let controller = try makeController(display, device: "A", preferences: preferences)
+        defer { controller.invalidate() }
+        // The window opens at Point Accurate, which fits the screen, and as
+        // the first window that cascades, centered with center().
+        #expect(display.renderScale == 1)
+        var cascade = NSPoint.zero
+        controller.showNewWindow(cascadingFrom: &cascade)
+        #expect(cascade != .zero)
+        let window = try #require(controller.window)
+        let placed = window.frame
+        window.center()
+        #expect(window.frame == placed)
+        // The current arrangement is saved beside the other.
+        let configurations = preferences.values[HostPreferences.screenConfigurations] as? [String: [String]]
+        #expect(configurations?.count == 2)
+        #expect(configurations?[elsewhere] == ["{{-9000, 9000}, {640, 480}}"])
     }
 
     @Test func restartsAndRotationsKeepTheWindowScale() async throws {
@@ -700,33 +738,36 @@ struct InputFocusTests {
 
     @Test func aWindowClosedDuringARestartSavesNothing() async throws {
         let preferences = MemoryPreferences()
-        preferences.setWindowGeometry(center: NSPoint(x: 100, y: 200), scale: 2, forDevice: "A")
+        let screens = NSScreen.screens.map(\.frame)
+        preferences.setWindowGeometry(center: NSPoint(x: 100, y: 200), scale: 2, forDevice: "A", screens: screens)
         // Like Simulator.app, a window that closes while its device restarts
         // keeps the geometry its device's window saved last.
         let restarting = try makeController(TestDisplay(), device: "A", preferences: preferences)
         await restarting.prepareForRestart()
         restarting.invalidate()
-        #expect(preferences.windowCenter(forDevice: "A") == NSPoint(x: 100, y: 200))
-        #expect(preferences.windowScale(forDevice: "A") == 2)
+        let kept = preferences.windowGeometry(forDevice: "A", screens: screens)
+        #expect(kept.center == NSPoint(x: 100, y: 200) && kept.scale == 2)
         // Once the device reconnects, closing saves again.
         let reconnected = try makeController(TestDisplay(), device: "B", preferences: preferences)
         await reconnected.prepareForRestart()
         reconnected.reconnect(try makeSession(TestDisplay(), device: "B"))
         reconnected.invalidate()
-        #expect(preferences.windowCenter(forDevice: "B") != nil)
+        #expect(preferences.windowGeometry(forDevice: "B", screens: screens).center != nil)
     }
 
     @Test func aControllerReleasedBeforeItsWindowShowsSavesNothing() throws {
         let preferences = MemoryPreferences()
-        preferences.setWindowGeometry(center: NSPoint(x: 100, y: 200), scale: 2, forDevice: "test-device")
+        let screens = NSScreen.screens.map(\.frame)
+        preferences.setWindowGeometry(center: NSPoint(x: 100, y: 200), scale: 2, forDevice: "test-device",
+                                      screens: screens)
         let display = TestDisplay()
         // HostApplication releases a new controller when another host appears
         // before its window shows. That disconnects the display and keeps the
         // geometry the device's window saved last.
         try autoreleasepool { _ = try makeController(display, preferences: preferences) }
         #expect(display.disconnectCount == 1)
-        #expect(preferences.windowCenter(forDevice: "test-device") == NSPoint(x: 100, y: 200))
-        #expect(preferences.windowScale(forDevice: "test-device") == 2)
+        let kept = preferences.windowGeometry(forDevice: "test-device", screens: screens)
+        #expect(kept.center == NSPoint(x: 100, y: 200) && kept.scale == 2)
     }
 
     @Test func rotationsBezelsAndRestartsKeepAScaleWiderThanTheScreen() async throws {
@@ -823,10 +864,11 @@ struct InputFocusTests {
         }
         let visible = try #require(NSScreen.screens.first?.visibleFrame)
         let center = NSPoint(x: visible.midX, y: visible.midY)
+        let screens = NSScreen.screens.map(\.frame)
         var cascade = NSPoint.zero
         // Like Simulator.app, the window is centered where it closed in the
         // shape of the device's orientation, which is read after it shows.
-        preferences.setWindowGeometry(center: center, scale: nil, forDevice: "A")
+        preferences.setWindowGeometry(center: center, scale: nil, forDevice: "A", screens: screens)
         let (reopened, display) = try open("A")
         defer { reopened.invalidate() }
         reopened.showNewWindow(cascadingFrom: &cascade)
@@ -836,7 +878,7 @@ struct InputFocusTests {
         #expect(window.contentLayoutRect.width == landscape.width)
         #expect(abs(window.frame.midX - center.x) < 1 && abs(window.frame.midY - center.y) < 1)
         // A window moved before the reading keeps its top-left corner instead.
-        preferences.setWindowGeometry(center: center, scale: nil, forDevice: "B")
+        preferences.setWindowGeometry(center: center, scale: nil, forDevice: "B", screens: screens)
         let (moved, _) = try open("B")
         defer { moved.invalidate() }
         moved.showNewWindow(cascadingFrom: &cascade)
@@ -2090,29 +2132,63 @@ struct HostBehaviorTests {
         #expect(origin(100, 100, 1200, 1000) == NSPoint(x: 0, y: 0))
     }
 
-    @Test func windowGeometryIsSavedUnderSimulatorKeys() {
+    @Test func windowGeometryIsSavedForEachArrangementOfScreens() throws {
         let preferences = MemoryPreferences()
-        #expect(preferences.windowScale(forDevice: "A") == nil && preferences.windowCenter(forDevice: "A") == nil)
-        preferences.setWindowGeometry(center: NSPoint(x: 10.5, y: -20), scale: 1.5, forDevice: "A")
-        preferences.setWindowGeometry(center: NSPoint(x: 300, y: 400), scale: 0.5, forDevice: "B")
-        preferences.setWindowGeometry(center: NSPoint(x: 1, y: 2), scale: nil, forDevice: "B")
-        let devices = preferences.values["DevicePreferences"] as? [String: [String: [String: Any]]]
-        #expect(devices?["A"]?["SimulatorWindowGeometry"]?["WindowScale"] as? Double == 1.5)
-        #expect(devices?["A"]?["SimulatorWindowGeometry"]?["WindowCenter"] as? String == "{10.5, -20}")
-        #expect(devices?["B"]?["SimulatorWindowGeometry"]?["WindowScale"] as? Double == 0.5)
-        #expect(devices?["B"]?["SimulatorWindowGeometry"]?["WindowCenter"] as? String == "{1, 2}")
-        #expect(preferences.windowScale(forDevice: "A") == 1.5)
-        #expect(preferences.windowCenter(forDevice: "A") == NSPoint(x: 10.5, y: -20))
+        let laptop = NSRect(x: 0, y: 0, width: 1512, height: 982)
+        let two = [laptop, NSRect(x: -565, y: 982, width: 2560, height: 1440)]
+        let none = preferences.windowGeometry(forDevice: "A", screens: two)
+        #expect(none.center == nil && none.scale == nil)
+        preferences.setWindowGeometry(center: NSPoint(x: 10.5, y: -20), scale: 1.5, forDevice: "A", screens: two)
+        preferences.setWindowGeometry(center: NSPoint(x: 300, y: 400), scale: 0.5, forDevice: "B", screens: two)
+        preferences.setWindowGeometry(center: NSPoint(x: 1, y: 2), scale: nil, forDevice: "B", screens: two)
+        // Simulator.app's keys: the arrangement of screens is a UUID in
+        // ScreenConfigurations, which names the window's center and scale in
+        // DevicePreferences[UDID].SimulatorWindowGeometry.
+        let configurations = preferences.values["ScreenConfigurations"] as? [String: [String]]
+        let (name, frames) = try #require(configurations?.first)
+        #expect(configurations?.count == 1 && UUID(uuidString: name)?.uuidString == name)
+        #expect(frames == ["{{0, 0}, {1512, 982}}", "{{-565, 982}, {2560, 1440}}"])
+        let devices = preferences.values["DevicePreferences"] as? [String: [String: [String: [String: Any]]]]
+        #expect(devices?["A"]?["SimulatorWindowGeometry"]?[name]?["WindowScale"] as? Double == 1.5)
+        #expect(devices?["A"]?["SimulatorWindowGeometry"]?[name]?["WindowCenter"] as? String == "{10.5, -20}")
+        // A later save replaces what was saved in the arrangement.
+        #expect(devices?["B"]?["SimulatorWindowGeometry"]?[name]?["WindowScale"] == nil)
+        #expect(devices?["B"]?["SimulatorWindowGeometry"]?[name]?["WindowCenter"] as? String == "{1, 2}")
+        // The same screens in another order are the same arrangement.
+        let saved = preferences.windowGeometry(forDevice: "A", screens: two.reversed())
+        #expect(saved.center == NSPoint(x: 10.5, y: -20) && saved.scale == 1.5)
+        // Fewer screens, or a screen moved, are other arrangements, which
+        // have no geometry until a window closes there and are saved too.
+        let alone = [laptop], moved = [laptop, NSRect(x: 1512, y: 0, width: 2560, height: 1440)]
+        for screens in [alone, moved] {
+            let other = preferences.windowGeometry(forDevice: "A", screens: screens)
+            #expect(other.center == nil && other.scale == nil)
+        }
+        #expect((preferences.values["ScreenConfigurations"] as? [String: [String]])?.count == 3)
+        preferences.setWindowGeometry(center: NSPoint(x: 5, y: 6), scale: 2, forDevice: "A", screens: alone)
+        #expect(preferences.windowGeometry(forDevice: "A", screens: alone).center == NSPoint(x: 5, y: 6))
+        #expect(preferences.windowGeometry(forDevice: "A", screens: two).center == NSPoint(x: 10.5, y: -20))
+        let current = preferences.screenConfiguration(for: alone)
         for invalid: Any in [0, -1, "1.5", Double.nan] {
-            preferences.values["DevicePreferences"] = ["A": ["SimulatorWindowGeometry": ["WindowScale": invalid]]]
-            #expect(preferences.windowScale(forDevice: "A") == nil)
+            preferences.values["DevicePreferences"] = ["A": ["SimulatorWindowGeometry": [current: ["WindowScale": invalid]]]]
+            #expect(preferences.windowGeometry(forDevice: "A", screens: alone).scale == nil)
         }
         // Like Simulator.app, the zero point, which an unreadable string also
         // gives, is no center.
         for invalid: Any in ["{0, 0}", "center", 12] {
-            preferences.values["DevicePreferences"] = ["A": ["SimulatorWindowGeometry": ["WindowCenter": invalid]]]
-            #expect(preferences.windowCenter(forDevice: "A") == nil)
+            preferences.values["DevicePreferences"] = ["A": ["SimulatorWindowGeometry": [current: ["WindowCenter": invalid]]]]
+            #expect(preferences.windowGeometry(forDevice: "A", screens: alone).center == nil)
         }
+        // An entry that is not a UUID names no arrangement. Like
+        // Simulator.app, entries that are not all lists of strings are
+        // replaced by the new arrangement.
+        preferences.values["ScreenConfigurations"] = ["laptop": ["{{0, 0}, {1512, 982}}"]]
+        let named = preferences.screenConfiguration(for: alone)
+        #expect(named != "laptop" && UUID(uuidString: named) != nil)
+        preferences.values["ScreenConfigurations"] = [current: ["{{0, 0}, {1512, 982}}"], "other": [1]] as [String: Any]
+        let replaced = preferences.screenConfiguration(for: alone)
+        #expect(replaced != current)
+        #expect(preferences.values["ScreenConfigurations"] as? [String: [String]] == [replaced: ["{{0, 0}, {1512, 982}}"]])
     }
 
     @Test func aBezelWithTopPaddingMayReachAboveTheScreen() throws {

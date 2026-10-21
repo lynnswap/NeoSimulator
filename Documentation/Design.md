@@ -482,20 +482,30 @@ connection shows a new, upright display; like Simulator.app, which turns its
 display upright then, the window takes that display's shape as after a
 rotation, below its top edge, and moves back inside the visible frame.
 
-Closing a window saves its center (`NSStringFromPoint`) and scale as
-`WindowCenter` and `WindowScale` in
-`DevicePreferences[UDID].SimulatorWindowGeometry`, Simulator.app's keys, in
-NeoSimulator's own defaults. Like Simulator.app, which saves nothing while its
-device is rebooting, a window that closes from the start of a restart until the
-device reconnects saves nothing. Neither does a new window that `HostApplication`
-discards before it shows, when another simulator host appears first. The
-device's next window opens at the saved scale, or at Point Accurate, reduced to
-Fit Screen's scale, and is centered at the saved center. Without a saved
-center, or at the zero point, which is also what an unreadable value gives,
-it cascades as in Simulator.app: the first such window is centered on its
-screen with `center()`, and each takes `cascadeTopLeft(from:)` from the
-app-wide point the previous one returned. A new window then moves back inside
-the visible frame where it crosses an edge.
+Like Simulator.app, a window's geometry is saved for each arrangement of the
+Mac's screens, under Simulator.app's keys in NeoSimulator's own defaults.
+`ScreenConfigurations` names each arrangement with a UUID and lists the
+screens' frames (`NSStringFromRect`). The arrangement of `NSScreen.screens` is
+the entry with as many frames, each of the screens' frames among them in any
+order; without one, a new UUID is saved with the frames, also when a window is
+only reading its geometry. Closing a window saves its center
+(`NSStringFromPoint`) and scale as `WindowCenter` and `WindowScale` in
+`DevicePreferences[UDID].SimulatorWindowGeometry[UUID]`, replacing what was
+saved for that arrangement and keeping the others. Like Simulator.app, which
+saves nothing while its device is rebooting, a window that closes from the
+start of a restart until the device reconnects saves nothing. Neither does a
+new window that `HostApplication` discards before it shows, when another
+simulator host appears first.
+
+A new window reads the geometry saved for the current arrangement once, when
+it connects. It opens at the saved scale, or at Point Accurate, reduced to Fit
+Screen's scale, and is centered at the saved center. A window saved in another
+arrangement, such as before a display was connected, removed, or moved, opens
+as one that was never saved. Without a saved center, or at the zero point,
+which is also what an unreadable value gives, it cascades as in Simulator.app:
+the first such window is centered on its screen with `center()`, and each takes
+`cascadeTopLeft(from:)` from the app-wide point the previous one returned. A
+new window then moves back inside the visible frame where it crosses an edge.
 
 Simulator.app turns the display to the device's orientation before it places
 a new window. NeoSimulator reads the orientation with `devicectl` after the
@@ -510,6 +520,8 @@ These differ from Simulator.app:
 
 - Physical Size also uses the default densities for a zero or non-finite value,
   where Simulator.app divides by zero.
+- A `ScreenConfigurations` entry whose name is not a UUID matches no
+  arrangement, where Simulator.app stops.
 - Simulator.app resizes a window with a bezel by dragging the bezel's corners
   (`SimDisplayView.typedResizeRects`). NeoSimulator does not, so such a window
   changes size only through the scale commands, rotation, and Show Device

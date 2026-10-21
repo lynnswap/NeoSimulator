@@ -23,6 +23,9 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     private var customLocation: CustomLocationWindowController?
     /// Keeps where each device's window closes and its display scale.
     private let preferences: any PreferenceStore
+    /// Where the device's window last closed in the current arrangement of
+    /// screens, which a new window is centered at.
+    private let savedCenter: NSPoint?
     /// Whether the window is in full screen or moving into or out of it,
     /// where Simulator.app's scale commands are unavailable.
     private var isFullScreen = false
@@ -40,6 +43,10 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
          onRestart: @escaping (DeviceWindowController, _ erasing: Bool) -> Void = { _, _ in }) throws {
         self.session = session
         self.preferences = preferences
+        // Like Simulator.app, the window's geometry is read once, when it
+        // connects, for the current arrangement of screens.
+        let saved = preferences.windowGeometry(forDevice: session.device.id, screens: Self.screenFrames)
+        savedCenter = saved.center
         self.onClose = onClose
         self.onRestart = onRestart
         content = DeviceContentView(display: session.display.view)
@@ -89,14 +96,18 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         }
         // Like Simulator.app, the window opens at the saved scale or Point
         // Accurate, reduced to Fit Screen's.
-        showDisplay(at: min(scale(for: .fitScreen) ?? .infinity,
-                            preferences.windowScale(forDevice: session.device.id) ?? 1))
+        showDisplay(at: min(scale(for: .fitScreen) ?? .infinity, saved.scale ?? 1))
     }
 
+    /// The frames of the Mac's screens, whose arrangement keys the saved
+    /// window geometry.
+    private static var screenFrames: [NSRect] { NSScreen.screens.map(\.frame) }
+
     /// Shows a new window where Simulator.app places it: centered where the
-    /// device's window last closed, or else cascading from `cascadePoint`,
-    /// which the first window takes from the center of the screen. The
-    /// window then moves back inside the screen where it crosses an edge.
+    /// device's window last closed in the current arrangement of screens, or
+    /// else cascading from `cascadePoint`, which the first window takes from
+    /// the center of the screen. The window then moves back inside the
+    /// screen where it crosses an edge.
     ///
     /// Simulator.app turns the display to the device's orientation before
     /// placing the window. NeoSimulator reads the orientation afterwards, so
@@ -106,7 +117,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     func showNewWindow(cascadingFrom cascadePoint: inout NSPoint) {
         guard let window else { return }
         let place: ((NSWindow) -> Void)?
-        if let center = preferences.windowCenter(forDevice: session.device.id) {
+        if let center = savedCenter {
             place = { $0.setFrameOrigin(NSPoint(x: center.x - $0.frame.width * 0.5, y: center.y - $0.frame.height * 0.5)) }
             place?(window)
         } else {
@@ -769,13 +780,14 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         window?.delegate = nil
         window?.close()
     }
-    /// Like Simulator.app, the device's next window opens at this center and
-    /// scale. A window that closes during a restart saves nothing.
+    /// Like Simulator.app, the device's next window in the same arrangement of
+    /// screens opens at this center and scale. A window that closes during a
+    /// restart saves nothing.
     private func saveWindowGeometry() {
         guard !closed, !isRestarting, let window else { return }
         preferences.setWindowGeometry(center: NSPoint(x: window.frame.midX, y: window.frame.midY),
                                       scale: WindowScale.usable(session.display.renderScale),
-                                      forDevice: session.device.id)
+                                      forDevice: session.device.id, screens: Self.screenFrames)
     }
     private func disconnect() {
         guard !closed else { return }
