@@ -290,13 +290,24 @@ analysis source only and is not a runtime dependency.
 The first parity set contains only commands with an available, validated owner:
 
 - File: Save Screen, Close Window;
-- Device: Rotate Left/Right, Home, Lock, Shake;
-- I/O: Toggle Software Keyboard;
-- Features: Toggle Appearance;
+- Device: Rotate Left/Right, Home, Lock, Side Button (watchOS devices only, so
+  hidden until Neo hosts them), Action Button, Siri, Shake, App Switcher,
+  Trigger Screenshot;
+- I/O: Toggle Software Keyboard, Increase Volume, Decrease Volume;
+- Features: Authorize Apple Pay, Toggle Appearance;
 - Window: standard minimize/zoom/full screen, Show Device Bezels, Stay on Top,
   Fit Screen, Bring All to Front.
 
-Home, Lock, and Software Keyboard use typed HID button messages. Shake uses a
+Hardware inputs send Indigo HID messages to the connected screen's
+`buttonTarget` through `SimDeviceLegacyHIDClient`: button messages for Home,
+Lock, Software Keyboard, Side Button, Action Button, Siri, and Authorize Apple
+Pay, and consumer-page usages for Trigger Screenshot and volume. Each command
+follows Simulator.app's timing: the staccato Action Button is released after
+0.5 seconds, and App Switcher presses Home twice 150 ms apart. The session
+reports the first failed event of a command, including a delivery failure
+SimulatorKit reports later. Closing the window cancels pending steps and
+releases a held button first. Commands are shown only for the device family or
+`SimDevice` feature Simulator.app requires. Shake uses a
 fail-loud CoreSimulator Darwin-notification call. Appearance uses the current
 and target UI style selectors.
 

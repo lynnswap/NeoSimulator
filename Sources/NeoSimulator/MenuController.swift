@@ -51,15 +51,22 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
         device.addItem(.separator())
         commands([.rotateLeft, .rotateRight], in: device)
         device.addItem(.separator())
-        commands([.home, .lock, .shake], in: device)
+        commands([.home, .lock, .sideButton, .actionButtonSting, .actionButtonStaccato, .siri, .shake, .appSwitcher],
+                 in: device)
+        device.addItem(.separator())
+        commands([.triggerScreenshot], in: device)
 
         let io = menu("I/O", in: main)
         let keyboard = menu("Keyboard", in: io)
         commands([.toggleSoftwareKeyboard], in: keyboard)
         io.addItem(.separator())
+        commands([.increaseVolume, .decreaseVolume], in: io)
+        io.addItem(.separator())
         commands([.openURL], in: io)
 
         let features = menu("Features", in: main)
+        commands([.authorizeApplePay], in: features)
+        features.addItem(.separator())
         commands([.toggleAppearance], in: features)
 
         let window = menu("Window", in: main)

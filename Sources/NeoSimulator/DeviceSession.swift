@@ -15,6 +15,21 @@ struct DeviceCapabilities {
     var isPhoneOrPad: Bool { family == .iPhone || family == .iPad }
 
     static let displayRotation = "com.apple.CoreSimulator.display.rotation"
+    static let actionButtonSting = "com.apple.hid.sting"
+    static let actionButtonStaccato = "com.apple.hid.staccato"
+    static let siri = "com.apple.siri"
+    static let routableAudio = "com.apple.CoreSimulator.audio.routable"
+    static let applePayAuthorization = "com.apple.hid.applepay.authorize"
+}
+
+/// How Simulator.app times the events of a hardware input.
+enum HardwareInput {
+    /// Pressed and released at once.
+    case press(HIDInput)
+    /// Pressed, then released after a delay.
+    case hold(HIDInput, for: Duration)
+    /// Pressed and released twice, the second time after a delay.
+    case pressTwice(HIDInput, interval: Duration)
 }
 
 /// One connected simulator: its display and input, its device tools, and every
@@ -29,6 +44,16 @@ final class DeviceSession {
     @ObservationIgnored private let recordings: RecordingStore
     @ObservationIgnored private let makeRecordingProcess: (URL) -> Process
     @ObservationIgnored private var operation: Task<Void, Never>?
+    /// The delayed steps of hardware inputs, which a disconnect cancels.
+    @ObservationIgnored private var inputSteps: [Int: Task<Void, Never>] = [:]
+    @ObservationIgnored private var nextInputStep = 0
+    /// How many holds of each input are still pending. HID button state is
+    /// not counted, so overlapping holds keep the input down until the last ends.
+    @ObservationIgnored private var pendingHolds: [HIDInput: Int] = [:]
+    /// Inputs sent down whose release SimulatorKit has not yet delivered, with
+    /// the generation of their latest down event. Closing the window releases them.
+    @ObservationIgnored private var downInputs: [HIDInput: Int] = [:]
+    @ObservationIgnored private var lastDownGeneration = 0
     @ObservationIgnored private var isDisconnected = false
     /// A tool operation or a modal step that leads to one is in progress.
     private(set) var isBusy = false
@@ -53,9 +78,111 @@ final class DeviceSession {
 
     // MARK: Immediate device input
 
-    func press(_ button: DeviceButton) throws {
+    /// Sends a hardware input. The first failure of its events, including a
+    /// delivery failure SimulatorKit reports later, goes to `failure`.
+    func send(_ input: HardwareInput, failure: @escaping @MainActor (Error) -> Void) {
         guard canPerformCommands else { return }
-        try display.press(button)
+        let report = FirstFailure(failure)
+        switch input {
+        case .press(let event):
+            press(event, report)
+        case .hold(let event, let delay):
+            guard let down = message(event, .down, report), send(down, report) else { return }
+            markDown(event)
+            pendingHolds[event, default: 0] += 1
+            after(delay) { session in session.release(event, report) }
+        case .pressTwice(let event, let interval):
+            guard press(event, report) else { return }
+            after(interval) { session in session.press(event, report) }
+        }
+    }
+
+    /// Presses and releases an input, and returns whether both events were sent.
+    /// Both messages are created first, so that a failure cannot leave the
+    /// input down.
+    @discardableResult
+    private func press(_ event: HIDInput, _ report: FirstFailure) -> Bool {
+        guard canPerformCommands, let down = message(event, .down, report),
+              let up = message(event, .up, report), send(down, report) else { return false }
+        return sendRelease(up, generation: markDown(event), report)
+    }
+
+    // A held input is released while the device is booted, even when a
+    // shutdown in progress makes other commands unavailable: the shutdown can
+    // fail and leave the device running. The release is created when the hold
+    // ends, so that its timestamp records the hold.
+    private func release(_ event: HIDInput, _ report: FirstFailure) {
+        guard let count = pendingHolds[event] else { return }
+        guard count == 1 else {
+            pendingHolds[event] = count - 1
+            return
+        }
+        pendingHolds[event] = nil
+        guard !isDisconnected, display.isBooted, let generation = downInputs[event] else {
+            downInputs[event] = nil
+            return
+        }
+        if let up = message(event, .up, report) { sendRelease(up, generation: generation, report) }
+    }
+
+    @discardableResult
+    private func markDown(_ event: HIDInput) -> Int {
+        lastDownGeneration += 1
+        downInputs[event] = lastDownGeneration
+        return lastDownGeneration
+    }
+
+    /// Sends the release of the down event with `generation`. The input stays
+    /// down until SimulatorKit delivers that release, unless a later down event
+    /// or a pending hold keeps it down anyway.
+    @discardableResult
+    private func sendRelease(_ up: HIDMessage, generation: Int, _ report: FirstFailure) -> Bool {
+        let event = up.input
+        do {
+            try display.send(up) { [weak self] error in
+                if let error {
+                    report(error)
+                } else if let self, self.downInputs[event] == generation, self.pendingHolds[event] == nil {
+                    self.downInputs[event] = nil
+                }
+            }
+            return true
+        } catch {
+            report(error)
+            return false
+        }
+    }
+
+    private func message(_ event: HIDInput, _ state: HIDState, _ report: FirstFailure) -> HIDMessage? {
+        do {
+            return try display.message(for: event, state)
+        } catch {
+            report(error)
+            return nil
+        }
+    }
+
+    private func send(_ message: HIDMessage, _ report: FirstFailure) -> Bool {
+        do {
+            try display.send(message) { error in
+                if let error { report(error) }
+            }
+            return true
+        } catch {
+            report(error)
+            return false
+        }
+    }
+
+    private func after(_ delay: Duration, _ step: @escaping @MainActor (DeviceSession) -> Void) {
+        let id = nextInputStep
+        nextInputStep += 1
+        inputSteps[id] = Task { [weak self] in
+            try? await Task.sleep(for: delay)
+            guard let self, !Task.isCancelled else { return }
+            self.inputSteps[id] = nil
+            step(self)
+        }
     }
 
     func shake() throws {
@@ -158,6 +285,14 @@ final class DeviceSession {
 
     func disconnect() {
         guard !isDisconnected else { return }
+        // Release held inputs while the input client can still send.
+        for event in downInputs.keys {
+            if let up = try? display.message(for: event, .up) { try? display.send(up, completion: nil) }
+        }
+        pendingHolds.removeAll()
+        downInputs.removeAll()
+        inputSteps.values.forEach { $0.cancel() }
+        inputSteps.removeAll()
         isDisconnected = true
         isConnected = false
         operation?.cancel()
@@ -167,4 +302,15 @@ final class DeviceSession {
     }
 
     isolated deinit { disconnect() }
+}
+
+/// Forwards only the first failure of an input whose events fail together.
+@MainActor
+private final class FirstFailure {
+    private var failure: ((Error) -> Void)?
+    init(_ failure: @escaping @MainActor (Error) -> Void) { self.failure = failure }
+    func callAsFunction(_ error: Error) {
+        failure?(error)
+        failure = nil
+    }
 }

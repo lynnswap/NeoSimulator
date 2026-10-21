@@ -79,7 +79,7 @@ Representative per-window actions in the reference binary:
 | Lock | `0x10005411C` | same HID function, button `1` |
 | Hardware / Software Keyboard | `0x10005571C` / `0x10005574C` | CoreSimulator keyboard selector / HID button `0x3f0` |
 | Save Screen | `0x1000570D8` | typed direct `simctl io … screenshot` transaction |
-| Volume Up / Down | `0x100058224` / `0x10005823C` | SimulatorKit HID arbitrary message, deferred until version-gated and live-tested |
+| Volume Up / Down | `0x100058224` / `0x10005823C` | `IndigoHIDMessageForHIDArbitrary`, consumer page `0x0c`, usages `0xe9` / `0xea`, shown with `com.apple.CoreSimulator.audio.routable` |
 | Window scale | `0x100054BBC` | SimulatorKit render scale and resize owner |
 
 Representative coordinator actions:
@@ -100,9 +100,10 @@ semantics:
 
 - Application: About, Hide, Hide Others, Show All, Quit;
 - File: Save Screen, Close Window;
-- Device: Rotate Left, Rotate Right, Home, Lock, Shake;
-- I/O: Toggle Software Keyboard;
-- Features: Toggle Appearance;
+- Device: Rotate Left, Rotate Right, Home, Lock, Side Button, Action Button,
+  Siri, Shake, App Switcher, Trigger Screenshot;
+- I/O: Toggle Software Keyboard, Increase Volume, Decrease Volume;
+- Features: Authorize Apple Pay, Toggle Appearance;
 - Window: Minimize, Full Screen, Show Device Bezels, Stay on Top, Fit
   Screen, Bring All to Front. Simulator.app hides Zoom.
 
@@ -120,10 +121,9 @@ These have viable Xcode 27+ primitives but need a dedicated state/capability
 contract before being user-visible:
 
 - Connect Hardware Keyboard and keyboard-language sync;
-- volume controls;
 - content size and increased contrast;
 - location controls;
-- biometrics and Apple Pay;
+- biometrics;
 - status-bar overrides;
 - screen recording and graceful finalization;
 - restart, erase, and window-close shutdown choices;

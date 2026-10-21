@@ -260,9 +260,199 @@ struct InputFocusTests {
         let device = try #require(NSApp.mainMenu?.items.first { $0.title == "Device" }?.submenu)
         menus.updateVisibility(in: device, for: controller.session.capabilities)
         let visible = device.items.filter { !$0.isHidden }
-        #expect(visible.map { $0.isSeparatorItem ? "-" : $0.title } == ["Shut Down", "-", "Home", "Lock", "Shake"])
+        #expect(visible.map { $0.isSeparatorItem ? "-" : $0.title } ==
+            ["Shut Down", "-", "Home", "Lock", "Shake", "App Switcher", "-", "Trigger Screenshot"])
         controller.perform(.rotateRight)
         #expect(!controller.session.isBusy)
+    }
+
+    @Test func hardwareCommandsFollowDeviceFeatures() throws {
+        _ = NSApplication.shared
+        let menus = MenuController(application: nil)
+        menus.install()
+        defer { NSApp.mainMenu = nil }
+        let features: Set<String> = [
+            DeviceCapabilities.actionButtonStaccato, DeviceCapabilities.siri,
+            DeviceCapabilities.routableAudio, DeviceCapabilities.applePayAuthorization,
+        ]
+        let controller = try makeController(TestDisplay(), features: features)
+        defer { controller.invalidate() }
+        func visibleTitles(_ title: String) throws -> [String] {
+            let menu = try #require(NSApp.mainMenu?.items.first { $0.title == title }?.submenu)
+            menus.updateVisibility(in: menu, for: controller.session.capabilities)
+            return menu.items.filter { !$0.isHidden }.map { $0.isSeparatorItem ? "-" : $0.title }
+        }
+        #expect(try visibleTitles("Device") == ["Shut Down", "-", "Home", "Lock", "Action Button", "Siri", "Shake",
+                                                 "App Switcher", "-", "Trigger Screenshot"])
+        #expect(try visibleTitles("I/O") == ["Keyboard", "-", "Increase Volume", "Decrease Volume", "-", "Open URL…"])
+        #expect(try visibleTitles("Features") == ["Authorize Apple Pay", "-", "Toggle Appearance"])
+    }
+
+    @Test func hardwareCommandsSendSimulatorAppEvents() throws {
+        let display = TestDisplay()
+        let controller = try makeController(display, features: [
+            DeviceCapabilities.siri, DeviceCapabilities.routableAudio, DeviceCapabilities.applePayAuthorization,
+        ])
+        defer { controller.invalidate() }
+        for command in [DeviceCommand.ID.siri, .triggerScreenshot, .increaseVolume, .decreaseVolume, .authorizeApplePay] {
+            controller.perform(command)
+        }
+        #expect(display.events.map(\.input) == [
+            .button(.siri), .button(.siri), .screenshot, .screenshot, .volumeUp, .volumeUp,
+            .volumeDown, .volumeDown, .button(.applePay), .button(.applePay),
+        ])
+        #expect(display.events.map(\.state) == Array(repeating: [HIDState.down, .up], count: 5).flatMap { $0 })
+    }
+
+    @Test func timedInputsKeepSimulatorAppDelays() async throws {
+        let display = TestDisplay()
+        let controller = try makeController(display)
+        defer { controller.invalidate() }
+        let clock = ContinuousClock()
+        let start = clock.now
+        controller.send(.pressTwice(.button(.home), interval: .milliseconds(150)))
+        controller.send(.hold(.button(.actionStaccato), for: .milliseconds(500)))
+        #expect(display.events.map(\.state) == [.down, .up, .down])
+        while display.events.count < 6, clock.now - start < .seconds(5) {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(clock.now - start >= .milliseconds(500))
+        #expect(display.events.map(\.input) == [
+            .button(.home), .button(.home), .button(.actionStaccato), .button(.home), .button(.home),
+            .button(.actionStaccato),
+        ])
+        #expect(display.events.map(\.state) == [.down, .up, .down, .down, .up, .up])
+    }
+
+    @Test func closingTheWindowReleasesHeldInputsAndCancelsLaterSteps() async throws {
+        let display = TestDisplay()
+        let controller = try makeController(display)
+        controller.send(.hold(.button(.actionStaccato), for: .milliseconds(200)))
+        controller.send(.pressTwice(.button(.home), interval: .milliseconds(200)))
+        controller.invalidate()
+        let sent = display.events.count
+        #expect(display.events.last.map { $0.input == .button(.actionStaccato) && $0.state == .up } == true)
+        try await Task.sleep(for: .milliseconds(400))
+        #expect(display.events.count == sent)
+    }
+
+    @Test func overlappingHoldsReleaseWhenTheLastEnds() async throws {
+        let display = TestDisplay()
+        let controller = try makeController(display)
+        defer { controller.invalidate() }
+        let clock = ContinuousClock()
+        let start = clock.now
+        controller.send(.hold(.button(.actionStaccato), for: .milliseconds(100)))
+        try await Task.sleep(for: .milliseconds(50))
+        controller.send(.hold(.button(.actionStaccato), for: .milliseconds(100)))
+        while display.events.count < 3, clock.now - start < .seconds(5) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(clock.now - start >= .milliseconds(150))
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(display.events.map(\.state) == [.down, .down, .up])
+    }
+
+    @Test func aHeldInputIsReleasedDuringAShutdown() async throws {
+        let display = TestDisplay()
+        let controller = try makeController(display)
+        defer { controller.invalidate() }
+        let session = controller.session
+        var releasedDuringShutdown = false
+        display.onSend = { [weak session] in
+            if session?.canPerformCommands == false { releasedDuringShutdown = true }
+        }
+        controller.send(.hold(.button(.actionStaccato), for: .milliseconds(10)))
+        // The shutdown fails because the test device does not exist.
+        session.run({ try await session.shutDown() }, failure: { _ in })
+        for _ in 0..<3000 where session.isBusy { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(releasedDuringShutdown)
+        #expect(display.events.map(\.state) == [.down, .up])
+        #expect(session.canPerformCommands)
+    }
+
+    @Test func aPressWhoseReleaseCannotBeCreatedSendsNothing() async throws {
+        let display = TestDisplay()
+        display.unavailableStates = [.up]
+        let controller = try makeController(display)
+        defer { controller.invalidate() }
+        var failures = 0
+        controller.session.send(.press(.button(.siri))) { _ in failures += 1 }
+        controller.session.send(.pressTwice(.button(.home), interval: .milliseconds(10))) { _ in failures += 1 }
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(display.events.isEmpty)
+        #expect(failures == 2)
+    }
+
+    @Test func anUndeliveredReleaseIsRetriedWhenTheWindowCloses() async throws {
+        let display = TestDisplay()
+        display.undeliveredStates = [.up]
+        let controller = try makeController(display)
+        var failures = 0
+        controller.session.send(.hold(.button(.actionStaccato), for: .milliseconds(10))) { _ in failures += 1 }
+        for _ in 0..<300 where display.events.count < 2 { try await Task.sleep(for: .milliseconds(10)) }
+        controller.invalidate()
+        #expect(display.events.map(\.state) == [.down, .up, .up])
+        #expect(failures == 1)
+    }
+
+    @Test func aLaterHoldReleasesAnInputWhoseReleaseFailed() async throws {
+        let display = TestDisplay()
+        display.undeliveredStates = [.up]
+        let controller = try makeController(display)
+        controller.session.send(.hold(.button(.actionStaccato), for: .milliseconds(10))) { _ in }
+        for _ in 0..<300 where display.events.count < 2 { try await Task.sleep(for: .milliseconds(10)) }
+        display.undeliveredStates = []
+        controller.session.send(.hold(.button(.actionStaccato), for: .milliseconds(10))) { _ in }
+        for _ in 0..<300 where display.events.count < 4 { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(display.events.map(\.state) == [.down, .up, .down, .up])
+        // Nothing is left to release when the window closes.
+        controller.invalidate()
+        #expect(display.events.count == 4)
+    }
+
+    @Test func aHoldCreatesItsReleaseWhenItEnds() async throws {
+        let display = TestDisplay()
+        let controller = try makeController(display)
+        defer { controller.invalidate() }
+        controller.session.send(.hold(.button(.actionStaccato), for: .milliseconds(50))) { _ in }
+        for _ in 0..<300 where display.events.count < 2 { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(display.created.map(\.state) == [.down, .up])
+        #expect(display.created[1].at - display.created[0].at >= .milliseconds(50))
+    }
+
+    @Test func aReleaseNotYetDeliveredIsSentAgainWhenTheWindowCloses() async throws {
+        let display = TestDisplay()
+        display.deferCompletions = true
+        let controller = try makeController(display)
+        controller.session.send(.hold(.button(.actionStaccato), for: .milliseconds(10))) { _ in }
+        for _ in 0..<300 where display.events.count < 2 { try await Task.sleep(for: .milliseconds(10)) }
+        controller.invalidate()
+        #expect(display.events.map(\.state) == [.down, .up, .up])
+    }
+
+    @Test func anEarlierDeliveryKeepsALaterPressTracked() async throws {
+        let display = TestDisplay()
+        display.deferCompletions = true
+        // The second Home release is not delivered.
+        display.undeliveredEvents = [3]
+        let controller = try makeController(display)
+        controller.session.send(.pressTwice(.button(.home), interval: .milliseconds(10))) { _ in }
+        for _ in 0..<300 where display.events.count < 4 { try await Task.sleep(for: .milliseconds(10)) }
+        display.pendingCompletions.forEach { $0() }
+        controller.invalidate()
+        #expect(display.events.map(\.state) == [.down, .up, .down, .up, .up])
+    }
+
+    @Test func aFailedInputReportsOneError() throws {
+        let display = TestDisplay()
+        display.deliveryError = HostError.operation("delivery failed")
+        let controller = try makeController(display)
+        defer { controller.invalidate() }
+        var failures: [Error] = []
+        controller.session.send(.press(.button(.siri))) { failures.append($0) }
+        #expect(display.events.count == 2)
+        #expect(failures.count == 1)
     }
 
     private func makeController(_ display: TestDisplay,
@@ -300,12 +490,45 @@ private final class TestDisplay: SimulatorDisplay {
     var inputView: NSView { input }
     var naturalSize: NSSize { NSSize(width: 390, height: 844) }
     var isBooted = true
-    var buttons: [DeviceButton] = []
+    var events: [(input: HIDInput, state: HIDState)] = []
+    /// Called for each sent event, before it is recorded.
+    var onSend: () -> Void = {}
+    /// Completes each sent event with this error.
+    var deliveryError: Error?
+    /// Completes sent events of these states with an error.
+    var undeliveredStates: Set<HIDState> = []
+    /// Completes the sent events at these positions with an error.
+    var undeliveredEvents: Set<Int> = []
+    /// Fails to create messages for events of these states.
+    var unavailableStates: Set<HIDState> = []
+    /// Holds completions until the test runs them, as SimulatorKit delivers later.
+    var deferCompletions = false
+    var pendingCompletions: [() -> Void] = []
+    var created: [(state: HIDState, at: ContinuousClock.Instant)] = []
+    var buttons: [DeviceButton] {
+        events.compactMap { if case .button(let button) = $0.input, $0.state == .down { button } else { nil } }
+    }
     var activations: [Bool] = []
     var keyboard: [Bool] = []
     var disconnectCount = 0
     init() { view.addSubview(input) }
-    func press(_ button: DeviceButton) throws { buttons.append(button) }
+    func message(for input: HIDInput, _ state: HIDState) throws -> HIDMessage {
+        guard !unavailableStates.contains(state) else { throw HostError.operation("No message") }
+        created.append((state, ContinuousClock.now))
+        return HIDMessage(input: input, state: state, pointer: OpaquePointer(malloc(1)!))
+    }
+    func send(_ message: HIDMessage, completion: (@MainActor (Error?) -> Void)?) throws {
+        onSend()
+        free(UnsafeMutableRawPointer(message.take()))
+        events.append((message.input, message.state))
+        let undelivered = undeliveredStates.contains(message.state) || undeliveredEvents.contains(events.count - 1)
+        let error = undelivered ? HostError.operation("Undelivered") : deliveryError
+        if deferCompletions {
+            pendingCompletions.append { completion?(error) }
+        } else {
+            completion?(error)
+        }
+    }
     func shake() throws {}
     func toggleAppearance() throws {}
     func setChromeVisible(_ visible: Bool) {}
