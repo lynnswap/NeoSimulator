@@ -328,6 +328,37 @@ struct InputFocusTests {
         #expect(display.rotations == [90])
     }
 
+    @Test func resumingGuestFollowAppliesTheNextGuestRotation() throws {
+        let display = TestDisplay()
+        let controller = try makeController(display)
+        defer { controller.invalidate() }
+        let key = HostPreferences.rotateWindowWhenSignaledByGuest
+        let saved = UserDefaults.standard.object(forKey: key)
+        defer { UserDefaults.standard.set(saved, forKey: key) }
+        let window = try #require(controller.window)
+        func isLandscape() -> Bool { window.contentLayoutRect.width > window.contentLayoutRect.height }
+        let portrait = display.naturalSize
+        let landscape = NSSize(width: portrait.height, height: portrait.width)
+        UserDefaults.standard.set(true, forKey: key)
+        display.guestInterfaceAngle = 0
+        display.onPropertiesChange?()
+        #expect(display.rotations == [0])
+        // With following off, the guest and the window turn to landscape.
+        controller.perform(.rotateDeviceAutomatically)
+        display.guestInterfaceAngle = 90
+        display.naturalSize = landscape
+        display.onPropertiesChange?()
+        controller.fitScreen()
+        #expect(isLandscape())
+        // After following resumes, the guest's return to portrait is applied.
+        controller.perform(.rotateDeviceAutomatically)
+        display.guestInterfaceAngle = 0
+        display.naturalSize = portrait
+        display.onPropertiesChange?()
+        #expect(display.rotations == [0, 0])
+        #expect(!isLandscape())
+    }
+
     @Test func orientationCommandsSetTheDeviceAndKeepManualRotation() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

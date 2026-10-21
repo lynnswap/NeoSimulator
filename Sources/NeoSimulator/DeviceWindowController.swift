@@ -197,8 +197,8 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     // interface orientation and the window follows the display. Other
     // property changes, such as the backlight, keep the window size.
     private func displayPropertiesChanged() {
-        guard !closed, UserDefaults.standard.bool(forKey: HostPreferences.rotateWindowWhenSignaledByGuest),
-              session.followGuestInterfaceOrientation() else { return }
+        let enabled = UserDefaults.standard.bool(forKey: HostPreferences.rotateWindowWhenSignaledByGuest)
+        guard !closed, session.followGuestInterfaceOrientation(enabled: enabled) else { return }
         didRotate()
     }
 

@@ -304,8 +304,13 @@ final class DeviceSession {
     /// Shows the display at the guest's interface orientation when that
     /// changed, and returns whether it did. SimulatorKit also applies it with
     /// Rotate Device Automatically on; applying it here keeps the order
-    /// deterministic.
-    func followGuestInterfaceOrientation() -> Bool {
+    /// deterministic. While following is off, the display can rotate without
+    /// the guest, so the next change after following resumes is applied.
+    func followGuestInterfaceOrientation(enabled: Bool) -> Bool {
+        guard enabled else {
+            guestAngle = nil
+            return false
+        }
         guard canPerformCommands, let angle = display.guestInterfaceAngle, angle != guestAngle else { return false }
         guestAngle = angle
         display.setRotation(degrees: angle)
