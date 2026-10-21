@@ -527,6 +527,28 @@ struct InputFocusTests {
                                                  "App Switcher", "-", "Trigger Screenshot"])
         #expect(try visibleTitles("I/O") == ["Keyboard", "-", "Increase Volume", "Decrease Volume", "-", "Open URL…"])
         #expect(try visibleTitles("Features") == ["Authorize Apple Pay", "-", "Toggle Appearance"])
+        #expect(try visibleTitles("Debug") == ["Show Parallel Testing Devices"])
+    }
+
+    @Test func orientationCommandsNeedTheDefaultDeviceSet() throws {
+        _ = NSApplication.shared
+        let menus = MenuController(application: nil)
+        menus.install()
+        defer { NSApp.mainMenu = nil }
+        let device = try #require(NSApp.mainMenu?.items.first { $0.title == "Device" }?.submenu)
+        func visibleTitles(controllingOrientation: Bool) -> [String] {
+            menus.updateVisibility(in: device, for: DeviceCapabilities(
+                family: .iPhone, runtimeVersion: 0x1B_00_00,
+                supportsFeature: { $0 == DeviceCapabilities.displayRotation },
+                controlsOrientation: controllingOrientation))
+            return device.items.filter { !$0.isHidden && !$0.isSeparatorItem }.map(\.title)
+        }
+        let rotation = ["Rotate Left", "Rotate Right", "Orientation"]
+        #expect(Set(rotation).isSubset(of: visibleTitles(controllingOrientation: true)))
+        // devicectl cannot reach a parallel testing device, but SimulatorKit
+        // still follows the guest's rotation.
+        let testing = visibleTitles(controllingOrientation: false)
+        #expect(Set(rotation).isDisjoint(with: testing) && testing.contains("Rotate Device Automatically"))
     }
 
     @Test func openSimulatorListsDevicesBySimulatorAppRules() throws {
@@ -1026,6 +1048,25 @@ struct DeviceToolTests {
             try await runner.run(URL(fileURLWithPath: "/bin/sh"), arguments: ["-c", "echo rejected >&2; exit 7"])
         }
         #expect(runner.process == nil)
+    }
+
+    @Test func toolsAddressADeviceOutsideTheDefaultSet() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let log = directory.appendingPathComponent("arguments"), simctl = directory.appendingPathComponent("simctl")
+        try """
+            #!/bin/sh
+            printf '%s\\n' "$@" > "\(log.path)"
+            """.write(to: simctl, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: simctl.path)
+        let tools = try DeviceTools(identifier: "test-device", xcodeURL: URL(fileURLWithPath: "/Applications/Xcode.app"),
+                                    deviceSetPath: "/tmp/XCTestDevices", simctl: simctl)
+        try await tools.boot()
+        #expect(try String(contentsOf: log, encoding: .utf8).split(separator: "\n")
+                == ["--set", "/tmp/XCTestDevices", "boot", "test-device"])
+        #expect(tools.recordingProcess(to: URL(fileURLWithPath: "/tmp/video.mp4")).arguments?.prefix(4)
+                == ["--set", "/tmp/XCTestDevices", "io", "test-device"])
     }
 
     @Test func createDevicePassesNameTypeAndRuntimeToSimctl() async throws {

@@ -296,6 +296,7 @@ The first parity set contains only commands with an available, validated owner:
   Action Button, Siri, Shake, App Switcher, Trigger Screenshot;
 - I/O: Toggle Software Keyboard, Increase Volume, Decrease Volume;
 - Features: Authorize Apple Pay, Toggle Appearance;
+- Debug: Show Parallel Testing Devices;
 - Window: standard minimize/zoom/full screen, Show Device Bezels, Stay on Top,
   Fit Screen, Simulators, Bring All to Front.
 
@@ -310,6 +311,17 @@ compatible choice, the device type's name as the default name, and `simctl
 create` without booting. Its Paired Apple Watch page waits for watchOS hosting.
 Window ▸ Simulators is NeoSimulator's own device list; Simulator.app has no such
 window.
+
+Parallel testing devices come from a second device set, opened with
+`SimServiceContext.deviceSetWithPath:error:` at `TestingDeviceSetPath` or
+`~/Library/Developer/XCTestDevices`, never at the default set's path. Neo does
+not create a missing set; it watches the parent directory until Xcode creates
+it. While Debug ▸ Show Parallel Testing Devices (`ShowTestingDevices`, on by
+default) is on, booted devices of both sets get windows; turning it off closes
+the testing devices' windows without shutting them down, and turning it on
+attaches every booted testing device again. `simctl` reaches a testing device
+with `--set`; `devicectl` does not, so rotation and orientation commands are
+hidden for it.
 
 Hardware inputs send Indigo HID messages to the connected screen's
 `buttonTarget` through `SimDeviceLegacyHIDClient`: button messages for Home,

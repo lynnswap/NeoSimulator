@@ -9,6 +9,11 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     private var isTerminating = false
     private var recordingTerminationErrors: [Error] = []
     private var notificationToken: UInt64?
+    /// Xcode's parallel testing device set, once it exists.
+    private var testingSet: SimulatorDeviceSet?
+    private var testingNotificationToken: UInt64?
+    /// Watches for Xcode to create the parallel testing set.
+    private var testingSetWatcher: DispatchSourceFileSystemObject?
     private var sessions: [String: DeviceWindowController] = [:]
     private var connections: [String: Task<Void, Never>] = [:]
     private var bootOperations: [String: DeviceTools] = [:]
@@ -30,6 +35,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         self.runtime = runtime
         self.conflicts = conflicts
         deviceSet = try runtime.openDeviceSet()
+        HostPreferences.registerDefaults()
         super.init()
         recordings.onError = { [weak self] error in
             guard let self else { return }
@@ -44,6 +50,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         menu = MenuController(application: self)
         menu?.install()
         notificationToken = try deviceSet.observe { [weak self] in self?.rescan() }
+        openTestingSet()
         try conflicts.check()
         try scanDevices()
         if sessions.isEmpty { showDeviceBrowser() }
@@ -57,8 +64,102 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         sessions[identifier]?.window?.isVisible == true
     }
 
-    private func readDevices() throws -> [SimulatorDevice] {
-        try deviceSet.readDevices().filter { $0.platformIdentifier == "com.apple.platform.iphonesimulator" }
+    private func readDevices(in set: SimulatorDeviceSet? = nil) throws -> [SimulatorDevice] {
+        try (set ?? deviceSet).readDevices().filter { $0.platformIdentifier == "com.apple.platform.iphonesimulator" }
+    }
+
+    // MARK: Parallel testing devices
+
+    var showsTestingDevices: Bool { UserDefaults.standard.bool(forKey: HostPreferences.showTestingDevices) }
+
+    /// Debug ▸ Show Parallel Testing Devices. Hiding closes the testing
+    /// devices' windows without shutting the devices down.
+    func toggleShowTestingDevices() {
+        let show = !showsTestingDevices
+        UserDefaults.standard.set(show, forKey: HostPreferences.showTestingDevices)
+        if show {
+            // Like Simulator.app, showing attaches every booted testing device,
+            // including those whose windows were closed.
+            if let testingSet, let devices = try? readDevices(in: testingSet) {
+                suppressed.subtract(devices.map(\.identifier))
+            }
+        } else {
+            let hadDeviceWindows = !sessions.isEmpty
+            // A restart keeps running without its window.
+            for (identifier, controller) in sessions where controller.session.tools.deviceSetPath != nil {
+                sessions.removeValue(forKey: identifier)
+                awaitingReconnect.removeValue(forKey: identifier)
+                controller.invalidate()
+            }
+            if hadDeviceWindows && sessions.isEmpty { showDeviceBrowser() }
+        }
+        rescan()
+    }
+
+    /// Opens Xcode's parallel testing device set, as Simulator.app does: the
+    /// `TestingDeviceSetPath` default, or `~/Library/Developer/XCTestDevices`.
+    /// A missing set is not created; the host waits for Xcode to create it.
+    private func openTestingSet() {
+        guard !stopped, testingSet == nil else { return }
+        let path = UserDefaults.standard.string(forKey: HostPreferences.testingDeviceSetPath)
+            .map { NSString(string: $0).expandingTildeInPath }
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Developer/XCTestDevices").path
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        guard url != URL(fileURLWithPath: deviceSet.path).standardizedFileURL else {
+            hostLog("TestingDeviceSetPath names the default device set; parallel testing devices are not shown")
+            return
+        }
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            watchForTestingSet(at: url)
+            return
+        }
+        testingSetWatcher?.cancel()
+        testingSetWatcher = nil
+        do {
+            let set = try runtime.openDeviceSet(at: url.path)
+            testingNotificationToken = try set.observe { [weak self] in self?.rescan() }
+            testingSet = set
+        } catch {
+            hostLog("Could not open the parallel testing device set: \(error.localizedDescription)")
+        }
+    }
+
+    /// Watches the set's nearest existing ancestor, moving down as Xcode
+    /// creates the directories, until the set exists.
+    private func watchForTestingSet(at url: URL) {
+        func nearestAncestor() -> URL {
+            var ancestor = url.deletingLastPathComponent()
+            while !FileManager.default.fileExists(atPath: ancestor.path), ancestor.path != "/" {
+                ancestor.deleteLastPathComponent()
+            }
+            return ancestor
+        }
+        let ancestor = nearestAncestor()
+        testingSetWatcher?.cancel()
+        testingSetWatcher = nil
+        let descriptor = open(ancestor.path, O_EVTONLY)
+        guard descriptor >= 0 else {
+            hostLog("Cannot watch \(ancestor.path) for the parallel testing device set")
+            return
+        }
+        let watcher = DispatchSource.makeFileSystemObjectSource(fileDescriptor: descriptor, eventMask: .write,
+                                                                queue: .main)
+        watcher.setEventHandler { [weak self] in
+            MainActor.assumeIsolated { self?.testingSetDirectoryChanged() }
+        }
+        watcher.setCancelHandler { close(descriptor) }
+        testingSetWatcher = watcher
+        watcher.resume()
+        // A directory created before the watcher started sends no event.
+        if FileManager.default.fileExists(atPath: url.path) || nearestAncestor() != ancestor {
+            testingSetDirectoryChanged()
+        }
+    }
+
+    private func testingSetDirectoryChanged() {
+        guard testingSet == nil else { return }
+        openTestingSet()
+        if testingSet != nil { rescan() }
     }
 
     private static func describe(_ device: SimulatorDevice) -> AvailableDevice {
@@ -70,7 +171,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     private static func capabilities(of device: SimulatorDevice) -> DeviceCapabilities {
         DeviceCapabilities(family: DeviceCapabilities.Family(rawValue: device.productFamily),
                            runtimeVersion: device.runtimeVersion,
-                           supportsFeature: { [device] in device.supportsFeature($0) })
+                           supportsFeature: { [device] in device.supportsFeature($0) },
+                           controlsOrientation: device.deviceSetPath == nil)
     }
 
     func openSimulator(withIdentifier identifier: String) async throws {
@@ -107,7 +209,9 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     private func scanDevices() throws {
         guard !stopped else { return }
         try conflicts.check()
-        let booted = try readDevices().filter { $0.state == 3 }
+        var devices = try readDevices()
+        if showsTestingDevices, let testingSet { devices += try readDevices(in: testingSet) }
+        let booted = devices.filter { $0.state == 3 }
         let identifiers = Set(booted.map(\.identifier))
         let hadDeviceWindows = !sessions.isEmpty
         for identifier in sessions.keys where !identifiers.contains(identifier) && restarting[identifier] == nil {
@@ -121,8 +225,10 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         // restart stays closed.
         suppressed.formIntersection(identifiers.union(restarting.keys))
         reportedFailures.formIntersection(identifiers)
-        for device in booted where (sessions[device.identifier] == nil
-                || (awaitingReconnect[device.identifier] != nil && restarting[device.identifier] == nil))
+        // A restarting device connects only after its restart ends, also when
+        // its window was hidden meanwhile.
+        for device in booted where restarting[device.identifier] == nil
+            && (sessions[device.identifier] == nil || awaitingReconnect[device.identifier] != nil)
             && connections[device.identifier] == nil
             && !suppressed.contains(device.identifier)
             && !reportedFailures.contains(device.identifier) {
@@ -153,7 +259,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                         let session = DeviceSession(
                             device: Self.describe(device), capabilities: Self.capabilities(of: device),
                             display: connection,
-                            tools: try DeviceTools(identifier: identifier, xcodeURL: runtime.xcodeURL),
+                            tools: try DeviceTools(identifier: identifier, xcodeURL: runtime.xcodeURL,
+                                                   deviceSetPath: device.deviceSetPath),
                             recordings: recordings)
                         if let controller = awaitingReconnect.removeValue(forKey: identifier) {
                             try conflicts.check()
@@ -195,7 +302,10 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         guard !stopped, sessions[identifier] === controller, restarting[identifier] == nil,
               bootOperations[identifier] == nil else { return }
         let tools: DeviceTools
-        do { tools = try DeviceTools(identifier: identifier, xcodeURL: runtime.xcodeURL) } catch {
+        do {
+            tools = try DeviceTools(identifier: identifier, xcodeURL: runtime.xcodeURL,
+                                    deviceSetPath: controller.session.tools.deviceSetPath)
+        } catch {
             controller.present(error)
             return
         }
@@ -298,6 +408,13 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             catch { hostLog("Could not unregister simulator notifications: \(error.localizedDescription)") }
         }
         notificationToken = nil
+        if let testingSet, let testingNotificationToken {
+            do { try testingSet.stopObserving(testingNotificationToken) }
+            catch { hostLog("Could not unregister testing device notifications: \(error.localizedDescription)") }
+        }
+        testingNotificationToken = nil
+        testingSetWatcher?.cancel()
+        testingSetWatcher = nil
         for task in connections.values { task.cancel() }
         connections.removeAll()
         for tools in bootOperations.values { tools.cancel() }

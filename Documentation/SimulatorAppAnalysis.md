@@ -105,6 +105,7 @@ semantics:
   Siri, Shake, App Switcher, Trigger Screenshot;
 - I/O: Toggle Software Keyboard, Increase Volume, Decrease Volume;
 - Features: Authorize Apple Pay, Toggle Appearance;
+- Debug: Show Parallel Testing Devices;
 - Window: Minimize, Full Screen, Show Device Bezels, Stay on Top, Fit
   Screen, Bring All to Front. Simulator.app hides Zoom.
 

@@ -60,10 +60,11 @@ final class SimulatorRuntime {
         }
     }
 
-    func openDeviceSet() throws -> SimulatorDeviceSet {
+    /// Opens the default device set, or the set at `path`.
+    func openDeviceSet(at path: String? = nil) throws -> SimulatorDeviceSet {
         try SimulatorDeviceSet(
             interface: coreSimulator,
-            developerDirectory: xcodeURL.appendingPathComponent("Contents/Developer").path)
+            developerDirectory: xcodeURL.appendingPathComponent("Contents/Developer").path, path: path)
     }
 }
 

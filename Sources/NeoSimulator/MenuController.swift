@@ -82,6 +82,9 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
         features.addItem(.separator())
         commands([.toggleAppearance], in: features)
 
+        let debug = menu("Debug", in: main)
+        item("Show Parallel Testing Devices", action: #selector(toggleShowTestingDevices(_:)), in: debug)
+
         let window = menu("Window", in: main)
         item("Minimize", action: #selector(minimizeWindow(_:)), key: "m", in: window)
         item("Enter Full Screen", action: #selector(fullScreen(_:)), key: "f", modifiers: [.command, .control], in: window)
@@ -159,6 +162,10 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
            [#selector(showBrowser(_:)), #selector(showNewSimulator(_:)), #selector(showHelp(_:))].contains(action) {
             return true
         }
+        if item.action == #selector(toggleShowTestingDevices(_:)) {
+            item.state = application?.showsTestingDevices == true ? .on : .off
+            return application != nil
+        }
         if item.action == #selector(fullScreen(_:)) {
             item.title = NSApp.keyWindow?.styleMask.contains(.fullScreen) == true ? "Exit Full Screen" : "Enter Full Screen"
         }
@@ -176,6 +183,7 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
 
     @objc private func showBrowser(_ sender: Any?) { application?.showDeviceBrowser() }
     @objc private func showNewSimulator(_ sender: Any?) { application?.showNewSimulator() }
+    @objc private func toggleShowTestingDevices(_ sender: Any?) { application?.toggleShowTestingDevices() }
     @objc private func closeWindow(_ sender: Any?) { NSApp.keyWindow?.performClose(sender) }
     @objc private func minimizeWindow(_ sender: Any?) { NSApp.keyWindow?.performMiniaturize(sender) }
     @objc private func fullScreen(_ sender: Any?) { NSApp.keyWindow?.toggleFullScreen(sender) }

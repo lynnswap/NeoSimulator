@@ -11,8 +11,12 @@ struct DeviceCapabilities {
     var runtimeVersion: UInt32
     /// `SimDevice supportsFeature:`, which combines device-type and runtime support.
     var supportsFeature: (String) -> Bool
+    /// Whether `devicectl` can read and set the physical orientation. It
+    /// reaches only devices in the default device set.
+    var controlsOrientation = true
 
     var isPhoneOrPad: Bool { family == .iPhone || family == .iPad }
+    var rotates: Bool { controlsOrientation && supportsFeature(Self.displayRotation) }
 
     static let displayRotation = "com.apple.CoreSimulator.display.rotation"
     static let actionButtonSting = "com.apple.hid.sting"
@@ -28,6 +32,14 @@ enum HostPreferences {
     /// the host's standard defaults and rotates the display when the guest
     /// changes its interface orientation.
     static let rotateWindowWhenSignaledByGuest = "RotateWindowWhenSignaledByGuest"
+    /// Debug ▸ Show Parallel Testing Devices, on unless turned off.
+    static let showTestingDevices = "ShowTestingDevices"
+    /// Overrides the path of Xcode's parallel testing device set.
+    static let testingDeviceSetPath = "TestingDeviceSetPath"
+
+    static func registerDefaults() {
+        UserDefaults.standard.register(defaults: [showTestingDevices: true])
+    }
 }
 
 /// A physical device orientation, named as `devicectl` names it.

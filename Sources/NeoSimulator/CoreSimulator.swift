@@ -11,6 +11,8 @@ struct CoreSimulatorInterface {
     let serviceClass: AnyClass
     let sharedContext: NativeObjCMethod<AnyObject, String>
     let defaultDeviceSet: NativeObjCMethod<AnyObject>
+    let deviceSetWithPath: NativeObjCMethod<AnyObject, String>
+    let setPath: NativeObjCMethod<String?>
     let supportedDeviceTypes: NativeObjCMethod<[AnyObject]>
     let supportedRuntimes: NativeObjCMethod<[AnyObject]>
     let subscribe: NativeObjCMethod<Void>
@@ -57,6 +59,9 @@ struct CoreSimulatorInterface {
             as: ((String) throws -> AnyObject).self, classMethod: true)
         defaultDeviceSet = try runtime.resolveObjCMethodAndWait(
             on: serviceClass, selector: "defaultDeviceSetWithError:", as: (() throws -> AnyObject).self)
+        deviceSetWithPath = try runtime.resolveObjCMethodAndWait(
+            on: serviceClass, selector: "deviceSetWithPath:error:", as: ((String) throws -> AnyObject).self)
+        setPath = try runtime.resolveObjCMethodAndWait(on: deviceSet, selector: "setPath", as: (() -> String?).self)
         supportedDeviceTypes = try runtime.resolveObjCMethodAndWait(
             on: serviceClass, selector: "supportedDeviceTypes", as: (() -> [AnyObject]).self)
         supportedRuntimes = try runtime.resolveObjCMethodAndWait(
@@ -128,11 +133,14 @@ final class SimulatorDevice {
     let productFamily: Int
     /// `SimRuntime.version`, packed as major << 16 | minor << 8 | patch.
     let runtimeVersion: UInt32
+    /// The path of the device's set, or nil for the default set.
+    let deviceSetPath: String?
     private let interface: CoreSimulatorInterface
 
-    fileprivate init?(_ object: AnyObject, interface: CoreSimulatorInterface) throws {
+    fileprivate init?(_ object: AnyObject, deviceSetPath: String?, interface: CoreSimulatorInterface) throws {
         guard let identifier = try unsafe interface.identifier.unsafeInvoke(on: object) else { return nil }
         self.object = object
+        self.deviceSetPath = deviceSetPath
         self.interface = interface
         self.identifier = identifier.uuidString
         name = try unsafe interface.name.unsafeInvoke(on: object) ?? "iOS Simulator"
@@ -191,18 +199,29 @@ struct SimulatorCatalog {
     }
 }
 
-/// The default CoreSimulator device set of one developer directory.
+/// A CoreSimulator device set of one developer directory: the default set,
+/// or a set at another path such as Xcode's parallel testing devices.
 @MainActor
 final class SimulatorDeviceSet {
+    /// The set's directory.
+    let path: String
+    /// The path tools need to address this set's devices, or nil for the default set.
+    let toolPath: String?
     private let context: AnyObject
     private let object: AnyObject
     private let interface: CoreSimulatorInterface
 
-    init(interface: CoreSimulatorInterface, developerDirectory: String) throws {
+    init(interface: CoreSimulatorInterface, developerDirectory: String, path: String? = nil) throws {
         self.interface = interface
         context = try unsafe interface.sharedContext.unsafeInvoke(
             on: interface.serviceClass as AnyObject, developerDirectory)
-        object = try unsafe interface.defaultDeviceSet.unsafeInvoke(on: context)
+        if let path {
+            object = try unsafe interface.deviceSetWithPath.unsafeInvoke(on: context, path)
+        } else {
+            object = try unsafe interface.defaultDeviceSet.unsafeInvoke(on: context)
+        }
+        self.path = try unsafe interface.setPath.unsafeInvoke(on: object) ?? path ?? ""
+        toolPath = path == nil ? nil : self.path
         try unsafe interface.subscribe.unsafeInvoke(on: object)
     }
 
@@ -234,7 +253,7 @@ final class SimulatorDeviceSet {
     /// device type, then name.
     func readDevices() throws -> [SimulatorDevice] {
         try unsafe interface.availableDevices.unsafeInvoke(on: object).compactMap {
-            try SimulatorDevice($0, interface: interface)
+            try SimulatorDevice($0, deviceSetPath: toolPath, interface: interface)
         }
     }
 

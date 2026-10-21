@@ -108,7 +108,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     func showAndActivate() {
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
-        if !didReadOrientation {
+        if !didReadOrientation, session.capabilities.controlsOrientation {
             didReadOrientation = true
             session.run({ [weak self] in
                 guard let self else { return }
