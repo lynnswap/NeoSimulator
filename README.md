@@ -98,9 +98,10 @@ Neo currently provides:
 - Home, Lock, Shake, rotation, the six device orientations, Rotate Device
   Automatically, appearance, bezel, Stay on Top, Fit Screen, and standard
   window commands;
-- the hardware inputs the active device supports: Side Button, Action Button,
-  Siri, App Switcher, Trigger Screenshot, Increase and Decrease Volume, and
-  Authorize Apple Pay.
+- the hardware inputs the active device supports: Action Button, Siri, App
+  Switcher, Trigger Screenshot, Increase and Decrease Volume, and Authorize
+  Apple Pay. The Side Button command is defined for watchOS devices, which Neo
+  does not host yet.
 
 Use **File → Open Simulator…** (Command-N) to choose a device and
 **Device → Shut Down** to stop it. Closing a window leaves the simulator
