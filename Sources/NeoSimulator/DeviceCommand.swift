@@ -15,7 +15,10 @@ struct DeviceCommand {
         case home, lock, sideButton, actionButtonSting
         case actionButtonStaccato, siri, shake, appSwitcher, triggerScreenshot
         case toggleSoftwareKeyboard, increaseVolume, decreaseVolume, openURL
-        case authorizeApplePay, toggleAppearance
+        case touchIDEnrolled, touchIDMatching, touchIDNonMatching
+        case faceIDEnrolled, faceIDMatching, faceIDNonMatching
+        case authorizeApplePay, toggleAppearance, toggleInCallStatusBar, toggleStandBy
+        case increaseTextSize, decreaseTextSize, toggleIncreaseContrast, triggerCloudSync
         case showDeviceBezels, stayOnTop, fitScreen
     }
 
@@ -31,12 +34,17 @@ struct DeviceCommand {
     /// Whether the menu shows the command in place of the one before it
     /// while the extra modifier is held.
     var isAlternate = false
+    /// Whether the key device, or nil without one, gets the command's
+    /// shortcut, for commands that share a shortcut with another.
+    var hasKey: ((DeviceCapabilities?) -> Bool)?
     var toolbar: Toolbar?
     /// Whether the device supports the command. Unsupported commands are hidden.
     var isSupported: (DeviceCapabilities) -> Bool = { _ in true }
     /// Whether the command can run now. Defaults to a connected, booted device.
     var isEnabled: (DeviceWindowController) -> Bool = { $0.session.canPerformCommands }
     var state: ((DeviceWindowController) -> NSControl.StateValue)?
+    /// The title for the current state, when it changes with the state.
+    var stateTitle: ((DeviceWindowController) -> String)?
     let perform: (DeviceWindowController) -> Void
 
     static func command(_ id: ID) -> DeviceCommand { catalog[id]! }
@@ -57,7 +65,8 @@ struct DeviceCommand {
         DeviceCommand(id: .stopRecording, title: "Stop Recording",
                       toolbar: Toolbar(label: "Stop Recording", symbol: "stop.circle.fill"),
                       isEnabled: { $0.session.recording.map { !$0.isStopping } ?? false }) { $0.session.stopRecording() },
-        DeviceCommand(id: .importFiles, title: "Install App or Import Media…", key: "i", modifiers: [.command, .shift],
+        // NeoSimulator's own command. Shift-Command-I is Trigger iCloud Sync in Simulator.app.
+        DeviceCommand(id: .importFiles, title: "Install App or Import Media…",
                       isEnabled: { $0.session.canPerformToolOperation }) { $0.chooseFilesToImport() },
         // Edit
         DeviceCommand(id: .copyScreen, title: "Copy Screen", key: "c", modifiers: [.command, .control],
@@ -130,12 +139,38 @@ struct DeviceCommand {
         DeviceCommand(id: .openURL, title: "Open URL…", key: "u", modifiers: [.command, .shift],
                       isEnabled: { $0.session.canPerformToolOperation }) { $0.chooseURLToOpen() },
         // Features
+        biometricEnrollment(.touchIDEnrolled, feature: DeviceCapabilities.touchID),
+        biometric(.touchIDMatching, title: "Matching Touch", .touchID, matching: true),
+        biometric(.touchIDNonMatching, title: "Non-matching Touch", .touchID, matching: false),
+        biometricEnrollment(.faceIDEnrolled, feature: DeviceCapabilities.faceID),
+        biometric(.faceIDMatching, title: "Matching Face", .faceID, matching: true),
+        biometric(.faceIDNonMatching, title: "Non-matching Face", .faceID, matching: false),
         DeviceCommand(id: .authorizeApplePay, title: "Authorize Apple Pay", key: "a", modifiers: [.command, .option],
                       isSupported: { $0.supportsFeature(DeviceCapabilities.applePayAuthorization) }) {
             $0.send(.press(.button(.applePay)))
         },
         DeviceCommand(id: .toggleAppearance, title: "Toggle Appearance", key: "a", modifiers: [.command, .shift],
                       isSupported: { $0.isPhoneOrPad }) { controller in controller.run { try controller.session.toggleAppearance() } },
+        DeviceCommand(id: .toggleInCallStatusBar, title: "Toggle In-call Status Bar", key: "y",
+                      isSupported: { $0.isPhoneOrPad }) { controller in
+            controller.run { try controller.session.toggleInCallStatusBar() }
+        },
+        DeviceCommand(id: .toggleStandBy, title: "Show StandBy",
+                      isSupported: { $0.supportsFeature(DeviceCapabilities.standBy) },
+                      stateTitle: { $0.session.showsStandBy ? "Hide StandBy" : "Show StandBy" }) { controller in
+            controller.run { try controller.session.toggleStandBy() }
+        },
+        DeviceCommand(id: .increaseTextSize, title: "Increase Preferred Text Size", key: "+", modifiers: [.command, .option],
+                      isSupported: { $0.isPhoneOrPad }) { controller in controller.run { try controller.session.changeTextSize(by: 1) } },
+        DeviceCommand(id: .decreaseTextSize, title: "Decrease Preferred Text Size", key: "-", modifiers: [.command, .option],
+                      isSupported: { $0.isPhoneOrPad }) { controller in controller.run { try controller.session.changeTextSize(by: -1) } },
+        DeviceCommand(id: .toggleIncreaseContrast, title: "Toggle Increase Contrast",
+                      isSupported: { $0.isPhoneOrPad }) { controller in controller.run { try controller.session.toggleIncreaseContrast() } },
+        DeviceCommand(id: .triggerCloudSync, title: "Trigger iCloud Sync", key: "i", modifiers: [.command, .shift],
+                      isEnabled: { $0.session.canPerformToolOperation }) { controller in
+            controller.session.run({ [session = controller.session] in try await session.triggerCloudSync() },
+                                   failure: { [weak controller] in controller?.present($0) })
+        },
         // Window
         DeviceCommand(id: .showDeviceBezels, title: "Show Device Bezels",
                       state: { $0.showsDeviceBezel ? .on : .off }) { $0.toggleDeviceBezel() },
@@ -144,6 +179,30 @@ struct DeviceCommand {
         DeviceCommand(id: .fitScreen, title: "Fit Screen", key: "4",
                       isEnabled: { $0.canFitScreen }) { $0.fitScreen() },
     ].map { ($0.id, $0) })
+
+    /// Touch ID ▸ Enrolled or Face ID ▸ Enrolled. The two share one guest state.
+    private static func biometricEnrollment(_ id: ID, feature: String) -> DeviceCommand {
+        DeviceCommand(id: id, title: "Enrolled", isSupported: { $0.supportsFeature(feature) },
+                      state: { $0.session.isBiometricEnrolled ? .on : .off }) { controller in
+            controller.run { try controller.session.toggleBiometricEnrollment() }
+        }
+    }
+
+    /// A matching or non-matching biometric event. Option-Command-M and N go
+    /// to Face ID on a device with Face ID, and otherwise to Touch ID, as
+    /// Simulator.app assigns them when a device window becomes key.
+    private static func biometric(_ id: ID, title: String, _ biometric: DeviceSession.Biometric,
+                                  matching: Bool) -> DeviceCommand {
+        let feature = biometric == .touchID ? DeviceCapabilities.touchID : DeviceCapabilities.faceID
+        return DeviceCommand(id: id, title: title, key: matching ? "m" : "n", modifiers: [.command, .option],
+                             hasKey: { capabilities in
+                                 let faceID = capabilities?.supportsFeature(DeviceCapabilities.faceID) ?? false
+                                 return biometric == .faceID ? faceID : !faceID
+                             },
+                             isSupported: { $0.supportsFeature(feature) }) { controller in
+            controller.run { try controller.session.sendBiometric(biometric, matching: matching) }
+        }
+    }
 
     /// Sets a physical orientation. The checkmark shows the orientation last
     /// read from the device; Face Up and Face Down keep the display angle.

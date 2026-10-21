@@ -566,13 +566,87 @@ struct InputFocusTests {
                                                  "Home", "Lock", "Action Button", "Siri", "Shake",
                                                  "App Switcher", "-", "Trigger Screenshot"])
         #expect(try visibleTitles("I/O") == ["Keyboard", "-", "Increase Volume", "Decrease Volume", "-", "Open URL…"])
-        #expect(try visibleTitles("Features") == ["Authorize Apple Pay", "-", "Toggle Appearance"])
+        #expect(try visibleTitles("Features") == ["Authorize Apple Pay", "-", "Toggle Appearance",
+                                                   "Toggle In-call Status Bar", "-", "Increase Preferred Text Size",
+                                                   "Decrease Preferred Text Size", "Toggle Increase Contrast", "-",
+                                                   "Trigger iCloud Sync"])
         #expect(try visibleTitles("Debug") == ["Show Parallel Testing Devices"])
         // Option and Control alternates ask before quitting, capturing, and closing.
         let alternates = NSApp.mainMenu?.items.compactMap(\.submenu).flatMap(\.items).filter(\.isAlternate)
         #expect(alternates?.map(\.title) == ["Quit NeoSimulator…", "Save Screen…", "Record Screen…", "Close Window…"])
         #expect(alternates?.map(\.keyEquivalentModifierMask) == [[.command, .option], [.command, .option],
                                                                   [.command, .option], [.command, .control]])
+    }
+
+    @Test func biometricShortcutsGoToTheKeyDevicesBiometrics() throws {
+        _ = NSApplication.shared
+        let menus = MenuController(application: nil)
+        menus.install()
+        defer { NSApp.mainMenu = nil }
+        let features = try #require(NSApp.mainMenu?.items.first { $0.title == "Features" }?.submenu)
+        func shortcuts(_ submenu: String) throws -> [String] {
+            try #require(features.items.first { $0.title == submenu }?.submenu).items.map(\.keyEquivalent)
+        }
+        func device(_ feature: String) -> DeviceCapabilities {
+            DeviceCapabilities(family: .iPhone, runtimeVersion: 0x1B_00_00, supportsFeature: { $0 == feature })
+        }
+        #expect(try shortcuts("Touch ID") == ["", "m", "n"] && shortcuts("Face ID") == ["", "", ""])
+        menus.updateKeyEquivalents(for: device(DeviceCapabilities.faceID))
+        #expect(try shortcuts("Touch ID") == ["", "", ""] && shortcuts("Face ID") == ["", "m", "n"])
+        menus.updateVisibility(in: features, for: device(DeviceCapabilities.faceID))
+        #expect(features.items.filter { !$0.isHidden }.prefix(2).map { $0.isSeparatorItem ? "-" : $0.title }
+                == ["Face ID", "-"])
+        menus.updateKeyEquivalents(for: device(DeviceCapabilities.touchID))
+        #expect(try shortcuts("Touch ID") == ["", "m", "n"] && shortcuts("Face ID") == ["", "", ""])
+        // Shift-Command-I belongs to Trigger iCloud Sync, as in Simulator.app.
+        let items = NSApp.mainMenu?.items.compactMap(\.submenu).flatMap(\.items) ?? []
+        #expect(items.filter { $0.keyEquivalent == "i" && $0.keyEquivalentModifierMask == [.command, .shift] }
+            .map(\.title) == ["Trigger iCloud Sync"])
+    }
+
+    @Test func featureCommandsChangeTheGuestState() throws {
+        let display = TestDisplay()
+        let controller = try makeController(display, features: [DeviceCapabilities.faceID, DeviceCapabilities.standBy])
+        defer { controller.invalidate() }
+        let session = controller.session
+        controller.perform(.faceIDEnrolled)
+        #expect(session.isBiometricEnrolled)
+        controller.perform(.faceIDMatching)
+        controller.perform(.faceIDNonMatching)
+        // A device without Touch ID ignores its commands.
+        controller.perform(.touchIDMatching)
+        controller.perform(.faceIDEnrolled)
+        #expect(!session.isBiometricEnrolled)
+        controller.perform(.toggleStandBy)
+        #expect(DeviceCommand.command(.toggleStandBy).stateTitle?(controller) == "Hide StandBy")
+        controller.perform(.toggleInCallStatusBar)
+        controller.perform(.shake)
+        #expect(display.postedNotifications == [
+            "com.apple.BiometricKit.enrollmentChanged", "com.apple.BiometricKit_Sim.pearl.match",
+            "com.apple.BiometricKit_Sim.pearl.nomatch", "com.apple.BiometricKit.enrollmentChanged",
+            "com.apple.springboard.ambient.presentation", "com.apple.iphonesimulator.toggleincallstatusbar",
+            "com.apple.UIKit.SimulatorShake",
+        ])
+
+        // Text size stops at the largest size; an unknown size is an error.
+        display.contentSize = 11
+        try session.changeTextSize(by: 1)
+        try session.changeTextSize(by: 1)
+        #expect(display.contentSize == 12)
+        try session.changeTextSize(by: -1)
+        #expect(display.contentSize == 11)
+        display.contentSize = 0
+        #expect(throws: (any Error).self) { try session.changeTextSize(by: -1) }
+        #expect(display.contentSize == 0)
+
+        try session.toggleIncreaseContrast()
+        #expect(display.contrastMode == 2)
+        try session.toggleIncreaseContrast()
+        #expect(display.contrastMode == 1)
+        // Toggling from an unknown mode would guess; it reports the failure instead.
+        display.contrastMode = 0
+        #expect(throws: (any Error).self) { try session.toggleIncreaseContrast() }
+        #expect(display.contrastMode == 0)
     }
 
     @Test func orientationCommandsNeedTheDefaultDeviceSet() throws {
@@ -1015,8 +1089,20 @@ private final class TestDisplay: SimulatorDisplay {
             completion?(error)
         }
     }
-    func shake() throws {}
     func toggleAppearance() throws {}
+    /// The guest's Darwin notification states, and the names posted in order.
+    var notificationStates: [String: UInt64] = [:]
+    var postedNotifications: [String] = []
+    var contentSize = 4
+    var contrastMode = 1
+    func postNotification(_ name: String) throws { postedNotifications.append(name) }
+    func notificationState(_ name: String) throws -> UInt64 { notificationStates[name] ?? 0 }
+    func setNotificationState(_ name: String, to state: UInt64) throws { notificationStates[name] = state }
+    func contentSizeCategory() throws -> Int { contentSize }
+    func setContentSizeCategory(_ category: Int) throws { contentSize = category }
+    func increaseContrastMode() throws -> Int { contrastMode }
+    func setIncreaseContrast(_ enabled: Bool) throws { contrastMode = enabled ? 2 : 1 }
+    func triggerCloudSync() async throws {}
     func setChromeVisible(_ visible: Bool) {}
     func setActive(_ active: Bool) { activations.append(active) }
     func setKeyboardEnabled(_ enabled: Bool) { keyboard.append(enabled) }

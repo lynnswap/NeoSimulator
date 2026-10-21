@@ -93,7 +93,9 @@ Representative coordinator actions:
 | Memory Warning | `0x10001FE70` | omitted: private implementation discards its file-write result |
 | Hardware keyboard sync | `0x1000207D4` | available, deferred pending UI state ownership |
 | Graphics/debug options | `0x10002180C` onward | available, outside first parity |
-| iCloud sync | `0x100022224` | available, deferred |
+| iCloud sync | `0x100022224` | implemented with `SimDevice triggerCloudSyncWithCompletionQueue:completionHandler:`, reporting its error |
+| Text size / Increase Contrast | `0x100020654` / `0x1000204E8` | implemented with `currentContentSizeCategory`/`setContentSizeCategory:error:` (1–12, no change at the limits) and `currentIncreaseContrastMode`/`setIncreaseContrastEnabled:error:` |
+| StandBy | `0x1000202D4` | implemented by flipping and posting the `com.apple.springboard.ambient.presentation` notification state |
 | Location | `0x100022390` | available, deferred pending location UI |
 
 ## Implemented parity set
@@ -109,7 +111,10 @@ semantics:
   Home, Lock, Side Button, Action Button,
   Siri, Shake, App Switcher, Trigger Screenshot;
 - I/O: Toggle Software Keyboard, Increase Volume, Decrease Volume;
-- Features: Authorize Apple Pay, Toggle Appearance;
+- Features: Touch ID and Face ID (Enrolled, Matching, Non-matching),
+  Authorize Apple Pay, Toggle Appearance, Toggle In-call Status Bar,
+  Show/Hide StandBy, Increase and Decrease Preferred Text Size, Toggle
+  Increase Contrast, Trigger iCloud Sync;
 - Debug: Show Parallel Testing Devices;
 - Window: Minimize, Full Screen, Show Device Bezels, Stay on Top, Fit
   Screen, Bring All to Front. Simulator.app hides Zoom.
@@ -128,9 +133,7 @@ These have viable Xcode 27+ primitives but need a dedicated state/capability
 contract before being user-visible:
 
 - Connect Hardware Keyboard and keyboard-language sync;
-- content size and increased contrast;
 - location controls;
-- biometrics;
 - status-bar overrides;
 - physical, point-accurate, and pixel-accurate scale modes;
 - external displays and CarPlay.
