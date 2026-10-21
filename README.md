@@ -108,7 +108,13 @@ to create one, and **Device → Shut Down** to stop it. As in Simulator.app, Ope
 Simulator groups devices by runtime and marks booted devices: a checkmark when
 the device has a window, a dash when it does not; hold Option to see each
 device's runtime and type. Neo lists only iOS devices until it hosts other
-platforms. **Device → Restart** and **Device → Erase
+platforms.
+
+Neo also shows the devices Xcode boots for parallel testing, from
+`~/Library/Developer/XCTestDevices` (or the `TestingDeviceSetPath` default).
+**Debug → Show Parallel Testing Devices** hides their windows without shutting
+the devices down. Rotation and orientation commands are unavailable for these
+devices, because `devicectl` reaches only the default device set. **Device → Restart** and **Device → Erase
 All Content and Settings…** keep the window open and reconnect it when the
 device boots again; an active recording is saved first. Closing a window
 leaves the simulator running; it can be reopened from File → Open Simulator or

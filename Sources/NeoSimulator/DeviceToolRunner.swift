@@ -90,15 +90,19 @@ final class DeviceTools {
     static let simctl = URL(fileURLWithPath: "/Library/Developer/PrivateFrameworks/CoreSimulator.framework/Versions/A/Resources/bin/simctl")
     static let devicectl = URL(fileURLWithPath: "/Library/Developer/PrivateFrameworks/CoreDevice.framework/Versions/A/Resources/bin/devicectl")
     let identifier: String
+    /// The device's set when it is not the default set.
+    let deviceSetPath: String?
     let environment: [String: String]
     private let simctlURL: URL
     private let devicectlURL: URL
     private let runner = DeviceToolRunner()
 
     /// - Parameters:
+    ///   - deviceSetPath: The device's set when it is not the default set.
+    ///     `simctl` addresses the device in that set; `devicectl` cannot.
     ///   - simctl: The `simctl` executable; tests substitute a stand-in.
     ///   - devicectl: The `devicectl` executable; tests substitute a stand-in.
-    init(identifier: String, xcodeURL: URL, simctl: URL = DeviceTools.simctl,
+    init(identifier: String, xcodeURL: URL, deviceSetPath: String? = nil, simctl: URL = DeviceTools.simctl,
          devicectl: URL = DeviceTools.devicectl) throws {
         let developerDirectory = xcodeURL.appendingPathComponent("Contents/Developer").path
         simctlURL = simctl
@@ -109,6 +113,7 @@ final class DeviceTools {
             }
         }
         self.identifier = identifier
+        self.deviceSetPath = deviceSetPath
         environment = ["DEVELOPER_DIR": developerDirectory]
     }
 
@@ -184,12 +189,13 @@ final class DeviceTools {
     func recordingProcess(to url: URL) -> Process {
         let process = Process()
         process.executableURL = simctlURL
-        process.arguments = ["io", identifier, "recordVideo", "--codec=h264", "--mask=black", "--force", url.path]
+        process.arguments = simctlSet + ["io", identifier, "recordVideo", "--codec=h264", "--mask=black", "--force", url.path]
         process.environment = ProcessInfo.processInfo.environment.merging(environment) { _, new in new }
         return process
     }
     func cancel() { runner.cancel() }
+    private var simctlSet: [String] { deviceSetPath.map { ["--set", $0] } ?? [] }
     private func simctl(_ arguments: [String], timeout: Duration = .seconds(30)) async throws -> Data {
-        try await runner.run(simctlURL, arguments: arguments, environment: environment, timeout: timeout)
+        try await runner.run(simctlURL, arguments: simctlSet + arguments, environment: environment, timeout: timeout)
     }
 }

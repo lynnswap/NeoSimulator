@@ -58,11 +58,11 @@ struct DeviceCommand {
         DeviceCommand(id: .shutDown, title: "Shut Down",
                       isEnabled: { $0.session.canPerformToolOperation && $0.session.recording == nil }) { $0.shutDown() },
         DeviceCommand(id: .rotateLeft, title: "Rotate Left", key: String(UnicodeScalar(NSLeftArrowFunctionKey)!),
-                      isSupported: { $0.supportsFeature(DeviceCapabilities.displayRotation) },
+                      isSupported: { $0.rotates },
                       isEnabled: { $0.session.canPerformToolOperation }) { $0.rotate(left: true) },
         DeviceCommand(id: .rotateRight, title: "Rotate Right", key: String(UnicodeScalar(NSRightArrowFunctionKey)!),
                       toolbar: Toolbar(label: "Rotate Right", symbol: "rotate.right"),
-                      isSupported: { $0.supportsFeature(DeviceCapabilities.displayRotation) },
+                      isSupported: { $0.rotates },
                       isEnabled: { $0.session.canPerformToolOperation }) { $0.rotate(left: false) },
         orientation(.portrait, title: "Portrait"),
         orientation(.landscapeRight, title: "Landscape Right"),
@@ -137,7 +137,7 @@ struct DeviceCommand {
     /// read from the device; Face Up and Face Down keep the display angle.
     private static func orientation(_ orientation: DeviceOrientation, title: String) -> DeviceCommand {
         DeviceCommand(id: ID(rawValue: orientation.rawValue)!, title: title,
-                      isSupported: { $0.supportsFeature(DeviceCapabilities.displayRotation) },
+                      isSupported: { $0.rotates },
                       isEnabled: { $0.session.canPerformToolOperation },
                       state: { $0.session.orientation == orientation ? .on : .off }) {
             $0.setOrientation(orientation)
