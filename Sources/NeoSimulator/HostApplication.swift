@@ -30,8 +30,10 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     /// Quitting's device shutdowns, which another host appearing cancels.
     private var terminationShutdowns: [Task<String?, Never>] = []
     /// SIGTERM is how `xcode-simulator-host` ends the host when it switches
-    /// simulator hosts, handing the devices over.
+    /// simulator hosts, handing the devices over. It stays until the process
+    /// exits, so a handover also ends a quit that waits on an alert.
     private var handoverSignal: DispatchSourceSignal?
+    private static weak var handoverTarget: HostApplication?
     /// The choice Quit NeoSimulator… made, which takes precedence over the
     /// default quit action.
     private var quitChoice: DeviceLifetimeChoice?
@@ -63,12 +65,18 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         menu?.install()
         notificationToken = try deviceSet.observe { [weak self] in self?.rescan() }
         signal(SIGTERM, SIG_IGN)
-        let handover = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
-        handover.setEventHandler { [weak self] in
-            MainActor.assumeIsolated {
-                self?.yieldToAnotherHost()
-                Self.requestTermination()
+        Self.handoverTarget = self
+        let handover = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .global())
+        handover.setEventHandler {
+            // An alert shown from a main-queue block keeps the main queue busy,
+            // but its modal loop still runs main run-loop blocks.
+            CFRunLoopPerformBlock(CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue) {
+                MainActor.assumeIsolated {
+                    Self.handoverTarget?.yieldToAnotherHost()
+                    Self.requestTermination()
+                }
             }
+            CFRunLoopWakeUp(CFRunLoopGetMain())
         }
         handover.resume()
         handoverSignal = handover
@@ -625,8 +633,6 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             catch { hostLog("Could not unregister simulator notifications: \(error.localizedDescription)") }
         }
         notificationToken = nil
-        handoverSignal?.cancel()
-        handoverSignal = nil
         if let testingSet, let testingNotificationToken {
             do { try testingSet.stopObserving(testingNotificationToken) }
             catch { hostLog("Could not unregister testing device notifications: \(error.localizedDescription)") }
