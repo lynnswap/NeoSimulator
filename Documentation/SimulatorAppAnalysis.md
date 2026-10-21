@@ -91,9 +91,11 @@ Representative coordinator actions:
 | Action | Address | Status |
 | --- | ---: | --- |
 | Restart | `0x10001FDBC` | implemented with `simctl shutdown` and `boot` (plus `erase` for Erase All Content and Settings…), keeping the window and reconnecting after boot |
-| Memory Warning | `0x10001FE70` | omitted: private implementation discards its file-write result |
+| Memory Warning | `0x10001FE70` | implemented as a checked, in-place write of `SimDevice.memoryWarningFilePath`, because `simulateMemoryWarning` discards its write result |
 | Hardware keyboard sync | `0x1000207D4` | available, deferred pending UI state ownership |
-| Graphics/debug options | `0x10002180C` onward | available, outside first parity |
+| Slow Animations / Graphics Quality Override | `0x10002180C` / `0x1000218AC` | implemented by setting and posting `com.apple.UIKit.SimulatorSlowMotionAnimationState` (0/1) and `com.apple.UIKit.ForceGraphicsQuality` (0/10/100), checked from `SlowMotionAnimation` / `GraphicsQualityOverride` and applied again on connection; Apple TV also stops PineBoard |
+| Color options | `0x100021B84` onward | implemented with `setCADebugOption:enabled:` (options 2, 1, 14, 17), checked and verified with `getCADebugOption:` |
+| Open System Log… | `0x100022064` | implemented: `<logPath>/system.log` opened in Console, reporting a missing file or failed launch |
 | iCloud sync | `0x100022224` | implemented with `SimDevice triggerCloudSyncWithCompletionQueue:completionHandler:`, reporting its error |
 | Text size / Increase Contrast | `0x100020654` / `0x1000204E8` | implemented with `currentContentSizeCategory`/`setContentSizeCategory:error:` (1–12, no change at the limits) and `currentIncreaseContrastMode`/`setIncreaseContrastEnabled:error:` |
 | StandBy | `0x1000202D4` | implemented by flipping and posting the `com.apple.springboard.ambient.presentation` notification state |
@@ -106,7 +108,10 @@ semantics:
 
 - Application: About, Hide, Hide Others, Show All, Quit, Quit…;
 - File: New Simulator…, Open Simulator, Save Screen, Save Screen…, Record
-  Screen, Record Screen…, Stop Recording, Close Window, Close Window…;
+  Screen, Record Screen…, Stop Recording, GPU Selection
+  (`FramebufferServerGPUPolicy` in `com.apple.CoreSimulator`, rewritten as
+  `selectPreferredGPUType:` at `0x100015ED4` does), Close Window, Close
+  Window…;
 - Edit: Copy Screen;
 - Device: Rotate Left, Rotate Right, Orientation, Rotate Device Automatically,
   Home, Lock, Side Button, Action Button,
@@ -117,7 +122,9 @@ semantics:
   Show/Hide StandBy, Increase and Decrease Preferred Text Size, Toggle
   Increase Contrast, Trigger iCloud Sync, Location (None, Custom Location…,
   and the runtime's scenarios);
-- Debug: Show Parallel Testing Devices;
+- Debug: Slow Animations, Graphics Quality Override, Color Blended Layers,
+  Color Copied Images, Color Misaligned Images, Color Off-screen Rendered, Open
+  System Log…, Simulate Memory Warning, Show Parallel Testing Devices;
 - Window: Minimize, Full Screen, Show Device Bezels, Stay on Top, Fit
   Screen, Bring All to Front. Simulator.app hides Zoom.
 
@@ -148,7 +155,7 @@ contract before being user-visible:
   does not have.
 - watchOS, tvOS, and visionOS-specific gesture, remote, camera, immersion, and
   viewport commands.
-- FaceTime/audio-routing and internal GPU/debug menus.
+- FaceTime/audio-routing menus.
 - Device Manager or any Device Hub URL handoff.
 
 These exclusions are part of the Neo-mode safety boundary, not missing

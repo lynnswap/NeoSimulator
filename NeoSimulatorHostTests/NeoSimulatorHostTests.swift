@@ -570,7 +570,12 @@ struct InputFocusTests {
                                                    "Toggle In-call Status Bar", "-", "Increase Preferred Text Size",
                                                    "Decrease Preferred Text Size", "Toggle Increase Contrast", "-",
                                                    "Trigger iCloud Sync", "-", "Location"])
-        #expect(try visibleTitles("Debug") == ["Show Parallel Testing Devices"])
+        // Graphics Quality Override needs its feature, and Slow Animations
+        // without its feature toggles the frontmost app.
+        #expect(try visibleTitles("Debug") == ["Toggle Slow Animations in Frontmost App", "-", "Color Blended Layers",
+                                                "Color Copied Images", "Color Misaligned Images",
+                                                "Color Off-screen Rendered", "-", "Open System Log…",
+                                                "Simulate Memory Warning", "-", "Show Parallel Testing Devices"])
         // Option and Control alternates ask before quitting, capturing, and closing.
         let alternates = NSApp.mainMenu?.items.compactMap(\.submenu).flatMap(\.items).filter(\.isAlternate)
         #expect(alternates?.map(\.title) == ["Quit NeoSimulator…", "Save Screen…", "Record Screen…", "Close Window…"])
@@ -647,6 +652,201 @@ struct InputFocusTests {
         display.contrastMode = 0
         #expect(throws: (any Error).self) { try session.toggleIncreaseContrast() }
         #expect(display.contrastMode == 0)
+    }
+
+    @Test func debugMenuFollowsSimulatorAppOrderAndShortcuts() throws {
+        _ = NSApplication.shared
+        let menus = MenuController(application: nil)
+        menus.install()
+        defer { NSApp.mainMenu = nil }
+        let debug = try #require(NSApp.mainMenu?.items.first { $0.title == "Debug" }?.submenu)
+        let features = [DeviceCapabilities.slowMotionStateful, DeviceCapabilities.graphicsQualityOverride]
+        menus.updateVisibility(in: debug, for: DeviceCapabilities(family: .iPhone, runtimeVersion: 0x1B_00_00,
+                                                                  supportsFeature: { features.contains($0) }))
+        #expect(debug.items.filter { !$0.isHidden }.map { $0.isSeparatorItem ? "-" : $0.title } == [
+            "Toggle Slow Animations in Frontmost App", "Graphics Quality Override", "-", "Color Blended Layers",
+            "Color Copied Images", "Color Misaligned Images", "Color Off-screen Rendered", "-", "Open System Log…",
+            "Simulate Memory Warning", "-", "Show Parallel Testing Devices",
+        ])
+        let quality = try #require(debug.items.first { $0.title == "Graphics Quality Override" }?.submenu)
+        #expect(quality.items.map(\.title) == ["Device Default", "Low Quality", "High Quality"])
+        let shortcuts = debug.items.filter { !$0.keyEquivalent.isEmpty }
+        #expect(shortcuts.map(\.title) == ["Open System Log…", "Simulate Memory Warning"])
+        #expect(shortcuts.map(\.keyEquivalent) == ["/", "m"])
+        #expect(shortcuts.map(\.keyEquivalentModifierMask) == [.command, [.command, .shift]])
+    }
+
+    @Test func slowAnimationsAndGraphicsQualityFollowTheAppsSettings() throws {
+        let keys = [HostPreferences.slowMotionAnimation, HostPreferences.graphicsQualityOverride]
+        let saved = keys.map { UserDefaults.standard.object(forKey: $0) }
+        defer { for (key, value) in zip(keys, saved) { UserDefaults.standard.set(value, forKey: key) } }
+        for key in keys { UserDefaults.standard.removeObject(forKey: key) }
+        let slowMotion = "com.apple.UIKit.SimulatorSlowMotionAnimationState"
+        let quality = "com.apple.UIKit.ForceGraphicsQuality"
+        let features: Set = [DeviceCapabilities.slowMotionStateful, DeviceCapabilities.graphicsQualityOverride]
+        let display = TestDisplay()
+        let controller = try makeController(display, features: features)
+        defer { controller.invalidate() }
+        let slow = DeviceCommand.command(.toggleSlowAnimations)
+        #expect(slow.stateTitle?(controller) == "Slow Animations" && slow.state?(controller) == .off)
+        controller.perform(.toggleSlowAnimations)
+        #expect(slow.state?(controller) == .on)
+        controller.perform(.graphicsQualityLow)
+        #expect(DeviceCommand.command(.graphicsQualityLow).state?(controller) == .on)
+        #expect(DeviceCommand.command(.graphicsQualityDefault).state?(controller) == .off)
+        #expect(display.notificationStates == [slowMotion: 1, quality: 10])
+        #expect(display.postedNotifications == [slowMotion, quality])
+
+        // A device that refuses the state keeps the app's setting unchanged.
+        display.notificationError = HostError.operation("refused")
+        #expect(throws: (any Error).self) { try controller.session.toggleSlowAnimations() }
+        #expect(slow.state?(controller) == .on)
+
+        // Connecting applies the settings, but not the default quality.
+        let connected = TestDisplay()
+        try makeSession(connected, features: features).applyDebugSettings()
+        #expect(connected.notificationStates == [slowMotion: 1, quality: 10])
+        UserDefaults.standard.set(GraphicsQuality.deviceDefault.rawValue, forKey: HostPreferences.graphicsQualityOverride)
+        let older = TestDisplay()
+        try makeSession(older, features: [DeviceCapabilities.graphicsQualityOverride]).applyDebugSettings()
+        #expect(older.postedNotifications.isEmpty)
+
+        // A guest that does not keep slow animations gets Simulator.app's
+        // toggle, which still alternates the state.
+        let other = try makeController(older, features: [])
+        defer { other.invalidate() }
+        #expect(slow.stateTitle?(other) == "Toggle Slow Animations in Frontmost App" && slow.state?(other) == .off)
+        other.perform(.toggleSlowAnimations)
+        #expect(older.notificationStates == [slowMotion: 0])
+        #expect(!UserDefaults.standard.bool(forKey: HostPreferences.slowMotionAnimation))
+    }
+
+    @Test func graphicsQualityAppliesAtOnceUnlessAnAppleTVRestartsItsSystemUI() async throws {
+        let key = HostPreferences.graphicsQualityOverride
+        let saved = UserDefaults.standard.object(forKey: key)
+        defer { UserDefaults.standard.set(saved, forKey: key) }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let log = directory.appendingPathComponent("arguments"), simctl = directory.appendingPathComponent("simctl")
+        try """
+            #!/bin/sh
+            printf '%s\\n' "$*" >> "\(log.path)"
+            """.write(to: simctl, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: simctl.path)
+        let quality = "com.apple.UIKit.ForceGraphicsQuality"
+        for family in [DeviceCapabilities.Family.tv, .iPhone] {
+            let display = TestDisplay()
+            let controller = try makeController(display, family: family,
+                                                features: [DeviceCapabilities.graphicsQualityOverride], simctl: simctl)
+            defer { controller.invalidate() }
+            // While another device-tool operation runs, Simulator.app still
+            // applies the choice; only the Apple TV's restart has to wait.
+            #expect(controller.session.reserve())
+            #expect(DeviceCommand.command(.graphicsQualityHigh).isEnabled(controller) == (family != .tv))
+            controller.perform(.graphicsQualityHigh)
+            #expect(display.notificationStates[quality] == (family == .tv ? nil : 100))
+            controller.session.release()
+            if family == .tv { controller.perform(.graphicsQualityHigh) }
+            for _ in 0..<200 where controller.session.isBusy { try await Task.sleep(for: .milliseconds(10)) }
+            #expect(display.notificationStates[quality] == 100)
+        }
+        #expect(try String(contentsOf: log, encoding: .utf8) == "spawn test-device launchctl stop com.apple.PineBoard\n")
+    }
+
+    @Test func colorOptionsShowTheDeviceStateAndReportDroppedChanges() throws {
+        let display = TestDisplay()
+        let controller = try makeController(display)
+        defer { controller.invalidate() }
+        controller.perform(.colorBlendedLayers)
+        controller.perform(.colorOffscreenRendered)
+        #expect(display.caDebugOptions.map(\.rawValue).sorted() == [2, 17])
+        let blended = DeviceCommand.command(.colorBlendedLayers)
+        #expect(blended.state?(controller) == .on && DeviceCommand.command(.colorCopiedImages).state?(controller) == .off)
+        // The checkmark is read from the device, which another host can change.
+        display.caDebugOptions.remove(.colorBlendedLayers)
+        #expect(blended.state?(controller) == .off)
+        // CoreSimulator does not report a dropped change; reading back does.
+        display.droppedCADebugOptions = [.colorMisalignedImages]
+        #expect(throws: (any Error).self) { try controller.session.toggle(.colorMisalignedImages) }
+    }
+
+    @Test func memoryWarningRewritesTheTriggerFileInPlaceAndReportsFailures() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let trigger = directory.appendingPathComponent("memory_warning_simulation")
+        try Data("earlier".utf8).write(to: trigger)
+        let file = try FileManager.default.attributesOfItem(atPath: trigger.path)[.systemFileNumber] as? Int
+        let display = TestDisplay()
+        display.memoryWarningURL = trigger
+        let controller = try makeController(display)
+        defer { controller.invalidate() }
+        controller.perform(.simulateMemoryWarning)
+        let attributes = try FileManager.default.attributesOfItem(atPath: trigger.path)
+        #expect(attributes[.size] as? Int == 0)
+        // Like CoreSimulator's write, the file is truncated rather than replaced.
+        #expect(attributes[.systemFileNumber] as? Int == file)
+        display.memoryWarningURL = directory.appendingPathComponent("missing/memory_warning_simulation")
+        #expect(throws: (any Error).self) { try controller.session.simulateMemoryWarning() }
+    }
+
+    @Test func openSystemLogOpensTheDevicesLogOrReportsItsAbsence() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let display = TestDisplay()
+        display.logFolder = directory
+        var opened: [URL] = []
+        let controller = try makeController(display, openLog: { opened.append($0) })
+        defer { controller.invalidate() }
+        await #expect(throws: (any Error).self) { try await controller.session.openSystemLog() }
+        #expect(opened.isEmpty)
+        let log = directory.appendingPathComponent("system.log")
+        try Data().write(to: log)
+        controller.perform(.openSystemLog)
+        for _ in 0..<200 where opened.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(opened == [log])
+    }
+
+    @Test func gpuSelectionRewritesCoreSimulatorsPolicyAsSimulatorAppDoes() throws {
+        _ = NSApplication.shared
+        let defaults = try #require(MemoryDefaults(suiteName: nil))
+        let menus = MenuController(application: nil, gpuPolicy: GPUPolicy(defaults: defaults))
+        menus.install()
+        defer { NSApp.mainMenu = nil }
+        let file = try #require(NSApp.mainMenu?.items.first { $0.title == "File" }?.submenu)
+        let titles = file.items.map { $0.isSeparatorItem ? "-" : $0.title }
+        let index = try #require(titles.firstIndex(of: "GPU Selection"))
+        #expect(titles[(index - 2)...(index + 2)] == ["Stop Recording", "-", "GPU Selection", "-", "Install App or Import Media…"])
+        let gpu = try #require(file.items[index].submenu)
+        #expect(gpu.items.map { $0.isSeparatorItem ? "-" : $0.title } == [
+            "Automatic", "Prefer Integrated GPU", "Prefer Discrete GPU", "-", "Use External GPU When Available",
+        ])
+        let items = gpu.items.filter { !$0.isSeparatorItem }
+        func checked() -> [String] { items.filter { menus.validateMenuItem($0) && $0.state == .on }.map(\.title) }
+        func choose(_ title: String) throws -> [String]? {
+            let item = try #require(items.first { $0.title == title })
+            #expect(NSApp.sendAction(try #require(item.action), to: item.target, from: item))
+            return defaults.stringArray(forKey: GPUPolicy.key)
+        }
+        // Unset, the policy is Simulator.app's default order, led by automatic.
+        #expect(checked() == ["Automatic"])
+        #expect(try choose("Prefer Integrated GPU") == ["lowPower", "discrete", "external"])
+        #expect(try choose("Use External GPU When Available") == ["external", "lowPower", "discrete"])
+        #expect(checked() == ["Prefer Integrated GPU", "Use External GPU When Available"])
+        #expect(try choose("Prefer Discrete GPU") == ["external", "discrete", "lowPower"])
+        #expect(try choose("Automatic") == ["external", "automatic"])
+        #expect(try choose("Use External GPU When Available") == ["automatic", "external"])
+        #expect(checked() == ["Automatic"])
+        // An older single string is an order of one; kinds the menu does not
+        // offer are dropped.
+        defaults.set("headless", forKey: GPUPolicy.key)
+        #expect(checked().isEmpty)
+        #expect(try choose("Prefer Discrete GPU") == ["discrete", "lowPower", "external"])
+        // Without a policy, the choices are unavailable.
+        let unavailable = MenuController(application: nil)
+        #expect(!items.contains { unavailable.validateMenuItem($0) })
     }
 
     @Test func connectingRestoresTheSavedLocationOnDevicesWithScenarios() async throws {
@@ -1230,34 +1430,39 @@ struct InputFocusTests {
     }
 
     private func makeController(_ display: TestDisplay,
+                                family: DeviceCapabilities.Family = .iPhone,
                                 features: Set<String> = [DeviceCapabilities.displayRotation],
                                 framebufferMask: Bool = false,
                                 simctl: URL = DeviceTools.simctl,
                                 devicectl: URL = DeviceTools.devicectl,
                                 recordingProcess: ((URL, DeviceTools.ScreenMask) -> Process)? = nil,
+                                openLog: @escaping (URL) async throws -> Void = { _ in },
                                 onClose: @escaping (DeviceWindowController, DeviceLifetimeChoice?) -> Void = { _, _ in },
                                 onRestart: @escaping (DeviceWindowController, Bool) -> Void = { _, _ in })
         throws -> DeviceWindowController {
-        let session = try makeSession(display, features: features, framebufferMask: framebufferMask, simctl: simctl,
-                                      devicectl: devicectl, recordingProcess: recordingProcess)
+        let session = try makeSession(display, family: family, features: features, framebufferMask: framebufferMask,
+                                      simctl: simctl, devicectl: devicectl, recordingProcess: recordingProcess,
+                                      openLog: openLog)
         return try DeviceWindowController(session: session, onClose: onClose, onRestart: onRestart)
     }
 
     private func makeSession(_ display: TestDisplay,
+                             family: DeviceCapabilities.Family = .iPhone,
                              features: Set<String> = [DeviceCapabilities.displayRotation],
                              framebufferMask: Bool = false,
                              simctl: URL = DeviceTools.simctl,
                              devicectl: URL = DeviceTools.devicectl,
-                             recordingProcess: ((URL, DeviceTools.ScreenMask) -> Process)? = nil) throws -> DeviceSession {
+                             recordingProcess: ((URL, DeviceTools.ScreenMask) -> Process)? = nil,
+                             openLog: @escaping (URL) async throws -> Void = { _ in }) throws -> DeviceSession {
         DeviceSession(
             device: availableDevice("test-device", "Test iPhone", runtime: "iOS", state: 3),
-            capabilities: DeviceCapabilities(family: .iPhone, runtimeVersion: 0x1B_00_00,
+            capabilities: DeviceCapabilities(family: family, runtimeVersion: 0x1B_00_00,
                                              supportsFeature: { features.contains($0) },
                                              hasFramebufferMask: framebufferMask),
             display: display,
             tools: try DeviceTools(identifier: "test-device", xcodeURL: URL(fileURLWithPath: "/Applications/Xcode.app"),
                                    simctl: simctl, devicectl: devicectl),
-            recordingProcess: recordingProcess)
+            recordingProcess: recordingProcess, openLog: openLog)
     }
 }
 
@@ -1274,6 +1479,14 @@ private final class InputView: NSView {
 @MainActor
 private final class RefusingResponder: NSResponder {
     override func resignFirstResponder() -> Bool { false }
+}
+/// Defaults kept in memory, so that tests never write CoreSimulator's domain.
+/// A scratch suite would leave its property list behind.
+private final class MemoryDefaults: UserDefaults {
+    private var values: [String: Any] = [:]
+    override func object(forKey defaultName: String) -> Any? { values[defaultName] }
+    override func set(_ value: Any?, forKey defaultName: String) { values[defaultName] = value }
+    override func removeObject(forKey defaultName: String) { values[defaultName] = nil }
 }
 private enum AppliedLocation: Equatable {
     case cleared, coordinate(Double, Double), scenario(String)
@@ -1336,12 +1549,29 @@ private final class TestDisplay: SimulatorDisplay {
     var contrastMode = 1
     func postNotification(_ name: String) throws { postedNotifications.append(name) }
     func notificationState(_ name: String) throws -> UInt64 { notificationStates[name] ?? 0 }
-    func setNotificationState(_ name: String, to state: UInt64) throws { notificationStates[name] = state }
+    /// Thrown when a notification state is set.
+    var notificationError: Error?
+    func setNotificationState(_ name: String, to state: UInt64) throws {
+        if let notificationError { throw notificationError }
+        notificationStates[name] = state
+    }
     func contentSizeCategory() throws -> Int { contentSize }
     func setContentSizeCategory(_ category: Int) throws { contentSize = category }
     func increaseContrastMode() throws -> Int { contrastMode }
     func setIncreaseContrast(_ enabled: Bool) throws { contrastMode = enabled ? 2 : 1 }
     func triggerCloudSync() async throws {}
+    var logFolder = URL(fileURLWithPath: "/nonexistent")
+    var memoryWarningURL = URL(fileURLWithPath: "/nonexistent/memory_warning_simulation")
+    var caDebugOptions: Set<CADebugOption> = []
+    /// Options whose changes the device drops, as CoreSimulator can without an error.
+    var droppedCADebugOptions: Set<CADebugOption> = []
+    func logDirectory() throws -> URL { logFolder }
+    func memoryWarningFile() throws -> URL { memoryWarningURL }
+    func caDebugOption(_ option: CADebugOption) throws -> Bool { caDebugOptions.contains(option) }
+    func setCADebugOption(_ option: CADebugOption, enabled: Bool) throws {
+        guard !droppedCADebugOptions.contains(option) else { return }
+        if enabled { caDebugOptions.insert(option) } else { caDebugOptions.remove(option) }
+    }
     /// The runtime's location routes, and each location change requested in order.
     var scenarios: [LocationScenario] = []
     var appliedLocations: [AppliedLocation] = []

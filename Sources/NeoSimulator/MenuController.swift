@@ -5,6 +5,8 @@ import AppKit
 @MainActor
 final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
     private weak var application: HostApplication?
+    /// File ▸ GPU Selection's policy, or nil when it is unavailable.
+    private let gpuPolicy: GPUPolicy?
     private let openSimulator: OpenSimulatorMenu
     private let locationMenu = LocationMenu()
     /// Items whose shortcut depends on the key device.
@@ -14,8 +16,9 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
         NSApp.keyWindow?.windowController as? DeviceWindowController
     }
 
-    init(application: HostApplication?) {
+    init(application: HostApplication?, gpuPolicy: GPUPolicy? = nil) {
         self.application = application
+        self.gpuPolicy = gpuPolicy
         openSimulator = OpenSimulatorMenu(application: application)
     }
 
@@ -44,6 +47,14 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
         file.addItem(open)
         file.addItem(.separator())
         commands([.saveScreen, .saveScreenAs, .recordScreen, .recordScreenAs, .stopRecording], in: file)
+        file.addItem(.separator())
+        let gpu = menu("GPU Selection", in: file)
+        for (title, preference) in [("Automatic", GPUPolicy.Preference.automatic),
+                                    ("Prefer Integrated GPU", .integrated), ("Prefer Discrete GPU", .discrete)] {
+            item(title, action: #selector(preferGPU(_:)), in: gpu).representedObject = preference
+        }
+        gpu.addItem(.separator())
+        item("Use External GPU When Available", action: #selector(togglePrefersExternalGPU(_:)), in: gpu)
         file.addItem(.separator())
         commands([.importFiles], in: file)
         file.addItem(.separator())
@@ -107,6 +118,15 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
         features.addItem(location)
 
         let debug = menu("Debug", in: main)
+        commands([.toggleSlowAnimations], in: debug)
+        commands([.graphicsQualityDefault, .graphicsQualityLow, .graphicsQualityHigh],
+                 in: menu("Graphics Quality Override", in: debug))
+        debug.addItem(.separator())
+        commands([.colorBlendedLayers, .colorCopiedImages, .colorMisalignedImages, .colorOffscreenRendered], in: debug)
+        debug.addItem(.separator())
+        commands([.openSystemLog, .simulateMemoryWarning], in: debug)
+        // Simulator.app's Show Gaze Target follows here for Apple Vision Pro.
+        debug.addItem(.separator())
         item("Show Parallel Testing Devices", action: #selector(toggleShowTestingDevices(_:)), in: debug)
 
         let window = menu("Window", in: main)
@@ -212,6 +232,16 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
             item.state = application?.showsTestingDevices == true ? .on : .off
             return application != nil
         }
+        // Like Simulator.app, the checkmarks follow the head of the policy
+        // after a leading external GPU.
+        if item.action == #selector(preferGPU(_:)) {
+            item.state = gpuPolicy?.preference == item.representedObject as? GPUPolicy.Preference ? .on : .off
+            return gpuPolicy != nil
+        }
+        if item.action == #selector(togglePrefersExternalGPU(_:)) {
+            item.state = gpuPolicy?.prefersExternal == true ? .on : .off
+            return gpuPolicy != nil
+        }
         if item.action == #selector(fullScreen(_:)) {
             item.title = NSApp.keyWindow?.styleMask.contains(.fullScreen) == true ? "Exit Full Screen" : "Enter Full Screen"
         }
@@ -232,6 +262,10 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
     @objc private func showBrowser(_ sender: Any?) { application?.showDeviceBrowser() }
     @objc private func showNewSimulator(_ sender: Any?) { application?.showNewSimulator() }
     @objc private func toggleShowTestingDevices(_ sender: Any?) { application?.toggleShowTestingDevices() }
+    @objc private func preferGPU(_ sender: NSMenuItem) {
+        if let preference = sender.representedObject as? GPUPolicy.Preference { gpuPolicy?.prefer(preference) }
+    }
+    @objc private func togglePrefersExternalGPU(_ sender: Any?) { gpuPolicy?.togglePrefersExternal() }
     @objc private func closeWindow(_ sender: Any?) { NSApp.keyWindow?.performClose(sender) }
     @objc private func closeAsking(_ sender: Any?) { activeWindow?.closeAsking() }
     @objc private func quitAsking(_ sender: Any?) { application?.quitAsking() }
