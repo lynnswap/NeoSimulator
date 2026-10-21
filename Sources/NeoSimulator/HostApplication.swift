@@ -375,7 +375,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             } catch {
                 hostLog("Could not shut down \(identifier): \(error.localizedDescription)")
             }
-            self?.closingShutdowns.removeValue(forKey: identifier)
+            self.closingShutdowns.removeValue(forKey: identifier)
         }
     }
 
