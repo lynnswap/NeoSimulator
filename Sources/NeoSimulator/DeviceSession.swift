@@ -47,7 +47,8 @@ final class DeviceSession {
     /// The delayed steps of hardware inputs, which a disconnect cancels.
     @ObservationIgnored private var inputSteps: [Int: Task<Void, Never>] = [:]
     @ObservationIgnored private var nextInputStep = 0
-    /// How many times each input is pressed and not yet released.
+    /// How many holds of each input are still pending. HID button state is
+    /// not counted, so overlapping holds keep the input down until the last ends.
     @ObservationIgnored private var heldInputs: [HIDInput: Int] = [:]
     @ObservationIgnored private var isDisconnected = false
     /// A tool operation or a modal step that leads to one is in progress.
@@ -114,7 +115,7 @@ final class DeviceSession {
     // fail and leave the device running.
     private func release(_ event: HIDInput, _ report: FirstFailure) {
         heldInputs[event] = heldInputs[event].flatMap { $0 > 1 ? $0 - 1 : nil }
-        guard !isDisconnected, display.isBooted else { return }
+        guard heldInputs[event] == nil, !isDisconnected, display.isBooted else { return }
         do {
             try display.send(event, .up) { error in
                 if let error { report(error) }
@@ -236,8 +237,8 @@ final class DeviceSession {
     func disconnect() {
         guard !isDisconnected else { return }
         // Release held inputs while the input client can still send.
-        for (event, count) in heldInputs {
-            for _ in 0..<count { try? display.send(event, .up, completion: nil) }
+        for event in heldInputs.keys {
+            try? display.send(event, .up, completion: nil)
         }
         heldInputs.removeAll()
         inputSteps.values.forEach { $0.cancel() }

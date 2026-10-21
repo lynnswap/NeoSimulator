@@ -336,6 +336,23 @@ struct InputFocusTests {
         #expect(display.events.count == sent)
     }
 
+    @Test func overlappingHoldsReleaseWhenTheLastEnds() async throws {
+        let display = TestDisplay()
+        let controller = try makeController(display)
+        defer { controller.invalidate() }
+        let clock = ContinuousClock()
+        let start = clock.now
+        controller.send(.hold(.button(.actionStaccato), for: .milliseconds(100)))
+        try await Task.sleep(for: .milliseconds(50))
+        controller.send(.hold(.button(.actionStaccato), for: .milliseconds(100)))
+        while display.events.count < 3, clock.now - start < .seconds(5) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(clock.now - start >= .milliseconds(150))
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(display.events.map(\.state) == [.down, .down, .up])
+    }
+
     @Test func aHeldInputIsReleasedDuringAShutdown() async throws {
         let display = TestDisplay()
         let controller = try makeController(display)
