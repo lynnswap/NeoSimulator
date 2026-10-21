@@ -336,6 +336,24 @@ struct InputFocusTests {
         #expect(display.events.count == sent)
     }
 
+    @Test func aHeldInputIsReleasedDuringAShutdown() async throws {
+        let display = TestDisplay()
+        let controller = try makeController(display)
+        defer { controller.invalidate() }
+        let session = controller.session
+        var releasedDuringShutdown = false
+        display.onSend = { [weak session] in
+            if session?.canPerformCommands == false { releasedDuringShutdown = true }
+        }
+        controller.send(.hold(.button(.actionStaccato), for: .milliseconds(10)))
+        // The shutdown fails because the test device does not exist.
+        session.run({ try await session.shutDown() }, failure: { _ in })
+        for _ in 0..<3000 where session.isBusy { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(releasedDuringShutdown)
+        #expect(display.events.map(\.state) == [.down, .up])
+        #expect(session.canPerformCommands)
+    }
+
     @Test func aFailedInputReportsOneError() throws {
         let display = TestDisplay()
         display.deliveryError = HostError.operation("delivery failed")
@@ -383,6 +401,8 @@ private final class TestDisplay: SimulatorDisplay {
     var naturalSize: NSSize { NSSize(width: 390, height: 844) }
     var isBooted = true
     var events: [(input: HIDInput, state: HIDState)] = []
+    /// Called for each sent event, before it is recorded.
+    var onSend: () -> Void = {}
     /// Completes each sent event with this error.
     var deliveryError: Error?
     var buttons: [DeviceButton] {
@@ -393,6 +413,7 @@ private final class TestDisplay: SimulatorDisplay {
     var disconnectCount = 0
     init() { view.addSubview(input) }
     func send(_ input: HIDInput, _ state: HIDState, completion: (@MainActor (Error?) -> Void)?) throws {
+        onSend()
         events.append((input, state))
         completion?(deliveryError)
     }

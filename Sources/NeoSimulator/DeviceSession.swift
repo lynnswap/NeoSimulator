@@ -84,10 +84,7 @@ final class DeviceSession {
         case .hold(let event, let delay):
             guard send(event, .down, report) else { return }
             heldInputs[event, default: 0] += 1
-            after(delay) { session in
-                session.heldInputs[event] = session.heldInputs[event].flatMap { $0 > 1 ? $0 - 1 : nil }
-                session.send(event, .up, report)
-            }
+            after(delay) { session in session.release(event, report) }
         case .pressTwice(let event, let interval):
             press(event, report)
             after(interval) { session in session.press(event, report) }
@@ -109,6 +106,21 @@ final class DeviceSession {
         } catch {
             report(error)
             return false
+        }
+    }
+
+    // A held input is released while the device is booted, even when a
+    // shutdown in progress makes other commands unavailable: the shutdown can
+    // fail and leave the device running.
+    private func release(_ event: HIDInput, _ report: FirstFailure) {
+        heldInputs[event] = heldInputs[event].flatMap { $0 > 1 ? $0 - 1 : nil }
+        guard !isDisconnected, display.isBooted else { return }
+        do {
+            try display.send(event, .up) { error in
+                if let error { report(error) }
+            }
+        } catch {
+            report(error)
         }
     }
 
