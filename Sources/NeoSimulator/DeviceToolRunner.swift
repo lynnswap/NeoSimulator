@@ -130,8 +130,13 @@ final class DeviceTools {
     func boot() async throws { _ = try await simctl(["boot", identifier], timeout: .seconds(300)) }
     func shutdown() async throws { _ = try await simctl(["shutdown", identifier], timeout: .seconds(300)) }
     func erase() async throws { _ = try await simctl(["erase", identifier], timeout: .seconds(300)) }
-    func screenshot(to url: URL) async throws {
-        _ = try await simctl(["io", identifier, "screenshot", "--type=png", "--mask=alpha", url.path])
+    /// How `simctl io` renders the area outside the device's screen shape:
+    /// not at all, transparent, or black.
+    enum ScreenMask: String { case ignored, alpha, black }
+    enum VideoCodec: String { case h264, hevc }
+
+    func screenshot(to url: URL, mask: ScreenMask) async throws {
+        _ = try await simctl(["io", identifier, "screenshot", "--type=png", "--mask=\(mask.rawValue)", url.path])
     }
     func rotate(left: Bool) async throws -> OrientationReading {
         _ = try await runner.run(devicectlURL,
@@ -186,10 +191,11 @@ final class DeviceTools {
     func openURL(_ url: URL) async throws {
         _ = try await simctl(["openurl", identifier, url.absoluteString])
     }
-    func recordingProcess(to url: URL) -> Process {
+    func recordingProcess(to url: URL, mask: ScreenMask, codec: VideoCodec) -> Process {
         let process = Process()
         process.executableURL = simctlURL
-        process.arguments = simctlSet + ["io", identifier, "recordVideo", "--codec=h264", "--mask=black", "--force", url.path]
+        process.arguments = simctlSet + ["io", identifier, "recordVideo", "--codec=\(codec.rawValue)",
+                                         "--mask=\(mask.rawValue)", "--force", url.path]
         process.environment = ProcessInfo.processInfo.environment.merging(environment) { _, new in new }
         return process
     }

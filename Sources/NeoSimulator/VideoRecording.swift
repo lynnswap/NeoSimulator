@@ -113,7 +113,8 @@ final class VideoRecording {
 final class RecordingStore {
     private struct Entry {
         let recording: VideoRecording
-        let destinationKey: String
+        /// The chosen file, which another recording must not save to.
+        let destinationKey: String?
         let completion: Task<Void, Never>
     }
     private var entries: [UUID: Entry] = [:]
@@ -121,22 +122,35 @@ final class RecordingStore {
     var onError: (Error) -> Void = { hostLog($0.localizedDescription) }
     var hasActiveRecordings: Bool { !entries.isEmpty }
 
-    func start(to destination: URL, process: (URL) -> Process,
+    /// Where a finished recording is saved.
+    enum Destination {
+        /// A file chosen in a save panel, replaced when the recording finishes.
+        case file(URL)
+        /// A folder, with the name made when the recording finishes. An
+        /// existing file of that name gets a number, as `CaptureFile.move` adds.
+        case folder(URL, name: @MainActor () -> String)
+    }
+
+    func start(to destination: Destination, process: (URL) -> Process,
                onFinished: @escaping @MainActor () -> Void) throws -> VideoRecording {
         guard !isFinishing else { throw HostError.operation("Recordings are finishing before NeoSimulator quits") }
-        let canonicalDestination = destination.deletingLastPathComponent()
-            .standardizedFileURL.resolvingSymlinksInPath()
-            .appendingPathComponent(destination.lastPathComponent)
-        let caseSensitive = try canonicalDestination.deletingLastPathComponent()
-            .resourceValues(forKeys: [.volumeSupportsCaseSensitiveNamesKey]).volumeSupportsCaseSensitiveNames ?? true
-        let path = canonicalDestination.path.precomposedStringWithCanonicalMapping
-        let destinationKey = caseSensitive ? path : path.folding(options: .caseInsensitive, locale: Locale(identifier: "en_US_POSIX"))
-        guard !entries.values.contains(where: { $0.destinationKey == destinationKey }) else {
-            throw HostError.operation("Another recording is saving to \(destination.path). Choose a different filename.")
-        }
         let identifier = UUID()
-        let temporary = destination.deletingLastPathComponent()
-            .appendingPathComponent(".neo-simulator-\(identifier.uuidString).mp4")
+        let temporary: URL, destinationKey: String?
+        switch destination {
+        case .file(let file):
+            let key = try Self.destinationKey(for: file)
+            guard !entries.values.contains(where: { $0.destinationKey == key }) else {
+                throw HostError.operation("Another recording is saving to \(file.path). Choose a different filename.")
+            }
+            destinationKey = key
+            temporary = file.deletingLastPathComponent()
+                .appendingPathComponent(".neo-simulator-\(identifier.uuidString).mov")
+        case .folder:
+            // Like Simulator.app's quick recording, which is named only when it stops.
+            destinationKey = nil
+            temporary = FileManager.default.temporaryDirectory
+                .appendingPathComponent("simulator_recording_\(identifier.uuidString).mov")
+        }
         let descriptor = open(temporary.path, O_WRONLY | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR)
         guard descriptor >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
         close(descriptor)
@@ -161,8 +175,17 @@ final class RecordingStore {
                     throw HostError.operation("The recording contains no video frames")
                 }
                 readyToSave = true
-                guard rename(temporary.path, destination.path) == 0 else {
-                    throw HostError.operation("Could not save \(destination.lastPathComponent). The recording is available at \(temporary.path): \(String(cString: strerror(errno)))")
+                switch destination {
+                case .file(let file):
+                    guard rename(temporary.path, file.path) == 0 else {
+                        throw HostError.operation("Could not save \(file.lastPathComponent). The recording is available at \(temporary.path): \(String(cString: strerror(errno)))")
+                    }
+                case .folder(let folder, let name):
+                    // A recording to a chosen file would replace this one when it finishes.
+                    let reserved = Set(entries.values.compactMap(\.destinationKey))
+                    _ = try CaptureFile.move(temporary, into: folder, named: name()) {
+                        (try? Self.destinationKey(for: $0)).map(reserved.contains) ?? false
+                    }
                 }
             } catch {
                 var reported: Error = error
@@ -179,6 +202,18 @@ final class RecordingStore {
         }
         entries[identifier] = Entry(recording: recording, destinationKey: destinationKey, completion: completion)
         return recording
+    }
+
+    /// Identifies a file however its folder is spelled, and ignoring case on
+    /// a case-insensitive volume.
+    nonisolated private static func destinationKey(for file: URL) throws -> String {
+        let canonical = file.deletingLastPathComponent()
+            .standardizedFileURL.resolvingSymlinksInPath()
+            .appendingPathComponent(file.lastPathComponent)
+        let caseSensitive = try canonical.deletingLastPathComponent()
+            .resourceValues(forKeys: [.volumeSupportsCaseSensitiveNamesKey]).volumeSupportsCaseSensitiveNames ?? true
+        let path = canonical.path.precomposedStringWithCanonicalMapping
+        return caseSensitive ? path : path.folding(options: .caseInsensitive, locale: Locale(identifier: "en_US_POSIX"))
     }
 
     func finishAll() async {

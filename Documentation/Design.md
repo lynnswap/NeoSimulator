@@ -296,7 +296,9 @@ analysis source only and is not a runtime dependency.
 
 The first parity set contains only commands with an available, validated owner:
 
-- File: New Simulator…, Open Simulator, Save Screen, Close Window, Close Window…;
+- File: New Simulator…, Open Simulator, Save Screen, Save Screen…, Record
+  Screen, Record Screen…, Stop Recording, Close Window, Close Window…;
+- Edit: Copy Screen;
 - Device: Restart, Erase All Content and Settings…, Shut Down, Rotate
   Left/Right, Orientation, Rotate Device Automatically, Home,
   Lock, Side Button (watchOS devices only, so hidden until Neo hosts them),
@@ -364,16 +366,24 @@ the backlight, keep the window size. A window opened while the preference is on
 also starts at the guest's interface orientation. Releasing the registration on
 disconnect ends the events. The Orientation checkmark keeps showing the physical
 orientation that `devicectl` reports, which a guest-initiated rotation does not
-change. Save Screen uses direct Apple `simctl` and a
-same-directory temporary PNG. The file is signature-checked and then atomically
-renamed, so cancellation or failure preserves an existing destination.
+change. Screenshots and recordings use direct Apple `simctl io` with a
+`--mask` policy: `alpha` for screenshots and `black` for recordings when the
+device mask applies, and `ignored` otherwise. Save Screen and Record Screen
+follow Simulator.app's names (`Simulator Screenshot - <device> - <date>.png`,
+`Simulator Screen Recording - <device> - <date>.mov`) and capture to a
+temporary file first; `CaptureFile.move` then saves it into the screenshot
+folder or the Desktop, numbering a taken name and keeping the capture when
+the move fails. A quick recording is named when it stops, as in Simulator.app.
+A destination chosen in a save panel is written through a same-directory
+temporary file that is checked and then atomically renamed, so cancellation
+or failure preserves an existing destination.
 Device-tool operations are single-flight, drain both output pipes, have a
 bounded timeout, and are cancelled when their window closes.
 
 The following are intentionally absent:
 
 - continuous, send, receive, or automatic pasteboard synchronization;
-- Copy Screen, Edit menu clipboard commands, and Services;
+- Edit menu clipboard commands and Services;
 - global keyboard, pointer, or game-controller capture;
 - Device Manager, external-display, CarPlay, audio-routing, FaceTime, GPU, and
   internal debug menus;

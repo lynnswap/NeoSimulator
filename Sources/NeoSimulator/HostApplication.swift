@@ -239,7 +239,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         DeviceCapabilities(family: DeviceCapabilities.Family(rawValue: device.productFamily),
                            runtimeVersion: device.runtimeVersion,
                            supportsFeature: { [device] in device.supportsFeature($0) },
-                           controlsOrientation: device.deviceSetPath == nil)
+                           controlsOrientation: device.deviceSetPath == nil,
+                           hasFramebufferMask: device.hasFramebufferMask)
     }
 
     func openSimulator(withIdentifier identifier: String) async throws {
