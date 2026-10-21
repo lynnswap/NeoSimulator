@@ -77,10 +77,19 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     func toggleShowTestingDevices() {
         let show = !showsTestingDevices
         UserDefaults.standard.set(show, forKey: HostPreferences.showTestingDevices)
-        // Like Simulator.app, showing attaches every booted testing device,
-        // including those whose windows were closed.
-        if show, let testingSet, let devices = try? readDevices(in: testingSet) {
-            suppressed.subtract(devices.map(\.identifier))
+        if show {
+            // Like Simulator.app, showing attaches every booted testing device,
+            // including those whose windows were closed.
+            if let testingSet, let devices = try? readDevices(in: testingSet) {
+                suppressed.subtract(devices.map(\.identifier))
+            }
+        } else {
+            // A restart keeps running without its window.
+            for (identifier, controller) in sessions where controller.session.tools.deviceSetPath != nil {
+                sessions.removeValue(forKey: identifier)
+                awaitingReconnect.removeValue(forKey: identifier)
+                controller.invalidate()
+            }
         }
         rescan()
     }
@@ -113,18 +122,27 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         }
     }
 
+    /// Watches the set's nearest existing ancestor, moving down as Xcode
+    /// creates the directories, until the set exists.
     private func watchForTestingSet(at url: URL) {
-        guard testingSetWatcher == nil else { return }
-        let parent = url.deletingLastPathComponent().path
-        let descriptor = open(parent, O_EVTONLY)
-        guard descriptor >= 0 else { return }
+        var ancestor = url.deletingLastPathComponent()
+        while !FileManager.default.fileExists(atPath: ancestor.path), ancestor.path != "/" {
+            ancestor.deleteLastPathComponent()
+        }
+        testingSetWatcher?.cancel()
+        testingSetWatcher = nil
+        let descriptor = open(ancestor.path, O_EVTONLY)
+        guard descriptor >= 0 else {
+            hostLog("Cannot watch \(ancestor.path) for the parallel testing device set")
+            return
+        }
         let watcher = DispatchSource.makeFileSystemObjectSource(fileDescriptor: descriptor, eventMask: .write,
                                                                 queue: .main)
         watcher.setEventHandler { [weak self] in
             MainActor.assumeIsolated {
-                guard let self, FileManager.default.fileExists(atPath: url.path) else { return }
+                guard let self, self.testingSet == nil else { return }
                 self.openTestingSet()
-                self.rescan()
+                if self.testingSet != nil { self.rescan() }
             }
         }
         watcher.setCancelHandler { close(descriptor) }
