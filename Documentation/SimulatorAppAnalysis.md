@@ -79,7 +79,7 @@ Representative per-window actions in the reference binary:
 | Lock | `0x10005411C` | same HID function, button `1` |
 | Hardware / Software Keyboard | `0x10005571C` / `0x10005574C` | CoreSimulator keyboard selector / HID button `0x3f0` |
 | Save Screen | `0x1000570D8` | typed direct `simctl io … screenshot` transaction |
-| Volume Up / Down | `0x100058224` / `0x10005823C` | SimulatorKit HID arbitrary message, deferred until version-gated and live-tested |
+| Volume Up / Down | `0x100058224` / `0x10005823C` | `IndigoHIDMessageForHIDArbitrary`, consumer page `0x0c`, usages `0xe9` / `0xea`, shown with `com.apple.CoreSimulator.audio.routable` |
 | Window scale | `0x100054BBC` | SimulatorKit render scale and resize owner |
 
 Representative coordinator actions:
