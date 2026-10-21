@@ -82,6 +82,7 @@ Representative per-window actions in the reference binary:
 | Record Screen / Record Screen… | `0x100058EC4` | `simctl io … recordVideo --mask=black\|ignored`, H.264 (HEVC for visionOS); names from `0x100058634` |
 | Stop Recording | `0x10005A014` | SIGINT after `Recording started`, then the movie is moved to the Desktop or the chosen file |
 | Copy Screen | `0x100053A68` | `simctl io … screenshot --mask=ignored`, written to the general pasteboard as PNG only |
+| Capture thumbnail | `0x100063CD8` / `0x1000637A8` | AppKit child window: white flash and shrink to a quarter size plus 10 points, 5-second or movie-length timer paused by hover, menus, and window moves; dismissal saves to the default folder; file-promise drag; GIF export at up to `GifMaxFramerate` 10 fps and `GifMaxFrameSize` 640 px with `CIDither` |
 | Volume Up / Down | `0x100058224` / `0x10005823C` | `IndigoHIDMessageForHIDArbitrary`, consumer page `0x0c`, usages `0xe9` / `0xea`, shown with `com.apple.CoreSimulator.audio.routable` |
 | Window scale | `0x100054BBC` | SimulatorKit render scale and resize owner |
 
@@ -98,7 +99,7 @@ Representative coordinator actions:
 | iCloud sync | `0x100022224` | implemented with `SimDevice triggerCloudSyncWithCompletionQueue:completionHandler:`, reporting its error |
 | Text size / Increase Contrast | `0x100020654` / `0x1000204E8` | implemented with `currentContentSizeCategory`/`setContentSizeCategory:error:` (1–12, no change at the limits) and `currentIncreaseContrastMode`/`setIncreaseContrastEnabled:error:` |
 | StandBy | `0x1000202D4` | implemented by flipping and posting the `com.apple.springboard.ambient.presentation` notification state |
-| Location | `0x100022390` | available, deferred pending location UI |
+| Location | `0x100022390` | implemented with `SimDevice availableLocationScenarios`, `clearSimulatedLocationWithError:`, `setLocationWithLatitude:andLongitude:error:`, and `setLocationScenario:error:`, restored at each connection from `LocationMode`/`LocationScenario`/`LocationLatitude`/`LocationLongitude`; the menu lists the key device's scenarios rather than the last connected device's; the `com.apple.iphonesimulator.simulateLocation` notification is not handled |
 
 ## Implemented parity set
 
@@ -119,7 +120,8 @@ semantics:
 - Features: Touch ID and Face ID (Enrolled, Matching, Non-matching),
   Authorize Apple Pay, Toggle Appearance, Toggle In-call Status Bar,
   Show/Hide StandBy, Increase and Decrease Preferred Text Size, Toggle
-  Increase Contrast, Trigger iCloud Sync;
+  Increase Contrast, Trigger iCloud Sync, Location (None, Custom Location…,
+  and the runtime's scenarios);
 - Debug: Slow Animations, Graphics Quality Override, Color Blended Layers,
   Color Copied Images, Color Misaligned Images, Color Off-screen Rendered, Open
   System Log…, Simulate Memory Warning, Show Parallel Testing Devices;
@@ -140,7 +142,6 @@ These have viable Xcode 27+ primitives but need a dedicated state/capability
 contract before being user-visible:
 
 - Connect Hardware Keyboard and keyboard-language sync;
-- location controls;
 - status-bar overrides;
 - physical, point-accurate, and pixel-accurate scale modes;
 - external displays and CarPlay.

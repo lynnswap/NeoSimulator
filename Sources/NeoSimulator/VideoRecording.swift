@@ -126,9 +126,16 @@ final class RecordingStore {
     enum Destination {
         /// A file chosen in a save panel, replaced when the recording finishes.
         case file(URL)
-        /// A folder, with the name made when the recording finishes. An
-        /// existing file of that name gets a number, as `CaptureFile.move` adds.
-        case folder(URL, name: @MainActor () -> String)
+        /// A temporary movie, handed over once it is finalized, like
+        /// Simulator.app's quick recording, which is named only when it stops.
+        /// A failure to take it over is reported like a failure to save.
+        case capture(@MainActor (URL) throws -> Void)
+    }
+
+    /// Whether a recording to a chosen file will replace `file` when it finishes.
+    func isReserved(_ file: URL) -> Bool {
+        guard let key = try? Self.destinationKey(for: file) else { return false }
+        return entries.values.contains { $0.destinationKey == key }
     }
 
     func start(to destination: Destination, process: (URL) -> Process,
@@ -145,8 +152,7 @@ final class RecordingStore {
             destinationKey = key
             temporary = file.deletingLastPathComponent()
                 .appendingPathComponent(".neo-simulator-\(identifier.uuidString).mov")
-        case .folder:
-            // Like Simulator.app's quick recording, which is named only when it stops.
+        case .capture:
             destinationKey = nil
             temporary = FileManager.default.temporaryDirectory
                 .appendingPathComponent("simulator_recording_\(identifier.uuidString).mov")
@@ -180,12 +186,8 @@ final class RecordingStore {
                     guard rename(temporary.path, file.path) == 0 else {
                         throw HostError.operation("Could not save \(file.lastPathComponent). The recording is available at \(temporary.path): \(String(cString: strerror(errno)))")
                     }
-                case .folder(let folder, let name):
-                    // A recording to a chosen file would replace this one when it finishes.
-                    let reserved = Set(entries.values.compactMap(\.destinationKey))
-                    _ = try CaptureFile.move(temporary, into: folder, named: name()) {
-                        (try? Self.destinationKey(for: $0)).map(reserved.contains) ?? false
-                    }
+                case .capture(let handOver):
+                    try handOver(temporary)
                 }
             } catch {
                 var reported: Error = error

@@ -59,6 +59,11 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             if self.isTerminating || self.stopped { self.recordingTerminationErrors.append(error) }
             else { self.report(error) }
         }
+        CaptureThumbnail.reportDetached = { [weak self] error in
+            guard let self else { return }
+            if self.isTerminating || self.stopped { self.recordingTerminationErrors.append(error) }
+            else { self.report(error) }
+        }
         conflicts.onConflict = { [weak self] in self?.handleHostConflict() }
     }
 
@@ -241,7 +246,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                            runtimeVersion: device.runtimeVersion,
                            supportsFeature: { [device] in device.supportsFeature($0) },
                            controlsOrientation: device.deviceSetPath == nil,
-                           hasFramebufferMask: device.hasFramebufferMask)
+                           hasFramebufferMask: device.hasFramebufferMask,
+                           screenCornerRadius: device.screenCornerRadius)
     }
 
     func openSimulator(withIdentifier identifier: String) async throws {
@@ -340,6 +346,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                         if let controller = awaitingReconnect.removeValue(forKey: identifier) {
                             try conflicts.check()
                             controller.reconnect(session)
+                            restoreLocation(of: session)
                             return
                         }
                         let controller = try DeviceWindowController(session: session, onClose: { [weak self] in
@@ -351,6 +358,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                             nextWindowPosition = window.cascadeTopLeft(from: nextWindowPosition)
                         }
                         controller.showAndActivate()
+                        restoreLocation(of: session)
                         return
                     }
                     try await Task.sleep(for: .milliseconds(250))
@@ -360,6 +368,17 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             } catch {
                 reportedFailures.insert(identifier)
                 report(error)
+            }
+        }
+    }
+
+    /// Applies the saved Features ▸ Location choice to a new connection, also
+    /// after a restart, without waiting for it. Like Simulator.app, which
+    /// ignores the result, a failure is not shown; it is logged.
+    private func restoreLocation(of session: DeviceSession) {
+        Task {
+            do { try await session.restoreLocation() } catch {
+                hostLog("Could not restore the simulated location of \(session.device.name): \(error.localizedDescription)")
             }
         }
     }
@@ -575,6 +594,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     private func handleHostConflict() {
         guard !stopped, let name = conflicts.conflictingHostName else { return }
         hostLog("\(name) appeared; disconnecting simulators and exiting")
+        CaptureThumbnail.savesImmediately = true
+        recordingTerminationErrors += CaptureThumbnail.finishAll()
         yieldToAnotherHost()
         shutdown()
         // A conflict can arrive on the main dispatch queue. Finish recordings
@@ -600,15 +621,21 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     /// `DetachOnAppQuit` is on. Devices another host takes over keep running.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !isTerminating else { return .terminateLater }
+        // Pending captures are saved now, and those that recordings finish
+        // while quitting are saved without a thumbnail.
+        CaptureThumbnail.savesImmediately = true
+        let captureFailures = CaptureThumbnail.finishAll()
         let keepsRunning = quitChoice.map { $0 == .keepRunning }
             ?? UserDefaults.standard.bool(forKey: HostPreferences.detachOnAppQuit)
         let devices = keepsRunning ? [] : sessions.values.map {
             (identifier: $0.session.device.id, deviceSetPath: $0.session.tools.deviceSetPath)
         }
         guard recordings.hasActiveRecordings || !devices.isEmpty || !closingShutdowns.isEmpty else {
+            if !captureFailures.isEmpty, !handoverRequested { Self.alert(captureFailures) }
             return .terminateNow
         }
         isTerminating = true
+        recordingTerminationErrors += captureFailures
         // No window opens while quitting; its device would not be shut down.
         for connection in connections.values { connection.cancel() }
         Task {
@@ -638,7 +665,18 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         }
         return .terminateLater
     }
-    func applicationWillTerminate(_ notification: Notification) { shutdown() }
+    func applicationWillTerminate(_ notification: Notification) {
+        CaptureThumbnail.savesImmediately = true
+        CaptureThumbnail.finishAll()
+        shutdown()
+    }
+
+    private static func alert(_ captureFailures: [Error]) {
+        let alert = NSAlert()
+        alert.messageText = "Some captures could not be saved."
+        alert.informativeText = captureFailures.map(\.localizedDescription).joined(separator: "\n")
+        alert.runModal()
+    }
 
     func shutdown() {
         guard !stopped else { return }

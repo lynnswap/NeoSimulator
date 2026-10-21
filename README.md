@@ -106,7 +106,7 @@ Neo currently provides:
   does not host yet;
 - Features menu controls: Touch ID and Face ID enrollment and matching or
   non-matching events, the in-call status bar, StandBy, preferred text size,
-  Increase Contrast, and Trigger iCloud Sync (Shift-Command-I);
+  Increase Contrast, Trigger iCloud Sync (Shift-Command-I), and Location;
 - Debug menu tools: Slow Animations, Graphics Quality Override, Color Blended
   Layers, Color Copied Images, Color Misaligned Images, Color Off-screen
   Rendered, Open System Log… (Command-/), and Simulate Memory Warning
@@ -155,12 +155,17 @@ starts the device last opened (`StartLastDeviceOnLaunch`, `CurrentDeviceUDID`).
 
 Neo requires no `Simulator.app` installation.
 
-**File → Save Screen** (Command-S) and the header's camera button save a PNG
-named like Simulator.app's to the screenshot folder: `ScreenShotSaveLocation`,
-which starts as the macOS screenshot location, or the Desktop.
-**File → Record Screen** (Command-R) starts recording at once; stopping it
-saves a QuickTime movie to the Desktop. A file of the same name gets " #2" and
-so on. Hold Option for **Save Screen…** and **Record Screen…**, which ask for a
+**File → Save Screen** (Command-S) and the header's camera button capture a PNG
+named like Simulator.app's, and **File → Record Screen** (Command-R) starts
+recording at once. As in Simulator.app, a capture first appears as a floating
+thumbnail beside the device window. When the thumbnail goes away, after five
+seconds or the movie's length, the capture is saved: a screenshot to the
+screenshot folder (`ScreenShotSaveLocation`, which starts as the macOS screenshot
+location, or the Desktop), a recording to the Desktop. Hover over the thumbnail
+to keep it, drag it out as a file, or Control-click it to save it elsewhere,
+copy, open, or delete it; a recording's menu also saves an animated GIF. A
+new capture saves the previous thumbnail's capture, and quitting saves any that
+remain. A file of the same name gets " #2" and so on. Hold Option for **Save Screen…** and **Record Screen…**, which ask for a
 destination and whether to apply the device mask to a non-rectangular screen;
 Save Screen… remembers the folder and the choice (`ScreenShotUseMask`), which
 Save Screen and Record Screen then use. Use the red stop control or **File →
@@ -169,6 +174,17 @@ capture's location for recovery. **Edit → Copy Screen** (Control-Command-C)
 puts a PNG of the screen, without the mask, on the Mac pasteboard.
 Toggle the software keyboard through **I/O → Keyboard → Toggle Software
 Keyboard** (Command-K).
+
+**Features → Location** simulates the active device's location: **None**
+clears it, **Custom Location…** asks for a latitude and longitude, and the
+other items run the routes the device's runtime provides, such as City Run or
+Freeway Drive. As in Simulator.app, a choice changes only the active device,
+and the last choice is saved (`LocationMode`, `LocationLatitude`,
+`LocationLongitude`, `LocationScenario`) and applied to each device that
+connects, including after a restart. A new installation therefore starts
+devices at Simulator.app's San Francisco coordinate. Devices whose runtime
+lists no routes are left alone. Unlike Simulator.app, which lists the routes
+of the device that connected last, the menu lists the active device's own.
 
 Drop simulator `.app` bundles or media onto a device, or choose
 **File → Install App or Import Media…**. If only some files succeed, Neo lists

@@ -308,7 +308,8 @@ The first parity set contains only commands with an available, validated owner:
 - Features: Touch ID and Face ID (Enrolled, Matching, Non-matching),
   Authorize Apple Pay, Toggle Appearance, Toggle In-call Status Bar,
   Show/Hide StandBy, Increase and Decrease Preferred Text Size, Toggle
-  Increase Contrast, Trigger iCloud Sync;
+  Increase Contrast, Trigger iCloud Sync, Location (None, Custom Location…,
+  and the runtime's scenarios);
 - Debug: Slow Animations, Graphics Quality Override, Color Blended Layers,
   Color Copied Images, Color Misaligned Images, Color Off-screen Rendered, Open
   System Log…, Simulate Memory Warning, Show Parallel Testing Devices;
@@ -429,14 +430,59 @@ change. Screenshots and recordings use direct Apple `simctl io` with a
 device mask applies, and `ignored` otherwise. Save Screen and Record Screen
 follow Simulator.app's names (`Simulator Screenshot - <device> - <date>.png`,
 `Simulator Screen Recording - <device> - <date>.mov`) and capture to a
-temporary file first; `CaptureFile.move` then saves it into the screenshot
-folder or the Desktop, numbering a taken name and keeping the capture when
-the move fails. A quick recording is named when it stops, as in Simulator.app.
+temporary file first. A `CapturedContent` holds the temporary file and its
+default folder while a `CaptureThumbnail` shows it beside the device window;
+dismissing the thumbnail saves it with `CaptureFile.move`, which numbers a
+taken name and keeps the capture when the move fails. Like Simulator.app, one
+app-wide list holds the thumbnails, so a new capture ends and saves the
+previous one. Unlike Simulator.app, closing the device window or quitting
+saves a pending capture at once instead of leaving it in the temporary folder,
+including a recording whose animated GIF is still being written; captures that
+cannot be saved while quitting are listed in an alert with their locations.
+A quick recording is named when it stops, as in Simulator.app.
 A destination chosen in a save panel is written through a same-directory
 temporary file that is checked and then atomically renamed, so cancellation
 or failure preserves an existing destination.
 Device-tool operations are single-flight, drain both output pipes, have a
 bounded timeout, and are cancelled when their window closes.
+
+Features ▸ Location follows Simulator.app's split between a per-device
+selection and app-wide saved settings. Each `DeviceSession` owns its device's
+selection (None, Custom, or a scenario by name) and the scenario list that
+`SimDevice availableLocationScenarios` returned when it connected. On every
+new connection and every reconnection after a restart, `HostApplication` starts
+the session's restore without waiting for it. When the list is empty or nil,
+nothing happens.
+Otherwise `LocationMode` 5101 restores None, 5102 Custom, and a value above
+5102 the `LocationScenario` name, which falls back to None (saved as 5101)
+when the runtime lacks it. The restored choice is applied at once, so the
+registered default (5102 at 37.785834, -122.406417) reaches every device with
+scenarios. Right after a boot, CoreSimulator takes up to a second to list the
+scenarios and to apply a location, so `SimulatorDevice` makes the location
+calls on a serial queue of its own, as Simulator.app makes them on a global
+queue. The main actor stays responsive, and changes reach the device in the
+order they are made. A choice made while the restore waits for the list is
+kept, and a session that ends meanwhile is left alone.
+
+Choosing an item saves the choice and applies it to the key device only, with
+`clearSimulatedLocationWithError:`,
+`setLocationWithLatitude:andLongitude:error:`, or `setLocationScenario:error:`.
+The checkmark shows the host's selection, because CoreSimulator offers no
+readback. Like Simulator.app, the choice stays when applying fails; Neo
+reports the failure of a chosen item on the device window and logs a failed
+restore. The Location menu is rebuilt from the key device's own scenario list
+when it opens. This deliberately differs from Simulator.app, which keeps one
+list built by the last connected device, whose names may not exist on the key
+device's runtime.
+
+Custom Location… opens a titled window for the device window, with
+Simulator.app's text and number formatters (up to six fraction digits, within
+±90 and ±180). OK is enabled only while both fields parse; it saves the
+coordinate and selects Custom. The window takes its device window's level, also
+when Stay on Top changes, and closes with its device window and before a
+restart. Simulator.app's `com.apple.iphonesimulator.simulateLocation`
+distributed notification, through which another process sets a scenario file
+or a coordinate, is not handled.
 
 The following are intentionally absent:
 

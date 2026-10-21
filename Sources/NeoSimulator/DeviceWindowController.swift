@@ -17,6 +17,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     private var content: DeviceContentView
     private var deviceToolbar: DeviceToolbar?
     private var commandKeyUpMonitor: Any?
+    private var customLocation: CustomLocationWindowController?
     var staysOnTop: Bool { window?.level == .floating }
     var canFitScreen: Bool {
         session.canPerformCommands && window?.inLiveResize == false && window?.styleMask.contains(.fullScreen) == false
@@ -83,6 +84,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         await session.finishRecording()
         guard !closed else { return }
         if let window, let sheet = window.attachedSheet { window.endSheet(sheet, returnCode: .cancel) }
+        customLocation?.close()
         session.disconnect()
         window?.subtitle = "Restarting…"
     }
@@ -189,7 +191,39 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         resizeDisplay()
     }
 
-    func toggleStayOnTop() { window?.level = staysOnTop ? .normal : .floating }
+    func toggleStayOnTop() {
+        window?.level = staysOnTop ? .normal : .floating
+        customLocation?.window?.level = window?.level ?? .normal
+    }
+
+    /// Features ▸ Location: Custom Location… asks for a coordinate first.
+    func selectLocation(_ selection: LocationSelection) {
+        guard !closed, session.canPerformCommands else { return }
+        guard selection == .custom else {
+            changeLocation { [session] in try await session.selectLocation(selection) }
+            focusInput()
+            return
+        }
+        let customLocation = customLocation ?? CustomLocationWindowController { [weak self] latitude, longitude in
+            guard let self else { return }
+            changeLocation { [session] in try await session.setCustomLocation(latitude: latitude, longitude: longitude) }
+        }
+        self.customLocation = customLocation
+        // The window takes its device window's level, also when Stay on Top
+        // changes, so that the device window cannot hide it.
+        customLocation.window?.level = window?.level ?? .normal
+        let defaults = UserDefaults.standard
+        customLocation.show(latitude: defaults.double(forKey: HostPreferences.locationLatitude),
+                            longitude: defaults.double(forKey: HostPreferences.locationLongitude))
+    }
+
+    /// Starts a location change before returning, so that changes reach the
+    /// device in the order they are chosen, and presents its failure on this window.
+    private func changeLocation(_ change: @escaping @MainActor () async throws -> Void) {
+        Task.immediate { [weak self] in
+            do { try await change() } catch { self?.present(error) }
+        }
+    }
 
     /// Whether captures apply the device's mask by default: the device has
     /// one and `ScreenShotUseMask` is on.
@@ -197,13 +231,49 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         session.capabilities.hasFramebufferMask && UserDefaults.standard.bool(forKey: HostPreferences.screenShotUseMask)
     }
 
-    /// File ▸ Save Screen: saves the screen to the screenshot folder without asking.
+    /// File ▸ Save Screen: captures the screen without asking and shows its
+    /// thumbnail, which saves it to the screenshot folder when dismissed.
     func saveScreen() {
         let name = CaptureFile.screenshotName(device: session.device.name, date: Date())
+        let folder = CaptureFile.screenshotFolder()
         let mask: DeviceTools.ScreenMask = usesDeviceMask ? .alpha : .ignored
-        session.run({ [session] in
-            _ = try await session.saveScreenshot(into: CaptureFile.screenshotFolder(), named: name, mask: mask)
+        session.run({ [weak self, session] in
+            let file = try await session.screenshot(mask: mask)
+            let capture = CapturedContent(.screenshot, file: file, name: name, defaultFolder: folder)
+            guard let self else {
+                try capture.saveToDefaultLocation()
+                return
+            }
+            try self.showThumbnail(of: capture, image: NSImage(contentsOf: file))
         }, failure: { [weak self] in self?.present($0) })
+    }
+
+    /// Shows a capture's thumbnail beside this window, or saves the capture
+    /// when the window has closed.
+    private func showThumbnail(of capture: CapturedContent, image: NSImage?) throws {
+        guard !closed, let window, window.isVisible, !CaptureThumbnail.savesImmediately else {
+            try capture.saveToDefaultLocation()
+            return
+        }
+        let display = session.display.view, screen = session.display.inputView
+        // The thumbnail shrinks from the device screen, without the bezel.
+        let source = window.convertToScreen(screen.convert(screen.bounds, to: nil))
+        let displayFrame = window.convertToScreen(display.convert(display.bounds, to: nil))
+        // Simulator.app spaces a screenshot's thumbnail by the window's scale,
+        // twice as far for a landscape display, a TV, or a watch; in full
+        // screen, from the display's right edge.
+        let scale = session.display.naturalSize.width > 0 ? display.bounds.width / session.display.naturalSize.width : 1
+        let landscape = abs(session.displayAngle.truncatingRemainder(dividingBy: 180)) == 90
+        let family = session.capabilities.family
+        let base: CGFloat = landscape || family == .tv || family == .watch ? 20 : 10
+        let horizontal = window.styleMask.contains(.fullScreen) ? displayFrame.maxX - source.maxX + 10 : 10
+        let thumbnail = CaptureThumbnail(capture, image: image, parent: window, source: source,
+                                         rotation: session.displayAngle,
+                                         cornerRadius: session.capabilities.screenCornerRadius * scale,
+                                         spacing: NSSize(width: horizontal, height: ceil(scale * base))) { [weak self] error in
+            if let self, !self.closed { self.present(error) } else { CaptureThumbnail.reportDetached(error) }
+        }
+        thumbnail.show()
     }
 
     /// File ▸ Save Screen…: asks where to save, starting in the screenshot
@@ -243,17 +313,22 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         }, failure: { [weak self] in self?.present($0) })
     }
 
-    /// File ▸ Record Screen: starts recording without asking. Stopping saves
-    /// the movie to the Desktop, named when it stops.
+    /// File ▸ Record Screen: starts recording without asking. Stopping shows
+    /// the movie's thumbnail, which saves it to the Desktop when dismissed;
+    /// the movie is named when the recording stops.
     func recordScreen() {
         guard let desktop = CaptureFile.desktop else {
             present(HostError.operation("Could not find the Desktop folder to save the recording in."))
             return
         }
         let device = session.device.name
+        let isReserved = session.isRecordingDestination
         run {
-            try session.startRecording(to: .folder(desktop, name: { CaptureFile.recordingName(device: device, date: Date()) }),
-                                       mask: usesDeviceMask ? .black : .ignored)
+            try session.startRecording(to: .capture { [weak self] file in
+                let capture = CapturedContent(.movie, file: file, name: CaptureFile.recordingName(device: device, date: Date()),
+                                              defaultFolder: desktop, isReserved: isReserved)
+                if let self { try self.showThumbnail(of: capture, image: nil) } else { try capture.saveToDefaultLocation() }
+            }, mask: usesDeviceMask ? .black : .ignored)
         }
     }
 
@@ -461,6 +536,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         if let window, let sheet = window.attachedSheet {
             window.endSheet(sheet, returnCode: .cancel)
         }
+        customLocation?.close()
         session.disconnect()
     }
     isolated deinit { disconnect() }
@@ -558,6 +634,17 @@ enum CaptureFile {
             }
         }
         return desktop ?? URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+    }
+
+    /// The first of `name`, "name #2" through "name #99" that is free in
+    /// `folder` and not reserved.
+    static func unusedFile(in folder: URL, named name: String, isReserved: (URL) -> Bool = { _ in false }) throws -> URL {
+        let base = (name as NSString).deletingPathExtension, suffix = (name as NSString).pathExtension
+        for number in 1...99 {
+            let candidate = folder.appendingPathComponent(number == 1 ? name : "\(base) #\(number).\(suffix)")
+            if !FileManager.default.fileExists(atPath: candidate.path), !isReserved(candidate) { return candidate }
+        }
+        throw HostError.operation("Could not save \(name): \(folder.path) already has files of that name through #99.")
     }
 
     /// Moves a capture into `folder` under `name`, adding " #2" through

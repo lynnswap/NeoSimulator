@@ -16,6 +16,8 @@ struct DeviceCapabilities {
     var controlsOrientation = true
     /// Whether the device type has a framebuffer mask that captures can apply.
     var hasFramebufferMask = false
+    /// The screen's corner radius in points; 0 for a square screen.
+    var screenCornerRadius = 0.0
 
     var isPhoneOrPad: Bool { family == .iPhone || family == .iPad }
     var rotates: Bool { controlsOrientation && supportsFeature(Self.displayRotation) }
@@ -70,6 +72,18 @@ enum HostPreferences {
     /// Debug ▸ Graphics Quality Override, a `GraphicsQuality` value, which
     /// connecting applies to each device that supports it unless it is the default.
     static let graphicsQualityOverride = "GraphicsQualityOverride"
+    /// Animated GIF export from a recording's thumbnail.
+    static let gifMaxFramerate = "GifMaxFramerate"
+    static let gifMaxFrameSize = "GifMaxFrameSize"
+    static let gifUseDither = "GifUseDither"
+    static let gifDitherDepth = "GifDitherDepth"
+    /// The last Features ▸ Location choice, which each connection restores:
+    /// see `LocationSelection`.
+    static let locationMode = "LocationMode"
+    static let locationScenario = "LocationScenario"
+    /// The coordinate Custom Location… last set.
+    static let locationLatitude = "LocationLatitude"
+    static let locationLongitude = "LocationLongitude"
 
     /// Registers Simulator.app's defaults for these preferences.
     static func registerDefaults() {
@@ -78,6 +92,8 @@ enum HostPreferences {
             attachBootedOnStart: true, sessionOnLaunch: true, startLastDeviceOnLaunch: true,
             terminationTimeout: 60.0, screenShotSaveLocation: defaultScreenshotLocation(), screenShotUseMask: false,
             slowMotionAnimation: false, graphicsQualityOverride: GraphicsQuality.deviceDefault.rawValue,
+            gifMaxFramerate: 10, gifMaxFrameSize: 640, gifUseDither: true, gifDitherDepth: 4.0,
+            locationMode: LocationSelection.customMode, locationLatitude: 37.785834, locationLongitude: -122.406417,
         ])
     }
 
@@ -91,6 +107,43 @@ enum HostPreferences {
             return location
         }
         return CaptureFile.desktop?.path ?? NSString(string: "~/Desktop").expandingTildeInPath
+    }
+}
+
+/// A device's Features ▸ Location choice. Simulator.app keeps it per device
+/// and saves the last choice app-wide, as its menu tag in `LocationMode` and a
+/// scenario's name in `LocationScenario`.
+enum LocationSelection: Equatable {
+    case none, custom
+    /// A runtime scenario, by its `LocationScenario.name`.
+    case scenario(String)
+
+    static let noneMode = 5101, customMode = 5102
+    /// Simulator.app saves a scenario's menu tag, which is above Custom's.
+    static let scenarioMode = 5103
+
+    /// The saved choice for a device with `scenarios`. A saved scenario the
+    /// device does not have, and a mode Simulator.app does not use, are None.
+    static func saved(among scenarios: [LocationScenario]) -> Self {
+        let defaults = UserDefaults.standard
+        let mode = defaults.integer(forKey: HostPreferences.locationMode)
+        guard mode > customMode else { return mode == customMode ? .custom : .none }
+        guard let name = defaults.string(forKey: HostPreferences.locationScenario),
+              scenarios.contains(where: { $0.name == name }) else { return .none }
+        return .scenario(name)
+    }
+
+    /// Saves this choice for the next connection. Choosing None keeps the
+    /// saved scenario name, as in Simulator.app.
+    func save() {
+        let defaults = UserDefaults.standard
+        switch self {
+        case .none: defaults.set(Self.noneMode, forKey: HostPreferences.locationMode)
+        case .custom: defaults.set(Self.customMode, forKey: HostPreferences.locationMode)
+        case .scenario(let name):
+            defaults.set(name, forKey: HostPreferences.locationScenario)
+            defaults.set(Self.scenarioMode, forKey: HostPreferences.locationMode)
+        }
     }
 }
 
@@ -185,9 +238,18 @@ final class DeviceSession {
     private(set) var recording: VideoRecording?
     /// The orientation last read from the device.
     private(set) var orientation: DeviceOrientation?
+    /// The angle the display is shown at, which a guest-initiated rotation
+    /// can set without changing `orientation`.
+    @ObservationIgnored private(set) var displayAngle: Double = 0
     /// The guest's interface orientation angle last observed, so that only its
     /// changes rotate the display. A manual rotation does not change it.
     @ObservationIgnored private var guestAngle: Double?
+    /// The location routes the device's runtime listed when this session connected.
+    private(set) var locationScenarios: [LocationScenario] = []
+    /// The Features ▸ Location choice for this device, which its checkmark
+    /// shows. CoreSimulator does not report the guest's location, so this is
+    /// what the host last applied.
+    private(set) var location: LocationSelection?
 
     /// - Parameters:
     ///   - recordingProcess: Creates the recording process for a destination
@@ -497,6 +559,51 @@ final class DeviceSession {
         try Data().write(to: display.memoryWarningFile())
     }
 
+    // MARK: Location
+
+    /// Restores the saved Location choice when the session connects, as
+    /// Simulator.app does when it lists the runtime's scenarios: a device that
+    /// lists none gets no choice and no location.
+    func restoreLocation() async throws {
+        let scenarios = try await display.locationScenarios()
+        // Right after a boot, listing takes up to a second. The session can
+        // end meanwhile, and a choice made meanwhile is kept.
+        guard !isDisconnected else { return }
+        locationScenarios = scenarios
+        guard !scenarios.isEmpty, location == nil else { return }
+        try await use(.saved(among: scenarios))
+    }
+
+    /// Features ▸ Location ▸ None or a scenario, for this device only; the
+    /// choice is also saved for later connections.
+    func selectLocation(_ selection: LocationSelection) async throws {
+        guard canPerformCommands else { return }
+        try await use(selection)
+    }
+
+    /// Custom Location…'s OK: saves the coordinate and selects it.
+    func setCustomLocation(latitude: Double, longitude: Double) async throws {
+        guard canPerformCommands else { return }
+        UserDefaults.standard.set(latitude, forKey: HostPreferences.locationLatitude)
+        UserDefaults.standard.set(longitude, forKey: HostPreferences.locationLongitude)
+        try await use(.custom)
+    }
+
+    // Like Simulator.app, the choice is kept and saved before it is applied,
+    // so it stays when applying fails, and choosing it again retries.
+    private func use(_ selection: LocationSelection) async throws {
+        location = selection
+        selection.save()
+        switch selection {
+        case .none: try await display.clearSimulatedLocation()
+        case .custom:
+            try await display.setLocation(
+                latitude: UserDefaults.standard.double(forKey: HostPreferences.locationLatitude),
+                longitude: UserDefaults.standard.double(forKey: HostPreferences.locationLongitude))
+        case .scenario(let name): try await display.setLocationScenario(name)
+        }
+    }
+
     // MARK: Device tool operations
 
     /// Holds the single device-operation slot for a modal step, such as a save
@@ -542,7 +649,7 @@ final class DeviceSession {
         orientation = reading.physical
         guestAngle = display.guestInterfaceAngle
         let followsGuest = UserDefaults.standard.bool(forKey: HostPreferences.rotateWindowWhenSignaledByGuest)
-        display.setRotation(degrees: followsGuest ? guestAngle ?? reading.displayAngle : reading.displayAngle)
+        rotateDisplay(followsGuest ? guestAngle ?? reading.displayAngle : reading.displayAngle)
     }
 
     /// Shows the display at the guest's interface orientation when that
@@ -557,7 +664,7 @@ final class DeviceSession {
         }
         guard canPerformCommands, let angle = display.guestInterfaceAngle, angle != guestAngle else { return false }
         guestAngle = angle
-        display.setRotation(degrees: angle)
+        rotateDisplay(angle)
         return true
     }
 
@@ -572,7 +679,12 @@ final class DeviceSession {
     private func apply(_ reading: OrientationReading) throws {
         try Task.checkCancellation()
         orientation = reading.physical
-        display.setRotation(degrees: reading.displayAngle)
+        rotateDisplay(reading.displayAngle)
+    }
+
+    private func rotateDisplay(_ degrees: Double) {
+        displayAngle = degrees
+        display.setRotation(degrees: degrees)
     }
 
     /// Saves the screen to a file chosen in a save panel, replacing it.
@@ -583,13 +695,6 @@ final class DeviceSession {
         }
     }
 
-    /// Saves the screen into `folder` under `name`, numbering the name when
-    /// it is taken, and returns the saved file.
-    func saveScreenshot(into folder: URL, named name: String, mask: DeviceTools.ScreenMask) async throws -> URL {
-        let temporary = try await screenshot(mask: mask)
-        return try CaptureFile.move(temporary, into: folder, named: name)
-    }
-
     /// The screen as a PNG, without the device's mask, for Edit ▸ Copy Screen.
     func screenPNG() async throws -> Data {
         let temporary = try await screenshot(mask: .ignored)
@@ -598,7 +703,7 @@ final class DeviceSession {
     }
 
     /// Takes a screenshot into a new temporary PNG, which the caller owns.
-    private func screenshot(mask: DeviceTools.ScreenMask) async throws -> URL {
+    func screenshot(mask: DeviceTools.ScreenMask) async throws -> URL {
         let temporary = FileManager.default.temporaryDirectory
             .appendingPathComponent("simulator_screenshot_\(UUID().uuidString).png")
         do {
@@ -618,6 +723,9 @@ final class DeviceSession {
             throw HostError.operation("The screenshot tool did not produce a PNG file")
         }
     }
+
+    /// Whether a recording to a chosen file will replace `file` when it finishes.
+    func isRecordingDestination(_ file: URL) -> Bool { recordings.isReserved(file) }
 
     func startRecording(to destination: RecordingStore.Destination, mask: DeviceTools.ScreenMask) throws {
         guard canPerformCommands, recording == nil else { return }
