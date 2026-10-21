@@ -402,11 +402,22 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         for shutdown in terminationShutdowns { shutdown.cancel() }
     }
 
-    /// Terminates from a run-loop callback rather than a main-queue block:
-    /// while AppKit's termination loop runs inside a main-queue block, the
-    /// main-actor work that termination waits for cannot run.
+    /// Terminates from a run-loop callback rather than a main-queue block, and
+    /// after ending a modal alert: AppKit's termination loop inside either one
+    /// waits forever for the main-actor work that termination needs.
     private static func requestTermination() {
-        RunLoop.main.perform(inModes: [.default]) { NSApp.terminate(nil) }
+        RunLoop.main.perform(inModes: [.common]) {
+            if NSApp.modalWindow != nil {
+                NSApp.abortModal()
+                // The modal loop notices the abort after its next event.
+                if let event = NSEvent.otherEvent(with: .applicationDefined, location: .zero, modifierFlags: [],
+                                                  timestamp: 0, windowNumber: 0, context: nil, subtype: 0,
+                                                  data1: 0, data2: 0) {
+                    NSApp.postEvent(event, atStart: false)
+                }
+            }
+            RunLoop.main.perform(inModes: [.default]) { NSApp.terminate(nil) }
+        }
     }
 
     /// Whether a device still needs shutting down. Like Simulator.app's close,
