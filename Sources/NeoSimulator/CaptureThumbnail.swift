@@ -509,6 +509,20 @@ final class CaptureThumbnail: NSObject {
 
     // MARK: Dragging
 
+    /// The pasteboard writer for dragging a capture out: a file promise,
+    /// with the file and a screenshot's PNG as Simulator.app also offers.
+    static func dragProvider(for content: CapturedContent, report: @escaping (Error) -> Void) -> NSFilePromiseProvider {
+        let type: UTType = content.kind == .screenshot ? .png : .quickTimeMovie
+        let delivery = CaptureDelivery(content: content, report: report)
+        let provider = CaptureFilePromiseProvider(fileType: type.identifier, delegate: delivery)
+        // The provider's delegate is weak, and the destination can ask for the
+        // file after the thumbnail has gone.
+        provider.delivery = delivery
+        provider.file = content.file
+        if content.kind == .screenshot { provider.png = try? Data(contentsOf: content.file) }
+        return provider
+    }
+
     func dragBegan() {
         pause()
         window.orderOut(nil)
@@ -543,7 +557,7 @@ private final class CaptureThumbnailAction {
 /// The thumbnail's content: the image or playing movie inside a black frame,
 /// with the white flash a screenshot shows.
 @MainActor
-private final class CaptureThumbnailView: NSView, NSMenuDelegate, NSDraggingSource, NSFilePromiseProviderDelegate {
+private final class CaptureThumbnailView: NSView, NSMenuDelegate, NSDraggingSource {
     weak var owner: CaptureThumbnail?
     private let content: CapturedContent
     private let image: NSImage?
@@ -706,12 +720,7 @@ private final class CaptureThumbnailView: NSView, NSMenuDelegate, NSDraggingSour
         let location = event.locationInWindow
         guard abs(location.x - start.x) > 3 || abs(location.y - start.y) > 3 else { return }
         mouseDownLocation = nil
-        let type: UTType = content.kind == .screenshot ? .png : .quickTimeMovie
-        let provider = CaptureFilePromiseProvider(fileType: type.identifier, delegate: self)
-        // Like Simulator.app, the drag also offers the file and a screenshot's PNG.
-        provider.file = content.file
-        if content.kind == .screenshot { provider.png = try? Data(contentsOf: content.file) }
-        let item = NSDraggingItem(pasteboardWriter: provider)
+        let item = NSDraggingItem(pasteboardWriter: CaptureThumbnail.dragProvider(for: content, report: report))
         item.setDraggingFrame(bounds, contents: image ?? movieFrame ?? snapshot())
         owner.dragBegan()
         let session = beginDraggingSession(with: [item], event: event, source: self)
@@ -735,6 +744,18 @@ private final class CaptureThumbnailView: NSView, NSMenuDelegate, NSDraggingSour
 
     func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
         owner?.dragEnded(operation)
+    }
+}
+
+/// Writes a dragged capture where the destination asks for it.
+@MainActor
+private final class CaptureDelivery: NSObject, NSFilePromiseProviderDelegate {
+    private let content: CapturedContent
+    private let report: (Error) -> Void
+
+    init(content: CapturedContent, report: @escaping (Error) -> Void) {
+        self.content = content
+        self.report = report
     }
 
     nonisolated func filePromiseProvider(_ provider: NSFilePromiseProvider, fileNameForType fileType: String) -> String {
@@ -761,6 +782,7 @@ private final class CaptureThumbnailView: NSView, NSMenuDelegate, NSDraggingSour
 
 /// A file promise that also offers the capture's file URL and PNG data.
 private final class CaptureFilePromiseProvider: NSFilePromiseProvider {
+    var delivery: CaptureDelivery?
     var file: URL?
     var png: Data?
 

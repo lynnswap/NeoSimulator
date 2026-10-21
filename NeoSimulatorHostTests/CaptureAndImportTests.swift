@@ -514,6 +514,23 @@ struct CaptureThumbnailTests {
         #expect(CaptureThumbnail.active.isEmpty)
     }
 
+    @Test func aDraggedCaptureIsWrittenWhenAskedAfterItsThumbnailIsGone() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let content = try capture(named: "Promised.png", in: directory)
+        let provider = CaptureThumbnail.dragProvider(for: content) { _ in }
+        #expect(provider.writableTypes(for: .general).contains(.fileURL))
+        #expect(provider.pasteboardPropertyList(forType: .png) as? Data == Data("Promised.png".utf8))
+        let delegate = try #require(provider.delegate)
+        let destination = directory.appendingPathComponent("Promised.png")
+        let failure = await withCheckedContinuation { continuation in
+            delegate.filePromiseProvider(provider, writePromiseTo: destination) { continuation.resume(returning: $0) }
+        }
+        #expect(failure == nil)
+        #expect(try Data(contentsOf: destination) == Data("Promised.png".utf8))
+    }
+
     @Test func aShownScreenshotShrinksBesideItsWindowAndSavesItselfWhenItsTimerEnds() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
