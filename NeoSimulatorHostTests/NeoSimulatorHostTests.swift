@@ -266,6 +266,39 @@ struct InputFocusTests {
         #expect(!controller.session.isBusy)
     }
 
+    @Test func orientationReadingsKeepTheUprightAngleWhileFlat() throws {
+        func reading(_ physical: String, _ nonFlat: String) throws -> (DeviceOrientation, Double) {
+            let reading = try OrientationReading(devicectlOutput: Data("""
+                {"info": {"outcome": "success"}, "result": {"deviceIdentifier": "test-device",
+                 "deviceIsOrientationLocked": false, "deviceOrientation": "\(physical)",
+                 "deviceOrientationNonFlat": "\(nonFlat)"}}
+                """.utf8))
+            return (reading.physical, reading.displayAngle)
+        }
+        #expect(try reading("unknown", "portrait") == (.portrait, 0))
+        // A device turned counterclockwise is shown turned counterclockwise.
+        #expect(try reading("landscapeLeft", "landscapeLeft") == (.landscapeLeft, 90))
+        #expect(try reading("landscapeRight", "landscapeRight") == (.landscapeRight, -90))
+        #expect(try reading("faceUp", "landscapeLeft") == (.faceUp, 90))
+        #expect(throws: HostError.self) { try reading("faceDown", "faceDown") }
+    }
+
+    @Test func orientationCommandsAreShownWithDisplayRotation() throws {
+        _ = NSApplication.shared
+        let menus = MenuController(application: nil)
+        menus.install()
+        defer { NSApp.mainMenu = nil }
+        let controller = try makeController(TestDisplay())
+        defer { controller.invalidate() }
+        let device = try #require(NSApp.mainMenu?.items.first { $0.title == "Device" }?.submenu)
+        menus.updateVisibility(in: device, for: controller.session.capabilities)
+        let orientation = try #require(device.items.first { $0.title == "Orientation" })
+        #expect(!orientation.isHidden)
+        #expect(orientation.submenu?.items.map { $0.isSeparatorItem ? "-" : $0.title } == [
+            "Portrait", "Landscape Right", "Portrait Upside Down", "Landscape Left", "-", "Face Up", "Face Down",
+        ])
+    }
+
     @Test func hardwareCommandsFollowDeviceFeatures() throws {
         _ = NSApplication.shared
         let menus = MenuController(application: nil)

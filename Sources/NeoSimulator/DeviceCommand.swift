@@ -9,7 +9,9 @@ import AppKit
 struct DeviceCommand {
     enum ID: String, CaseIterable {
         case saveScreen, recordScreen, stopRecording, importFiles
-        case shutDown, rotateLeft, rotateRight, home, lock, sideButton, actionButtonSting
+        case shutDown, rotateLeft, rotateRight
+        case portrait, landscapeRight, portraitUpsideDown, landscapeLeft, faceUp, faceDown
+        case home, lock, sideButton, actionButtonSting
         case actionButtonStaccato, siri, shake, appSwitcher, triggerScreenshot
         case toggleSoftwareKeyboard, increaseVolume, decreaseVolume, openURL
         case authorizeApplePay, toggleAppearance
@@ -57,6 +59,12 @@ struct DeviceCommand {
                       toolbar: Toolbar(label: "Rotate Right", symbol: "rotate.right"),
                       isSupported: { $0.supportsFeature(DeviceCapabilities.displayRotation) },
                       isEnabled: { $0.session.canPerformToolOperation }) { $0.rotate(left: false) },
+        orientation(.portrait, title: "Portrait"),
+        orientation(.landscapeRight, title: "Landscape Right"),
+        orientation(.portraitUpsideDown, title: "Portrait Upside Down"),
+        orientation(.landscapeLeft, title: "Landscape Left"),
+        orientation(.faceUp, title: "Face Up"),
+        orientation(.faceDown, title: "Face Down"),
         DeviceCommand(id: .home, title: "Home", key: "h", modifiers: [.command, .shift],
                       toolbar: Toolbar(label: "Home", symbol: "house")) { $0.send(.press(.button(.home))) },
         DeviceCommand(id: .lock, title: "Lock", key: "l") { $0.send(.press(.button(.lock))) },
@@ -109,6 +117,17 @@ struct DeviceCommand {
         DeviceCommand(id: .fitScreen, title: "Fit Screen", key: "4",
                       isEnabled: { $0.canFitScreen }) { $0.fitScreen() },
     ].map { ($0.id, $0) })
+
+    /// Sets a physical orientation. The checkmark shows the orientation last
+    /// read from the device; Face Up and Face Down keep the display angle.
+    private static func orientation(_ orientation: DeviceOrientation, title: String) -> DeviceCommand {
+        DeviceCommand(id: ID(rawValue: orientation.rawValue)!, title: title,
+                      isSupported: { $0.supportsFeature(DeviceCapabilities.displayRotation) },
+                      isEnabled: { $0.session.canPerformToolOperation },
+                      state: { $0.session.orientation == orientation ? .on : .off }) {
+            $0.setOrientation(orientation)
+        }
+    }
 
     /// Toolbar items in Simulator.app's iPhone toolbar order. Unsupported items
     /// are omitted; Stop Recording appears only while recording.

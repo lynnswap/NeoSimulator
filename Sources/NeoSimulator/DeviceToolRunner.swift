@@ -109,24 +109,22 @@ final class DeviceTools {
     func screenshot(to url: URL) async throws {
         _ = try await simctl(["io", identifier, "screenshot", "--type=png", "--mask=alpha", url.path])
     }
-    func rotate(left: Bool) async throws -> Double {
+    func rotate(left: Bool) async throws -> OrientationReading {
         _ = try await runner.run(Self.devicectl,
             arguments: ["device", "orientation", "rotate", "--device", identifier, left ? "left" : "right", "--quiet"],
             environment: environment)
         return try await orientation()
     }
-    func orientation() async throws -> Double {
-        let data = try await runner.run(Self.devicectl,
-            arguments: ["device", "orientation", "get", "--device", identifier, "--json-output", "-", "--quiet"],
+    func setOrientation(_ orientation: DeviceOrientation) async throws -> OrientationReading {
+        _ = try await runner.run(Self.devicectl,
+            arguments: ["device", "orientation", "set", "--device", identifier, orientation.rawValue, "--quiet"],
             environment: environment)
-        struct Output: Decodable {
-            struct Result: Decodable { var deviceOrientationNonFlat: String }
-            var result: Result
-        }
-        let orientation = try JSONDecoder().decode(Output.self, from: data).result.deviceOrientationNonFlat
-        let angles = ["portrait": 0.0, "landscapeRight": 90, "portraitUpsideDown": 180, "landscapeLeft": -90]
-        guard let angle = angles[orientation] else { throw HostError.operation("Unsupported orientation: \(orientation)") }
-        return angle
+        return try await self.orientation()
+    }
+    func orientation() async throws -> OrientationReading {
+        try OrientationReading(devicectlOutput: await runner.run(Self.devicectl,
+            arguments: ["device", "orientation", "get", "--device", identifier, "--json-output", "-", "--quiet"],
+            environment: environment))
     }
     func installApplication(at url: URL) async throws {
         _ = try await simctl(["install", identifier, url.path])

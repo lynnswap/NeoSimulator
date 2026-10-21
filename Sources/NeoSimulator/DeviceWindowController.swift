@@ -67,7 +67,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
             didReadOrientation = true
             session.run({ [weak self] in
                 guard let self else { return }
-                _ = try await self.session.readOrientation()
+                try await self.session.readOrientation()
                 self.didRotate()
             }, failure: { hostLog($0.localizedDescription) })
         }
@@ -93,6 +93,14 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         session.run({ [weak self] in
             guard let self else { return }
             try await self.session.rotate(left: left)
+            self.didRotate()
+        }, failure: { [weak self] in self?.present($0) })
+    }
+
+    func setOrientation(_ orientation: DeviceOrientation) {
+        session.run({ [weak self] in
+            guard let self else { return }
+            try await self.session.setOrientation(orientation)
             self.didRotate()
         }, failure: { [weak self] in self?.present($0) })
     }

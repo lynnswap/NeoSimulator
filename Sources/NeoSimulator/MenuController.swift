@@ -50,6 +50,10 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
         commands([.shutDown], in: device)
         device.addItem(.separator())
         commands([.rotateLeft, .rotateRight], in: device)
+        let orientation = menu("Orientation", in: device)
+        commands([.portrait, .landscapeRight, .portraitUpsideDown, .landscapeLeft], in: orientation)
+        orientation.addItem(.separator())
+        commands([.faceUp, .faceDown], in: orientation)
         device.addItem(.separator())
         commands([.home, .lock, .sideButton, .actionButtonSting, .actionButtonStaccato, .siri, .shake, .appSwitcher],
                  in: device)

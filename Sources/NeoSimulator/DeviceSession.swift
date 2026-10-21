@@ -22,6 +22,51 @@ struct DeviceCapabilities {
     static let applePayAuthorization = "com.apple.hid.applepay.authorize"
 }
 
+/// A physical device orientation, named as `devicectl` names it.
+enum DeviceOrientation: String, CaseIterable {
+    case portrait, landscapeRight, portraitUpsideDown, landscapeLeft, faceUp, faceDown
+
+    /// The `SimDisplayView.deviceRotation` angle that shows this orientation
+    /// upright: a device turned counterclockwise (landscape left) is shown
+    /// turned 90° counterclockwise. A flat device keeps its last angle.
+    var displayAngle: Double? {
+        switch self {
+        case .portrait: 0
+        case .landscapeLeft: 90
+        case .portraitUpsideDown: 180
+        case .landscapeRight: -90
+        case .faceUp, .faceDown: nil
+        }
+    }
+}
+
+/// The device's orientation and the display angle that follows it.
+struct OrientationReading: Equatable {
+    var physical: DeviceOrientation
+    /// The angle of the last upright orientation, kept while the device is flat.
+    var displayAngle: Double
+
+    /// Reads the JSON output of `devicectl device orientation get`.
+    init(devicectlOutput data: Data) throws {
+        struct Output: Decodable {
+            struct Result: Decodable {
+                var deviceOrientation: String
+                var deviceOrientationNonFlat: String
+            }
+            var result: Result
+        }
+        let result = try JSONDecoder().decode(Output.self, from: data).result
+        guard let upright = DeviceOrientation(rawValue: result.deviceOrientationNonFlat),
+              let angle = upright.displayAngle else {
+            throw HostError.operation("Unsupported orientation: \(result.deviceOrientationNonFlat)")
+        }
+        // Before an orientation is set, devicectl reports `unknown` for the
+        // physical orientation; the device is then upright.
+        physical = DeviceOrientation(rawValue: result.deviceOrientation) ?? upright
+        displayAngle = angle
+    }
+}
+
 /// How Simulator.app times the events of a hardware input.
 enum HardwareInput {
     /// Pressed and released at once.
@@ -55,6 +100,8 @@ final class DeviceSession {
     private(set) var isBusy = false
     private(set) var isConnected = true
     private(set) var recording: VideoRecording?
+    /// The orientation last read from the device.
+    private(set) var orientation: DeviceOrientation?
 
     /// - Parameter recordingProcess: Creates the recording process for a
     ///   destination. Defaults to the device's direct `simctl` recorder.
@@ -182,18 +229,23 @@ final class DeviceSession {
         }
     }
 
-    /// Reads the device orientation and returns the display angle in degrees.
-    func readOrientation() async throws -> Double {
-        let angle = try await tools.orientation()
-        try Task.checkCancellation()
-        display.setRotation(degrees: angle)
-        return angle
+    /// Reads the device orientation and shows the display at its angle.
+    func readOrientation() async throws {
+        try apply(await tools.orientation())
     }
 
     func rotate(left: Bool) async throws {
-        let angle = try await tools.rotate(left: left)
+        try apply(await tools.rotate(left: left))
+    }
+
+    func setOrientation(_ orientation: DeviceOrientation) async throws {
+        try apply(await tools.setOrientation(orientation))
+    }
+
+    private func apply(_ reading: OrientationReading) throws {
         try Task.checkCancellation()
-        display.setRotation(degrees: angle)
+        orientation = reading.physical
+        display.setRotation(degrees: reading.displayAngle)
     }
 
     func saveScreenshot(to destination: URL) async throws {
