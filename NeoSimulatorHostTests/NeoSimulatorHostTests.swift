@@ -396,6 +396,21 @@ struct InputFocusTests {
         #expect(failures == 1)
     }
 
+    @Test func aLaterHoldReleasesAnInputWhoseReleaseFailed() async throws {
+        let display = TestDisplay()
+        display.undeliveredStates = [.up]
+        let controller = try makeController(display)
+        controller.session.send(.hold(.button(.actionStaccato), for: .milliseconds(10))) { _ in }
+        for _ in 0..<300 where display.events.count < 2 { try await Task.sleep(for: .milliseconds(10)) }
+        display.undeliveredStates = []
+        controller.session.send(.hold(.button(.actionStaccato), for: .milliseconds(10))) { _ in }
+        for _ in 0..<300 where display.events.count < 4 { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(display.events.map(\.state) == [.down, .up, .down, .up])
+        // Nothing is left to release when the window closes.
+        controller.invalidate()
+        #expect(display.events.count == 4)
+    }
+
     @Test func aFailedInputReportsOneError() throws {
         let display = TestDisplay()
         display.deliveryError = HostError.operation("delivery failed")
