@@ -37,6 +37,12 @@ struct CoreSimulatorInterface {
     let increaseContrastMode: NativeObjCMethod<Int>
     let setIncreaseContrast: NativeObjCMethod<Void, Bool>
     let triggerCloudSync: NativeObjCMethod<Void, DispatchQueue, CloudSyncCompletion>
+    /// An array of dictionaries with `name` and `localizedName` strings, or
+    /// nil when the device cannot list them.
+    let availableLocationScenarios: NativeObjCMethod<[NSDictionary]?>
+    let clearSimulatedLocation: NativeObjCMethod<Void>
+    let setLocation: NativeObjCMethod<Void, Double, Double>
+    let setLocationScenario: NativeObjCMethod<Void, String>
     let runtimeName: NativeObjCMethod<String?>
     let runtimeIdentifier: NativeObjCMethod<String?>
     let runtimeAvailable: NativeObjCMethod<Bool>
@@ -119,6 +125,14 @@ struct CoreSimulatorInterface {
         triggerCloudSync = try runtime.resolveObjCMethodAndWait(
             on: device, selector: "triggerCloudSyncWithCompletionQueue:completionHandler:",
             as: ((DispatchQueue, @escaping CloudSyncCompletion) -> Void).self)
+        availableLocationScenarios = try runtime.resolveObjCMethodAndWait(
+            on: device, selector: "availableLocationScenarios", as: (() -> [NSDictionary]?).self)
+        clearSimulatedLocation = try runtime.resolveObjCMethodAndWait(
+            on: device, selector: "clearSimulatedLocationWithError:", as: (() throws -> Void).self)
+        setLocation = try runtime.resolveObjCMethodAndWait(
+            on: device, selector: "setLocationWithLatitude:andLongitude:error:", as: ((Double, Double) throws -> Void).self)
+        setLocationScenario = try runtime.resolveObjCMethodAndWait(
+            on: device, selector: "setLocationScenario:error:", as: ((String) throws -> Void).self)
         runtimeName = try runtime.resolveObjCMethodAndWait(
             on: simRuntime, selector: "name", as: (() -> String?).self)
         runtimeIdentifier = try runtime.resolveObjCMethodAndWait(
@@ -240,6 +254,33 @@ final class SimulatorDevice {
             catch { continuation.resume(throwing: error) }
         }
     }
+
+    /// The runtime's recorded location routes in CoreSimulator's order, empty
+    /// when the device lists none.
+    func locationScenarios() throws -> [LocationScenario] {
+        try unsafe interface.availableLocationScenarios.unsafeInvoke(on: object)?.compactMap { scenario in
+            guard let name = scenario["name"] as? String else { return nil }
+            return LocationScenario(name: name, localizedName: scenario["localizedName"] as? String ?? name)
+        } ?? []
+    }
+
+    func clearSimulatedLocation() throws { try unsafe interface.clearSimulatedLocation.unsafeInvoke(on: object) }
+
+    func setLocation(latitude: Double, longitude: Double) throws {
+        try unsafe interface.setLocation.unsafeInvoke(on: object, latitude, longitude)
+    }
+
+    func setLocationScenario(_ name: String) throws {
+        try unsafe interface.setLocationScenario.unsafeInvoke(on: object, name)
+    }
+}
+
+/// A recorded location route of a device's runtime, such as City Run.
+struct LocationScenario: Equatable {
+    /// The name that identifies the scenario to CoreSimulator.
+    let name: String
+    /// The title Features ▸ Location shows.
+    let localizedName: String
 }
 
 /// The device types and runtimes that File ▸ New Simulator… offers, in

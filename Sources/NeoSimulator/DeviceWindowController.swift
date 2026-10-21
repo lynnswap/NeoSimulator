@@ -17,6 +17,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     private var content: DeviceContentView
     private var deviceToolbar: DeviceToolbar?
     private var commandKeyUpMonitor: Any?
+    private var customLocation: CustomLocationWindowController?
     var staysOnTop: Bool { window?.level == .floating }
     var canFitScreen: Bool {
         session.canPerformCommands && window?.inLiveResize == false && window?.styleMask.contains(.fullScreen) == false
@@ -83,6 +84,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         await session.finishRecording()
         guard !closed else { return }
         if let window, let sheet = window.attachedSheet { window.endSheet(sheet, returnCode: .cancel) }
+        customLocation?.close()
         session.disconnect()
         window?.subtitle = "Restarting…"
     }
@@ -182,6 +184,26 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func toggleStayOnTop() { window?.level = staysOnTop ? .normal : .floating }
+
+    /// Features ▸ Location: Custom Location… asks for a coordinate first.
+    func selectLocation(_ selection: LocationSelection) {
+        guard !closed, session.canPerformCommands else { return }
+        guard selection == .custom else {
+            run { try session.selectLocation(selection) }
+            focusInput()
+            return
+        }
+        let customLocation = customLocation ?? CustomLocationWindowController { [weak self] latitude, longitude in
+            guard let self else { return }
+            run { try session.setCustomLocation(latitude: latitude, longitude: longitude) }
+        }
+        self.customLocation = customLocation
+        // A device window that stays on top would otherwise hide it.
+        customLocation.window?.level = window?.level ?? .normal
+        let defaults = UserDefaults.standard
+        customLocation.show(latitude: defaults.double(forKey: HostPreferences.locationLatitude),
+                            longitude: defaults.double(forKey: HostPreferences.locationLongitude))
+    }
 
     /// Whether captures apply the device's mask by default: the device has
     /// one and `ScreenShotUseMask` is on.
@@ -453,6 +475,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         if let window, let sheet = window.attachedSheet {
             window.endSheet(sheet, returnCode: .cancel)
         }
+        customLocation?.close()
         session.disconnect()
     }
     isolated deinit { disconnect() }

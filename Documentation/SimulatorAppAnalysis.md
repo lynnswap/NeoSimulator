@@ -96,7 +96,7 @@ Representative coordinator actions:
 | iCloud sync | `0x100022224` | implemented with `SimDevice triggerCloudSyncWithCompletionQueue:completionHandler:`, reporting its error |
 | Text size / Increase Contrast | `0x100020654` / `0x1000204E8` | implemented with `currentContentSizeCategory`/`setContentSizeCategory:error:` (1–12, no change at the limits) and `currentIncreaseContrastMode`/`setIncreaseContrastEnabled:error:` |
 | StandBy | `0x1000202D4` | implemented by flipping and posting the `com.apple.springboard.ambient.presentation` notification state |
-| Location | `0x100022390` | available, deferred pending location UI |
+| Location | `0x100022390` | implemented with `SimDevice availableLocationScenarios`, `clearSimulatedLocationWithError:`, `setLocationWithLatitude:andLongitude:error:`, and `setLocationScenario:error:`, restored at each connection from `LocationMode`/`LocationScenario`/`LocationLatitude`/`LocationLongitude`; the menu lists the key device's scenarios rather than the last connected device's; the `com.apple.iphonesimulator.simulateLocation` notification is not handled |
 
 ## Implemented parity set
 
@@ -114,7 +114,8 @@ semantics:
 - Features: Touch ID and Face ID (Enrolled, Matching, Non-matching),
   Authorize Apple Pay, Toggle Appearance, Toggle In-call Status Bar,
   Show/Hide StandBy, Increase and Decrease Preferred Text Size, Toggle
-  Increase Contrast, Trigger iCloud Sync;
+  Increase Contrast, Trigger iCloud Sync, Location (None, Custom Location…,
+  and the runtime's scenarios);
 - Debug: Show Parallel Testing Devices;
 - Window: Minimize, Full Screen, Show Device Bezels, Stay on Top, Fit
   Screen, Bring All to Front. Simulator.app hides Zoom.
@@ -133,7 +134,6 @@ These have viable Xcode 27+ primitives but need a dedicated state/capability
 contract before being user-visible:
 
 - Connect Hardware Keyboard and keyboard-language sync;
-- location controls;
 - status-bar overrides;
 - physical, point-accurate, and pixel-accurate scale modes;
 - external displays and CarPlay.

@@ -569,7 +569,7 @@ struct InputFocusTests {
         #expect(try visibleTitles("Features") == ["Authorize Apple Pay", "-", "Toggle Appearance",
                                                    "Toggle In-call Status Bar", "-", "Increase Preferred Text Size",
                                                    "Decrease Preferred Text Size", "Toggle Increase Contrast", "-",
-                                                   "Trigger iCloud Sync"])
+                                                   "Trigger iCloud Sync", "-", "Location"])
         #expect(try visibleTitles("Debug") == ["Show Parallel Testing Devices"])
         // Option and Control alternates ask before quitting, capturing, and closing.
         let alternates = NSApp.mainMenu?.items.compactMap(\.submenu).flatMap(\.items).filter(\.isAlternate)
@@ -647,6 +647,192 @@ struct InputFocusTests {
         display.contrastMode = 0
         #expect(throws: (any Error).self) { try session.toggleIncreaseContrast() }
         #expect(display.contrastMode == 0)
+    }
+
+    @Test func connectingRestoresTheSavedLocationOnDevicesWithScenarios() throws {
+        let restoreDefaults = removeLocationPreferences()
+        defer { restoreDefaults() }
+        HostPreferences.registerDefaults()
+        let defaults = UserDefaults.standard
+        // Without scenarios nothing is restored, applied, or saved.
+        let bare = TestDisplay()
+        let bareSession = try makeSession(bare)
+        try bareSession.restoreLocation()
+        #expect(bareSession.location == nil && bare.appliedLocations.isEmpty)
+        #expect(defaults.persistentDomain(forName: Bundle.main.bundleIdentifier ?? "")?[HostPreferences.locationMode] == nil)
+
+        func restore() throws -> (LocationSelection?, [AppliedLocation]) {
+            let display = TestDisplay()
+            display.scenarios = Self.scenarios
+            let session = try makeSession(display)
+            try session.restoreLocation()
+            #expect(session.locationScenarios == Self.scenarios)
+            return (session.location, display.appliedLocations)
+        }
+        // A fresh install applies the registered coordinate.
+        #expect(try restore() == (.custom, [.coordinate(37.785834, -122.406417)]))
+        defaults.set(LocationSelection.scenarioMode, forKey: HostPreferences.locationMode)
+        defaults.set("Freeway Drive", forKey: HostPreferences.locationScenario)
+        #expect(try restore() == (.scenario("Freeway Drive"), [.scenario("Freeway Drive")]))
+        // A scenario the runtime lacks falls back to None, keeping its name.
+        defaults.set("Apple", forKey: HostPreferences.locationScenario)
+        #expect(try restore() == (LocationSelection.none, [.cleared]))
+        #expect(defaults.integer(forKey: HostPreferences.locationMode) == LocationSelection.noneMode)
+        #expect(defaults.string(forKey: HostPreferences.locationScenario) == "Apple")
+        // Modes up to Custom's other than None and Custom are None.
+        defaults.set(5000, forKey: HostPreferences.locationMode)
+        #expect(try restore() == (LocationSelection.none, [.cleared]))
+    }
+
+    @Test func locationMenuShowsTheKeyDevicesScenariosAndChoice() throws {
+        _ = NSApplication.shared
+        let restoreDefaults = removeLocationPreferences()
+        defer { restoreDefaults() }
+        let menus = MenuController(application: nil)
+        menus.install()
+        defer { NSApp.mainMenu = nil }
+        let features = try #require(NSApp.mainMenu?.items.first { $0.title == "Features" }?.submenu)
+        let menu = try #require(features.items.last?.submenu)
+        let location = try #require(menu.delegate as? LocationMenu)
+        func items(for controller: DeviceWindowController?) -> [String] {
+            location.update(menu, for: controller)
+            return menu.items.map { "\($0.title)\($0.state == .on ? " ✓" : "")\($0.isEnabled ? "" : " (disabled)")" }
+        }
+        #expect(items(for: nil) == ["None (disabled)", "Custom Location… (disabled)"])
+
+        HostPreferences.registerDefaults()
+        let display = TestDisplay()
+        display.scenarios = Self.scenarios
+        let controller = try makeController(display)
+        defer { controller.invalidate() }
+        try controller.session.restoreLocation()
+        #expect(items(for: controller) == ["None", "Custom Location… ✓", "City Run", "Freeway Drive"])
+        controller.selectLocation(.scenario("City Run"))
+        #expect(items(for: controller) == ["None", "Custom Location…", "City Run ✓", "Freeway Drive"])
+        #expect(display.appliedLocations == [.coordinate(37.785834, -122.406417), .scenario("City Run")])
+        #expect(UserDefaults.standard.string(forKey: HostPreferences.locationScenario) == "City Run")
+        #expect(UserDefaults.standard.integer(forKey: HostPreferences.locationMode) > LocationSelection.customMode)
+
+        // Another device lists its own runtime's scenarios and keeps its own
+        // choice. Its connection restores the choice saved last.
+        let other = TestDisplay()
+        other.scenarios = [LocationScenario(name: "City Run", localizedName: "Course à pied")]
+        let otherController = try makeController(other)
+        defer { otherController.invalidate() }
+        try otherController.session.restoreLocation()
+        #expect(items(for: otherController) == ["None", "Custom Location…", "Course à pied ✓"])
+        otherController.selectLocation(.none)
+        #expect(items(for: otherController) == ["None ✓", "Custom Location…", "Course à pied"])
+        #expect(items(for: controller) == ["None", "Custom Location…", "City Run ✓", "Freeway Drive"])
+        #expect(other.appliedLocations == [.scenario("City Run"), .cleared])
+        #expect(display.appliedLocations.count == 2)
+
+        display.isBooted = false
+        #expect(items(for: controller) == ["None (disabled)", "Custom Location… (disabled)", "City Run ✓ (disabled)",
+                                           "Freeway Drive (disabled)"])
+        controller.selectLocation(.none)
+        #expect(display.appliedLocations.count == 2)
+    }
+
+    @Test func aFailedLocationChoiceIsReportedAndKept() throws {
+        let restoreDefaults = removeLocationPreferences()
+        defer { restoreDefaults() }
+        let display = TestDisplay()
+        display.locationError = HostError.operation("location failed")
+        let controller = try makeController(display)
+        defer { controller.invalidate() }
+        controller.showWindow(nil)
+        let window = try #require(controller.window)
+        controller.selectLocation(.none)
+        #expect(try #require(window.attachedSheet).isVisible)
+        // Like Simulator.app, the choice stays and is saved; choosing it again retries.
+        #expect(controller.session.location == LocationSelection.none)
+        #expect(UserDefaults.standard.integer(forKey: HostPreferences.locationMode) == LocationSelection.noneMode)
+        window.endSheet(try #require(window.attachedSheet))
+    }
+
+    @Test func customLocationAcceptsOnlyCoordinatesThatParse() throws {
+        _ = NSApplication.shared
+        var accepted: [[Double]] = []
+        let dialog = CustomLocationWindowController { accepted.append([$0, $1]) }
+        defer { dialog.close() }
+        let window = try #require(dialog.window)
+        #expect(window.title == "Custom Location")
+        #expect(window.styleMask == [.titled])
+        let texts = window.contentView?.subviews.flatMap { [$0] + $0.subviews }.compactMap { ($0 as? NSTextField)?.stringValue }
+        #expect(texts?.contains("Enter a latitude and longitude for the location you would like to simulate.") == true)
+        #expect(texts.map { Set(["Latitude:", "Longitude:"]).isSubset(of: $0) } == true)
+        let cancel = try #require(window.contentView?.subviews.compactMap { $0 as? NSButton }.first { $0.title == "Cancel" })
+        #expect(cancel.keyEquivalent == "\u{1b}" && dialog.okButton.keyEquivalent == "\r")
+
+        dialog.show(latitude: 37.785834, longitude: -122.406417)
+        #expect(window.isVisible && dialog.okButton.isEnabled)
+        #expect(dialog.latitudeField.doubleValue == 37.785834 && dialog.longitudeField.doubleValue == -122.406417)
+        // Each change is checked as it is typed. Leaving a field that does
+        // not parse would show AppKit's formatter error, so each field ends valid.
+        func type(_ texts: [String], in field: NSTextField) throws -> [Bool] {
+            #expect(window.makeFirstResponder(field))
+            let editor = try #require(field.currentEditor() as? NSTextView)
+            return texts.map { text in
+                editor.selectAll(nil)
+                editor.insertText(text, replacementRange: editor.selectedRange())
+                // Checking leaves the text as typed.
+                #expect(editor.string == text)
+                return dialog.okButton.isEnabled
+            }
+        }
+        #expect(try type(["91", "x", "", "-90"], in: dialog.latitudeField) == [false, false, false, true])
+        #expect(try type(["-181", "180", "-180"], in: dialog.longitudeField) == [false, true, true])
+        // OK reads the text still being edited.
+        dialog.okButton.performClick(nil)
+        #expect(accepted == [[-90, -180]] && !window.isVisible)
+
+        // Showing again starts from the given coordinate; Cancel changes nothing.
+        dialog.show(latitude: 1, longitude: 2)
+        #expect(dialog.latitudeField.doubleValue == 1 && dialog.okButton.isEnabled)
+        cancel.performClick(nil)
+        #expect(accepted.count == 1 && !window.isVisible)
+    }
+
+    @Test func customLocationSavesAndAppliesTheCoordinateForItsDevice() throws {
+        _ = NSApplication.shared
+        let restoreDefaults = removeLocationPreferences()
+        defer { restoreDefaults() }
+        HostPreferences.registerDefaults()
+        let display = TestDisplay()
+        let controller = try makeController(display)
+        controller.selectLocation(.custom)
+        let window = try #require(NSApp.windows.first { $0.title == "Custom Location" && $0.isVisible })
+        let dialog = try #require(window.windowController as? CustomLocationWindowController)
+        #expect(dialog.latitudeField.doubleValue == 37.785834 && dialog.longitudeField.doubleValue == -122.406417)
+        // Choosing Custom Location… only asks.
+        #expect(controller.session.location == nil && display.appliedLocations.isEmpty)
+        dialog.latitudeField.doubleValue = 10
+        dialog.longitudeField.doubleValue = -20
+        dialog.okButton.performClick(nil)
+        #expect(!window.isVisible)
+        #expect(controller.session.location == .custom && display.appliedLocations == [.coordinate(10, -20)])
+        #expect(UserDefaults.standard.double(forKey: HostPreferences.locationLatitude) == 10)
+        #expect(UserDefaults.standard.double(forKey: HostPreferences.locationLongitude) == -20)
+        #expect(UserDefaults.standard.integer(forKey: HostPreferences.locationMode) == LocationSelection.customMode)
+        // The window opens with the saved coordinate and closes with its device window.
+        controller.selectLocation(.custom)
+        #expect(window.isVisible && dialog.latitudeField.doubleValue == 10)
+        controller.invalidate()
+        #expect(!window.isVisible)
+    }
+
+    private static let scenarios = [LocationScenario(name: "City Run", localizedName: "City Run"),
+                                    LocationScenario(name: "Freeway Drive", localizedName: "Freeway Drive")]
+
+    /// Removes the saved Location preferences and returns a closure that puts
+    /// back the ones that were saved.
+    private func removeLocationPreferences() -> () -> Void {
+        let keys = [HostPreferences.locationMode, HostPreferences.locationScenario,
+                    HostPreferences.locationLatitude, HostPreferences.locationLongitude]
+        let saved = UserDefaults.standard.persistentDomain(forName: Bundle.main.bundleIdentifier ?? "")
+        for key in keys { UserDefaults.standard.removeObject(forKey: key) }
+        return { for key in keys { UserDefaults.standard.set(saved?[key], forKey: key) } }
     }
 
     @Test func orientationCommandsNeedTheDefaultDeviceSet() throws {
@@ -1040,6 +1226,10 @@ private final class InputView: NSView {
 private final class RefusingResponder: NSResponder {
     override func resignFirstResponder() -> Bool { false }
 }
+private enum AppliedLocation: Equatable {
+    case cleared, coordinate(Double, Double), scenario(String)
+}
+
 @MainActor
 private final class TestDisplay: SimulatorDisplay {
     let view = NSView(frame: NSRect(x: 0, y: 0, width: 390, height: 844))
@@ -1103,6 +1293,19 @@ private final class TestDisplay: SimulatorDisplay {
     func increaseContrastMode() throws -> Int { contrastMode }
     func setIncreaseContrast(_ enabled: Bool) throws { contrastMode = enabled ? 2 : 1 }
     func triggerCloudSync() async throws {}
+    /// The runtime's location routes, and each location change requested in order.
+    var scenarios: [LocationScenario] = []
+    var appliedLocations: [AppliedLocation] = []
+    /// Fails location changes with this error after recording them.
+    var locationError: Error?
+    func locationScenarios() throws -> [LocationScenario] { scenarios }
+    func clearSimulatedLocation() throws { try applyLocation(.cleared) }
+    func setLocation(latitude: Double, longitude: Double) throws { try applyLocation(.coordinate(latitude, longitude)) }
+    func setLocationScenario(_ name: String) throws { try applyLocation(.scenario(name)) }
+    private func applyLocation(_ location: AppliedLocation) throws {
+        appliedLocations.append(location)
+        if let locationError { throw locationError }
+    }
     func setChromeVisible(_ visible: Bool) {}
     func setActive(_ active: Bool) { activations.append(active) }
     func setKeyboardEnabled(_ enabled: Bool) { keyboard.append(enabled) }

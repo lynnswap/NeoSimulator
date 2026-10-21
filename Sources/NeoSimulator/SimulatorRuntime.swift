@@ -346,6 +346,12 @@ protocol SimulatorDisplay: AnyObject {
     func increaseContrastMode() throws -> Int
     func setIncreaseContrast(_ enabled: Bool) throws
     func triggerCloudSync() async throws
+    /// The runtime's recorded location routes, in CoreSimulator's order.
+    func locationScenarios() throws -> [LocationScenario]
+    func clearSimulatedLocation() throws
+    func setLocation(latitude: Double, longitude: Double) throws
+    /// Runs the route a `LocationScenario.name` names.
+    func setLocationScenario(_ name: String) throws
     func setChromeVisible(_ visible: Bool)
     func setActive(_ active: Bool)
     func setKeyboardEnabled(_ enabled: Bool)
@@ -438,6 +444,12 @@ final class SimulatorConnection: SimulatorDisplay {
     func increaseContrastMode() throws -> Int { try device.increaseContrastMode() }
     func setIncreaseContrast(_ enabled: Bool) throws { try device.setIncreaseContrast(enabled) }
     func triggerCloudSync() async throws { try await device.triggerCloudSync() }
+    func locationScenarios() throws -> [LocationScenario] { try device.locationScenarios() }
+    func clearSimulatedLocation() throws { try device.clearSimulatedLocation() }
+    func setLocation(latitude: Double, longitude: Double) throws {
+        try device.setLocation(latitude: latitude, longitude: longitude)
+    }
+    func setLocationScenario(_ name: String) throws { try device.setLocationScenario(name) }
     func setChromeVisible(_ visible: Bool) {
         perform("show device chrome") { try unsafe runtime.display.showChrome.unsafeInvoke(on: view, visible) }
         view.invalidateIntrinsicContentSize()
