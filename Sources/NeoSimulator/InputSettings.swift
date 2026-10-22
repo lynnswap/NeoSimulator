@@ -185,3 +185,82 @@ final class TouchPressure {
         NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
     }
 }
+
+/// A touch indicator that SimulatorKit's digitizer draws over the device's
+/// screen, a `SimDigitizerInputView.DrawOption`, under Simulator.app's
+/// preference for it. Each device window draws the indicators whose
+/// preferences are on, when its display connects and after a preference
+/// changes.
+///
+/// Simulator.app's settings show single touches and pinch gestures. The
+/// other two are in its Internal menu, which only Apple's internal builds
+/// show; NeoSimulator follows their preferences, which `defaults write` sets.
+enum TouchIndicator: CaseIterable {
+    /// `.normalTouch`: where the pointer touches the screen.
+    case singleTouches
+    /// `.pinchTouches`: the two touches of an Option-drag pinch.
+    case pinches
+    /// `.pinchPivotPoint`: the pivot point of a pinch.
+    case pinchPivotPoint
+    /// `.edgeGestures`: Highlight Edge Gestures.
+    case edgeGestures
+
+    var preferenceKey: String {
+        switch self {
+        case .singleTouches: HostPreferences.showSingleTouches
+        case .pinches: HostPreferences.showPinches
+        case .pinchPivotPoint: HostPreferences.showPinchPivotPoint
+        case .edgeGestures: HostPreferences.highlightEdgeGestures
+        }
+    }
+
+    /// Posted, with the preference store as its object, after a touch
+    /// indicator's preference changes.
+    static let didChangeNotification = Notification.Name("dev.lynnswap.NeoSimulator.TouchIndicatorsDidChange")
+}
+
+extension PreferenceStore {
+    /// Whether device windows draw `indicator`. Like Simulator.app's
+    /// `boolForKey:`, a value that `defaults write` saves as a string reads by
+    /// its text. Show Pinch Gestures is on unless it was turned off, and the
+    /// others are off unless they were turned on, as their registered
+    /// defaults say.
+    func showsTouchIndicator(_ indicator: TouchIndicator) -> Bool {
+        let key = indicator.preferenceKey
+        return indicator == .pinches ? isOn(key) : bool(forKey: key)
+    }
+}
+
+/// Calls `changed` on the main actor after the value of one of `keys` in a
+/// `UserDefaults` changes, until it is released. Key-value observing also
+/// reports the changes that other processes make, such as `defaults write`,
+/// which `UserDefaults.didChangeNotification` leaves out.
+final class DefaultsObservation: NSObject {
+    private let defaults: UserDefaults
+    private let keys: [String]
+    private let changed: @MainActor () -> Void
+
+    init(_ defaults: UserDefaults, keys: [String], changed: @escaping @MainActor () -> Void) {
+        self.defaults = defaults
+        self.keys = keys
+        self.changed = changed
+        super.init()
+        for key in keys { defaults.addObserver(self, forKeyPath: key, context: nil) }
+    }
+
+    deinit {
+        for key in keys { defaults.removeObserver(self, forKeyPath: key) }
+    }
+
+    // A change in this process arrives on the thread that made it, and one
+    // from another process on a thread of its own.
+    override func observeValue(forKeyPath keyPath: String?, of object: Any?,
+                               change: [NSKeyValueChangeKey: Any]?, context: UnsafeMutableRawPointer?) {
+        let changed = changed
+        if Thread.isMainThread {
+            MainActor.assumeIsolated { changed() }
+        } else {
+            DispatchQueue.main.async { changed() }
+        }
+    }
+}

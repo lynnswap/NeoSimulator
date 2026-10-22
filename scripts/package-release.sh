@@ -80,7 +80,9 @@ source_root="$dist_base/arm64"
 cli_source_path="$source_root/bin/$cli_product"
 host_source_app="$source_root/libexec/$cli_product/$host_product.app"
 host_source_binary="$host_source_app/Contents/MacOS/$host_product"
-for source_path in "$cli_source_path" "$host_source_app/Contents/Info.plist" "$host_source_binary" "$host_source_app/Contents/_CodeSignature/CodeResources"; do
+for source_path in "$cli_source_path" "$host_source_app/Contents/Info.plist" "$host_source_binary" \
+  "$host_source_app/Contents/Resources/Settings.bundle/Root.plist" \
+  "$host_source_app/Contents/_CodeSignature/CodeResources"; do
   if [[ ! -e "$source_path" ]]; then
     echo "Missing staged release input: $source_path" >&2
     exit 1
@@ -91,6 +93,7 @@ expected_files="$(printf '%s\n' \
   "bin/$cli_product" \
   "libexec/$cli_product/$host_product.app/Contents/Info.plist" \
   "libexec/$cli_product/$host_product.app/Contents/MacOS/$host_product" \
+  "libexec/$cli_product/$host_product.app/Contents/Resources/Settings.bundle/Root.plist" \
   "libexec/$cli_product/$host_product.app/Contents/_CodeSignature/CodeResources" | LC_ALL=C sort)"
 actual_files="$(
   cd "$source_root"
