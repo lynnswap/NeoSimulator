@@ -125,3 +125,77 @@ extension PreferenceStore {
         updatePreferences(forDevice: identifier) { $0[externalDisplayKey] = tag }
     }
 }
+
+/// The changes a session sends to its device's external display.
+/// CoreSimulator completes each change later, so they are sent one at a
+/// time and the last choice wins: a choice made while a change is in flight
+/// waits for it and replaces an earlier choice that waits. Disabled turns off
+/// a display that its last report, or a change completed since, left on.
+@MainActor
+final class ExternalDisplayChanges {
+    let screen: any SimulatorExternalScreen
+    private var isSending = false
+    private var waiting: (mode: ExternalDisplayMode, report: @MainActor (Error) -> Void)?
+    /// Whether the display was on when it last reported its state.
+    private var reportedOn = false
+    /// Whether the last change completed since that report left it on.
+    private var completedOn: Bool?
+    private var isClosed = false
+
+    init(screen: any SimulatorExternalScreen) { self.screen = screen }
+
+    /// The display's state as it reported it, which supersedes the changes
+    /// completed before.
+    func reported(_ state: ExternalScreenState?) {
+        reportedOn = state?.isPoweredOn ?? false
+        completedOn = nil
+    }
+
+    /// Sends `mode`'s change, or makes it wait for the change in flight.
+    /// `report` receives a failure, also one CoreSimulator reports later.
+    func apply(_ mode: ExternalDisplayMode, report: @escaping @MainActor (Error) -> Void) {
+        guard !isClosed else { return }
+        if isSending { waiting = (mode, report) } else { send(mode, report: report) }
+    }
+
+    /// Stops taking choices and the display's reports. With `poweringOff`,
+    /// turns the display off once the change in flight completes, if it is
+    /// on then.
+    func close(poweringOff: Bool, report: @escaping @MainActor (Error) -> Void) {
+        guard !isClosed else { return }
+        isClosed = true
+        screen.disconnect()
+        waiting = poweringOff ? (.disabled, report) : nil
+        if !isSending { sendWaiting() }
+    }
+
+    private func send(_ mode: ExternalDisplayMode, report: @escaping @MainActor (Error) -> Void) {
+        // The completion keeps these changes until CoreSimulator calls it.
+        let completion: @MainActor (Error?) -> Void = { error in self.completed(mode, error: error, report: report) }
+        do {
+            if let size = mode.pixelSize {
+                isSending = true
+                try screen.setMode(pixelSize: size, scale: ExternalDisplayMode.scale, carPlayProperties: nil,
+                                   completion: completion)
+            } else if completedOn ?? reportedOn {
+                isSending = true
+                try screen.powerOff(completion: completion)
+            }
+        } catch {
+            isSending = false
+            report(error)
+        }
+    }
+
+    private func completed(_ mode: ExternalDisplayMode, error: Error?, report: @MainActor (Error) -> Void) {
+        isSending = false
+        if let error { report(error) } else { completedOn = mode.pixelSize != nil }
+        sendWaiting()
+    }
+
+    private func sendWaiting() {
+        guard let waiting else { return }
+        self.waiting = nil
+        send(waiting.mode, report: waiting.report)
+    }
+}

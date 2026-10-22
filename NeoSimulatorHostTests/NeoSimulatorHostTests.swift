@@ -2868,18 +2868,19 @@ struct InputFocusTests {
         #expect(second !== first && rebooted.displays.count == 1)
     }
 
-    @Test func externalDisplayFailuresAreReported() throws {
+    @Test func externalDisplayFailuresAreReported() async throws {
         let preferences = MemoryPreferences()
         var failures: [String] = []
         func choose(_ mode: ExternalDisplayMode, on controller: DeviceWindowController) {
             controller.session.chooseExternalDisplay(mode) { failures.append($0.localizedDescription) }
         }
-        // A device without an external display port, which is looked up again
-        // for the choice, which is saved.
+        // A device without an external display port: the choice is saved, and
+        // its failure is reported once the look-up for the display ends.
         let (portless, display) = try makeExternalDisplayController(nil, preferences: preferences)
         defer { portless.invalidate() }
         choose(.size1920x1080, on: portless)
-        #expect(display.externalScreenConnections == 2)
+        for _ in 0..<100 where failures.isEmpty { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(display.externalScreenConnections > 1)
         #expect(preferences.externalDisplayTag(forDevice: "test-device") == 2614)
         #expect(failures == [
             "Could not set the external display of Test iPhone to 1920×1080 (1080p): The device has no external display port.",
@@ -2927,6 +2928,109 @@ struct InputFocusTests {
         let sheet = try #require(controller.window?.attachedSheet)
         #expect(texts(in: sheet.contentView).contains("Could not set the external display of Test iPhone to 1024×768: mode failed"))
         controller.window?.endSheet(sheet)
+    }
+
+    @Test func anExternalDisplayThatAppearsAfterTheDeviceConnectsIsRestoredAndFollowed() async throws {
+        let preferences = MemoryPreferences()
+        preferences.setExternalDisplayTag(ExternalDisplayMode.size1280x720.rawValue, forDevice: "test-device")
+        var failures: [String] = []
+        // SimulatorKit's screen adapter has not listed the TVOut screen yet.
+        let (controller, display) = try makeExternalDisplayController(nil, preferences: preferences) {
+            failures.append($0.localizedDescription)
+        }
+        defer { controller.invalidate() }
+        #expect(controller.session.externalDisplayMode == nil)
+        let screen = TestExternalScreen()
+        display.externalScreen = screen
+        for _ in 0..<100 where screen.requests.isEmpty { try await Task.sleep(for: .milliseconds(20)) }
+        // The saved choice is applied once the screen appears, and the
+        // display's changes are followed from then on.
+        #expect(screen.requests == ["mode 1280x720@1"])
+        #expect(controller.externalDisplayWindow != nil)
+        #expect(failures.isEmpty)
+        screen.report { $0.isPoweredOn = false }
+        #expect(controller.session.externalDisplayMode == .disabled && controller.externalDisplayWindow == nil)
+    }
+
+    @Test func aChoiceWhileTheExternalDisplayIsLookedUpWaitsForIt() async throws {
+        let preferences = MemoryPreferences()
+        var failures: [String] = []
+        let (controller, display) = try makeExternalDisplayController(nil, preferences: preferences) {
+            failures.append($0.localizedDescription)
+        }
+        defer { controller.invalidate() }
+        controller.session.chooseExternalDisplay(.size640x480) { failures.append($0.localizedDescription) }
+        #expect(failures.isEmpty)
+        let screen = TestExternalScreen()
+        screen.current.isPoweredOn = true
+        display.externalScreen = screen
+        controller.session.chooseExternalDisplay(.disabled) { failures.append($0.localizedDescription) }
+        for _ in 0..<100 where screen.requests.isEmpty { try await Task.sleep(for: .milliseconds(20)) }
+        // The last choice, Disabled, turns off a display that is on.
+        #expect(screen.requests == ["off"])
+        #expect(failures.isEmpty)
+    }
+
+    @Test func aDeviceWhoseExternalDisplayNeverAppearsReportsTheChoice() async throws {
+        let preferences = MemoryPreferences()
+        preferences.setExternalDisplayTag(ExternalDisplayMode.size1920x1080.rawValue, forDevice: "test-device")
+        var restored: [String] = []
+        let (controller, display) = try makeExternalDisplayController(nil, preferences: preferences) {
+            restored.append($0.localizedDescription)
+        }
+        defer { controller.invalidate() }
+        var chosen: [String] = []
+        controller.session.chooseExternalDisplay(.size1024x768) { chosen.append($0.localizedDescription) }
+        for _ in 0..<1000 where chosen.isEmpty { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(chosen == [
+            "Could not set the external display of Test iPhone to 1024×768: The device has no external display port.",
+        ])
+        #expect(restored.isEmpty)
+        // The menu shows no state for it, and the items stay available.
+        #expect(controller.session.externalDisplayMode == nil)
+        #expect(externalDisplayItems(for: controller).allSatisfy { !$0.contains("✓") && !$0.hasSuffix("(disabled)") })
+        let lookups = display.externalScreenConnections
+        controller.session.chooseExternalDisplay(.size1024x768) { chosen.append($0.localizedDescription) }
+        #expect(chosen.count == 2 && display.externalScreenConnections == lookups + 1)
+    }
+
+    @Test func theLastExternalDisplayChoiceWinsOverChangesInFlight() throws {
+        let preferences = MemoryPreferences()
+        let screen = TestExternalScreen()
+        screen.defersChanges = true
+        let (controller, _) = try makeExternalDisplayController(screen, preferences: preferences)
+        defer { controller.invalidate() }
+        // Disabled right after a size, before CoreSimulator has turned the
+        // display on, turns it off once that change completes.
+        controller.perform(.externalDisplay1920x1080)
+        controller.perform(.externalDisplayDisabled)
+        #expect(screen.requests == ["mode 1920x1080@1"])
+        screen.deliver()
+        #expect(screen.requests == ["mode 1920x1080@1", "off"])
+        screen.deliver()
+        #expect(!screen.current.isPoweredOn && controller.session.externalDisplayMode == .disabled)
+        #expect(preferences.externalDisplayTag(forDevice: "test-device") == 2114)
+        // Of the choices made while a change is in flight, only the last follows it.
+        controller.perform(.externalDisplay640x480)
+        controller.perform(.externalDisplay1024x768)
+        controller.perform(.externalDisplay3840x2160)
+        screen.deliver()
+        screen.deliver()
+        #expect(Array(screen.requests.dropFirst(2)) == ["mode 640x480@1", "mode 3840x2160@1"])
+        #expect(controller.session.externalDisplayMode == .size3840x2160)
+    }
+
+    @Test func aDeviceWindowThatClosesDuringAChangeTurnsTheDisplayOffAfterIt() throws {
+        let screen = TestExternalScreen()
+        screen.defersChanges = true
+        let (controller, _) = try makeExternalDisplayController(screen)
+        controller.perform(.externalDisplay1920x1080)
+        controller.invalidate()
+        #expect(screen.requests == ["mode 1920x1080@1"])
+        screen.deliver()
+        #expect(screen.requests == ["mode 1920x1080@1", "off"])
+        screen.deliver()
+        #expect(!screen.current.isPoweredOn)
     }
 
     @Test func theExternalDisplaysWindowScalesAndTakesTheKeyboardWhileKey() throws {
@@ -3840,6 +3944,8 @@ struct InputFocusTests {
                              keyboardLanguage: @escaping @MainActor () -> String? = { "fr" },
                              pasteboard: NSPasteboard? = nil,
                              pasteboardSync: PasteboardSync? = nil) throws -> DeviceSession {
+        // Five looks for an external display, 20 ms apart, so that a test
+        // sees the look-up end.
         DeviceSession(
             device: availableDevice(identifier, "Test iPhone", runtime: "iOS", state: 3),
             capabilities: DeviceCapabilities(family: family, runtimeVersion: 0x1B_00_00,
@@ -3850,7 +3956,8 @@ struct InputFocusTests {
             tools: try DeviceTools(identifier: "test-device", xcodeURL: URL(fileURLWithPath: "/Applications/Xcode.app"),
                                    simctl: simctl, devicectl: devicectl),
             recordingProcess: recordingProcess, openLog: openLog, preferences: preferences,
-            hostKeyboardLanguage: keyboardLanguage, pasteboard: pasteboard, pasteboardSync: pasteboardSync)
+            hostKeyboardLanguage: keyboardLanguage, pasteboard: pasteboard, pasteboardSync: pasteboardSync,
+            externalScreenLookUp: (5, .milliseconds(20)))
     }
 }
 
@@ -4210,6 +4317,10 @@ private final class TestExternalScreen: SimulatorExternalScreen {
     var completionError: Error?
     /// Refuses each change with this error, as for a size that no mode takes.
     var refusal: Error?
+    /// Holds each change until `deliver()`, as CoreSimulator completes and
+    /// reports a change later.
+    var defersChanges = false
+    private var pendingChanges: [() -> Void] = []
     var changed: (() -> Void)?
     /// The displays made for the display's windows, in order.
     private(set) var displays: [TestDisplay] = []
@@ -4222,17 +4333,32 @@ private final class TestExternalScreen: SimulatorExternalScreen {
         if let refusal { throw refusal }
         #expect(carPlayProperties == nil)
         requests.append("mode \(Int(pixelSize.width))x\(Int(pixelSize.height))@\(Int(scale))")
-        guard completionError == nil else { return completion(completionError) }
-        report { $0 = ExternalScreenState(isPoweredOn: true, pixelSize: pixelSize, scale: scale) }
-        completion(nil)
+        complete(completion) { $0 = ExternalScreenState(isPoweredOn: true, pixelSize: pixelSize, scale: scale) }
     }
 
     func powerOff(completion: @escaping @MainActor (Error?) -> Void) throws {
         if let refusal { throw refusal }
         requests.append("off")
-        guard completionError == nil else { return completion(completionError) }
-        report { $0.isPoweredOn = false }
-        completion(nil)
+        complete(completion) { $0.isPoweredOn = false }
+    }
+
+    /// Applies a change and completes it, at once or when `deliver()` runs.
+    private func complete(_ completion: @escaping @MainActor (Error?) -> Void,
+                          _ change: @escaping (inout ExternalScreenState) -> Void) {
+        let error = completionError
+        let finish = { [self] in
+            guard error == nil else { return completion(error) }
+            report(change)
+            completion(nil)
+        }
+        if defersChanges { pendingChanges.append(finish) } else { finish() }
+    }
+
+    /// Completes the held changes in the order they were asked for.
+    func deliver() {
+        let changes = pendingChanges
+        pendingChanges = []
+        for change in changes { change() }
     }
 
     func makeDisplay() throws -> any SimulatorDisplay {

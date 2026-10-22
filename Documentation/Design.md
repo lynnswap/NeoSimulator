@@ -1052,8 +1052,13 @@ Neo reaches the screen as Simulator.app does:
   `SimDeviceScreenAdapter.screens`. The external display is the first, by ID,
   whose `SimScreen` is connected and whose properties' `screenType` is TVOut,
   as Simulator.app waits for the first TVOut screen to connect. The adapter
-  fills `screens` asynchronously; it is read once the device's own screen is
-  connected, and again for a choice when it was not filled yet.
+  fills `screens` from an enumeration that ends asynchronously, possibly after
+  the device's own screen connects. A device's screens exist from its
+  creation, so the TVOut screen is in that enumeration or the device has none:
+  the session looks for it every 250 ms for as long as the host waits for the
+  device's own screen (10 seconds), then applies the saved choice, or a choice
+  made meanwhile. A later choice looks again; until the display is found, the
+  items check nothing.
 - `SimDeviceScreen.screen`'s `setCurrentMode:pixelSize:carPlayProperties:completionQueue:completionHandler:`
   sets a size and turns the screen on; `setPowerState:completionQueue:completionHandler:`
   with 0 turns it off. The mode is Simulator.app's choice: the current mode
@@ -1061,6 +1066,11 @@ Neo reaches the screen as Simulator.app does:
   the first of `supportedScreenModes` whose size rule takes the size at its
   `preferredUIScale` (0 `exactSize`, 1 from `minSize` through `maxSize`, 2 one
   of `allowedSizes`). A size that no mode takes is reported.
+- CoreSimulator completes a change later, so the session sends one change at
+  a time. A choice made while a change is in flight waits for it and replaces
+  an earlier choice that waits, so the last choice wins. Disabled turns off a
+  display that its last report, or a change completed since, left on, and a
+  window that disconnects during a change turns the display off after it.
 - `SimDeviceScreen.register(types:queue:handler:)` with `.properties` reports
   each change of the screen's `powerState`, `pixelSize`, and
   `currentMode.preferredUIScale`, also those another tool makes.
