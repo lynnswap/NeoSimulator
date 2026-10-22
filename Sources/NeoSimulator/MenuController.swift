@@ -77,6 +77,10 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
             item(title, action: action, key: key, modifiers: modifiers, in: edit).target = nil
             if title == "Copy" { commands([.copyScreen], in: edit) }
         }
+        edit.addItem(.separator())
+        // Simulator.app's Automatically Sync Pasteboard comes first; NeoSimulator
+        // does not synchronize pasteboards.
+        commands([.getPasteboard, .sendPasteboard], in: edit)
 
         let device = menu("Device", in: main)
         commands([.restart, .eraseAllContentAndSettings, .shutDown], in: device)

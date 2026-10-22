@@ -20,6 +20,7 @@ final class SimulatorRuntime {
     let coreSimulator: CoreSimulatorInterface
     let display: SimulatorDisplayInterface
     let input: SimulatorInputInterface
+    let pasteboard: SimulatorPasteboardInterface
 
     init(xcodeURL: URL) throws {
         self.xcodeURL = xcodeURL.resolvingSymlinksInPath()
@@ -30,6 +31,7 @@ final class SimulatorRuntime {
         coreSimulator = try CoreSimulatorInterface(runtime: runtime)
         display = try SimulatorDisplayInterface(runtime: runtime)
         input = try SimulatorInputInterface(runtime: runtime)
+        pasteboard = try SimulatorPasteboardInterface(runtime: runtime)
         try validateLoadedImages()
     }
 
@@ -346,6 +348,117 @@ struct SimulatorInputInterface {
     }
 }
 
+/// SimPasteboardPlus, which CoreSimulator loads: the host end of a device's
+/// pasteboard connection, which Simulator.app and `simctl pbsync` use.
+@MainActor
+struct SimulatorPasteboardInterface {
+    let interfaceClass: AnyClass
+    /// `initWithConnectingToPort:managingPasteboard:delegate:delegateQueue:`.
+    let makeInterface: NativeObjCMethod<AnyObject, UInt32, NSPasteboard, AnyObject?, DispatchQueue?>
+    /// Sends the managed pasteboard to the device.
+    let push: NativeObjCMethod<Void>
+    /// Asks the device for its pasteboard, which then replaces the managed one.
+    let pull: NativeObjCMethod<Void>
+    /// The guest's pasteboard service, `SimPasteboardInterfaceListener.machServiceName`.
+    let serviceName: String
+
+    init(runtime: ABIRuntime) throws {
+        guard let interfaceClass = NSClassFromString("SimPasteboardPlus.SimPasteboardInterface"),
+              let listenerClass = NSClassFromString("SimPasteboardPlus.SimPasteboardInterfaceListener") else {
+            throw HostError.unavailable("SimPasteboardPlus pasteboard classes are unavailable")
+        }
+        self.interfaceClass = interfaceClass
+        makeInterface = try runtime.resolveObjCMethodAndWait(
+            on: interfaceClass, selector: "initWithConnectingToPort:managingPasteboard:delegate:delegateQueue:",
+            as: ((UInt32, NSPasteboard, AnyObject?, DispatchQueue?) -> AnyObject).self)
+        push = try runtime.resolveObjCMethodAndWait(on: interfaceClass, selector: "push", as: (() -> Void).self)
+        pull = try runtime.resolveObjCMethodAndWait(on: interfaceClass, selector: "pull", as: (() -> Void).self)
+        serviceName = try unsafe runtime.resolveObjCMethodAndWait(
+            on: listenerClass, selector: "machServiceName", as: (() -> String).self, classMethod: true)
+            .unsafeInvoke(on: listenerClass as AnyObject)
+    }
+
+    /// Connects to the device's pasteboard service, managing `pasteboard`.
+    /// Connecting transfers nothing, and the connection never synchronizes on
+    /// its own: SimPasteboardPlus does that only after `enableRemoteAutosync`.
+    func connect(to device: SimulatorDevice, managing pasteboard: NSPasteboard,
+                 events: @escaping @MainActor (SimulatorPasteboardEvent) -> Void) throws -> SimulatorPasteboardConnection {
+        let port = try device.lookUp(serviceName)
+        guard let allocated = allocate(interfaceClass) else {
+            throw HostError.unavailable("Could not allocate the simulator's pasteboard connection")
+        }
+        // The interface calls the delegate on the main queue; the connection keeps it.
+        let delegate = SimulatorPasteboardDelegate(events)
+        let object = try unsafe makeInterface.unsafeInvoke(on: allocated, port, pasteboard, delegate, .main)
+        return SimulatorPasteboardConnection(object: object, delegate: delegate, interface: self)
+    }
+}
+
+/// A SimPasteboardPlus callback about a device's pasteboard connection.
+enum SimulatorPasteboardEvent {
+    /// The connection became active: once after connecting, and again each
+    /// time the device has taken a push, which `simctl pbsync` waits for.
+    case activated
+    /// The device's pasteboard replaced the managed pasteboard after a pull.
+    case applied
+    /// Writing the device's pasteboard to the managed pasteboard failed.
+    case failedToApply(Error)
+    /// The device closed the connection. Later pushes and pulls on it do nothing.
+    case lostConnection
+}
+
+/// A device's pasteboard connection. Releasing it closes the connection.
+@MainActor
+protocol SimulatorPasteboard: AnyObject {
+    /// SimPasteboardPlus `pull`: Edit ▸ Get Pasteboard.
+    func pull() throws
+    /// SimPasteboardPlus `push`: Edit ▸ Send Pasteboard.
+    func push() throws
+    /// Stops the connection's events.
+    func disconnect()
+}
+
+@MainActor
+final class SimulatorPasteboardConnection: SimulatorPasteboard {
+    private let object: AnyObject
+    private let delegate: SimulatorPasteboardDelegate
+    private let interface: SimulatorPasteboardInterface
+
+    fileprivate init(object: AnyObject, delegate: SimulatorPasteboardDelegate, interface: SimulatorPasteboardInterface) {
+        self.object = object
+        self.delegate = delegate
+        self.interface = interface
+    }
+
+    func pull() throws { try unsafe interface.pull.unsafeInvoke(on: object) }
+    func push() throws { try unsafe interface.push.unsafeInvoke(on: object) }
+    func disconnect() { delegate.events = nil }
+}
+
+/// Forwards the `SimPasteboardDelegate` callbacks that the host needs, which
+/// the connection makes on the main queue. Every method of that protocol is
+/// optional, and the connection does not check conformance.
+@MainActor
+final class SimulatorPasteboardDelegate: NSObject {
+    var events: ((SimulatorPasteboardEvent) -> Void)?
+
+    init(_ events: @escaping @MainActor (SimulatorPasteboardEvent) -> Void) { self.events = events }
+
+    @objc func simPasteboardDidBecomeActive(_ interface: AnyObject) { events?(.activated) }
+
+    @objc func simPasteboardDidLoseConnection(_ interface: AnyObject) { events?(.lostConnection) }
+
+    @objc func simPasteboardDidApplySnapshot(_ interface: AnyObject, fromHost host: NSUUID, incomingGeneration: Int64,
+                                             toPasteboard pasteboard: NSPasteboard, atGeneration generation: Int64) {
+        events?(.applied)
+    }
+
+    @objc func simPasteboardErrorApplyingSnapshot(_ interface: AnyObject, fromHost host: NSUUID, generation: Int64,
+                                                  error: NSError, toPasteboard pasteboard: NSPasteboard) {
+        events?(.failedToApply(error))
+    }
+}
+
 /// An uninitialized instance for an Objective-C initializer, which consumes it.
 @MainActor
 private func allocate(_ type: AnyClass) -> AnyObject? {
@@ -532,6 +645,10 @@ protocol SimulatorDisplay: AnyObject {
     func setHardwareKeyboardConnected(_ connected: Bool) async throws
     /// Sets the language of the guest's keyboard, such as `en` or `ja`.
     func setKeyboardLanguage(_ language: String) async throws
+    /// Connects to the device's pasteboard service, managing `pasteboard`;
+    /// `events` receives the connection's callbacks.
+    func connectPasteboard(_ pasteboard: NSPasteboard,
+                           events: @escaping @MainActor (SimulatorPasteboardEvent) -> Void) throws -> any SimulatorPasteboard
     func setChromeVisible(_ visible: Bool)
     func setActive(_ active: Bool)
     func setKeyboardEnabled(_ enabled: Bool)
@@ -694,6 +811,10 @@ final class SimulatorConnection: SimulatorDisplay {
         try await device.setHardwareKeyboardEnabled(connected, keyboardType: runtime.input.currentKeyboardType())
     }
     func setKeyboardLanguage(_ language: String) async throws { try await device.setKeyboardLanguage(language) }
+    func connectPasteboard(_ pasteboard: NSPasteboard,
+                           events: @escaping @MainActor (SimulatorPasteboardEvent) -> Void) throws -> any SimulatorPasteboard {
+        try runtime.pasteboard.connect(to: device, managing: pasteboard, events: events)
+    }
     func setChromeVisible(_ visible: Bool) {
         perform("show device chrome") { try unsafe runtime.display.showChrome.unsafeInvoke(on: view, visible) }
         view.invalidateIntrinsicContentSize()

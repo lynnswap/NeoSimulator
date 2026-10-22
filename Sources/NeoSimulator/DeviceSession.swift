@@ -45,6 +45,9 @@ struct DeviceCapabilities {
     /// `SimFeatureTouchPressure`: the guest takes the pressure of a touch,
     /// such as 3D Touch. Simulator.app shows I/O ▸ Touch Pressure only with it.
     static let touchPressure = "com.apple.hid.touch-pressure"
+    /// `SimFeaturePasteboard`: the guest runs the pasteboard service that Get
+    /// and Send Pasteboard connect to. `simctl pbsync` requires it.
+    static let pasteboard = "com.apple.CoreSimulator.pasteboard"
 }
 
 /// Preferences Simulator.app keeps in its standard user defaults.
@@ -228,6 +231,15 @@ enum GraphicsQuality: Int {
     case deviceDefault = 0, low = 10, high = 100
 }
 
+/// Edit ▸ Get Pasteboard or Send Pasteboard: a one-time copy of a whole
+/// pasteboard, with all its types, between the Mac and the device.
+enum PasteboardTransfer {
+    /// Replaces the Mac pasteboard with the device's: SimPasteboardPlus `pull`.
+    case get
+    /// Replaces the device's pasteboard with the Mac's: `push`.
+    case send
+}
+
 /// How Simulator.app times the events of a hardware input.
 enum HardwareInput {
     /// Pressed and released at once.
@@ -255,6 +267,18 @@ final class DeviceSession {
     @ObservationIgnored private let recordings: RecordingStore
     @ObservationIgnored private let makeRecordingProcess: (URL, DeviceTools.ScreenMask) -> Process
     @ObservationIgnored private let openLog: (URL) async throws -> Void
+    /// The Mac pasteboard that Get Pasteboard replaces and Send Pasteboard
+    /// sends, or nil for the general pasteboard.
+    @ObservationIgnored private let hostPasteboard: NSPasteboard?
+    /// The device's pasteboard connection, from the first transfer until the
+    /// device closes it or the session disconnects.
+    @ObservationIgnored private var pasteboardConnection: (any SimulatorPasteboard)?
+    /// Whether the connection reported its first activation, after which each
+    /// activation completes a push.
+    @ObservationIgnored private var isPasteboardActive = false
+    /// The failure handlers of transfers the device has not completed, oldest first.
+    @ObservationIgnored private var pendingPulls: [(Error) -> Void] = []
+    @ObservationIgnored private var pendingPushes: [(Error) -> Void] = []
     @ObservationIgnored private var operation: Task<Void, Never>?
     /// The delayed steps of hardware inputs, which a disconnect cancels.
     @ObservationIgnored private var inputSteps: [Int: Task<Void, Never>] = [:]
@@ -292,18 +316,23 @@ final class DeviceSession {
     ///   - openLog: Opens the device's system log. Defaults to Console.
     ///   - preferences: Where the keyboard preferences are kept.
     ///   - hostKeyboardLanguage: Reads the Mac keyboard's language.
+    ///   - pasteboard: The Mac pasteboard that the device's pasteboard is
+    ///     exchanged with. Defaults to the general pasteboard, which the
+    ///     session uses only once a transfer starts.
     init(device: AvailableDevice, capabilities: DeviceCapabilities, display: any SimulatorDisplay,
          tools: DeviceTools, recordings: RecordingStore = RecordingStore(),
          recordingProcess: ((URL, DeviceTools.ScreenMask) -> Process)? = nil,
          openLog: @escaping (URL) async throws -> Void = DeviceSession.openInConsole,
          preferences: any PreferenceStore = UserDefaults.standard,
-         hostKeyboardLanguage: @escaping @MainActor () -> String? = HostKeyboard.language) {
+         hostKeyboardLanguage: @escaping @MainActor () -> String? = HostKeyboard.language,
+         pasteboard: NSPasteboard? = nil) {
         self.device = device
         self.capabilities = capabilities
         self.display = display
         self.tools = tools
         self.preferences = preferences
         self.hostKeyboardLanguage = hostKeyboardLanguage
+        hostPasteboard = pasteboard
         self.recordings = recordings
         // Simulator.app records Apple Vision Pro in HEVC and other devices in H.264.
         let codec: DeviceTools.VideoCodec = capabilities.family == .vision ? .hevc : .h264
@@ -706,6 +735,85 @@ final class DeviceSession {
         }
     }
 
+    // MARK: Pasteboard
+
+    /// Whether Edit ▸ Get Pasteboard and Send Pasteboard are available. Like
+    /// Simulator.app, they are for an iPhone, iPad, or Apple Vision.
+    /// Simulator.app also needs the device's pasteboard connected; since
+    /// NeoSimulator connects on the first transfer, it needs the device's
+    /// pasteboard feature instead. Simulator.app turns them off while it
+    /// synchronizes pasteboards automatically, which NeoSimulator never does.
+    var canTransferPasteboard: Bool {
+        canPerformCommands && [.iPhone, .iPad, .vision].contains(capabilities.family)
+            && capabilities.supportsFeature(DeviceCapabilities.pasteboard)
+    }
+
+    /// Get Pasteboard or Send Pasteboard. Nothing crosses between the Mac and
+    /// the device otherwise. The first transfer connects to the device's
+    /// pasteboard service. The connection stays open for later transfers and
+    /// for data that the Mac pasteboard reads from the device only when an app
+    /// pastes it. A failure, also one the device reports later, goes to `failure`.
+    func transferPasteboard(_ transfer: PasteboardTransfer, failure: @escaping @MainActor (Error) -> Void) {
+        guard canTransferPasteboard else { return }
+        let report = { (reason: Error) in
+            failure(HostError.operation(transfer == .get
+                ? "Could not get the simulator's pasteboard: \(reason.localizedDescription)"
+                : "Could not send the pasteboard to the simulator: \(reason.localizedDescription)"))
+        }
+        do {
+            let connection = try pasteboardConnection ?? connectPasteboard()
+            switch transfer {
+            case .get:
+                pendingPulls.append(report)
+                do { try connection.pull() } catch { pendingPulls.removeLast(); throw error }
+            case .send:
+                pendingPushes.append(report)
+                do { try connection.push() } catch { pendingPushes.removeLast(); throw error }
+            }
+        } catch {
+            report(error)
+        }
+    }
+
+    private func connectPasteboard() throws -> any SimulatorPasteboard {
+        let connection = try display.connectPasteboard(hostPasteboard ?? .general) { [weak self] in
+            self?.handlePasteboard($0)
+        }
+        pasteboardConnection = connection
+        isPasteboardActive = false
+        return connection
+    }
+
+    private func handlePasteboard(_ event: SimulatorPasteboardEvent) {
+        switch event {
+        case .activated:
+            if isPasteboardActive, !pendingPushes.isEmpty { pendingPushes.removeFirst() }
+            isPasteboardActive = true
+        case .applied:
+            if !pendingPulls.isEmpty { pendingPulls.removeFirst() }
+        case .failedToApply(let error):
+            if pendingPulls.isEmpty {
+                hostLog("Could not apply the pasteboard of \(device.name): \(error.localizedDescription)")
+            } else {
+                pendingPulls.removeFirst()(error)
+            }
+        case .lostConnection:
+            // Simulator.app connects again at once; the next transfer does here.
+            let pending = pendingPulls + pendingPushes
+            closePasteboard()
+            hostLog("The pasteboard connection of \(device.name) closed")
+            let error = HostError.operation("The simulator closed its pasteboard connection.")
+            for report in pending { report(error) }
+        }
+    }
+
+    private func closePasteboard() {
+        pasteboardConnection?.disconnect()
+        pasteboardConnection = nil
+        pendingPulls.removeAll()
+        pendingPushes.removeAll()
+    }
+
     // MARK: Device tool operations
 
     /// Holds the single device-operation slot for a modal step, such as a save
@@ -881,6 +989,7 @@ final class DeviceSession {
         operation?.cancel()
         tools.cancel()
         recording?.stop()
+        closePasteboard()
         display.disconnect()
     }
 
