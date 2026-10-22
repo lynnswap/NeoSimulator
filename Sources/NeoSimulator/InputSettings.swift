@@ -67,6 +67,60 @@ enum ForceTouchTrackpad {
     }
 }
 
+extension ForceTouchTrackpad {
+    /// Calls `changed` on the main thread after a HID event service, such as
+    /// a trackpad, appears or goes away, until the returned object is released.
+    static func observeChanges(_ changed: @escaping @MainActor () -> Void) -> AnyObject? {
+        HIDEventServiceObserver(changed)
+    }
+}
+
+/// Watches the I/O Registry for HID event services. The HID event system
+/// lists a new service shortly after the registry publishes it, so each
+/// change is reported again after a delay.
+private final class HIDEventServiceObserver {
+    private let port: IONotificationPortRef
+    private var iterators: [io_iterator_t] = []
+    private let changed: @MainActor () -> Void
+
+    init?(_ changed: @escaping @MainActor () -> Void) {
+        guard let port = IONotificationPortCreate(kIOMainPortDefault) else { return nil }
+        self.port = port
+        self.changed = changed
+        IONotificationPortSetDispatchQueue(port, .main)
+        let observer = Unmanaged.passUnretained(self).toOpaque()
+        for type in [kIOFirstMatchNotification, kIOTerminatedNotification] {
+            var iterator = io_iterator_t()
+            let result = IOServiceAddMatchingNotification(port, type, IOServiceMatching("IOHIDEventService"), { observer, iterator in
+                HIDEventServiceObserver.drain(iterator)
+                guard let observer else { return }
+                Unmanaged<HIDEventServiceObserver>.fromOpaque(observer).takeUnretainedValue().report()
+            }, observer, &iterator)
+            guard result == KERN_SUCCESS else { continue }
+            // Draining the iterator arms its notification.
+            Self.drain(iterator)
+            iterators.append(iterator)
+        }
+    }
+
+    deinit {
+        iterators.forEach { IOObjectRelease($0) }
+        IONotificationPortDestroy(port)
+    }
+
+    private func report() {
+        let changed = changed
+        MainActor.assumeIsolated { changed() }
+        for delay in [0.5, 2.0] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { MainActor.assumeIsolated { changed() } }
+        }
+    }
+
+    private static func drain(_ iterator: io_iterator_t) {
+        while case let service = IOIteratorNext(iterator), service != IO_OBJECT_NULL { IOObjectRelease(service) }
+    }
+}
+
 /// I/O ▸ Touch Pressure's app-wide settings, which Simulator.app's app
 /// delegate keeps and applies to the window of every device that takes
 /// touch pressure. Each window applies them when its display connects and
@@ -79,17 +133,37 @@ final class TouchPressure {
 
     private let preferences: any PreferenceStore
     private let findsForceTouchTrackpad: () -> Bool
+    private var trackpadObservation: AnyObject?
+    /// Whether the Mac had a Force Touch trackpad when trackpads last changed.
+    private var hadForceTouchTrackpad = false
     /// Shallow Press or Deep Press. Like Simulator.app, the app keeps it
     /// only while it runs, starting with Shallow Press.
     private(set) var mode = SimulatedTouchMode.shallow
 
-    /// - Parameter forceTouchTrackpad: Whether the Mac has a Force Touch
-    ///   trackpad. Like Simulator.app, it is asked each time, so a trackpad
-    ///   connected later counts.
+    /// - Parameters:
+    ///   - forceTouchTrackpad: Whether the Mac has a Force Touch trackpad.
+    ///     Like Simulator.app, it is asked each time, so a trackpad connected
+    ///     later counts.
+    ///   - observeTrackpads: Starts calling its argument when trackpads may
+    ///     have been connected or removed. Simulator.app applies Use Trackpad
+    ///     Force only when a window opens or the setting changes, so a window
+    ///     that opened before a Force Touch trackpad was connected keeps
+    ///     ignoring its force while the menu shows the setting on;
+    ///     NeoSimulator applies it again.
     init(preferences: any PreferenceStore = UserDefaults.standard,
-         forceTouchTrackpad: @escaping () -> Bool = ForceTouchTrackpad.isAvailable) {
+         forceTouchTrackpad: @escaping () -> Bool = ForceTouchTrackpad.isAvailable,
+         observeTrackpads: (@escaping @MainActor () -> Void) -> AnyObject? = ForceTouchTrackpad.observeChanges) {
         self.preferences = preferences
         findsForceTouchTrackpad = forceTouchTrackpad
+        hadForceTouchTrackpad = forceTouchTrackpad()
+        trackpadObservation = observeTrackpads { [weak self] in self?.trackpadsChanged() }
+    }
+
+    private func trackpadsChanged() {
+        let has = hasForceTouchTrackpad
+        guard has != hadForceTouchTrackpad else { return }
+        hadForceTouchTrackpad = has
+        NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
     }
 
     var hasForceTouchTrackpad: Bool { findsForceTouchTrackpad() }

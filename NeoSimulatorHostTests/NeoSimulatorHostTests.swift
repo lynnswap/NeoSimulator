@@ -2508,6 +2508,30 @@ struct InputFocusTests {
         #expect(restarted.touchModes == [.deep, .shallow] && watch.touchModes.last == .deep)
     }
 
+    @Test func aForceTouchTrackpadConnectedLaterReachesOpenWindows() throws {
+        let preferences = MemoryPreferences()
+        var trackpad = false
+        var trackpadsChanged: (@MainActor () -> Void)?
+        let touchPressure = TouchPressure(preferences: preferences, forceTouchTrackpad: { trackpad },
+                                          observeTrackpads: { trackpadsChanged = $0; return nil })
+        let display = TestDisplay()
+        let controller = try makeController(display, features: Self.defaultFeatures.union([DeviceCapabilities.touchPressure]),
+                                            preferences: preferences, touchPressure: touchPressure)
+        defer { controller.invalidate() }
+        #expect(display.usesTrackpadForce == [false])
+        // The window uses a trackpad connected after it opened, as the menu then shows.
+        trackpad = true
+        trackpadsChanged?()
+        #expect(display.usesTrackpadForce == [false, true])
+        #expect(DeviceCommand.command(.useTrackpadForce).state?(controller) == .on)
+        // A change that leaves the Force Touch trackpads as they were applies nothing.
+        trackpadsChanged?()
+        #expect(display.usesTrackpadForce == [false, true])
+        trackpad = false
+        trackpadsChanged?()
+        #expect(display.usesTrackpadForce == [false, true, false])
+    }
+
     /// A controller whose session and touch pressure settings keep their
     /// preferences in `preferences`. Without `touchPressure`, the Mac has no
     /// Force Touch trackpad.
