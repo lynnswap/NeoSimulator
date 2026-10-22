@@ -61,6 +61,13 @@ enum HostPreferences {
     /// Window ▸ Show Device Bezels, on unless turned off. It applies to every
     /// device window: see `PreferenceStore.showsDeviceBezels`.
     static let showChrome = "ShowChrome"
+    /// The style of each device window's title bar, which Simulator.app's
+    /// geometry update reads: with `UseCompactTitleBar`, off unless turned on,
+    /// the compact unified style; otherwise, with `UseMonobar`, on unless
+    /// turned off, the unified style while the window is wide enough for its
+    /// toolbar, and the expanded style below that. See `DeviceToolbar.style`.
+    static let useMonobar = "UseMonobar"
+    static let useCompactTitleBar = "UseCompactTitleBar"
     /// Overrides the path of Xcode's parallel testing device set.
     static let testingDeviceSetPath = "TestingDeviceSetPath"
     /// Whether closing a device window leaves the device running instead of
@@ -135,7 +142,8 @@ enum HostPreferences {
     /// registers it on: NeoSimulator exchanges pasteboards only when chosen.
     static func registerDefaults() {
         UserDefaults.standard.register(defaults: [
-            showTestingDevices: true, showChrome: true, detachOnWindowClose: false, detachOnAppQuit: false,
+            showTestingDevices: true, showChrome: true, useMonobar: true, useCompactTitleBar: false,
+            detachOnWindowClose: false, detachOnAppQuit: false,
             attachBootedOnStart: true, sessionOnLaunch: true, startLastDeviceOnLaunch: true,
             terminationTimeout: 60.0, screenShotSaveLocation: defaultScreenshotLocation(), screenShotUseMask: false,
             slowMotionAnimation: false, graphicsQualityOverride: GraphicsQuality.deviceDefault.rawValue,
