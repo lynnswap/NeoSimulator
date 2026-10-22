@@ -2969,12 +2969,13 @@ struct InputFocusTests {
     private func makeExternalDisplayController(_ screen: TestExternalScreen? = TestExternalScreen(),
                                                device: String = "test-device",
                                                preferences: MemoryPreferences = MemoryPreferences(),
+                                               externalDisplayChanges: ExternalDisplayChanges = ExternalDisplayChanges(),
                                                failure: @escaping @MainActor (Error) -> Void = { Issue.record($0) })
         throws -> (DeviceWindowController, TestDisplay) {
         let display = TestDisplay()
         display.externalScreen = screen
         let controller = try makeController(display, features: Self.externalDisplayFeatures, device: device,
-                                            preferences: preferences)
+                                            preferences: preferences, externalDisplayChanges: externalDisplayChanges)
         controller.session.connectExternalDisplay(failure: failure)
         return (controller, display)
     }
@@ -3405,35 +3406,59 @@ struct InputFocusTests {
         #expect(!screen.current.isPoweredOn)
     }
 
-    @Test func quittingWaitsForTheExternalDisplaysChangeInFlightAndItsPowerOff() async throws {
-        final class Result { var closed: Bool? }
+    @Test func quittingWaitsForTheExternalDisplayChangesOfAClosedWindow() async throws {
+        final class Result { var idle: Bool? }
+        let changes = ExternalDisplayChanges()
         let screen = TestExternalScreen()
         screen.defersChanges = true
-        let (controller, _) = try makeExternalDisplayController(screen)
-        let session = controller.session
-        #expect(session.hasExternalDisplay)
-        // Quitting disconnects the window while a size is in flight. Its wait
+        let (controller, _) = try makeExternalDisplayController(screen, externalDisplayChanges: changes)
+        #expect(controller.session.hasExternalDisplay)
+        // The window closes, keeping the device running, while a size is in
+        // flight. The device's changes outlive the session, and their wait
         // ends once the size and then the power-off have completed.
         controller.perform(.externalDisplay1920x1080)
         controller.invalidate()
+        #expect(changes.isBusy)
         let result = Result()
-        let wait = Task { result.closed = await session.externalDisplayCloses(before: .now + .seconds(60)) }
+        let wait = Task { result.idle = await changes.idle(before: .now + .seconds(60)) }
         await Task.yield()
         screen.deliver()
         await Task.yield()
         #expect(screen.requests == ["mode 1920x1080@1", "off"])
-        #expect(result.closed == nil)
+        #expect(result.idle == nil)
         screen.deliver()
         await wait.value
-        #expect(result.closed == true)
+        #expect(result.idle == true && !changes.isBusy)
         #expect(!screen.current.isPoweredOn)
         // A power-off that does not complete ends the wait at its deadline.
         let held = TestExternalScreen()
         held.defersChanges = true
-        let (other, _) = try makeExternalDisplayController(held)
+        let heldChanges = ExternalDisplayChanges()
+        let (other, _) = try makeExternalDisplayController(held, externalDisplayChanges: heldChanges)
         other.invalidate()
         #expect(held.requests == ["off"])
-        #expect(await !other.session.externalDisplayCloses(before: .now + .milliseconds(50)))
+        #expect(await !heldChanges.idle(before: .now + .milliseconds(50)))
+    }
+
+    @Test func aReopenedDevicesExternalDisplayFollowsThePowerOffOfItsClosedWindow() throws {
+        let preferences = MemoryPreferences()
+        let changes = ExternalDisplayChanges()
+        let screen = TestExternalScreen()
+        screen.defersChanges = true
+        let (closed, _) = try makeExternalDisplayController(screen, preferences: preferences, externalDisplayChanges: changes)
+        // The window closes, keeping the device running, while a size is in
+        // flight, so its power-off waits. The reopened device's session then
+        // restores the size, which follows that power-off.
+        closed.perform(.externalDisplay1920x1080)
+        closed.invalidate()
+        let (reopened, _) = try makeExternalDisplayController(screen, preferences: preferences,
+                                                              externalDisplayChanges: changes)
+        defer { reopened.invalidate() }
+        screen.deliver()
+        screen.deliver()
+        #expect(screen.requests.last == "mode 1920x1080@1")
+        #expect(screen.current.isPoweredOn && reopened.session.externalDisplayMode == .size1920x1080)
+        #expect(reopened.externalDisplayWindow != nil)
     }
 
     @Test func aDeviceWindowThatClosesDuringAChangeTurnsTheDisplayOffAfterIt() throws {
@@ -4333,6 +4358,7 @@ struct InputFocusTests {
                                 openLog: @escaping (URL) async throws -> Void = { _ in },
                                 pasteboard: NSPasteboard? = nil,
                                 pasteboardSync: PasteboardSync? = nil,
+                                externalDisplayChanges: ExternalDisplayChanges = ExternalDisplayChanges(),
                                 performWindowDrag: @escaping (NSWindow, NSEvent) -> Void = { _, _ in },
                                 onClose: @escaping (DeviceWindowController, DeviceLifetimeChoice?) -> Void = { _, _ in },
                                 onRestart: @escaping (DeviceWindowController, Bool) -> Void = { _, _ in })
@@ -4341,7 +4367,8 @@ struct InputFocusTests {
                                       simctl: simctl, devicectl: devicectl, recordingProcess: recordingProcess,
                                       openLog: openLog, screenPointsPerInch: screenPointsPerInch, device: identifier,
                                       preferences: preferences, keyboardLanguage: keyboardLanguage,
-                                      pasteboard: pasteboard, pasteboardSync: pasteboardSync)
+                                      pasteboard: pasteboard, pasteboardSync: pasteboardSync,
+                                      externalDisplayChanges: externalDisplayChanges)
         return try DeviceWindowController(
             session: session, preferences: preferences,
             touchPressure: touchPressure ?? TouchPressure(preferences: preferences, forceTouchTrackpad: { false }),
@@ -4448,7 +4475,8 @@ struct InputFocusTests {
                              preferences: MemoryPreferences = MemoryPreferences(),
                              keyboardLanguage: @escaping @MainActor () -> String? = { "fr" },
                              pasteboard: NSPasteboard? = nil,
-                             pasteboardSync: PasteboardSync? = nil) throws -> DeviceSession {
+                             pasteboardSync: PasteboardSync? = nil,
+                             externalDisplayChanges: ExternalDisplayChanges = ExternalDisplayChanges()) throws -> DeviceSession {
         // Five looks for an external display, 20 ms apart, so that a test
         // sees the look-up end.
         DeviceSession(
@@ -4462,7 +4490,7 @@ struct InputFocusTests {
                                    simctl: simctl, devicectl: devicectl),
             recordingProcess: recordingProcess, openLog: openLog, preferences: preferences,
             hostKeyboardLanguage: keyboardLanguage, pasteboard: pasteboard, pasteboardSync: pasteboardSync,
-            externalScreenLookUp: (5, .milliseconds(20)))
+            externalDisplayChanges: externalDisplayChanges, externalScreenLookUp: (5, .milliseconds(20)))
     }
 }
 

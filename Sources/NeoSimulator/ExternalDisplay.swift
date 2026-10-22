@@ -126,81 +126,112 @@ extension PreferenceStore {
     }
 }
 
-/// The changes a session sends to its device's external display.
-/// CoreSimulator completes each change later, so they are sent one at a
-/// time and the last choice wins: a choice made while a change is in flight
-/// waits for it and replaces an earlier choice that waits.
+/// The changes sent to one device's external display, which `HostApplication`
+/// keeps for the device across its sessions, so that a session's changes
+/// follow the power-off that the previous session's close sent. CoreSimulator
+/// completes each change later, so they are sent one at a time and the last
+/// choice wins: a change asked for while one is in flight waits for it and
+/// replaces an earlier change that waits. Each change goes through the screen
+/// connection of the session that asked for it.
 ///
 /// Disabled always sends the power-off. Simulator.app sends it only while the
 /// display's window is connected; CoreSimulator completes a power-off of a
-/// display that is already off without an error, so the session keeps no
-/// record of the display's power that reports and completions arriving in
-/// either order could leave wrong.
+/// display that is already off without an error, so no record of the
+/// display's power, which reports and completions arriving in either order
+/// could leave wrong, decides it.
 @MainActor
 final class ExternalDisplayChanges {
-    let screen: any SimulatorExternalScreen
-    private var isSending = false
-    private var waiting: (mode: ExternalDisplayMode, report: @MainActor (Error) -> Void)?
-    private var isClosed = false
-    /// Runs once the changes are closed and none is in flight or waiting.
-    private var finished: (@MainActor () -> Void)?
-
-    init(screen: any SimulatorExternalScreen) { self.screen = screen }
-
-    /// Sends `mode`'s change, or makes it wait for the change in flight.
-    /// `report` receives a failure, also one CoreSimulator reports later.
-    func apply(_ mode: ExternalDisplayMode, report: @escaping @MainActor (Error) -> Void) {
-        guard !isClosed else { return }
-        if isSending { waiting = (mode, report) } else { send(mode, report: report) }
+    private struct Change {
+        let mode: ExternalDisplayMode
+        let screen: any SimulatorExternalScreen
+        let report: @MainActor (Error) -> Void
     }
 
-    /// Stops taking choices and the display's reports. With `poweringOff`,
-    /// turns the display off once the change in flight completes. `finished`
-    /// runs once the change in flight and the power-off have completed.
-    func close(poweringOff: Bool, report: @escaping @MainActor (Error) -> Void,
-               finished: @escaping @MainActor () -> Void) {
-        guard !isClosed else { return finished() }
-        isClosed = true
-        self.finished = finished
-        screen.disconnect()
-        waiting = poweringOff ? (.disabled, report) : nil
-        if !isSending { sendWaiting() }
+    private var isSending = false
+    private var waiting: Change?
+    /// What waits for no change to be in flight or waiting.
+    private var idleWaits: [@MainActor () -> Void] = []
+
+    /// Whether a change is in flight or waiting.
+    var isBusy: Bool { isSending || waiting != nil }
+
+    /// Sends `mode`'s change through `screen`, or makes it wait for the change
+    /// in flight. `report` receives a failure, also one CoreSimulator reports
+    /// later.
+    func apply(_ mode: ExternalDisplayMode, through screen: any SimulatorExternalScreen,
+               report: @escaping @MainActor (Error) -> Void) {
+        let change = Change(mode: mode, screen: screen, report: report)
+        if isSending { waiting = change } else { send(change) }
+    }
+
+    /// Drops the change that waits, as when its session disconnects from a
+    /// device that is shutting down.
+    func discardWaiting() {
+        waiting = nil
         finishIfIdle()
     }
 
-    private func send(_ mode: ExternalDisplayMode, report: @escaping @MainActor (Error) -> Void) {
+    /// Waits until no change is in flight or waiting, or until `deadline`.
+    /// Returns whether the changes completed.
+    func idle(before deadline: ContinuousClock.Instant) async -> Bool {
+        guard isBusy else { return true }
+        return await withCheckedContinuation { continuation in
+            let wait = IdleWait(continuation)
+            idleWaits.append { wait.finish(true) }
+            wait.timer = Task { [wait] in
+                guard (try? await Task.sleep(until: deadline)) != nil else { return }
+                wait.finish(false)
+            }
+        }
+    }
+
+    private func send(_ change: Change) {
         // The completion keeps these changes until CoreSimulator calls it.
-        let completion: @MainActor (Error?) -> Void = { error in self.completed(error: error, report: report) }
+        let completion: @MainActor (Error?) -> Void = { error in self.completed(error: error, report: change.report) }
         isSending = true
         do {
-            if let size = mode.pixelSize {
-                try screen.setMode(pixelSize: size, scale: ExternalDisplayMode.scale, carPlayProperties: nil,
-                                   completion: completion)
+            if let size = change.mode.pixelSize {
+                try change.screen.setMode(pixelSize: size, scale: ExternalDisplayMode.scale, carPlayProperties: nil,
+                                          completion: completion)
             } else {
-                try screen.powerOff(completion: completion)
+                try change.screen.powerOff(completion: completion)
             }
         } catch {
             isSending = false
-            report(error)
+            change.report(error)
         }
     }
 
     private func completed(error: Error?, report: @MainActor (Error) -> Void) {
         isSending = false
         if let error { report(error) }
-        sendWaiting()
+        if let waiting {
+            self.waiting = nil
+            send(waiting)
+        }
         finishIfIdle()
     }
 
     private func finishIfIdle() {
-        guard isClosed, !isSending, waiting == nil, let finished else { return }
-        self.finished = nil
-        finished()
+        guard !isBusy, !idleWaits.isEmpty else { return }
+        let waits = idleWaits
+        idleWaits = []
+        for wait in waits { wait() }
     }
+}
 
-    private func sendWaiting() {
-        guard let waiting else { return }
-        self.waiting = nil
-        send(waiting.mode, report: waiting.report)
+/// One wait for a device's external display changes, which their completion
+/// or the wait's deadline ends, whichever comes first.
+@MainActor
+private final class IdleWait {
+    private var continuation: CheckedContinuation<Bool, Never>?
+    var timer: Task<Void, Never>?
+
+    init(_ continuation: CheckedContinuation<Bool, Never>) { self.continuation = continuation }
+
+    func finish(_ idle: Bool) {
+        timer?.cancel()
+        continuation?.resume(returning: idle)
+        continuation = nil
     }
 }

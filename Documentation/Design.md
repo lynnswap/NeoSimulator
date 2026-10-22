@@ -104,6 +104,7 @@ signal cannot land between a move and a separate bookkeeping update.
 | Edit ▸ Automatically Sync Pasteboard and the exchange between devices | `PasteboardSync` |
 | Route a device's audio over its `SimAudioHostRoutable` port | `DeviceSession` |
 | Configure a device's external display and follow its state | `DeviceSession` |
+| Order the changes sent to a device's external display across its sessions | `ExternalDisplayChanges`, one per device in `HostApplication` |
 | Present an external display's window | `ExternalDisplayWindowController` |
 | Give a window's display the Mac's keyboard and the focus, as both windows do | `DisplayKeyboardInput` |
 | Fit a window's display in full screen and during a live resize, as both windows do | `DisplayFitting` |
@@ -1148,14 +1149,16 @@ Neo reaches the screen as Simulator.app does:
   the first of `supportedScreenModes` whose size rule takes the size at its
   `preferredUIScale` (0 `exactSize`, 1 from `minSize` through `maxSize`, 2 one
   of `allowedSizes`). A size that no mode takes is reported.
-- CoreSimulator completes a change later, so the session sends one change at
-  a time. A choice made while a change is in flight waits for it and replaces
-  an earlier choice that waits, so the last choice wins. A window that
-  disconnects during a change turns the display off after it.
+- CoreSimulator completes a change later, so a device's changes go one at a
+  time, also across its sessions. A change asked for while one is in flight
+  waits for it and replaces an earlier change that waits, so the last one
+  wins. A window that disconnects during a change turns the display off after
+  it, and the next session of the device, after a reopening or a restart,
+  sends its changes after that power-off.
 - Disabled, and closing the device window while the device is booted,
-  always send the power-off, after a change in flight. The session keeps no
-  record of whether the display is on, which reports and completions that
-  arrive in either order, and other tools' changes, could leave wrong.
+  always send the power-off, after a change in flight. No record of whether
+  the display is on decides it, which reports and completions that arrive in
+  either order, and other tools' changes, could leave wrong.
 - `SimDeviceScreen.register(types:queue:handler:)` with `.properties` reports
   each change of the screen's `powerState`, `pixelSize`, and
   `currentMode.preferredUIScale`, also those another tool makes.
@@ -1225,14 +1228,20 @@ Like Simulator.app:
 - Closing the window chooses Disabled. Closing the device window, quitting, or
   restarting closes it and, while the device is booted, turns the display off,
   keeping the choice for the next connection. Quitting, also with
-  `DetachOnAppQuit` on, waits for a change in flight and that power-off within
-  `TerminationTimeout` before the app exits; a display that has not turned off
-  by then is listed in the alert that quitting shows for its failures.
+  `DetachOnAppQuit` on, waits for every device's changes within
+  `TerminationTimeout` before the app exits, including the power-offs of
+  windows that closed earlier; a display whose changes have not completed by
+  then is listed in the alert that quitting shows for its failures.
 
-`DeviceSession` owns the device's external screen connection and its last
-reported state; `DeviceWindowController` opens and closes the
-`ExternalDisplayWindowController` from that state. While an external display's
-window is key, the other menus act on its device window.
+`DeviceSession` owns its connection to the device's external display, the
+look-up for it, and its last reported state; `DeviceWindowController` opens
+and closes the `ExternalDisplayWindowController` from that state. The changes
+sent to the display belong to the device instead: `HostApplication` keeps one
+`ExternalDisplayChanges` for each device, which the device's successive
+sessions share, each change going through the connection of the session that
+asked for it. A session's pending changes thereby outlive it: the next
+session's changes follow them, and quitting waits for them. While an external
+display's window is key, the other menus act on its device window.
 
 These differ from Simulator.app:
 
