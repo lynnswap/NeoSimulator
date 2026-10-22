@@ -219,20 +219,25 @@ points. The gap, the display filling the window below it, and the fit
 checks follow the table above; the differences are listed in the
 [design](Design.md#commands-and-menus).
 
-## Bezel corner resizing
+## Bezel resizing and moving
 
 The evidence is Simulator.app 16.0 (1063.4) from Xcode 26.6 and SimulatorKit
-from Xcode 27.1. Simulator.app's `DeviceWindow` tracks the drag itself; its
-window is not resizable while it shows a bezel.
+from Xcode 27.1. Simulator.app's `DeviceWindow` tracks a drag on a corner of
+the bezel itself, and leaves a drag elsewhere on the bezel to the window
+server; its window is not resizable while it shows a bezel.
 
 | Reference owner | Observed behavior |
 | --- | --- |
-| `DeviceWindow.mouseDown:` `0x100037290` → `0x100036E70` | In full screen (`styleMask` bit 14) without a chrome, skips the corners; otherwise looks for the first of `displayView.typedResizeRects` whose `rect` contains `event.locationInWindow` (the display view sits at the window's origin). On a corner: sets `_allowResize`; saves `_initialFrame` (`contentRect(forFrameRect: frame)` with the display view's height), `_initialScale` (`renderScale`), `_initialMouse` (`NSEvent.mouseLocation`), `_resizeRectType`, and `_maxResizeScale` (`0x100037BB0`); calls `beginResize()` and posts `NSWindowWillStartLiveResizeNotification`. Otherwise, with `AllowsMoveByDragOnWindowChrome` (registered YES), calls `performWindowDrag(with:)`. It never calls `super`. |
+| `DeviceWindow.mouseDown:` `0x100037290` → `0x100036E70` | In full screen (`styleMask` bit 14) without a chrome, skips the corners; otherwise looks for the first of `displayView.typedResizeRects` whose `rect` contains `event.locationInWindow` (the display view sits at the window's origin). On a corner: sets `_allowResize`; saves `_initialFrame` (`contentRect(forFrameRect: frame)` with the display view's height), `_initialScale` (`renderScale`), `_initialMouse` (`NSEvent.mouseLocation`), `_resizeRectType`, and `_maxResizeScale` (`0x100037BB0`); calls `beginResize()` and posts `NSWindowWillStartLiveResizeNotification`. Then (`0x100037208`), unless `_allowResize` is set, reads `[[NSUserDefaults standardUserDefaults] boolForKey:@"AllowsMoveByDragOnWindowChrome"]` (`0x100037234`) and, when it is YES, calls `performWindowDragWithEvent:` with the event (`0x10003724C`), also in full screen. It never calls `super`. |
 | Maximum `0x100037BB0` | `scale(for:)` of the size from the opposite corner of `_initialFrame` to the edges of `(screen ?? NSScreen.main).visibleFrame`: width `initial.maxX − visible.minX` for the left corners, `visible.maxX − initial.minX` for the right; height `initial.maxY − visible.minY` for the lower corners, `visible.maxY − initial.minY` for the upper. 1000 without a screen. |
 | `DeviceWindow.mouseDragged:` `0x100037860` → `0x100037448` | Without a chrome or `_allowResize`, calls `super`. Otherwise the width is the initial width minus the pointer's x movement (`NSEvent.mouseLocation − _initialMouse`) for the left corners and plus it for the right; the height minus the y movement for the lower corners and plus it for the upper. Sets `renderScale = min(_maxResizeScale, max(minimum, scale(for: size)))` with the minimum of the scale commands (`0x100047884`), then calls the geometry update (`0x10004B2E4`) with the content size of the display's `intrinsicContentSize` plus the gap above the display (`0x1000377CC` → `0x100036364`) and the origin that keeps the display's opposite corner, computed from the display's size alone: `x = initial.maxX − width` for the left corners, else `initial.minX`; `y = initial.maxY − height` for the lower corners, else `initial.minY`. |
 | `DeviceWindow.mouseUp:` `0x1000373F8` → `0x1000372E0` | Without a chrome or `_allowResize`, calls `super`. Otherwise calls `endResize()`, clears `_allowResize`, posts `NSWindowDidEndLiveResizeNotification` (so `DWC.windowDidEndLiveResize:` sets `renderScale` from the display view's frame), and runs `0x10003853C`: outside full screen, when the frame does not intersect the visible frame inset by 128 points (`0x100038638`), moves it along each axis until it touches that inset frame. |
 | Geometry update `0x10004B2E4(size:origin:)` | Both arguments are optional; without them it uses the current content rect. The frame is the content size plus the title bar at the origin, `NSIntegralRect`, moved down when its top is above the visible frame, then `setFrame:display:NO animate:NO`. A flag ignores calls made while it runs, such as from `windowDidResize:`. |
 | Resize cursors: the window's setup `0x100035B50` (from `awakeFromNib` and the initializer), `fullScreenState` `didSet` `0x100036184` | The setup turns `displayView.showResizeCursors` on (`0x100036010`); each full screen change sets it to `fullScreenState == none`, followed by `invalidateCursorRectsForView:`. |
+| Defaults dictionary `0x1000250B4` … `0x1000253AC`, `registerDefaults:` `0x1000253E8` | Registers `AllowsMoveByDragOnWindowChrome` YES (key at `0x1000252C4`, `kCFBooleanTrue` at `0x1000252BC`). The Settings bundle does not list it. |
+| Views under a press outside the display view: setup `0x100035B50`, `DeviceWindow.sendEvent:` `0x100036E20` → `0x100036D60` | The content view is the window's own `NSView`. Below the display view, the setup adds `blurredBackgroundContainerView` (an `NSView` with alpha 0 and the content view's frame, `0x100035C0C`–`0x100035C4C`) holding `visualEffectView` (an `NSVisualEffectView` with the container's frame, `0x100035C50`–`0x100035C98`). AppKit's hit test does not skip a view with alpha 0, so a press in the gap above the display view hits the effect view; `NSVisualEffectView` takes `NSView`'s `mouseDown:`, `hitTest:`, and `mouseDownCanMoveWindow`, and none of these views is Simulator.app's own class. `sendEvent:` only drops an event equal to the previous one (`_previousEvent`) before calling `super`. The press therefore reaches `DeviceWindow.mouseDown:`, which moves the window. |
+| Setup `0x100036024`–`0x100036040` | Sets the content view's layer's private `hitTestsContentsAlphaChannel` to YES. AppKit's backing layer (`NSViewBackingLayer`) already has it on. |
+| AppKit (macOS 26.6.2) `-[NSWindow performWindowDragWithEvent:]` | Calls `_beginWindowDragWithEvent:options:completionHandler:`, which passes the event's location in the window to `_dragWindowRelativeToMouseDown:options:completionHandler:`; that reaches SkyLight's `SLSPackagesDragWindowRelativeToMouse` through `_dragWindowRelativeToMouseDown:options:`, so the window server moves the window for the rest of the drag. |
 
 SimulatorKit (Xcode 27.1):
 
@@ -242,17 +247,58 @@ SimulatorKit (Xcode 27.1):
 | `SimDeviceChrome.ResizeRectType` | Cases `lowerLeft` 0, `lowerRight` 1, `upperRight` 2, `upperLeft` 3, whose raw values are their names. |
 | `SimChromeResizeRectsExcludeView`, created in `SimDisplayView.init` (`0x660B8`); `hitTest:` `0x34684` → `0x34504` | Returns itself for a point inside any `typedResizeRects` while the chrome exists, otherwise nil. It does not handle the mouse, so the press reaches the window through the responder chain. |
 | `resetCursorRects` `0x6440C` → `0x642D0` | When `showResizeCursors` is on (it starts off), adds `_windowResizeNorthEastSouthWestCursor` over the `lowerLeft` and `upperRight` rects and `_windowResizeNorthWestSouthEastCursor` over the others. |
+| `SimDigitizerInputView.hitTest:` `0x1E4B0` → `0x1E2A8` | Returns `super`'s result, except nil for a point that a view of `edgeSwipeExcludedViews` hits. |
+| `EventHandlingView` event methods, such as `mouseDown:` `0x2CA1C`, → `0x2C7C4` | Call `handleEvent(_:)` (vtable offset `0x70`; the digitizer's is `0x1E510`). An event it returns goes to `super`'s method for the event's type through `objc_msgSendSuper2` (`0x2C4AC`), so `NSView` passes it up the responder chain. |
+| `SimChromeButton.mouseDown:` `0x31328` | Tracks the press itself in a `nextEventMatchingMask:` loop for mouse up, drag, and periodic events (`0x31178`). |
+| `SimDigitizerInputView.ignoreInsetDragAwayFromFramebuffer`, `ignoreInsetDragMinimumDistance` | Neither Simulator.app nor NeoSimulator sets them. Xcode 26.6's SimulatorKit has the same members. |
+
+A live check through NeoSimulator's own code (an iOS 26.5 iPhone 17 Pro at
+Point Accurate, SimulatorKit from Xcode 27.1) showed which presses SimulatorKit
+passes on. In the 456 by 910 point display view, the bezel's image
+(`SimDisplayChromeRenderView`) spans x 9 to 447, the screen is at (27, 18, 402,
+874), and the digitizer at (3, −6, 450, 922), with
+`ignoreInsetDragAwayFromFramebuffer` on and `ignoreInsetDragMinimumDistance`
+5. Each press went to the view that `hitTest:` returned, as AppKit gives it in
+a key window:
+
+| Press | Reached the window |
+| --- | --- |
+| At x 1.5, left of the bezel's image and outside the digitizer (`SimDisplayChromeView`) | At once |
+| On the bezel 12 points left of the screen, released in place, or moved 4 points away from the screen, 60 points along its edge, or 30 points toward it | No; the digitizer kept it |
+| The same press moved 60 points away from the screen, or a press below the screen moved 60 points down | Yes, as its original mouse down |
+| A swipe on the screen | No; the guest's screenshot changed from a Home Screen page to the App Library |
+| A corner (`SimChromeResizeRectsExcludeView`) | Yes, as a corner drag |
+
+On each button, `hitTest:` returns `SimChromeButton` on the part outside the
+bezel's image and the digitizer on the part over it.
+
+The window server chooses the window before AppKit's hit test.
+`NSWindow.windowNumber(at:belowWindowWithWindowNumber:)` names the window
+that a mouse down at a point would hit; it was read with an opaque window
+right behind the device window and both above other apps' windows, without
+posting events. It named the device window for x 1.5, a point outside the
+bezel image's rounded corner, the bezel image, the screen, and the header's
+capsule, and the window behind for the gap below the header and for the
+header rectangle's corner outside the capsule. Turning the content view
+layer's `hitTestsContentsAlphaChannel` on or off changed none of these. A
+window rebuilt as Simulator.app builds its own (titled without a full-size
+content view, clear, the alpha-0 container with an `NSVisualEffectView`, the
+flag set, and an opaque view 10 points below the content view's top) gave the
+window behind for the gap, where AppKit's hit test returns the
+`NSVisualEffectView`, with the flag on or off.
 
 NeoSimulator reads `typedResizeRects` through ABIBridge: the getter returns
 the array as a runtime value, `Array.count` and `Array.subscript` bound to
 `TypedResizeRect` read its elements, and `TypedResizeRect.rect`, `type`, and
 `ResizeRectType.rawValue` read each one. `DeviceWindow` passes the mouse
-events that reach it to `DeviceWindowController`, which tracks the drag as
-above. Unlike Simulator.app, it converts the press to the display view's
-coordinates, reads the pointer from each event's `CGEvent` location instead of
+events that reach it to `DeviceWindowController`, which tracks a corner drag
+as above. For any other press while `AllowsMoveByDragOnWindowChrome` is on,
+it calls `performDrag(with:)`. Unlike
+Simulator.app, it converts the press to the display view's coordinates, reads
+the pointer from each event's `CGEvent` location instead of
 `NSEvent.mouseLocation`, does not post the live resize notifications, and
-starts no drag in full screen. The user-visible differences are listed in the
-[design](Design.md#commands-and-menus).
+starts no drag of either kind in full screen. The user-visible differences are
+listed in the [design](Design.md#commands-and-menus).
 
 ## Keyboard and touch pressure
 

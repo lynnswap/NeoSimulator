@@ -160,6 +160,16 @@ extension PreferenceStore {
     var showsDeviceBezels: Bool {
         object(forKey: HostPreferences.showChrome) == nil || bool(forKey: HostPreferences.showChrome)
     }
+
+    /// Simulator.app's app-wide `AllowsMoveByDragOnWindowChrome`: whether a
+    /// press on a device window's bezel outside its corners moves the window.
+    /// Like Simulator.app, which reads it with `boolForKey:` at each press, a
+    /// change applies to the next press. It is on unless it was turned off, as
+    /// its registered default says.
+    var movesWindowByDraggingBezel: Bool {
+        object(forKey: HostPreferences.allowsMoveByDragOnWindowChrome) == nil
+            || bool(forKey: HostPreferences.allowsMoveByDragOnWindowChrome)
+    }
 }
 
 private let windowGeometryKey = "SimulatorWindowGeometry"

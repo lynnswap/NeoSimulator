@@ -1694,6 +1694,76 @@ struct InputFocusTests {
         #expect(display.showsResizeCursors)
     }
 
+    @Test func aPressOnTheBezelOutsideItsCornersMovesTheWindow() throws {
+        var drags: [(window: NSWindow, event: NSEvent)] = []
+        let (controller, display) = try makeBezelController { drags.append(($0, $1)) }
+        defer { controller.invalidate() }
+        let window = try #require(controller.window)
+        let view = display.view, scale = display.renderScale
+        // Like SimulatorKit's digitizer, the input view covers the device's
+        // screen, inside the 10-point bezel, and the bezel next to it. A
+        // button on the bezel takes its presses.
+        display.input.frame = view.bounds.insetBy(dx: 3 * scale, dy: 3 * scale)
+        let button = TestButton(frame: NSRect(x: view.bounds.maxX - 10 * scale, y: view.bounds.midY,
+                                              width: 10 * scale, height: 30 * scale))
+        view.addSubview(button)
+        // A press on the bezel outside the digitizer reaches the window, which
+        // moves with its drag, and so does a press that the digitizer passes on.
+        let edge = view.convert(NSPoint(x: 1.5 * scale, y: view.bounds.midY), to: nil)
+        #expect(try press(window, at: edge) === view)
+        display.input.passesOnPresses = true
+        let nextToScreen = view.convert(NSPoint(x: 6 * scale, y: view.bounds.midY), to: nil)
+        #expect(try press(window, at: nextToScreen) === display.input)
+        display.input.passesOnPresses = false
+        #expect(drags.map(\.window) == [window, window])
+        #expect(drags.map(\.event.locationInWindow) == [edge, nextToScreen])
+        // Presses that the digitizer and the button keep reach the device.
+        let screen = try press(window, at: view.convert(NSPoint(x: view.bounds.midX, y: view.bounds.midY), to: nil))
+        let pressedButton = try press(window, at: view.convert(NSPoint(x: button.frame.midX, y: button.frame.midY), to: nil))
+        #expect(screen === display.input && display.input.presses.count == 2)
+        #expect(pressedButton === button && button.presses.count == 1)
+        // A press on a corner resizes the window instead.
+        try drag(window, from: try point(of: .lowerLeft, in: display), by: NSSize(width: -30, height: -55)) {
+            #expect(display.isResizing)
+        }
+        // Like Simulator.app, where no view takes a press outside the display,
+        // a press in the gap below the header that reaches the window moves it.
+        let content = try #require(window.contentView)
+        let gap = content.convert(NSPoint(
+            x: view.frame.midX, y: view.frame.maxY + WindowScale.displayGap(bezelPadding: display.chromePadding) / 2), to: nil)
+        #expect(try press(window, at: gap) === content)
+        #expect(drags.map(\.event.locationInWindow) == [edge, nextToScreen, gap])
+    }
+
+    @Test func allowsMoveByDragOnWindowChromeTurnsMovingByTheBezelOff() throws {
+        let preferences = MemoryPreferences()
+        preferences.set(false, forKey: HostPreferences.allowsMoveByDragOnWindowChrome)
+        var drags = 0
+        let (controller, display) = try makeBezelController(preferences: preferences) { _, _ in drags += 1 }
+        defer { controller.invalidate() }
+        let window = try #require(controller.window)
+        _ = try press(window, at: try pointOnBezel(of: display))
+        #expect(drags == 0)
+        // Like Simulator.app, which reads the preference at each press, the
+        // next press follows a change.
+        preferences.set(true, forKey: HostPreferences.allowsMoveByDragOnWindowChrome)
+        _ = try press(window, at: try pointOnBezel(of: display))
+        #expect(drags == 1)
+    }
+
+    @Test func aPressOnTheBezelMovesNothingInFullScreen() throws {
+        var drags = 0
+        let (controller, display) = try makeBezelController { _, _ in drags += 1 }
+        defer { controller.invalidate() }
+        let window = try #require(controller.window)
+        controller.windowWillEnterFullScreen(Notification(name: NSWindow.willEnterFullScreenNotification, object: window))
+        _ = try press(window, at: try pointOnBezel(of: display))
+        #expect(drags == 0)
+        controller.windowDidExitFullScreen(Notification(name: NSWindow.didExitFullScreenNotification, object: window))
+        _ = try press(window, at: try pointOnBezel(of: display))
+        #expect(drags == 1)
+    }
+
     @Test func orientationCommandsSetTheDeviceAndKeepManualRotation() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -3304,6 +3374,7 @@ struct InputFocusTests {
                                 openLog: @escaping (URL) async throws -> Void = { _ in },
                                 pasteboard: NSPasteboard? = nil,
                                 pasteboardSync: PasteboardSync? = nil,
+                                performWindowDrag: @escaping (NSWindow, NSEvent) -> Void = { _, _ in },
                                 onClose: @escaping (DeviceWindowController, DeviceLifetimeChoice?) -> Void = { _, _ in },
                                 onRestart: @escaping (DeviceWindowController, Bool) -> Void = { _, _ in })
         throws -> DeviceWindowController {
@@ -3315,7 +3386,7 @@ struct InputFocusTests {
         return try DeviceWindowController(
             session: session, preferences: preferences,
             touchPressure: touchPressure ?? TouchPressure(preferences: preferences, forceTouchTrackpad: { false }),
-            onClose: onClose, onRestart: onRestart)
+            performWindowDrag: performWindowDrag, onClose: onClose, onRestart: onRestart)
     }
 
     /// The features of an iPhone that the tests need unless they choose others.
@@ -3323,12 +3394,14 @@ struct InputFocusTests {
 
     /// A shown window whose display, 100 by 200 points at scale 1, has a
     /// 10-point bezel without top padding, like an iPhone's.
-    private func makeBezelController() throws -> (DeviceWindowController, TestDisplay) {
+    private func makeBezelController(preferences: MemoryPreferences = MemoryPreferences(),
+                                     performWindowDrag: @escaping (NSWindow, NSEvent) -> Void = { _, _ in })
+        throws -> (DeviceWindowController, TestDisplay) {
         let display = TestDisplay()
         display.naturalSize = NSSize(width: 100, height: 200)
         display.bezel = NSSize(width: 20, height: 20)
         display.bezelPadding = NSSize(width: 9, height: 0)
-        let controller = try makeController(display)
+        let controller = try makeController(display, preferences: preferences, performWindowDrag: performWindowDrag)
         controller.showWindow(nil)
         return (controller, display)
     }
@@ -3338,6 +3411,29 @@ struct InputFocusTests {
         let rect = try #require(display.resizeRects.first { $0.corner == corner }).rect
         let window = try #require(display.view.window)
         return window.convertPoint(toScreen: display.view.convert(NSPoint(x: rect.midX, y: rect.midY), to: nil))
+    }
+
+    /// The middle of the left edge of the 10-point bezel of a display from
+    /// `makeBezelController()`, away from its corners, in the window.
+    private func pointOnBezel(of display: TestDisplay) throws -> NSPoint {
+        let view = display.view
+        try #require(view.window != nil)
+        return view.convert(NSPoint(x: 5 * display.renderScale, y: view.bounds.midY), to: nil)
+    }
+
+    /// Presses the mouse at `location` in `window` as AppKit's dispatch does
+    /// in a key window, and returns the view that the press hits. That view
+    /// receives the press, and its responder chain passes on a press it does
+    /// not handle: SimulatorKit's bezel passes its presses on to the window,
+    /// its buttons keep theirs, and its digitizer keeps those it does not
+    /// pass on.
+    private func press(_ window: NSWindow, at location: NSPoint) throws -> NSView {
+        let hit = try #require(window.contentView?.superview?.hitTest(location))
+        hit.mouseDown(with: try #require(NSEvent.mouseEvent(
+            with: .leftMouseDown, location: location, modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil,
+            eventNumber: 0, clickCount: 1, pressure: 1)))
+        return hit
     }
 
     /// Presses the mouse at `start` on the screen, drags it by `offset`, runs
@@ -3420,10 +3516,27 @@ private final class InputView: NSView {
     var keyDowns: [NSEvent] = []
     var keyUps: [NSEvent] = []
     var modifiers: [NSEvent] = []
+    /// The presses the digitizer received.
+    var presses: [NSEvent] = []
+    /// Whether the digitizer passes its presses on, as SimulatorKit's does
+    /// with a press on the bezel next to the screen once the pointer moves
+    /// away from the screen.
+    var passesOnPresses = false
     override var acceptsFirstResponder: Bool { true }
     override func keyDown(with event: NSEvent) { keyDowns.append(event) }
     override func keyUp(with event: NSEvent) { keyUps.append(event) }
     override func flagsChanged(with event: NSEvent) { modifiers.append(event) }
+    override func mouseDown(with event: NSEvent) {
+        presses.append(event)
+        if passesOnPresses { super.mouseDown(with: event) }
+    }
+}
+/// A hardware button on the bezel, which takes its presses as SimulatorKit's
+/// `SimChromeButton` does.
+@MainActor
+private final class TestButton: NSView {
+    var presses: [NSEvent] = []
+    override func mouseDown(with event: NSEvent) { presses.append(event) }
 }
 @MainActor
 private final class RefusingResponder: NSResponder {
@@ -3784,6 +3897,21 @@ struct HostBehaviorTests {
         #expect(origin(-250, 300) == NSPoint(x: -172, y: 300))
         #expect(origin(300, 700) == NSPoint(x: 300, y: 672))
         #expect(origin(300, -350) == NSPoint(x: 300, y: -272))
+    }
+
+    @Test func movingByTheBezelReadsAllowsMoveByDragOnWindowChromeAsSimulatorDoes() {
+        // Simulator.app registers it on and reads it with boolForKey:.
+        HostPreferences.registerDefaults()
+        let registered = UserDefaults.standard.volatileDomain(forName: UserDefaults.registrationDomain)
+        #expect(registered["AllowsMoveByDragOnWindowChrome"] as? Bool == true)
+        let defaults = RegisteredDefaults()
+        // Without a value, as before the app registers its default, it is on.
+        #expect(defaults.movesWindowByDraggingBezel)
+        let values: [(Any, Bool)] = [("NO", false), ("YES", true), (false, false), (true, true)]
+        for (value, moves) in values {
+            defaults.set(value, forKey: HostPreferences.allowsMoveByDragOnWindowChrome)
+            #expect(defaults.movesWindowByDraggingBezel == moves)
+        }
     }
 
     @Test func showDeviceBezelsReadsShowChromeAsSimulatorDoes() {

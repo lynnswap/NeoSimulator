@@ -127,6 +127,10 @@ enum HostPreferences {
     static let recentAudioOutputDeviceUIDs = "RecentAudioOutputDeviceUIDs"
     /// Edit ▸ Automatically Sync Pasteboard: see `PasteboardSync`.
     static let pasteboardAutomaticSync = "PasteboardAutomaticSync"
+    /// Whether a drag on a device window's bezel outside its corners moves
+    /// the window, on unless turned off: see
+    /// `PreferenceStore.movesWindowByDraggingBezel`.
+    static let allowsMoveByDragOnWindowChrome = "AllowsMoveByDragOnWindowChrome"
 
     /// Registers Simulator.app's defaults for these preferences. Show Pinch
     /// Gestures is on: Simulator.app registers it so, and its Settings.bundle's
@@ -143,7 +147,7 @@ enum HostPreferences {
             locationMode: LocationSelection.customMode, locationLatitude: 37.785834, locationLongitude: -122.406417,
             enableKeyboardSync: true, connectHardwareKeyboard: true, useTrackpadForce: true,
             showSingleTouches: false, showPinches: true, showPinchPivotPoint: false, highlightEdgeGestures: false,
-            pasteboardAutomaticSync: false,
+            pasteboardAutomaticSync: false, allowsMoveByDragOnWindowChrome: true,
         ])
     }
 

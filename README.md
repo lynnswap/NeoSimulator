@@ -86,7 +86,8 @@ Neo currently provides:
 
 - a searchable device browser to start simulators or reopen their windows;
 - one window for each booted iOS simulator, resized by dragging the corners of
-  its device bezel, or its edges while it shows no bezel;
+  its device bezel, or its edges while it shows no bezel, and moved by
+  dragging its bezel away from the screen;
 - device bezel, touch, accessibility, and focused keyboard input;
 - a Simulator-style window header with the device name, runtime, Home,
   Save Screen, and Rotate Right controls;
