@@ -222,10 +222,12 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     /// to it. A new window that still has its `initialPlacement` frame then
     /// takes the scale it opens at in that shape and is placed again.
     private func readInitialOrientation() {
-        guard !didReadOrientation, session.capabilities.controlsOrientation else {
+        guard session.capabilities.controlsOrientation else {
             initialPlacement = nil
             return
         }
+        // A reading in progress keeps the placement for its result.
+        guard !didReadOrientation else { return }
         didReadOrientation = true
         session.run({ [weak self] in
             guard let self else { return }

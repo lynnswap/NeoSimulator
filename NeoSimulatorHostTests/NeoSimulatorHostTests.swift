@@ -943,6 +943,20 @@ struct InputFocusTests {
         #expect(guestDisplay.renderScale == 0.5)
         let guestWindow = try #require(guestRotated.window)
         #expect(abs(guestWindow.frame.midX - center.x) < 1 && abs(guestWindow.frame.midY - center.y) < 1)
+        // Showing the window again while the reading is pending, as Open
+        // Simulator or a Dock click does, keeps the placement for its result.
+        preferences.setWindowGeometry(center: center, scale: 0.5, forDevice: "F", screens: screens)
+        let reshownDisplay = TestDisplay()
+        reshownDisplay.naturalSize = tall
+        reshownDisplay.onRotation = { [unowned reshownDisplay] in reshownDisplay.naturalSize = $0 == 0 ? tall : landscape }
+        let reshown = try makeController(reshownDisplay, devicectl: devicectl, device: "F", preferences: preferences)
+        defer { reshown.invalidate() }
+        reshown.showNewWindow(cascadingFrom: &cascade)
+        reshown.showAndActivate()
+        try await readOrientation(reshown)
+        #expect(reshownDisplay.renderScale == 0.5)
+        let reshownWindow = try #require(reshown.window)
+        #expect(abs(reshownWindow.frame.midX - center.x) < 1 && abs(reshownWindow.frame.midY - center.y) < 1)
     }
 
     @Test func fullScreenFillsTheScreenAndRestoresTheWindowAfter() throws {
