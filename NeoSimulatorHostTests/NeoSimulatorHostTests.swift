@@ -1065,6 +1065,43 @@ struct InputFocusTests {
         #expect(try visible("Window", .watch).contains("Show Device Bezels"))
     }
 
+    @Test func watchGesturesAndSimulateFallFollowSimulatorAppsMenus() throws {
+        _ = NSApplication.shared
+        let menus = MenuController(application: nil)
+        menus.install()
+        defer { NSApp.mainMenu = nil }
+        /// The items of the menu `title`, or of its `submenu`, shown for a watch.
+        func visible(_ title: String, submenu: String? = nil, runtime: UInt32 = 0x1B_00_00,
+                     _ features: Set<String>) throws -> [String] {
+            let menu = try #require(NSApp.mainMenu?.items.first { $0.title == title }?.submenu)
+            menus.updateVisibility(in: menu, for: DeviceCapabilities(family: .watch, runtimeVersion: runtime,
+                                                                     supportsFeature: { features.contains($0) }))
+            let shown = try submenu.map { name in try #require(menu.items.first { $0.title == name }?.submenu) } ?? menu
+            return shown.items.filter { !$0.isHidden }.map { $0.isSeparatorItem ? "-" : $0.title }
+        }
+        let gestures = DeviceCapabilities.watchGestures, fall = DeviceCapabilities.fallDetection
+        // Gestures follows the watch's buttons, before Siri, and Wrist Flick
+        // needs watchOS 12.
+        #expect(try visible("Device", [gestures, DeviceCapabilities.actionButtonSting, DeviceCapabilities.siri])
+            == ["Restart", "Erase All Content and Settings…", "Shut Down", "-", "Home", "Re-Center Open Apps", "Lock",
+                "Side Button", "Action Button", "Gestures", "Siri"])
+        #expect(try visible("Device", submenu: "Gestures", [gestures]) == ["Double Tap", "Wrist Flick"])
+        #expect(try visible("Device", submenu: "Gestures", runtime: 0x0B_06_00, [gestures]) == ["Double Tap"])
+        #expect(try visible("Device", submenu: "Gestures", runtime: 0x0C_00_00, [gestures])
+            == ["Double Tap", "Wrist Flick"])
+        #expect(try !visible("Device", [fall]).contains("Gestures"))
+        // Simulate Fall follows Face ID, before Authorize Apple Pay.
+        #expect(try visible("Features", [fall, DeviceCapabilities.faceID, DeviceCapabilities.applePayAuthorization])
+            .prefix(3) == ["Face ID", "Simulate Fall", "Authorize Apple Pay"])
+        #expect(try visible("Features", submenu: "Simulate Fall", [fall])
+            == ["Confirmed", "Dismissed", "Rejected", "Unresponsive"])
+        #expect(try !visible("Features", [gestures]).contains("Simulate Fall"))
+        // As in Simulator.app, none of them has a shortcut.
+        let items = NSApp.mainMenu?.items.compactMap(\.submenu).flatMap(\.items)
+            .filter { ["Gestures", "Simulate Fall"].contains($0.title) }.compactMap(\.submenu).flatMap(\.items)
+        #expect(items?.count == 6 && items?.allSatisfy(\.keyEquivalent.isEmpty) == true)
+    }
+
     @Test func visionOSCommandsFollowSimulatorAppsMainMenu() throws {
         _ = NSApplication.shared
         let menus = MenuController(application: nil)
@@ -2884,6 +2921,30 @@ struct InputFocusTests {
         display.contrastMode = 0
         #expect(throws: (any Error).self) { try session.toggleIncreaseContrast() }
         #expect(display.contrastMode == 0)
+    }
+
+    @Test func simulateFallSetsAndPostsTheGuestsFallState() throws {
+        let display = TestDisplay()
+        let controller = try makeController(display, family: .watch, features: [DeviceCapabilities.fallDetection])
+        defer { controller.invalidate() }
+        let name = "com.apple.sos.user-fell"
+        // Each item sets the state that numbers its resolution, then posts it.
+        for (command, state) in [(DeviceCommand.ID.fallUnresponsive, 3), (.fallRejected, 2), (.fallDismissed, 1),
+                                 (.fallConfirmed, 0)] as [(DeviceCommand.ID, UInt64)] {
+            controller.perform(command)
+            #expect(display.notificationStates[name] == state, "\(command)")
+        }
+        #expect(display.postedNotifications == Array(repeating: name, count: 4))
+        // A state the guest refuses is not posted.
+        display.notificationError = HostError.operation("refused")
+        #expect(throws: (any Error).self) { try controller.session.simulateFall(.dismissed) }
+        #expect(display.postedNotifications.count == 4)
+        // A device without the feature changes nothing.
+        let other = TestDisplay()
+        let otherController = try makeController(other, family: .watch, features: [], device: "other")
+        defer { otherController.invalidate() }
+        otherController.perform(.fallConfirmed)
+        #expect(other.notificationStates.isEmpty && other.postedNotifications.isEmpty)
     }
 
     @Test func debugMenuFollowsSimulatorAppOrderAndShortcuts() throws {
@@ -5027,6 +5088,28 @@ struct InputFocusTests {
         #expect(display.events.map(\.state) == Array(repeating: [HIDState.down, .up], count: 5).flatMap { $0 })
     }
 
+    @Test func watchGesturesSendOneMessageEachAndReportItsFailure() throws {
+        let display = TestDisplay()
+        let controller = try makeController(display, family: .watch, features: [DeviceCapabilities.watchGestures])
+        defer { controller.invalidate() }
+        controller.perform(.doubleTap)
+        controller.perform(.wristFlick)
+        // Each gesture is one message, without down and up events.
+        #expect(display.gestures == [.doubleTap, .wristFlick])
+        #expect(display.events.isEmpty)
+        // SimulatorKit's delivery failure reaches the command.
+        display.deliveryError = HostError.operation("delivery failed")
+        var failures: [Error] = []
+        controller.session.send(.watchGesture(.doubleTap)) { failures.append($0) }
+        #expect(failures.count == 1)
+        // A watch without the feature sends nothing.
+        let other = TestDisplay()
+        let otherController = try makeController(other, family: .watch, features: [], device: "other")
+        defer { otherController.invalidate() }
+        otherController.perform(.doubleTap)
+        #expect(other.gestures.isEmpty)
+    }
+
     @Test func timedInputsKeepSimulatorAppDelays() async throws {
         let display = TestDisplay()
         let controller = try makeController(display)
@@ -5433,6 +5516,36 @@ struct InputFocusTests {
         trackpad = false
         trackpadsChanged?()
         #expect(display.usesTrackpadForce == [false, true, false])
+    }
+
+    @Test func theDigitizerTakesScrollingForADigitalCrownOrDialAndWithoutABezel() async throws {
+        func makeDisplay() -> TestDisplay {
+            let display = TestDisplay()
+            display.bezelPadding = NSSize(width: 9, height: 0)
+            return display
+        }
+        let preferences = MemoryPreferences()
+        let watch = makeDisplay(), vision = makeDisplay(), phone = makeDisplay()
+        let crown: Set<String> = [DeviceCapabilities.digitalCrown]
+        let w = try makeController(watch, family: .watch, features: crown, device: "watch", preferences: preferences)
+        let v = try makeController(vision, family: .vision, features: [DeviceCapabilities.digitalDial], device: "vision",
+                                   preferences: preferences)
+        let p = try makeController(phone, device: "phone", preferences: preferences)
+        defer { for controller in [w, v, p] { controller.invalidate() } }
+        // As in Simulator.app, the pointer's scrolling turns a watch's
+        // Digital Crown and Apple Vision Pro's Digital Dial.
+        #expect(watch.supportsScrolling.last == true && vision.supportsScrolling.last == true)
+        // Another device's digitizer takes it only while no bezel shows.
+        #expect(phone.supportsScrolling.last == false)
+        p.setDeviceBezelVisible(false)
+        #expect(phone.supportsScrolling.last == true)
+        p.setDeviceBezelVisible(true)
+        #expect(phone.supportsScrolling.last == false)
+        // The display of the watch's next connection takes it too.
+        await w.prepareForRestart()
+        let restarted = makeDisplay()
+        w.reconnect(try makeSession(restarted, family: .watch, features: crown, device: "watch", preferences: preferences))
+        #expect(restarted.supportsScrolling.last == true)
     }
 
     @Test func touchIndicatorsFollowTheirPreferencesInEveryOpenWindow() async throws {
@@ -5955,6 +6068,12 @@ private final class TestDisplay: SimulatorDisplay {
             completion?(error)
         }
     }
+    /// Each watch gesture sent, in order, which `deliveryError` also fails.
+    var gestures: [WatchGesture] = []
+    func send(_ gesture: WatchGesture, completion: @escaping @MainActor (Error?) -> Void) throws {
+        gestures.append(gesture)
+        completion(deliveryError)
+    }
     func toggleAppearance() throws {}
     /// The guest's Darwin notification states, and the names posted in order.
     var notificationStates: [String: UInt64] = [:]
@@ -6092,6 +6211,9 @@ private final class TestDisplay: SimulatorDisplay {
         externalScreen?.changed = changed
         return externalScreen
     }
+    /// Each value the digitizer's scrolling setting was given, in order.
+    var supportsScrolling: [Bool] = []
+    func setSupportsScrolling(_ supports: Bool) { supportsScrolling.append(supports) }
     /// Each value the digitizer's touch pressure settings were given, in order.
     var supportsTouchPressure: [Bool] = []
     var usesTrackpadForce: [Bool] = []

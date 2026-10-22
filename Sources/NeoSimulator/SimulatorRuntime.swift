@@ -155,6 +155,8 @@ struct SimulatorDisplayInterface {
     /// Messages to a plugin, whose class its bundle provides only once loaded;
     /// `SimDeviceUserInterfacePlugin` must declare them.
     let pluginMessages = ProxyMessages()
+    /// `SimDigitizerInputView.supportScrolling`.
+    let setSupportsScrolling: NativeSwiftMethod<(Bool) -> Void>
     /// `SimDigitizerInputView.supportTouchPressure`.
     let setSupportsTouchPressure: NativeSwiftMethod<(Bool) -> Void>
     /// `SimDigitizerInputView.useForceTrackpadForPressure`.
@@ -329,6 +331,7 @@ struct SimulatorDisplayInterface {
             throw HostError.unavailable("\(pluginProtocol) does not declare \(selector)")
         }
         let digitizer = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimDigitizerInputView")
+        setSupportsScrolling = try digitizer.resolveSetterAndWait(named: "supportScrolling", as: Bool.self)
         setSupportsTouchPressure = try digitizer.resolveSetterAndWait(named: "supportTouchPressure", as: Bool.self)
         setUsesTrackpadForce = try digitizer.resolveSetterAndWait(named: "useForceTrackpadForPressure", as: Bool.self)
         // TouchMode has no field metadata to establish its convention.
@@ -679,6 +682,8 @@ struct SimulatorInputInterface {
     let messageForButton: NativeFunction<OpaquePointer?, UInt32, UInt32, UInt32>
     /// `IndigoHIDMessageForHIDArbitrary(target, usagePage, usage, state)`.
     let messageForUsage: NativeFunction<OpaquePointer?, UInt32, UInt32, UInt32, UInt32>
+    /// `IndigoHIDMessageForWatchGesture(gesture)`.
+    let messageForWatchGesture: NativeFunction<OpaquePointer?, UInt32>
     /// `IndigoHIDGetKeyboardType()`, the type of the Mac's keyboard.
     let keyboardType: NativeFunction<UInt32>
     /// `IndigoHIDMessageToCreateCarPlayService(hasDigitizer)` and
@@ -703,6 +708,8 @@ struct SimulatorInputInterface {
         messageForUsage = try runtime.resolveCFunctionAndWait(
             named: "IndigoHIDMessageForHIDArbitrary",
             as: ((UInt32, UInt32, UInt32, UInt32) -> OpaquePointer?).self)
+        messageForWatchGesture = try runtime.resolveCFunctionAndWait(
+            named: "IndigoHIDMessageForWatchGesture", as: ((UInt32) -> OpaquePointer?).self)
         keyboardType = try runtime.resolveCFunctionAndWait(named: "IndigoHIDGetKeyboardType", as: (() -> UInt32).self)
         createCarPlayService = try runtime.resolveCFunctionAndWait(
             named: "IndigoHIDMessageToCreateCarPlayService", as: ((Bool) -> OpaquePointer?).self)
@@ -742,6 +749,14 @@ struct SimulatorInputInterface {
     /// main queue.
     func send(_ hidMessage: HIDMessage, client: AnyObject, completion: (@MainActor (Error?) -> Void)?) throws {
         try send(hidMessage.take(), client: client, completion: completion)
+    }
+
+    /// Sends a watch gesture, a single message without down and up events.
+    func send(_ gesture: WatchGesture, client: AnyObject, completion: @escaping @MainActor (Error?) -> Void) throws {
+        guard let message = try unsafe messageForWatchGesture.unsafeInvoke(gesture.rawValue) else {
+            throw HostError.operation("Could not allocate simulator input")
+        }
+        try send(message, client: client, completion: completion)
     }
 
     /// Sends the message that creates the guest's CarPlay HID service, with a
@@ -1151,6 +1166,13 @@ enum DeviceButton: UInt32 {
     case actionStaccato = 3002
 }
 
+/// A watch gesture of Device ▸ Gestures, by the value
+/// `IndigoHIDMessageForWatchGesture` takes, which is also Simulator.app's
+/// menu tag.
+enum WatchGesture: UInt32 {
+    case doubleTap = 0, wristFlick = 1
+}
+
 /// An input Simulator.app sends as a down event and an up event.
 enum HIDInput: Hashable {
     case button(DeviceButton)
@@ -1300,6 +1322,9 @@ protocol SimulatorDisplay: AnyObject {
     /// Sends a message. `completion`, when present, receives SimulatorKit's
     /// delivery result; a thrown error means the message was not sent.
     func send(_ message: HIDMessage, completion: (@MainActor (Error?) -> Void)?) throws
+    /// Sends a watch gesture. `completion` receives SimulatorKit's delivery
+    /// result; a thrown error means the gesture was not sent.
+    func send(_ gesture: WatchGesture, completion: @escaping @MainActor (Error?) -> Void) throws
     func toggleAppearance() throws
     /// Posts a Darwin notification in the guest.
     func postNotification(_ name: String) throws
@@ -1351,6 +1376,10 @@ protocol SimulatorDisplay: AnyObject {
     func setChromeVisible(_ visible: Bool)
     func setActive(_ active: Bool)
     func setKeyboardEnabled(_ enabled: Bool)
+    /// `SimDigitizerInputView.supportScrolling`: whether the digitizer passes
+    /// the pointer's scrolling to the device, which turns its Digital Crown
+    /// or Digital Dial.
+    func setSupportsScrolling(_ supports: Bool)
     /// `SimDigitizerInputView.supportTouchPressure`: whether clicks press
     /// the screen with a pressure.
     func setSupportsTouchPressure(_ supports: Bool)
@@ -1531,6 +1560,11 @@ final class SimulatorConnection: SimulatorDisplay {
         try runtime.input.send(message, client: hidClient, completion: completion)
     }
 
+    func send(_ gesture: WatchGesture, completion: @escaping @MainActor (Error?) -> Void) throws {
+        guard let hidClient else { throw HostError.operation("Simulator input is disconnected") }
+        try runtime.input.send(gesture, client: hidClient, completion: completion)
+    }
+
     func toggleAppearance() throws { try device.toggleAppearance() }
     func postNotification(_ name: String) throws { try device.postNotification(name) }
     func notificationState(_ name: String) throws -> UInt64 { try device.notificationState(name) }
@@ -1584,6 +1618,12 @@ final class SimulatorConnection: SimulatorDisplay {
         guard !disconnected, let keyboard = object_getIvar(view, runtime.display.keyboardDelegate) else { return }
         perform("enable keyboard input") {
             try unsafe runtime.display.setKeyboardEnabled.unsafeInvoke(on: keyboard as AnyObject, enabled)
+        }
+    }
+    func setSupportsScrolling(_ supports: Bool) {
+        guard !disconnected else { return }
+        perform("enable scrolling") {
+            try unsafe runtime.display.setSupportsScrolling.unsafeInvoke(on: digitizerView, supports)
         }
     }
     func setSupportsTouchPressure(_ supports: Bool) {
