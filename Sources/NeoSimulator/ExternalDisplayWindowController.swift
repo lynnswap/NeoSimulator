@@ -2,8 +2,9 @@ import AppKit
 
 /// The window of a device's external display while the display is on, as
 /// Simulator.app's device window shows a TVOut screen: titled with the device
-/// and "External Display", without a toolbar or a bezel, black around the
-/// display, and opened where it last closed, under the device's
+/// and "External Display", without a toolbar or a bezel, the display directly
+/// below the title bar, black around the display where the window is larger,
+/// and opened where it last closed, under the device's
 /// `ExternalWindowGeometry`. While the window is key, the Window menu's scale
 /// commands scale it. Its display takes the pointer as touches and, while the
 /// window is key and the device's hardware keyboard is connected, the Mac's
@@ -160,7 +161,7 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
             // The window keeps 10 points from each edge of the screen.
             guard let visible = (screen ?? NSScreen.main)?.visibleFrame else { return nil }
             return scale(fitting: NSSize(width: visible.width - 20,
-                                         height: visible.height - titleBarHeight - ExternalDisplayContentView.gap - 20))
+                                         height: visible.height - titleBarHeight - 20))
         }
     }
 
@@ -239,7 +240,7 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
 
     /// Sizes the window to the display at its scale, as Simulator.app's
     /// geometry update does for a display without a bezel: the content is the
-    /// display below the gap, the window keeps its bottom-left corner, takes
+    /// display, the window keeps its bottom-left corner, takes
     /// the smallest integral frame around that, and moves down when its top
     /// would be above the screen. A drag on the window's edges keeps the
     /// screen's aspect ratio and stops at the minimum scale. In full screen
@@ -247,15 +248,13 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
     private func updateWindowSize() {
         guard !closed, let window, !fitting.fitsWindow else { return resizeDisplay() }
         let size = displaySize(at: display.renderScale)
-        let sized = window.frameRect(forContentRect: NSRect(
-            x: 0, y: 0, width: size.width, height: size.height + ExternalDisplayContentView.gap))
+        let sized = window.frameRect(forContentRect: NSRect(origin: .zero, size: size))
         var frame = NSIntegralRect(NSRect(origin: window.frame.origin, size: sized.size))
         if let visible = window.screen?.visibleFrame, visible.maxY < frame.maxY {
             frame.origin.y = visible.maxY - frame.height
         }
         window.contentAspectRatio = screenSize
-        let minimum = displaySize(at: minimumScale)
-        window.contentMinSize = NSSize(width: minimum.width, height: minimum.height + ExternalDisplayContentView.gap)
+        window.contentMinSize = displaySize(at: minimumScale)
         content.isSizedToDisplay = true
         isSizingWindow = true
         window.setFrame(frame, display: true)
@@ -369,18 +368,15 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
     isolated deinit { disconnect() }
 }
 
-/// The external display's window content: the display below a gap, on the
-/// window's black background.
+/// The external display's window content: the display, on the window's black
+/// background. Simulator.app's chrome refresh keeps no gap above a display
+/// without a bezel, so the display meets the title bar.
 @MainActor
 private final class ExternalDisplayContentView: NSView, DisplayContentView {
-    /// The space Simulator.app keeps between the title bar and a display
-    /// without a bezel.
-    static let gap = WindowScale.displayGap(bezelPadding: nil)
-
     let display: NSView
     /// Whether the window has the display's size; the display then fills the
-    /// window below the gap. In full screen and after a manual resize, the
-    /// display keeps its own size, centered below the gap.
+    /// content. In full screen and after a manual resize, the display keeps
+    /// its own size, centered.
     var isSizedToDisplay = false {
         didSet { needsLayout = true }
     }
@@ -394,9 +390,7 @@ private final class ExternalDisplayContentView: NSView, DisplayContentView {
 
     required init?(coder: NSCoder) { nil }
 
-    var availableDisplaySize: NSSize {
-        NSSize(width: max(1, bounds.width), height: max(1, bounds.height - Self.gap))
-    }
+    var availableDisplaySize: NSSize { NSSize(width: max(1, bounds.width), height: max(1, bounds.height)) }
 
     override func layout() {
         super.layout()

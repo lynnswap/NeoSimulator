@@ -1206,8 +1206,11 @@ Like Simulator.app:
   Neo does not know, CarPlay's, is kept and not applied.
 - The window opens while the display is on, whoever turned it on, and closes
   once the display is off. It has the device window's title, with `External
-  Display` where the runtime goes, no toolbar and no bezel, the content below
-  the title bar with a 10-point gap above the display, and a black background.
+  Display` where the runtime goes, no toolbar and no bezel, and a black
+  background. Simulator.app's window for it is its device window class, whose
+  chrome refresh, without a bezel, keeps no gap and sets the black
+  background, so the display meets AppKit's plain title bar, which a window
+  without a toolbar has whatever the toolbar style.
   It opens centered where it last closed in the current arrangement of
   screens, at the scale it closed at, reduced to Fit Screen's on the screen
   it is placed on, from `DevicePreferences[UDID].ExternalWindowGeometry`,

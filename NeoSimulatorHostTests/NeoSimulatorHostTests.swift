@@ -3110,16 +3110,17 @@ struct InputFocusTests {
         #expect(window.styleMask == [.titled, .closable, .miniaturizable, .resizable])
         #expect(window.backgroundColor == .black)
         #expect(display.supportsTouchPressure == [false])
-        // The display fills the window below a 10-point gap, at its scale.
+        // Like Simulator.app's window without a bezel, the display fills the
+        // window below the title bar, with no gap, at its scale.
         func content() -> NSSize { window.contentRect(forFrameRect: window.frame).size }
         let scale = display.renderScale
         #expect(scale > 0 && scale <= 1)
-        #expect(abs(content().width - 640 * scale) <= 1 && abs(content().height - (480 * scale + 10)) <= 1)
+        #expect(abs(content().width - 640 * scale) <= 1 && abs(content().height - 480 * scale) <= 1)
         #expect(window.contentAspectRatio == NSSize(width: 640, height: 480))
         // A new size keeps the display's scale.
         controller.perform(.externalDisplay1024x768)
         #expect(controller.externalDisplayWindow === external && display.renderScale == scale)
-        #expect(abs(content().width - 1024 * scale) <= 1 && abs(content().height - (768 * scale + 10)) <= 1)
+        #expect(abs(content().width - 1024 * scale) <= 1 && abs(content().height - 768 * scale) <= 1)
         // The display turning off closes the window without saving Disabled.
         screen.report { $0.isPoweredOn = false }
         #expect(controller.externalDisplayWindow == nil && !window.isVisible)
@@ -3476,8 +3477,7 @@ struct InputFocusTests {
         let display = try #require(screen.displays.last)
         external.windowWillEnterFullScreen(Notification(name: NSWindow.willEnterFullScreenNotification, object: window))
         window.setFrame(NSRect(x: 0, y: 0, width: 800, height: 600), display: true)
-        let content = window.contentRect(forFrameRect: window.frame).size
-        let available = NSSize(width: content.width, height: content.height - 10)
+        let available = window.contentRect(forFrameRect: window.frame).size
         func fits() -> Bool {
             let size = display.size(for: display.renderScale)
             return size.width <= available.width + 0.5 && size.height <= available.height + 0.5
