@@ -136,11 +136,16 @@ struct InputFocusTests {
             window.setContentSize(size)
             controller.windowDidResize(Notification(name: NSWindow.didResizeNotification, object: window))
             let content = try #require(window.contentView)
-            let frame = controller.session.display.view.frame
+            let display = controller.session.display
+            let frame = display.view.frame
             #expect(frame.minX >= 0)
             #expect(frame.minY >= 0)
             #expect(frame.maxX <= content.bounds.maxX)
-            #expect(frame.maxY <= window.contentLayoutRect.maxY - 12)
+            #expect(frame.maxY <= window.contentLayoutRect.maxY - 10)
+            // The display keeps its own size, centered across the window,
+            // instead of filling it as when the window has the display's size.
+            #expect(frame.size == display.size(for: display.renderScale))
+            #expect(abs(frame.midX - content.bounds.midX) < 0.001)
             #expect(try #require(window.standardWindowButton(.closeButton)).isHidden == false)
         }
     }
@@ -806,13 +811,13 @@ struct InputFocusTests {
                 DeviceCommand.command($0).state?(controller) == .on
             }
         }
-        // The window takes the display's size at the scale, 12 points below
-        // its header, also when the display is narrower than a manual resize
-        // can make the window.
+        // The window takes the display's size at the scale, 10 points below
+        // its header without a bezel, also when the display is narrower than
+        // a manual resize can make the window.
         func fitsDisplay() -> Bool {
             display.view.frame.size == display.size(for: display.renderScale)
                 && window.contentLayoutRect.size == NSSize(width: display.view.frame.width,
-                                                           height: display.view.frame.height + 12)
+                                                           height: display.view.frame.height + 10)
         }
         controller.perform(.pointAccurate)
         #expect(display.renderScale == 1)
@@ -883,7 +888,9 @@ struct InputFocusTests {
         controller.showWindow(nil)
         let window = try #require(controller.window)
         let visible = try #require((window.screen ?? NSScreen.main)?.visibleFrame)
-        let above = window.frame.height - window.contentLayoutRect.height + 12
+        // Like Simulator.app, the space is the visible frame less the window's
+        // header and the 10 points above a display without a bezel.
+        let above = window.frame.height - window.contentLayoutRect.height + 10
         controller.perform(.fitScreen)
         // Unlike NeoSimulator's earlier Fit Screen, the scale can exceed 1.
         let expected = min((visible.width - 20) / 200, (visible.height - above - 20) / 400)
@@ -928,9 +935,10 @@ struct InputFocusTests {
         #expect(!enabled().contains(.pixelAccurate))
         display.screenScale = 0.41 * backing
         #expect(enabled().contains(.pixelAccurate))
-        // A fixed scale must fit the screen below the window's header.
+        // A fixed scale must fit the screen below the window's header. Like
+        // Simulator.app, the check leaves out the 10 points above the display.
         let visible = try #require(window.screen?.visibleFrame)
-        let above = window.frame.height - window.contentLayoutRect.height + 12
+        let above = window.frame.height - window.contentLayoutRect.height
         display.naturalSize = NSSize(width: 200, height: visible.height - above)
         #expect(enabled().contains(.pointAccurate))
         display.naturalSize = NSSize(width: 200, height: visible.height - above + 1)
@@ -1471,27 +1479,28 @@ struct InputFocusTests {
         defer { controller.invalidate() }
         controller.showWindow(nil)
         let window = try #require(controller.window)
-        // The window takes the display's size, 12 points below its header.
-        func showsDisplay(_ size: NSSize) -> Bool {
+        // The window takes the display's size, 1 point below its header with
+        // the bezel, whose images have 9 points of top padding, and 10 without.
+        func showsDisplay(_ size: NSSize, below gap: CGFloat) -> Bool {
             display.view.frame.size == size
-                && window.contentLayoutRect.size == NSSize(width: size.width, height: size.height + 12)
+                && window.contentLayoutRect.size == NSSize(width: size.width, height: size.height + gap)
         }
         controller.perform(.pointAccurate)
-        #expect(showsDisplay(NSSize(width: 400, height: 460)))
+        #expect(showsDisplay(NSSize(width: 400, height: 460), below: 1))
         let origin = window.frame.origin
         // Hiding the bezel keeps the scale and the window's bottom-left
         // corner, as Simulator.app does, and shrinks the window.
         controller.setDeviceBezelVisible(false)
         #expect(display.renderScale == 1)
         #expect(DeviceCommand.command(.pointAccurate).state?(controller) == .on)
-        #expect(showsDisplay(NSSize(width: 360, height: 400)))
+        #expect(showsDisplay(NSSize(width: 360, height: 400), below: 10))
         #expect(window.frame.origin == origin)
         #expect(window.styleMask.contains(.resizable))
         // Showing it keeps a scale chosen without the bezel and grows the window.
         controller.perform(.pointAccurate)
         controller.setDeviceBezelVisible(true)
         #expect(display.renderScale == 1)
-        #expect(showsDisplay(NSSize(width: 400, height: 460)))
+        #expect(showsDisplay(NSSize(width: 400, height: 460), below: 1))
         #expect(window.frame.origin == origin)
         #expect(!window.styleMask.contains(.resizable))
         // The window may rise above the screen by the bezel's top padding at
@@ -1505,6 +1514,97 @@ struct InputFocusTests {
         controller.setDeviceBezelVisible(false)
         window.setFrameOrigin(NSPoint(x: window.frame.minX, y: visible.maxY - window.frame.height + 100))
         #expect(window.frame.maxY <= visible.maxY)
+    }
+
+    @Test func theDisplaySitsTenPointsLessTheBezelsTopPaddingBelowTheHeader() throws {
+        // Without a bezel, with an iPhone 17 Pro's bezel, which has no top
+        // padding, and with an iPad's, which has 9 points.
+        for (padding, gap) in [(nil, CGFloat(10)), (NSSize(width: 9, height: 0), 10), (NSSize(width: 10, height: 9), 1)] {
+            let display = TestDisplay()
+            display.naturalSize = NSSize(width: 200, height: 300)
+            display.bezel = padding == nil ? .zero : NSSize(width: 20, height: 20)
+            display.bezelPadding = padding
+            display.showsBezel = padding != nil
+            let controller = try makeController(display)
+            defer { controller.invalidate() }
+            controller.showWindow(nil)
+            let window = try #require(controller.window)
+            controller.perform(.pointAccurate)
+            // Like Simulator.app's constraints, the display fills the window
+            // below the gap.
+            let size = display.size(for: 1)
+            #expect(display.view.frame == NSRect(origin: .zero, size: size))
+            #expect(window.contentLayoutRect.maxY - display.view.frame.maxY == gap)
+            #expect(window.contentLayoutRect.size == NSSize(width: size.width, height: size.height + gap))
+        }
+    }
+
+    @Test func windowFramesAreIntegralAtAFractionalScale() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        // A devicectl stand-in that sets any orientation and reports landscape.
+        let devicectl = directory.appendingPathComponent("devicectl")
+        try """
+            #!/bin/sh
+            printf '{"result":{"deviceOrientation":"landscapeLeft","deviceOrientationNonFlat":"landscapeLeft"}}'
+            """.write(to: devicectl, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: devicectl.path)
+        let portrait = NSSize(width: 161, height: 323), landscape = NSSize(width: 323, height: 161)
+        func makeDisplay() -> TestDisplay {
+            let display = TestDisplay()
+            display.naturalSize = portrait
+            display.bezel = NSSize(width: 21, height: 21)
+            display.bezelPadding = NSSize(width: 10, height: 9)
+            display.onRotation = { [unowned display] in display.naturalSize = $0 == 0 ? portrait : landscape }
+            return display
+        }
+        // The device's window last closed at a fractional scale.
+        let preferences = MemoryPreferences()
+        preferences.setWindowGeometry(center: NSPoint(x: 300, y: 300), scale: 1.37, forDevice: "test-device",
+                                      screens: NSScreen.screens.map(\.frame))
+        var display = makeDisplay()
+        let controller = try makeController(display, devicectl: devicectl, preferences: preferences)
+        defer { controller.invalidate() }
+        let window = try #require(controller.window)
+        let header = window.frame.height - window.contentLayoutRect.height
+        // Like Simulator.app's geometry update, the window takes the smallest
+        // integral frame around the display and the space above it, and the
+        // display fills the window below the gap.
+        func isSizedToDisplay(gap: CGFloat = 1) -> Bool {
+            let frame = window.frame, size = display.size(for: display.renderScale)
+            let extra = NSSize(width: frame.width - size.width, height: frame.height - header - gap - size.height)
+            return display.renderScale != display.renderScale.rounded()
+                && [frame.minX, frame.minY, frame.width, frame.height].allSatisfy { $0 == $0.rounded() }
+                && (0..<1).contains(extra.width) && (0..<1).contains(extra.height)
+                && display.view.frame == NSRect(x: 0, y: 0, width: frame.width, height: frame.height - header - gap)
+        }
+        #expect(isSizedToDisplay(), "new window")
+        display.screenScale = 1.43 * (window.screen?.backingScaleFactor ?? 1)
+        controller.perform(.pixelAccurate)
+        #expect(isSizedToDisplay(), "scale command")
+        controller.perform(.landscapeLeft)
+        for _ in 0..<300 where controller.session.isBusy { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(display.rotations == [90])
+        #expect(isSizedToDisplay(), "rotation")
+        controller.setDeviceBezelVisible(false)
+        #expect(isSizedToDisplay(gap: 10), "bezel hidden")
+        controller.setDeviceBezelVisible(true)
+        #expect(isSizedToDisplay(), "bezel shown")
+        let visible = try #require(window.screen?.visibleFrame)
+        window.setFrameOrigin(NSPoint(x: (visible.midX - window.frame.width / 2).rounded(),
+                                      y: (visible.midY - window.frame.height / 2).rounded()))
+        try drag(window, from: try point(of: .lowerRight, in: display), by: NSSize(width: 30.3, height: -20.6)) {
+            #expect(isSizedToDisplay(), "bezel drag")
+        }
+        controller.windowWillEnterFullScreen(Notification(name: NSWindow.willEnterFullScreenNotification, object: window))
+        window.setFrame(NSRect(x: 100, y: 100, width: 300, height: 300), display: true)
+        controller.windowDidExitFullScreen(Notification(name: NSWindow.didExitFullScreenNotification, object: window))
+        #expect(isSizedToDisplay(), "full screen left")
+        await controller.prepareForRestart()
+        display = makeDisplay()
+        controller.reconnect(try makeSession(display))
+        #expect(isSizedToDisplay(), "restart")
     }
 
     @Test func draggingACornerOfTheBezelScalesTheDisplayAroundTheOppositeCorner() throws {
@@ -1530,10 +1630,10 @@ struct InputFocusTests {
             try drag(window, from: try point(of: corner, in: display), by: outward) {
                 #expect(display.isResizing)
                 #expect(display.renderScale == 1.25)
-                // The window takes the display's size, 12 points below its
+                // The window takes the display's size, 10 points below its
                 // header, and keeps the display's opposite corner.
                 #expect(window.contentLayoutRect.size
-                    == NSSize(width: display.view.frame.width, height: display.view.frame.height + 12))
+                    == NSSize(width: display.view.frame.width, height: display.view.frame.height + 10))
                 #expect(corner.isLeft ? window.frame.maxX == start.maxX : window.frame.minX == start.minX)
                 #expect(corner.isLower ? window.frame.maxY == start.maxY : window.frame.minY == start.minY)
             }
