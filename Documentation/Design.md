@@ -1430,15 +1430,22 @@ by removing the HID service and ending the session, then sets the size, as
 Simulator.app does before it reconfigures a CarPlay screen. Disabled writes
 `{stark: 0}`, turns the screen off, then ends this host's CarPlay, as
 Simulator.app does once the screen reports it is off. Each choice goes
-through `ExternalDisplayChanges` as one change, which keeps whether this host
-started the guest's CarPlay (`startedCarPlay`) for the device across its
-sessions, with the device's boot then (`SimDevice.lastBootedAt`). A session
-belongs to its boot: a restart can shut the device down before its window's
-power-off and the session's end reach the guest, and the next boot's bridge
-starts with no session, where an end would count below zero and stop the next
-start, so only a session of the current boot is ended. The tag 2714 is saved like the
-others, and a connection restores it, also after the device restarts; the
-file on the device's disk keeps the configuration for the guest.
+through `ExternalDisplayChanges` as one change. The queue counts the
+sessions that this host started in the device's current boot
+(`CarPlaySessions`, by `SimDevice.lastBootedAt`), from each request's own
+completion, also one that comes after its change stopped waiting, and counts
+a request that has not completed as if it will succeed, since a
+connection's requests reach the guest one at a time. Ending CarPlay ends that many
+sessions, one at a time, and stops at one that does not end, which stays
+counted for the next change; CarPlay then keeps that session, recreating its
+HID service, instead of starting another beside it. An end without a session
+would count below zero in the bridge, which keeps that count and refuses the
+next start; a session also belongs to its boot, because a restart can shut
+the device down before its window's power-off and the session's end reach
+the guest, and the next boot's bridge starts with none. The tag 2714 is saved
+like the others, and a connection restores it, also after the device
+restarts; the file on the device's disk keeps the configuration for the
+guest.
 
 The window of a CarPlay screen is the external display's window with the
 subtitle `CarPlay`. Like Simulator.app, it opens at Point Accurate (a scale of
@@ -1458,9 +1465,12 @@ These differ from Simulator.app:
 - A session that did not start gets no HID service; Simulator.app creates it
   either way. A step that fails does not stop the others, except that a
   screen that did not change ends the change.
-- Neo ends only the session it started, as `startedCarPlay` records it.
+- Neo ends only the sessions it started, as `CarPlaySessions` counts them,
+  and keeps a session that did not end instead of starting another.
   Simulator.app ends a session whenever the screen it reconfigures or
-  disconnects is a CarPlay screen, which can end another host's session.
+  disconnects is a CarPlay screen, which can end another host's session, and
+  starts one after each CarPlay screen, also beside a session it could not
+  end.
 - Closing the device window, quitting, and restarting, which turn the display
   off, also end the CarPlay that this host started, keeping the saved choice
   and the file. Simulator.app's disconnection powers the screen off without
