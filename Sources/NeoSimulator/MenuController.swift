@@ -122,8 +122,9 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
         let externalDisplays = menu("External Displays", in: io)
         commands([ExternalDisplayMode.disabled.commandID], in: externalDisplays)
         externalDisplays.addItem(.separator())
-        commands(ExternalDisplayMode.allCases.dropFirst().map(\.commandID), in: externalDisplays)
-        // Simulator.app's CarPlay item follows a separator here.
+        commands(ExternalDisplayMode.sizes.map(\.commandID), in: externalDisplays)
+        externalDisplays.addItem(.separator())
+        commands([ExternalDisplayMode.carPlay.commandID], in: externalDisplays)
         io.addItem(.separator())
         commands([.openURL], in: io)
 

@@ -41,6 +41,10 @@ struct CoreSimulatorInterface {
     let memoryWarningFilePath: NativeObjCMethod<String?>
     let caDebugOption: NativeObjCMethod<Bool, UInt32>
     let setCADebugOption: NativeObjCMethod<Void, UInt32, Bool>
+    /// `dataPath`, the folder of the device's own files.
+    let dataPath: NativeObjCMethod<String?>
+    /// `enableCarPlay:error:`, a request to the guest's CoreSimulatorBridge.
+    let enableCarPlay: NativeObjCMethod<Void, Bool>
     /// An array of dictionaries with `name` and `localizedName` strings, or
     /// nil when the device cannot list them.
     let availableLocationScenarios: NativeObjCMethod<[NSDictionary]?>
@@ -146,6 +150,9 @@ struct CoreSimulatorInterface {
             on: device, selector: "getCADebugOption:", as: ((UInt32) -> Bool).self)
         setCADebugOption = try runtime.resolveObjCMethodAndWait(
             on: device, selector: "setCADebugOption:enabled:", as: ((UInt32, Bool) -> Void).self)
+        dataPath = try runtime.resolveObjCMethodAndWait(on: device, selector: "dataPath", as: (() -> String?).self)
+        enableCarPlay = try runtime.resolveObjCMethodAndWait(
+            on: device, selector: "enableCarPlay:error:", as: ((Bool) throws -> Void).self)
         availableLocationScenarios = try runtime.resolveObjCMethodAndWait(
             on: device, selector: "availableLocationScenarios", as: (() -> [NSDictionary]?).self)
         clearSimulatedLocation = try runtime.resolveObjCMethodAndWait(
@@ -318,6 +325,26 @@ final class SimulatorDevice {
         return URL(fileURLWithPath: path)
     }
 
+    /// `<dataPath>/Library/Application Support/Simulator/extended_display.plist`,
+    /// the device's external display configuration. CoreSimulator gives the
+    /// guest its path, and the guest reads it each time the TVOut screen's
+    /// modes change: with `stark` on, it takes that screen as a car's display.
+    func extendedDisplayFile() throws -> URL {
+        guard let path = try unsafe interface.dataPath.unsafeInvoke(on: object) else {
+            throw HostError.operation("The device did not report its data folder.")
+        }
+        return URL(fileURLWithPath: path, isDirectory: true)
+            .appendingPathComponent("Library/Application Support/Simulator/extended_display.plist")
+    }
+
+    /// Starts or ends a CarPlay session in the guest through its
+    /// CoreSimulatorBridge, which counts them: each start needs one end. The
+    /// request waits for the guest, so it runs off the main actor, and the
+    /// requests reach the guest in the order they are made.
+    func setCarPlayEnabled(_ enabled: Bool) async throws {
+        try await call(interface.enableCarPlay, on: carPlayQueue) { try unsafe $0.unsafeInvoke(on: $1, enabled) }
+    }
+
     /// CoreSimulator drops the error of this read, so false can also mean that it failed.
     func caDebugOption(_ option: CADebugOption) throws -> Bool {
         try unsafe interface.caDebugOption.unsafeInvoke(on: object, option.rawValue)
@@ -336,6 +363,7 @@ final class SimulatorDevice {
     // second, so keyboard changes run on this queue, as Simulator.app runs
     // them on a global queue, also in the order they are made.
     private lazy var keyboardQueue = DispatchQueue(label: "dev.lynnswap.NeoSimulator.keyboard")
+    private lazy var carPlayQueue = DispatchQueue(label: "dev.lynnswap.NeoSimulator.carplay")
 
     /// The runtime's recorded location routes in CoreSimulator's order, empty
     /// when the device lists none.
