@@ -101,6 +101,7 @@ Representative coordinator actions:
 | StandBy | `0x1000202D4` | implemented by flipping and posting the `com.apple.springboard.ambient.presentation` notification state |
 | Location | `0x100022390` | implemented with `SimDevice availableLocationScenarios`, `clearSimulatedLocationWithError:`, `setLocationWithLatitude:andLongitude:error:`, and `setLocationScenario:error:`, restored at each connection from `LocationMode`/`LocationScenario`/`LocationLatitude`/`LocationLongitude`; the menu lists the key device's scenarios rather than the last connected device's; the `com.apple.iphonesimulator.simulateLocation` notification is not handled |
 | Get Pasteboard / Send Pasteboard | `0x10001FC3C` / `0x10001FC80` | implemented with SimPasteboardPlus `pull` / `push` on a connection opened at the first command; see [Pasteboard](#pasteboard) |
+| Audio Input / Audio Output | `0x1000142C8` (app delegate) | implemented with CoreSimDeviceIO's `SimAudioHostRoutable` port; see [Audio routing](#audio-routing) |
 
 ## Implemented parity set
 
@@ -119,7 +120,8 @@ semantics:
   Siri, Shake, App Switcher, Trigger Screenshot;
 - I/O: Keyboard (Use the Same Keyboard Language as macOS, Connect Hardware
   Keyboard, Toggle Software Keyboard), Touch Pressure (Use Trackpad Force,
-  Shallow Press, Deep Press), Increase Volume, Decrease Volume;
+  Shallow Press, Deep Press), Audio Input, Audio Output, Increase Volume,
+  Decrease Volume;
 - Features: Touch ID and Face ID (Enrolled, Matching, Non-matching),
   Authorize Apple Pay, Toggle Appearance, Toggle In-call Status Bar,
   Show/Hide StandBy, Increase and Decrease Preferred Text Size, Toggle
@@ -388,6 +390,84 @@ tracking, so they do not replace a check with a physical keyboard and trackpad.
 NeoSimulator reproduces this behavior; its handling is described in the
 [design](Design.md#modifier-gestures).
 
+## Audio routing
+
+The evidence is Simulator.app 16.0 (1063.4) and SimulatorKit from Xcode 26.6,
+CoreSimulator 1174.9.2 with its CoreSimDeviceIO and SimAudioProcessorService,
+CoreDevice 651.13.5, and an iOS 26.5 iPhone 17 Pro in a separate device set. In
+`MainMenu.nib`, I/O ▸ Audio Input and Audio Output follow the separator after
+Touch Pressure and precede Increase Volume and Decrease Volume. `DC` is
+`DeviceCoordinator`.
+
+| Reference owner | Observed behavior |
+| --- | --- |
+| `-[DC initWithDevice:]` `0x100018914`, block `0x100018ECC` | Each coordinator owns an Audio Input and an Audio Output submenu with one item, `System`, whose action is `changeSelectedAudioDevice:` and whose tag is `0x20000001` (input) or `0x40000001` (output). |
+| `-[DC _onSessionQueue_connect]` `0x10001B314`, at `0x10001B528` … `0x10001B65C` | With `SimFeatureRoutableAudio` (`com.apple.CoreSimulator.audio.routable`), creates `SimDeviceAudioClient initWithDevice:eventHandlerQueue:error:changedEventHandler:` with the main queue. A failure logs "Unable to start Audio Client, will be unable to change audio routing. Error: %@", and the submenus keep only System. |
+| Changed handler `0x10001B900` | On each state the client reports: `updateAudioMenuWithState:`, then `synchronizeSelectedAudioDevicesInScope:` with 1 and 2. |
+| `-[DC deviceWindowBecameKey:]` `0x100019B0C`, at `0x100019F9C`; `-[DC deviceWindowWillClose:]` `0x100019720`, at `0x1000198E8` | Send `connectAudioSubmenus:` YES and NO. |
+| `-[DC connectAudioSubmenus:]` `0x10001D0DC` | With YES and `SimFeatureRoutableAudio`, enables the app delegate's `audioInputMenuItem` and `audioOutputMenuItem` and gives them this coordinator's submenus; otherwise disables them and removes their submenus. They are never hidden. |
+| `-[DC updateAudioMenuWithState:]` `0x10001CA38` | For each direction: finds System by its tag, removes all items, adds System back, then adds an item per `inputDevices` or `outputDevices` entry: `displayName`, `changeSelectedAudioDevice:`, the device as `representedObject`, tag `0x20000000` or `0x40000000`. A device is checked when the client does not use the default and its `uniqueIdentifier` equals the selected device's. When a device's identifier equals the effective default device's, System's title becomes `System (%@)` with its `displayName`; otherwise the title stays. System is checked from `useDefaultInputDevice` or `useDefaultOutputDevice`. No separator is added. |
+| `SimulatorAppDelegate.validateMenuItem:` `0x10001202C`, at `0x1000121A8` → `0x100012720` | `changeSelectedAudioDevice:` is enabled while `keyDeviceCoordinator.device` is not nil. |
+| `-[SimulatorAppDelegate changeSelectedAudioDevice:]` `0x1000142C8` | Tag `0x20000001` or `0x40000001` chooses `SimAudioHostUseSystemDefaultDeviceUID`; another item's `representedObject`, which must conform to `SimAudioHostDevice`, gives its `uniqueIdentifier`, and tag bit 29 tells input from output. Records an analytics event, inserts the route at index 0 of the recent list (`arrayByInsertingObject:` `0x10003B8FC`), saves it, and sends `synchronizeSelectedAudioDevicesInScope:` with that direction to every coordinator in `deviceCoordinators`. |
+| `NSUserDefaults(Indigo)` `recentAudioInputDeviceUIDs` `0x10003AD64`, `recentAudioOutputDeviceUIDs` `0x10003B0D0` → `0x10003B13C` | `RecentAudioInputDeviceUIDs` or `RecentAudioOutputDeviceUIDs` cast to `[String]`; when missing, not of strings, or empty, `[SimAudioHostUseSystemDefaultDeviceUID]`. |
+| Setters `0x10003AD7C`, `0x10003B240` → `0x10003B2A0` | Keep the first occurrence of each route (`0x10003ADDC`), keep the first five (`0x10003B004`), and `setObject:forKey:`. |
+| `-[DC synchronizeSelectedAudioDevicesInScope:]` `0x10001D2A4`, block `0x10001D324` | On the session queue, passes the recent list, the client state's devices, selected device, and default flag of that direction to `_onQueue_synchronizeSelectedAudioDevices:hostDevices:currentlySelectedDevice:currentlyUsingDefaultDevice:inScope:`. |
+| `_onQueue_synchronize…` `0x10001D46C` | For each recent route in order: System while using the default, or the selected device's identifier while not, logs "already selected" and stops. Otherwise the first host device with that identifier, or for System the first host device whose `isDefaultInScopes` has the direction's bit, makes it call `routeGuestWithScope:to:completionQueue:completionHandler:` (`0x10001D7C0`) on the main queue and stop. With none, it logs "Unable to find the preferred audio device for scope %@!". The completion (`0x10001D8FC`) only logs the error or success. |
+
+SimulatorKit 26.6's `SimDeviceAudioClient` (`SimAudioHostRouteClient.swift`):
+
+| Owner | Observed behavior |
+| --- | --- |
+| `init(device:eventHandlerQueue:changedEventHandler:)` `0x813B0` | Takes `SimDevice.io`, its `ioPorts`, and the first port whose `descriptor` conforms to `SimAudioHostRoutable`; without one it throws `noAudioPort`. On its serial queue `com.apple.SimulatorKit.AudioHostRouteClient.<UDID>`, it reads the port (`0x81DE8`) and reports that state, then registers `availableDevicesChangedCallback` (`0x81EF4`) and `selectedDeviceUIDChangedCallback` (`0x820E4`, scope and route). |
+| State `0x8267C`, `0x82B30`, `0x83388` | `inputDevices` and `outputDevices` are `availableHostDevices` with at least one input or output channel. The effective default device has the identifier of `effectiveDefaultInputDeviceUID` or `effectiveDefaultOutputDeviceUID`. The selected device is the device of the guest's route, or else the device that is the default in that direction. `useDefaultInputDevice` and `useDefaultOutputDevice` compare the guest's route with `SimAudioHostUseSystemDefaultDeviceUID`. |
+| `routeGuest(scope:to:completionQueue:completionHandler:)` `0x83B9C` | Sends `routeGuestDeviceScope:toHostDeviceUID:completionQueue:completionHandler:` to the port. |
+
+Xcode 27's SimulatorKit has no `SimDeviceAudioClient`. The port remains:
+
+- CoreSimDeviceIO declares `SimAudioHostRoutable` with `availableHostDevices`,
+  `guestInputHostDeviceUID`, `guestOutputHostDeviceUID`,
+  `effectiveDefaultInputDeviceUID`, `effectiveDefaultOutputDeviceUID`,
+  `routeGuestDeviceScope:toHostDeviceUID:completionQueue:completionHandler:`
+  (`v48@0:8Q16@"NSString"24@"NSObject<OS_dispatch_queue>"32@?<v@?@"NSError">40`),
+  `registerCallbackWithUUID:availableDevicesChangedCallback:` (a block taking
+  an array), `registerCallbackWithUUID:selectedDeviceUIDChangedCallback:` (a
+  block taking a scope and a route), and `unregisterCallbackWithUUID:`.
+  `SimAudioHostDevice` has `uniqueIdentifier`, `name`, `displayName`,
+  `dataSourceID`, `dataSourceName`, `scope`, `inputChannels`,
+  `outputChannels`, and `isDefaultInScopes`. It exports
+  `SimAudioHostUseSystemDefaultDeviceUID`, whose value is
+  `__sim__hostUseSystemDefaultDeviceUID`.
+- SimAudioProcessorService handles CoreAudio's device-list, default-input, and
+  default-output changes (`0x10000C824`, `0x10000C900`, `0x10000CA04`); each
+  calls `0x10000CB08`, which calls the `availableDevicesChangedCallbacks`
+  (`0x10000CBBC`).
+- CoreDevice's SimulatorCoreDevicePlugin implements `devicectl device settings
+  audio` and `device info audio` with `io`, `ioPorts`, `descriptor`,
+  `conformsToProtocol:` `SimAudioHostRoutable`, the guest's routes, and the
+  route message ("No audio routable port found on the device"). CoreDeviceService
+  implements `devicectl list audioDevices` with CoreAudio
+  (`AudioObjectGetPropertyData` and a device-list listener).
+
+The live check on the separate device set showed:
+
+- The device had 14 I/O port proxies; finding the routable one took 7 ms and
+  reading its state 2 to 7 ms. `availableHostDevices` gave the identifiers
+  that `devicectl list audioDevices` gives, with CoreAudio's names.
+- Routes completed in 3 to 50 ms without an error, and
+  `selectedDeviceUIDChangedCallback` reported each scope and route. The
+  callbacks and the completion arrived on the proxies' own queues, although the
+  completion queue was the main queue. Registering reported nothing.
+- A route to an identifier that the Mac lacked, and an input route to an
+  output-only device, completed without an error; the guest then used the
+  Mac's default device by its identifier.
+- With the output routed to BlackHole 2ch, an existing loopback device,
+  BlackHole's `kAudioDevicePropertyDeviceIsRunningSomewhere` changed from 0 to
+  1 while a guest process played a tone and back to 0 after it; the guest's
+  `AVAudioSession` still reported its own Speaker route.
+
+NeoSimulator reproduces Audio Input and Audio Output; its handling and
+differences are described in the [design](Design.md#audio-input-and-audio-output).
+
 ## Deferred features
 
 These have viable Xcode 27+ primitives but need a dedicated state/capability
@@ -406,7 +486,7 @@ contract before being user-visible:
   does not have.
 - watchOS, tvOS, and visionOS-specific gesture, remote, camera, immersion, and
   viewport commands.
-- FaceTime/audio-routing menus.
+- FaceTime menus.
 - Device Manager or any Device Hub URL handoff.
 
 These exclusions are part of the Neo-mode safety boundary, not missing

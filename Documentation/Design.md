@@ -101,6 +101,8 @@ signal cannot land between a move and a separate bookkeeping update.
 | Build and validate active-window menus | `MenuController` |
 | Run device tool subprocesses | `DeviceToolRunner` |
 | Get and Send Pasteboard over a device's SimPasteboardPlus connection | `DeviceSession` |
+| Route a device's audio over its `SimAudioHostRoutable` port | `DeviceSession` |
+| Keep the app-wide recent audio routes | `PreferenceStore` (`RecentAudio…DeviceUIDs`) |
 | Automatic clipboard synchronization | deliberately no owner |
 
 The active simulator for a menu command is derived from `NSApp.keyWindow` each
@@ -312,7 +314,7 @@ The first parity set contains only commands with an available, validated owner:
 - I/O: Keyboard (Use the Same Keyboard Language as macOS, Connect Hardware
   Keyboard, Toggle Software Keyboard), Touch Pressure (Use Trackpad Force, and
   Shallow Press and Deep Press, which need a watch and so stay disabled until
-  Neo hosts one), Increase Volume, Decrease Volume;
+  Neo hosts one), Audio Input, Audio Output, Increase Volume, Decrease Volume;
 - Features: Touch ID and Face ID (Enrolled, Matching, Non-matching),
   Authorize Apple Pay, Toggle Appearance, Toggle In-call Status Bar,
   Show/Hide StandBy, Increase and Decrease Preferred Text Size, Toggle
@@ -679,8 +681,7 @@ The following are intentionally absent:
   user did not choose;
 - Services;
 - global keyboard, pointer, or game-controller capture;
-- Device Manager, external-display, CarPlay, audio-routing, and FaceTime
-  menus;
+- Device Manager, external-display, CarPlay, and FaceTime menus;
 - platform-specific watchOS, tvOS, and visionOS commands, such as Debug ▸ Show
   Gaze Target;
 - commands whose remaining private implementation silently discards failure.
@@ -814,6 +815,95 @@ These differ from Simulator.app:
 - Connect Hardware Keyboard needs a connected, booted device, like
   NeoSimulator's other device commands; Simulator.app enables it for any
   device with a keyboard.
+
+### Audio Input and Audio Output
+
+I/O ▸ Audio Input and Audio Output choose the Mac audio devices that the
+simulators use. Simulator.app reaches them through SimulatorKit's
+`SimDeviceAudioClient`, which Xcode 27 removed. The primitive under it remains:
+CoreSimDeviceIO's `SimAudioHostRoutable`, the descriptor of one of a booted
+device's I/O ports, which CoreSimulator's SimAudioProcessorService serves.
+`SimDevice.io` returns the device's `SimDeviceIOClient`, and the port whose
+`descriptor` conforms to `SimAudioHostRoutable` among its `ioPorts` routes
+audio. CoreDevice's simulator plugin uses the same port for `devicectl device
+settings audio` and `devicectl device info audio`. Neo sends it messages
+directly instead of running `devicectl`, because the port:
+
+- reaches devices of any device set, including parallel testing devices, which
+  `devicectl` cannot address;
+- lists the Mac's devices with the identifiers that its routes take, which
+  `devicectl list audioDevices` also reads from CoreAudio;
+- reports changes of the Mac's devices and of the guest's routes, which the
+  command line cannot.
+
+The port gives `availableHostDevices`, each a `SimAudioHostDevice` with
+`uniqueIdentifier` (CoreAudio's device UID), `displayName`, `inputChannels`,
+`outputChannels`, and `isDefaultInScopes`; the guest's routes,
+`guestInputHostDeviceUID` and `guestOutputHostDeviceUID`; and the Mac's default
+devices, `effectiveDefaultInputDeviceUID` and
+`effectiveDefaultOutputDeviceUID`. A route is a device UID or
+`SimAudioHostUseSystemDefaultDeviceUID` (`__sim__hostUseSystemDefaultDeviceUID`),
+which follows the Mac's default device.
+`routeGuestDeviceScope:toHostDeviceUID:completionQueue:completionHandler:`
+changes the input (scope 1) or the output (scope 2).
+`registerCallbackWithUUID:availableDevicesChangedCallback:` and
+`registerCallbackWithUUID:selectedDeviceUIDChangedCallback:` report changes
+until `unregisterCallbackWithUUID:`. The service listens to CoreAudio's device
+list and default input and output devices, and reports each of their changes
+through `availableDevicesChangedCallback`, so Neo needs no CoreAudio listener
+of its own.
+
+The port and the Mac's devices are remote proxies, so `SimulatorRuntime`
+checks at startup that their protocols declare these messages and that
+`SimAudioHostUseSystemDefaultDeviceUID` has the value that recent routes are
+saved with; the messages are bound to each proxy when a device connects. The
+proxies call the change blocks, and a route's completion despite its completion
+queue, on threads of their own; the connection passes each call to the main
+queue.
+
+Like Simulator.app:
+
+- Audio Input and Audio Output stay in the I/O menu. For a key device with
+  `SimFeatureRoutableAudio` (`com.apple.CoreSimulator.audio.routable`) they
+  have their submenus; otherwise they are disabled and have none.
+- Each submenu lists System first, titled `System (<name>)` with the Mac's
+  default device when the port lists it, then the devices with channels in
+  that direction, in the port's order, without separators. System is checked
+  while the guest follows the Mac's default; otherwise the device of the
+  guest's route is checked, or, for a route the Mac lacks, the Mac's default
+  device, as SimulatorKit selects it.
+- A choice puts the route first in the app-wide recent routes,
+  `RecentAudioInputDeviceUIDs` or `RecentAudioOutputDeviceUIDs`, which keep
+  each route once and five at most, and which are System alone while missing,
+  empty, or not strings. Every device window then synchronizes that direction.
+- Synchronizing goes through the recent routes in order. The first route that
+  the guest already uses ends it; the first that the Mac has is routed to.
+  System counts as present while a device is the Mac's default for that
+  direction. When none is available, the route stays.
+- Each connection, including after a restart, and each change the port
+  reports synchronizes both directions. A route that another tool changes is
+  therefore routed back, and a device that returns is used again.
+
+`DeviceSession` owns the device's port connection and its last reported state,
+which the menus show; `DeviceWindowController` synchronizes its session when
+`AudioRouting.didChangeNotification` reports a choice.
+
+These differ from Simulator.app:
+
+- Simulator.app attaches the submenus when a device window becomes key and
+  keeps them while another kind of window is key. Neo attaches them for the key
+  device window each time the I/O menu opens, and disables them without one.
+- Simulator.app keeps the System item's last title when the Mac's default
+  device is not listed; Neo shows `System`.
+- Simulator.app only logs failures. Neo logs the failures of routes it makes
+  on its own, on connection and after a change, and presents on each device
+  window the failure of a route that a choice asks for, including why a
+  device's port did not connect.
+
+CoreSimulator does not fail a route to a device that the Mac lacks or that has
+no channels in that direction: it routes the guest to the Mac's default device
+by that device's UID. Neo, like Simulator.app, routes only to devices that the
+port lists.
 
 ### Settings and touch indicators
 
@@ -969,7 +1059,8 @@ Live validation additionally covers framebuffer/touch/accessibility, focused
 keyboard input, Home, Software Keyboard, connecting and disconnecting the
 hardware keyboard, the keyboard language, the digitizer's touch pressure
 settings and touch indicator draw options, the settings window, modifier
-gestures through the lifecycle cases above, resize, menu rotation, screenshot
+gestures through the lifecycle cases above, audio routes to an existing
+loopback device and back with the guest's audio reaching it, resize, menu rotation, screenshot
 PNG, Get and Send Pasteboard with text and a PNG and without any exchange
 between commands, Device Hub absence, and loaded-image provenance.
 
