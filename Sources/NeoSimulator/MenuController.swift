@@ -243,6 +243,8 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
         for item in menu.items {
             if let raw = item.representedObject as? String, let id = DeviceCommand.ID(rawValue: raw) {
                 item.isHidden = capabilities.map { !DeviceCommand.command(id).isSupported($0) } ?? false
+            } else if item.action == #selector(toggleShowDeviceBezels(_:)) {
+                item.isHidden = capabilities.map { !$0.supportsDeviceBezels } ?? false
             } else if let submenu = item.submenu, submenu.delegate === self {
                 updateVisibility(in: submenu, for: capabilities)
                 item.isHidden = submenu.items.allSatisfy { $0.isHidden || $0.isSeparatorItem }

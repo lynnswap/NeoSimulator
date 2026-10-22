@@ -13,7 +13,7 @@ struct DeviceCommand {
         case restart, eraseAllContentAndSettings, shutDown, rotateLeft, rotateRight
         case portrait, landscapeRight, portraitUpsideDown, landscapeLeft, faceUp, faceDown
         case rotateDeviceAutomatically
-        case home, lock, sideButton, actionButtonSting
+        case home, lock, alwaysOn, sideButton, actionButtonSting
         case actionButtonStaccato, siri, shake, appSwitcher, triggerScreenshot
         case syncKeyboardLanguage, connectHardwareKeyboard, toggleSoftwareKeyboard
         case useTrackpadForce, shallowPress, deepPress
@@ -43,8 +43,10 @@ struct DeviceCommand {
         }
 
         /// The item's label, which is also the button's tooltip while it
-        /// performs the command, as in Simulator.app's toolbar nibs.
+        /// performs the command, as in Simulator.app's toolbar nibs, unless
+        /// `toolTip` gives another.
         let label: String
+        let toolTip: String?
         let symbol: String
         /// The description of the button's image while it performs the
         /// command, by default the label.
@@ -61,9 +63,10 @@ struct DeviceCommand {
         /// whether or not Option is down.
         let alternate: Face?
 
-        init(label: String, symbol: String, imageDescription: String? = nil, buttonWidth: CGFloat,
-             optionAlternate: Face? = nil, alternate: Face? = nil) {
+        init(label: String, toolTip: String? = nil, symbol: String, imageDescription: String? = nil,
+             buttonWidth: CGFloat, optionAlternate: Face? = nil, alternate: Face? = nil) {
             self.label = label
+            self.toolTip = toolTip
             self.symbol = symbol
             self.imageDescription = imageDescription ?? label
             self.buttonWidth = buttonWidth
@@ -188,7 +191,16 @@ struct DeviceCommand {
         },
         DeviceCommand(id: .home, title: "Home", key: "h", modifiers: [.command, .shift],
                       toolbar: Toolbar(label: "Home", symbol: "house", buttonWidth: 31)) { $0.send(.press(.button(.home))) },
-        DeviceCommand(id: .lock, title: "Lock", key: "l") { $0.send(.press(.button(.lock))) },
+        // Simulator.app shows Lock for iPhones, iPads, and watches.
+        DeviceCommand(id: .lock, title: "Lock", key: "l",
+                      isSupported: { $0.isPhoneOrPad || $0.family == .watch }) { $0.send(.press(.button(.lock))) },
+        // Only a toolbar button, of Simulator.app's IndigoWatchAODToolbar.nib:
+        // it presses Lock, and its state is the watch's backlight.
+        DeviceCommand(id: .alwaysOn, title: "Always On",
+                      toolbar: Toolbar(label: "Always On", toolTip: "Toggle Always On", symbol: "applewatch.watchface",
+                                       buttonWidth: 25),
+                      isSupported: { $0.family == .watch && $0.supportsFeature(DeviceCapabilities.alwaysOnDisplay) },
+                      state: { $0.session.showsAlwaysOn ? .on : .off }) { $0.send(.press(.button(.lock))) },
         DeviceCommand(id: .sideButton, title: "Side Button", key: "b", modifiers: [.command, .shift],
                       isSupported: { $0.family == .watch }) { $0.send(.press(.button(.side))) },
         DeviceCommand(id: .actionButtonSting, title: "Action Button",
@@ -408,26 +420,32 @@ struct DeviceCommand {
         }
     }
 
-    /// Toolbar items in Simulator.app's iPhone toolbar order. Unsupported items
-    /// are omitted.
-    static let toolbarItems: [ID] = [.home, .saveScreen, .rotateRight]
+    /// Toolbar items in the order of Simulator.app's toolbar nibs: Home, Save
+    /// Screen, then Rotate for iPhones and iPads or Always On for watches with
+    /// an always-on display. Unsupported items are omitted, so a watch
+    /// without one and an Apple TV show Home and Save Screen.
+    static let toolbarItems: [ID] = [.home, .saveScreen, .rotateRight, .alwaysOn]
 }
 
 /// Splits a device name the way Simulator.app titles its windows: the name up
 /// to the first closing parenthesis stays in the title, and later parenthesized
-/// groups join the runtime name in the subtitle.
+/// groups join the runtime name in the subtitle. A title that starts with
+/// "Apple Watch " loses that prefix, as a watch's does in Simulator.app.
 func deviceWindowTitles(name: String, runtimeName: String) -> (title: String, subtitle: String) {
     let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+    func shown(_ title: Substring) -> String {
+        let prefix = "Apple Watch "
+        return String(title.hasPrefix(prefix) ? title.dropFirst(prefix.count) : title)
+    }
     guard let open = trimmed.firstIndex(of: "("), let close = trimmed.firstIndex(of: ")"),
           open < close, close < trimmed.index(before: trimmed.endIndex) else {
-        return (trimmed, runtimeName)
+        return (shown(trimmed[...]), runtimeName)
     }
-    let title = String(trimmed[...close])
     let suffix = trimmed[trimmed.index(after: close)...]
         .replacingOccurrences(of: ") (", with: " - ")
         .filter { $0 != "(" && $0 != ")" }
         .trimmingCharacters(in: .whitespaces)
-    return (title, suffix.isEmpty ? runtimeName : "\(suffix) – \(runtimeName)")
+    return (shown(trimmed[...close]), suffix.isEmpty ? runtimeName : "\(suffix) – \(runtimeName)")
 }
 
 extension ExternalDisplayMode {

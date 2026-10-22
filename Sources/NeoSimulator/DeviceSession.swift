@@ -20,8 +20,14 @@ struct DeviceCapabilities {
     var screenCornerRadius = 0.0
     /// The screen's points per inch, for Physical Size; nil when unknown.
     var screenPointsPerInch: Double?
+    /// Whether the device type has a user-interface plugin, which
+    /// SimulatorKit loads for its display, such as Apple Vision Pro's.
+    var hasUserInterfacePlugin = false
 
     var isPhoneOrPad: Bool { family == .iPhone || family == .iPad }
+    /// Whether Window ▸ Show Device Bezels applies. Simulator.app hides it for
+    /// Apple Vision, whose display has no bezel.
+    var supportsDeviceBezels: Bool { family != .vision }
     var rotates: Bool { controlsOrientation && supportsFeature(Self.displayRotation) }
     /// Whether I/O ▸ External Displays applies: like Simulator.app, the device
     /// supports external displays and has its own screen.
@@ -60,6 +66,9 @@ struct DeviceCapabilities {
     static let integratedDisplay = "com.apple.display.integrated"
     /// `SimFeatureCarPlay`: the guest runs CarPlay on its external display.
     static let carPlay = "com.apple.carplay"
+    /// `SimFeatureAlwaysOnDisplay`: the watch dims its display instead of
+    /// turning it off, which Simulator.app's Always On button shows.
+    static let alwaysOnDisplay = "com.apple.display.aot"
 }
 
 /// Preferences Simulator.app keeps in its standard user defaults.
@@ -513,6 +522,23 @@ final class DeviceSession {
     func shake() throws {
         guard canPerformCommands else { return }
         try display.postNotification("com.apple.UIKit.SimulatorShake")
+    }
+
+    /// The state of a watch's Always On button. Like Simulator.app's, it
+    /// follows the screen's backlight: on while the backlight is 0 or 1, off
+    /// at 2, and unchanged at other values; it starts off.
+    private(set) var showsAlwaysOn = false
+
+    /// Reads the backlight of a watch for its Always On button, as
+    /// Simulator.app does when the display connects and when the screen's
+    /// properties change.
+    func followBacklight() {
+        guard capabilities.family == .watch, !isDisconnected else { return }
+        switch display.backlightState {
+        case 0, 1: showsAlwaysOn = true
+        case 2: showsAlwaysOn = false
+        default: break
+        }
     }
 
     func toggleAppearance() throws {
@@ -1337,13 +1363,17 @@ final class DeviceSession {
     /// Whether a recording to a chosen file will replace `file` when it finishes.
     func isRecordingDestination(_ file: URL) -> Bool { recordings.isReserved(file) }
 
+    /// Starts recording the screen. Like Simulator.app, the session announces
+    /// the recording's start and end for the device's user-interface plugin.
     func startRecording(to destination: RecordingStore.Destination, mask: DeviceTools.ScreenMask) throws {
         guard canPerformCommands, recording == nil else { return }
         recording = try recordings.start(to: destination, process: { [makeRecordingProcess] in
             makeRecordingProcess($0, mask)
         }) { [weak self] in
             self?.recording = nil
+            self?.display.announceRecording(started: false)
         }
+        display.announceRecording(started: true)
     }
 
     func stopRecording() { recording?.stop() }

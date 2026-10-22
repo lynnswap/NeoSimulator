@@ -141,7 +141,9 @@ semantics:
   Simulator.app hides Zoom.
 
 The detached window header exposes Home, Save Screen, and Rotate using the same
-session actions as the menus. With Option down over the toolbar, Save Screen
+session actions as the menus; watches and Apple TV have Home and Save Screen, a
+watch with an always-on display also Always On, and Apple Vision Pro its
+plugin's toolbar (see [watchOS, tvOS, and visionOS](#watchos-tvos-and-visionos)). With Option down over the toolbar, Save Screen
 records the screen and Rotate turns the device left; while a video is
 recording, Save Screen shows `stop.circle` and stops it, as in Simulator.app.
 Software Keyboard is available from I/O and Command-K.
@@ -717,6 +719,29 @@ iPhone 17 Pro in the separate device set showed:
 NeoSimulator reproduces External Displays; its handling and differences are
 described in the [design](Design.md#external-displays).
 
+## watchOS, tvOS, and visionOS
+
+Reference addresses are in Simulator.app 16.0 (1063.4) from Xcode 26.6;
+SimulatorKit addresses are in Xcode 27.1's arm64e slice. The live checks used
+Xcode 27.1, CoreSimulator 1174.9.2, an Apple Watch Series 11 (46mm) on watchOS
+27.0, an Apple Watch SE (44mm) (2nd generation) on watchOS 26.5, an Apple TV 4K
+(3rd generation) on tvOS 27.0, and an Apple Vision Pro on visionOS 26.5 in a
+separate device set, through NeoSimulator's code.
+
+| Reference owner | Observed behavior | Neo |
+| --- | --- | --- |
+| `SimDevice(KeyboardSync)` `isIOS` (body `0x10003BABC`), `isWatch`, `isTV`, `isVision` (`0x10003BCCC`) | Families by `deviceType.productFamilyID`: iOS is 1 or 2, TV 3, watch 4, Vision 7. | `DeviceCapabilities.Family`; devices of other families are not hosted. |
+| `DC.deviceWindowBecameKey:` `0x100019B0C` | Hides Shake, App Switcher, Trigger Screenshot, Toggle Appearance, Toggle In-call Status Bar, the text sizes, and Toggle Increase Contrast unless iOS; Lock unless iOS or watch (`0x10001A038`…`0x10001A054`); Side Button unless watch; Show Device Bezels for Vision (`0x10001A9A0`); the viewport, Reset Camera, Simulated Scenes, Set Immersion To, and FaceTime items unless Vision; Increase and Decrease Immersion and 0% and 25% always. | The same rules through `DeviceCommand.isSupported` and `DeviceCapabilities.supportsDeviceBezels`; the Vision-only items are not implemented. |
+| `DWC.validateMenuItem:` `0x100051A40` | Lock (`lockButtonPressed:`) is enabled for iOS and otherwise for a watch. | Lock is shown only for them. |
+| Toolbar setup `0x100049D70` | A watch takes `IndigoWatchAODToolbar` with `SimFeatureAlwaysOnDisplay`, otherwise `IndigoWatchToolbar`; a TV `IndigoTVToolbar`; Vision the iPhone toolbar until its plugin's replaces it. The watch and TV nibs have Home and Save Screen; the always-on nib adds Always On: label "Always On", tooltip "Toggle Always On", a 25-point toggle `NSButton` (shows state by its contents) with the asset `ToolbarAlwaysOnSymbol` (`watch.always.on`) and an on image, to `lockButtonPressed:`. | `DeviceCommand.alwaysOn` on watches with `com.apple.display.aot`, an on/off toolbar button with `applewatch.watchface`. |
+| Always On update `0x100054128` | Only for family 4; backlight 0 or 1 sets the button on, 2 off, other values leave it, and an unchanged value is skipped. The chrome refresh (`0x10005B0B8`) passes `SimDisplayView.backlightState`; the `simDisplayView(_:screen:propertiesChanged:)` witness (`0x10005F7D8`) passes `properties.backlight.state`. | Reads `SimScreenProperties.backlight.state` both times. Live, at a property change the properties already had the new value while `backlightState` still had the old one, until the next main-queue turn. The Series 11 went 2 → 1 → 2 with Lock, the SE 2 → 0 → 2; Apple TV and Apple Vision Pro report -101. |
+| Title updater `0x10005A90C`, `0x10005AABC`…`0x10005AB18` | After `WindowTitleHelper`, a title with the prefix "Apple Watch " loses those 12 characters, for any device. | `deviceWindowTitles`: "Apple Watch Series 11 (46mm)" is titled "Series 11 (46mm)". |
+| `DC._onSessionQueue_connect` `0x10001B3A4`…`0x10001B408` | For family 3, `configureExternalDisplayWithSize:` the device type's `mainScreenSize`, `scale:` its `mainScreenScale`, `carPlayProperties:` nil. | Not sent. Live, the Apple TV's default screen 1 was a TVOut screen (`screenType` 1, `displayClass` 1), powered on at 3840×2160, the device type's size, right after `simctl boot`. |
+| SimulatorKit `SimDisplayView` connect `0x68474`…`0x6860C`, loader `0x48358` | Loads the device type's `userInterfaceIdentifier` profile from the service context's `supportedUserInterfaceProfileBundles`, keeps the principal-class instance in `_userInterfacePlugin` (`0x685A4`), and adds `overlayView` as a subview (`0x6860C`); a failed load logs "Failed to load simdeviceui bundle for device". | Live, the plugin (`PalomaSimSupport`) was set when the display factory returned, its overlay `XROS.VirtualHMDInputView` covered the 1920×1080 display and became the first responder, and the XROS image came from the selected Xcode. |
+| `simDisplayView(_:changedUserInterfacePlugin:)` witness `0x10005F82C` → `0x10005F66C` | Stores `deviceUserInterfacePlugin`, sets the window's toolbar to the plugin's `toolbar` when it has one, and makes the plugin the app delegate's game-controller delegate when it conforms to `SimGameControllerDelegate`. | Sets the window's toolbar; no game-controller delegate. The plugin's `XROS.SimToolbar` had Home (`homeButtonPressed:`), Save Screen (`saveFramebufferImage:`, `toggleVideoRecording:` with Option), Capture Pointer, Capture Keyboard (both handled by the overlay), and Simulated Scenes. |
+| XROS `VirtualHMDInputView.toggleCapturingMouse:` and `mouseUp:` (Xcode 27.1 `0x2943C`…`0x29640`) | Capture Pointer starts choosing the gaze target; the click that ends it passes `toggleCapturingMouse:` to the next responder when the overlay's `client` is `.simulatorApp`, and otherwise starts `SimHIDCaptureManager` itself (`startCaptureSessionWithDevice:hidDeviceTypes:error:`, type 2). | Live, the overlay's `client` was `.simulatorApp`; Capture Keyboard left `_captureKeyboardEnabled` off, and a click after Capture Pointer ended the gaze choice without a capture, because no responder in Neo captures. |
+| DWC `homeButtonPressed:`, `saveFramebufferImage:`, `toggleVideoRecording:`; recording notifications `0x1000594B4` / `0x10005991C` | The plugin's toolbar actions reach the device window through the responder chain. Starting and stopping a recording posts `SimulatorVideoRecordingStartedNotification` / `…StoppedNotification` with the `SimDevice` under `…DeviceUserInfoKey`. | The device window implements the three actions; the session posts both notifications. Live, they turned the plugin's Save Screen button into Stop Recording (`toggleVideoRecording:`) and back. |
+
 ## Input capture
 
 The evidence is Simulator.app 16.0 (1063.4) from Xcode 26.6, SimulatorKit from
@@ -777,7 +802,11 @@ were considered are in the [design](Design.md#input-capture).
 These have viable Xcode 27+ primitives but need a dedicated state/capability
 contract before being user-visible:
 
-- status-bar overrides.
+- status-bar overrides;
+- watch gestures, Digital Crown scrolling, and Simulate Fall; the Apple TV
+  Remote; and the visionOS viewport, camera, scene, immersion, Optic ID, and
+  gaze commands, which build on [watchOS, tvOS, and visionOS](#watchos-tvos-and-visionos)
+  hosting.
 
 ## Excluded features
 
@@ -786,8 +815,6 @@ contract before being user-visible:
   private HID event-filter/event-monitor and TCC entitlements that the companion
   does not have; for the keyboard and pointer, see
   [Input capture](#input-capture).
-- watchOS, tvOS, and visionOS-specific gesture, remote, camera, immersion, and
-  viewport commands.
 - FaceTime menus.
 - Device Manager or any Device Hub URL handoff.
 

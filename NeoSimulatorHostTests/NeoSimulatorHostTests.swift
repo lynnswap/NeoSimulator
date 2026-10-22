@@ -827,6 +827,102 @@ struct InputFocusTests {
         try unsafe display.disconnect.unsafeInvoke(on: view, NativeSwiftClosure {})
     }
 
+    @Test func aUserInterfacePluginGivesTheWindowItsToolbarAndTakesTheInput() throws {
+        let display = TestDisplay()
+        let overlay = InputView()
+        display.view.addSubview(overlay)
+        let toolbar = NSToolbar(identifier: "PluginToolbar")
+        // Like SimulatorKit for Apple Vision Pro, the display has loaded the
+        // plugin by the time the window opens.
+        display.plugin = SimulatorUserInterfacePlugin(overlayView: overlay, toolbar: toolbar)
+        let controller = try makeController(display, family: .vision, features: [], userInterfacePlugin: true)
+        defer { controller.invalidate() }
+        let window = try #require(controller.window)
+        // Like Simulator.app, the window shows the plugin's toolbar.
+        #expect(window.toolbar === toolbar)
+        // The overlay takes the window's focus and the Mac's modifiers.
+        controller.focusInput()
+        #expect(window.firstResponder === overlay)
+        #expect(!overlay.modifiers.isEmpty && display.input.modifiers.isEmpty)
+        // The plugin's buttons send Simulator.app's actions, which reach the
+        // window from the overlay.
+        #expect(overlay.tryToPerform(Selector(("homeButtonPressed:")), with: nil))
+        #expect(display.buttons == [.home])
+    }
+
+    @Test func aWindowWaitsForItsDisplaysUserInterfacePluginAndReportsOneThatDoesNotLoad() async throws {
+        _ = NSApplication.shared
+        let display = TestDisplay()
+        let controller = try makeController(display, family: .vision, features: [], userInterfacePlugin: true,
+                                            userInterfacePluginLookUp: (50, .milliseconds(10)))
+        defer { controller.invalidate() }
+        controller.showWindow(nil)
+        let window = try #require(controller.window)
+        let deviceToolbar = window.toolbar
+        // A plugin that loads later replaces the window's toolbar then.
+        let toolbar = NSToolbar(identifier: "LatePluginToolbar")
+        display.plugin = SimulatorUserInterfacePlugin(overlayView: nil, toolbar: toolbar)
+        try await wait { window.toolbar === toolbar }
+        #expect(window.toolbar === toolbar && toolbar !== deviceToolbar)
+        #expect(window.attachedSheet == nil)
+
+        // A plugin that never loads, or that cannot be used, is reported.
+        for error in [nil, HostError.unavailable("plugin from another Xcode")] as [Error?] {
+            let missing = TestDisplay()
+            missing.pluginError = error
+            let unloaded = try makeController(missing, family: .vision, features: [], userInterfacePlugin: true,
+                                              userInterfacePluginLookUp: (3, .milliseconds(10)))
+            defer { unloaded.invalidate() }
+            unloaded.showWindow(nil)
+            let unloadedWindow = try #require(unloaded.window)
+            try await wait { unloadedWindow.attachedSheet != nil }
+            let sheet = try #require(unloadedWindow.attachedSheet)
+            #expect(texts(in: sheet.contentView).contains {
+                $0.hasPrefix("The controls of Test iPhone are unavailable: ")
+                    && $0.hasSuffix(error == nil ? "SimulatorKit did not load its user interface plugin." : "plugin from another Xcode")
+            })
+            unloadedWindow.endSheet(sheet)
+        }
+        // A device type without a plugin is not looked up.
+        let phone = TestDisplay()
+        phone.pluginError = HostError.unavailable("looked up")
+        let phoneController = try makeController(phone)
+        defer { phoneController.invalidate() }
+        phoneController.showWindow(nil)
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(phoneController.window?.attachedSheet == nil)
+    }
+
+    @Test func recordingsAreAnnouncedAsInSimulatorApp() async throws {
+        let display = TestDisplay()
+        let overlay = InputView()
+        display.view.addSubview(overlay)
+        display.plugin = SimulatorUserInterfacePlugin(overlayView: overlay, toolbar: nil)
+        // A recording runs until it is stopped, and another fails at once.
+        var recordings = 0
+        let controller = try makeController(display, family: .vision, features: [], recordingProcess: { _, _ in
+            recordings += 1
+            return Self.recorder(then: recordings == 1 ? "while :; do sleep 0.05; done" : "sleep 0.1; exit 1")
+        }, userInterfacePlugin: true)
+        defer { controller.invalidate() }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try controller.session.startRecording(to: .file(directory.appendingPathComponent("Recording.mov")), mask: .ignored)
+        let recording = try #require(controller.session.recording)
+        #expect(display.announcedRecordings == [true])
+        // Save Screen on the plugin's toolbar stops it with Simulator.app's
+        // `toggleVideoRecording:`, and its end is announced.
+        #expect(overlay.tryToPerform(Selector(("toggleVideoRecording:")), with: nil))
+        #expect(recording.isStopping)
+        try await recording.waitUntilFinished()
+        try await wait { controller.session.recording == nil }
+        #expect(display.announcedRecordings == [true, false])
+        try controller.session.startRecording(to: .file(directory.appendingPathComponent("Failed.mov")), mask: .ignored)
+        try await wait { controller.session.recording == nil }
+        #expect(display.announcedRecordings == [true, false, true, false])
+    }
+
     @Test func unsupportedCommandsAreHiddenFromMenusAndToolbar() throws {
         _ = NSApplication.shared
         let menus = MenuController(application: nil)
@@ -845,6 +941,111 @@ struct InputFocusTests {
              "App Switcher", "-", "Trigger Screenshot"])
         controller.perform(.rotateRight)
         #expect(!controller.session.isBusy)
+    }
+
+    @Test func eachFamilysToolbarHasSimulatorAppsButtons() throws {
+        func items(_ family: DeviceCapabilities.Family, _ features: Set<String>) throws -> [DeviceCommand.ID] {
+            let controller = try makeController(TestDisplay(), family: family, features: features)
+            defer { controller.invalidate() }
+            return try #require(controller.window?.toolbar).items.compactMap {
+                DeviceCommand.ID(rawValue: $0.itemIdentifier.rawValue)
+            }
+        }
+        // IndigoWatchToolbar.nib and IndigoTVToolbar.nib, and
+        // IndigoWatchAODToolbar.nib for a watch with an always-on display.
+        #expect(try items(.watch, [DeviceCapabilities.keyboard]) == [.home, .saveScreen])
+        #expect(try items(.tv, [DeviceCapabilities.keyboard]) == [.home, .saveScreen])
+        #expect(try items(.watch, [DeviceCapabilities.alwaysOnDisplay]) == [.home, .saveScreen, .alwaysOn])
+        // An iPhone with an always-on display gets the iPhone toolbar.
+        #expect(try items(.iPhone, [DeviceCapabilities.alwaysOnDisplay, DeviceCapabilities.displayRotation])
+            == [.home, .saveScreen, .rotateRight])
+    }
+
+    @Test func alwaysOnPressesLockAndFollowsTheWatchsBacklight() async throws {
+        let display = TestDisplay()
+        display.backlightState = 2
+        let controller = try makeController(display, family: .watch, features: [DeviceCapabilities.alwaysOnDisplay])
+        defer { controller.invalidate() }
+        let item = try #require(controller.window?.toolbar?.items.first { $0.itemIdentifier.rawValue == "alwaysOn" })
+        let button = try #require(item.view as? NSButton)
+        #expect(item.label == "Always On")
+        #expect(button.toolTip == "Toggle Always On")
+        #expect(button.state == .off)
+        // Like Simulator.app's, the button is on while the backlight is 0 or
+        // 1 and off at 2, and other values leave it as it is.
+        for (backlight, on) in [(1, true), (-101, true), (2, false), (-101, false), (0, true)] as [(Int32, Bool)] {
+            display.backlightState = backlight
+            display.onPropertiesChange?()
+            #expect(controller.session.showsAlwaysOn == on, "backlight \(backlight)")
+            try await wait { button.state == (on ? .on : .off) }
+            #expect(button.state == (on ? .on : .off), "backlight \(backlight)")
+        }
+        // A click presses Lock, and the button keeps the backlight's state
+        // until the backlight changes.
+        button.performClick(nil)
+        #expect(display.buttons == [.lock])
+        #expect(button.state == .on)
+        display.backlightState = 2
+        display.onPropertiesChange?()
+        try await wait { button.state == .off }
+        #expect(button.state == .off)
+        // Another family's backlight changes nothing.
+        let tv = TestDisplay()
+        tv.backlightState = 1
+        let tvController = try makeController(tv, family: .tv, features: [DeviceCapabilities.alwaysOnDisplay])
+        defer { tvController.invalidate() }
+        tv.onPropertiesChange?()
+        #expect(!tvController.session.showsAlwaysOn)
+    }
+
+    @Test func menusShowWhatEachFamilySupportsAsInSimulatorApp() throws {
+        _ = NSApplication.shared
+        let menus = MenuController(application: nil)
+        menus.install()
+        defer { NSApp.mainMenu = nil }
+        func visible(_ title: String, _ family: DeviceCapabilities.Family) throws -> [String] {
+            let menu = try #require(NSApp.mainMenu?.items.first { $0.title == title }?.submenu)
+            menus.updateVisibility(in: menu, for: DeviceCapabilities(family: family, runtimeVersion: 0x1B_00_00,
+                                                                     supportsFeature: { _ in false }))
+            return menu.items.filter { !$0.isHidden }.map { $0.isSeparatorItem ? "-" : $0.title }
+        }
+        let commands = ["Restart", "Erase All Content and Settings…", "Shut Down", "-", "Home"]
+        // Lock is for iPhones, iPads, and watches, and Side Button for watches.
+        #expect(try visible("Device", .watch) == commands + ["Lock", "Side Button"])
+        #expect(try visible("Device", .tv) == commands)
+        #expect(try visible("Device", .vision) == commands)
+        // Apple Vision's display has no bezel to show.
+        #expect(try !visible("Window", .vision).contains("Show Device Bezels"))
+        #expect(try visible("Window", .watch).contains("Show Device Bezels"))
+    }
+
+    @Test func onlyADeviceThatRotatesReadsItsOrientation() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let log = directory.appendingPathComponent("arguments"), devicectl = directory.appendingPathComponent("devicectl")
+        try """
+            #!/bin/sh
+            printf '%s\\n' "$*" >> "\(log.path)"
+            printf '{"result":{"deviceOrientation":"portrait","deviceOrientationNonFlat":"portrait"}}'
+            """.write(to: devicectl, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: devicectl.path)
+        // Like Simulator.app, which turns only an iPhone's or iPad's display,
+        // a watch's window does not ask for the orientation.
+        let watch = try makeController(TestDisplay(), family: .watch, features: [DeviceCapabilities.keyboard],
+                                       devicectl: devicectl)
+        defer { watch.invalidate() }
+        var position = NSPoint.zero
+        watch.showNewWindow(cascadingFrom: &position)
+        #expect(!watch.session.isBusy)
+        #expect(!FileManager.default.fileExists(atPath: log.path))
+        // An iPhone's does.
+        let phone = try makeController(TestDisplay(), devicectl: devicectl, device: "phone")
+        defer { phone.invalidate() }
+        phone.showNewWindow(cascadingFrom: &position)
+        #expect(phone.session.isBusy)
+        try await wait { !phone.session.isBusy }
+        #expect(try String(contentsOf: log, encoding: .utf8).contains("orientation get"))
     }
 
     @Test func orientationReadingsKeepTheUprightAngleWhileFlat() throws {
@@ -5039,6 +5240,8 @@ struct InputFocusTests {
                                 pasteboard: NSPasteboard? = nil,
                                 pasteboardSync: PasteboardSync? = nil,
                                 externalDisplayChanges: ExternalDisplayChanges = ExternalDisplayChanges(),
+                                userInterfacePlugin: Bool = false,
+                                userInterfacePluginLookUp: (attempts: Int, interval: Duration) = (5, .milliseconds(20)),
                                 performWindowDrag: @escaping (NSWindow, NSEvent) -> Void = { _, _ in },
                                 onClose: @escaping (DeviceWindowController, DeviceLifetimeChoice?) -> Void = { _, _ in },
                                 onRestart: @escaping (DeviceWindowController, Bool) -> Void = { _, _ in })
@@ -5048,11 +5251,13 @@ struct InputFocusTests {
                                       openLog: openLog, screenPointsPerInch: screenPointsPerInch, device: identifier,
                                       preferences: preferences, keyboardLanguage: keyboardLanguage,
                                       pasteboard: pasteboard, pasteboardSync: pasteboardSync,
-                                      externalDisplayChanges: externalDisplayChanges)
+                                      externalDisplayChanges: externalDisplayChanges,
+                                      userInterfacePlugin: userInterfacePlugin)
         return try DeviceWindowController(
             session: session, preferences: preferences,
             touchPressure: touchPressure ?? TouchPressure(preferences: preferences, forceTouchTrackpad: { false }),
-            performWindowDrag: performWindowDrag, onClose: onClose, onRestart: onRestart)
+            performWindowDrag: performWindowDrag, userInterfacePluginLookUp: userInterfacePluginLookUp,
+            onClose: onClose, onRestart: onRestart)
     }
 
     /// Waits up to two seconds for `condition`, checking it every 10 ms. It
@@ -5168,7 +5373,8 @@ struct InputFocusTests {
                              keyboardLanguage: @escaping @MainActor () -> String? = { "fr" },
                              pasteboard: NSPasteboard? = nil,
                              pasteboardSync: PasteboardSync? = nil,
-                             externalDisplayChanges: ExternalDisplayChanges = ExternalDisplayChanges()) throws -> DeviceSession {
+                             externalDisplayChanges: ExternalDisplayChanges = ExternalDisplayChanges(),
+                             userInterfacePlugin: Bool = false) throws -> DeviceSession {
         // Five looks for an external display, 20 ms apart, so that a test
         // sees the look-up end.
         DeviceSession(
@@ -5176,7 +5382,8 @@ struct InputFocusTests {
             capabilities: DeviceCapabilities(family: family, runtimeVersion: 0x1B_00_00,
                                              supportsFeature: { features.contains($0) },
                                              hasFramebufferMask: framebufferMask,
-                                             screenPointsPerInch: screenPointsPerInch),
+                                             screenPointsPerInch: screenPointsPerInch,
+                                             hasUserInterfacePlugin: userInterfacePlugin),
             display: display,
             tools: try DeviceTools(identifier: "test-device", xcodeURL: URL(fileURLWithPath: "/Applications/Xcode.app"),
                                    simctl: simctl, devicectl: devicectl),
@@ -5371,7 +5578,22 @@ private final class TestDisplayView: NSView {
 private final class TestDisplay: SimulatorDisplay {
     let view: NSView = TestDisplayView(frame: NSRect(x: 0, y: 0, width: 390, height: 844))
     let input = InputView()
-    var inputView: NSView { input }
+    var inputView: NSView { foundPlugin?.overlayView ?? input }
+    /// The user-interface plugin the display has loaded, and the error that
+    /// finding it throws.
+    var plugin: SimulatorUserInterfacePlugin?
+    var pluginError: Error?
+    /// The plugin once `userInterfacePlugin()` found it.
+    private var foundPlugin: SimulatorUserInterfacePlugin?
+    func userInterfacePlugin() throws -> SimulatorUserInterfacePlugin? {
+        if let pluginError { throw pluginError }
+        foundPlugin = plugin
+        return plugin
+    }
+    var backlightState: Int32?
+    /// Each recording start (true) and end (false) announced, in order.
+    var announcedRecordings: [Bool] = []
+    func announceRecording(started: Bool) { announcedRecordings.append(started) }
     /// The display's size at scale 1, without the bezel.
     var naturalSize = NSSize(width: 390, height: 844)
     private(set) var renderScale: CGFloat = 1
@@ -6065,6 +6287,12 @@ struct HostBehaviorTests {
             == ("iPad Pro 11-inch (M5)", "16GB – iOS 27.0"))
         #expect(deviceWindowTitles(name: "iPhone 17", runtimeName: "iOS 26.5") == ("iPhone 17", "iOS 26.5"))
         #expect(deviceWindowTitles(name: "My iPad (16GB)", runtimeName: "iOS 27.0") == ("My iPad (16GB)", "iOS 27.0"))
+        // A watch's title drops "Apple Watch ", after the split.
+        #expect(deviceWindowTitles(name: "Apple Watch Series 11 (46mm)", runtimeName: "watchOS 27.0")
+            == ("Series 11 (46mm)", "watchOS 27.0"))
+        #expect(deviceWindowTitles(name: "Apple Watch SE (44mm) (2nd generation)", runtimeName: "watchOS 26.5")
+            == ("SE (44mm)", "2nd generation – watchOS 26.5"))
+        #expect(deviceWindowTitles(name: "Apple Watch", runtimeName: "watchOS 27.0") == ("Apple Watch", "watchOS 27.0"))
     }
 
     @Test func externalDisplayModesUseSimulatorAppsTagsSizesAndModeChoice() {

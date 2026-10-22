@@ -64,7 +64,6 @@ struct CoreSimulatorInterface {
     let runtimeIdentifier: NativeObjCMethod<String?>
     let runtimeAvailable: NativeObjCMethod<Bool>
     let runtimeSupportsDeviceType: NativeObjCMethod<Bool, AnyObject>
-    let platformIdentifier: NativeObjCMethod<String?>
     let runtimeVersion: NativeObjCMethod<UInt32>
     let productFamily: NativeObjCMethod<Int32>
     let deviceTypeName: NativeObjCMethod<String?>
@@ -73,6 +72,7 @@ struct CoreSimulatorInterface {
     let deviceTypeIdentifier: NativeObjCMethod<String?>
     let mainScreenDPI: NativeObjCMethod<CGSize>
     let mainScreenScale: NativeObjCMethod<Float>
+    let userInterfaceIdentifier: NativeObjCMethod<String?>
 
     typealias NotificationHandler = @convention(block) (NSDictionary) -> Void
     typealias CloudSyncCompletion = @convention(block) (NSError?) -> Void
@@ -179,8 +179,6 @@ struct CoreSimulatorInterface {
             on: simRuntime, selector: "available", as: (() -> Bool).self)
         runtimeSupportsDeviceType = try runtime.resolveObjCMethodAndWait(
             on: simRuntime, selector: "supportsDeviceType:", as: ((AnyObject) -> Bool).self)
-        platformIdentifier = try runtime.resolveObjCMethodAndWait(
-            on: simRuntime, selector: "platformIdentifier", as: (() -> String?).self)
         runtimeVersion = try runtime.resolveObjCMethodAndWait(
             on: simRuntime, selector: "version", as: (() -> UInt32).self)
         productFamily = try runtime.resolveObjCMethodAndWait(
@@ -197,6 +195,8 @@ struct CoreSimulatorInterface {
             on: simDeviceType, selector: "mainScreenDPI", as: (() -> CGSize).self)
         mainScreenScale = try runtime.resolveObjCMethodAndWait(
             on: simDeviceType, selector: "mainScreenScale", as: (() -> Float).self)
+        userInterfaceIdentifier = try runtime.resolveObjCMethodAndWait(
+            on: simDeviceType, selector: "userInterfaceIdentifier", as: (() -> String?).self)
     }
 }
 
@@ -213,7 +213,6 @@ final class SimulatorDevice {
     let descriptiveName: String
     let runtimeIdentifier: String
     let runtimeName: String
-    let platformIdentifier: String
     /// `SimDeviceType.productFamilyID`: 1 iPhone, 2 iPad, 3 TV, 4 Watch, 7 Vision.
     let productFamily: Int
     let deviceTypeName: String
@@ -227,6 +226,10 @@ final class SimulatorDevice {
     let screenPointsPerInch: Double?
     /// `SimRuntime.version`, packed as major << 16 | minor << 8 | patch.
     let runtimeVersion: UInt32
+    /// Whether the device type names a user-interface profile, such as
+    /// Apple Vision Pro's `com.apple.CoreSimulator.SimDeviceUserInterface.XROS`,
+    /// whose plugin SimulatorKit loads for the device's display.
+    let hasUserInterfacePlugin: Bool
     /// The path of the device's set, or nil for the default set.
     let deviceSetPath: String?
     private let interface: CoreSimulatorInterface
@@ -242,8 +245,6 @@ final class SimulatorDevice {
         runtimeIdentifier = try unsafe interface.deviceRuntimeIdentifier.unsafeInvoke(on: object) ?? ""
         let runtime = try unsafe interface.deviceRuntime.unsafeInvoke(on: object)
         runtimeName = try runtime.flatMap { try unsafe interface.runtimeName.unsafeInvoke(on: $0) } ?? "iOS"
-        platformIdentifier =
-            try runtime.flatMap { try unsafe interface.platformIdentifier.unsafeInvoke(on: $0) } ?? ""
         runtimeVersion = try runtime.map { try unsafe interface.runtimeVersion.unsafeInvoke(on: $0) } ?? 0
         let deviceType = try unsafe interface.deviceType.unsafeInvoke(on: object)
         productFamily = Int(try deviceType.map { try unsafe interface.productFamily.unsafeInvoke(on: $0) } ?? 0)
@@ -255,6 +256,8 @@ final class SimulatorDevice {
             Double(try unsafe interface.mainScreenDPI.unsafeInvoke(on: $0).width)
                 / Double(try unsafe interface.mainScreenScale.unsafeInvoke(on: $0))
         }
+        hasUserInterfacePlugin =
+            try deviceType.flatMap { try unsafe interface.userInterfaceIdentifier.unsafeInvoke(on: $0) } != nil
     }
 
     /// `SimDeviceState`; 3 is Booted. A device whose state cannot be read is
