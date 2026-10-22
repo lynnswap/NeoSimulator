@@ -146,19 +146,26 @@ final move preserves the completed temporary recording and reports its path.
 
 SimulatorKit owns simulated contacts, their coordinates, finger indicators,
 mouse-move tracking, and HID delivery. The host assigns keyboard focus to the
-native digitizer when a window becomes key and after Home, Software Keyboard,
-and Lock commands. Its unhandled keyboard events continue through the existing
-display responder. A current modifier-state event
-also reconciles releases that occurred while another window was active.
+native digitizer when a window becomes key and after each device command. Its
+unhandled keyboard events continue through the existing display responder. A
+current modifier-state event also reconciles releases that occurred while
+another window or app was active.
+
+When a window resigns key, the host releases the guest's modifier keys before
+the display stops taking the Mac's keyboard. The window, not the digitizer,
+receives that release, so a gesture in progress keeps following the pointer, as
+in Simulator.app.
 
 The digitizer getter is part of the private runtime compatibility gate. The host
 uses the same input view for the lifetime of the display connection; it does not
 keep a second contact-state model or install a global input monitor.
 
 See the [gesture controls](../README.md#mouse-and-keyboard-gestures) for Option,
-Shift, and Control usage. Automatic cancellation of active contacts when a
-window closes is not part of the current native disconnect guarantee. Gestures
-and pinned contacts must be released before closing the window.
+Shift, and Control usage. Like Simulator.app, the host sends no touch end when a
+display disconnects: `SimDisplayView.disconnect(completion:)` turns the
+digitizer off without lifting its contacts, so a finger that is down or pinned
+stays active in a device that keeps running until the next touch from a device
+window. See the [design](Design.md#modifier-gestures) for each case.
 
 ### Competing-host invariant
 

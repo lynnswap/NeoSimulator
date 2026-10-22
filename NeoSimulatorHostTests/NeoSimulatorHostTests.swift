@@ -212,6 +212,33 @@ struct InputFocusTests {
         #expect(events.count == 3)
     }
 
+    @Test func deactivatingReleasesTheKeyboardsModifiersWithoutTheDigitizer() throws {
+        _ = NSApplication.shared
+        let display = TestDisplay()
+        let controller = try makeController(display)
+        defer { controller.invalidate() }
+        let window = try #require(controller.window)
+        // AppKit passes key events to the app's key window, which stays this
+        // window while the app deactivates.
+        window.makeKeyAndOrderFront(nil)
+        controller.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification, object: window))
+        #expect(window.firstResponder === display.inputView)
+        let seen = display.input.modifiers.count
+        var released: [NSEvent.ModifierFlags] = []
+        let monitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { event in
+            released.append(event.modifierFlags)
+            return event
+        }
+        defer { if let monitor { NSEvent.removeMonitor(monitor) } }
+        controller.windowDidResignKey(Notification(name: NSWindow.didResignKeyNotification, object: window))
+        // SimulatorKit's keyboard monitor still takes the release, while the
+        // digitizer keeps a gesture in progress.
+        #expect(released == [[]])
+        #expect(display.input.modifiers.count == seen)
+        #expect(display.keyboard == [true, false])
+        #expect(window.firstResponder === display.inputView)
+    }
+
     @Test func editMenuLeavesEditingKeysToTheFocusedSimulator() throws {
         _ = NSApplication.shared
         MenuController(application: nil).install()
