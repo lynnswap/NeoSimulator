@@ -90,7 +90,8 @@ Neo currently provides:
   dragging its bezel away from the screen;
 - device bezel, touch, accessibility, and focused keyboard input;
 - a Simulator-style window header with the device name, runtime, Home,
-  Save Screen, and Rotate Right controls;
+  Save Screen, and Rotate controls, which become Record Screen and Rotate
+  Left while Option is held with the pointer over the toolbar;
 - Simulator.app's Save Screen, Record Screen, and Copy Screen commands, with
   its file names, save folders, and device-mask option; recordings are
   finalized when a window closes or the app quits;
@@ -188,9 +189,11 @@ new capture saves the previous thumbnail's capture, and quitting saves any that
 remain. A file of the same name gets " #2" and so on. Hold Option for **Save Screen…** and **Record Screen…**, which ask for a
 destination and whether to apply the device mask to a non-rectangular screen;
 Save Screen… remembers the folder and the choice (`ScreenShotUseMask`), which
-Save Screen and Record Screen then use. As in Simulator.app, the camera button
-becomes a stop button while a recording runs; click it or choose **File →
-Stop Recording** to finish the recording. If a save fails, the error includes the
+Save Screen and Record Screen then use. As in Simulator.app, holding Option
+with the pointer over the window's toolbar turns the camera button into a
+record button, which starts Record Screen, and the rotate button into one that
+rotates left. The camera button becomes a stop button while a recording runs;
+click it or choose **File → Stop Recording** to finish the recording. If a save fails, the error includes the
 capture's location for recovery. **Edit → Copy Screen** (Control-Command-C)
 puts a PNG of the screen, without the mask, on the Mac pasteboard.
 

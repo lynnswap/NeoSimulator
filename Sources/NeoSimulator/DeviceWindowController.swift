@@ -232,7 +232,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
         guard let window else { return }
         let toolbar = DeviceToolbar(controller: self)
         deviceToolbar = toolbar
-        window.toolbar = toolbar.toolbar
+        toolbar.attach(to: window)
         session.display.onPropertiesChange = { [weak self] in self?.displayPropertiesChanged() }
         session.onExternalScreenChange = { [weak self] in self?.syncExternalDisplayWindow() }
         content.canImport = { [weak self] in self?.session.canPerformToolOperation == true }
