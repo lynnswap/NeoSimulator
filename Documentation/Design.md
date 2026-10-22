@@ -1086,10 +1086,15 @@ it is bound to the first device that needs it and reused for the others;
 their properties, and their modes are proxies, so `SimulatorRuntime` checks at
 startup that `SimScreen`, `SimScreenProperties`, and `SimScreenMode` declare
 the messages Neo sends, and they are bound to each proxy class when they are
-first sent. `SimDeviceScreenAdapter.register(screenID:queue:handler:)` is not
-used: its `UInt32?` parameter is a value `Optional`, which the pinned ABIBridge
-cannot pass. A device's screens exist from its creation, so the screen's own
-property reports cover the changes Neo needs.
+first sent. `SimDeviceScreenAdapter.register(screenID:queue:handler:)`, which
+Simulator.app uses to learn of screens, is not used: the pinned ABIBridge has
+no support for a value `Optional` such as its `UInt32?` parameter. A host
+description of `Optional<UInt32>`'s layout passes it, but ABIBridge does not
+check that description against the declaration; an indirect one registers
+without an error and never reports a screen. A device's screens exist from its
+creation, so looking in `screens` until the enumeration ends finds the
+external display, and the screen's own property reports cover the changes Neo
+needs.
 
 Like Simulator.app:
 
