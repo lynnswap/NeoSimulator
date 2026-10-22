@@ -664,8 +664,27 @@ and `creatableScreenProperties`. `SimScreen` declares
 and `setPowerState:completionQueue:completionHandler:`, each completing with an
 `NSError`. Neither Simulator.app nor SimulatorKit calls the creation method.
 
+SimulatorKit 27.1's `SimDeviceScreenAdapter.register(screenID:queue:handler:)`
+(`0x3F83C` → `0x3F8A0`) adds a `Registration` holding the queue and the
+handler to the adapter, then reports each screen in `screens` as connected
+for a nil screen ID, or only that screen for an ID. Each report is a block
+dispatched asynchronously to the queue (`0x3F418`) that retains the
+registration. `ScreenEvent` has the cases `connected(SimDeviceScreen)` and
+`disconnected(SimDeviceScreen)` and exports its case symbols, as a resilient
+enum does; Simulator.app's handler copies it through its value witnesses,
+compares its tag with `.connected`, and projects the screen
+(`0x100030C78`–`0x100030CF4`).
+
 The live check on the separate device set showed:
 
+- `register(screenID: nil, …)` on the main queue, with SimulatorKit 27.0,
+  27.1, and 27.2, reported `.connected` for each of the adapter's screens
+  within 10 ms, in an order that varied between runs, also to a registration
+  released right after it was made. The properties' `screenID` gave the IDs
+  that `simctl io enumerate` lists. A registration held across `simctl
+  shutdown` and `boot` received `.disconnected` for each screen and, after
+  the boot, `.connected` for each again; the released one received nothing
+  more.
 - `simctl io <UDID> enumerate`, also on a shut-down device, lists the
   iPhone's screens 1 LCD (Integrated), 2 TVOut, and 3 Wireless (CarPlay), and
   the iPad's 1 LCD and 2 TVOut. `SimScreenProperties.screenType` is 0, 1, and
