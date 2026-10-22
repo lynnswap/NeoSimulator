@@ -1125,8 +1125,10 @@ Like Simulator.app:
   Display` where the runtime goes, no toolbar and no bezel, the content below
   the title bar with a 10-point gap above the display, and a black background.
   It opens centered where it last closed in the current arrangement of
-  screens, at the scale it closed at, reduced to Fit Screen's, from
-  `DevicePreferences[UDID].ExternalWindowGeometry`, which closing saves.
+  screens, at the scale it closed at, reduced to Fit Screen's on the screen
+  it is placed on, from `DevicePreferences[UDID].ExternalWindowGeometry`,
+  which closing saves. As for the device window, it is placed before its
+  scale is chosen and placed again at its new size.
 - A new size keeps the display's scale. A drag on the window's edges keeps the
   screen's aspect ratio and stops at the scale that fits the display in 240 by
   240 points. While the window is key, Point Accurate, Pixel Accurate (the

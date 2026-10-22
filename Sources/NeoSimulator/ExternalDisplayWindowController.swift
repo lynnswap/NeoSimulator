@@ -119,20 +119,24 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
     /// window that connects. The window then moves back inside its screen.
     func showNewWindow(cascadingFrom deviceWindow: NSWindow?) {
         guard let window else { return }
-        showWindow(nil)
-        window.makeKeyAndOrderFront(nil)
-        // The window opened at the scale for the main screen; it takes the
-        // scale for the screen it is placed on.
-        display.setRenderScale(initialScale)
-        updateWindowSize()
+        let place: (NSWindow) -> Void
         if let center = savedCenter {
-            window.setFrameOrigin(NSPoint(x: center.x - window.frame.width / 2, y: center.y - window.frame.height / 2))
+            place = { $0.setFrameOrigin(NSPoint(x: center.x - $0.frame.width / 2, y: center.y - $0.frame.height / 2)) }
         } else if let deviceWindow {
             let topLeft = window.cascadeTopLeft(from: NSPoint(x: deviceWindow.frame.minX, y: deviceWindow.frame.maxY))
-            window.cascadeTopLeft(from: topLeft)
+            place = { _ = $0.cascadeTopLeft(from: topLeft) }
         } else {
-            window.center()
+            place = { $0.center() }
         }
+        place(window)
+        showWindow(nil)
+        window.makeKeyAndOrderFront(nil)
+        // The window opened at the scale for the main screen; as the device
+        // window does, it takes the scale for the screen it is placed on and
+        // is placed again at its new size.
+        display.setRenderScale(initialScale)
+        updateWindowSize()
+        place(window)
         moveWindowOntoScreen()
     }
 
