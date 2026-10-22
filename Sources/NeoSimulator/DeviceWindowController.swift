@@ -42,6 +42,10 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     /// The drag on a corner of the bezel in progress, and the largest scale it
     /// may give the display.
     private var bezelResize: (drag: BezelResize, maximumScale: CGFloat)?
+    /// Moves the window with the drag that a press on the bezel begins: by
+    /// default AppKit's `performDrag(with:)`, which hands the drag to the
+    /// window server.
+    private let performWindowDrag: (NSWindow, NSEvent) -> Void
     /// The display's scale and the window's origin when the window entered
     /// full screen, which Simulator.app restores when the window leaves it.
     private var geometryBeforeFullScreen: (scale: CGFloat, origin: NSPoint)?
@@ -64,11 +68,13 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
 
     init(session: DeviceSession, preferences: any PreferenceStore = UserDefaults.standard,
          touchPressure: TouchPressure,
+         performWindowDrag: @escaping (NSWindow, NSEvent) -> Void = { $0.performDrag(with: $1) },
          onClose: @escaping (DeviceWindowController, DeviceLifetimeChoice?) -> Void,
          onRestart: @escaping (DeviceWindowController, _ erasing: Bool) -> Void = { _, _ in }) throws {
         self.session = session
         self.preferences = preferences
         self.touchPressure = touchPressure
+        self.performWindowDrag = performWindowDrag
         // Like Simulator.app, the window's geometry is read once, when it
         // connects, for the current arrangement of screens.
         let saved = preferences.windowGeometry(forDevice: session.device.id, screens: Self.screenFrames)
@@ -101,7 +107,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         window.collectionBehavior = [.fullScreenPrimary, .fullScreenAllowsTiling]
         window.delegate = self
         window.displayScale = { [weak self] in self?.session.display.renderScale ?? 1 }
-        window.handleMouseEvent = { [weak self] in self?.handleBezelResize($0) ?? false }
+        window.handleMouseEvent = { [weak self] in self?.handleBezelDrag($0) ?? false }
         attachSession()
         // Like Simulator.app, each window shows the bezel as the app-wide
         // Show Device Bezels preference says, before it takes its scale.
@@ -836,19 +842,35 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         layoutDisplay()
     }
 
-    // MARK: Bezel resizing
+    // MARK: Bezel dragging
 
-    /// Resizes the window by a drag on a corner of the bezel, as
-    /// Simulator.app's `DeviceWindow` does with the clicks that SimulatorKit
-    /// leaves to the window in `SimDisplayView.typedResizeRects`. Returns
-    /// whether `event` belongs to such a drag.
-    private func handleBezelResize(_ event: NSEvent) -> Bool {
+    /// Handles the presses on the bezel that SimulatorKit's views leave to
+    /// the window, as Simulator.app's `DeviceWindow` does: a drag on a corner
+    /// of the bezel, in `SimDisplayView.typedResizeRects`, resizes the
+    /// window, and a press elsewhere on the bezel moves it. Returns whether
+    /// `event` belongs to such a drag.
+    private func handleBezelDrag(_ event: NSEvent) -> Bool {
         switch event.type {
-        case .leftMouseDown: return beginBezelResize(with: event)
+        case .leftMouseDown: return beginBezelResize(with: event) || moveWindow(with: event)
         case .leftMouseDragged where bezelResize != nil: continueBezelResize(with: event)
         case .leftMouseUp where bezelResize != nil: endBezelResize()
         default: return false
         }
+        return true
+    }
+
+    /// Moves the window with a press on the display outside the bezel's
+    /// corners while `AllowsMoveByDragOnWindowChrome` is on, outside full
+    /// screen. SimulatorKit passes the window only presses on the bezel: its
+    /// digitizer, which also covers the bezel around the screen, passes on a
+    /// press there once the pointer moves away from the screen, and keeps the
+    /// presses on the screen, as the bezel's buttons keep theirs. A press on
+    /// the window outside the display, such as below the header, moves nothing.
+    private func moveWindow(with event: NSEvent) -> Bool {
+        guard !closed, !isFullScreen, preferences.movesWindowByDraggingBezel, let window else { return false }
+        let display = session.display.view
+        guard display.bounds.contains(display.convert(event.locationInWindow, from: nil)) else { return false }
+        performWindowDrag(window, event)
         return true
     }
 
@@ -1068,8 +1090,8 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
 }
 
 /// Simulator.app's `DeviceWindow`, which lets a window whose bezel has top
-/// padding extend past the screen and receives the drags on the bezel's
-/// corners that resize the window.
+/// padding extend past the screen and receives the presses on the bezel
+/// that resize or move the window.
 @MainActor
 final class DeviceWindow: NSWindow {
     /// The top padding of the display's bezel at scale 1,
@@ -1078,8 +1100,8 @@ final class DeviceWindow: NSWindow {
     /// The display's scale, which the padding scales with.
     var displayScale: () -> CGFloat = { 1 }
     /// Receives each mouse down, drag, and up that no view in the window
-    /// handles, such as a press on a corner of the bezel, and returns whether
-    /// it handled the event.
+    /// handles, such as a press on the bezel, and returns whether it handled
+    /// the event.
     var handleMouseEvent: (NSEvent) -> Bool = { _ in false }
 
     override func mouseDown(with event: NSEvent) {
