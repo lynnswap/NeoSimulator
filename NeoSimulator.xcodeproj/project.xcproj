@@ -140,6 +140,13 @@
           ],
         },
         { "path": "Settings.bundle", "target-membership": [ "NeoSimulator/resources" ] },
+        {
+          "path": "AudioRouting.swift",
+          "target-membership": [
+            "NeoSimulator/compile-sources",
+            "NeoSimulatorHostTests/compile-sources",
+          ],
+        },
       ],
     },
     { "kind": "folder", "path": "NeoSimulatorHostTests", "target-membership": [ "NeoSimulatorHostTests" ] },

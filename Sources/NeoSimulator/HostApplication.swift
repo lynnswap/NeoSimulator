@@ -369,6 +369,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                             controller.reconnect(session)
                             applyKeyboardSettings(of: session)
                             restoreLocation(of: session)
+                            connectAudioRoutes(of: session)
                             return
                         }
                         let controller = try DeviceWindowController(session: session, touchPressure: touchPressure, onClose: { [weak self] in
@@ -379,6 +380,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                         controller.showNewWindow(cascadingFrom: &nextWindowPosition)
                         applyKeyboardSettings(of: session)
                         restoreLocation(of: session)
+                        connectAudioRoutes(of: session)
                         return
                     }
                     try await Task.sleep(for: .milliseconds(250))
@@ -411,6 +413,16 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             do { try await session.restoreLocation() } catch {
                 hostLog("Could not restore the simulated location of \(session.device.name): \(error.localizedDescription)")
             }
+        }
+    }
+
+    /// Routes a new connection's audio to the app's recent routes, also
+    /// after a restart, and keeps following the device's audio port. Like
+    /// Simulator.app, which only logs them, these failures are logged.
+    private func connectAudioRoutes(of session: DeviceSession) {
+        let name = session.device.name
+        session.connectAudioRoutes { error in
+            hostLog("Could not route the audio of \(name): \(error.localizedDescription)")
         }
     }
 

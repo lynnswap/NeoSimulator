@@ -121,6 +121,10 @@ enum HostPreferences {
     /// The arrangements of the Mac's screens that device windows were saved
     /// in, by UUID: see `PreferenceStore.screenConfiguration(for:)`.
     static let screenConfigurations = "ScreenConfigurations"
+    /// I/O ▸ Audio Input's and Audio Output's recent routes, which every
+    /// device follows: see `PreferenceStore.recentAudioRoutes(in:)`.
+    static let recentAudioInputDeviceUIDs = "RecentAudioInputDeviceUIDs"
+    static let recentAudioOutputDeviceUIDs = "RecentAudioOutputDeviceUIDs"
 
     /// Registers Simulator.app's defaults for these preferences. Show Pinch
     /// Gestures is on: Simulator.app registers it so, and its Settings.bundle's
@@ -823,6 +827,85 @@ final class DeviceSession {
         pendingPushes.removeAll()
     }
 
+    // MARK: Audio routes
+
+    /// Whether I/O ▸ Audio Input and Audio Output apply to the device:
+    /// `SimFeatureRoutableAudio`.
+    var routesAudio: Bool { capabilities.supportsFeature(DeviceCapabilities.routableAudio) }
+
+    /// The device's audio routes as its audio port last reported them; nil
+    /// until the port connects, and when it cannot.
+    private(set) var audioRoutes: AudioRouteState?
+    @ObservationIgnored private var audioConnection: (any SimulatorAudioRoutes)?
+    /// Why the device's audio port could not connect.
+    @ObservationIgnored private var audioConnectionFailure: Error?
+
+    /// Connects to the device's audio port and routes the guest to the app's
+    /// recent routes, as Simulator.app does when a device connects. Each
+    /// change the port then reports, of the Mac's devices or of the guest's
+    /// routes, is shown and routed in the same way. The failures of these
+    /// routes go to `failure`.
+    func connectAudioRoutes(failure: @escaping @MainActor (Error) -> Void) {
+        guard routesAudio, audioConnection == nil, !isDisconnected else { return }
+        do {
+            audioConnection = try display.connectAudioRoutes { [weak self] in self?.audioRoutesChanged(failure: failure) }
+        } catch {
+            audioConnectionFailure = error
+            failure(error)
+            return
+        }
+        audioRoutesChanged(failure: failure)
+    }
+
+    /// Like the handler of Simulator.app's audio client: shows the port's
+    /// state, then synchronizes both directions with the recent routes.
+    private func audioRoutesChanged(failure: @escaping @MainActor (Error) -> Void) {
+        guard let audioConnection else { return }
+        do {
+            audioRoutes = try audioConnection.state()
+        } catch {
+            failure(HostError.operation("Could not read the audio routes of \(device.name): \(error.localizedDescription)"))
+            return
+        }
+        synchronizeAudioRoute(in: .input, failure: failure)
+        synchronizeAudioRoute(in: .output, failure: failure)
+    }
+
+    /// Routes `scope` to the first of the app's recent routes that the guest
+    /// already uses or that the Mac has, as Simulator.app does for every
+    /// device after a choice. When none is available, the route stays, as
+    /// there. A device that routes audio but whose port did not connect
+    /// reports why.
+    func synchronizeAudioRoute(in scope: AudioScope, failure: @escaping @MainActor (Error) -> Void) {
+        guard routesAudio, !isDisconnected else { return }
+        let name = device.name
+        guard let audioConnection, let state = audioRoutes else {
+            let reason = audioConnectionFailure?.localizedDescription ?? "Its audio routes are unavailable."
+            failure(HostError.operation("Could not change the audio \(scope.noun) of \(name): \(reason)"))
+            return
+        }
+        switch state.decision(among: preferences.recentAudioRoutes(in: scope), in: scope) {
+        case .current:
+            break
+        case .unavailable:
+            hostLog("None of the recent audio \(scope.noun) devices is available for \(name)")
+        case .route(let route):
+            let title = route == AudioRouting.systemDefault
+                ? "System" : state.devices(in: scope).first { $0.uid == route }?.name ?? route
+            let report = { (error: Error) in
+                failure(HostError.operation(
+                    "Could not route the audio \(scope.noun) of \(name) to \(title): \(error.localizedDescription)"))
+            }
+            do {
+                try audioConnection.route(scope, to: route) { error in
+                    if let error { report(error) }
+                }
+            } catch {
+                report(error)
+            }
+        }
+    }
+
     // MARK: Device tool operations
 
     /// Holds the single device-operation slot for a modal step, such as a save
@@ -999,6 +1082,8 @@ final class DeviceSession {
         tools.cancel()
         recording?.stop()
         closePasteboard()
+        audioConnection?.disconnect()
+        audioConnection = nil
         display.disconnect()
     }
 

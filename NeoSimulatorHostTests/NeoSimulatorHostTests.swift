@@ -1575,7 +1575,8 @@ struct InputFocusTests {
         #expect(try visibleTitles("Device") == ["Restart", "Erase All Content and Settings…", "Shut Down", "-",
                                                  "Home", "Lock", "Action Button", "Siri", "Shake",
                                                  "App Switcher", "-", "Trigger Screenshot"])
-        #expect(try visibleTitles("I/O") == ["Keyboard", "-", "Increase Volume", "Decrease Volume", "-", "Open URL…"])
+        #expect(try visibleTitles("I/O") == ["Keyboard", "-", "Audio Input", "Audio Output", "Increase Volume",
+                                              "Decrease Volume", "-", "Open URL…"])
         #expect(try visibleTitles("Features") == ["Authorize Apple Pay", "-", "Toggle Appearance",
                                                    "Toggle In-call Status Bar", "-", "Increase Preferred Text Size",
                                                    "Decrease Preferred Text Size", "Toggle Increase Contrast", "-",
@@ -1989,6 +1990,221 @@ struct InputFocusTests {
         #expect(controller.session.location == LocationSelection.none)
         #expect(UserDefaults.standard.integer(forKey: HostPreferences.locationMode) == LocationSelection.noneMode)
         window.endSheet(try #require(window.attachedSheet))
+    }
+
+    // MARK: Audio routes
+
+    private static let microphone = HostAudioDevice(uid: "Microphone", name: "MacBook Pro Microphone",
+                                                    inputChannels: 1, outputChannels: 0, defaultScopes: 1)
+    private static let speakers = HostAudioDevice(uid: "Speakers", name: "MacBook Pro Speakers",
+                                                  inputChannels: 0, outputChannels: 2, defaultScopes: 2)
+    private static let loopback = HostAudioDevice(uid: "Loopback", name: "BlackHole 2ch",
+                                                  inputChannels: 2, outputChannels: 2, defaultScopes: 0)
+    private static let headset = HostAudioDevice(uid: "Headset", name: "USB Headset",
+                                                 inputChannels: 1, outputChannels: 2, defaultScopes: 0)
+    private static let routableFeatures = defaultFeatures.union([DeviceCapabilities.routableAudio])
+
+    /// A controller whose device routes audio through `port`.
+    private func makeAudioController(_ port: TestAudioRoutes?, device: String = "test-device",
+                                     features: Set<String> = routableFeatures,
+                                     preferences: MemoryPreferences) throws -> (DeviceWindowController, TestDisplay) {
+        let display = TestDisplay()
+        display.audioPort = port
+        return (try makeController(display, features: features, device: device, preferences: preferences), display)
+    }
+
+    /// The text of `view`'s labels, such as an alert's.
+    private func texts(in view: NSView?) -> [String] {
+        guard let view else { return [] }
+        return ((view as? NSTextField).map { [$0.stringValue] } ?? []) + view.subviews.flatMap { texts(in: $0) }
+    }
+
+    @Test func audioMenusAreAttachedForTheKeyDeviceThatRoutesAudio() throws {
+        _ = NSApplication.shared
+        let menus = MenuController(application: nil)
+        menus.install()
+        defer { NSApp.mainMenu = nil }
+        let io = try #require(NSApp.mainMenu?.items.first { $0.title == "I/O" }?.submenu)
+        let items = try ["Audio Input", "Audio Output"].map { title in try #require(io.items.first { $0.title == title }) }
+        // Like Simulator.app, they follow Touch Pressure's separator and precede the volume commands.
+        let titles = io.items.map { $0.isSeparatorItem ? "-" : $0.title }
+        #expect(titles.prefix(7) == ["Keyboard", "Touch Pressure", "-", "Audio Input", "Audio Output",
+                                     "Increase Volume", "Decrease Volume"])
+        func attached(_ window: DeviceWindowController?) -> [String] {
+            menus.updateAudioMenus(for: window)
+            return items.map { "\($0.submenu?.title ?? "none")\($0.isEnabled ? "" : " (disabled)")" }
+        }
+        #expect(attached(nil) == ["none (disabled)", "none (disabled)"])
+        let preferences = MemoryPreferences()
+        let (routing, _) = try makeAudioController(TestAudioRoutes([Self.speakers]), preferences: preferences)
+        defer { routing.invalidate() }
+        #expect(attached(routing) == ["Audio Input", "Audio Output"])
+        // A device without SimFeatureRoutableAudio leaves them disabled but shown.
+        let (silent, _) = try makeAudioController(nil, device: "B", features: Self.defaultFeatures, preferences: preferences)
+        defer { silent.invalidate() }
+        #expect(attached(silent) == ["none (disabled)", "none (disabled)"])
+        menus.updateVisibility(in: io, for: silent.session.capabilities)
+        #expect(items.allSatisfy { !$0.isHidden })
+        #expect(attached(routing) == ["Audio Input", "Audio Output"])
+    }
+
+    @Test func audioMenusListTheMacsDevicesAndCheckTheGuestsRoute() throws {
+        _ = NSApplication.shared
+        let preferences = MemoryPreferences()
+        let port = TestAudioRoutes([Self.microphone, Self.loopback, Self.speakers, Self.headset])
+        let (controller, _) = try makeAudioController(port, preferences: preferences)
+        defer { controller.invalidate() }
+        let input = AudioRouteMenu(scope: .input), output = AudioRouteMenu(scope: .output)
+        func items(_ audio: AudioRouteMenu, keyDevice: Bool = true) -> [String] {
+            let menu = NSMenu()
+            audio.update(menu, for: keyDevice ? controller : nil)
+            #expect(!menu.items.contains { $0.isSeparatorItem })
+            return menu.items.map { "\($0.title)\($0.state == .on ? " ✓" : "")\($0.isEnabled ? "" : " (disabled)")" }
+        }
+        // Until the port reports, only System is listed.
+        #expect(items(output) == ["System"])
+        controller.session.connectAudioRoutes { Issue.record($0) }
+        // System names the Mac's default device; each list has the devices
+        // with channels in its direction, in the port's order.
+        #expect(items(input) == ["System (MacBook Pro Microphone) ✓", "MacBook Pro Microphone", "BlackHole 2ch", "USB Headset"])
+        #expect(items(output) == ["System (MacBook Pro Speakers) ✓", "BlackHole 2ch", "MacBook Pro Speakers", "USB Headset"])
+        // The checkmark follows the guest's route, also one set elsewhere.
+        preferences.set(["Headset"], forKey: HostPreferences.recentAudioOutputDeviceUIDs)
+        port.report { $0.outputRoute = "Headset" }
+        #expect(items(output) == ["System (MacBook Pro Speakers)", "BlackHole 2ch", "MacBook Pro Speakers", "USB Headset ✓"])
+        // Without a default device in the list, System has no name.
+        port.report { $0.defaultOutput = "Elsewhere" }
+        #expect(items(output).first == "System")
+        // A guest routed to a device the Mac lacks shows the Mac's default
+        // device, as SimulatorKit selects it.
+        #expect(port.current.outputRoute == "Headset")
+        var state = port.current
+        state.outputRoute = "Gone"
+        #expect(state.selectedDevice(in: .output) == Self.speakers)
+        #expect(state.selectedDevice(in: .input) == Self.microphone)
+
+        // Like Simulator.app, the routes are available with any key device
+        // window, and only then.
+        (controller.session.display as? TestDisplay)?.isBooted = false
+        #expect(!items(input).contains { $0.hasSuffix("(disabled)") })
+        #expect(items(input, keyDevice: false) == ["System (disabled)"])
+    }
+
+    @Test func aChosenAudioRouteIsSavedAndAppliedToEveryDeviceWindow() throws {
+        let preferences = MemoryPreferences()
+        let ports = [TestAudioRoutes([Self.microphone, Self.loopback, Self.speakers]),
+                     TestAudioRoutes([Self.microphone, Self.loopback, Self.speakers])]
+        let (a, _) = try makeAudioController(ports[0], device: "A", preferences: preferences)
+        let (b, _) = try makeAudioController(ports[1], device: "B", preferences: preferences)
+        let (silent, silentDisplay) = try makeAudioController(TestAudioRoutes([Self.loopback]), device: "C",
+                                                              features: Self.defaultFeatures, preferences: preferences)
+        defer { [a, b, silent].forEach { $0.invalidate() } }
+        for controller in [a, b, silent] { controller.session.connectAudioRoutes { Issue.record($0) } }
+        // Both devices already follow System, which nothing has replaced.
+        #expect(preferences.recentAudioRoutes(in: .output) == [AudioRouting.systemDefault])
+        #expect(ports.allSatisfy { $0.requests.isEmpty })
+        #expect(silentDisplay.audioConnections == 0)
+
+        a.selectAudioRoute("Loopback", in: .output)
+        #expect(preferences.values[HostPreferences.recentAudioOutputDeviceUIDs] as? [String]
+            == ["Loopback", AudioRouting.systemDefault])
+        #expect(ports.map(\.requests) == [["output Loopback"], ["output Loopback"]])
+        #expect(ports.allSatisfy { $0.current.outputRoute == "Loopback" && $0.current.inputRoute == AudioRouting.systemDefault })
+        #expect(preferences.recentAudioRoutes(in: .input) == [AudioRouting.systemDefault])
+
+        // A device the Mac does not have is saved, and the guests keep their route.
+        b.selectAudioRoute("Gone", in: .output)
+        #expect(ports.map(\.requests) == [["output Loopback"], ["output Loopback"]])
+        b.selectAudioRoute(AudioRouting.systemDefault, in: .output)
+        #expect(ports.map(\.requests.last) == ["output \(AudioRouting.systemDefault)", "output \(AudioRouting.systemDefault)"])
+        // The recent routes keep each route once, most recent first, and five at most.
+        for route in ["Loopback", "One", "Two", "Three", "Gone"] { a.selectAudioRoute(route, in: .input) }
+        #expect(preferences.recentAudioRoutes(in: .input) == ["Gone", "Three", "Two", "One", "Loopback"])
+        #expect(preferences.recentAudioRoutes(in: .output) == [AudioRouting.systemDefault, "Gone", "Loopback"])
+        // Like Simulator.app, an empty or foreign list is System alone.
+        for stored in [[] as [Any], [1, 2] as [Any], "Loopback" as Any] {
+            preferences.set(stored, forKey: HostPreferences.recentAudioInputDeviceUIDs)
+            #expect(preferences.recentAudioRoutes(in: .input) == [AudioRouting.systemDefault])
+        }
+    }
+
+    @Test func connectingAndPortChangesRouteToTheMostRecentRouteTheMacHas() throws {
+        let preferences = MemoryPreferences()
+        preferences.set(["Headset", "Loopback", AudioRouting.systemDefault], forKey: HostPreferences.recentAudioOutputDeviceUIDs)
+        // The Mac lacks the headset: connecting routes the output to the
+        // next recent route; the input stays at System.
+        let port = TestAudioRoutes([Self.microphone, Self.loopback, Self.speakers])
+        let (controller, _) = try makeAudioController(port, preferences: preferences)
+        defer { controller.invalidate() }
+        controller.session.connectAudioRoutes { Issue.record($0) }
+        #expect(port.requests == ["output Loopback"])
+        // The headset appears, and the output follows it.
+        port.report { $0.devices.append(Self.headset) }
+        #expect(port.requests.last == "output Headset")
+        // It goes away: the next recent route that the Mac has.
+        port.report { $0.devices.removeAll { $0 == Self.headset } }
+        #expect(port.requests.last == "output Loopback")
+        // Another process routes the guest elsewhere, and it comes back.
+        port.report { $0.outputRoute = "Speakers" }
+        #expect(port.requests.last == "output Loopback" && port.requests.count == 4)
+        #expect(port.current.outputRoute == "Loopback")
+        // A change that leaves the guest on its route asks for nothing.
+        port.report { $0.defaultOutput = "Loopback" }
+        #expect(port.requests.count == 4)
+        // System needs a default device in its direction; without one and
+        // without another recent route, the route stays.
+        preferences.set([AudioRouting.systemDefault], forKey: HostPreferences.recentAudioOutputDeviceUIDs)
+        port.report { $0.devices = [Self.microphone, Self.loopback] }
+        #expect(port.requests.count == 4)
+        port.report { $0.devices.append(Self.speakers) }
+        #expect(port.requests.last == "output \(AudioRouting.systemDefault)")
+
+        // A closed window no longer follows its device.
+        controller.invalidate()
+        #expect(port.isDisconnected)
+        let count = port.requests.count
+        port.report { $0.outputRoute = "Speakers" }
+        #expect(port.requests.count == count)
+    }
+
+    @Test func audioRouteFailuresOfAChoiceArePresentedAndOthersLogged() throws {
+        let preferences = MemoryPreferences()
+        let port = TestAudioRoutes([Self.microphone, Self.loopback, Self.speakers])
+        let (controller, _) = try makeAudioController(port, preferences: preferences)
+        defer { controller.invalidate() }
+        controller.showWindow(nil)
+        let window = try #require(controller.window)
+        // A failed route made on the device's own goes to the session's
+        // handler, not to the window.
+        preferences.set(["Loopback"], forKey: HostPreferences.recentAudioOutputDeviceUIDs)
+        port.routeError = HostError.operation("port failed")
+        var automatic: [String] = []
+        controller.session.connectAudioRoutes { automatic.append($0.localizedDescription) }
+        #expect(automatic == ["Could not route the audio output of Test iPhone to BlackHole 2ch: port failed"])
+        #expect(window.attachedSheet == nil)
+        // A chosen route's failure is presented on the window.
+        controller.selectAudioRoute("Speakers", in: .output)
+        #expect(port.requests == ["output Loopback", "output Speakers"])
+        let sheet = try #require(window.attachedSheet)
+        window.endSheet(sheet)
+        port.routeError = nil
+        port.refusal = HostError.operation("refused")
+        controller.selectAudioRoute("Loopback", in: .output)
+        window.endSheet(try #require(window.attachedSheet))
+
+        // A device whose port does not connect reports why when a route is chosen.
+        let (unconnected, display) = try makeAudioController(nil, device: "B", preferences: MemoryPreferences())
+        defer { unconnected.invalidate() }
+        unconnected.showWindow(nil)
+        var reasons: [String] = []
+        unconnected.session.connectAudioRoutes { reasons.append($0.localizedDescription) }
+        #expect(display.audioConnections == 1 && reasons == ["The device has no audio route port."])
+        #expect(unconnected.window?.attachedSheet == nil)
+        unconnected.selectAudioRoute("Loopback", in: .input)
+        let unavailable = try #require(unconnected.window?.attachedSheet)
+        #expect(texts(in: unavailable.contentView).contains(
+            "Could not change the audio input of Test iPhone: The device has no audio route port."))
+        unconnected.window?.endSheet(unavailable)
     }
 
     @Test func customLocationAcceptsOnlyCoordinatesThatParse() throws {
@@ -2452,11 +2668,13 @@ struct InputFocusTests {
                                                                    supportsFeature: { features.contains($0) }))
             return io.items.filter { !$0.isHidden }.map { $0.isSeparatorItem ? "-" : $0.title }
         }
+        // Audio Input and Audio Output stay shown, as in Simulator.app.
         #expect(visible([DeviceCapabilities.keyboard, DeviceCapabilities.touchPressure])
-            == ["Keyboard", "Touch Pressure", "-", "Open URL…"])
+            == ["Keyboard", "Touch Pressure", "-", "Audio Input", "Audio Output", "-", "Open URL…"])
         // Each submenu needs its feature.
-        #expect(visible([DeviceCapabilities.touchPressure]) == ["Touch Pressure", "-", "Open URL…"])
-        #expect(visible([]) == ["Open URL…"])
+        #expect(visible([DeviceCapabilities.touchPressure])
+            == ["Touch Pressure", "-", "Audio Input", "Audio Output", "-", "Open URL…"])
+        #expect(visible([]) == ["Audio Input", "Audio Output", "-", "Open URL…"])
         func items(_ title: String) throws -> [NSMenuItem] {
             try #require(io.items.first { $0.title == title }?.submenu).items
         }
@@ -3086,6 +3304,15 @@ private final class TestDisplay: SimulatorDisplay {
         pasteboards.append(connection)
         return connection
     }
+    /// The device's audio route port, or nil for a device whose port does not connect.
+    var audioPort: TestAudioRoutes?
+    var audioConnections = 0
+    func connectAudioRoutes(changed: @escaping @MainActor () -> Void) throws -> any SimulatorAudioRoutes {
+        audioConnections += 1
+        guard let audioPort else { throw HostError.unavailable("The device has no audio route port.") }
+        audioPort.changed = changed
+        return audioPort
+    }
     /// Each value the digitizer's touch pressure settings were given, in order.
     var supportsTouchPressure: [Bool] = []
     var usesTrackpadForce: [Bool] = []
@@ -3110,6 +3337,52 @@ private final class TestDisplay: SimulatorDisplay {
     func resize(to size: NSSize) { setRenderScale(scale(for: size)) }
     func endResize() { isResizing = false }
     func disconnect() { disconnectCount += 1; onDisconnect() }
+}
+
+/// A device's audio route port that records the routes it is asked for, as
+/// "input <route>" or "output <route>", and applies them as CoreSimulator does,
+/// reporting the change. The test reports other changes, such as a Mac device
+/// appearing or another process routing the device.
+@MainActor
+private final class TestAudioRoutes: SimulatorAudioRoutes {
+    var current: AudioRouteState
+    private(set) var requests: [String] = []
+    /// Completes each route with this error, without applying it.
+    var routeError: Error?
+    /// Refuses each route with this error.
+    var refusal: Error?
+    var changed: (() -> Void)?
+    private(set) var isDisconnected = false
+
+    init(_ devices: [HostAudioDevice], input: String = AudioRouting.systemDefault,
+         output: String = AudioRouting.systemDefault) {
+        current = AudioRouteState(devices: devices, inputRoute: input, outputRoute: output,
+                                  defaultInput: devices.first { $0.isDefault(in: .input) }?.uid,
+                                  defaultOutput: devices.first { $0.isDefault(in: .output) }?.uid)
+    }
+
+    func state() throws -> AudioRouteState { current }
+
+    func route(_ scope: AudioScope, to route: String, completion: @escaping @MainActor (Error?) -> Void) throws {
+        if let refusal { throw refusal }
+        requests.append("\(scope.noun) \(route)")
+        guard routeError == nil else { return completion(routeError) }
+        completion(nil)
+        report { state in
+            if scope == .input { state.inputRoute = route } else { state.outputRoute = route }
+        }
+    }
+
+    func disconnect() {
+        isDisconnected = true
+        changed = nil
+    }
+
+    /// A change that the port reports.
+    func report(_ change: (inout AudioRouteState) -> Void) {
+        change(&current)
+        changed?()
+    }
 }
 
 /// A device's pasteboard connection that records its pushes and pulls; the
