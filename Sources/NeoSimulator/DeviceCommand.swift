@@ -33,9 +33,11 @@ struct DeviceCommand {
         let symbol: String
         /// The width of the command's button in Simulator.app's toolbar nib,
         /// which its toolbar style threshold counts (see
-        /// `DeviceToolbar.buttonsWidth`), or nil for an item that Simulator.app's
-        /// toolbar does not have.
-        var buttonWidth: CGFloat?
+        /// `DeviceToolbar.buttonsWidth`).
+        let buttonWidth: CGFloat
+        /// Another command that the button shows, with this label and symbol,
+        /// and performs while that command can run.
+        var alternate: (id: ID, label: String, symbol: String)?
     }
 
     let id: ID
@@ -84,8 +86,11 @@ struct DeviceCommand {
 
     static let catalog: [ID: DeviceCommand] = Dictionary(uniqueKeysWithValues: [
         // File
+        // Like Simulator.app's, the Save Screen button stops a recording while
+        // it runs, showing `stop.circle`, instead of the toolbar adding an item.
         DeviceCommand(id: .saveScreen, title: "Save Screen", key: "s",
-                      toolbar: Toolbar(label: "Save Screen", symbol: "camera.on.rectangle", buttonWidth: 32),
+                      toolbar: Toolbar(label: "Save Screen", symbol: "camera.on.rectangle", buttonWidth: 32,
+                                       alternate: (.stopRecording, "Stop Recording", "stop.circle")),
                       isEnabled: { $0.session.canPerformToolOperation }) { $0.saveScreen() },
         DeviceCommand(id: .saveScreenAs, title: "Save Screen…", key: "s", modifiers: [.command, .option],
                       isAlternate: true,
@@ -96,7 +101,6 @@ struct DeviceCommand {
                       isAlternate: true,
                       isEnabled: { $0.session.canPerformToolOperation && $0.session.recording == nil }) { $0.chooseRecordingDestination() },
         DeviceCommand(id: .stopRecording, title: "Stop Recording",
-                      toolbar: Toolbar(label: "Stop Recording", symbol: "stop.circle.fill"),
                       isEnabled: { $0.session.recording.map { !$0.isStopping } ?? false }) { $0.session.stopRecording() },
         // NeoSimulator's own command. Shift-Command-I is Trigger iCloud Sync in Simulator.app.
         DeviceCommand(id: .importFiles, title: "Install App or Import Media…",
@@ -347,8 +351,8 @@ struct DeviceCommand {
     }
 
     /// Toolbar items in Simulator.app's iPhone toolbar order. Unsupported items
-    /// are omitted; Stop Recording appears only while recording.
-    static let toolbarItems: [ID] = [.home, .saveScreen, .rotateRight, .stopRecording]
+    /// are omitted.
+    static let toolbarItems: [ID] = [.home, .saveScreen, .rotateRight]
 }
 
 /// Splits a device name the way Simulator.app titles its windows: the name up

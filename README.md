@@ -186,8 +186,9 @@ new capture saves the previous thumbnail's capture, and quitting saves any that
 remain. A file of the same name gets " #2" and so on. Hold Option for **Save Screen…** and **Record Screen…**, which ask for a
 destination and whether to apply the device mask to a non-rectangular screen;
 Save Screen… remembers the folder and the choice (`ScreenShotUseMask`), which
-Save Screen and Record Screen then use. Use the red stop control or **File →
-Stop Recording** to finish a recording. If a save fails, the error includes the
+Save Screen and Record Screen then use. As in Simulator.app, the camera button
+becomes a stop button while a recording runs; click it or choose **File →
+Stop Recording** to finish the recording. If a save fails, the error includes the
 capture's location for recovery. **Edit → Copy Screen** (Control-Command-C)
 puts a PNG of the screen, without the mask, on the Mac pasteboard.
 

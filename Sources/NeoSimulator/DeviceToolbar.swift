@@ -79,11 +79,6 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
               let presentation = DeviceCommand.command(id).toolbar else { return nil }
         let item = NSToolbarItem(itemIdentifier: itemIdentifier)
         item.label = presentation.label
-        item.toolTip = presentation.label
-        item.image = NSImage(systemSymbolName: presentation.symbol, accessibilityDescription: presentation.label)
-        if id == .stopRecording {
-            item.image = item.image?.withSymbolConfiguration(.init(paletteColors: [.systemRed]))
-        }
         item.target = self
         item.action = #selector(activate(_:))
         item.autovalidates = false
@@ -91,10 +86,25 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
         return item
     }
 
+    /// The command that `id`'s button performs now, with the label and symbol
+    /// it shows: its alternate while that can run, and otherwise its own.
+    private func shown(_ id: DeviceCommand.ID, for controller: DeviceWindowController)
+        -> (id: DeviceCommand.ID, label: String, symbol: String)? {
+        guard let presentation = DeviceCommand.command(id).toolbar else { return nil }
+        if let alternate = presentation.alternate, DeviceCommand.command(alternate.id).isEnabled(controller) {
+            return alternate
+        }
+        return (id, presentation.label, presentation.symbol)
+    }
+
+    /// Like Simulator.app's buttons, a button keeps its item's label while
+    /// its tooltip and image, and the image's description, follow the command
+    /// it performs.
     private func configure(_ item: NSToolbarItem, _ id: DeviceCommand.ID) {
-        guard let controller else { return }
-        item.isEnabled = DeviceCommand.command(id).isEnabled(controller)
-        if id == .stopRecording { item.isHidden = controller.session.recording == nil }
+        guard let controller, let shown = shown(id, for: controller) else { return }
+        item.toolTip = shown.label
+        item.image = NSImage(systemSymbolName: shown.symbol, accessibilityDescription: shown.label)
+        item.isEnabled = DeviceCommand.command(shown.id).isEnabled(controller)
     }
 
     private func updateItems() {
@@ -113,6 +123,8 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
     }
 
     @objc private func activate(_ sender: NSToolbarItem) {
-        if let id = DeviceCommand.ID(rawValue: sender.itemIdentifier.rawValue) { controller?.perform(id) }
+        guard let controller, let id = DeviceCommand.ID(rawValue: sender.itemIdentifier.rawValue),
+              let shown = shown(id, for: controller) else { return }
+        controller.perform(shown.id)
     }
 }
