@@ -49,13 +49,25 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     /// Set while the window takes the size of a chosen display scale, which
     /// the resize must not change.
     private var isSizingWindow = false
+    /// I/O ▸ Touch Pressure's app-wide settings, which every window shares.
+    let touchPressure: TouchPressure
+    private var touchPressureObserver: (any NSObjectProtocol)?
+    private var keyboardSelectionObserver: (any NSObjectProtocol)?
+    /// Whether the window is key, which makes its device the one that
+    /// Simulator.app's keyboard controller types into and that a change of
+    /// the Mac's input source applies to.
+    private var isKey = false
+    /// Whether the display takes the Mac's keyboard.
+    private var hasKeyboardInput = false
     var staysOnTop: Bool { window?.level == .floating }
 
     init(session: DeviceSession, preferences: any PreferenceStore = UserDefaults.standard,
+         touchPressure: TouchPressure,
          onClose: @escaping (DeviceWindowController, DeviceLifetimeChoice?) -> Void,
          onRestart: @escaping (DeviceWindowController, _ erasing: Bool) -> Void = { _, _ in }) throws {
         self.session = session
         self.preferences = preferences
+        self.touchPressure = touchPressure
         // Like Simulator.app, the window's geometry is read once, when it
         // connects, for the current arrangement of screens.
         let saved = preferences.windowGeometry(forDevice: session.device.id, screens: Self.screenFrames)
@@ -109,6 +121,14 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         screenParametersObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.moveWindowOntoScreen() }
+        }
+        touchPressureObserver = NotificationCenter.default.addObserver(
+            forName: TouchPressure.didChangeNotification, object: touchPressure, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.touchPressureChanged() }
+        }
+        keyboardSelectionObserver = NotificationCenter.default.addObserver(
+            forName: NSTextInputContext.keyboardSelectionDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.keyboardSelectionChanged() }
         }
         showDisplay(at: initialScale)
     }
@@ -167,6 +187,9 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         content.importFiles = { [weak self] in self?.importFiles($0) }
         window.contentView = content
         showResizeCursors()
+        // A new display takes no keyboard input until the window gives it.
+        hasKeyboardInput = false
+        connectTouchPressure()
     }
 
     // MARK: Restart
@@ -332,6 +355,71 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     func toggleStayOnTop() {
         window?.level = staysOnTop ? .normal : .floating
         customLocation?.window?.level = window?.level ?? .normal
+    }
+
+    // MARK: Keyboard and touch pressure
+
+    /// I/O ▸ Keyboard ▸ Connect Hardware Keyboard. As in Simulator.app, the
+    /// device's choice is saved and the Mac's keyboard follows it at once;
+    /// the guest's keyboard changes later. A failure is presented.
+    func toggleHardwareKeyboard() {
+        Task.immediate { [weak self, session] in
+            do { try await session.toggleHardwareKeyboard() } catch { self?.present(error) }
+        }
+        updateKeyboardInput()
+    }
+
+    /// Gives the display the Mac's keyboard while the window is key and its
+    /// device's hardware keyboard is connected, as Simulator.app's keyboard
+    /// controller does.
+    private func updateKeyboardInput() {
+        let enabled = isKey && session.connectsHardwareKeyboard
+        guard enabled != hasKeyboardInput else { return }
+        hasKeyboardInput = enabled
+        if enabled {
+            session.display.setKeyboardEnabled(true)
+            sendModifiers(NSEvent.modifierFlags)
+        } else {
+            sendModifiers([])
+            session.display.setKeyboardEnabled(false)
+        }
+    }
+
+    /// Like Simulator.app, a change of the Mac's input source gives the key
+    /// device's keyboard its language. Simulator.app ignores a failure; it is
+    /// logged. The change starts before this returns, so that changes reach
+    /// the device in order.
+    private func keyboardSelectionChanged() {
+        guard !closed, isKey else { return }
+        Task.immediate { [session] in
+            do { try await session.syncKeyboardLanguage() } catch {
+                hostLog("Could not set the keyboard language of \(session.device.name): \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Gives a newly connected display I/O ▸ Touch Pressure's settings. Like
+    /// Simulator.app, the display takes touch pressure on the device's own
+    /// screen when the device does, and the trackpad's force as Use Trackpad
+    /// Force says. Simulator.app leaves a new display at Shallow Press,
+    /// whatever the menu's checkmark shows; here it takes the app's mode.
+    private func connectTouchPressure() {
+        let display = session.display
+        display.setSupportsTouchPressure(
+            display.displayClass == 0 && session.capabilities.supportsFeature(DeviceCapabilities.touchPressure))
+        applyTouchPressure()
+    }
+
+    /// Like Simulator.app, a change reaches the window of each device that
+    /// takes touch pressure.
+    private func touchPressureChanged() {
+        guard !closed, session.capabilities.supportsFeature(DeviceCapabilities.touchPressure) else { return }
+        applyTouchPressure()
+    }
+
+    private func applyTouchPressure() {
+        session.display.setUsesTrackpadForce(touchPressure.usesTrackpadForce)
+        session.display.setSimulatedTouchMode(touchPressure.mode)
     }
 
     /// Features ▸ Location: Custom Location… asks for a coordinate first.
@@ -830,15 +918,15 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
 
     private func activateDisplay() {
         guard !closed else { return }
+        isKey = true
         session.display.setActive(true)
-        session.display.setKeyboardEnabled(true)
-        sendModifiers(NSEvent.modifierFlags)
+        updateKeyboardInput()
         focusInput()
     }
     func windowDidResignKey(_ notification: Notification) {
         guard !closed else { return }
-        sendModifiers([])
-        session.display.setKeyboardEnabled(false)
+        isKey = false
+        updateKeyboardInput()
         session.display.setActive(false)
     }
     func windowWillStartLiveResize(_ notification: Notification) { if !closed { session.display.beginResize() } }
@@ -921,8 +1009,12 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         closed = true
         if let commandKeyUpMonitor { NSEvent.removeMonitor(commandKeyUpMonitor) }
         commandKeyUpMonitor = nil
-        if let screenParametersObserver { NotificationCenter.default.removeObserver(screenParametersObserver) }
+        for observer in [screenParametersObserver, touchPressureObserver, keyboardSelectionObserver].compactMap(\.self) {
+            NotificationCenter.default.removeObserver(observer)
+        }
         screenParametersObserver = nil
+        touchPressureObserver = nil
+        keyboardSelectionObserver = nil
         if let window, let sheet = window.attachedSheet {
             window.endSheet(sheet, returnCode: .cancel)
         }

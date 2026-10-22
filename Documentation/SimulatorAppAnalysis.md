@@ -77,7 +77,7 @@ Representative per-window actions in the reference binary:
 | Rotate Left / Right | `0x100053B50` / `0x100053DA0` | typed direct `devicectl device orientation rotate` |
 | Home | `0x1000540EC` | `IndigoHIDMessageForButton`, button `0`, down/up, integrated target |
 | Lock | `0x10005411C` | same HID function, button `1` |
-| Hardware / Software Keyboard | `0x10005571C` / `0x10005574C` | CoreSimulator keyboard selector / HID button `0x3f0` |
+| Hardware / Software Keyboard | `0x10005571C` / `0x10005574C` | `SimDevice setHardwareKeyboardEnabled:keyboardType:error:` / HID button `0x3f0`; see [Keyboard and touch pressure](#keyboard-and-touch-pressure) |
 | Save Screen / Save Screen… | `0x1000570D8` | typed direct `simctl io … screenshot --mask=alpha\|ignored`; names from `0x100055758`, folder from `0x1000559C0` |
 | Record Screen / Record Screen… | `0x100058EC4` | `simctl io … recordVideo --mask=black\|ignored`, H.264 (HEVC for visionOS); names from `0x100058634` |
 | Stop Recording | `0x10005A014` | SIGINT after `Recording started`, then the movie is moved to the Desktop or the chosen file |
@@ -92,7 +92,7 @@ Representative coordinator actions:
 | --- | ---: | --- |
 | Restart | `0x10001FDBC` | implemented with `simctl shutdown` and `boot` (plus `erase` for Erase All Content and Settings…), keeping the window and reconnecting after boot |
 | Memory Warning | `0x10001FE70` | implemented as a checked, in-place write of `SimDevice.memoryWarningFilePath`, because `simulateMemoryWarning` discards its write result |
-| Hardware keyboard sync | `0x1000207D4` | available, deferred pending UI state ownership |
+| Keyboard language sync | `0x1000207D4` | implemented with `SimDevice setKeyboardLanguage:error:` and the first language of the Mac's input source; see [Keyboard and touch pressure](#keyboard-and-touch-pressure) |
 | Slow Animations / Graphics Quality Override | `0x10002180C` / `0x1000218AC` | implemented by setting and posting `com.apple.UIKit.SimulatorSlowMotionAnimationState` (0/1) and `com.apple.UIKit.ForceGraphicsQuality` (0/10/100), checked from `SlowMotionAnimation` / `GraphicsQualityOverride` and applied again on connection; Apple TV also stops PineBoard |
 | Color options | `0x100021B84` onward | implemented with `setCADebugOption:enabled:` (options 2, 1, 14, 17), checked and verified with `getCADebugOption:` |
 | Open System Log… | `0x100022064` | implemented: `<logPath>/system.log` opened in Console, reporting a missing file or failed launch |
@@ -116,7 +116,9 @@ semantics:
 - Device: Rotate Left, Rotate Right, Orientation, Rotate Device Automatically,
   Home, Lock, Side Button, Action Button,
   Siri, Shake, App Switcher, Trigger Screenshot;
-- I/O: Toggle Software Keyboard, Increase Volume, Decrease Volume;
+- I/O: Keyboard (Use the Same Keyboard Language as macOS, Connect Hardware
+  Keyboard, Toggle Software Keyboard), Touch Pressure (Use Trackpad Force,
+  Shallow Press, Deep Press), Increase Volume, Decrease Volume;
 - Features: Touch ID and Face ID (Enrolled, Matching, Non-matching),
   Authorize Apple Pay, Toggle Appearance, Toggle In-call Status Bar,
   Show/Hide StandBy, Increase and Decrease Preferred Text Size, Toggle
@@ -211,12 +213,58 @@ coordinates, reads the pointer from each event's `CGEvent` location instead of
 starts no drag in full screen. The user-visible differences are listed in the
 [design](Design.md#commands-and-menus).
 
+## Keyboard and touch pressure
+
+The evidence is Simulator.app 16.0 (1063.4) from Xcode 26.6, SimulatorKit from
+Xcode 27.1, and CoreSimulator 1174.9.2. `SimFeatureKeyboard` is
+`com.apple.hid.keyboard` and `SimFeatureTouchPressure` is
+`com.apple.hid.touch-pressure`. In `MainMenu.nib`, I/O ▸ Keyboard lists Use the
+Same Keyboard Language as macOS, Connect Hardware Keyboard (`K` with Command,
+so Shift-Command-K), and Toggle Software Keyboard (Command-K); I/O ▸ Touch
+Pressure (tag 2020) lists Use Trackpad Force, Shallow Press (Shift-Command-1),
+and Deep Press (Shift-Command-2). Neither submenu has separators, and Touch
+Pressure follows Keyboard before the separator above Audio Input.
+
+| Reference owner | Observed behavior |
+| --- | --- |
+| Defaults `0x1000250A0` … `0x1000253E8` | Registers `EnableKeyboardSync`, `ConnectHardwareKeyboard`, and `UseTrackpadForce` as YES in the standard defaults. |
+| `-[DeviceCoordinator deviceWindowBecameKey:]` `0x100019B0C`, at `0x10001A4CC` and `0x10001A568` | Hides the Keyboard submenu (and Send Keyboard Input to Device) without `SimFeatureKeyboard`, and the Touch Pressure submenu without `SimFeatureTouchPressure`. |
+| Device preference getter `0x100079D64` | `DevicePreferences[UDID]` (`dictionaryForKey:`) cast to `[String: Any]`, then `ConnectHardwareKeyboard` cast to `Bool`; YES when any step is missing or not of that type. The app-wide `ConnectHardwareKeyboard` is not read. |
+| Device preference setter `0x100073A70` | Sets `DevicePreferences[UDID].ConnectHardwareKeyboard` to a Boolean, keeping the device's other entries and the other devices, and writes `DevicePreferences` back. |
+| `DWC.validateMenuItem:` `0x1000523B4`, `0x100052460` | Connect Hardware Keyboard: enabled with `SimFeatureKeyboard`; checked with the feature and the device's preference. Toggle Software Keyboard: enabled with the feature and the device's preference (a connected hardware keyboard); its state is not set. |
+| `DWC.toggleHardwareKeyboard:` `0x10005571C`, body `0x100055310` | Saves the negation of the device's preference (`0x100073A70`), calls `KeyboardController.updateMode` (`0x100073F74`), reads the preference again, and on a global queue (`0x100055564`) calls `setHardwareKeyboardEnabled:keyboardType:error:` with `IndigoHIDGetKeyboardType()`, trapping on a type above 0xFF. A failure is printed ("Failed to toggle hardware keyboard state: …"); nothing is shown and the preference stays. |
+| `KeyboardController` (`_TtC9Simulator18KeyboardController`), `becomeKey(coordinator:)` `0x100073C30`, `updateMode` `0x100073F74` → `0x1000740FC` | Mode 1 while a key device coordinator's device has `SimFeatureKeyboard` and its preference is on, otherwise 0. `SimKeyboardInputController.isEnabled` follows mode 1, so the Mac's keyboard types into the device only while its hardware keyboard is connected; the pasteboard shortcut group is enabled in mode 0. |
+| `-[DeviceCoordinator _onSessionQueue_connect]` `0x10001B314`, main-queue block `0x10001B97C` → `0x10001BABC` | Each connection, including after a restart: with `EnableKeyboardSync`, calls `updateKeyboardLayoutToMatchHost` (`0x10001B82C`); then reads the app-wide `boolForKey:@"ConnectHardwareKeyboard"` (`0x10001B9F4`) and, on a global queue, calls `setHardwareKeyboardEnabled:` with it, `IndigoHIDGetKeyboardType()`, and a NULL error. The device's own preference is not read here. |
+| `-[DeviceCoordinator makeWindowGroupKeyAndOrderFront:]` `0x100019A28` | Called once from `connectAsync` (`0x10001B2B8`); after `makeKeyAndOrderFront:`, calls `updateKeyboardLayoutToMatchHost` again with `EnableKeyboardSync`. |
+| `-[DeviceCoordinator validateMenuItem:]` keyboard branch `0x10001F4C0`; `toggleKeyboardSync:` `0x1000207D4` | Enabled with `deviceSupportsKeyboard` (`SimFeatureKeyboard`) and checked from `EnableKeyboardSync`; otherwise disabled and unchecked. The action flips `EnableKeyboardSync` and synchronizes the defaults; it sends nothing to the device. |
+| `-[SimDevice(KeyboardSync) updateKeyboardLayoutToMatchHost]` `0x100022D7C` | On the main queue: `TISCopyCurrentKeyboardInputSource`, `kTISPropertyInputSourceLanguages`, and the array's first element; an empty array logs "KEYBOARD: Unable to determine keyboard layout". Otherwise, on a global queue (`0x100022F28`), `setKeyboardLanguage:error:` with a NULL error. |
+| `keyboardSelectionDidChangeNotification:` `0x100026A8C`, registered at `0x10002576C` | For `NSTextInputContextKeyboardSelectionDidChangeNotification`: with `EnableKeyboardSync`, calls `updateKeyboardLayoutToMatchHost` on the key device coordinator's device only. |
+| `SimulatorAppDelegate.validateMenuItem:` `0x100012350`, `0x100012380`, `0x1000123D4` | The key device's coordinator decides. Use Trackpad Force: enabled with `SimFeatureTouchPressure` and `forceTouchTrackpadAvailable`, checked from `useForceTrackpadFor3DTouch`. Shallow and Deep Press: enabled with the feature and `productFamilyID` 4 (watch), checked from `touchesAreDeep` (Shallow from its negation). A disabled item is unchecked. None needs a booted device. |
+| `useForceTrackpadFor3DTouch` `0x10001522C` / setter `0x100015294`; `toggleTrackpadFor3DTouch:` `0x100012C1C` | The getter is `UseTrackpadForce && forceTouchTrackpadAvailable`. The action sets the negation of the getter; the setter saves `UseTrackpadForce` and sends it to the window controller of every device coordinator whose `windowExists` and whose device has `SimFeatureTouchPressure` (`DWC.setUseForceTrackpadFor3DTouch:` `0x100047DAC` → `SimDigitizerInputView.useForceTrackpadForPressure`). |
+| `setTouchPressureShallow:` `0x100012BE8`, `setTouchPressureDeep:` `0x100012BB4`, `setTouchesAreDeep:` `0x100014FF8` | Set the app delegate's `touchesAreDeep` (NO at launch, `0x10000ED80`, never saved) and send it to the same windows (`DWC.setTouchesAreDeep:` `0x100047F1C` → `simulatedTouchMode` 0 or 1, the raw values of `SimDigitizerInputView.TouchMode`). |
+| `forceTouchTrackpadAvailable` `0x100015664`, HID client `0x100015500` | The client is `IOHIDEventSystemClientCreate` matching `PrimaryUsagePage` 13 and `PrimaryUsage` 12 (a multiple-point digitizer). Each call copies its services and returns YES when the registry entry of a service's `IOHIDServiceClientGetRegistryID` has `ForceSupported` true; nothing is cached. |
+| Window setup `0x10004A6F8` … `0x10004A734`; `connectTo:completionQueue:completion:` `0x10004DE68`, at `0x10004E480` … `0x10004E550` | The window sets its digitizer's `useForceTrackpadForPressure` from `useForceTrackpadFor3DTouch`. Each display connection sets `supportTouchPressure` to `SimFeatureTouchPressure` on display class 0 and NO on other screens. `simulatedTouchMode` is not set, so a new display is shallow whatever the menu shows. |
+
+SimulatorKit exports `IndigoHIDGetKeyboardType` and dispatch thunks for
+`SimDigitizerInputView.supportTouchPressure`, `useForceTrackpadForPressure`,
+and `simulatedTouchMode` (a `TouchMode` with `Int` raw values). CoreSimulator's
+`setHardwareKeyboardEnabled:keyboardType:error:` takes a Boolean and a byte
+(`B32@0:8B16C20^@24`), and `setKeyboardLanguage:error:` a language string.
+Touch pressure exists only on device types with `SupportsForceTouch`, such as
+the iPhone XS on iOS 18 and the Apple Watch Series 2 to 5, which the installed
+watchOS 26.5 runtime does not run. On iOS 26.5, `setKeyboardLanguage:` with `de`
+selects `de_AT@sw=QWERTZ-German` as the guest's `KeyboardLastUsed` and adds it to
+`AppleKeyboards`; it takes 0.2 to 0.5 seconds, `setHardwareKeyboardEnabled:`
+a few milliseconds.
+
+NeoSimulator reproduces these commands; its differences are listed in the
+[design](Design.md#keyboard-and-touch-pressure).
+
 ## Deferred features
 
 These have viable Xcode 27+ primitives but need a dedicated state/capability
 contract before being user-visible:
 
-- Connect Hardware Keyboard and keyboard-language sync;
 - status-bar overrides;
 - external displays and CarPlay.
 

@@ -47,6 +47,9 @@ struct CoreSimulatorInterface {
     let clearSimulatedLocation: NativeObjCMethod<Void>
     let setLocation: NativeObjCMethod<Void, Double, Double>
     let setLocationScenario: NativeObjCMethod<Void, String>
+    /// `setHardwareKeyboardEnabled:keyboardType:error:`, whose type is a byte.
+    let setHardwareKeyboard: NativeObjCMethod<Void, Bool, UInt8>
+    let setKeyboardLanguage: NativeObjCMethod<Void, String>
     let runtimeName: NativeObjCMethod<String?>
     let runtimeIdentifier: NativeObjCMethod<String?>
     let runtimeAvailable: NativeObjCMethod<Bool>
@@ -147,6 +150,10 @@ struct CoreSimulatorInterface {
             on: device, selector: "setLocationWithLatitude:andLongitude:error:", as: ((Double, Double) throws -> Void).self)
         setLocationScenario = try runtime.resolveObjCMethodAndWait(
             on: device, selector: "setLocationScenario:error:", as: ((String) throws -> Void).self)
+        setHardwareKeyboard = try runtime.resolveObjCMethodAndWait(
+            on: device, selector: "setHardwareKeyboardEnabled:keyboardType:error:", as: ((Bool, UInt8) throws -> Void).self)
+        setKeyboardLanguage = try runtime.resolveObjCMethodAndWait(
+            on: device, selector: "setKeyboardLanguage:error:", as: ((String) throws -> Void).self)
         runtimeName = try runtime.resolveObjCMethodAndWait(
             on: simRuntime, selector: "name", as: (() -> String?).self)
         runtimeIdentifier = try runtime.resolveObjCMethodAndWait(
@@ -318,11 +325,15 @@ final class SimulatorDevice {
     // location calls, so they run on this queue, as Simulator.app runs them on
     // a global queue. Being serial, it applies changes in the order they are made.
     private lazy var locationQueue = DispatchQueue(label: "dev.lynnswap.NeoSimulator.location")
+    // Changing the keyboard's language takes CoreSimulator up to half a
+    // second, so keyboard changes run on this queue, as Simulator.app runs
+    // them on a global queue, also in the order they are made.
+    private lazy var keyboardQueue = DispatchQueue(label: "dev.lynnswap.NeoSimulator.keyboard")
 
     /// The runtime's recorded location routes in CoreSimulator's order, empty
     /// when the device lists none.
     func locationScenarios() async throws -> [LocationScenario] {
-        try await onLocationQueue(interface.availableLocationScenarios) { method, device in
+        try await call(interface.availableLocationScenarios, on: locationQueue) { method, device in
             try unsafe method.unsafeInvoke(on: device)?.compactMap { scenario in
                 guard let name = scenario["name"] as? String else { return nil }
                 return LocationScenario(name: name, localizedName: scenario["localizedName"] as? String ?? name)
@@ -331,26 +342,38 @@ final class SimulatorDevice {
     }
 
     func clearSimulatedLocation() async throws {
-        try await onLocationQueue(interface.clearSimulatedLocation) { try unsafe $0.unsafeInvoke(on: $1) }
+        try await call(interface.clearSimulatedLocation, on: locationQueue) { try unsafe $0.unsafeInvoke(on: $1) }
     }
 
     func setLocation(latitude: Double, longitude: Double) async throws {
-        try await onLocationQueue(interface.setLocation) { try unsafe $0.unsafeInvoke(on: $1, latitude, longitude) }
+        try await call(interface.setLocation, on: locationQueue) { try unsafe $0.unsafeInvoke(on: $1, latitude, longitude) }
     }
 
     func setLocationScenario(_ name: String) async throws {
-        try await onLocationQueue(interface.setLocationScenario) { try unsafe $0.unsafeInvoke(on: $1, name) }
+        try await call(interface.setLocationScenario, on: locationQueue) { try unsafe $0.unsafeInvoke(on: $1, name) }
     }
 
-    /// Sends `method` to the device on `locationQueue`, queued before this
-    /// suspends. SimDevice takes these calls on any thread, as Simulator.app
-    /// makes them, and a prepared message can be sent from any thread.
-    private func onLocationQueue<Method, Value: Sendable>(
-        _ method: Method, _ call: @escaping @Sendable (Method, AnyObject) throws -> Value
+    /// Connects or disconnects the guest's hardware keyboard, of a type that
+    /// `IndigoHIDGetKeyboardType()` gives.
+    func setHardwareKeyboardEnabled(_ enabled: Bool, keyboardType: UInt8) async throws {
+        try await call(interface.setHardwareKeyboard, on: keyboardQueue) {
+            try unsafe $0.unsafeInvoke(on: $1, enabled, keyboardType)
+        }
+    }
+
+    func setKeyboardLanguage(_ language: String) async throws {
+        try await call(interface.setKeyboardLanguage, on: keyboardQueue) { try unsafe $0.unsafeInvoke(on: $1, language) }
+    }
+
+    /// Sends `method` to the device on `queue`, queued before this suspends.
+    /// SimDevice takes these calls on any thread, as Simulator.app makes them,
+    /// and a prepared message can be sent from any thread.
+    private func call<Method, Value: Sendable>(
+        _ method: Method, on queue: DispatchQueue, _ call: @escaping @Sendable (Method, AnyObject) throws -> Value
     ) async throws -> Value {
         nonisolated(unsafe) let method = method, device = object
         return try await withCheckedThrowingContinuation { continuation in
-            locationQueue.async { continuation.resume(with: Result { try call(method, device) }) }
+            queue.async { continuation.resume(with: Result { try call(method, device) }) }
         }
     }
 }

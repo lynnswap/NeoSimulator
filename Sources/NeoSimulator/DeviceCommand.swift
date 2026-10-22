@@ -14,7 +14,9 @@ struct DeviceCommand {
         case rotateDeviceAutomatically
         case home, lock, sideButton, actionButtonSting
         case actionButtonStaccato, siri, shake, appSwitcher, triggerScreenshot
-        case toggleSoftwareKeyboard, increaseVolume, decreaseVolume, openURL
+        case syncKeyboardLanguage, connectHardwareKeyboard, toggleSoftwareKeyboard
+        case useTrackpadForce, shallowPress, deepPress
+        case increaseVolume, decreaseVolume, openURL
         case touchIDEnrolled, touchIDMatching, touchIDNonMatching
         case faceIDEnrolled, faceIDMatching, faceIDNonMatching
         case authorizeApplePay, toggleAppearance, toggleInCallStatusBar, toggleStandBy
@@ -153,10 +155,32 @@ struct DeviceCommand {
                       isEnabled: { $0.session.canPerformCommands && $0.session.capabilities.runtimeVersion >= 0x0D_00_00 }) {
             $0.send(.press(.screenshot))
         },
-        // I/O
-        DeviceCommand(id: .toggleSoftwareKeyboard, title: "Toggle Software Keyboard", key: "k") {
+        // I/O. Simulator.app shows Keyboard only for a device that takes a
+        // hardware keyboard, and Touch Pressure only for one that takes
+        // touch pressure. Use the Same Keyboard Language as macOS is an app
+        // preference, so it does not need a booted device.
+        DeviceCommand(id: .syncKeyboardLanguage, title: "Use the Same Keyboard Language as macOS",
+                      isSupported: { $0.supportsFeature(DeviceCapabilities.keyboard) },
+                      isEnabled: { _ in true },
+                      state: { $0.session.syncsKeyboardLanguage ? .on : .off }) { $0.session.toggleKeyboardLanguageSync() },
+        DeviceCommand(id: .connectHardwareKeyboard, title: "Connect Hardware Keyboard", key: "k",
+                      modifiers: [.command, .shift],
+                      isSupported: { $0.supportsFeature(DeviceCapabilities.keyboard) },
+                      state: { $0.session.connectsHardwareKeyboard ? .on : .off }) { $0.toggleHardwareKeyboard() },
+        // The software keyboard toggles only beside a hardware keyboard.
+        DeviceCommand(id: .toggleSoftwareKeyboard, title: "Toggle Software Keyboard", key: "k",
+                      isSupported: { $0.supportsFeature(DeviceCapabilities.keyboard) },
+                      isEnabled: { $0.session.canPerformCommands && $0.session.connectsHardwareKeyboard }) {
             $0.send(.press(.button(.softwareKeyboard)))
         },
+        // App-wide settings, as Simulator.app keeps them, so they do not need
+        // a booted device. Use Trackpad Force needs a Force Touch trackpad.
+        DeviceCommand(id: .useTrackpadForce, title: "Use Trackpad Force",
+                      isSupported: { $0.supportsFeature(DeviceCapabilities.touchPressure) },
+                      isEnabled: { $0.touchPressure.hasForceTouchTrackpad },
+                      state: { $0.touchPressure.usesTrackpadForce ? .on : .off }) { $0.touchPressure.toggleTrackpadForce() },
+        touchMode(.shallowPress, title: "Shallow Press", key: "1", .shallow),
+        touchMode(.deepPress, title: "Deep Press", key: "2", .deep),
         DeviceCommand(id: .increaseVolume, title: "Increase Volume", key: String(UnicodeScalar(NSUpArrowFunctionKey)!),
                       isSupported: { $0.supportsFeature(DeviceCapabilities.routableAudio) }) { $0.send(.press(.volumeUp)) },
         DeviceCommand(id: .decreaseVolume, title: "Decrease Volume", key: String(UnicodeScalar(NSDownArrowFunctionKey)!),
@@ -232,6 +256,18 @@ struct DeviceCommand {
                       isEnabled: { $0.canSetScale(mode) },
                       state: mode == .fitScreen ? nil : { $0.scaleState(mode) },
                       keepsStateWithoutWindow: true) { $0.setScale(mode) }
+    }
+
+    /// Shallow Press or Deep Press, checked when it is the app's touch mode.
+    /// Like Simulator.app, they are available only for a watch, and
+    /// choosing one changes every window that takes touch pressure.
+    private static func touchMode(_ id: ID, title: String, key: String, _ mode: SimulatedTouchMode) -> DeviceCommand {
+        DeviceCommand(id: id, title: title, key: key, modifiers: [.command, .shift],
+                      isSupported: { $0.supportsFeature(DeviceCapabilities.touchPressure) },
+                      isEnabled: { $0.session.capabilities.family == .watch },
+                      state: { $0.session.capabilities.family == .watch && $0.touchPressure.mode == mode ? .on : .off }) {
+            $0.touchPressure.setMode(mode)
+        }
     }
 
     /// Touch ID ▸ Enrolled or Face ID ▸ Enrolled. The two share one guest state.

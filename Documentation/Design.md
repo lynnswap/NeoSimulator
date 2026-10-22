@@ -307,7 +307,10 @@ The first parity set contains only commands with an available, validated owner:
   Left/Right, Orientation, Rotate Device Automatically, Home,
   Lock, Side Button (watchOS devices only, so hidden until Neo hosts them),
   Action Button, Siri, Shake, App Switcher, Trigger Screenshot;
-- I/O: Toggle Software Keyboard, Increase Volume, Decrease Volume;
+- I/O: Keyboard (Use the Same Keyboard Language as macOS, Connect Hardware
+  Keyboard, Toggle Software Keyboard), Touch Pressure (Use Trackpad Force, and
+  Shallow Press and Deep Press, which need a watch and so stay disabled until
+  Neo hosts one), Increase Volume, Decrease Volume;
 - Features: Touch ID and Face ID (Enrolled, Matching, Non-matching),
   Authorize Apple Pay, Toggle Appearance, Toggle In-call Status Bar,
   Show/Hide StandBy, Increase and Decrease Preferred Text Size, Toggle
@@ -682,6 +685,77 @@ The following are intentionally absent:
 See [Simulator.app analysis](SimulatorAppAnalysis.md) for the complete menu
 inventory and classification.
 
+### Keyboard and touch pressure
+
+I/O ▸ Keyboard and I/O ▸ Touch Pressure follow Simulator.app's menu archive and
+validation. Keyboard is shown for a device with `SimFeatureKeyboard`, and Touch
+Pressure for one with `SimFeatureTouchPressure`: a device type with
+`SupportsForceTouch`, from the iPhone 6s to the iPhone XS, such as an iPhone XS
+on iOS 18. Current iPhones, iPads, and watches have no touch pressure.
+
+Connect Hardware Keyboard (Shift-Command-K) is each device's choice, saved as
+`DevicePreferences[UDID].ConnectHardwareKeyboard` in NeoSimulator's own defaults
+and on unless turned off. The command saves the opposite of the choice, then
+calls `SimDevice setHardwareKeyboardEnabled:keyboardType:error:` with
+`IndigoHIDGetKeyboardType()`. Like Simulator.app's keyboard controller, a
+display takes the Mac's keyboard (its `_defaultKeyboardDelegate`'s `isEnabled`)
+only while its window is key and its device's hardware keyboard is connected,
+and Toggle Software Keyboard (Command-K) is enabled only then. Without a
+hardware keyboard the guest shows its software keyboard.
+
+Use the Same Keyboard Language as macOS (`EnableKeyboardSync`, app-wide, on
+unless turned off) gives the guest's keyboard the first language of the Mac's
+current input source (`TISCopyCurrentKeyboardInputSource`,
+`kTISPropertyInputSourceLanguages`) with `setKeyboardLanguage:error:`. This
+happens on each connection and, for the key device only, on
+`NSTextInputContext.keyboardSelectionDidChangeNotification`. As in
+Simulator.app, the command changes only the preference. Each connection,
+including after a restart, first applies the device's hardware keyboard choice,
+then the language; a failure of one does not stop the other. CoreSimulator
+takes up to half a second to change the language, so `SimulatorDevice` makes
+the keyboard calls on a serial queue of its own, as Simulator.app makes them on
+a global queue.
+
+Touch Pressure is app-wide, as in Simulator.app's app delegate; one
+`TouchPressure` object, shared by every device window, owns it. Use Trackpad
+Force saves `UseTrackpadForce` (on unless turned off) as the opposite of its
+checkmark, which also needs a Force Touch trackpad: an HID event-system service
+with `PrimaryUsagePage` 13 and `PrimaryUsage` 12 whose registry entry has
+`ForceSupported`. NeoSimulator finds it through the public
+`IOHIDEventSystemClientCreateSimpleClient` each time it is needed, so a
+trackpad connected later counts. Shallow Press (Shift-Command-1) and Deep Press
+(Shift-Command-2) need a watch. The mode is kept only while the app runs and
+starts at Shallow Press. A change reaches the digitizer
+(`SimDigitizerInputView`) of every window whose device has touch pressure:
+`useForceTrackpadForPressure` and `simulatedTouchMode` (0 shallow, 1 deep). Each
+display connection also sets `supportTouchPressure` to the device's support on
+its own screen (display class 0).
+
+These differ from Simulator.app:
+
+- On each connection Simulator.app connects the hardware keyboard as the
+  app-wide `ConnectHardwareKeyboard` (registered on) says, while its
+  checkmark, keyboard input, and Toggle Software Keyboard follow the device's
+  choice, so a keyboard disconnected there comes back after a restart.
+  NeoSimulator applies the device's choice, which the app-wide value stands in
+  for until the device has one.
+- Simulator.app leaves a newly connected display at Shallow Press whatever the
+  checkmark shows; NeoSimulator gives it the app's mode.
+- Simulator.app applies Use Trackpad Force to a window only when it opens or
+  the setting changes, so a window that opened before a Force Touch trackpad
+  was connected ignores its force while the checkmark shows the option on.
+  NeoSimulator watches the I/O Registry for HID event services and applies the
+  option again to every window when a Force Touch trackpad appears or goes
+  away.
+- NeoSimulator presents a failed Connect Hardware Keyboard on the window, where
+  Simulator.app only prints it, and logs failures of a connection's keyboard
+  settings and of a language change, which Simulator.app discards. As in
+  Simulator.app, the choice stays saved after a failure; choosing again retries.
+  A keyboard type that does not fit a byte is reported, where Simulator.app traps.
+- Connect Hardware Keyboard needs a connected, booted device, like
+  NeoSimulator's other device commands; Simulator.app enables it for any
+  device with a keyboard.
+
 ## Failure semantics
 
 The executable follows BSD `sysexits` categories:
@@ -729,8 +803,10 @@ set, installs over a synthetic previous version, and compares installed CLI/app
 files with the archive.
 
 Live validation additionally covers framebuffer/touch/accessibility, focused
-keyboard input, Home, Software Keyboard, resize, menu rotation, screenshot PNG,
-Device Hub absence, and loaded-image provenance.
+keyboard input, Home, Software Keyboard, connecting and disconnecting the
+hardware keyboard, the keyboard language, the digitizer's touch pressure
+settings, resize, menu rotation, screenshot PNG, Device Hub absence, and
+loaded-image provenance.
 
 ## Non-goals
 

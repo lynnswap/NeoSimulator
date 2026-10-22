@@ -177,8 +177,7 @@ extension PreferenceStore {
     /// `screenConfiguration(for:)` does.
     func windowGeometry(forDevice identifier: String, screens: [NSRect]) -> (center: NSPoint?, scale: CGFloat?) {
         let configuration = screenConfiguration(for: screens)
-        let devices = object(forKey: HostPreferences.devicePreferences) as? [String: Any]
-        let geometry = ((devices?[identifier] as? [String: Any])?[windowGeometryKey] as? [String: Any])?[configuration]
+        let geometry = (preferences(forDevice: identifier)?[windowGeometryKey] as? [String: Any])?[configuration]
             as? [String: Any]
         let center = (geometry?[windowCenterKey] as? String).map(NSPointFromString)
         let scale = (geometry?[windowScaleKey] as? NSNumber).map { CGFloat($0.doubleValue) }
@@ -191,13 +190,26 @@ extension PreferenceStore {
     /// and keeps what was saved for others and the device's other preferences.
     func setWindowGeometry(center: NSPoint, scale: CGFloat?, forDevice identifier: String, screens: [NSRect]) {
         let configuration = screenConfiguration(for: screens)
-        var devices = object(forKey: HostPreferences.devicePreferences) as? [String: Any] ?? [:]
-        var device = devices[identifier] as? [String: Any] ?? [:]
-        var geometry = device[windowGeometryKey] as? [String: Any] ?? [:]
         var saved: [String: Any] = [windowCenterKey: NSStringFromPoint(center)]
         if let scale { saved[windowScaleKey] = Double(scale) }
-        geometry[configuration] = saved
-        device[windowGeometryKey] = geometry
+        updatePreferences(forDevice: identifier) { device in
+            var geometry = device[windowGeometryKey] as? [String: Any] ?? [:]
+            geometry[configuration] = saved
+            device[windowGeometryKey] = geometry
+        }
+    }
+
+    /// The device's own preferences, `DevicePreferences[UDID]`, or nil when
+    /// it has none.
+    func preferences(forDevice identifier: String) -> [String: Any]? {
+        (object(forKey: HostPreferences.devicePreferences) as? [String: Any])?[identifier] as? [String: Any]
+    }
+
+    /// Changes the device's own preferences, keeping the other devices'.
+    func updatePreferences(forDevice identifier: String, _ change: (inout [String: Any]) -> Void) {
+        var devices = object(forKey: HostPreferences.devicePreferences) as? [String: Any] ?? [:]
+        var device = devices[identifier] as? [String: Any] ?? [:]
+        change(&device)
         devices[identifier] = device
         set(devices, forKey: HostPreferences.devicePreferences)
     }
