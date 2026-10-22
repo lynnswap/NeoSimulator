@@ -206,10 +206,11 @@ struct ExternalDisplayFailure {
 /// `extended_display.plist` first, CarPlay's configuration for CarPlay and
 /// `{stark: 0}` for every other item, since the guest reads it when the
 /// screen's modes change. A size or CarPlay then ends the guest's CarPlay
-/// sessions that this host started (see `CarPlaySessions`), removing their HID
+/// sessions that this host started (see `CarPlaySessions`), removing the HID
 /// service first, and Disabled ends them once the screen is off. Once the
 /// screen is a CarPlay screen, CarPlay starts a session, or keeps one that did
-/// not end, then creates the HID service that takes the display's touches.
+/// not end or has not been answered, then creates the HID service that takes
+/// the display's touches.
 /// Each step's failure is reported and the change goes on, except that a
 /// screen that did not change ends it and a session that did not start leaves
 /// the HID service uncreated.
@@ -350,22 +351,24 @@ final class ExternalDisplayChanges {
         }
     }
 
-    /// Like Simulator.app before the display changes, ends the CarPlay
-    /// sessions that this host started in the device's current boot: removes
-    /// their HID service, then ends them one at a time. Their failures are
-    /// reported, and the change goes on; a session that does not end stays
-    /// counted for the next change.
+    /// Like Simulator.app before the display changes, ends the CarPlay that
+    /// this host started in the device's current boot: removes the HID
+    /// service, then ends the confirmed sessions one at a time. Their failures
+    /// are reported, and the change goes on; a session that does not end stays
+    /// counted for the next change. A start that has not been answered is not
+    /// ended: once it succeeds, a later change ends it.
     private func endCarPlay(in run: Run, then next: @escaping @MainActor () -> Void) {
         let screen = run.change.screen
-        guard carPlaySessions.expected(in: screen.deviceBootDate) > 0 else { return next() }
+        let boot = screen.deviceBootDate
+        guard carPlaySessions.hasService(in: boot) || carPlaySessions.endable(in: boot) > 0 else { return next() }
         perform(.carPlayService(creating: false), in: run, {
-            try screen.setCarPlayService(connected: false, completion: $0)
+            try requestCarPlayService(connected: false, through: screen, completion: $0)
         }) { [self] _ in endCarPlaySessions(in: run, then: next) }
     }
 
     private func endCarPlaySessions(in run: Run, then next: @escaping @MainActor () -> Void) {
         let screen = run.change.screen
-        guard carPlaySessions.expected(in: screen.deviceBootDate) > 0 else { return next() }
+        guard carPlaySessions.endable(in: screen.deviceBootDate) > 0 else { return next() }
         perform(.carPlaySession(starting: false), in: run, {
             requestCarPlaySession(starting: false, through: screen, completion: $0)
         }) { [self] ended in
@@ -377,17 +380,18 @@ final class ExternalDisplayChanges {
     /// Like Simulator.app once the screen is a CarPlay screen, starts the
     /// guest's CarPlay session, then creates the HID service that takes the
     /// display's touches. Unlike Simulator.app, which creates the service
-    /// either way, the service waits for a session that started, and a
-    /// session of this host that did not end stays the device's CarPlay
-    /// session instead of another starting beside it.
+    /// either way and starts a session each time, the service waits for a
+    /// session that started, and a session of this host that did not end, or
+    /// a start that has not been answered, stays the device's CarPlay instead
+    /// of another starting beside it.
     private func startCarPlay(in run: Run, then next: @escaping @MainActor () -> Void) {
         let screen = run.change.screen
         let createService: @MainActor () -> Void = { [self] in
             perform(.carPlayService(creating: true), in: run, {
-                try screen.setCarPlayService(connected: true, completion: $0)
+                try requestCarPlayService(connected: true, through: screen, completion: $0)
             }) { _ in next() }
         }
-        guard carPlaySessions.expected(in: screen.deviceBootDate) == 0 else { return createService() }
+        guard carPlaySessions.mayStart(in: screen.deviceBootDate) else { return createService() }
         perform(.carPlaySession(starting: true), in: run, {
             requestCarPlaySession(starting: true, through: screen, completion: $0)
         }) { started in
@@ -396,15 +400,25 @@ final class ExternalDisplayChanges {
         }
     }
 
-    /// Starts or ends a guest's CarPlay session through `screen`, counting the
-    /// request until it completes and its result once it does, also when the
-    /// change no longer waits for it.
+    /// Starts or ends a guest's CarPlay session through `screen`. Its own
+    /// completion counts the result, also when the change no longer waits for it.
     private func requestCarPlaySession(starting: Bool, through screen: any SimulatorExternalScreen,
                                        completion: @escaping @MainActor (Error?) -> Void) {
         let boot = screen.deviceBootDate
         carPlaySessions.sent(starting: starting, in: boot)
         screen.setCarPlayEnabled(starting) { [self] error in
-            carPlaySessions.completed(starting: starting, succeeded: error == nil, in: boot)
+            carPlaySessions.answered(starting: starting, succeeded: error == nil, in: boot)
+            completion(error)
+        }
+    }
+
+    /// Creates or removes the guest's CarPlay HID service through `screen`,
+    /// noting a success also when the change no longer waits for it.
+    private func requestCarPlayService(connected: Bool, through screen: any SimulatorExternalScreen,
+                                       completion: @escaping @MainActor (Error?) -> Void) throws {
+        let boot = screen.deviceBootDate
+        try screen.setCarPlayService(connected: connected) { [self] error in
+            if error == nil { carPlaySessions.serviceChanged(created: connected, in: boot) }
             completion(error)
         }
     }
@@ -504,42 +518,60 @@ final class ExternalDisplayChanges {
     }
 }
 
-/// The guest's CarPlay sessions that a host started in one boot of a device.
-/// The guest's CoreSimulatorBridge counts the sessions that hosts start; an
-/// end without a session counts below zero, which the bridge keeps, and stops
-/// the next start. A new boot starts the bridge again without any. A host
-/// therefore ends only the sessions it started in the current boot, as many
-/// as it expects the guest to have from it: those whose start completed, less
-/// those whose end completed, with the requests that have not completed
-/// counted as if they will succeed, since a screen connection's requests
-/// reach the guest one at a time, in order.
+/// The guest's CarPlay that a host started in one boot of a device. The
+/// guest's CoreSimulatorBridge counts the sessions that hosts start; an end
+/// without a session counts below zero, which the bridge keeps, and stops the
+/// next start. A new boot starts the bridge again without any. A host
+/// therefore ends only sessions whose start succeeded in the current boot,
+/// counted from each request's own answer, also one that comes after its
+/// change stopped waiting: a start that has not been answered may still fail,
+/// so it is not ended, and an extra session that a late success leaves stays
+/// until a later change ends it, as Simulator.app's sessions can. Nor does a
+/// host start a session while one of its sessions or starts remains, so that
+/// the sessions cannot double up.
 struct CarPlaySessions {
-    /// `SimDevice.lastBootedAt` of the boot the counts belong to.
+    /// `SimDevice.lastBootedAt` of the boot the record belongs to.
     private var boot: Date?
-    private var started = 0
+    /// Sessions whose start succeeded, less those whose end succeeded.
+    private var confirmed = 0
+    /// Starts and ends that have not been answered.
     private var starting = 0
     private var ending = 0
+    /// Whether the HID service was created and not removed since.
+    private var service = false
 
     init() {}
 
     private init(boot: Date?) { self.boot = boot }
 
-    /// The sessions this host expects the guest to have from it in `boot`.
-    func expected(in boot: Date?) -> Int { boot == self.boot ? started + starting - ending : 0 }
+    /// The confirmed sessions in `boot` that no end waits on.
+    func endable(in boot: Date?) -> Int { boot == self.boot ? confirmed - ending : 0 }
 
-    /// Counts a start or an end sent in `boot`. A start in another boot
-    /// replaces the counts of the earlier one, whose sessions ended with it.
+    /// Whether `boot` has none of this host's sessions or starts, so that a
+    /// session may start.
+    func mayStart(in boot: Date?) -> Bool { endable(in: boot) == 0 && (boot != self.boot || starting == 0) }
+
+    func hasService(in boot: Date?) -> Bool { boot == self.boot && service }
+
+    /// Counts a start or an end sent in `boot`. A request in another boot
+    /// replaces the record of the earlier one, which ended with it.
     mutating func sent(starting: Bool, in boot: Date?) {
         if boot != self.boot { self = CarPlaySessions(boot: boot) }
         if starting { self.starting += 1 } else { ending += 1 }
     }
 
-    /// Counts the result of a request sent in `boot`; that of an earlier boot
+    /// Counts the answer to a request sent in `boot`; that of an earlier boot
     /// changes nothing.
-    mutating func completed(starting: Bool, succeeded: Bool, in boot: Date?) {
+    mutating func answered(starting: Bool, succeeded: Bool, in boot: Date?) {
         guard boot == self.boot else { return }
         if starting { self.starting -= 1 } else { ending -= 1 }
-        if succeeded { started += starting ? 1 : -1 }
+        if succeeded { confirmed += starting ? 1 : -1 }
+    }
+
+    /// Notes that the HID service was created or removed in `boot`.
+    mutating func serviceChanged(created: Bool, in boot: Date?) {
+        if boot != self.boot { self = CarPlaySessions(boot: boot) }
+        service = created
     }
 }
 

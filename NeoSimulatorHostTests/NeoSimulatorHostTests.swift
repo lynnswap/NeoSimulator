@@ -3974,34 +3974,83 @@ struct InputFocusTests {
         #expect(screen.carPlaySessions == 0 && failures.count == 1)
     }
 
-    @Test func aCarPlaySessionThatStartsAfterItsChangeTimedOutIsEndedLater() async throws {
-        let screen = TestExternalScreen()
-        screen.defersCarPlaySessions = true
-        let (controller, _) = try makeExternalDisplayController(
+    /// A controller whose CarPlay session requests time out after 50 ms.
+    private func makeSlowCarPlayController(_ screen: TestExternalScreen) throws -> DeviceWindowController {
+        try makeExternalDisplayController(
             screen, features: Self.carPlayFeatures,
-            externalDisplayChanges: ExternalDisplayChanges(completionTimeout: .milliseconds(50)))
+            externalDisplayChanges: ExternalDisplayChanges(completionTimeout: .milliseconds(50),
+                                                           carPlayReconnectionDelay: .zero)).0
+    }
+
+    @Test func aCarPlayStartWithoutAnAnswerIsNotEnded() async throws {
+        let screen = TestExternalScreen()
+        let controller = try makeSlowCarPlayController(screen)
         defer { controller.invalidate() }
         var failures: [String] = []
-        controller.session.chooseExternalDisplay(.carPlay) { failures.append($0.localizedDescription) }
-        #expect(screen.requests == ["save carplay", "mode 800x480@2 carplay", "start carplay"])
+        func choose(_ mode: ExternalDisplayMode) -> [String] {
+            let count = screen.requests.count
+            controller.session.chooseExternalDisplay(mode) { failures.append($0.localizedDescription) }
+            return Array(screen.requests.dropFirst(count))
+        }
+        // The guest does not answer the start before the change stops waiting.
+        screen.defersCarPlaySessions = true
+        #expect(choose(.carPlay) == ["save carplay", "mode 800x480@2 carplay", "start carplay"])
         for _ in 0..<100 where failures.isEmpty { try await Task.sleep(for: .milliseconds(20)) }
         #expect(failures == ["Could not start CarPlay on Test iPhone: CoreSimulator did not complete the change."])
-        // The guest starts the session after all, and Disabled ends it.
+        // Disabled ends no session that may never have started.
+        #expect(choose(.disabled) == ["save off", "off"])
+        // The start fails after all, and the guest has no session; the next
+        // CarPlay starts one as usual.
+        screen.carPlayErrors = ["start carplay": HostError.operation("no CarPlay")]
+        screen.deliverCarPlaySessions()
+        screen.carPlayErrors = [:]
+        screen.defersCarPlaySessions = false
+        #expect(screen.carPlaySessions == 0)
+        #expect(choose(.carPlay) == ["save carplay", "mode 800x480@2 carplay", "start carplay", "connect service"])
+        #expect(screen.carPlaySessions == 1 && failures.count == 1)
+    }
+
+    @Test func aCarPlayStartThatSucceedsLateIsEndedByALaterChange() async throws {
+        let screen = TestExternalScreen()
+        let controller = try makeSlowCarPlayController(screen)
+        defer { controller.invalidate() }
+        var failures: [String] = []
+        func choose(_ mode: ExternalDisplayMode) -> [String] {
+            let count = screen.requests.count
+            controller.session.chooseExternalDisplay(mode) { failures.append($0.localizedDescription) }
+            return Array(screen.requests.dropFirst(count))
+        }
+        func timeOut() async throws {
+            let count = failures.count
+            for _ in 0..<100 where failures.count == count { try await Task.sleep(for: .milliseconds(20)) }
+        }
+        // CarPlay chosen again while its start has no answer keeps that start
+        // instead of another, and the session it gives ends with Disabled.
+        screen.defersCarPlaySessions = true
+        _ = choose(.carPlay)
+        try await timeOut()
+        #expect(choose(.carPlay) == ["save carplay", "mode 800x480@2 carplay", "connect service"])
         screen.deliverCarPlaySessions()
         #expect(screen.carPlaySessions == 1)
         screen.defersCarPlaySessions = false
-        let count = screen.requests.count
-        controller.session.chooseExternalDisplay(.disabled) { failures.append($0.localizedDescription) }
-        #expect(Array(screen.requests.dropFirst(count)) == ["save off", "off", "remove service", "stop carplay"])
-        #expect(screen.carPlaySessions == 0 && failures.count == 1)
+        #expect(choose(.disabled) == ["save off", "off", "remove service", "stop carplay"])
+        #expect(screen.carPlaySessions == 0)
+        // A start that succeeds after Disabled already ran leaves a session,
+        // which the next change that ends CarPlay ends.
+        screen.defersCarPlaySessions = true
+        _ = choose(.carPlay)
+        try await timeOut()
+        #expect(choose(.disabled) == ["save off", "off"])
+        screen.deliverCarPlaySessions()
+        #expect(screen.carPlaySessions == 1)
+        screen.defersCarPlaySessions = false
+        #expect(choose(.size1920x1080) == ["save off", "remove service", "stop carplay", "mode 1920x1080@1"])
+        #expect(screen.carPlaySessions == 0 && failures.count == 2)
     }
 
     @Test func aCarPlaySessionThatEndsAfterItsChangeTimedOutIsNotEndedAgain() async throws {
         let screen = TestExternalScreen()
-        let (controller, _) = try makeExternalDisplayController(
-            screen, features: Self.carPlayFeatures,
-            externalDisplayChanges: ExternalDisplayChanges(completionTimeout: .milliseconds(50),
-                                                           carPlayReconnectionDelay: .zero))
+        let controller = try makeSlowCarPlayController(screen)
         defer { controller.invalidate() }
         var failures: [String] = []
         func choose(_ mode: ExternalDisplayMode) -> [String] {
