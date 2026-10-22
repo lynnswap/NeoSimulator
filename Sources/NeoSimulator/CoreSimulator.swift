@@ -221,6 +221,9 @@ final class SimulatorDevice {
     /// The screen's corner radius in points, from the device type's
     /// `DeviceCornerRadius` capability; 0 for a square screen.
     let screenCornerRadius: Double
+    /// The device type's `DeviceSupportsEnhancedMultitasking` capability: the
+    /// guest runs Stage Manager, also on an external display.
+    let supportsEnhancedMultitasking: Bool
     /// The screen's points per inch, `SimDeviceType.mainScreenDPI`'s width
     /// over `mainScreenScale`, or nil without a device type.
     let screenPointsPerInch: Double?
@@ -251,7 +254,9 @@ final class SimulatorDevice {
         deviceTypeName = try deviceType.flatMap { try unsafe interface.deviceTypeName.unsafeInvoke(on: $0) } ?? ""
         hasFramebufferMask = try deviceType.flatMap { try unsafe interface.framebufferMaskURL.unsafeInvoke(on: $0) } != nil
         let capabilities = try deviceType.flatMap { try unsafe interface.deviceTypeCapabilities.unsafeInvoke(on: $0) }
-        screenCornerRadius = ((capabilities?["capabilities"] as? NSDictionary)?["DeviceCornerRadius"] as? NSNumber)?.doubleValue ?? 0
+        let deviceCapabilities = capabilities?["capabilities"] as? NSDictionary
+        screenCornerRadius = (deviceCapabilities?["DeviceCornerRadius"] as? NSNumber)?.doubleValue ?? 0
+        supportsEnhancedMultitasking = deviceCapabilities?["DeviceSupportsEnhancedMultitasking"] as? Bool ?? false
         screenPointsPerInch = try deviceType.map {
             Double(try unsafe interface.mainScreenDPI.unsafeInvoke(on: $0).width)
                 / Double(try unsafe interface.mainScreenScale.unsafeInvoke(on: $0))

@@ -469,16 +469,21 @@ protocol SimulatorExternalScreen: AnyObject {
     /// When the device last booted. The guest's CarPlay session belongs to
     /// the boot that started it.
     var deviceBootDate: Date? { get }
-    /// The screen's power, size, scale, and CarPlay as CoreSimulator reports them now.
+    /// The screen's power, size, scale, CarPlay, and refresh rate as
+    /// CoreSimulator reports them now.
     func state() throws -> ExternalScreenState
+    /// The modes the screen advertises, `supportedScreenModes`, which stay the
+    /// same while the device runs; only their order changes between reads.
+    func supportedModes() throws -> [ExternalScreenMode]
     /// `SimScreen setCurrentMode:pixelSize:carPlayProperties:…` with the mode
-    /// Simulator.app chooses for `pixelSize` at `scale`, which also turns the
-    /// screen on. With `carPlay`, the properties of Simulator.app's default
-    /// CarPlay configuration (`SimCarPlayPropertyKeyStark` and
-    /// `SimCarPlayPropertyKeyHasTouchScreen`) make it a CarPlay screen;
-    /// without, it has none. `completion` receives CoreSimulator's result on
-    /// the main actor; a thrown error, such as for a size that no mode takes,
-    /// means nothing was sent.
+    /// `ExternalScreenMode.choice(for:scale:current:among:)` chooses for
+    /// `pixelSize` at `scale`, which also turns the screen on. With `carPlay`,
+    /// the properties of Simulator.app's default CarPlay configuration
+    /// (`SimCarPlayPropertyKeyStark` and `SimCarPlayPropertyKeyHasTouchScreen`)
+    /// make it a CarPlay screen; without, it has none. `completion` receives
+    /// CoreSimulator's result on the main actor; a thrown error, such as an
+    /// `ExternalDisplayLimit` for a size the device cannot show, means nothing
+    /// was sent.
     func setMode(pixelSize: CGSize, scale: CGFloat, carPlay: Bool,
                  completion: @escaping @MainActor (Error?) -> Void) throws
     /// `SimScreen setPowerState:0 …`. `completion` receives CoreSimulator's
@@ -520,7 +525,8 @@ final class SimulatorExternalScreenConnection: SimulatorExternalScreen {
                        "setPowerState:completionQueue:completionHandler:", "screenProperties"]),
         ("SimScreenProperties", ["powerState", "screenType", "pixelSize", "currentMode", "supportedScreenModes",
                                  "carPlayProperties"]),
-        ("SimScreenMode", ["sizeRule", "exactSize", "minSize", "maxSize", "allowedSizes", "preferredUIScale"]),
+        ("SimScreenMode", ["sizeRule", "exactSize", "minSize", "maxSize", "allowedSizes", "preferredUIScale",
+                           "refreshRate"]),
     ]
 
     typealias Completion = @convention(block) (NSError?) -> Void
@@ -573,27 +579,23 @@ final class SimulatorExternalScreenConnection: SimulatorExternalScreen {
             isPoweredOn: try messages.send("powerState", to: properties, as: Int32.self) == 1,
             pixelSize: try messages.send("pixelSize", to: properties, as: CGSize.self),
             scale: try currentMode.map { CGFloat(try messages.send("preferredUIScale", to: $0, as: Double.self)) } ?? 0,
-            isCarPlay: try messages.send("carPlayProperties", to: properties, as: NSDictionary?.self) != nil)
+            isCarPlay: try messages.send("carPlayProperties", to: properties, as: NSDictionary?.self) != nil,
+            refreshRate: try currentMode.map { try refreshRate(of: $0) } ?? 0)
     }
+
+    func supportedModes() throws -> [ExternalScreenMode] { try advertisedModes().map(mode) }
 
     func setMode(pixelSize size: CGSize, scale: CGFloat, carPlay: Bool,
                  completion: @escaping @MainActor (Error?) -> Void) throws {
         let simScreen = try connectedScreen()
-        let messages = runtime.display.screenMessages
-        let properties = try self.properties()
-        let advertised = try messages.send("supportedScreenModes", to: properties, as: [AnyObject]?.self) ?? []
-        let current = try state()
-        let modes = try advertised.map(mode)
-        let target: AnyObject?
-        switch ExternalScreenMode.choice(for: size, scale: scale, currentSize: current.pixelSize,
-                                         currentScale: current.scale, among: modes) {
-        case .current: target = try messages.send("currentMode", to: properties, as: AnyObject?.self)
-        case .advertised(let index): target = advertised[index]
-        case nil: target = nil
+        // One read of the modes, whose order the choice's index refers to.
+        let advertised = try advertisedModes()
+        let target: AnyObject? = switch try ExternalScreenMode.choice(
+            for: size, scale: scale, current: try state(), among: try advertised.map(mode)) {
+        case .current: try runtime.display.screenMessages.send("currentMode", to: try properties(), as: AnyObject?.self)
+        case .advertised(let index): advertised[index]
         }
-        guard let target else {
-            throw HostError.operation("The external display has no mode for \(Int(size.width))×\(Int(size.height)) at a scale of \(scale).")
-        }
+        guard let target else { throw HostError.operation("The external display has no current mode.") }
         try unsafe setCurrentMode.unsafeInvoke(on: simScreen, target, size,
                                                carPlay ? runtime.display.carPlayProperties : nil, .main,
                                                Self.completed(completion))
@@ -656,7 +658,18 @@ final class SimulatorExternalScreenConnection: SimulatorExternalScreen {
         default: nil
         }
         return ExternalScreenMode(sizes: sizes,
-                                  scale: CGFloat(try messages.send("preferredUIScale", to: object, as: Double.self)))
+                                  scale: CGFloat(try messages.send("preferredUIScale", to: object, as: Double.self)),
+                                  refreshRate: try refreshRate(of: object))
+    }
+
+    /// A `SimScreenMode`'s `refreshRate`, which CoreSimulator gives in
+    /// hundredths of a hertz, in hertz.
+    private func refreshRate(of mode: AnyObject) throws -> Double {
+        Double(try runtime.display.screenMessages.send("refreshRate", to: mode, as: UInt32.self)) / 100
+    }
+
+    private func advertisedModes() throws -> [AnyObject] {
+        try runtime.display.screenMessages.send("supportedScreenModes", to: try properties(), as: [AnyObject]?.self) ?? []
     }
 
     // CoreSimDeviceIO can complete on a thread of its own despite the

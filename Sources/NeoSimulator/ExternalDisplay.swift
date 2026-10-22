@@ -94,6 +94,9 @@ struct ExternalScreenState: Equatable {
     /// `carPlayProperties` is not nil: the screen is a CarPlay screen, as
     /// SimulatorKit's `SimDeviceScreen.isCarPlay` says of a TVOut screen.
     var isCarPlay = false
+    /// `currentMode.refreshRate` in hertz, which decides what the guest
+    /// shows (see `ExternalScreenMode.guestSize(for:refreshRate:among:)`).
+    var refreshRate: Double = 60
 
     /// The External Displays item this state is: Disabled while the screen is
     /// off, CarPlay while it is a CarPlay screen, otherwise the size it shows
@@ -107,7 +110,7 @@ struct ExternalScreenState: Equatable {
 }
 
 /// A mode that a screen advertises, `SimScreenMode`: the pixel sizes it
-/// takes, by its `sizeRule`, at its `preferredUIScale`.
+/// takes, by its `sizeRule`, at its `preferredUIScale` and `refreshRate`.
 struct ExternalScreenMode: Equatable {
     enum Sizes: Equatable {
         /// Size rule 0: `exactSize`.
@@ -122,6 +125,8 @@ struct ExternalScreenMode: Equatable {
     /// know. Simulator.app traps on such a rule; here the mode takes no size.
     var sizes: Sizes?
     var scale: CGFloat
+    /// In hertz; CoreSimulator reports hundredths of a hertz.
+    var refreshRate: Double
 
     func accepts(_ size: CGSize, scale: CGFloat) -> Bool {
         guard scale == self.scale, let sizes else { return false }
@@ -134,20 +139,118 @@ struct ExternalScreenMode: Equatable {
         }
     }
 
-    /// Which mode Simulator.app sets for `size` at `scale`: the screen's
-    /// current mode when the screen already has that size and that mode has
-    /// that scale, otherwise the first advertised mode that takes both. Nil
-    /// when none does.
+    /// The refresh rates at which the guest keeps an external display's mode.
+    /// The guest's SpringBoard has CoreAnimation pick the display's mode
+    /// without a refresh rate of its own, and CoreAnimation then takes only
+    /// modes from 49 to 60.5 Hz (`ModeSet::preferred_mode_with_criteria_internal`
+    /// in the QuartzCore of the iOS 18.5, 26.0, and 26.5 runtimes).
+    static let guestRefreshRates: ClosedRange<Double> = 49...60.5
+
+    /// The size the guest shows on a display set to `size` at `refreshRate`
+    /// by a screen that advertises `modes`. The guest lists the display's
+    /// current mode and the screen's exact modes, which come from the device
+    /// type (720×480 at 60 Hz for a TVOut screen), and SpringBoard switches
+    /// the display to the one with the most pixels per second, width × height
+    /// × whole hertz (CoreAnimation's `Display::Mode::operator<`), at a rate
+    /// it keeps. So a 120 Hz mode ends at the exact 720×480 mode, as does any
+    /// smaller size, such as 640×480, while the screen and its window keep the
+    /// size that was set, with the guest's picture in its top-left corner.
+    static func guestSize(for size: CGSize, refreshRate: Double, among modes: [ExternalScreenMode]) -> CGSize {
+        let exact = modes.compactMap { mode -> (size: CGSize, rate: Double)? in
+            guard case .exact(let size) = mode.sizes else { return nil }
+            return (size, mode.refreshRate)
+        }
+        func pixelRate(_ mode: (size: CGSize, rate: Double)) -> Double {
+            mode.size.width * mode.size.height * mode.rate.rounded(.down)
+        }
+        // The display's own mode comes first and so wins a tie.
+        var shown: (size: CGSize, rate: Double)?
+        for mode in [(size, refreshRate)] + exact where guestRefreshRates.contains(mode.rate) {
+            if shown.map({ pixelRate(mode) > pixelRate($0) }) ?? true { shown = mode }
+        }
+        return shown?.size ?? size
+    }
+
+    /// Which mode NeoSimulator sets for `size` at `scale`, with that size.
     enum Choice: Equatable {
         case current
         case advertised(Int)
     }
 
-    static func choice(for size: CGSize, scale: CGFloat, currentSize: CGSize, currentScale: CGFloat,
-                       among modes: [ExternalScreenMode]) -> Choice? {
-        if currentSize == size, currentScale == scale { return .current }
-        return modes.firstIndex { $0.accepts(size, scale: scale) }.map(Choice.advertised)
+    /// Like Simulator.app, the screen's current mode when the screen already
+    /// has `size` at `scale`, otherwise the first advertised mode that takes
+    /// both, except that the mode must also have a refresh rate the guest
+    /// keeps, whatever the order of `modes`. When the only modes that take the
+    /// size are at rates the guest drops, such as the 120 Hz modes of
+    /// `allowedSizes` that are a TVOut screen's only modes on an iPad, or on an
+    /// iPhone from iOS 27, the first mode of that scale at a rate the guest
+    /// keeps is set with the size instead. CoreSimulator makes the screen's
+    /// mode from the size and that mode's scale, refresh rate, and format, and
+    /// takes it when the screen's size specification does: the TVOut screen's
+    /// takes 30, 60, 75, and 120 Hz but advertises only 120 Hz
+    /// (SimRenderServer 1174.9.2 `0x100027240`–`0x1000272C0`). Simulator.app
+    /// sets the 120 Hz mode, which the guest replaces with its 720×480 mode.
+    ///
+    /// Throws when no mode takes the size at the scale, or when the guest
+    /// would show another size (see `guestSize(for:refreshRate:among:)`).
+    static func choice(for size: CGSize, scale: CGFloat, current: ExternalScreenState?,
+                       among modes: [ExternalScreenMode]) throws(ExternalDisplayLimit) -> Choice {
+        let keeps = { (rate: Double) in guestRefreshRates.contains(rate) }
+        let takes = { (mode: ExternalScreenMode) in mode.accepts(size, scale: scale) }
+        let choice: Choice
+        let rate: Double
+        if let current, current.pixelSize == size, current.scale == scale, keeps(current.refreshRate) {
+            (choice, rate) = (.current, current.refreshRate)
+        } else if let index = modes.firstIndex(where: { takes($0) && keeps($0.refreshRate) }) {
+            (choice, rate) = (.advertised(index), modes[index].refreshRate)
+        } else if modes.contains(where: takes),
+                  let index = modes.firstIndex(where: { $0.scale == scale && keeps($0.refreshRate) }) {
+            (choice, rate) = (.advertised(index), modes[index].refreshRate)
+        } else if let index = modes.firstIndex(where: takes) {
+            // Only at rates the guest drops: the check below reports what it shows instead.
+            (choice, rate) = (.advertised(index), modes[index].refreshRate)
+        } else {
+            throw .noMode
+        }
+        let shown = guestSize(for: size, refreshRate: rate, among: modes)
+        guard shown == size else { throw .showsInstead(shown) }
+        return choice
     }
+}
+
+/// Why a device cannot show an External Displays item, which the item says
+/// and a choice of it reports instead of changing the display.
+enum ExternalDisplayLimit: LocalizedError, Equatable {
+    /// No mode of the device's external display takes the item's size at its scale.
+    case noMode
+    /// The guest shows its mode of this size instead (see
+    /// `ExternalScreenMode.guestSize(for:refreshRate:among:)`).
+    case showsInstead(CGSize)
+    /// iPadOS before 27 on an iPad with Stage Manager makes a 3840×2160
+    /// display at 60 Hz an extended display, and its SpringBoard then aborts
+    /// (`SBSystemShellExtendedDisplayControllerPolicy.m:199`) as soon as the
+    /// display changes or turns off. iOS 18.6, 26.0, and 26.5 did; 27.0 did not.
+    case extendedDisplay
+
+    var errorDescription: String? {
+        switch self {
+        case .noMode: "The external display has no mode for this size."
+        case .showsInstead(let size):
+            "The device would show its own \(Self.name(size)) mode instead, which has more pixels at up to 60 Hz."
+        case .extendedDisplay:
+            "The device would make it an extended display, and its SpringBoard quits when such a display changes or turns off."
+        }
+    }
+
+    /// What the item's subtitle says.
+    var menuSubtitle: String {
+        switch self {
+        case .noMode, .extendedDisplay: "Not available on this device"
+        case .showsInstead(let size): "This device shows \(Self.name(size))"
+        }
+    }
+
+    static func name(_ size: CGSize) -> String { "\(Int(size.width))×\(Int(size.height))" }
 }
 
 private let externalDisplayKey = "SimulatorExternalDisplay"

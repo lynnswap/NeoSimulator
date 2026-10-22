@@ -15,8 +15,13 @@ import AppKit
 @MainActor
 final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegate, DisplayScaling {
     /// The subtitle's label, which Simulator.app shows where a device window
-    /// shows the runtime.
-    static func subtitle(isCarPlay: Bool) -> String { isCarPlay ? "CarPlay" : "External Display" }
+    /// shows the runtime. Unlike Simulator.app's, it also gives the size the
+    /// guest shows when that is not the display's: the guest then draws that
+    /// size in the display's top-left corner.
+    static func subtitle(isCarPlay: Bool, guestSize: CGSize? = nil) -> String {
+        guard !isCarPlay else { return "CarPlay" }
+        return guestSize.map { "External Display – Device Shows \(ExternalDisplayLimit.name($0))" } ?? "External Display"
+    }
 
     /// Like Simulator.app, a CarPlay window takes no full screen space of its
     /// own and may accompany a window in full screen.
@@ -45,6 +50,8 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
     private var screenSize: NSSize
     /// Whether the display is a CarPlay screen, which the subtitle names.
     private var isCarPlay: Bool
+    /// The size the guest shows when it is not the display's, which the subtitle names.
+    private var guestSize: CGSize?
     /// Whether the window is key, while the display can take the Mac's keyboard.
     private(set) var isKey = false
     private let keyboard: DisplayKeyboardInput
@@ -67,6 +74,7 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
         content = ExternalDisplayContentView(display: display.view)
         screenSize = Self.points(of: state) ?? .zero
         isCarPlay = state.isCarPlay
+        guestSize = session.externalDisplayGuestSize(for: state)
         guard screenSize.width > 0, screenSize.height > 0 else {
             display.disconnect()
             throw HostError.unavailable("The external display has no usable size")
@@ -79,8 +87,8 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
         keyboard = DisplayKeyboardInput(window: window, display: display)
         fitting = DisplayFitting(display: display, content: content)
         super.init(window: window)
-        (window.title, window.subtitle) = deviceWindowTitles(name: session.device.name,
-                                                             runtimeName: Self.subtitle(isCarPlay: isCarPlay))
+        (window.title, window.subtitle) = deviceWindowTitles(
+            name: session.device.name, runtimeName: Self.subtitle(isCarPlay: isCarPlay, guestSize: guestSize))
         window.appearance = NSAppearance(named: .darkAqua)
         window.titlebarSeparatorStyle = .none
         window.tabbingMode = .disallowed
@@ -284,11 +292,15 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
     /// display becoming a CarPlay screen or another.
     func screenChanged(_ state: ExternalScreenState) {
         guard !closed else { return }
-        if state.isCarPlay != isCarPlay, let window {
+        let guestSize = session.externalDisplayGuestSize(for: state)
+        if state.isCarPlay != isCarPlay || guestSize != self.guestSize, let window {
+            if state.isCarPlay != isCarPlay {
+                window.collectionBehavior = Self.collectionBehavior(isCarPlay: state.isCarPlay)
+            }
             isCarPlay = state.isCarPlay
-            (window.title, window.subtitle) = deviceWindowTitles(name: session.device.name,
-                                                                 runtimeName: Self.subtitle(isCarPlay: isCarPlay))
-            window.collectionBehavior = Self.collectionBehavior(isCarPlay: isCarPlay)
+            self.guestSize = guestSize
+            (window.title, window.subtitle) = deviceWindowTitles(
+                name: session.device.name, runtimeName: Self.subtitle(isCarPlay: isCarPlay, guestSize: guestSize))
         }
         guard let size = Self.points(of: state), size != screenSize else { return }
         screenSize = size

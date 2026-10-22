@@ -281,7 +281,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                            hasFramebufferMask: device.hasFramebufferMask,
                            screenCornerRadius: device.screenCornerRadius,
                            screenPointsPerInch: device.screenPointsPerInch,
-                           hasUserInterfacePlugin: device.hasUserInterfacePlugin)
+                           hasUserInterfacePlugin: device.hasUserInterfacePlugin,
+                           supportsEnhancedMultitasking: device.supportsEnhancedMultitasking)
     }
 
     func openSimulator(withIdentifier identifier: String) async throws {

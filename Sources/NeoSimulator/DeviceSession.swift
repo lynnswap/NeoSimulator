@@ -23,6 +23,9 @@ struct DeviceCapabilities {
     /// Whether the device type has a user-interface plugin, which
     /// SimulatorKit loads for its display, such as Apple Vision Pro's.
     var hasUserInterfacePlugin = false
+    /// Whether the guest runs Stage Manager, also on an external display
+    /// (`DeviceSupportsEnhancedMultitasking`), as iPads from M1 do.
+    var supportsEnhancedMultitasking = false
 
     var isPhoneOrPad: Bool { family == .iPhone || family == .iPad }
     /// Whether Window ▸ Show Device Bezels applies. Simulator.app hides it for
@@ -35,6 +38,16 @@ struct DeviceCapabilities {
     /// Whether I/O ▸ External Displays ▸ CarPlay applies: like Simulator.app,
     /// the device also supports CarPlay.
     var supportsCarPlay: Bool { supportsExternalDisplays && supportsFeature(Self.carPlay) }
+
+    /// Why the device cannot show an External Displays item whatever its
+    /// external display offers, or nil: iPadOS before 27 on an iPad with Stage
+    /// Manager cannot leave a 3840×2160 display at 60 Hz (see
+    /// `ExternalDisplayLimit.extendedDisplay`), and at 120 Hz it would show
+    /// 720×480.
+    func externalDisplayLimit(for mode: ExternalDisplayMode) -> ExternalDisplayLimit? {
+        mode == .size3840x2160 && family == .iPad && supportsEnhancedMultitasking && runtimeVersion < 0x1B_00_00
+            ? .extendedDisplay : nil
+    }
 
     static let displayRotation = "com.apple.CoreSimulator.display.rotation"
     static let actionButtonSting = "com.apple.hid.sting"
@@ -1053,6 +1066,9 @@ final class DeviceSession {
     private(set) var externalScreen: ExternalScreenState?
     /// The session's connection to the device's external display.
     @ObservationIgnored private var externalScreenConnection: (any SimulatorExternalScreen)?
+    /// The modes the external display advertises, read when the session
+    /// connects to it; nil before then or when they cannot be read.
+    private var externalScreenModes: [ExternalScreenMode]?
     /// The changes sent to the device's external display, which the device's
     /// sessions share.
     @ObservationIgnored private let externalDisplayChanges: ExternalDisplayChanges
@@ -1071,6 +1087,31 @@ final class DeviceSession {
     /// checks, or nil when no item does. Simulator.app checks the device's
     /// saved choice instead, which a failure or `simctl` leaves behind.
     var externalDisplayMode: ExternalDisplayMode? { externalScreen?.mode }
+
+    /// Why the device cannot show `mode`, which its item then says and a
+    /// choice of it reports, or nil when it can, or when the session has not
+    /// read the external display's modes yet and so cannot tell.
+    /// Simulator.app offers every item and sets the size anyway.
+    func externalDisplayLimit(for mode: ExternalDisplayMode) -> ExternalDisplayLimit? {
+        if let limit = capabilities.externalDisplayLimit(for: mode) { return limit }
+        guard let size = mode.pixelSize, let modes = externalScreenModes else { return nil }
+        do throws(ExternalDisplayLimit) {
+            _ = try ExternalScreenMode.choice(for: size, scale: mode.scale, current: nil, among: modes)
+            return nil
+        } catch {
+            return error
+        }
+    }
+
+    /// The size the guest shows on the external display in `state` when it
+    /// is not the display's size, as when another tool set a 120 Hz mode or
+    /// 640×480 (see `ExternalScreenMode.guestSize(for:refreshRate:among:)`),
+    /// or nil. A CarPlay screen shows the guest's CarPlay.
+    func externalDisplayGuestSize(for state: ExternalScreenState) -> CGSize? {
+        guard state.isPoweredOn, !state.isCarPlay, let modes = externalScreenModes else { return nil }
+        let shown = ExternalScreenMode.guestSize(for: state.pixelSize, refreshRate: state.refreshRate, among: modes)
+        return shown == state.pixelSize ? nil : shown
+    }
 
     /// Connects to the device's external display and applies the device's
     /// saved choice, as Simulator.app does when a device connects: a size
@@ -1157,6 +1198,8 @@ final class DeviceSession {
             // A device whose external display was not listed is asked again.
             if externalScreenConnection == nil { _ = try attachExternalScreen() }
             guard let externalScreenConnection else { throw HostError.unavailable("The device has no external display port.") }
+            // Unlike Simulator.app, a size the device cannot show changes nothing.
+            if let limit = externalDisplayLimit(for: mode) { throw limit }
             // Like Simulator.app, a choice on a device with CarPlay writes its
             // CarPlay configuration.
             externalDisplayChanges.apply(mode, through: externalScreenConnection,
@@ -1189,6 +1232,9 @@ final class DeviceSession {
         guard let screen = try display.connectExternalScreen(changed: { [weak self] in self?.externalScreenChanged() })
         else { return false }
         externalScreenConnection = screen
+        do { externalScreenModes = try screen.supportedModes() } catch {
+            hostLog("Could not read the external display modes of \(device.name): \(error.localizedDescription)")
+        }
         externalScreenChanged()
         return true
     }
@@ -1236,6 +1282,7 @@ final class DeviceSession {
             }
         }
         externalScreenConnection = nil
+        externalScreenModes = nil
         externalScreen = nil
         onExternalScreenChange = nil
     }
