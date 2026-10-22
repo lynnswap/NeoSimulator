@@ -3100,7 +3100,7 @@ struct InputFocusTests {
         #expect(controller.externalDisplayWindow == nil)
         // Like Simulator.app's screen monitor, a display that another tool
         // turns on gets its window too.
-        screen.report { $0 = ExternalScreenState(isPoweredOn: true, pixelSize: CGSize(width: 640, height: 480), scale: 1) }
+        screen.report { $0 = ExternalScreenState(isPoweredOn: true, pixelSize: CGSize(width: 720, height: 480), scale: 1) }
         let external = try #require(controller.externalDisplayWindow)
         let window = try #require(external.window)
         let display = try #require(screen.displays.last)
@@ -3117,19 +3117,21 @@ struct InputFocusTests {
         func content() -> NSSize { window.contentRect(forFrameRect: window.frame).size }
         let scale = display.renderScale
         #expect(scale > 0 && scale <= 1)
+        #expect(abs(content().width - 720 * scale) <= 1 && abs(content().height - 480 * scale) <= 1)
+        #expect(window.contentAspectRatio == NSSize(width: 720, height: 480))
+        // A new size keeps the display's scale. The smaller size fits any
+        // screen that the first one fits at this scale.
+        controller.perform(.externalDisplay640x480)
+        #expect(controller.externalDisplayWindow === external && display.renderScale == scale)
         #expect(abs(content().width - 640 * scale) <= 1 && abs(content().height - 480 * scale) <= 1)
         #expect(window.contentAspectRatio == NSSize(width: 640, height: 480))
-        // A new size keeps the display's scale.
-        controller.perform(.externalDisplay1024x768)
-        #expect(controller.externalDisplayWindow === external && display.renderScale == scale)
-        #expect(abs(content().width - 1024 * scale) <= 1 && abs(content().height - 768 * scale) <= 1)
         // The display turning off closes the window without saving Disabled.
         screen.report { $0.isPoweredOn = false }
         #expect(controller.externalDisplayWindow == nil && !window.isVisible)
         #expect(display.disconnectCount == 1)
-        #expect(preferences.externalDisplayTag(forDevice: "test-device") == 2314)
+        #expect(preferences.externalDisplayTag(forDevice: "test-device") == 2214)
         // Turning it on again opens a new window with a new display.
-        controller.perform(.externalDisplay640x480)
+        controller.perform(.externalDisplay720x480)
         #expect(controller.externalDisplayWindow != nil && screen.displays.count == 2)
     }
 
