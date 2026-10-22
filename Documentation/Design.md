@@ -598,11 +598,20 @@ elsewhere on the bezel:
   presses where they stand out of the bezel, and the corners reach the window
   as described above. A press on the display outside the digitizer reaches the
   window at once.
-- Outside full screen, a press that reaches the window on the display, away
-  from the corners, calls AppKit's `performDrag(with:)` (Simulator.app's
+- Before any view, the window server chooses the window: it gives a press on
+  a pixel the window leaves fully transparent to the window behind. The gap
+  below the header draws nothing, so a press there goes to the window behind,
+  as it does in Simulator.app's window, while the whole display view takes
+  presses, also outside the bezel's rounded outline. Simulator.app also turns
+  on the content view layer's private `hitTestsContentsAlphaChannel`; AppKit's
+  backing layers have it on already, and turning it off or on changed none of
+  these results, so NeoSimulator does not set it.
+- Outside full screen, every press that reaches the window away from the
+  corners calls AppKit's `performDrag(with:)` (Simulator.app's
   `performWindowDrag(with:)`), which hands the rest of the drag to the window
-  server. A press on the window outside the display, such as in the gap below
-  the header, moves nothing.
+  server. As in Simulator.app, where no view takes a press outside the
+  display, this includes a press outside the display, such as in the gap,
+  that AppKit gives the window.
 - Simulator.app's app-wide `AllowsMoveByDragOnWindowChrome` turns this off.
   NeoSimulator registers it on in its own defaults, as Simulator.app does, and
   reads it with `UserDefaults.bool(forKey:)` at each press, as Simulator.app

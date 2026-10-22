@@ -235,7 +235,8 @@ server; its window is not resizable while it shows a bezel.
 | Geometry update `0x10004B2E4(size:origin:)` | Both arguments are optional; without them it uses the current content rect. The frame is the content size plus the title bar at the origin, `NSIntegralRect`, moved down when its top is above the visible frame, then `setFrame:display:NO animate:NO`. A flag ignores calls made while it runs, such as from `windowDidResize:`. |
 | Resize cursors: the window's setup `0x100035B50` (from `awakeFromNib` and the initializer), `fullScreenState` `didSet` `0x100036184` | The setup turns `displayView.showResizeCursors` on (`0x100036010`); each full screen change sets it to `fullScreenState == none`, followed by `invalidateCursorRectsForView:`. |
 | Defaults dictionary `0x1000250B4` … `0x1000253AC`, `registerDefaults:` `0x1000253E8` | Registers `AllowsMoveByDragOnWindowChrome` YES (key at `0x1000252C4`, `kCFBooleanTrue` at `0x1000252BC`). The Settings bundle does not list it. |
-| `DeviceWindow` setup `0x100035B50` | Adds the display view to the content view with `constraintEqualToAnchor:` to the content view's bottom, left, and right edges and to its center, so that outside full screen the display view fills the content area below the title bar. |
+| Views under a press outside the display view: setup `0x100035B50`, `DeviceWindow.sendEvent:` `0x100036E20` → `0x100036D60` | The content view is the window's own `NSView`. Below the display view, the setup adds `blurredBackgroundContainerView` (an `NSView` with alpha 0 and the content view's frame, `0x100035C0C`–`0x100035C4C`) holding `visualEffectView` (an `NSVisualEffectView` with the container's frame, `0x100035C50`–`0x100035C98`). AppKit's hit test does not skip a view with alpha 0, so a press in the gap above the display view hits the effect view; `NSVisualEffectView` takes `NSView`'s `mouseDown:`, `hitTest:`, and `mouseDownCanMoveWindow`, and none of these views is Simulator.app's own class. `sendEvent:` only drops an event equal to the previous one (`_previousEvent`) before calling `super`. The press therefore reaches `DeviceWindow.mouseDown:`, which moves the window. |
+| Setup `0x100036024`–`0x100036040` | Sets the content view's layer's private `hitTestsContentsAlphaChannel` to YES. AppKit's backing layer (`NSViewBackingLayer`) already has it on. |
 | AppKit (macOS 26.6.2) `-[NSWindow performWindowDragWithEvent:]` | Calls `_beginWindowDragWithEvent:options:completionHandler:`, which passes the event's location in the window to `_dragWindowRelativeToMouseDown:options:completionHandler:`; that reaches SkyLight's `SLSPackagesDragWindowRelativeToMouse` through `_dragWindowRelativeToMouseDown:options:`, so the window server moves the window for the rest of the drag. |
 
 SimulatorKit (Xcode 27.1):
@@ -271,19 +272,33 @@ a key window:
 On each button, `hitTest:` returns `SimChromeButton` on the part outside the
 bezel's image and the digitizer on the part over it.
 
+The window server chooses the window before AppKit's hit test.
+`NSWindow.windowNumber(at:belowWindowWithWindowNumber:)` names the window
+that a mouse down at a point would hit; it was read with an opaque window
+right behind the device window and both above other apps' windows, without
+posting events. It named the device window for x 1.5, a point outside the
+bezel image's rounded corner, the bezel image, the screen, and the header's
+capsule, and the window behind for the gap below the header and for the
+header rectangle's corner outside the capsule. Turning the content view
+layer's `hitTestsContentsAlphaChannel` on or off changed none of these. A
+window rebuilt as Simulator.app builds its own (titled without a full-size
+content view, clear, the alpha-0 container with an `NSVisualEffectView`, the
+flag set, and an opaque view 10 points below the content view's top) gave the
+window behind for the gap, where AppKit's hit test returns the
+`NSVisualEffectView`, with the flag on or off.
+
 NeoSimulator reads `typedResizeRects` through ABIBridge: the getter returns
 the array as a runtime value, `Array.count` and `Array.subscript` bound to
 `TypedResizeRect` read its elements, and `TypedResizeRect.rect`, `type`, and
 `ResizeRectType.rawValue` read each one. `DeviceWindow` passes the mouse
 events that reach it to `DeviceWindowController`, which tracks a corner drag
-as above. For another press on the display view while
-`AllowsMoveByDragOnWindowChrome` is on, it calls `performDrag(with:)`. Unlike
+as above. For any other press while `AllowsMoveByDragOnWindowChrome` is on,
+it calls `performDrag(with:)`. Unlike
 Simulator.app, it converts the press to the display view's coordinates, reads
 the pointer from each event's `CGEvent` location instead of
-`NSEvent.mouseLocation`, does not post the live resize notifications, starts
-no drag of either kind in full screen, and moves the window for no press
-outside the display view. The user-visible differences are listed in the
-[design](Design.md#commands-and-menus).
+`NSEvent.mouseLocation`, does not post the live resize notifications, and
+starts no drag of either kind in full screen. The user-visible differences are
+listed in the [design](Design.md#commands-and-menus).
 
 ## Keyboard and touch pressure
 
