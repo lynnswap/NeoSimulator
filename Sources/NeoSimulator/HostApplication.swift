@@ -54,6 +54,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     private var nextWindowPosition = NSPoint.zero
     /// I/O ▸ Touch Pressure's settings, which every device window shares.
     private let touchPressure = TouchPressure()
+    /// Window ▸ Show Apple TV Remote's panel, which every device window shares.
+    private let tvRemote = TVRemoteController()
     /// Edit ▸ Automatically Sync Pasteboard, for the devices that have windows.
     private lazy var pasteboardSync = PasteboardSync { [weak self] in
         self?.sessions.values.map(\.session) ?? []
@@ -392,7 +394,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                             connectExternalDisplay(of: session)
                             return
                         }
-                        let controller = try DeviceWindowController(session: session, touchPressure: touchPressure, onClose: { [weak self] in
+                        let controller = try DeviceWindowController(session: session, touchPressure: touchPressure, tvRemote: tvRemote, onClose: { [weak self] in
                             self?.deviceWindowClosed($0, choice: $1)
                         }, onRestart: { [weak self] in self?.restartDevice($0, erasing: $1) })
                         try conflicts.check()

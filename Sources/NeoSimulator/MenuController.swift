@@ -162,7 +162,7 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
         item("Minimize", action: #selector(minimizeWindow(_:)), key: "m", in: window)
         item("Enter Full Screen", action: #selector(fullScreen(_:)), key: "f", modifiers: [.command, .control], in: window)
         item("Show Device Bezels", action: #selector(toggleShowDeviceBezels(_:)), in: window)
-        commands([.stayOnTop], in: window)
+        commands([.appleTVRemote, .stayOnTop], in: window)
         window.addItem(.separator())
         commands([.physicalSize, .pointAccurate, .pixelAccurate, .fitScreen], in: window)
         window.addItem(.separator())

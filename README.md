@@ -102,6 +102,10 @@ Neo currently provides:
   its toolbar has Home, Save Screen, Capture Pointer, Capture Keyboard, and
   Simulated Scenes. Capture Pointer and Capture Keyboard do not capture the
   Mac's input, which Neo leaves out;
+- Window → Show Apple TV Remote (Shift-Command-R) for Apple TV: Simulator.app's
+  onscreen remote, whose Menu, TV, Siri, Play/Pause, and Volume Up and Down
+  buttons stay pressed while you hold them, and whose touch surface is Select
+  when you click it and a touch while you hold Option with the pointer over it;
 - Simulator.app's Save Screen, Record Screen, and Copy Screen commands, with
   its file names, save folders, and device-mask option; recordings are
   finalized when a window closes or the app quits;
@@ -152,9 +156,9 @@ device's runtime and type.
 
 Watches, Apple TV, and Apple Vision Pro show the commands Simulator.app shows
 for them: Lock and Side Button for watches, and no Lock for Apple TV or Apple
-Vision Pro. Watch gestures and Digital Crown scrolling, the Apple TV Remote
-window, and the visionOS camera, scene, and immersion commands of the Device,
-I/O, and Debug menus are not available yet. File → New Simulator… does not
+Vision Pro. Watch gestures and Digital Crown scrolling, and the visionOS
+camera, scene, and immersion commands of the Device, I/O, and Debug menus are
+not available yet. File → New Simulator… does not
 create a paired Apple Watch yet.
 
 Neo also shows the devices Xcode boots for parallel testing, from

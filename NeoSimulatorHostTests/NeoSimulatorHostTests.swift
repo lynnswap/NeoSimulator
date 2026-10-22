@@ -1019,6 +1019,270 @@ struct InputFocusTests {
         #expect(try visible("Window", .watch).contains("Show Device Bezels"))
     }
 
+    // MARK: Apple TV Remote
+
+    @Test func theAppleTVRemoteItemShowsAndHidesTheRemoteAsInSimulatorApp() throws {
+        _ = NSApplication.shared
+        let menus = MenuController(application: nil)
+        menus.install()
+        defer { NSApp.mainMenu = nil }
+        let windowMenu = try #require(NSApp.mainMenu?.items.first { $0.title == "Window" }?.submenu)
+        let item = try #require(windowMenu.items.first { $0.title == "Show Apple TV Remote" })
+        // Simulator.app's MainMenu.nib places it after Show Device Bezels, with Shift-Command-R.
+        let index = windowMenu.index(of: item)
+        #expect(windowMenu.items[index - 1].title == "Show Device Bezels")
+        #expect(windowMenu.items[index + 1].title == "Stay On Top")
+        #expect(item.keyEquivalent == "r" && item.keyEquivalentModifierMask == [.command, .shift])
+        // It shows for every device and is enabled for an Apple TV.
+        for family in [DeviceCapabilities.Family.iPhone, .iPad, .tv, .watch, .vision] {
+            menus.updateVisibility(in: windowMenu, for: DeviceCapabilities(family: family, runtimeVersion: 0x1B_00_00,
+                                                                           supportsFeature: { _ in false }))
+            #expect(!item.isHidden)
+        }
+        let remote = TVRemoteController(target: { nil })
+        let tv = try makeController(TestDisplay(), family: .tv, features: [DeviceCapabilities.tvRemote], tvRemote: remote)
+        let phone = try makeController(TestDisplay(), tvRemote: remote)
+        defer {
+            tv.invalidate()
+            phone.invalidate()
+            remote.close()
+        }
+        let command = DeviceCommand.command(.appleTVRemote)
+        #expect(!command.validate(item, for: phone))
+        #expect(command.validate(item, for: tv))
+        #expect(item.title == "Show Apple TV Remote")
+        // Choosing it shows the remote, and its title then hides it.
+        tv.perform(.appleTVRemote)
+        #expect(remote.isVisible)
+        #expect(command.validate(item, for: tv))
+        #expect(item.title == "Hide Apple TV Remote")
+        tv.perform(.appleTVRemote)
+        #expect(!remote.isVisible)
+        #expect(command.validate(item, for: tv))
+        #expect(item.title == "Show Apple TV Remote")
+        // Like Simulator.app's AppleRemotePanel, the remote never takes the
+        // keyboard from the device window.
+        #expect(remote.window?.canBecomeKey == false)
+    }
+
+    @Test func theRemotesButtonsHoldTheAppleTVsButtonsAsInSimulatorApp() throws {
+        _ = NSApplication.shared
+        let display = TestDisplay()
+        var target: DeviceWindowController?
+        let remote = TVRemoteController(target: { target })
+        let tv = try makeController(display, family: .tv, features: [DeviceCapabilities.tvRemote], tvRemote: remote)
+        let phoneDisplay = TestDisplay()
+        let phone = try makeController(phoneDisplay, tvRemote: remote)
+        defer {
+            tv.invalidate()
+            phone.invalidate()
+            remote.close()
+        }
+        target = tv
+        remote.showWindow(nil)
+        let content = try #require(remote.window?.contentView)
+        func view(_ label: String) throws -> NSView {
+            try #require(content.subviews.first { $0.accessibilityLabel() == label }, "\(label)")
+        }
+        let click = try #require(NSEvent.mouseEvent(
+            with: .leftMouseDown, location: .zero, modifierFlags: [], timestamp: 0,
+            windowNumber: remote.window?.windowNumber ?? 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+        // Each button is down while the mouse holds it; a click on the touch
+        // surface is Select.
+        let buttons: [(String, TVRemoteButton)] = [
+            ("Select", .select), ("Menu", .menu), ("TV", .tv), ("Siri", .siri), ("Play/Pause", .playPause),
+            ("Volume Up", .volumeUp), ("Volume Down", .volumeDown),
+        ]
+        for (label, button) in buttons {
+            let view = try view(label)
+            view.mouseDown(with: click)
+            #expect(display.events.last?.input == .tvRemote(button) && display.events.last?.state == .down, "\(label)")
+            view.mouseUp(with: click)
+            #expect(display.events.last?.input == .tvRemote(button) && display.events.last?.state == .up, "\(label)")
+        }
+        #expect(display.events.count == 14)
+        // Like Simulator.app's actions, only an Apple TV takes them.
+        target = phone
+        try view("Menu").mouseDown(with: click)
+        try view("Menu").mouseUp(with: click)
+        #expect(phoneDisplay.events.isEmpty)
+        // Closing the remote releases a button it holds, and so does the
+        // device's disconnection.
+        target = tv
+        try view("Siri").mouseDown(with: click)
+        remote.close()
+        #expect(display.events.suffix(2).map(\.input) == [.tvRemote(.siri), .tvRemote(.siri)])
+        #expect(display.events.suffix(2).map(\.state) == [.down, .up])
+        remote.showWindow(nil)
+        try view("Play/Pause").mouseDown(with: click)
+        tv.session.disconnect()
+        try view("Play/Pause").mouseUp(with: click)
+        #expect(display.events.suffix(2).map(\.input) == [.tvRemote(.playPause), .tvRemote(.playPause)])
+        #expect(display.events.suffix(2).map(\.state) == [.down, .up])
+        #expect(display.events.count == 18)
+    }
+
+    @Test func theRemotesTouchSurfaceTouchesWhileOptionIsHeldAsInSimulatorApp() throws {
+        _ = NSApplication.shared
+        let display = TestDisplay(), other = TestDisplay()
+        var target: DeviceWindowController?
+        let remote = TVRemoteController(target: { target })
+        let tv = try makeController(display, family: .tv, features: [DeviceCapabilities.tvRemote], tvRemote: remote)
+        let otherTV = try makeController(other, family: .tv, features: [DeviceCapabilities.tvRemote], tvRemote: remote)
+        defer {
+            tv.invalidate()
+            otherTV.invalidate()
+            remote.close()
+        }
+        target = tv
+        remote.showWindow(nil)
+        let window = try #require(remote.window)
+        let surface = try #require(window.contentView?.subviews.compactMap { $0 as? TVRemoteTouchSurface }.first)
+        // A point from 0 to 1 from the surface's top-left corner.
+        func event(_ type: NSEvent.EventType, _ x: CGFloat, _ y: CGFloat, option: Bool) throws -> NSEvent {
+            let location = surface.convert(NSPoint(x: x * surface.bounds.width, y: (1 - y) * surface.bounds.height), to: nil)
+            let flags: NSEvent.ModifierFlags = option ? .option : []
+            if type == .mouseEntered || type == .mouseExited {
+                return try #require(NSEvent.enterExitEvent(
+                    with: type, location: location, modifierFlags: flags, timestamp: 0, windowNumber: window.windowNumber,
+                    context: nil, eventNumber: 0, trackingNumber: 0, userData: nil))
+            }
+            return try #require(NSEvent.mouseEvent(
+                with: type, location: location, modifierFlags: flags, timestamp: 0, windowNumber: window.windowNumber,
+                context: nil, eventNumber: 0, clickCount: 0, pressure: 0))
+        }
+        func touch(_ phase: TVRemoteTouch.Phase, _ x: CGFloat, _ y: CGFloat) -> TVRemoteTouch {
+            TVRemoteTouch(phase: phase, point: CGPoint(x: x, y: y))
+        }
+        surface.mouseEntered(with: try event(.mouseEntered, 0.5, 0.25, option: false))
+        surface.mouseMoved(with: try event(.mouseMoved, 0.5, 0.5, option: false))
+        #expect(display.remoteTouches.isEmpty)
+        // With Option, moving the pointer touches; Option's release, or a
+        // move without it, ends the touch.
+        surface.mouseMoved(with: try event(.mouseMoved, 0.5, 0.25, option: true))
+        surface.mouseMoved(with: try event(.mouseMoved, 0.75, 0.5, option: true))
+        surface.optionChanged(isDown: true)
+        surface.optionChanged(isDown: false)
+        surface.optionChanged(isDown: true)
+        surface.mouseDragged(with: try event(.leftMouseDragged, 0.25, 0.75, option: true))
+        surface.mouseMoved(with: try event(.mouseMoved, 0.25, 0.5, option: false))
+        #expect(display.remoteTouches == [touch(.began, 0.5, 0.25), touch(.moved, 0.75, 0.5), touch(.ended, 0.75, 0.5),
+                                          touch(.began, 0.75, 0.5), touch(.moved, 0.25, 0.75), touch(.ended, 0.25, 0.5)])
+        // The pointer leaving ends the touch, and Option outside the surface touches nothing.
+        surface.optionChanged(isDown: true)
+        surface.mouseExited(with: try event(.mouseExited, 1, 0.5, option: true))
+        surface.optionChanged(isDown: false)
+        surface.optionChanged(isDown: true)
+        #expect(display.remoteTouches.suffix(2) == [touch(.began, 0.25, 0.5), touch(.ended, 1, 0.5)])
+        // A touch that another Apple TV's window becoming key takes leaves the first one.
+        surface.mouseEntered(with: try event(.mouseEntered, 0.5, 0.5, option: true))
+        target = otherTV
+        surface.mouseMoved(with: try event(.mouseMoved, 0.5, 0.75, option: true))
+        #expect(display.remoteTouches.suffix(2) == [touch(.began, 0.5, 0.5), touch(.ended, 0.5, 0.75)])
+        #expect(other.remoteTouches == [touch(.began, 0.5, 0.75)])
+        // Closing the remote ends its touch, and so does the device's disconnection.
+        remote.close()
+        #expect(other.remoteTouches.last == touch(.ended, 0.5, 0.75))
+        remote.showWindow(nil)
+        target = tv
+        surface.mouseEntered(with: try event(.mouseEntered, 0.25, 0.25, option: true))
+        tv.session.disconnect()
+        surface.mouseExited(with: try event(.mouseExited, 0, 0.25, option: true))
+        #expect(display.remoteTouches.suffix(2) == [touch(.began, 0.25, 0.25), touch(.ended, 0.25, 0.25)])
+        #expect(display.remoteTouches.count == 12)
+    }
+
+    @Test func aRemoteButtonOrTouchReportsOneErrorEach() throws {
+        let display = TestDisplay()
+        display.deliveryError = HostError.operation("delivery failed")
+        let controller = try makeController(display, family: .tv, features: [DeviceCapabilities.tvRemote])
+        defer { controller.invalidate() }
+        var failures = 0
+        controller.session.pressRemoteButton(.menu) { _ in failures += 1 }
+        controller.session.releaseRemoteButton(.menu)
+        #expect(display.events.count == 2 && failures == 1)
+        for point in [CGPoint(x: 0.25, y: 0.25), CGPoint(x: 0.5, y: 0.5)] {
+            controller.session.touchRemote(at: point) { _ in failures += 1 }
+        }
+        controller.session.liftRemoteTouch(at: CGPoint(x: 0.5, y: 0.5))
+        #expect(display.remoteTouches.map(\.phase) == [.began, .moved, .ended] && failures == 2)
+    }
+
+    @Test func theRemoteClosesForAnotherDeviceAndWithTheLastAppleTVAsInSimulatorApp() throws {
+        _ = NSApplication.shared
+        let remote = TVRemoteController(target: { nil })
+        func make(_ family: DeviceCapabilities.Family, _ features: Set<String>) throws -> DeviceWindowController {
+            let controller = try makeController(TestDisplay(), family: family, features: features, tvRemote: remote)
+            controller.showWindow(nil)
+            return controller
+        }
+        func becomeKey(_ controller: DeviceWindowController) {
+            controller.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification, object: controller.window))
+        }
+        let tv = try make(.tv, [DeviceCapabilities.tvRemote])
+        let phone = try make(.iPhone, [])
+        defer {
+            tv.invalidate()
+            phone.invalidate()
+            remote.close()
+        }
+        // Another Apple TV's window keeps the remote; any other device's closes it.
+        remote.showWindow(nil)
+        becomeKey(tv)
+        #expect(remote.isVisible)
+        becomeKey(phone)
+        #expect(!remote.isVisible)
+        // Closing an Apple TV's window keeps the remote while another device
+        // window is open; the next key window decides.
+        remote.showWindow(nil)
+        tv.window?.close()
+        #expect(remote.isVisible)
+        // Closing the last device window, an Apple TV's, closes it.
+        let lastTV = try make(.tv, [DeviceCapabilities.tvRemote])
+        defer { lastTV.invalidate() }
+        phone.window?.close()
+        #expect(remote.isVisible)
+        try #require(!NSApp.windows.contains { $0 !== lastTV.window && $0.isVisible && $0.windowController is DeviceWindowController })
+        lastTV.window?.close()
+        #expect(!remote.isVisible)
+        // So does a window that goes away with its device.
+        let shutDown = try make(.tv, [DeviceCapabilities.tvRemote])
+        remote.showWindow(nil)
+        shutDown.invalidate()
+        #expect(!remote.isVisible)
+    }
+
+    @Test func theRemotesMessagesAreSimulatorAppsForThisSimulatorKit() throws {
+        let input = try makeRuntime().input
+        func fields(_ message: OpaquePointer, _ offsets: [Int]) -> [UInt32] {
+            offsets.map { UnsafeRawPointer(message).load(fromByteOffset: $0, as: UInt32.self) }
+        }
+        // A remote button takes 1 when pressed and 0 when released, at the
+        // remote's target; the device's buttons keep 1 and 2 at the screen's.
+        for (state, value) in [(HIDState.down, UInt32(1)), (.up, 0)] {
+            let message = try input.message(.tvRemote(.siri), state, target: 7).take()
+            defer { free(UnsafeMutableRawPointer(message)) }
+            #expect(fields(message, [0x30, 0x34, 0x38]) == [0x3f2, value, 0x15])
+        }
+        let home = try input.message(.button(.home), .up, target: 7).take()
+        defer { free(UnsafeMutableRawPointer(home)) }
+        #expect(fields(home, [0x30, 0x34, 0x38]) == [0, 2, 7])
+        // A touch's start and end change the event masks and touch flags of
+        // both events as Simulator.app's touchStarted and touchEnded do.
+        let expected: [(TVRemoteTouch.Phase, [UInt32])] = [
+            (.began, [0x23, 1, 1, 3, 1, 1]), (.moved, [4, 1, 1, 4, 1, 1]), (.ended, [0x21, 0, 0, 1, 0, 0]),
+        ]
+        for (phase, values) in expected {
+            let message = try input.message(for: TVRemoteTouch(phase: phase, point: CGPoint(x: 0.25, y: 0.75)))
+            defer { free(UnsafeMutableRawPointer(message)) }
+            #expect(fields(message, [0x38, 0x64, 0x68, 0xd8, 0x104, 0x108]) == values, "\(phase)")
+            let raw = UnsafeRawPointer(message)
+            #expect(raw.loadUnaligned(fromByteOffset: 0x3c, as: Double.self) == 0.25)
+            #expect(raw.loadUnaligned(fromByteOffset: 0x44, as: Double.self) == 0.75)
+            #expect(fields(message, [0x6c]) == [0x16])
+        }
+    }
+
     @Test func onlyADeviceThatRotatesReadsItsOrientation() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -5235,6 +5499,7 @@ struct InputFocusTests {
                                 device identifier: String = "test-device",
                                 preferences: MemoryPreferences = MemoryPreferences(),
                                 touchPressure: TouchPressure? = nil,
+                                tvRemote: TVRemoteController? = nil,
                                 keyboardLanguage: @escaping @MainActor () -> String? = { "fr" },
                                 openLog: @escaping (URL) async throws -> Void = { _ in },
                                 pasteboard: NSPasteboard? = nil,
@@ -5256,6 +5521,7 @@ struct InputFocusTests {
         return try DeviceWindowController(
             session: session, preferences: preferences,
             touchPressure: touchPressure ?? TouchPressure(preferences: preferences, forceTouchTrackpad: { false }),
+            tvRemote: tvRemote ?? TVRemoteController(target: { nil }),
             performWindowDrag: performWindowDrag, userInterfacePluginLookUp: userInterfacePluginLookUp,
             onClose: onClose, onRestart: onRestart)
     }
@@ -5644,6 +5910,12 @@ private final class TestDisplay: SimulatorDisplay {
         } else {
             completion?(error)
         }
+    }
+    /// Each touch of the Apple TV Remote's touch surface sent, in order.
+    var remoteTouches: [TVRemoteTouch] = []
+    func send(_ touch: TVRemoteTouch, completion: (@MainActor (Error?) -> Void)?) throws {
+        remoteTouches.append(touch)
+        completion?(deliveryError)
     }
     func toggleAppearance() throws {}
     /// The guest's Darwin notification states, and the names posted in order.

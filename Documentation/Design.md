@@ -108,6 +108,8 @@ signal cannot land between a move and a separate bookkeeping update.
 | Present an external display's window | `ExternalDisplayWindowController` |
 | Give a window's display the Mac's keyboard and the focus, as both windows do | `DisplayKeyboardInput` |
 | Fit a window's display in full screen and during a live resize, as both windows do | `DisplayFitting` |
+| Present the Apple TV Remote and send its input to the device it controls | `TVRemoteController`, one in `HostApplication` |
+| A device's held Apple TV Remote buttons and the remote's touch | `DeviceSession` |
 | Keep the app-wide recent audio routes | `PreferenceStore` (`RecentAudio…DeviceUIDs`) |
 
 The active simulator for a menu command is derived from `NSApp.keyWindow` each
@@ -147,7 +149,9 @@ application, CoreSimulator device set, or display session. This keeps the runtim
 rejecting a changed Xcode before preference mutation. Those lookups include
 `SimDisplayView._userInterfacePlugin`, the `overlayView` and `toolbar`
 messages of `SimDeviceUserInterfacePlugin`, and the `backlight` and `state`
-messages of `SimScreenProperties` and `SimScreenBacklight`. A device type's
+messages of `SimScreenProperties` and `SimScreenBacklight`, and the layout of
+the message `IndigoHIDMessageForTrackpadMoveEvent` builds, whose fields the
+[Apple TV Remote](#apple-tv-remote)'s touches change. A device type's
 user-interface plugin, such as Apple Vision Pro's `XROS.simdeviceui`, is loaded
 only by SimulatorKit when it connects a display, so the gate does not load it;
 the loaded-image check then requires the plugin's bundle to come from the
@@ -343,8 +347,9 @@ The first parity set contains only commands with an available, validated owner:
   Color Copied Images, Color Misaligned Images, Color Off-screen Rendered, Open
   System Log…, Simulate Memory Warning, Show Parallel Testing Devices;
 - Window: standard minimize/zoom/full screen, Show Device Bezels (not for
-  Apple Vision), Stay on Top, Physical Size, Point Accurate, Pixel Accurate,
-  Fit Screen, Simulators, Bring All to Front.
+  Apple Vision), Show Apple TV Remote (enabled for Apple TV), Stay on Top,
+  Physical Size, Point Accurate, Pixel Accurate, Fit Screen, Simulators, Bring
+  All to Front.
 
 File ▸ Open Simulator follows Simulator.app's menu delegate: CoreSimulator's
 available-device order, a submenu per runtime (none for a single runtime), the
@@ -1700,10 +1705,64 @@ capture, excluded above. The toolbar style threshold counts Neo's own Home
 and Save Screen for Apple Vision, where Simulator.app counts its iPhone nib's
 three buttons; the display is wide enough for the unified style either way.
 
-Watch gestures and Digital Crown scrolling, Simulate Fall, the Apple TV
-Remote, the visionOS camera, scene, immersion, Optic ID, and Show Gaze Target
-commands, and creating a paired Apple Watch build on this hosting and are not
-implemented yet.
+Watch gestures and Digital Crown scrolling, Simulate Fall, the visionOS
+camera, scene, immersion, Optic ID, and Show Gaze Target commands, and creating
+a paired Apple Watch build on this hosting and are not implemented yet.
+
+#### Apple TV Remote
+
+Window ▸ Show Apple TV Remote (Shift-Command-R) shows Simulator.app's onscreen
+remote. As there, the item shows for every device, is enabled for an Apple TV,
+and reads Hide Apple TV Remote while the remote shows. The app has one remote,
+`TVRemoteController`, which `HostApplication` gives every device window. Like
+Simulator.app's `AppleRemotePanel`, it is a borderless 155 × 515 panel that
+never becomes key, so the device window keeps the keyboard; it moves by its
+background, hides while the app is inactive, and saves its frame as "Apple TV
+Remote Window". It controls the device of the key device window, or else of
+the frontmost device window, as Simulator.app's `keyDeviceCoordinator`
+chooses, and like `deviceSupportsAppleTVRemote` the session takes its input
+only for an Apple TV.
+
+The buttons send `IndigoHIDMessageForButton` with Simulator.app's button
+numbers (Select `0x190`, Menu `0x191`, TV `0x192`, Play/Pause `0x194`, Volume
+Up `0x195`, Volume Down `0x196`, Siri `0x3F2`) to the remote's target `0x15`:
+1 when the mouse goes down on a button and 0 when it comes up, where the
+device's own buttons take 1 and 2 at the screen's `buttonTarget`. They go
+through the session's `SimDeviceLegacyHIDClient`, as other hardware inputs do.
+A click on the touch surface is Select. While Option is held with the pointer
+over the surface, the pointer touches it: the session sends
+`IndigoHIDMessageForTrackpadMoveEvent` to target `0x16` at the pointer's point,
+from 0 to 1 from the surface's top-left corner, with Simulator.app's changes
+for a touch's start (event masks `0x23` and 3) and end (`0x21` and 1, touch
+flags cleared). Those changes write into the builder's C structure, so the
+runtime check builds a message and requires the size, the event header, and
+the masks and flags that the changes assume; the SimulatorKit of Xcode 26.6,
+which Simulator.app 16 was built against, and those of Xcode 27.0 through 27.2
+build the same message.
+
+A device window that becomes key brings a shown remote to the front for a
+device with `SimFeatureTVRemote` (`com.apple.hid.tv-remote`) and closes it for
+any other device, and closing the last device window, an Apple TV's, closes
+it, as in Simulator.app. Simulator.app also closes the remote when a device
+without the feature connects; a connecting device's window becomes key in
+Neo, which closes it.
+
+Deliberate differences:
+
+- AppKit drawing and SF Symbols (`tv`, `mic.fill`, `playpause.fill`, `plus`,
+  `minus`) and the text MENU replace Simulator.app's PDF artwork. Each control
+  is an accessibility button with its own name; Simulator.app's controls are
+  not accessibility elements, and its images carry some wrong names.
+- The session reports the first failure of a button's press and release, and
+  of a touch, on the device window. Simulator.app discards the results.
+- The session releases a held button and ends a touch when its device
+  disconnects, and closing the remote releases and ends them, as a closing
+  window releases held hardware buttons. A touch whose device stops being the
+  remote's target ends on that device before the next one starts; Simulator.app
+  sends the next move to the new device without a start.
+- Simulator.app posts `AppleTVRemoteWindowDidShow` and
+  `AppleTVRemoteWindowWillClose` for its Touch Bar's remote button; Neo has no
+  Touch Bar items.
 
 ## Failure semantics
 
@@ -1766,7 +1825,8 @@ and restoring the saved choice on an iPhone and an iPad, CarPlay on an iPhone
 with a click reaching the guest, switched with a size, Disabled, a closed
 window, and restored after a restart, watchOS, tvOS, and visionOS windows
 with their toolbars, menus, titles, and Always On following the backlight,
-Apple Vision Pro's plugin overlay and toolbar, Device Hub absence, and
+Apple Vision Pro's plugin overlay and toolbar, the Apple TV Remote's buttons
+and touch surface on tvOS 27.0 and 26.5, Device Hub absence, and
 loaded-image provenance.
 
 ## Non-goals

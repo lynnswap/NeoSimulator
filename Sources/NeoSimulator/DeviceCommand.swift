@@ -27,7 +27,7 @@ struct DeviceCommand {
         case toggleSlowAnimations, graphicsQualityDefault, graphicsQualityLow, graphicsQualityHigh
         case colorBlendedLayers, colorCopiedImages, colorMisalignedImages, colorOffscreenRendered
         case openSystemLog, simulateMemoryWarning
-        case stayOnTop, physicalSize, pointAccurate, pixelAccurate, fitScreen
+        case appleTVRemote, stayOnTop, physicalSize, pointAccurate, pixelAccurate, fitScreen
     }
 
     struct Toolbar {
@@ -310,6 +310,13 @@ struct DeviceCommand {
             controller.run { try controller.session.simulateMemoryWarning() }
         },
         // Window
+        // Like Simulator.app, the item shows for every device, is enabled for
+        // an Apple TV, and says whether choosing it shows or hides the remote.
+        DeviceCommand(id: .appleTVRemote, title: "Show Apple TV Remote", key: "r", modifiers: [.command, .shift],
+                      isEnabled: { $0.session.capabilities.family == .tv },
+                      stateTitle: { $0.tvRemote.isVisible ? "Hide Apple TV Remote" : "Show Apple TV Remote" }) {
+            $0.tvRemote.toggle()
+        },
         DeviceCommand(id: .stayOnTop, title: "Stay On Top",
                       state: { $0.staysOnTop ? .on : .off }) { $0.toggleStayOnTop() },
         scale(.physicalSize, title: "Physical Size", key: "1"),

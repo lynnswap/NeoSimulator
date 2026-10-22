@@ -687,6 +687,15 @@ struct SimulatorInputInterface {
     /// display sends its touches to.
     let createCarPlayService: NativeFunction<OpaquePointer?, Bool>
     let removeCarPlayService: NativeFunction<OpaquePointer?>
+    /// `IndigoHIDMessageForTrackpadMoveEvent(point, target)`: a trackpad
+    /// touch at a point from 0 to 1, which the Apple TV Remote's touch
+    /// surface sends.
+    let messageForTrackpadMove: NativeFunction<OpaquePointer?, CGPoint, UInt32>
+
+    /// The targets that Simulator.app's Apple TV Remote sends its buttons and
+    /// its touch surface's touches to, whatever the screen.
+    static let tvRemoteButtonTarget: UInt32 = 0x15
+    static let tvRemoteTouchTarget: UInt32 = 0x16
 
     init(runtime: ABIRuntime) throws {
         guard let clientClass = NSClassFromString("SimulatorKit.SimDeviceLegacyHIDClient") else {
@@ -708,6 +717,32 @@ struct SimulatorInputInterface {
             named: "IndigoHIDMessageToCreateCarPlayService", as: ((Bool) -> OpaquePointer?).self)
         removeCarPlayService = try runtime.resolveCFunctionAndWait(
             named: "IndigoHIDMessageToRemoveCarPlayService", as: (() -> OpaquePointer?).self)
+        messageForTrackpadMove = try runtime.resolveCFunctionAndWait(
+            named: "IndigoHIDMessageForTrackpadMoveEvent", as: ((CGPoint, UInt32) -> OpaquePointer?).self)
+        try checkTrackpadMessage()
+    }
+
+    /// Checks that the builder's message has the fields that `message(for:)`
+    /// changes for a touch, as Simulator.app's remote changes them in the
+    /// message of the SimulatorKit it was built with. The SimulatorKit of
+    /// Xcode 26.6 and those of Xcode 27.0 through 27.2 build the same message;
+    /// another layout fails here, before a touch writes into the wrong fields.
+    private func checkTrackpadMessage() throws {
+        guard let message = try unsafe messageForTrackpadMove.unsafeInvoke(CGPoint(x: 0.5, y: 0.5),
+                                                                          Self.tvRemoteTouchTarget)
+        else { throw HostError.operation("Could not allocate simulator input") }
+        let raw = UnsafeMutableRawPointer(message)
+        defer { free(raw) }
+        let field = TrackpadMessage.self
+        guard malloc_size(raw) >= field.size,
+              raw.load(fromByteOffset: field.eventSizeOffset, as: UInt32.self) == field.eventSize,
+              raw.load(fromByteOffset: field.eventCountOffset, as: UInt8.self) == field.eventCount,
+              field.eventMasks.allSatisfy({ raw.load(fromByteOffset: $0, as: UInt32.self) == field.positionMask }),
+              field.touchFlags.allSatisfy({ raw.load(fromByteOffset: $0, as: UInt32.self) == 1 })
+        else {
+            throw HostError.unavailable(
+                "IndigoHIDMessageForTrackpadMoveEvent builds a message the Apple TV Remote's touch surface does not know")
+        }
     }
 
     /// The Mac keyboard's type, which `SimDevice` takes as a byte when it
@@ -728,11 +763,16 @@ struct SimulatorInputInterface {
         return try unsafe makeClient.unsafeInvoke(on: allocated, device.object)
     }
 
-    /// Creates the message for one event of `input` sent to `target`.
+    /// Creates the message for one event of `input` sent to `target`, the
+    /// screen's button target. Like Simulator.app's remote, an Apple TV
+    /// Remote button goes to the remote's own target, with 1 for its press
+    /// and 0 for its release, where the device's buttons take 1 and 2.
     func message(_ input: HIDInput, _ state: HIDState, target: UInt32) throws -> HIDMessage {
         let message = switch input {
         case .button(let button): try unsafe messageForButton.unsafeInvoke(button.rawValue, state.rawValue, target)
         case .usage(let page, let usage): try unsafe messageForUsage.unsafeInvoke(target, page, usage, state.rawValue)
+        case .tvRemote(let button):
+            try unsafe messageForButton.unsafeInvoke(button.rawValue, state == .down ? 1 : 0, Self.tvRemoteButtonTarget)
         }
         guard let message else { throw HostError.operation("Could not allocate simulator input") }
         return HIDMessage(input: input, state: state, pointer: message)
@@ -742,6 +782,28 @@ struct SimulatorInputInterface {
     /// main queue.
     func send(_ hidMessage: HIDMessage, client: AnyObject, completion: (@MainActor (Error?) -> Void)?) throws {
         try send(hidMessage.take(), client: client, completion: completion)
+    }
+
+    /// Creates the message of a touch of the Apple TV Remote's touch surface
+    /// as Simulator.app's remote does: the trackpad message at the touch's
+    /// point, whose events it changes for a touch's start and end.
+    /// `checkTrackpadMessage()` verified those fields when the runtime
+    /// loaded. The caller sends or frees the message.
+    func message(for touch: TVRemoteTouch) throws -> OpaquePointer {
+        guard let message = try unsafe messageForTrackpadMove.unsafeInvoke(touch.point, Self.tvRemoteTouchTarget) else {
+            throw HostError.operation("Could not allocate simulator input")
+        }
+        let raw = UnsafeMutableRawPointer(message)
+        for (offset, value) in TrackpadMessage.changes(for: touch.phase) {
+            raw.storeBytes(of: value, toByteOffset: offset, as: UInt32.self)
+        }
+        return message
+    }
+
+    /// Sends a touch of the Apple TV Remote's touch surface. SimulatorKit
+    /// reports delivery to `completion` on the main queue.
+    func send(_ touch: TVRemoteTouch, client: AnyObject, completion: (@MainActor (Error?) -> Void)?) throws {
+        try send(message(for: touch), client: client, completion: completion)
     }
 
     /// Sends the message that creates the guest's CarPlay HID service, with a
@@ -1151,11 +1213,60 @@ enum DeviceButton: UInt32 {
     case actionStaccato = 3002
 }
 
+/// A button of the Apple TV Remote, by the Indigo HID button number that
+/// Simulator.app's remote sends.
+enum TVRemoteButton: UInt32 {
+    case select = 0x190, menu = 0x191, tv = 0x192, playPause = 0x194
+    case volumeUp = 0x195, volumeDown = 0x196, siri = 0x3f2
+}
+
+/// A touch on the Apple TV Remote's touch surface.
+struct TVRemoteTouch: Equatable {
+    enum Phase { case began, moved, ended }
+
+    var phase: Phase
+    /// Where the touch is, from 0 to 1 from the surface's top-left corner.
+    var point: CGPoint
+}
+
+/// The message `IndigoHIDMessageForTrackpadMoveEvent` builds: two digitizer
+/// events of 0xA0 bytes after a header, the second a copy of the first. For
+/// a touch it builds a move: each event's IOHID digitizer event mask is the
+/// position (4), and two flags of each event's touch are 1. Simulator.app's
+/// remote changes them for a touch's start and end.
+private enum TrackpadMessage {
+    /// The message's size, which its changes stay within.
+    static let size = 0x160
+    static let eventSizeOffset = 0x18, eventSize: UInt32 = 0xa0
+    static let eventCountOffset = 0x1c, eventCount: UInt8 = 2
+    /// The event masks of the first and second event.
+    static let eventMasks = [0x38, 0xd8]
+    static let positionMask: UInt32 = 4
+    /// The touch flags of the first and second event.
+    static let touchFlags = [0x64, 0x68, 0x104, 0x108]
+
+    /// The fields Simulator.app's remote writes for `phase`
+    /// (`appleRemoteControlSurface:touchStarted:`, `touchMoved:`, and
+    /// `touchEnded:`): a start sets the masks to the range, the touch, and,
+    /// on the first event, the identity (0x23 and 3); an end sets them to the
+    /// range and, on the first event, the identity (0x21 and 1), and clears
+    /// the touch flags. A move keeps the builder's fields.
+    static func changes(for phase: TVRemoteTouch.Phase) -> [(offset: Int, value: UInt32)] {
+        switch phase {
+        case .began: [(eventMasks[0], 0x23), (eventMasks[1], 3)]
+        case .moved: []
+        case .ended: [(eventMasks[0], 0x21), (eventMasks[1], 1)] + touchFlags.map { ($0, 0) }
+        }
+    }
+}
+
 /// An input Simulator.app sends as a down event and an up event.
 enum HIDInput: Hashable {
     case button(DeviceButton)
     /// A HID usage, such as a key on the consumer usage page.
     case usage(page: UInt32, usage: UInt32)
+    /// A button of the Apple TV Remote.
+    case tvRemote(TVRemoteButton)
 
     static let screenshot = HIDInput.usage(page: 0x0c, usage: 0x65)
     static let volumeUp = HIDInput.usage(page: 0x0c, usage: 0xe9)
@@ -1300,6 +1411,9 @@ protocol SimulatorDisplay: AnyObject {
     /// Sends a message. `completion`, when present, receives SimulatorKit's
     /// delivery result; a thrown error means the message was not sent.
     func send(_ message: HIDMessage, completion: (@MainActor (Error?) -> Void)?) throws
+    /// Sends a touch of the Apple TV Remote's touch surface, as
+    /// `send(_:completion:)` sends a message.
+    func send(_ touch: TVRemoteTouch, completion: (@MainActor (Error?) -> Void)?) throws
     func toggleAppearance() throws
     /// Posts a Darwin notification in the guest.
     func postNotification(_ name: String) throws
@@ -1529,6 +1643,11 @@ final class SimulatorConnection: SimulatorDisplay {
     func send(_ message: HIDMessage, completion: (@MainActor (Error?) -> Void)?) throws {
         guard let hidClient else { throw HostError.operation("Simulator input is disconnected") }
         try runtime.input.send(message, client: hidClient, completion: completion)
+    }
+
+    func send(_ touch: TVRemoteTouch, completion: (@MainActor (Error?) -> Void)?) throws {
+        guard let hidClient else { throw HostError.operation("Simulator input is disconnected") }
+        try runtime.input.send(touch, client: hidClient, completion: completion)
     }
 
     func toggleAppearance() throws { try device.toggleAppearance() }

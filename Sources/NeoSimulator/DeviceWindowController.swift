@@ -54,6 +54,8 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
     private var titleBarHeights: [NSWindow.ToolbarStyle: CGFloat] = [.unified: 52, .expanded: 76, .unifiedCompact: 40]
     /// I/O ▸ Touch Pressure's app-wide settings, which every window shares.
     let touchPressure: TouchPressure
+    /// Window ▸ Show Apple TV Remote's panel, which every window shares.
+    let tvRemote: TVRemoteController
     private var touchPressureObserver: (any NSObjectProtocol)?
     private var touchIndicatorObserver: (any NSObjectProtocol)?
     private var keyboardSelectionObserver: (any NSObjectProtocol)?
@@ -81,7 +83,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
     }
 
     init(session: DeviceSession, preferences: any PreferenceStore = UserDefaults.standard,
-         touchPressure: TouchPressure,
+         touchPressure: TouchPressure, tvRemote: TVRemoteController,
          performWindowDrag: @escaping (NSWindow, NSEvent) -> Void = { $0.performDrag(with: $1) },
          userInterfacePluginLookUp: (attempts: Int, interval: Duration) = (40, .milliseconds(250)),
          onClose: @escaping (DeviceWindowController, DeviceLifetimeChoice?) -> Void,
@@ -90,6 +92,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
         self.userInterfacePluginLookUp = userInterfacePluginLookUp
         self.preferences = preferences
         self.touchPressure = touchPressure
+        self.tvRemote = tvRemote
         self.performWindowDrag = performWindowDrag
         // Like Simulator.app, the window's geometry is read once, when it
         // connects, for the current arrangement of screens.
@@ -1174,6 +1177,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
         session.display.setActive(true)
         updateKeyboardInput()
         focusInput()
+        tvRemote.deviceWindowBecameKey(self)
     }
     func windowDidResignKey(_ notification: Notification) {
         guard !closed else { return }
@@ -1255,11 +1259,13 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
     func windowWillClose(_ notification: Notification) {
         guard !closed else { return }
         saveWindowGeometry()
+        tvRemote.deviceWindowWillClose(self)
         disconnect()
         onClose(self, closeChoice)
     }
     func invalidate() {
         saveWindowGeometry()
+        if !closed { tvRemote.deviceWindowWillClose(self) }
         disconnect()
         window?.delegate = nil
         window?.close()

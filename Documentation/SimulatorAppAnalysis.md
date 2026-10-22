@@ -136,8 +136,9 @@ semantics:
 - Debug: Slow Animations, Graphics Quality Override, Color Blended Layers,
   Color Copied Images, Color Misaligned Images, Color Off-screen Rendered, Open
   System Log…, Simulate Memory Warning, Show Parallel Testing Devices;
-- Window: Minimize, Full Screen, Show Device Bezels, Stay on Top, Physical
-  Size, Point Accurate, Pixel Accurate, Fit Screen, Bring All to Front.
+- Window: Minimize, Full Screen, Show Device Bezels, Show Apple TV Remote,
+  Stay on Top, Physical Size, Point Accurate, Pixel Accurate, Fit Screen,
+  Bring All to Front.
   Simulator.app hides Zoom.
 
 The detached window header exposes Home, Save Screen, and Rotate using the same
@@ -742,6 +743,41 @@ separate device set, through NeoSimulator's code.
 | XROS `VirtualHMDInputView.toggleCapturingMouse:` and `mouseUp:` (Xcode 27.1 `0x2943C`…`0x29640`) | Capture Pointer starts choosing the gaze target; the click that ends it passes `toggleCapturingMouse:` to the next responder when the overlay's `client` is `.simulatorApp`, and otherwise starts `SimHIDCaptureManager` itself (`startCaptureSessionWithDevice:hidDeviceTypes:error:`, type 2). | Live, the overlay's `client` was `.simulatorApp`; Capture Keyboard left `_captureKeyboardEnabled` off, and a click after Capture Pointer ended the gaze choice without a capture, because no responder in Neo captures. |
 | DWC `homeButtonPressed:`, `saveFramebufferImage:`, `toggleVideoRecording:`; recording notifications `0x1000594B4` / `0x10005991C` | The plugin's toolbar actions reach the device window through the responder chain. Starting and stopping a recording posts `SimulatorVideoRecordingStartedNotification` / `…StoppedNotification` with the `SimDevice` under `…DeviceUserInfoKey`. | The device window implements the three actions; the session posts both notifications. Live, they turned the plugin's Save Screen button into Stop Recording (`toggleVideoRecording:`) and back. |
 
+### Apple TV Remote
+
+Reference addresses are in Simulator.app 16.0 (1063.4) from Xcode 26.6 and its
+`AppleRemoteWindowController.nib`; SimulatorKit's message builder is at
+`0x11F88` in Xcode 26.6's and at `0xBE2C` in Xcode 27.0's, 27.1's, and 27.2's.
+The live checks used Xcode 27.0, 27.1, and 27.2, CoreSimulator 1174.9.2, an
+Apple TV 4K (3rd generation) on tvOS 27.0, and an Apple TV 4K (3rd
+generation) (at 1080p) on tvOS 26.5 in a separate device set, through
+NeoSimulator's code.
+
+| Reference owner | Observed behavior | Neo |
+| --- | --- | --- |
+| `MainMenu.nib`; `DC` validation `0x10001F430`…`0x10001F574` | Window ▸ Show Apple TV Remote, after Show Device Bezels, with Shift-Command-R, sends `toggleAppleRemoteWindow:` to the first responder. The coordinator enables it when the key device's `productFamilyID` is 3 and titles it "Hide Apple TV Remote" while the shared remote's window is visible, otherwise "Show Apple TV Remote". `deviceWindowBecameKey:` never hides it. | `DeviceCommand.appleTVRemote`. |
+| `DC.toggleAppleRemoteWindow:` `0x10001FDC4` | Closes `AppleRemoteWindowController.sharedInstance` while its window is visible, and otherwise sends it `showWindow:`. | `TVRemoteController.toggle()`, one controller for the app. |
+| `AppleRemotePanel` `0x10002AADC` / `0x10002AAE4`, `AppleRemoteWindowController.windowDidLoad` `0x100023248`, `AppleRemoteContentView` `0x100022F38` / `0x100023044` | The 155 × 515 panel, titled "Apple TV Remote", is borderless (its initializer drops the nib's style mask), not opaque, with a clear background, movable by its background, hidden while the app is inactive, and never key. It does not cascade and saves its frame as "Apple TV Remote Window". The content view draws `Remote Chrome`. The touch surface (`AppleRemoteControlSurface`, the top 161 points, over the hint "Hold Option to touch") is Select; `AppleRemoteMouseDownTrackingControl`s over circle and capsule images are Menu, TV, Siri, Play/Pause, and Volume Up and Down. | The same panel, layout, and hint, drawn with AppKit and SF Symbols. |
+| Button actions: Select `0x1000234B4`, Menu `0x100023584`, TV `0x100023654`, Play/Pause `0x100023724`, Volume Up `0x1000237F4`, Volume Down `0x1000238C4`, Siri `0x100023994`; `DC.deviceSupportsAppleTVRemote` `0x10001AB2C` | Each action checks that the key device's runtime platform is `kSimPlatformIdentifierTV`, then sends `IndigoHIDMessageForButton(button, sender.isButtonDown, 0x15)`, with buttons `0x190`, `0x191`, `0x192`, `0x194`, `0x195`, `0x196`, and `0x3F2`, through `sendIndigoHIDData:` (`0x10001ABAC`), discarding the result. A tracking control sends its action on mouse down and on mouse up (`_toggleIfNecessary:` `0x10002A1D0`). | The same messages, 1 and 0 at target `0x15`, for an Apple TV through the session's `SimDeviceLegacyHIDClient`. |
+| `AppleRemoteControlSurface` `0x100026C88`…`0x100027094`; `SimulatorApp.sendEvent:` `0x1000240FC` | The surface tracks the pointer while the app is active and keeps the last point as x over its width and 1 − y over its height. With Option held when the pointer enters or moves, or when Option goes down with the pointer inside (`SimulatorApp` posts `OptionKeyDown` or `OptionKeyUp` for each modifier change), it starts a touch, then moves it; Option's release, a move without Option, or the pointer leaving ends the touch. | `TVRemoteTouchSurface`, with a local monitor of modifier changes. |
+| Touch actions `0x100023A64` / `0x100023B38` / `0x100023BFC` | `IndigoHIDMessageForTrackpadMoveEvent(point, 0x16)`. A start sets the UInt32 at `0x38` to `0x23` and at `0xD8` to 3; an end sets `0x38` to `0x21`, `0x64` and `0x68` to 0, `0xD8` to 1, and the 8 bytes at `0x104` to 0; a move sends the builder's message. | The same changes. Every builder above lays out the same 0x160-byte message: a header with 2 events of 0xA0 bytes, the second a copy of the first, whose event masks at `0x38` / `0xD8` are 4 (position) and whose flags at `0x64`, `0x68` / `0x104`, `0x108` are 1. The runtime check requires those. |
+| `DC.deviceWindowBecameKey:` `0x100019BB4`…`0x100019C4C` | For a key device with `SimFeatureTVRemote` (`com.apple.hid.tv-remote`), orders a visible remote front; for another device, closes it. | The same. |
+| Device window close `0x100019774`…`0x1000197D4`; connection block `0x10001B97C` | Closing the last device window, of a device with `SimFeatureTVRemote`, closes the remote, and so does a device without the feature connecting. | The same at a close, counting visible and minimized device windows; a connecting device's window becomes key, which closes the remote. |
+| `AppleRemoteWindowController.showWindow:` `0x100023CDC` / `windowWillClose:` `0x100023D50` | Post `AppleTVRemoteWindowDidShow` / `AppleTVRemoteWindowWillClose` for the Touch Bar's remote button. | Not posted; Neo has no Touch Bar items. |
+| `SimulatorAppDelegate.keyDeviceCoordinator` `0x1000113F4` | The key window's device, or else the device of the frontmost device window. | `TVRemoteController.keyOrFrontmostDeviceWindow()`. |
+
+Live, with each Xcode and runtime, both Apple TVs had `SimFeatureTVRemote`,
+and the panel's controls, driven with mouse events as AppKit delivers them:
+
+- Select opened Settings from the home screen. A drag down the touch surface
+  with Option moved the focus from the first row to the sixth, and a drag up
+  moved it back (`simctl io screenshot` before and after each).
+- Menu, and TV, went back to the home screen from Settings.
+- Holding Siri brought up Siri's dictation screen.
+- Play/Pause, Volume Up, and Volume Down changed nothing on the home screen,
+  and no input reported a failure. Option over the surface without a move
+  changed nothing.
+
 ## Input capture
 
 The evidence is Simulator.app 16.0 (1063.4) from Xcode 26.6, SimulatorKit from
@@ -803,9 +839,9 @@ These have viable Xcode 27+ primitives but need a dedicated state/capability
 contract before being user-visible:
 
 - status-bar overrides;
-- watch gestures, Digital Crown scrolling, and Simulate Fall; the Apple TV
-  Remote; and the visionOS viewport, camera, scene, immersion, Optic ID, and
-  gaze commands, which build on [watchOS, tvOS, and visionOS](#watchos-tvos-and-visionos)
+- watch gestures, Digital Crown scrolling, and Simulate Fall; and the
+  visionOS viewport, camera, scene, immersion, Optic ID, and gaze commands,
+  which build on [watchOS, tvOS, and visionOS](#watchos-tvos-and-visionos)
   hosting.
 
 ## Excluded features
