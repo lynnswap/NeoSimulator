@@ -102,6 +102,7 @@ Representative coordinator actions:
 | Location | `0x100022390` | implemented with `SimDevice availableLocationScenarios`, `clearSimulatedLocationWithError:`, `setLocationWithLatitude:andLongitude:error:`, and `setLocationScenario:error:`, restored at each connection from `LocationMode`/`LocationScenario`/`LocationLatitude`/`LocationLongitude`; the menu lists the key device's scenarios rather than the last connected device's; the `com.apple.iphonesimulator.simulateLocation` notification is not handled |
 | Get Pasteboard / Send Pasteboard | `0x10001FC3C` / `0x10001FC80` | implemented with SimPasteboardPlus `pull` / `push` on a connection opened at the first command; see [Pasteboard](#pasteboard) |
 | Audio Input / Audio Output | `0x1000142C8` (app delegate) | implemented with CoreSimDeviceIO's `SimAudioHostRoutable` port; see [Audio routing](#audio-routing) |
+| Automatically Sync Pasteboard | `0x100012ABC` (app delegate) | implemented with `enableRemoteAutosync` / `disableRemoteAutosync` and the forwarding of a device's copy to the other devices, off by default; see [Pasteboard](#pasteboard) |
 
 ## Implemented parity set
 
@@ -114,7 +115,8 @@ semantics:
   (`FramebufferServerGPUPolicy` in `com.apple.CoreSimulator`, rewritten as
   `selectPreferredGPUType:` at `0x100015ED4` does), Close Window, Close
   Window…;
-- Edit: Copy Screen, Get Pasteboard, Send Pasteboard;
+- Edit: Copy Screen, Automatically Sync Pasteboard (off by default), Get
+  Pasteboard, Send Pasteboard;
 - Device: Rotate Left, Rotate Right, Orientation, Rotate Device Automatically,
   Home, Lock, Side Button, Action Button,
   Siri, Shake, App Switcher, Trigger Screenshot;
@@ -302,10 +304,12 @@ differences, in the [design](Design.md#settings-and-touch-indicators).
 ## Pasteboard
 
 The evidence is Simulator.app 16.0 (1063.4) from Xcode 26.6, `simctl` and
-`SimPasteboardPlus` from CoreSimulator 1174.9.2, and an iOS 26.5 iPhone 17 Pro
-in a separate device set. In `MainMenu.nib`, the Edit menu ends with a
-separator after Paste, then Automatically Sync Pasteboard, Get Pasteboard, and
-Send Pasteboard, without shortcuts. `DC` is `DeviceCoordinator`.
+`SimPasteboardPlus` from CoreSimulator 1174.9.2, and iOS 26.5 iPhones in a
+separate device set; for synchronization, two of them and a guest app that
+copies with `UIPasteboard`. In `MainMenu.nib`, the Edit menu ends with a
+separator after Paste, then Automatically Sync Pasteboard
+(`togglePasteboardAutomaticSync:`), Get Pasteboard, and Send Pasteboard,
+without shortcuts. `DC` is `DeviceCoordinator`.
 
 | Reference owner | Observed behavior |
 | --- | --- |
@@ -315,8 +319,12 @@ Send Pasteboard, without shortcuts. `DC` is `DeviceCoordinator`.
 | `DC._onSessionQueue_resetPasteboardInterfaceWithInitialPush:` `0x10001E5FC` | Sets `pasteboardInterface` to nil. For a connected device of family 1, 2, or 7 (otherwise it logs "we're detaching from the device" or "the device doesn't support pasteboards"), calls `SimDevice lookup:error:` with `SimPasteboardInterfaceListener.machServiceName`. A port that is `MACH_PORT_NULL` or `MACH_PORT_DEAD` logs "Failed to lookup pasteboard Mach service in device %@: %@" and leaves the interface nil. Otherwise it creates `initWithConnectingToPort:managingPasteboard:delegate:delegateQueue:` with the general pasteboard, the coordinator, and the main queue. On the main queue it then calls `updatePasteboardAutosyncStatus:` with `isSynchronizingPasteboards` and, when asked for an initial push and synchronizing, `push`. |
 | Callers | `_onSessionQueue_connect` passes YES after `setConnected:YES` (`0x10001B894`); `simPasteboardDidLoseConnection:` `0x10001EBB4` logs and passes NO on the session queue. |
 | `DC.updatePasteboardAutosyncStatus:` `0x10001FD68` | Sends `enableRemoteAutosync` or `disableRemoteAutosync`. |
-| Delegate callbacks `0x10001EB3C` … `0x10001F0B8` | `simPasteboardDidBecomeActive:` logs. `simPasteboardShouldApplySnapshot:…` logs and returns YES. `simPasteboardDidApplySnapshot:…` saves the sender's UUID and the local generation as `lastSyncedPasteboardSnapshotSender` and `lastSyncedPasteboardSnapshotLocalGeneration`, then enqueues `SimDeviceChangedLocalPasteboard` with the device. `simPasteboardErrorApplyingSnapshot:…` logs the error, saves the sender, and sets the generation to -1. `simPasteboardDidChangeAutoNotifyState:…` asserts "Device coordinator is out of sync with remote pasteboard interface." when the state differs from `isSynchronizingPasteboards`. No failure reaches the user. |
-| `SimulatorAppDelegate.togglePasteboardAutomaticSync:` `0x100012ABC`, `setSynchronizingPasteboards:` `0x1000104C8` | Saves `PasteboardAutomaticSync` (registered YES), adds or removes a `SimDeviceChangedLocalPasteboard` observer, and sends `updatePasteboardAutosyncStatus:` to every coordinator. The observer sends `sendPasteboard:` to every coordinator whose device is not the notification's. |
+| Delegate callbacks `0x10001EB3C` … `0x10001F0B8` | `simPasteboardDidBecomeActive:` logs. `simPasteboardShouldApplySnapshot:…` logs and returns YES. `simPasteboardDidApplySnapshot:…`, on the main queue, saves the sender's UUID and the `atGeneration` argument as `lastSyncedPasteboardSnapshotSender` and `lastSyncedPasteboardSnapshotLocalGeneration`, then enqueues `SimDeviceChangedLocalPasteboard` with the device on `NSNotificationQueue.defaultQueue`, with `NSPostASAP` and `NSNotificationCoalescingOnName`. Nothing reads the sender. `simPasteboardErrorApplyingSnapshot:…` logs the error, saves the sender, and sets the generation to -1. `simPasteboardDidChangeAutoNotifyState:…` raises an assertion, "Device coordinator is out of sync with remote pasteboard interface.", when the state differs from `isSynchronizingPasteboards`. No failure reaches the user. |
+| `SimulatorAppDelegate.togglePasteboardAutomaticSync:` `0x100012ABC` | Sends a `com.apple.simulator.menu` msgtracer message with `on` or `off`, then `setSynchronizingPasteboards:` with the opposite of `isSynchronizingPasteboards`. |
+| `SimulatorAppDelegate.setSynchronizingPasteboards:` `0x1000104C8` | Returns when the value does not change. Otherwise it saves `PasteboardAutomaticSync` (registered YES), adds a `SimDeviceChangedLocalPasteboard` observer on the main queue when on or removes it when off, and sends `updatePasteboardAutosyncStatus:` to every coordinator. The observer sends `sendPasteboard:` to every coordinator whose device's UDID differs from the notification object's. `applicationDidFinishLaunching:` calls it with `boolForKey:` (`0x10000F27C`) before it connects the booted devices. |
+| `SimulatorAppDelegate.validateMenuItem:` branch `0x1000122F4` | Automatically Sync Pasteboard is always enabled and checked from `isSynchronizingPasteboards`. |
+| `DC.connectAsync` `0x10001B1BC` | For a connected coordinator, sends `updatePasteboardAutosyncStatus:` with `isSynchronizingPasteboards` and brings its window group to the front; otherwise connects. File ▸ Open Simulator (`simDeviceSelected:`), launching, Show Parallel Testing Devices, device state changes, and `startSessionNotification:` call it. |
+| Window focus and disconnection | `windowDidBecomeKey:` (`0x10004AFD0`), `deviceWindowBecameKey:` (`0x100019B0C`), and `_onSessionQueue_disconnectWithCompletionGroup:` (`0x10001AEB0`) send no pasteboard message; only `_onSessionQueue_resetPasteboardInterfaceWithInitialPush:` sets `pasteboardInterface`. Synchronization does not follow focus. |
 | `simctl pbsync` `0x10000B098`, `SimDevice(diagnose) lookupPasteboardInterfaceWithDelegate:…` `0x100017CFC`, `SimctlPBCmdDelegate` `0x100017EC4` … `0x1000180B0` | Requires the runtime's `SimFeaturePasteboard` (`com.apple.CoreSimulator.pasteboard`) and a booted device, then creates the same interface. After `pull` it waits for `simPasteboardDidApplySnapshot:…` or an error; after `push`, for the connection's second `simPasteboardDidBecomeActive:`. Each wait gives up after one second; a lost connection fails with `ECONNRESET`. Nothing calls `enableRemoteAutosync`. |
 
 The live check on the separate device set showed:
@@ -339,11 +347,27 @@ The live check on the separate device set showed:
 - The guest's CoreSimulatorBridge (`com.apple.CoreSimulator.bridge`) serves
   `com.apple.CoreSimulator.SimPasteboardInterface`; killing it closed the
   connection with `simPasteboardDidLoseConnection:`.
-- After `enableRemoteAutosync`, a change of the managed pasteboard reached the
-  device without a command; after `disableRemoteAutosync`, it did not.
+- `enableRemoteAutosync` transferred nothing by itself, and the connection
+  called `simPasteboardDidChangeAutoNotifyState:…` with YES within a
+  millisecond; `disableRemoteAutosync` called it with NO.
+- With two connections managing the same pasteboard and synchronizing, a
+  change of that pasteboard reached both devices about 0.6 seconds later, each
+  followed by `simPasteboardDidBecomeActive:`. A copy made by an app on one
+  device was applied to the managed pasteboard
+  (`simPasteboardShouldApplySnapshot:…`, then
+  `simPasteboardDidApplySnapshot:…` with its change count) and was not sent
+  back, but it did not reach the other device either. That device's
+  pasteboard, which held the managed pasteboard's earlier snapshot, then read
+  as empty, since its data is fetched from the Mac when read. `simctl pbcopy`
+  does not make the guest report its change.
+- After CoreSimulatorBridge was killed, a new connection and
+  `enableRemoteAutosync` synchronized again. Releasing a synchronizing
+  connection without `disableRemoteAutosync` stopped its exchange; after
+  `disableRemoteAutosync`, nothing crossed.
 
-NeoSimulator reproduces Get Pasteboard and Send Pasteboard; its differences are
-listed in the [design](Design.md#get-and-send-pasteboard).
+NeoSimulator reproduces these commands; its differences are listed in the
+design under [Get and Send Pasteboard](Design.md#get-and-send-pasteboard) and
+[Automatically Sync Pasteboard](Design.md#automatically-sync-pasteboard).
 
 ## Modifier gestures
 
@@ -478,8 +502,6 @@ contract before being user-visible:
 
 ## Excluded features
 
-- Edit ▸ Automatically Sync Pasteboard, and any other pasteboard exchange
-  that the user did not choose.
 - Standard Edit/Services clipboard routing.
 - Global keyboard, pointer, and game-controller capture. The reference app has
   private HID event-filter/event-monitor and TCC entitlements that the companion

@@ -125,11 +125,14 @@ enum HostPreferences {
     /// device follows: see `PreferenceStore.recentAudioRoutes(in:)`.
     static let recentAudioInputDeviceUIDs = "RecentAudioInputDeviceUIDs"
     static let recentAudioOutputDeviceUIDs = "RecentAudioOutputDeviceUIDs"
+    /// Edit ▸ Automatically Sync Pasteboard: see `PasteboardSync`.
+    static let pasteboardAutomaticSync = "PasteboardAutomaticSync"
 
     /// Registers Simulator.app's defaults for these preferences. Show Pinch
     /// Gestures is on: Simulator.app registers it so, and its Settings.bundle's
     /// `false` only applies to a key without a value, which a registered key
-    /// never is.
+    /// never is. Automatically Sync Pasteboard is off, although Simulator.app
+    /// registers it on: NeoSimulator exchanges pasteboards only when chosen.
     static func registerDefaults() {
         UserDefaults.standard.register(defaults: [
             showTestingDevices: true, showChrome: true, detachOnWindowClose: false, detachOnAppQuit: false,
@@ -140,6 +143,7 @@ enum HostPreferences {
             locationMode: LocationSelection.customMode, locationLatitude: 37.785834, locationLongitude: -122.406417,
             enableKeyboardSync: true, connectHardwareKeyboard: true, useTrackpadForce: true,
             showSingleTouches: false, showPinches: true, showPinchPivotPoint: false, highlightEdgeGestures: false,
+            pasteboardAutomaticSync: false,
         ])
     }
 
@@ -283,9 +287,16 @@ final class DeviceSession {
     /// The Mac pasteboard that Get Pasteboard replaces and Send Pasteboard
     /// sends, or nil for the general pasteboard.
     @ObservationIgnored private let hostPasteboard: NSPasteboard?
-    /// The device's pasteboard connection, from the first transfer until the
-    /// device closes it or the session disconnects.
+    /// Edit ▸ Automatically Sync Pasteboard, or nil when the session never
+    /// synchronizes.
+    @ObservationIgnored private let pasteboardSync: PasteboardSync?
+    /// The device's pasteboard connection, from the first transfer, or while
+    /// synchronizing, until the device closes it or the session disconnects.
     @ObservationIgnored private var pasteboardConnection: (any SimulatorPasteboard)?
+    /// The Mac pasteboard's change count when the device's pasteboard last
+    /// replaced it, Simulator.app's `lastSyncedPasteboardSnapshotLocalGeneration`,
+    /// or nil after a failed replacement.
+    @ObservationIgnored private var lastReceivedGeneration: Int?
     /// Whether the connection reported its first activation, after which each
     /// activation completes a push.
     @ObservationIgnored private var isPasteboardActive = false
@@ -331,14 +342,16 @@ final class DeviceSession {
     ///   - hostKeyboardLanguage: Reads the Mac keyboard's language.
     ///   - pasteboard: The Mac pasteboard that the device's pasteboard is
     ///     exchanged with. Defaults to the general pasteboard, which the
-    ///     session uses only once a transfer starts.
+    ///     session uses only once a transfer or synchronization starts.
+    ///   - pasteboardSync: Edit ▸ Automatically Sync Pasteboard, which every
+    ///     device shares. Without it, the session never synchronizes.
     init(device: AvailableDevice, capabilities: DeviceCapabilities, display: any SimulatorDisplay,
          tools: DeviceTools, recordings: RecordingStore = RecordingStore(),
          recordingProcess: ((URL, DeviceTools.ScreenMask) -> Process)? = nil,
          openLog: @escaping (URL) async throws -> Void = DeviceSession.openInConsole,
          preferences: any PreferenceStore = UserDefaults.standard,
          hostKeyboardLanguage: @escaping @MainActor () -> String? = HostKeyboard.language,
-         pasteboard: NSPasteboard? = nil) {
+         pasteboard: NSPasteboard? = nil, pasteboardSync: PasteboardSync? = nil) {
         self.device = device
         self.capabilities = capabilities
         self.display = display
@@ -346,6 +359,7 @@ final class DeviceSession {
         self.preferences = preferences
         self.hostKeyboardLanguage = hostKeyboardLanguage
         hostPasteboard = pasteboard
+        self.pasteboardSync = pasteboardSync
         self.recordings = recordings
         // Simulator.app records Apple Vision Pro in HEVC and other devices in H.264.
         let codec: DeviceTools.VideoCodec = capabilities.family == .vision ? .hevc : .h264
@@ -750,22 +764,29 @@ final class DeviceSession {
 
     // MARK: Pasteboard
 
-    /// Whether Edit ▸ Get Pasteboard and Send Pasteboard are available. Like
-    /// Simulator.app, they are for an iPhone, iPad, or Apple Vision.
-    /// Simulator.app also needs the device's pasteboard connected; since
-    /// NeoSimulator connects on the first transfer, it needs the device's
-    /// pasteboard feature instead. Simulator.app turns them off while it
-    /// synchronizes pasteboards automatically, which NeoSimulator never does.
-    var canTransferPasteboard: Bool {
+    /// Whether the device exchanges its pasteboard with the Mac: like
+    /// Simulator.app, a booted iPhone, iPad, or Apple Vision. Simulator.app
+    /// also needs the device's pasteboard connected; since NeoSimulator
+    /// connects only once a transfer or synchronization needs it, it needs
+    /// the device's pasteboard feature instead.
+    private var exchangesPasteboard: Bool {
         canPerformCommands && [.iPhone, .iPad, .vision].contains(capabilities.family)
             && capabilities.supportsFeature(DeviceCapabilities.pasteboard)
     }
 
-    /// Get Pasteboard or Send Pasteboard. Nothing crosses between the Mac and
-    /// the device otherwise. The first transfer connects to the device's
-    /// pasteboard service. The connection stays open for later transfers and
-    /// for data that the Mac pasteboard reads from the device only when an app
-    /// pastes it. A failure, also one the device reports later, goes to `failure`.
+    /// Whether Edit ▸ Get Pasteboard and Send Pasteboard are available. Like
+    /// Simulator.app, they are not while pasteboards synchronize automatically.
+    var canTransferPasteboard: Bool { exchangesPasteboard && !synchronizesPasteboard }
+
+    /// Whether Edit ▸ Automatically Sync Pasteboard is on for this session.
+    var synchronizesPasteboard: Bool { pasteboardSync?.isOn == true }
+
+    /// Get Pasteboard or Send Pasteboard. Without automatic synchronization,
+    /// nothing crosses between the Mac and the device otherwise. The first
+    /// transfer connects to the device's pasteboard service. The connection
+    /// stays open for later transfers and for data that the Mac pasteboard
+    /// reads from the device only when an app pastes it. A failure, also one
+    /// the device reports later, goes to `failure`.
     func transferPasteboard(_ transfer: PasteboardTransfer, failure: @escaping @MainActor (Error) -> Void) {
         guard canTransferPasteboard else { return }
         let report = { (reason: Error) in
@@ -788,13 +809,63 @@ final class DeviceSession {
         }
     }
 
+    /// Starts synchronizing a device that just connected, while Automatically
+    /// Sync Pasteboard is on: like Simulator.app when a device connects, it
+    /// connects to the device's pasteboard and sends the Mac's.
+    func startPasteboardSync() {
+        guard synchronizesPasteboard, exchangesPasteboard, pasteboardConnection == nil else { return }
+        do { try connectPasteboard().push() } catch {
+            hostLog("Could not synchronize the pasteboard of \(device.name): \(error.localizedDescription)")
+        }
+    }
+
+    /// Tells the device's pasteboard connection whether to synchronize, as
+    /// Simulator.app's `updatePasteboardAutosyncStatus:` does after
+    /// Automatically Sync Pasteboard changes and when a connected device is
+    /// chosen again. Turning synchronization on connects a device that has no
+    /// connection yet, which transfers nothing; turning it off keeps the
+    /// connection for Get and Send Pasteboard.
+    func updatePasteboardSync() {
+        if let pasteboardConnection {
+            setAutomaticSync(of: pasteboardConnection)
+        } else if synchronizesPasteboard, exchangesPasteboard {
+            do { _ = try connectPasteboard() } catch {
+                hostLog("Could not synchronize the pasteboard of \(device.name): \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Sends the Mac pasteboard after another device's pasteboard replaced
+    /// it, as Simulator.app's `sendPasteboard:` does for synchronization. A
+    /// Mac pasteboard that still holds what this device sent last is not sent
+    /// back to it.
+    func sendSynchronizedPasteboard() {
+        guard let pasteboardConnection else { return }
+        guard (hostPasteboard ?? .general).changeCount != lastReceivedGeneration else {
+            hostLog("The Mac pasteboard still holds the pasteboard of \(device.name); it is not sent back")
+            return
+        }
+        do { try pasteboardConnection.push() } catch {
+            hostLog("Could not synchronize the pasteboard of \(device.name): \(error.localizedDescription)")
+        }
+    }
+
     private func connectPasteboard() throws -> any SimulatorPasteboard {
         let connection = try display.connectPasteboard(hostPasteboard ?? .general) { [weak self] in
             self?.handlePasteboard($0)
         }
         pasteboardConnection = connection
         isPasteboardActive = false
+        // Like Simulator.app, each connection is told whether to synchronize.
+        setAutomaticSync(of: connection)
         return connection
+    }
+
+    private func setAutomaticSync(of connection: any SimulatorPasteboard) {
+        let enabled = synchronizesPasteboard
+        do { try connection.setAutomaticSync(enabled) } catch {
+            hostLog("Could not turn \(enabled ? "on" : "off") pasteboard synchronization of \(device.name): \(error.localizedDescription)")
+        }
     }
 
     private func handlePasteboard(_ event: SimulatorPasteboardEvent) {
@@ -802,21 +873,32 @@ final class DeviceSession {
         case .activated:
             if isPasteboardActive, !pendingPushes.isEmpty { pendingPushes.removeFirst() }
             isPasteboardActive = true
-        case .applied:
+        case .applied(let generation):
             if !pendingPulls.isEmpty { pendingPulls.removeFirst() }
+            lastReceivedGeneration = generation
+            pasteboardSync?.devicePasteboardDidReplaceHost(self)
         case .failedToApply(let error):
+            lastReceivedGeneration = nil
             if pendingPulls.isEmpty {
                 hostLog("Could not apply the pasteboard of \(device.name): \(error.localizedDescription)")
             } else {
                 pendingPulls.removeFirst()(error)
             }
         case .lostConnection:
-            // Simulator.app connects again at once; the next transfer does here.
             let pending = pendingPulls + pendingPushes
             closePasteboard()
             hostLog("The pasteboard connection of \(device.name) closed")
             let error = HostError.operation("The simulator closed its pasteboard connection.")
             for report in pending { report(error) }
+            // Like Simulator.app, a synchronized device connects again at
+            // once, without sending the Mac's pasteboard. Otherwise the next
+            // transfer connects.
+            updatePasteboardSync()
+        case .synchronizationChanged(let enabled):
+            // Simulator.app asserts this; a late callback is only logged.
+            if enabled != synchronizesPasteboard {
+                hostLog("The pasteboard synchronization of \(device.name) turned \(enabled ? "on" : "off") while Automatically Sync Pasteboard is \(synchronizesPasteboard ? "on" : "off")")
+            }
         }
     }
 

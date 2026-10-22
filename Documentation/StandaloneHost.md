@@ -20,8 +20,9 @@ a SwiftUI device browser with these guarantees:
   CoreSimulator system resources installed with Xcode;
 - it never opens the Device Hub URL scheme or loads
   `DeviceKit.framework`;
-- it never synchronizes the clipboard: only Edit ▸ Get Pasteboard and Send
-  Pasteboard copy it, once per command;
+- it exchanges the clipboard only as the user chooses: Edit ▸ Get Pasteboard
+  and Send Pasteboard copy it once per command, and Edit ▸ Automatically Sync
+  Pasteboard, off until the user turns it on, synchronizes it while it is on;
 - it displays each booted iOS simulator and forwards touch, accessibility, and
   focused keyboard input;
 - it provides Home, Save Screen, and Rotate Right controls in the header, plus
@@ -53,7 +54,8 @@ NeoSimulator.app
   -> IDEPlaygroundSimulator display factory
   -> SimulatorKit SimDisplayView in a resizable AppKit window
   -> SimDeviceLegacyHIDClient for Home, Lock, and Software Keyboard
-  -> SimPasteboardPlus SimPasteboardInterface for Get and Send Pasteboard
+  -> SimPasteboardPlus SimPasteboardInterface for Get, Send, and Automatically
+     Sync Pasteboard
   -> typed direct simctl/devicectl operations for screenshot and rotation
 ```
 
@@ -74,8 +76,8 @@ NeoSimulator.app
 | Recording processes and final saves | app-owned Swift `RecordingStore` and `VideoRecording` |
 | CoreSimulator devices and device-set observation | `SimulatorDeviceSet` and `SimulatorDevice` |
 | Device selection and previews | SwiftUI `DeviceBrowserView` |
-| Get and Send Pasteboard over a device's SimPasteboardPlus connection | `DeviceSession` |
-| Automatic clipboard synchronization | deliberately no owner |
+| A device's SimPasteboardPlus connection, for Get and Send Pasteboard and synchronization | `DeviceSession` |
+| Edit ▸ Automatically Sync Pasteboard and the exchange between devices | `PasteboardSync` |
 
 The CLI and GUI host exchange only the selected Xcode application path. Private
 CoreSimulator and SimulatorKit objects never cross the process boundary.
@@ -184,14 +186,18 @@ termination cannot be confirmed, Neo is not opened. The standalone host never
 imports DeviceKit, loads a DeviceKit plugin, or opens a `devices:` URL.
 
 CoreSimulator loads its nested `SimPasteboardPlus.framework`, whose
-`SimPasteboardInterface` the host uses only for Edit ▸ Get Pasteboard and Send
-Pasteboard. A device's pasteboard connection opens on the first of those
-commands and stays until the device closes it or its window disconnects. Each
-command copies the whole pasteboard once. The connection exchanges nothing on
-its own: the host never sends `enableRemoteAutosync`, which starts
-SimPasteboardPlus's automatic synchronization, and it observes no pasteboard
-changes. Validation checks that neither DeviceKit nor Device Hub is loaded. Copy
-Screen and the browser's Copy Device Identifier action write only to the Mac's
+`SimPasteboardInterface` the host uses only for Edit ▸ Get Pasteboard, Send
+Pasteboard, and Automatically Sync Pasteboard. A device's pasteboard connection
+opens on the first Get or Send, or while synchronization is on, and stays until
+the device closes it or its window disconnects. Each Get or Send copies the
+whole pasteboard once. A connection exchanges changes on its own only after
+`enableRemoteAutosync`, which starts SimPasteboardPlus's automatic
+synchronization. The host sends it only while Automatically Sync Pasteboard is
+on, which the user must choose: `PasteboardAutomaticSync` is registered off,
+unlike Simulator.app's default. Turning it off sends `disableRemoteAutosync` to
+every connection and stops sending one device's copy to the others. Validation
+checks that neither DeviceKit nor Device Hub is loaded. Copy Screen and the
+browser's Copy Device Identifier action write only to the Mac's
 `NSPasteboard`; they neither read nor change the simulator clipboard.
 
 ### Lifecycle

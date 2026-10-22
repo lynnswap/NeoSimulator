@@ -100,7 +100,8 @@ struct DeviceCommand {
         DeviceCommand(id: .copyScreen, title: "Copy Screen", key: "c", modifiers: [.command, .control],
                       isEnabled: { $0.session.canPerformToolOperation }) { $0.copyScreen() },
         // Like Simulator.app, shown for every device and enabled only where
-        // the device can exchange its pasteboard.
+        // the device can exchange its pasteboard, while pasteboards do not
+        // synchronize automatically.
         DeviceCommand(id: .getPasteboard, title: "Get Pasteboard",
                       isEnabled: { $0.session.canTransferPasteboard }) { $0.transferPasteboard(.get) },
         DeviceCommand(id: .sendPasteboard, title: "Send Pasteboard",

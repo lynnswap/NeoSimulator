@@ -400,6 +400,10 @@ struct SimulatorPasteboardInterface {
     let push: NativeObjCMethod<Void>
     /// Asks the device for its pasteboard, which then replaces the managed one.
     let pull: NativeObjCMethod<Void>
+    /// Start and stop the automatic synchronization of Edit ▸ Automatically
+    /// Sync Pasteboard.
+    let enableAutomaticSync: NativeObjCMethod<Void>
+    let disableAutomaticSync: NativeObjCMethod<Void>
     /// The guest's pasteboard service, `SimPasteboardInterfaceListener.machServiceName`.
     let serviceName: String
 
@@ -414,14 +418,18 @@ struct SimulatorPasteboardInterface {
             as: ((UInt32, NSPasteboard, AnyObject?, DispatchQueue?) -> AnyObject).self)
         push = try runtime.resolveObjCMethodAndWait(on: interfaceClass, selector: "push", as: (() -> Void).self)
         pull = try runtime.resolveObjCMethodAndWait(on: interfaceClass, selector: "pull", as: (() -> Void).self)
+        enableAutomaticSync = try runtime.resolveObjCMethodAndWait(
+            on: interfaceClass, selector: "enableRemoteAutosync", as: (() -> Void).self)
+        disableAutomaticSync = try runtime.resolveObjCMethodAndWait(
+            on: interfaceClass, selector: "disableRemoteAutosync", as: (() -> Void).self)
         serviceName = try unsafe runtime.resolveObjCMethodAndWait(
             on: listenerClass, selector: "machServiceName", as: (() -> String).self, classMethod: true)
             .unsafeInvoke(on: listenerClass as AnyObject)
     }
 
     /// Connects to the device's pasteboard service, managing `pasteboard`.
-    /// Connecting transfers nothing, and the connection never synchronizes on
-    /// its own: SimPasteboardPlus does that only after `enableRemoteAutosync`.
+    /// Connecting transfers nothing, and the connection synchronizes only
+    /// after `enableRemoteAutosync`.
     func connect(to device: SimulatorDevice, managing pasteboard: NSPasteboard,
                  events: @escaping @MainActor (SimulatorPasteboardEvent) -> Void) throws -> SimulatorPasteboardConnection {
         let port = try device.lookUp(serviceName)
@@ -440,12 +448,16 @@ enum SimulatorPasteboardEvent {
     /// The connection became active: once after connecting, and again each
     /// time the device has taken a push, which `simctl pbsync` waits for.
     case activated
-    /// The device's pasteboard replaced the managed pasteboard after a pull.
-    case applied
+    /// The device's pasteboard replaced the managed pasteboard, after a pull
+    /// or, while synchronizing, a copy on the device. `generation` is the
+    /// managed pasteboard's change count after the change.
+    case applied(generation: Int)
     /// Writing the device's pasteboard to the managed pasteboard failed.
     case failedToApply(Error)
     /// The device closed the connection. Later pushes and pulls on it do nothing.
     case lostConnection
+    /// The connection started or stopped synchronizing automatically.
+    case synchronizationChanged(Bool)
 }
 
 /// A device's pasteboard connection. Releasing it closes the connection.
@@ -455,6 +467,11 @@ protocol SimulatorPasteboard: AnyObject {
     func pull() throws
     /// SimPasteboardPlus `push`: Edit ▸ Send Pasteboard.
     func push() throws
+    /// SimPasteboardPlus `enableRemoteAutosync` or `disableRemoteAutosync`.
+    /// While enabled, a change of the managed pasteboard reaches the device,
+    /// and a copy on the device replaces the managed pasteboard. Enabling
+    /// transfers nothing by itself.
+    func setAutomaticSync(_ enabled: Bool) throws
     /// Stops the connection's events.
     func disconnect()
 }
@@ -473,6 +490,9 @@ final class SimulatorPasteboardConnection: SimulatorPasteboard {
 
     func pull() throws { try unsafe interface.pull.unsafeInvoke(on: object) }
     func push() throws { try unsafe interface.push.unsafeInvoke(on: object) }
+    func setAutomaticSync(_ enabled: Bool) throws {
+        try unsafe (enabled ? interface.enableAutomaticSync : interface.disableAutomaticSync).unsafeInvoke(on: object)
+    }
     func disconnect() { delegate.events = nil }
 }
 
@@ -491,12 +511,17 @@ final class SimulatorPasteboardDelegate: NSObject {
 
     @objc func simPasteboardDidApplySnapshot(_ interface: AnyObject, fromHost host: NSUUID, incomingGeneration: Int64,
                                              toPasteboard pasteboard: NSPasteboard, atGeneration generation: Int64) {
-        events?(.applied)
+        events?(.applied(generation: Int(generation)))
     }
 
     @objc func simPasteboardErrorApplyingSnapshot(_ interface: AnyObject, fromHost host: NSUUID, generation: Int64,
                                                   error: NSError, toPasteboard pasteboard: NSPasteboard) {
         events?(.failedToApply(error))
+    }
+
+    @objc func simPasteboardDidChangeAutoNotifyState(_ interface: AnyObject, forPasteboard pasteboard: NSPasteboard,
+                                                     toStatus enabled: Bool) {
+        events?(.synchronizationChanged(enabled))
     }
 }
 
