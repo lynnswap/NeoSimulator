@@ -1450,7 +1450,16 @@ nothing, because a restart can shut the device down before its window's
 power-off and the session's end reach the guest, and the next boot's bridge
 starts with no session. For the same reason each request is decided for the
 boot read when its step begins and is not sent once the device has restarted
-since, as it can while the change waits for the step before. The tag 2714 is saved
+since, as it can while the change waits for the step before: the queue
+checks the boot before it sends, and `SimDevice.setCarPlayEnabled(_:inBoot:)`
+checks it again on its serial queue right before `enableCarPlay:error:`. A
+restart between that last check and CoreSimulator's delivery of the request
+cannot be told apart from Neo, so an end can still reach a new boot in that
+window. A HID service request without an answer may have taken effect, so the
+service then counts as created and the next change that ends CarPlay removes
+it; the guest's removal does nothing without a service
+(`-[SimHIDVirtualServiceManager removeCarplayServiceForTargetID:]` looks it
+up first). The tag 2714 is saved
 like the others, and a connection restores it, also after the device
 restarts; the file on the device's disk keeps the configuration for the
 guest.

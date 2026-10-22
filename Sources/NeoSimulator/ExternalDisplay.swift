@@ -240,8 +240,8 @@ final class ExternalDisplayChanges {
         /// The number of steps sent, which a completion must match.
         var steps = 0
         var timer: Task<Void, Never>?
-        /// The device's boot when the CarPlay session step was sent.
-        var sessionBoot: Date?
+        /// The boot that the waiting CarPlay request was decided for.
+        var requestBoot: Date?
 
         init(_ change: Change) { self.change = change }
 
@@ -366,6 +366,7 @@ final class ExternalDisplayChanges {
         let screen = run.change.screen
         let boot = screen.deviceBootDate
         guard carPlay.hasService(in: boot) || carPlay.session(in: boot) == .started else { return next() }
+        run.requestBoot = boot
         perform(.carPlayService(creating: false), in: run, {
             try screen.setCarPlayService(connected: false, completion: $0)
         }) { [self] removed in
@@ -387,6 +388,7 @@ final class ExternalDisplayChanges {
         let boot = screen.deviceBootDate
         let createService: @MainActor () -> Void = { [self] in
             guard screen.deviceBootDate == boot else { return next() }
+            run.requestBoot = boot
             perform(.carPlayService(creating: true), in: run, {
                 try screen.setCarPlayService(connected: true, completion: $0)
             }) { [self] created in
@@ -413,9 +415,9 @@ final class ExternalDisplayChanges {
         let screen = run.change.screen
         guard screen.deviceBootDate == boot else { return next(false) }
         carPlay.willSend(in: boot)
-        run.sessionBoot = boot
+        run.requestBoot = boot
         perform(.carPlaySession(starting: starting), in: run, {
-            screen.setCarPlayEnabled(starting, completion: $0)
+            screen.setCarPlayEnabled(starting, inBoot: boot, completion: $0)
         }) { [self] succeeded in
             carPlay.sessionAnswered(starting: starting, succeeded: succeeded, in: boot)
             next(succeeded)
@@ -471,7 +473,8 @@ final class ExternalDisplayChanges {
                 return
             }
             run.timer?.cancel()
-            if let error { run.fail(step, error) }
+            // A request that a restart made moot is not a failure.
+            if let error, !(error is CarPlayRequestMoot) { run.fail(step, error) }
             next(error == nil)
         }
         do { try operation(completion) } catch {
@@ -498,12 +501,13 @@ final class ExternalDisplayChanges {
             if case .carPlaySession = run.step {
                 // The session may or may not have changed; no request is
                 // sent for it again in this boot.
-                carPlay.timedOut(in: run.sessionBoot)
+                carPlay.timedOut(in: run.requestBoot)
                 run.fail(run.step, HostError.operation("""
                     The device did not answer, so NeoSimulator leaves its CarPlay session as it is until the \
                     device restarts.
                     """))
             } else {
+                if case .carPlayService = run.step { carPlay.serviceUnanswered(in: run.requestBoot) }
                 run.fail(run.step, HostError.operation("CoreSimulator did not complete the change."))
             }
             run.change.report(run.failures)
@@ -578,6 +582,15 @@ struct CarPlaySessionState {
     /// Notes the answer to a creation or a removal of the HID service.
     mutating func serviceAnswered(created: Bool, succeeded: Bool, in boot: Date?) {
         if boot == self.boot, succeeded { service = created }
+    }
+
+    /// Notes a creation or a removal of the HID service without an answer,
+    /// which may have taken effect: the service counts as created, so that
+    /// the next change that ends CarPlay removes it. The guest's removal does
+    /// nothing without a service (`-[SimHIDVirtualServiceManager
+    /// removeCarplayServiceForTargetID:]` looks it up first).
+    mutating func serviceUnanswered(in boot: Date?) {
+        if boot == self.boot { service = true }
     }
 }
 

@@ -347,9 +347,19 @@ final class SimulatorDevice {
     /// Starts or ends a CarPlay session in the guest through its
     /// CoreSimulatorBridge, which counts them: each start needs one end. The
     /// request waits for the guest, so it runs off the main actor, and the
-    /// requests reach the guest in the order they are made.
-    func setCarPlayEnabled(_ enabled: Bool) async throws {
-        try await call(interface.enableCarPlay, on: carPlayQueue) { try unsafe $0.unsafeInvoke(on: $1, enabled) }
+    /// requests reach the guest in the order they are made. A device whose
+    /// last boot is no longer `boot` when the request runs gets nothing, and
+    /// the request throws `CarPlayRequestMoot`.
+    func setCarPlayEnabled(_ enabled: Bool, inBoot boot: Date?) async throws {
+        nonisolated(unsafe) let lastBootedAt = interface.lastBootedAt
+        try await call(interface.enableCarPlay, on: carPlayQueue) { method, device in
+            // A restart between this check and CoreSimulator's delivery of
+            // the request cannot be told apart from here.
+            guard (try? unsafe lastBootedAt.unsafeInvoke(on: device)).flatMap({ $0 as Date? }) == boot else {
+                throw CarPlayRequestMoot()
+            }
+            try unsafe method.unsafeInvoke(on: device, enabled)
+        }
     }
 
     /// CoreSimulator drops the error of this read, so false can also mean that it failed.

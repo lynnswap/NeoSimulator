@@ -453,8 +453,11 @@ protocol SimulatorExternalScreen: AnyObject {
     func saveCarPlayConfiguration(carPlay: Bool) throws
     /// `SimDevice enableCarPlay:error:`, which starts or ends a CarPlay
     /// session in the guest. The guest counts them, so each start needs one
-    /// end. `completion` receives the result on the main actor.
-    func setCarPlayEnabled(_ enabled: Bool, completion: @escaping @MainActor (Error?) -> Void)
+    /// end. The request is decided for the device's `boot`; a device that has
+    /// restarted since gets nothing, and `completion` receives
+    /// `CarPlayRequestMoot`. Otherwise it receives the result, on the main
+    /// actor.
+    func setCarPlayEnabled(_ enabled: Bool, inBoot boot: Date?, completion: @escaping @MainActor (Error?) -> Void)
     /// Creates the guest's CarPlay HID service, which takes the touches of
     /// the screen's display, or removes it. `completion` receives the send's
     /// result on the main actor; a thrown error means nothing was sent.
@@ -464,6 +467,10 @@ protocol SimulatorExternalScreen: AnyObject {
     /// Stops the change reports.
     func disconnect()
 }
+
+/// A CarPlay request that was not sent because the device restarted after it
+/// was decided for the device's earlier boot.
+struct CarPlayRequestMoot: Error {}
 
 /// The external display of one device, through SimulatorKit's
 /// `SimDeviceScreen` and CoreSimDeviceIO's `SimScreen`.
@@ -562,10 +569,10 @@ final class SimulatorExternalScreenConnection: SimulatorExternalScreen {
         try CarPlayConfiguration.save(carPlay: carPlay, to: device.extendedDisplayFile())
     }
 
-    func setCarPlayEnabled(_ enabled: Bool, completion: @escaping @MainActor (Error?) -> Void) {
+    func setCarPlayEnabled(_ enabled: Bool, inBoot boot: Date?, completion: @escaping @MainActor (Error?) -> Void) {
         Task { [device] in
             do {
-                try await device.setCarPlayEnabled(enabled)
+                try await device.setCarPlayEnabled(enabled, inBoot: boot)
                 completion(nil)
             } catch {
                 completion(error)
