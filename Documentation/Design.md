@@ -279,8 +279,9 @@ A session discovers the default integrated `SimDeviceScreen`; screen ID zero is
 not assumed. It creates a connected `SimDisplayView` and one
 `SimDeviceLegacyHIDClient`, and installs the view in a transparent AppKit
 window, which shows the device bezel as Window ▸ Show Device Bezels says. A
-window with a bezel resizes by dragging the bezel's corners, and a window
-without one by its edges (see window scale below).
+window with a bezel resizes by dragging the bezel's corners and moves by
+dragging the bezel elsewhere; a window without one resizes by its edges (see
+window scale below).
 Shutdown removes the session. Closing a window
 shuts the device down, as Simulator.app does with `DetachOnWindowClose` off;
 a close that keeps the device running suppresses reopening until the device
@@ -565,6 +566,32 @@ dragging the bezel's corners:
 - When the drag ends, a window that does not reach 128 points into the
   visible frame moves along each axis until it does.
 
+Like Simulator.app's `DeviceWindow`, a window with a bezel moves with a drag
+elsewhere on the bezel:
+
+- SimulatorKit's views decide which presses reach the window, the same way in
+  both apps. The digitizer covers the device's screen and the bezel around
+  it; on an iPhone 17 Pro it covers all of the bezel's image. It keeps the
+  presses on the screen. It passes a press on the bezel to the window through
+  the responder chain once the pointer moves more than 5 points away from the
+  screen (`ignoreInsetDragAwayFromFramebuffer` and
+  `ignoreInsetDragMinimumDistance`, which neither app changes); a press that
+  stays where it is, or moves toward the screen or along its edge, stays with
+  the digitizer. The bezel's buttons (`SimChromeButton`) track their own
+  presses where they stand out of the bezel, and the corners reach the window
+  as described above. A press on the display outside the digitizer reaches the
+  window at once.
+- Outside full screen, a press that reaches the window on the display, away
+  from the corners, calls AppKit's `performDrag(with:)` (Simulator.app's
+  `performWindowDrag(with:)`), which hands the rest of the drag to the window
+  server. A press on the window outside the display, such as in the gap below
+  the header, moves nothing.
+- Simulator.app's app-wide `AllowsMoveByDragOnWindowChrome` turns this off.
+  NeoSimulator registers it on in its own defaults, as Simulator.app does, and
+  reads it with `UserDefaults.bool(forKey:)` at each press, as Simulator.app
+  reads it with `boolForKey:`. A value that `defaults write` saves applies to
+  the next press. Neither app shows the preference in its settings.
+
 A rotation, Show Device Bezels, and a restart keep the display's scale and
 resize the window, even when the window no longer fits the screen, as in
 Simulator.app. Without a bezel, AppKit then shrinks a window taller than the
@@ -618,10 +645,10 @@ These differ from Simulator.app:
 - A `ScreenConfigurations` entry whose name is not a UUID matches no
   arrangement, where Simulator.app stops.
 - Simulator.app also starts a drag on a corner of the bezel in full screen,
-  which then sets the full screen window's frame. NeoSimulator starts none in
-  full screen, where the display fits the window.
-- Simulator.app moves the window by a drag elsewhere on the bezel
-  (`AllowsMoveByDragOnWindowChrome`, registered on). NeoSimulator does not.
+  which then sets the full screen window's frame, and passes a press elsewhere
+  on the bezel to `performWindowDrag(with:)`, which leaves it to the window
+  server. NeoSimulator starts neither in full screen, where the display fits
+  the window.
 - A manual resize, possible without a bezel, does not keep the display's
   aspect ratio and stops at 320 by 300 points instead of the display's size at
   the minimum scale; the display is centered in the window. The scale
