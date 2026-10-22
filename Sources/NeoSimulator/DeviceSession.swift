@@ -38,6 +38,9 @@ struct DeviceCapabilities {
     /// Whether I/O ▸ External Displays ▸ CarPlay applies: like Simulator.app,
     /// the device also supports CarPlay.
     var supportsCarPlay: Bool { supportsExternalDisplays && supportsFeature(Self.carPlay) }
+    /// Whether the device has a Digital Crown or Digital Dial, which the
+    /// pointer's scrolling turns.
+    var hasCrownOrDial: Bool { supportsFeature(Self.digitalCrown) || supportsFeature(Self.digitalDial) }
 
     /// Why the device cannot show an External Displays item whatever its
     /// external display offers, or nil: iPadOS before 27 on an iPad with Stage
@@ -57,6 +60,12 @@ struct DeviceCapabilities {
     static let applePayAuthorization = "com.apple.hid.applepay.authorize"
     static let touchID = "com.apple.touch-id"
     static let faceID = "com.apple.pearl-id"
+    /// `SimFeatureOysterID`: Optic ID, Apple Vision Pro's.
+    static let opticID = "com.apple.oyster-id"
+    /// `SimFeatureHoverboard95880941`, which only Apple Vision Pro's device
+    /// types declare. Simulator.app shows Debug ▸ Show Gaze Target only with
+    /// it.
+    static let hoverboard = "com.apple.hid.hoverboard.95880941"
     static let standBy = "com.apple.display.ambient-overlay"
     /// `SimFeatureUIKitSlowMotionStateful`: the guest keeps slow animations on
     /// until they are turned off.
@@ -82,6 +91,15 @@ struct DeviceCapabilities {
     /// `SimFeatureAlwaysOnDisplay`: the watch dims its display instead of
     /// turning it off, which Simulator.app's Always On button shows.
     static let alwaysOnDisplay = "com.apple.display.aot"
+    /// `SimFeatureWatchGestures`: the watch takes Device ▸ Gestures.
+    static let watchGestures = "com.apple.hid.watch.gestures"
+    /// `SimFeatureDigitalCrown`, which watches have, and
+    /// `SimFeatureDigitalDial`, which Apple Vision Pro has: the device takes
+    /// the pointer's scrolling as turns of the crown or dial.
+    static let digitalCrown = "com.apple.hid.digital-crown"
+    static let digitalDial = "com.apple.hid.digital-dial"
+    /// `SimFeatureFallDetection`: the watch takes Features ▸ Simulate Fall.
+    static let fallDetection = "com.apple.motion.fall-detection"
 }
 
 /// Preferences Simulator.app keeps in its standard user defaults.
@@ -311,6 +329,15 @@ enum HardwareInput {
     case hold(HIDInput, for: Duration)
     /// Pressed and released twice, the second time after a delay.
     case pressTwice(HIDInput, interval: Duration)
+    /// A watch gesture, sent as one message.
+    case watchGesture(WatchGesture)
+}
+
+/// How a simulated fall ended, Features ▸ Simulate Fall, as the state of the
+/// guest's `com.apple.sos.user-fell` notification numbers it, which is also
+/// Simulator.app's menu tag.
+enum FallResolution: UInt64 {
+    case confirmed = 0, dismissed = 1, rejected = 2, unresponsive = 3
 }
 
 /// One connected simulator: its display and input, its device tools, and every
@@ -441,6 +468,14 @@ final class DeviceSession {
         case .pressTwice(let event, let interval):
             guard press(event, report) else { return }
             after(interval) { session in session.press(event, report) }
+        case .watchGesture(let gesture):
+            do {
+                try display.send(gesture) { error in
+                    if let error { report(error) }
+                }
+            } catch {
+                report(error)
+            }
         }
     }
 
@@ -561,12 +596,24 @@ final class DeviceSession {
 
     // MARK: Guest features
 
-    enum Biometric { case touchID, faceID }
+    enum Biometric {
+        case touchID, faceID, opticID
+
+        /// The `SimDevice` feature of the biometric.
+        var feature: String {
+            switch self {
+            case .touchID: DeviceCapabilities.touchID
+            case .faceID: DeviceCapabilities.faceID
+            case .opticID: DeviceCapabilities.opticID
+            }
+        }
+    }
 
     private static let biometricEnrollment = "com.apple.BiometricKit.enrollmentChanged"
     private static let standBy = "com.apple.springboard.ambient.presentation"
 
-    /// Whether biometrics are enrolled. Touch ID and Face ID share this guest state.
+    /// Whether biometrics are enrolled. Touch ID, Face ID, and Optic ID share
+    /// this guest state.
     var isBiometricEnrolled: Bool {
         canPerformCommands && (try? display.notificationState(Self.biometricEnrollment)) == 1
     }
@@ -576,16 +623,27 @@ final class DeviceSession {
         try toggleState(of: Self.biometricEnrollment)
     }
 
-    /// Presents a matching or non-matching finger or face to the guest.
+    /// Presents a matching or non-matching finger, face, or eye to the guest.
     func sendBiometric(_ biometric: Biometric, matching: Bool) throws {
         guard canPerformCommands else { return }
-        let source = biometric == .touchID ? "fingerTouch" : "pearl"
+        let source = switch biometric {
+        case .touchID: "fingerTouch"
+        case .faceID: "pearl"
+        case .opticID: "oyster"
+        }
         try display.postNotification("com.apple.BiometricKit_Sim.\(source).\(matching ? "match" : "nomatch")")
     }
 
     func toggleInCallStatusBar() throws {
         guard canPerformCommands else { return }
         try display.postNotification("com.apple.iphonesimulator.toggleincallstatusbar")
+    }
+
+    /// Features ▸ Simulate Fall: tells the guest that its user fell and how
+    /// the fall ended, as Simulator.app does.
+    func simulateFall(_ resolution: FallResolution) throws {
+        guard canPerformCommands else { return }
+        try send(resolution.rawValue, to: "com.apple.sos.user-fell")
     }
 
     var showsStandBy: Bool { canPerformCommands && (try? display.notificationState(Self.standBy)) == 1 }
