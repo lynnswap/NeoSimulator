@@ -50,6 +50,10 @@ struct CoreSimulatorInterface {
     /// `setHardwareKeyboardEnabled:keyboardType:error:`, whose type is a byte.
     let setHardwareKeyboard: NativeObjCMethod<Void, Bool, UInt8>
     let setKeyboardLanguage: NativeObjCMethod<Void, String>
+    /// `lookup:error:`, a send right to a Mach service of the guest. It
+    /// returns a port, which a `throws` signature cannot carry, so the error
+    /// slot is explicit.
+    let lookup: NativeObjCMethod<UInt32, String, AutoreleasingUnsafeMutablePointer<NSError?>?>
     let runtimeName: NativeObjCMethod<String?>
     let runtimeIdentifier: NativeObjCMethod<String?>
     let runtimeAvailable: NativeObjCMethod<Bool>
@@ -154,6 +158,9 @@ struct CoreSimulatorInterface {
             on: device, selector: "setHardwareKeyboardEnabled:keyboardType:error:", as: ((Bool, UInt8) throws -> Void).self)
         setKeyboardLanguage = try runtime.resolveObjCMethodAndWait(
             on: device, selector: "setKeyboardLanguage:error:", as: ((String) throws -> Void).self)
+        lookup = try runtime.resolveObjCMethodAndWait(
+            on: device, selector: "lookup:error:",
+            as: ((String, AutoreleasingUnsafeMutablePointer<NSError?>?) -> UInt32).self)
         runtimeName = try runtime.resolveObjCMethodAndWait(
             on: simRuntime, selector: "name", as: (() -> String?).self)
         runtimeIdentifier = try runtime.resolveObjCMethodAndWait(
@@ -363,6 +370,24 @@ final class SimulatorDevice {
 
     func setKeyboardLanguage(_ language: String) async throws {
         try await call(interface.setKeyboardLanguage, on: keyboardQueue) { try unsafe $0.unsafeInvoke(on: $1, language) }
+    }
+
+    /// A send right to the guest's Mach service `name`, which the caller then
+    /// owns. CoreSimulator fails while the device is not booted.
+    func lookUp(_ name: String) throws -> UInt32 {
+        try autoreleasepool {
+            // The method stores an autoreleased error, so the slot must not own it.
+            let slot = UnsafeMutablePointer<Int>.allocate(capacity: 1)
+            defer { slot.deallocate() }
+            unsafe slot.initialize(to: 0)
+            let error = unsafe AutoreleasingUnsafeMutablePointer<NSError?>(slot)
+            let port = try unsafe interface.lookup.unsafeInvoke(on: object, name, error)
+            // MACH_PORT_NULL and MACH_PORT_DEAD are not rights.
+            guard port != 0, port != UInt32.max else {
+                throw unsafe error.pointee ?? HostError.operation("The device did not provide \(name).")
+            }
+            return port
+        }
     }
 
     /// Sends `method` to the device on `queue`, queued before this suspends.

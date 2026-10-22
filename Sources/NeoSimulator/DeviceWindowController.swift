@@ -571,6 +571,12 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         }, failure: { [weak self] in self?.present($0) })
     }
 
+    /// Edit ▸ Get Pasteboard or Send Pasteboard. A failure that the device
+    /// reports later is also presented on this window.
+    func transferPasteboard(_ transfer: PasteboardTransfer) {
+        session.transferPasteboard(transfer) { [weak self] in self?.present($0) }
+    }
+
     /// File ▸ Record Screen: starts recording without asking. Stopping shows
     /// the movie's thumbnail, which saves it to the Desktop when dismissed;
     /// the movie is named when the recording stops.

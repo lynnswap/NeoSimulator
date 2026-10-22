@@ -261,6 +261,145 @@ struct InputFocusTests {
         #expect(NSApp.mainMenu?.performKeyEquivalent(with: editing[3]) == true)
     }
 
+    @Test func editMenuEndsWithSimulatorAppsPasteboardTransfers() throws {
+        _ = NSApplication.shared
+        MenuController(application: nil).install()
+        defer { NSApp.mainMenu = nil }
+        let edit = try #require(NSApp.mainMenu?.items.first { $0.title == "Edit" }?.submenu)
+        #expect(edit.items.map { $0.isSeparatorItem ? "-" : $0.title } == [
+            "Undo", "Redo", "-", "Cut", "Copy", "Copy Screen", "Paste", "Select All", "-",
+            "Get Pasteboard", "Send Pasteboard",
+        ])
+        #expect(edit.items.suffix(2).allSatisfy { $0.keyEquivalent.isEmpty })
+    }
+
+    @Test func pasteboardTransfersNeedADeviceThatExchangesItsPasteboard() throws {
+        let get = DeviceCommand.command(.getPasteboard), send = DeviceCommand.command(.sendPasteboard)
+        func availability(_ family: DeviceCapabilities.Family, features: Set<String> = [DeviceCapabilities.pasteboard],
+                          _ change: (DeviceWindowController, TestDisplay) -> Void = { _, _ in }) throws -> [Bool] {
+            let display = TestDisplay()
+            let controller = try makeController(display, family: family, features: features)
+            defer { controller.invalidate() }
+            change(controller, display)
+            return [get, send].flatMap { [$0.isSupported(controller.session.capabilities), $0.isEnabled(controller)] }
+        }
+        // Like Simulator.app, other devices show the commands disabled.
+        for family in [DeviceCapabilities.Family.iPhone, .iPad, .vision] {
+            #expect(try availability(family) == [true, true, true, true])
+        }
+        for family in [DeviceCapabilities.Family.tv, .watch] {
+            #expect(try availability(family) == [true, false, true, false])
+        }
+        #expect(try availability(.iPhone, features: []) == [true, false, true, false])
+        #expect(try availability(.iPhone) { $1.isBooted = false } == [true, false, true, false])
+        #expect(try availability(.iPhone) { controller, _ in controller.session.disconnect() } == [true, false, true, false])
+    }
+
+    @Test func pasteboardTransfersConnectOnlyWhenChosen() throws {
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("dev.lynnswap.NeoSimulatorTests.\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        let display = TestDisplay()
+        let controller = try makeController(display, features: [DeviceCapabilities.pasteboard], pasteboard: pasteboard)
+        defer { controller.invalidate() }
+        // Nothing crosses without a command, so the device's pasteboard
+        // service is not even connected until one is chosen.
+        #expect(display.pasteboards.isEmpty)
+        controller.perform(.getPasteboard)
+        controller.perform(.sendPasteboard)
+        controller.perform(.getPasteboard)
+        let connection = try #require(display.pasteboards.first)
+        #expect(display.pasteboards.count == 1)
+        #expect(connection.pasteboard === pasteboard)
+        #expect(connection.transfers == [.get, .send, .get])
+        // The connection stays until the window disconnects, so that the Mac
+        // pasteboard can read the device's data when an app pastes it.
+        #expect(!connection.isDisconnected)
+        controller.invalidate()
+        #expect(connection.isDisconnected)
+    }
+
+    @Test func pasteboardTransferFailuresReachTheirCommand() throws {
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("dev.lynnswap.NeoSimulatorTests.\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        let display = TestDisplay()
+        let session = try makeSession(display, features: [DeviceCapabilities.pasteboard], pasteboard: pasteboard)
+        defer { session.disconnect() }
+        var failures: [String] = []
+        func transfer(_ transfer: PasteboardTransfer) {
+            session.transferPasteboard(transfer) { failures.append($0.localizedDescription) }
+        }
+        let get = "Could not get the simulator's pasteboard: "
+        let send = "Could not send the pasteboard to the simulator: "
+        let closed = "The simulator closed its pasteboard connection."
+
+        display.pasteboardError = HostError.operation("Unable to lookup in current state: Shutdown")
+        transfer(.get)
+        #expect(failures == [get + "Unable to lookup in current state: Shutdown"])
+        #expect(display.pasteboards.isEmpty)
+
+        // The next transfer connects. The connection's first activation is
+        // its own; each later one completes a push.
+        transfer(.send)
+        let first = try #require(display.pasteboards.first)
+        first.send(.activated)
+        first.send(.activated)
+        transfer(.get)
+        first.send(.failedToApply(HostError.operation("pasteboard communication failure")))
+        #expect(failures.last == get + "pasteboard communication failure")
+        transfer(.get)
+        first.send(.applied)
+        // With nothing pending, the device closing the connection is no failure.
+        first.send(.lostConnection)
+        #expect(failures.count == 2)
+        #expect(first.isDisconnected)
+
+        // Transfers still pending fail, and the next transfer connects again.
+        transfer(.send)
+        let second = try #require(display.pasteboards.last)
+        #expect(display.pasteboards.count == 2)
+        second.send(.activated)
+        transfer(.get)
+        second.send(.lostConnection)
+        #expect(Set(failures.dropFirst(2)) == [send + closed, get + closed])
+        transfer(.send)
+        #expect(display.pasteboards.count == 3)
+    }
+
+    @Test func pasteboardDelegateAnswersSimPasteboardPlus() throws {
+        let runtime = try makeRuntime()
+        #expect(runtime.pasteboard.serviceName == "com.apple.CoreSimulator.SimPasteboardInterface")
+        // The connection calls the protocol's optional methods by selector, so
+        // each must match the protocol's declaration exactly.
+        let delegateProtocol = try #require(objc_getProtocol("_TtP17SimPasteboardPlus21SimPasteboardDelegate_"))
+        var events: [String] = []
+        let delegate = SimulatorPasteboardDelegate { events.append("\($0)") }
+        let interface = NSObject(), host = NSUUID(), pasteboard = NSPasteboard(name: NSPasteboard.Name(UUID().uuidString))
+        defer { pasteboard.releaseGlobally() }
+        let callbacks: [(String, () -> Void)] = [
+            ("simPasteboardDidBecomeActive:", { delegate.simPasteboardDidBecomeActive(interface) }),
+            ("simPasteboardDidLoseConnection:", { delegate.simPasteboardDidLoseConnection(interface) }),
+            ("simPasteboardDidApplySnapshot:fromHost:incomingGeneration:toPasteboard:atGeneration:", {
+                delegate.simPasteboardDidApplySnapshot(interface, fromHost: host, incomingGeneration: 7,
+                                                       toPasteboard: pasteboard, atGeneration: 2)
+            }),
+            ("simPasteboardErrorApplyingSnapshot:fromHost:generation:error:toPasteboard:", {
+                delegate.simPasteboardErrorApplyingSnapshot(interface, fromHost: host, generation: 7,
+                                                            error: NSError(domain: "CFPasteboardErrorDomain", code: -25130),
+                                                            toPasteboard: pasteboard)
+            }),
+        ]
+        for (name, call) in callbacks {
+            let selector = NSSelectorFromString(name)
+            let declared = protocol_getMethodDescription(delegateProtocol, selector, false, true)
+            let method = try #require(class_getInstanceMethod(SimulatorPasteboardDelegate.self, selector), "\(name)")
+            #expect(declared.types.map { String(cString: $0) } == String(cString: method_getTypeEncoding(method)!))
+            call()
+        }
+        #expect(events.count == 4)
+        #expect(events.prefix(3) == ["activated", "lostConnection", "applied"])
+        #expect(events.last?.hasPrefix("failedToApply") == true)
+    }
+
     @Test func commandHeldKeyUpReachesTheNativeInputUntilTheWindowCloses() throws {
         let display = TestDisplay()
         let controller = try makeController(display)
@@ -279,18 +418,7 @@ struct InputFocusTests {
 
     @Test func nativeDisplayKeepsInputIdentityAndChromeActivation() throws {
         _ = NSApplication.shared
-        let selection = Process()
-        let output = Pipe()
-        selection.executableURL = URL(fileURLWithPath: "/usr/bin/xcode-select")
-        selection.arguments = ["-p"]
-        selection.standardOutput = output
-        try selection.run()
-        let data = output.fileHandleForReading.readDataToEndOfFile()
-        selection.waitUntilExit()
-        let developerPath = ProcessInfo.processInfo.environment["DEVELOPER_DIR"]
-            ?? String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        let xcode = URL(fileURLWithPath: developerPath).deletingLastPathComponent().deletingLastPathComponent()
-        let runtime = try SimulatorRuntime(xcodeURL: xcode)
+        let runtime = try makeRuntime()
         let display = runtime.display
         let type = try #require(NSClassFromString("SimulatorKit.SimDisplayView") as? NSView.Type)
         let view = type.init(frame: .zero)
@@ -2609,6 +2737,22 @@ struct InputFocusTests {
     /// A controller whose session and touch pressure settings keep their
     /// preferences in `preferences`. Without `touchPressure`, the Mac has no
     /// Force Touch trackpad.
+    /// The private runtime of the selected Xcode, as the host loads it.
+    private func makeRuntime() throws -> SimulatorRuntime {
+        let selection = Process()
+        let output = Pipe()
+        selection.executableURL = URL(fileURLWithPath: "/usr/bin/xcode-select")
+        selection.arguments = ["-p"]
+        selection.standardOutput = output
+        try selection.run()
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        selection.waitUntilExit()
+        let developerPath = ProcessInfo.processInfo.environment["DEVELOPER_DIR"]
+            ?? String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        let xcode = URL(fileURLWithPath: developerPath).deletingLastPathComponent().deletingLastPathComponent()
+        return try SimulatorRuntime(xcodeURL: xcode)
+    }
+
     private func makeController(_ display: TestDisplay,
                                 family: DeviceCapabilities.Family = .iPhone,
                                 features: Set<String> = Self.defaultFeatures,
@@ -2622,13 +2766,15 @@ struct InputFocusTests {
                                 touchPressure: TouchPressure? = nil,
                                 keyboardLanguage: @escaping @MainActor () -> String? = { "fr" },
                                 openLog: @escaping (URL) async throws -> Void = { _ in },
+                                pasteboard: NSPasteboard? = nil,
                                 onClose: @escaping (DeviceWindowController, DeviceLifetimeChoice?) -> Void = { _, _ in },
                                 onRestart: @escaping (DeviceWindowController, Bool) -> Void = { _, _ in })
         throws -> DeviceWindowController {
         let session = try makeSession(display, family: family, features: features, framebufferMask: framebufferMask,
                                       simctl: simctl, devicectl: devicectl, recordingProcess: recordingProcess,
                                       openLog: openLog, screenPointsPerInch: screenPointsPerInch, device: identifier,
-                                      preferences: preferences, keyboardLanguage: keyboardLanguage)
+                                      preferences: preferences, keyboardLanguage: keyboardLanguage,
+                                      pasteboard: pasteboard)
         return try DeviceWindowController(
             session: session, preferences: preferences,
             touchPressure: touchPressure ?? TouchPressure(preferences: preferences, forceTouchTrackpad: { false }),
@@ -2687,7 +2833,8 @@ struct InputFocusTests {
                              screenPointsPerInch: Double? = nil,
                              device identifier: String = "test-device",
                              preferences: MemoryPreferences = MemoryPreferences(),
-                             keyboardLanguage: @escaping @MainActor () -> String? = { "fr" }) throws -> DeviceSession {
+                             keyboardLanguage: @escaping @MainActor () -> String? = { "fr" },
+                             pasteboard: NSPasteboard? = nil) throws -> DeviceSession {
         DeviceSession(
             device: availableDevice(identifier, "Test iPhone", runtime: "iOS", state: 3),
             capabilities: DeviceCapabilities(family: family, runtimeVersion: 0x1B_00_00,
@@ -2698,7 +2845,7 @@ struct InputFocusTests {
             tools: try DeviceTools(identifier: "test-device", xcodeURL: URL(fileURLWithPath: "/Applications/Xcode.app"),
                                    simctl: simctl, devicectl: devicectl),
             recordingProcess: recordingProcess, openLog: openLog, preferences: preferences,
-            hostKeyboardLanguage: keyboardLanguage)
+            hostKeyboardLanguage: keyboardLanguage, pasteboard: pasteboard)
     }
 }
 
@@ -2925,6 +3072,20 @@ private final class TestDisplay: SimulatorDisplay {
         keyboardLanguages.append(language)
         if let keyboardLanguageError { throw keyboardLanguageError }
     }
+    /// Each pasteboard connection, with the pasteboard it manages, in order.
+    var pasteboards: [TestPasteboard] = []
+    /// Fails the next pasteboard connection with this error.
+    var pasteboardError: Error?
+    func connectPasteboard(_ pasteboard: NSPasteboard,
+                           events: @escaping @MainActor (SimulatorPasteboardEvent) -> Void) throws -> any SimulatorPasteboard {
+        if let error = pasteboardError {
+            pasteboardError = nil
+            throw error
+        }
+        let connection = TestPasteboard(pasteboard: pasteboard, events: events)
+        pasteboards.append(connection)
+        return connection
+    }
     /// Each value the digitizer's touch pressure settings were given, in order.
     var supportsTouchPressure: [Bool] = []
     var usesTrackpadForce: [Bool] = []
@@ -2949,6 +3110,26 @@ private final class TestDisplay: SimulatorDisplay {
     func resize(to size: NSSize) { setRenderScale(scale(for: size)) }
     func endResize() { isResizing = false }
     func disconnect() { disconnectCount += 1; onDisconnect() }
+}
+
+/// A device's pasteboard connection that records its pushes and pulls; the
+/// test sends the device's events.
+@MainActor
+private final class TestPasteboard: SimulatorPasteboard {
+    let pasteboard: NSPasteboard
+    private let events: (SimulatorPasteboardEvent) -> Void
+    private(set) var transfers: [PasteboardTransfer] = []
+    private(set) var isDisconnected = false
+
+    init(pasteboard: NSPasteboard, events: @escaping @MainActor (SimulatorPasteboardEvent) -> Void) {
+        self.pasteboard = pasteboard
+        self.events = events
+    }
+
+    func pull() throws { transfers.append(.get) }
+    func push() throws { transfers.append(.send) }
+    func disconnect() { isDisconnected = true }
+    func send(_ event: SimulatorPasteboardEvent) { events(event) }
 }
 
 @Suite @MainActor
