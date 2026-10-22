@@ -29,15 +29,45 @@ struct DeviceCommand {
     }
 
     struct Toolbar {
+        /// What a button shows and the command it performs.
+        struct Face {
+            let id: ID
+            let symbol: String
+            /// The description of the button's image, which accessibility
+            /// reads, or nil for the symbol's own.
+            let imageDescription: String?
+            /// The button's tooltip, or nil for the item's label.
+            var toolTip: String?
+        }
+
+        /// The item's label, which is also the button's tooltip while it
+        /// performs the command, as in Simulator.app's toolbar nibs.
         let label: String
         let symbol: String
+        /// The description of the button's image while it performs the
+        /// command, by default the label.
+        let imageDescription: String
         /// The width of the command's button in Simulator.app's toolbar nib,
         /// which its toolbar style threshold counts (see
         /// `DeviceToolbar.buttonsWidth`).
         let buttonWidth: CGFloat
-        /// Another command that the button shows, with this label and symbol,
-        /// and performs while that command can run.
-        var alternate: (id: ID, label: String, symbol: String)?
+        /// What the button shows and performs while Option is down with the
+        /// pointer over the toolbar, as Simulator.app's `OptionSwitchingButton`
+        /// does.
+        let optionAlternate: Face?
+        /// What the button shows and performs while that command can run,
+        /// whether or not Option is down.
+        let alternate: Face?
+
+        init(label: String, symbol: String, imageDescription: String? = nil, buttonWidth: CGFloat,
+             optionAlternate: Face? = nil, alternate: Face? = nil) {
+            self.label = label
+            self.symbol = symbol
+            self.imageDescription = imageDescription ?? label
+            self.buttonWidth = buttonWidth
+            self.optionAlternate = optionAlternate
+            self.alternate = alternate
+        }
     }
 
     let id: ID
@@ -86,11 +116,15 @@ struct DeviceCommand {
 
     static let catalog: [ID: DeviceCommand] = Dictionary(uniqueKeysWithValues: [
         // File
-        // Like Simulator.app's, the Save Screen button stops a recording while
-        // it runs, showing `stop.circle`, instead of the toolbar adding an item.
+        // Like Simulator.app's, the Save Screen button records the screen with
+        // Option, and stops a recording while it runs, showing `stop.circle`,
+        // instead of the toolbar adding an item.
         DeviceCommand(id: .saveScreen, title: "Save Screen", key: "s",
                       toolbar: Toolbar(label: "Save Screen", symbol: "camera.on.rectangle", buttonWidth: 32,
-                                       alternate: (.stopRecording, "Stop Recording", "stop.circle")),
+                                       optionAlternate: .init(id: .recordScreen, symbol: "record.circle",
+                                                              imageDescription: "Start Recording", toolTip: "Record Screen"),
+                                       alternate: .init(id: .stopRecording, symbol: "stop.circle",
+                                                        imageDescription: "Stop Recording", toolTip: "Stop Recording")),
                       isEnabled: { $0.session.canPerformToolOperation }) { $0.saveScreen() },
         DeviceCommand(id: .saveScreenAs, title: "Save Screen…", key: "s", modifiers: [.command, .option],
                       isAlternate: true,
@@ -125,8 +159,13 @@ struct DeviceCommand {
         DeviceCommand(id: .rotateLeft, title: "Rotate Left", key: String(UnicodeScalar(NSLeftArrowFunctionKey)!),
                       isSupported: { $0.rotates },
                       isEnabled: { $0.session.canPerformToolOperation }) { $0.rotate(left: true) },
+        // As in Simulator.app, the button is Rotate, which keeps its tooltip
+        // with Option and then shows `rotate.left` with the symbol's own
+        // description.
         DeviceCommand(id: .rotateRight, title: "Rotate Right", key: String(UnicodeScalar(NSRightArrowFunctionKey)!),
-                      toolbar: Toolbar(label: "Rotate Right", symbol: "rotate.right", buttonWidth: 25),
+                      toolbar: Toolbar(label: "Rotate", symbol: "rotate.right", imageDescription: "Rotate Right",
+                                       buttonWidth: 25,
+                                       optionAlternate: .init(id: .rotateLeft, symbol: "rotate.left", imageDescription: nil)),
                       isSupported: { $0.rotates },
                       isEnabled: { $0.session.canPerformToolOperation }) { $0.rotate(left: false) },
         orientation(.portrait, title: "Portrait"),

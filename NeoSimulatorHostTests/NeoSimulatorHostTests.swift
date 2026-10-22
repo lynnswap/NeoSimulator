@@ -114,6 +114,146 @@ struct InputFocusTests {
         #expect(shows("camera.on.rectangle", "Save Screen"))
     }
 
+    @Test func theToolbarsButtonsShowTheirOptionAlternatesWhileThePointerIsOverTheToolbar() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        // A devicectl stand-in that logs its arguments and reports portrait.
+        let log = directory.appendingPathComponent("arguments"), devicectl = directory.appendingPathComponent("devicectl")
+        try """
+            #!/bin/sh
+            printf '%s\\n' "$*" >> "\(log.path)"
+            printf '{"result":{"deviceOrientation":"portrait","deviceOrientationNonFlat":"portrait"}}'
+            """.write(to: devicectl, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: devicectl.path)
+        let controller = try makeController(TestDisplay(), devicectl: devicectl)
+        defer { controller.invalidate() }
+        let pointer = try ToolbarPointer(controller)
+        /// The way the last rotation turned the device.
+        func rotation() async throws -> String? {
+            for _ in 0..<300 where controller.session.isBusy { try await Task.sleep(for: .milliseconds(10)) }
+            let rotate = try String(contentsOf: log, encoding: .utf8).split(separator: "\n").last { $0.contains(" rotate ") }
+            return rotate?.split(separator: " ").dropLast().last.map(String.init)
+        }
+        // The faces of Simulator.app's toolbar nib.
+        #expect(pointer.faces == ButtonFace.normal)
+        // Away from the toolbar, Option changes nothing.
+        pointer.hold(.option)
+        #expect(pointer.faces == ButtonFace.normal)
+        // Over the toolbar, Save Screen and Rotate show their alternates while
+        // Option is down, also with another modifier. Home has none.
+        pointer.hold([])
+        pointer.enter()
+        #expect(pointer.faces == ButtonFace.normal)
+        pointer.hold(.option)
+        #expect(pointer.faces == ButtonFace.optionAlternates)
+        pointer.hold([.option, .shift])
+        #expect(pointer.faces == ButtonFace.optionAlternates)
+        pointer.hold(.shift)
+        #expect(pointer.faces == ButtonFace.normal)
+        // A click performs the alternate: Rotate turns the device left.
+        pointer.hold(.option)
+        #expect(try pointer.click(.rotateRight))
+        #expect(try await rotation() == "left")
+        // Leaving the toolbar gives the buttons their own faces back, and
+        // Option no longer switches them.
+        pointer.exit()
+        #expect(pointer.faces == ButtonFace.normal)
+        pointer.hold([])
+        pointer.hold(.option)
+        #expect(pointer.faces == ButtonFace.normal)
+        #expect(try pointer.click(.rotateRight))
+        #expect(try await rotation() == "right")
+        // Entering with Option already down shows the alternates at once.
+        pointer.enter()
+        #expect(pointer.faces == ButtonFace.optionAlternates)
+        pointer.hold([])
+        #expect(pointer.faces == ButtonFace.normal)
+    }
+
+    @Test func aRecordingKeepsSaveScreenAsStopRecordingWhateverOptionDoes() async throws {
+        let controller = try makeController(TestDisplay()) { _, _ in
+            Self.recorder(then: "trap 'sleep 0.3; exit 0' INT; while :; do sleep 0.05; done")
+        }
+        defer { controller.invalidate() }
+        let pointer = try ToolbarPointer(controller)
+        func wait(until condition: () -> Bool) async throws {
+            for _ in 0..<200 where !condition() { try await Task.sleep(for: .milliseconds(10)) }
+        }
+        // With Option down over the toolbar, Save Screen records the screen as
+        // File ▸ Record Screen does.
+        pointer.enter()
+        pointer.hold(.option)
+        #expect(pointer.faces == ButtonFace.optionAlternates)
+        #expect(try pointer.click(.saveScreen))
+        let recording = try #require(controller.session.recording)
+        // While the recording runs, Save Screen is Stop Recording whatever
+        // Option and the pointer do, and Rotate still follows Option.
+        try await wait { pointer.faces[1] == .stopRecording }
+        #expect(pointer.faces == [.home, .stopRecording, .rotateLeft])
+        pointer.hold([])
+        #expect(pointer.faces == [.home, .stopRecording, .rotate])
+        pointer.exit()
+        pointer.hold(.option)
+        pointer.enter()
+        #expect(pointer.faces == [.home, .stopRecording, .rotateLeft])
+        // A click with Option stops the recording.
+        #expect(try pointer.click(.saveScreen))
+        #expect(recording.isStopping)
+        // As soon as the recording stops, Save Screen follows Option again,
+        // and Record Screen is available once the movie is finished.
+        try await wait { pointer.faces[1] == .recordScreen }
+        #expect(pointer.faces == ButtonFace.optionAlternates)
+        pointer.hold([])
+        #expect(pointer.faces == ButtonFace.normal)
+        recording.stop()  // Does nothing unless the click failed to stop it.
+        try await recording.waitUntilFinished()
+        try await wait { controller.session.recording == nil }
+        pointer.hold(.option)
+        #expect(pointer.faces == ButtonFace.optionAlternates)
+        #expect(try pointer.item(.saveScreen).isEnabled)
+    }
+
+    @Test func theOptionAlternatesFollowTheAppsActivationAsInSimulatorApp() throws {
+        let controller = try makeController(TestDisplay())
+        defer { controller.invalidate() }
+        let window = try #require(controller.window)
+        let pointer = try ToolbarPointer(controller)
+        // Like Simulator.app's `SimToolbar`, the toolbar's view tracks the
+        // pointer while the app is active, in any of its windows: AppKit
+        // reports the pointer leaving when the app resigns active and entering
+        // when the app becomes active with the pointer over the toolbar.
+        #expect(pointer.area.options == [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect])
+        // A window that resigns key keeps the alternates while Option is
+        // down, although it sends its device a modifier release through the
+        // app.
+        controller.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification, object: window))
+        var releases = 0
+        let monitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { event in
+            if event.modifierFlags.isEmpty { releases += 1 }
+            return event
+        }
+        defer { monitor.map(NSEvent.removeMonitor) }
+        pointer.enter()
+        pointer.hold(.option)
+        #expect(pointer.faces == ButtonFace.optionAlternates)
+        controller.windowDidResignKey(Notification(name: NSWindow.didResignKeyNotification, object: window))
+        #expect(releases == 1)
+        #expect(pointer.faces == ButtonFace.optionAlternates)
+        // When the app resigns active, the buttons take their own faces as the
+        // pointer leaves. Option changes made in another app do not reach this
+        // one.
+        pointer.exit()
+        #expect(pointer.faces == ButtonFace.normal)
+        pointer.holdInAnotherApp([])
+        pointer.holdInAnotherApp(.option)
+        #expect(pointer.faces == ButtonFace.normal)
+        // When the app becomes active again with the pointer over the toolbar,
+        // the buttons read Option as they enter.
+        pointer.enter()
+        #expect(pointer.faces == ButtonFace.optionAlternates)
+    }
+
     @Test func quickSaveScreenUsesTheScreenshotFolderAndMaskPreference() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -3873,6 +4013,109 @@ struct InputFocusTests {
 @MainActor
 private final class ChangeLog {
     var onMainThread: [Bool] = []
+}
+
+/// What a device window's toolbar button shows: its image's symbol and
+/// description, its tooltip, and its item's label.
+private struct ButtonFace: Equatable {
+    var symbol: String?
+    var imageDescription: String?
+    var toolTip: String?
+    var label: String
+
+    static let home = ButtonFace(symbol: "house", imageDescription: "Home", toolTip: "Home", label: "Home")
+    static let saveScreen = ButtonFace(symbol: "camera.on.rectangle", imageDescription: "Save Screen",
+                                       toolTip: "Save Screen", label: "Save Screen")
+    static let recordScreen = ButtonFace(symbol: "record.circle", imageDescription: "Start Recording",
+                                         toolTip: "Record Screen", label: "Save Screen")
+    static let stopRecording = ButtonFace(symbol: "stop.circle", imageDescription: "Stop Recording",
+                                          toolTip: "Stop Recording", label: "Save Screen")
+    static let rotate = ButtonFace(symbol: "rotate.right", imageDescription: "Rotate Right", toolTip: "Rotate", label: "Rotate")
+    /// As in Simulator.app, the image has the symbol's own description.
+    static let rotateLeft = ButtonFace(symbol: "rotate.left",
+                                       imageDescription: NSImage(systemSymbolName: "rotate.left", accessibilityDescription: nil)?
+                                           .accessibilityDescription,
+                                       toolTip: "Rotate", label: "Rotate")
+    /// Home, Save Screen, and Rotate, as Simulator.app's iPhone toolbar shows them.
+    static let normal = [home, saveScreen, rotate]
+    /// The same buttons while Option is down with the pointer over the toolbar.
+    static let optionAlternates = [home, recordScreen, rotateLeft]
+
+    @MainActor
+    init(_ item: NSToolbarItem) {
+        let image = item.image?.tiffRepresentation
+        symbol = ["house", "camera.on.rectangle", "record.circle", "stop.circle", "rotate.right", "rotate.left"].first {
+            image != nil && NSImage(systemSymbolName: $0, accessibilityDescription: nil)?.tiffRepresentation == image
+        }
+        imageDescription = item.image?.accessibilityDescription
+        toolTip = item.toolTip
+        label = item.label
+    }
+
+    init(symbol: String?, imageDescription: String?, toolTip: String?, label: String) {
+        (self.symbol, self.imageDescription, self.toolTip, self.label) = (symbol, imageDescription, toolTip, label)
+    }
+}
+
+/// Moves the pointer onto and off a device window's toolbar as AppKit reports
+/// it, through the tracking area of the toolbar's view, and holds modifier
+/// keys as the keyboard does: the toolbar reads the keys held, and hears of
+/// each change through a modifier event that the app sends.
+@MainActor
+private final class ToolbarPointer {
+    let area: NSTrackingArea
+    private let window: NSWindow
+    private let toolbar: NSToolbar
+    private var keys: NSEvent.ModifierFlags = []
+
+    init(_ controller: DeviceWindowController) throws {
+        window = try #require(controller.window)
+        toolbar = try #require(window.toolbar)
+        let owner = try #require(toolbar.delegate as? DeviceToolbar)
+        let view = try #require(toolbar.value(forKey: "_toolbarView") as? NSView)
+        area = try #require(view.trackingAreas.first { $0.owner as AnyObject === owner })
+        owner.modifierFlags = { [unowned self] in self.keys }
+    }
+
+    func enter() { report(.mouseEntered, "mouseEntered:") }
+    func exit() { report(.mouseExited, "mouseExited:") }
+
+    /// Sends the area's owner the event AppKit sends it.
+    private func report(_ type: NSEvent.EventType, _ selector: String) {
+        let event = NSEvent.enterExitEvent(with: type, location: .zero, modifierFlags: keys, timestamp: 0,
+                                           windowNumber: window.windowNumber, context: nil, eventNumber: 0,
+                                           trackingNumber: 0, userData: nil)
+        _ = (area.owner as AnyObject).perform(NSSelectorFromString(selector), with: event)
+    }
+
+    /// Holds `keys`, which the app hears of through a modifier event.
+    func hold(_ keys: NSEvent.ModifierFlags) {
+        self.keys = keys
+        if let event = NSEvent.keyEvent(with: .flagsChanged, location: .zero, modifierFlags: keys,
+                                        timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: 0, context: nil,
+                                        characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: 58) {
+            NSApp.sendEvent(event)
+        }
+    }
+
+    /// Holds `keys` while another app is active, so that no modifier event
+    /// reaches this one.
+    func holdInAnotherApp(_ keys: NSEvent.ModifierFlags) { self.keys = keys }
+
+    func item(_ id: DeviceCommand.ID) throws -> NSToolbarItem {
+        try #require(toolbar.items.first { $0.itemIdentifier.rawValue == id.rawValue })
+    }
+
+    /// The faces of the toolbar's buttons, in toolbar order.
+    var faces: [ButtonFace] {
+        toolbar.items.filter { DeviceCommand.ID(rawValue: $0.itemIdentifier.rawValue) != nil }.map(ButtonFace.init)
+    }
+
+    /// Clicks `id`'s button, as AppKit sends its action.
+    func click(_ id: DeviceCommand.ID) throws -> Bool {
+        let item = try item(id)
+        return NSApp.sendAction(try #require(item.action), to: item.target, from: item)
+    }
 }
 
 /// Preferences kept in memory, so that tests leave the app's defaults alone.

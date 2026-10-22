@@ -234,7 +234,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         guard let window else { return }
         let toolbar = DeviceToolbar(controller: self)
         deviceToolbar = toolbar
-        window.toolbar = toolbar.toolbar
+        toolbar.attach(to: window)
         session.display.onPropertiesChange = { [weak self] in self?.displayPropertiesChanged() }
         content.canImport = { [weak self] in self?.session.canPerformToolOperation == true }
         content.importFiles = { [weak self] in self?.importFiles($0) }

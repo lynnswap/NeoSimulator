@@ -7,6 +7,14 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
     let toolbar = NSToolbar(identifier: "DeviceToolbar")
     private weak var controller: DeviceWindowController?
     private let commands: [DeviceCommand.ID]
+    /// The modifier keys held now, which the buttons follow.
+    var modifierFlags: () -> NSEvent.ModifierFlags = { NSEvent.modifierFlags }
+    /// The toolbar's view, whose tracking area reports the pointer over it.
+    private var pointerTracking: (view: NSView, area: NSTrackingArea)?
+    /// Watches the modifier keys while the pointer is over the toolbar.
+    private var modifierMonitor: Any?
+    /// Whether the buttons show their Option alternates.
+    private var showsOptionAlternates = false
 
     init(controller: DeviceWindowController) {
         self.controller = controller
@@ -24,6 +32,57 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
             toolbar.setValue(0.0, forKey: "minimumInlineWindowTitleWidth")
         }
         updateItems()
+    }
+
+    isolated deinit {
+        if let modifierMonitor { NSEvent.removeMonitor(modifierMonitor) }
+        if let pointerTracking { pointerTracking.view.removeTrackingArea(pointerTracking.area) }
+    }
+
+    /// Gives `window` the toolbar and, like Simulator.app's `SimToolbar`,
+    /// tracks the pointer over the toolbar's view while the app is active, in
+    /// any of its windows, so that the buttons follow Option there. The view
+    /// is private AppKit API, as in Simulator.app: it spans the title bar with
+    /// the unified styles and the row below the title with the expanded one.
+    /// Without it, the buttons keep their faces.
+    func attach(to window: NSWindow) {
+        window.toolbar = toolbar
+        guard toolbar.responds(to: NSSelectorFromString("_toolbarView")),
+              let view = toolbar.value(forKey: "_toolbarView") as? NSView else { return }
+        let area = NSTrackingArea(rect: view.bounds, options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect],
+                                  owner: self, userInfo: nil)
+        view.addTrackingArea(area)
+        pointerTracking = (view, area)
+    }
+
+    /// The pointer entered the toolbar: until it leaves, the buttons show
+    /// their Option alternates while Option is down. Like Simulator.app's,
+    /// they read the keys when the pointer enters and at each modifier change
+    /// that reaches the app. They read the keys held rather than the event's,
+    /// so that the modifier release a window sends its device when it resigns
+    /// key does not turn the alternates off while Option is held.
+    @objc(mouseEntered:) func mouseEntered(with event: NSEvent) {
+        if modifierMonitor == nil {
+            modifierMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+                self?.followOption()
+                return event
+            }
+        }
+        followOption()
+    }
+
+    @objc(mouseExited:) func mouseExited(with event: NSEvent) {
+        if let modifierMonitor { NSEvent.removeMonitor(modifierMonitor) }
+        modifierMonitor = nil
+        showOptionAlternates(false)
+    }
+
+    private func followOption() { showOptionAlternates(modifierFlags().contains(.option)) }
+
+    private func showOptionAlternates(_ shows: Bool) {
+        guard shows != showsOptionAlternates else { return }
+        showsOptionAlternates = shows
+        configureItems()
     }
 
     /// Like Simulator.app's toolbar nibs, the buttons sit between two flexible
@@ -86,15 +145,17 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
         return item
     }
 
-    /// The command that `id`'s button performs now, with the label and symbol
-    /// it shows: its alternate while that can run, and otherwise its own.
-    private func shown(_ id: DeviceCommand.ID, for controller: DeviceWindowController)
-        -> (id: DeviceCommand.ID, label: String, symbol: String)? {
+    /// What `id`'s button shows and performs now: its alternate while that
+    /// can run, as Save Screen stops a recording whether or not Option is
+    /// down; otherwise its Option alternate while the buttons show those; and
+    /// otherwise its own command.
+    private func shown(_ id: DeviceCommand.ID, for controller: DeviceWindowController) -> DeviceCommand.Toolbar.Face? {
         guard let presentation = DeviceCommand.command(id).toolbar else { return nil }
         if let alternate = presentation.alternate, DeviceCommand.command(alternate.id).isEnabled(controller) {
             return alternate
         }
-        return (id, presentation.label, presentation.symbol)
+        if showsOptionAlternates, let alternate = presentation.optionAlternate { return alternate }
+        return .init(id: id, symbol: presentation.symbol, imageDescription: presentation.imageDescription)
     }
 
     /// Like Simulator.app's buttons, a button keeps its item's label while
@@ -102,8 +163,8 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
     /// it performs.
     private func configure(_ item: NSToolbarItem, _ id: DeviceCommand.ID) {
         guard let controller, let shown = shown(id, for: controller) else { return }
-        item.toolTip = shown.label
-        item.image = NSImage(systemSymbolName: shown.symbol, accessibilityDescription: shown.label)
+        item.toolTip = shown.toolTip ?? item.label
+        item.image = NSImage(systemSymbolName: shown.symbol, accessibilityDescription: shown.imageDescription)
         item.isEnabled = DeviceCommand.command(shown.id).isEnabled(controller)
     }
 
@@ -114,11 +175,15 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
             _ = controller.session.isBusy
             _ = controller.session.isConnected
             _ = controller.session.recording?.isStopping
-            for item in toolbar.items {
-                if let id = DeviceCommand.ID(rawValue: item.itemIdentifier.rawValue) { configure(item, id) }
-            }
+            configureItems()
         } onChange: { [weak self] in
             Task { @MainActor [weak self] in self?.updateItems() }
+        }
+    }
+
+    private func configureItems() {
+        for item in toolbar.items {
+            if let id = DeviceCommand.ID(rawValue: item.itemIdentifier.rawValue) { configure(item, id) }
         }
     }
 
