@@ -677,14 +677,14 @@ compares its tag with `.connected`, and projects the screen
 
 The live check on the separate device set showed:
 
-- `register(screenID: nil, …)` on the main queue reported `.connected` for
-  each of the adapter's screens within 10 ms, in the order 3, 1, 2 on the
-  iPhone and 2, 1 on the iPad, also to a registration released right after
-  it was made. The properties' `screenID` gave the IDs that `simctl io
-  enumerate` lists. A
-  registration held across `simctl shutdown` and `boot` received
-  `.disconnected` for each screen and, after the boot, `.connected` for each
-  again; the released one received nothing more.
+- `register(screenID: nil, …)` on the main queue, with SimulatorKit 27.0,
+  27.1, and 27.2, reported `.connected` for each of the adapter's screens
+  within 10 ms, in an order that varied between runs, also to a registration
+  released right after it was made. The properties' `screenID` gave the IDs
+  that `simctl io enumerate` lists. A registration held across `simctl
+  shutdown` and `boot` received `.disconnected` for each screen and, after
+  the boot, `.connected` for each again; the released one received nothing
+  more.
 - `simctl io <UDID> enumerate`, also on a shut-down device, lists the
   iPhone's screens 1 LCD (Integrated), 2 TVOut, and 3 Wireless (CarPlay), and
   the iPad's 1 LCD and 2 TVOut. `SimScreenProperties.screenType` is 0, 1, and

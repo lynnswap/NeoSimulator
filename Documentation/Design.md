@@ -1274,9 +1274,9 @@ Neo reaches the screen as Simulator.app does:
   reported connected whose properties' `screenType` is TVOut; like
   Simulator.app, the session then releases its registration and follows the
   screen's own events. Live, on the iOS 26.5 iPhone 17 Pro and iPad Pro
-  11-inch (M5), the reports came within 10 ms of the registration, in the
-  order 3, 1, 2 on the iPhone and 2, 1 on the iPad, and the session had the
-  display 30 to 50 ms after it connected, also right after a boot.
+  11-inch (M5) with Xcode 27.0, 27.1, and 27.2, the reports came within 10 ms
+  of the registration, in an order that varied between runs, and the session
+  had the display 30 to 80 ms after it connected, also right after a boot.
 - The adapter fills its screens from an enumeration that ends asynchronously,
   possibly after the device's own screen connects. A device's screens exist
   from its creation, so the TVOut screen is in that enumeration or the device
@@ -1424,8 +1424,9 @@ These differ from Simulator.app:
   `SimDeviceScreenMonitor` keeps its registration for the connection, which
   closes a window whose screen disconnects. Neo stops holding choices after
   10 seconds without the report, so that a device without the display reports
-  it, and keeps its registration only until the report: a screen disconnects
-  when its device shuts down, which disconnects the session.
+  its choice as failed, and keeps its registration only until the report: a
+  screen disconnects when its device shuts down, which disconnects the
+  session.
 - A window without a saved place cascades from its device window, where
   Simulator.app cascades from its app-wide cascade point.
 - Simulator.app sends `setPowerState:0` only while the display's window is

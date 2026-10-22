@@ -1183,20 +1183,20 @@ final class DeviceSession {
     /// display as it is, so a display that another tool turned on keeps its
     /// window, as in Simulator.app. Failures go to `failure`.
     ///
-    /// Like Simulator.app, the session learns of the display from SimulatorKit's
-    /// screen adapter, which reports it once it is connected, also when it
-    /// already is, and then releases its registration. The adapter fills its
-    /// screens from an enumeration that ends asynchronously, possibly after
-    /// the device's own screen connects. A device's screens exist from its
-    /// creation, so the external display is in that enumeration or the device
-    /// has none. The session therefore waits for the report as long as the
-    /// host waits for the device's own screen, holding the choices made
-    /// meanwhile, and applies the last of them, or the saved choice, when the
-    /// display is reported or the wait ends. A display reported later still
-    /// connects and gets the saved choice.
+    /// Like Simulator.app, the session learns of the display from
+    /// SimulatorKit's screen adapter, which reports it once it is connected,
+    /// also when it already is; the session then releases its registration.
+    /// The adapter fills its screens from an enumeration that ends
+    /// asynchronously, possibly after the device's own screen connects. A
+    /// device's screens exist from its creation, so the external display is in
+    /// that enumeration or the device has none. The session therefore waits
+    /// for the report as long as the host waits for the device's own screen,
+    /// holding the choices made meanwhile, and applies the last of them, or
+    /// the saved choice, when the display is reported or the wait ends. A
+    /// display reported later still connects and gets the saved choice.
     func connectExternalDisplay(failure: @escaping @MainActor (Error) -> Void) {
         guard capabilities.supportsExternalDisplays, !isDisconnected, externalScreenConnection == nil,
-              externalScreenRegistration == nil, externalScreenWait == nil else { return }
+              externalScreenRegistration == nil else { return }
         do {
             externalScreenRegistration = try display.registerForExternalScreen(
                 changed: { [weak self] in self?.externalScreenChanged() },
