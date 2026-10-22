@@ -394,9 +394,10 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                             connectExternalDisplay(of: session)
                             return
                         }
-                        let controller = try DeviceWindowController(session: session, touchPressure: touchPressure, tvRemote: tvRemote, onClose: { [weak self] in
-                            self?.deviceWindowClosed($0, choice: $1)
-                        }, onRestart: { [weak self] in self?.restartDevice($0, erasing: $1) })
+                        let controller = try DeviceWindowController(
+                            session: session, touchPressure: touchPressure, tvRemote: tvRemote, onClose: { [weak self] in
+                                self?.deviceWindowClosed($0, choice: $1)
+                            }, onRestart: { [weak self] in self?.restartDevice($0, erasing: $1) })
                         try conflicts.check()
                         sessions[identifier] = controller
                         controller.showNewWindow(cascadingFrom: &nextWindowPosition)
