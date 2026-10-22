@@ -129,6 +129,9 @@ Neo currently provides:
 - the hardware inputs the active device supports: Side Button, Action Button,
   Siri, App Switcher, Trigger Screenshot, Increase and Decrease Volume, and
   Authorize Apple Pay;
+- for watches, Device → Gestures (Double Tap, and Wrist Flick on watchOS 12 or
+  later), and the Digital Crown, which turns when you scroll with the mouse
+  wheel or trackpad over the watch's screen;
 - I/O → Keyboard: Connect Hardware Keyboard (Shift-Command-K), Toggle Software
   Keyboard (Command-K), and Use the Same Keyboard Language as macOS; and I/O →
   Touch Pressure for devices with 3D Touch: Use Trackpad Force, Shallow Press
@@ -138,9 +141,9 @@ Neo currently provides:
 - I/O → External Displays, which connects an external display from 640×480 to
   3840×2160 (4K), or a CarPlay display, and shows it in its own window;
 - Features menu controls: Touch ID, Face ID, and Optic ID enrollment and
-  matching or non-matching events, the in-call status bar, StandBy, preferred
-  text size, Increase Contrast, Trigger iCloud Sync (Shift-Command-I), and
-  Location;
+  matching or non-matching events, Simulate Fall on a watch with fall
+  detection, the in-call status bar, StandBy, preferred text size, Increase
+  Contrast, Trigger iCloud Sync (Shift-Command-I), and Location;
 - Debug menu tools: Slow Animations, Graphics Quality Override, Color Blended
   Layers, Color Copied Images, Color Misaligned Images, Color Off-screen
   Rendered, Open System Log… (Command-/), and Simulate Memory Warning
@@ -157,15 +160,15 @@ the device has a window, a dash when it does not; hold Option to see each
 device's runtime and type.
 
 Watches, Apple TV, and Apple Vision Pro show the commands Simulator.app shows
-for them: Lock and Side Button for watches, and no Lock for Apple TV or Apple
-Vision Pro. As in Simulator.app, Re-Center Open Apps is shown for every device
-but works only on Apple Vision Pro, Set Immersion To is available only while
-the guest lets the immersion change, and Simulated Scenes lists the scenes once
-the device reports its current scene; a device that was already booted when
-its window opened may not report it, which leaves Simulated Scenes disabled.
-Watch gestures and Digital Crown scrolling and the Apple TV Remote window are
-not available yet. File → New Simulator… does not create a paired Apple Watch
-yet.
+for them: Lock and Side Button for watches, Gestures and Simulate Fall for
+watches that support them, and no Lock for Apple TV or Apple Vision Pro. As in
+Simulator.app, Re-Center Open Apps is shown for every device but works only on
+Apple Vision Pro, Set Immersion To is available only while the guest lets the
+immersion change, and Simulated Scenes lists the scenes once the device
+reports its current scene; a device that was already booted when its window
+opened may not report it, which leaves Simulated Scenes disabled. The Apple TV
+Remote window is not available yet. File → New Simulator… does not create a
+paired Apple Watch yet.
 
 Neo also shows the devices Xcode boots for parallel testing, from
 `~/Library/Developer/XCTestDevices` (or the `TestingDeviceSetPath` default).
