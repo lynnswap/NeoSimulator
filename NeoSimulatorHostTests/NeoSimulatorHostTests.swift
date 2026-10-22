@@ -3405,6 +3405,37 @@ struct InputFocusTests {
         #expect(!screen.current.isPoweredOn)
     }
 
+    @Test func quittingWaitsForTheExternalDisplaysChangeInFlightAndItsPowerOff() async throws {
+        final class Result { var closed: Bool? }
+        let screen = TestExternalScreen()
+        screen.defersChanges = true
+        let (controller, _) = try makeExternalDisplayController(screen)
+        let session = controller.session
+        #expect(session.hasExternalDisplay)
+        // Quitting disconnects the window while a size is in flight. Its wait
+        // ends once the size and then the power-off have completed.
+        controller.perform(.externalDisplay1920x1080)
+        controller.invalidate()
+        let result = Result()
+        let wait = Task { result.closed = await session.externalDisplayCloses(before: .now + .seconds(60)) }
+        await Task.yield()
+        screen.deliver()
+        await Task.yield()
+        #expect(screen.requests == ["mode 1920x1080@1", "off"])
+        #expect(result.closed == nil)
+        screen.deliver()
+        await wait.value
+        #expect(result.closed == true)
+        #expect(!screen.current.isPoweredOn)
+        // A power-off that does not complete ends the wait at its deadline.
+        let held = TestExternalScreen()
+        held.defersChanges = true
+        let (other, _) = try makeExternalDisplayController(held)
+        other.invalidate()
+        #expect(held.requests == ["off"])
+        #expect(await !other.session.externalDisplayCloses(before: .now + .milliseconds(50)))
+    }
+
     @Test func aDeviceWindowThatClosesDuringAChangeTurnsTheDisplayOffAfterIt() throws {
         let screen = TestExternalScreen()
         screen.defersChanges = true

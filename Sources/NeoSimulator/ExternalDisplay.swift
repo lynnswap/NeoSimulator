@@ -142,6 +142,8 @@ final class ExternalDisplayChanges {
     private var isSending = false
     private var waiting: (mode: ExternalDisplayMode, report: @MainActor (Error) -> Void)?
     private var isClosed = false
+    /// Runs once the changes are closed and none is in flight or waiting.
+    private var finished: (@MainActor () -> Void)?
 
     init(screen: any SimulatorExternalScreen) { self.screen = screen }
 
@@ -153,13 +155,17 @@ final class ExternalDisplayChanges {
     }
 
     /// Stops taking choices and the display's reports. With `poweringOff`,
-    /// turns the display off once the change in flight completes.
-    func close(poweringOff: Bool, report: @escaping @MainActor (Error) -> Void) {
-        guard !isClosed else { return }
+    /// turns the display off once the change in flight completes. `finished`
+    /// runs once the change in flight and the power-off have completed.
+    func close(poweringOff: Bool, report: @escaping @MainActor (Error) -> Void,
+               finished: @escaping @MainActor () -> Void) {
+        guard !isClosed else { return finished() }
         isClosed = true
+        self.finished = finished
         screen.disconnect()
         waiting = poweringOff ? (.disabled, report) : nil
         if !isSending { sendWaiting() }
+        finishIfIdle()
     }
 
     private func send(_ mode: ExternalDisplayMode, report: @escaping @MainActor (Error) -> Void) {
@@ -183,6 +189,13 @@ final class ExternalDisplayChanges {
         isSending = false
         if let error { report(error) }
         sendWaiting()
+        finishIfIdle()
+    }
+
+    private func finishIfIdle() {
+        guard isClosed, !isSending, waiting == nil, let finished else { return }
+        self.finished = nil
+        finished()
     }
 
     private func sendWaiting() {

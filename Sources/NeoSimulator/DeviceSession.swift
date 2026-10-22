@@ -1020,6 +1020,9 @@ final class DeviceSession {
     private(set) var externalScreen: ExternalScreenState?
     /// The device's external display and the changes sent to it.
     @ObservationIgnored private var externalDisplayChanges: ExternalDisplayChanges?
+    /// What waits for the changes that disconnecting left in flight and the
+    /// power-off it sends, while they have not completed.
+    @ObservationIgnored private var externalDisplayClosings: [@MainActor () -> Void]?
     /// Whether the session is looking for the external display, which
     /// SimulatorKit's screen adapter may not have listed yet, and the task
     /// that looks.
@@ -1150,6 +1153,26 @@ final class DeviceSession {
         onExternalScreenChange?()
     }
 
+    /// Whether the session has an external display, which disconnecting turns
+    /// off, as quitting waits for.
+    var hasExternalDisplay: Bool { externalDisplayChanges != nil }
+
+    /// Waits until the external display's changes that disconnecting left in
+    /// flight, and the power-off it sends, have completed, as Simulator.app's
+    /// quit waits for its windows to disconnect, or until `deadline`. Returns
+    /// whether they completed.
+    func externalDisplayCloses(before deadline: ContinuousClock.Instant) async -> Bool {
+        guard externalDisplayClosings != nil else { return true }
+        return await withCheckedContinuation { continuation in
+            let wait = ExternalDisplayCloseWait(continuation)
+            externalDisplayClosings?.append { wait.finish(true) }
+            wait.timer = Task { [wait] in
+                guard (try? await Task.sleep(until: deadline)) != nil else { return }
+                wait.finish(false)
+            }
+        }
+    }
+
     /// Like Simulator.app, a disconnecting window turns off the external
     /// display of a device that stays booted, after a change in flight,
     /// keeping the device's choice for its next connection; unlike
@@ -1161,8 +1184,15 @@ final class DeviceSession {
         isLookingUpExternalScreen = false
         choiceDuringLookUp = nil
         let name = device.name
-        externalDisplayChanges?.close(poweringOff: display.isBooted) { error in
-            hostLog("Could not turn off the external display of \(name): \(error.localizedDescription)")
+        if let externalDisplayChanges {
+            externalDisplayClosings = []
+            externalDisplayChanges.close(poweringOff: display.isBooted, report: { error in
+                hostLog("Could not turn off the external display of \(name): \(error.localizedDescription)")
+            }, finished: { [weak self] in
+                let waiting = self?.externalDisplayClosings ?? []
+                self?.externalDisplayClosings = nil
+                for body in waiting { body() }
+            })
         }
         externalDisplayChanges = nil
         externalScreen = nil
@@ -1363,5 +1393,21 @@ private final class FirstFailure {
     func callAsFunction(_ error: Error) {
         failure?(error)
         failure = nil
+    }
+}
+
+/// One wait for an external display to close, which its completion or its
+/// deadline ends, whichever comes first.
+@MainActor
+private final class ExternalDisplayCloseWait {
+    private var continuation: CheckedContinuation<Bool, Never>?
+    var timer: Task<Void, Never>?
+
+    init(_ continuation: CheckedContinuation<Bool, Never>) { self.continuation = continuation }
+
+    func finish(_ closed: Bool) {
+        timer?.cancel()
+        continuation?.resume(returning: closed)
+        continuation = nil
     }
 }

@@ -1224,7 +1224,10 @@ Like Simulator.app:
   touch pressure and draws the touch indicators the preferences turn on.
 - Closing the window chooses Disabled. Closing the device window, quitting, or
   restarting closes it and, while the device is booted, turns the display off,
-  keeping the choice for the next connection.
+  keeping the choice for the next connection. Quitting, also with
+  `DetachOnAppQuit` on, waits for a change in flight and that power-off within
+  `TerminationTimeout` before the app exits; a display that has not turned off
+  by then is listed in the alert that quitting shows for its failures.
 
 `DeviceSession` owns the device's external screen connection and its last
 reported state; `DeviceWindowController` opens and closes the
@@ -1241,7 +1244,8 @@ These differ from Simulator.app:
   failure of a choice, including a device without the TVOut screen, a size
   that no mode takes, and an error CoreSimulator reports later; restoring the
   choice on connection logs its failures. When turning the display off from
-  its window fails, the window opens again.
+  its window fails, the window opens again. Quitting logs a failed power-off
+  and lists a display that did not turn off within `TerminationTimeout`.
 - A window without a saved place cascades from its device window, where
   Simulator.app cascades from its app-wide cascade point.
 - Simulator.app sends `setPowerState:0` only while the display's window is

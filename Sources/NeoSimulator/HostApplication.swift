@@ -542,6 +542,21 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         NSApp.terminate(nil)
     }
 
+    /// Waits, within `TerminationTimeout`, for the external displays of the
+    /// windows that quitting disconnected to complete their changes and turn
+    /// off, as Simulator.app waits for its windows to disconnect, and returns
+    /// the displays that did not. Their power-off failures are logged.
+    private func externalDisplaysClose(_ sessions: [DeviceSession]) async -> [String] {
+        let timeout = UserDefaults.standard.double(forKey: HostPreferences.terminationTimeout)
+        let deadline = ContinuousClock.now + .seconds(timeout)
+        var failures: [String] = []
+        for session in sessions {
+            guard await !session.externalDisplayCloses(before: deadline) else { continue }
+            failures.append("The external display of \(session.device.name) did not turn off within \(Int(timeout)) seconds of quitting.")
+        }
+        return failures
+    }
+
     /// Shuts down the devices that have windows, as Simulator.app does when
     /// quitting, and returns the failures. Each shutdown, and those of closed
     /// windows, must finish within `TerminationTimeout`.
@@ -679,9 +694,10 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         return true
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
-    /// Quitting finishes recordings, then, like Simulator.app, shuts down the
-    /// devices that have windows unless the quit chose to keep them running or
-    /// `DetachOnAppQuit` is on. Devices another host takes over keep running.
+    /// Quitting finishes recordings, then, like Simulator.app, disconnects the
+    /// windows, waits for their external displays to turn off, and shuts down
+    /// the devices that have windows unless the quit chose to keep them running
+    /// or `DetachOnAppQuit` is on. Devices another host takes over keep running.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !isTerminating else { return .terminateLater }
         // Pending captures are saved now, and those that recordings finish
@@ -693,7 +709,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         let devices = keepsRunning ? [] : sessions.values.map {
             (identifier: $0.session.device.id, deviceSetPath: $0.session.tools.deviceSetPath)
         }
-        guard recordings.hasActiveRecordings || !devices.isEmpty || !closingShutdowns.isEmpty else {
+        guard recordings.hasActiveRecordings || !devices.isEmpty || !closingShutdowns.isEmpty
+                || sessions.values.contains(where: { $0.session.hasExternalDisplay }) else {
             if !captureFailures.isEmpty, !handoverRequested { Self.alert(captureFailures) }
             return .terminateNow
         }
@@ -713,15 +730,19 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             for restart in restarts { await restart.value }
             // Windows disconnect before their devices shut down. Host conflicts
             // are still handled meanwhile and cancel the shutdowns.
+            let closing = sessions.values.map(\.session)
             for session in sessions.values { session.invalidate() }
             sessions.removeAll()
             awaitingReconnect.removeAll()
+            let displayFailures = await externalDisplaysClose(closing)
             let failures = await shutDownForTermination(devices)
             shutdown()
-            if !failures.isEmpty, !handoverRequested {
+            if !displayFailures.isEmpty || !failures.isEmpty, !handoverRequested {
                 let alert = NSAlert()
-                alert.messageText = "Some simulated devices could not be shut down."
-                alert.informativeText = failures.joined(separator: "\n")
+                alert.messageText = failures.isEmpty
+                    ? "Some external displays could not be turned off."
+                    : "Some simulated devices could not be shut down."
+                alert.informativeText = (displayFailures + failures).joined(separator: "\n")
                 alert.runModal()
             }
             sender.reply(toApplicationShouldTerminate: true)
