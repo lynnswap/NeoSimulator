@@ -104,7 +104,7 @@ signal cannot land between a move and a separate bookkeeping update.
 | Edit ▸ Automatically Sync Pasteboard and the exchange between devices | `PasteboardSync` |
 | Route a device's audio over its `SimAudioHostRoutable` port | `DeviceSession` |
 | Configure a device's external display and follow its state | `DeviceSession` |
-| Order the changes sent to a device's external display across its sessions | `ExternalDisplayChanges`, one per device in `HostApplication` |
+| Order the changes sent to a device's external display, with the guest's CarPlay, across its sessions | `ExternalDisplayChanges`, one per device in `HostApplication` |
 | Present an external display's window | `ExternalDisplayWindowController` |
 | Give a window's display the Mac's keyboard and the focus, as both windows do | `DisplayKeyboardInput` |
 | Fit a window's display in full screen and during a live resize, as both windows do | `DisplayFitting` |
@@ -334,8 +334,8 @@ The first parity set contains only commands with an available, validated owner:
   Keyboard, Toggle Software Keyboard), Touch Pressure (Use Trackpad Force, and
   Shallow Press and Deep Press, which only a watch enables), Audio Input,
   Audio Output, Increase Volume, Decrease Volume,
-  External Displays (Disabled and Simulator.app's six sizes), Set Immersion To
-  (50%, 75%, 100%);
+  External Displays (Disabled, Simulator.app's six sizes, and CarPlay), Set
+  Immersion To (50%, 75%, 100%);
 - Features: Touch ID, Face ID, and Optic ID (Enrolled, Matching,
   Non-matching),
   Authorize Apple Pay, Toggle Appearance, Toggle In-call Status Bar,
@@ -1220,12 +1220,14 @@ port lists.
 ### External displays
 
 I/O ▸ External Displays connects a device's external display and shows it in
-a window of its own. A device that supports external displays has a TVOut
-screen from its creation: `SimScreenType` 1 among the screens of its
+a window of its own, and CarPlay makes that display a car's CarPlay display
+(see [CarPlay](#carplay)). A device that supports external displays has a
+TVOut screen from its creation: `SimScreenType` 1 among the screens of its
 CoreSimDeviceIO screen adapter (0 is the device's own screen and 2 is CarPlay),
 turned off at 720×480. On the iOS 26.5 iPhone 17 Pro and iPad Pro 11-inch (M5)
-it is screen 2; the iPhone also has a CarPlay screen, 3. `simctl io <UDID>
-enumerate` lists these screens on a device that is shut down.
+it is screen 2; the iPhone also has a wireless screen of the CarPlay type, 3,
+which Simulator.app does not use. `simctl io <UDID> enumerate` lists these
+screens on a device that is shut down.
 
 The adapter declares
 `createScreenWithProperties:currentMode:pixelSize:carPlayProperties:completionQueue:completionHandler:`,
@@ -1275,8 +1277,9 @@ Neo reaches the screen as Simulator.app does:
   the display is on decides it, which reports and completions that arrive in
   either order, and other tools' changes, could leave wrong.
 - `SimDeviceScreen.register(types:queue:handler:)` with `.properties` reports
-  each change of the screen's `powerState`, `pixelSize`, and
-  `currentMode.preferredUIScale`, also those another tool makes.
+  each change of the screen's `powerState`, `pixelSize`,
+  `currentMode.preferredUIScale`, and `carPlayProperties`, also those another
+  tool makes.
 - The window shows the screen through the display factory, with the screen's
   ID. SimulatorKit's display takes a new size one or two main-queue turns
   after the properties event, so the window takes the size CoreSimulator
@@ -1305,11 +1308,13 @@ Like Simulator.app:
 
 - The submenu follows Increase and Decrease Volume and a separator: Disabled
   (tag 2114), a separator, 640×480 (2214), 720×480 (2514), 1024×768 (2314),
-  1280×720 (720p) (2414), 1920×1080 (1080p) (2614), and 3840×2160 (4K) (2664).
-  It is shown for a key device with `SimFeatureExternalDisplay`
-  (`com.apple.display.supports-external`) and `SimFeatureInternalDisplay`
-  (`com.apple.display.integrated`), and its items are enabled with a key
-  device window, also while the device restarts.
+  1280×720 (720p) (2414), 1920×1080 (1080p) (2614), 3840×2160 (4K) (2664), a
+  separator, and CarPlay (2714). It is shown for a key device with
+  `SimFeatureExternalDisplay` (`com.apple.display.supports-external`) and
+  `SimFeatureInternalDisplay` (`com.apple.display.integrated`), and its items
+  are enabled with a key device window, also while the device restarts;
+  CarPlay is enabled, and can be checked, only for a device that also has
+  `SimFeatureCarPlay` (`com.apple.carplay`).
 - A choice is saved for the device first, as its tag in
   `DevicePreferences[UDID].SimulatorExternalDisplay`, which is Disabled while
   missing or not an integer. A size then sets the screen's mode at a scale of
@@ -1317,12 +1322,13 @@ Like Simulator.app:
 - Each connection, including after a restart, applies the saved choice: a
   size sets the mode. Simulator.app's Disabled powers off only a display whose
   window is connected, which a new connection does not have yet, so Disabled
-  leaves the display as it is, and a display that is on gets its window. A tag
-  Neo does not know, CarPlay's, is kept and not applied.
+  leaves the display as it is, and a display that is on gets its window.
+  CarPlay saved for a device without `SimFeatureCarPlay`, which Simulator.app
+  turns into Disabled, is kept and not applied.
 - The window opens while the display is on, whoever turned it on, and closes
   once the display is off. It has the device window's title, with `External
-  Display` where the runtime goes, no toolbar and no bezel, and a black
-  background. Simulator.app's window for it is its device window class, whose
+  Display`, or `CarPlay` for a CarPlay screen, where the runtime goes, no
+  toolbar and no bezel, and a black background. Simulator.app's window for it is its device window class, whose
   chrome refresh, without a bezel, keeps no gap and sets the black
   background, so the display meets AppKit's plain title bar, which a window
   without a toolbar has whatever the toolbar style.
@@ -1361,9 +1367,10 @@ display's window is key, the other menus act on its device window.
 These differ from Simulator.app:
 
 - Simulator.app checks the saved choice. Neo checks the display's actual state:
-  Disabled while it is off, and otherwise the size it shows at a scale of 1, or
-  no item for another size or scale. A failed choice or a size that `simctl`
-  set therefore does not show as the saved one.
+  Disabled while it is off, CarPlay while it is a CarPlay screen, and otherwise
+  the size it shows at a scale of 1, or no item for another size or scale. A
+  failed choice or a size that `simctl` set therefore does not show as the
+  saved one.
 - Simulator.app only logs failures. Neo presents on the device window the
   failure of a choice, including a device without the TVOut screen, a size
   that no mode takes, and an error CoreSimulator reports later; restoring the
@@ -1377,10 +1384,6 @@ These differ from Simulator.app:
   device's window: in the iOS 26.5 simulator, turning off a display that is
   already off completes without an error and leaves it off, so the power-off
   needs no state to decide on.
-- For a device with CarPlay, Simulator.app's choice also writes
-  `<dataPath>/Library/Application Support/Simulator/extended_display.plist`
-  (`{stark: false}` for these items), its CarPlay boot configuration. Neo
-  leaves that file to CarPlay.
 
 In the iOS 26.5 simulator, the guest leaves the display black until an app
 presents a scene for it (`UIWindowSceneSessionRoleExternalDisplayNonInteractive`),
@@ -1391,6 +1394,137 @@ or without a display view connected. The iPad's TVOut screen advertised only
 those 120 Hz modes, and the iPhone's `supportedScreenModes` listed them before
 or after its 60 Hz ranges in different reads. The result of Simulator.app's
 choice, which Neo keeps, therefore depends on that order.
+
+#### CarPlay
+
+Simulator.app's CarPlay is the same TVOut screen set up as a car's display, in
+the default `StarkConfig`: 800×480 pixels at a UI scale of 2, a touch screen,
+and no wheel, back, or home controls. Its options panel, behind the
+`CarPlayExtraOptions` default, is not reproduced. Four parts make it, each
+through an Xcode 27 primitive that Simulator.app also uses:
+
+- The configuration file. A choice on a device with `SimFeatureCarPlay` first
+  writes `<dataPath>/Library/Application Support/Simulator/extended_display.plist`
+  in place, creating its folder: for CarPlay, `StarkConfig`'s plain keys
+  (`stark` true, `width` 800, `height` 480, `scale` 2.0, `hasTouchScreen`
+  true, the other controls false, `protocols` empty), and `{stark: 0}` for
+  every other item. CoreSimulator gives the guest that path as
+  `SIMULATOR_EXTENDED_DISPLAY_PROPERTIES` when the device boots, and the iOS
+  26.5 guest's backboardd reads the file each time the TVOut screen's modes
+  change: with `stark` on, it makes the screen a car display instead of an
+  AirPlay display. The file must therefore be written before the screen
+  changes.
+- The screen. `setCurrentMode:pixelSize:carPlayProperties:…` sets 800×480 at a
+  scale of 2 with the properties of the default configuration,
+  `SimCarPlayPropertyKeyStark` and `SimCarPlayPropertyKeyHasTouchScreen`
+  (CoreSimDeviceIO's exported keys, which `SimulatorRuntime` reads at startup)
+  set to true. The screen then reports these as its `carPlayProperties`,
+  which SimulatorKit's `SimDeviceScreen.isCarPlay` also counts; a size sets
+  none, and the screen drops them.
+- The guest's CarPlay session. `SimDevice enableCarPlay:error:` asks the
+  guest's CoreSimulatorBridge to start or end a CarPlay session, which
+  launches the guest's CarPlay app. The bridge counts the sessions that hosts
+  start and needs an end for each; the request waits for the guest, so it runs
+  on a serial queue off the main actor.
+- The HID service. `IndigoHIDMessageToCreateCarPlayService(YES)` and
+  `IndigoHIDMessageToRemoveCarPlayService()`, sent through a
+  `SimDeviceLegacyHIDClient`, create and remove the guest's CarPlay HID
+  service with a digitizer. SimulatorKit's display of the TVOut screen sends
+  its touches to that service's target on a device with `SimFeatureCarPlay`,
+  so the window's display takes the pointer as CarPlay's touches.
+
+A choice of CarPlay writes the file, ends the CarPlay that this host started,
+if any, sets the CarPlay screen, then starts the session and, once it started,
+creates the HID service. A size writes `{stark: 0}`, ends this host's CarPlay
+by removing the HID service and ending the session, then sets the size, as
+Simulator.app does before it reconfigures a CarPlay screen. Disabled writes
+`{stark: 0}`, turns the screen off, then ends this host's CarPlay, as
+Simulator.app does once the screen reports it is off. Each choice goes
+through `ExternalDisplayChanges` as one change. An end without a session
+would count below zero in the bridge, which keeps that count and refuses the
+next start, so the queue keeps this host's session in the device's current
+boot as a state (`CarPlaySessionState`, by `SimDevice.lastBootedAt`): none,
+started, or unknown. Session requests go out only from the queue, one at a
+time, and the change waits for each answer before it decides the next step,
+so no decision is made while a request has no answer. A start goes out only
+with none and an end only for a started session; a start that succeeds makes
+it started, an end that succeeds makes it none, and a failure leaves it as it
+was: CarPlay chosen again then keeps a session that did not end, recreating
+the HID service, and a later change tries the end again. A request without an
+answer within the change's 10 seconds leaves the session unknown for the rest
+of the boot, which is reported once: Neo then sends no session request until
+the device restarts, while the screen and the HID service still follow the
+choices, and a late answer changes nothing. A new boot starts with none, and
+answers from an earlier boot, for the session or the HID service, change
+nothing, because a restart can shut the device down before its window's
+power-off and the session's end reach the guest, and the next boot's bridge
+starts with no session. For the same reason each request is decided for the
+boot read when its step begins and is not sent once the device has restarted
+since, as it can while the change waits for the step before: the queue
+checks the boot before it sends, and `SimDevice.setCarPlayEnabled(_:inBoot:)`
+checks it again on its serial queue right before `enableCarPlay:error:`. A
+restart between that last check and CoreSimulator's delivery of the request
+cannot be told apart from Neo, so an end can still reach a new boot in that
+window. A HID service request without an answer may have taken effect, so the
+service then counts as created and the next change that ends CarPlay removes
+it; the guest's removal does nothing without a service
+(`-[SimHIDVirtualServiceManager removeCarplayServiceForTargetID:]` looks it
+up first). The tag 2714 is saved
+like the others, and a connection restores it, also after the device
+restarts; the file on the device's disk keeps the configuration for the
+guest.
+
+The window of a CarPlay screen is the external display's window with the
+subtitle `CarPlay`. Like Simulator.app, it opens at Point Accurate (a scale of
+1, so the 800×480 screen shows as 400×240 points), reduced to Fit Screen's,
+while it still opens at the center saved in `ExternalWindowGeometry`, and it
+takes no full screen space of its own (`.fullScreenAuxiliary`); Physical Size
+stays unavailable. A screen that changes between CarPlay and a size in place
+keeps its window, which follows the subtitle and full screen behavior.
+
+These differ from Simulator.app:
+
+- Every failure is reported: the file, the screen, the session's start or
+  end, and the HID service's creation or removal. The failures of one choice
+  share one alert on the device window, a line each; restoring on connection
+  and disconnecting log them. Simulator.app logs them, and drops the HID
+  messages' send results.
+- A session that did not start gets no HID service; Simulator.app creates it
+  either way. A step that fails does not stop the others, except that a
+  screen that did not change ends the change.
+- Neo ends only a session it saw start, and keeps one that did not end
+  instead of starting another. After a start or an end that the device did
+  not answer in time, Neo leaves the session alone until the device
+  restarts, and says so. Simulator.app tracks no session: it ends one
+  whenever the screen it reconfigures or disconnects is a CarPlay screen,
+  which can end another host's session, and starts one after each CarPlay
+  screen, also beside a session it could not end.
+- Closing the device window, quitting, and restarting, which turn the display
+  off, also end the CarPlay that this host started, keeping the saved choice
+  and the file. Simulator.app's disconnection powers the screen off without
+  ending the session, so the bridge's count stays up for the device's next
+  host.
+- CarPlay chosen while the display shows a size turns the display off first,
+  so its window closes and a CarPlay window opens, and a CarPlay screen waits
+  until the display has been off for a second since a change turned it off.
+  Simulator.app sets the CarPlay screen in place. In the iOS 26.5 guest, a
+  display that becomes a car display in place, or that comes back as one
+  before the guest has handled its power-off, connects as an AirPlay display
+  that stays in the guest's display debouncing, and a CarPlay app that is
+  already running, as it keeps running after its first session, never draws
+  on it. Turned off for 0.2 seconds or longer, it connected as a car display
+  in every try.
+- A CarPlay screen that another tool turns off keeps the guest's session
+  until the next choice; Simulator.app ends it when the screen reports it is
+  off.
+
+In the iOS 26.5 simulator, on an iPhone 17 Pro in a separate device set,
+CarPlay drew the CarPlay dashboard in its window, a click on an app's icon in
+the window opened that app on the CarPlay screen, and the CarPlay app's
+session and the HID service ended with Disabled. CarPlay came back after a
+size, after Disabled, and on the connection after a restart. The iPad Pro
+11-inch (M5) has no `SimFeatureCarPlay`. Right after a boot, the guest's
+CarPlay app once took seven seconds to start after the session did.
 
 ### Settings and touch indicators
 
@@ -1677,11 +1811,13 @@ between commands, Automatically Sync Pasteboard between the Mac and two devices
 (on and off, across a CoreSimulatorBridge restart, a device restart, and a
 closed window), external displays at 1920×1080 and 640×480 with a guest app's
 external scene in their windows, Disabled, closing their windows, a restart,
-and restoring the saved choice on an iPhone and an iPad, watchOS, tvOS, and
-visionOS windows with their toolbars, menus, titles, and Always On following
-the backlight, Apple Vision Pro's plugin overlay and toolbar, its camera modes,
-Reset Camera, Re-Center Open Apps, Simulated Scenes, Set Immersion To, Show
-Gaze Target, and Optic ID, Device Hub absence, and loaded-image provenance.
+and restoring the saved choice on an iPhone and an iPad, CarPlay on an iPhone
+with a click reaching the guest, switched with a size, Disabled, a closed
+window, and restored after a restart, watchOS, tvOS, and visionOS windows
+with their toolbars, menus, titles, and Always On following the backlight,
+Apple Vision Pro's plugin overlay and toolbar, its camera modes, Reset Camera,
+Re-Center Open Apps, Simulated Scenes, Set Immersion To, Show Gaze Target, and
+Optic ID, Device Hub absence, and loaded-image provenance.
 
 ## Non-goals
 

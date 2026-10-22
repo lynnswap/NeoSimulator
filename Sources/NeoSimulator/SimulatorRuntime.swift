@@ -103,6 +103,11 @@ struct SimulatorDisplayInterface {
     /// Messages to CoreSimDeviceIO's screen proxies: `SimScreenProperties`
     /// and `SimScreenMode`.
     let screenMessages = ProxyMessages()
+    /// The properties of Simulator.app's default CarPlay configuration, by
+    /// CoreSimDeviceIO's `SimCarPlayPropertyKeyStark` and
+    /// `SimCarPlayPropertyKeyHasTouchScreen`: a CarPlay screen with a touch
+    /// screen.
+    let carPlayProperties: NSDictionary
     let factoryClass: AnyClass
     let createDisplay: NativeObjCMethod<NSView?, AnyObject, UInt32>
     let showChrome: NativeSwiftMethod<(Bool) -> Void>
@@ -230,6 +235,17 @@ struct SimulatorDisplayInterface {
                 throw HostError.unavailable("\(name) does not declare \(selector)")
             }
         }
+        func carPlayKey(_ name: String) throws -> String {
+            let symbol = try runtime.resolveAndWait(NativeDeclaration(name: name, language: .c, kind: .data))
+            guard let key = unsafe symbol.withUnsafeAddress({
+                unsafe $0.load(as: Unmanaged<NSString>?.self)?.takeUnretainedValue() as String?
+            }) else {
+                throw HostError.unavailable("\(name) has no value")
+            }
+            return key
+        }
+        carPlayProperties = [try carPlayKey("SimCarPlayPropertyKeyStark"): true,
+                             try carPlayKey("SimCarPlayPropertyKeyHasTouchScreen"): true]
         createDisplay = try runtime.resolveObjCMethodAndWait(
             on: factoryClass, selector: "createSimDisplayViewWithDevice:simScreenID:",
             as: ((AnyObject, UInt32) -> NSView?).self, classMethod: true)
@@ -445,29 +461,54 @@ struct SimulatorUserInterfacePlugin {
 /// that supports external displays has from its creation, turned off.
 /// CoreSimDeviceIO's screen adapter lists no screen that a client could
 /// create (`creatableScreenProperties` is empty), so a device without one
-/// cannot get one.
+/// cannot get one. Simulator.app also makes this screen the device's CarPlay
+/// display, so the connection also reaches the guest's CarPlay.
 @MainActor
 protocol SimulatorExternalScreen: AnyObject {
     var screenID: UInt32 { get }
-    /// The screen's power, size, and scale as CoreSimulator reports them now.
+    /// When the device last booted. The guest's CarPlay session belongs to
+    /// the boot that started it.
+    var deviceBootDate: Date? { get }
+    /// The screen's power, size, scale, and CarPlay as CoreSimulator reports them now.
     func state() throws -> ExternalScreenState
     /// `SimScreen setCurrentMode:pixelSize:carPlayProperties:…` with the mode
     /// Simulator.app chooses for `pixelSize` at `scale`, which also turns the
-    /// screen on. Simulator.app also makes this screen its CarPlay display,
-    /// with `SimCarPlayPropertyKey…` properties; an ordinary size has none.
-    /// `completion` receives CoreSimulator's result on the main actor; a
-    /// thrown error, such as for a size that no mode takes, means nothing was
-    /// sent.
-    func setMode(pixelSize: CGSize, scale: CGFloat, carPlayProperties: NSDictionary?,
+    /// screen on. With `carPlay`, the properties of Simulator.app's default
+    /// CarPlay configuration (`SimCarPlayPropertyKeyStark` and
+    /// `SimCarPlayPropertyKeyHasTouchScreen`) make it a CarPlay screen;
+    /// without, it has none. `completion` receives CoreSimulator's result on
+    /// the main actor; a thrown error, such as for a size that no mode takes,
+    /// means nothing was sent.
+    func setMode(pixelSize: CGSize, scale: CGFloat, carPlay: Bool,
                  completion: @escaping @MainActor (Error?) -> Void) throws
     /// `SimScreen setPowerState:0 …`. `completion` receives CoreSimulator's
     /// result on the main actor; a thrown error means nothing was sent.
     func powerOff(completion: @escaping @MainActor (Error?) -> Void) throws
+    /// Writes the device's `extended_display.plist`, which the guest reads
+    /// each time the screen's modes change: Simulator.app's default CarPlay
+    /// configuration with `carPlay`, which makes the guest take the screen as
+    /// a car's display, and `{stark: 0}` otherwise.
+    func saveCarPlayConfiguration(carPlay: Bool) throws
+    /// `SimDevice enableCarPlay:error:`, which starts or ends a CarPlay
+    /// session in the guest. The guest counts them, so each start needs one
+    /// end. The request is decided for the device's `boot`; a device that has
+    /// restarted since gets nothing, and `completion` receives
+    /// `CarPlayRequestMoot`. Otherwise it receives the result, on the main
+    /// actor.
+    func setCarPlayEnabled(_ enabled: Bool, inBoot boot: Date?, completion: @escaping @MainActor (Error?) -> Void)
+    /// Creates the guest's CarPlay HID service, which takes the touches of
+    /// the screen's display, or removes it. `completion` receives the send's
+    /// result on the main actor; a thrown error means nothing was sent.
+    func setCarPlayService(connected: Bool, completion: @escaping @MainActor (Error?) -> Void) throws
     /// A display of the screen from the display factory, for its own window.
     func makeDisplay() throws -> any SimulatorDisplay
     /// Stops the change reports.
     func disconnect()
 }
+
+/// A CarPlay request that was not sent because the device restarted after it
+/// was decided for the device's earlier boot.
+struct CarPlayRequestMoot: Error {}
 
 /// The external display of one device, through SimulatorKit's
 /// `SimDeviceScreen` and CoreSimDeviceIO's `SimScreen`.
@@ -477,7 +518,8 @@ final class SimulatorExternalScreenConnection: SimulatorExternalScreen {
     static let selectors = [
         ("SimScreen", ["setCurrentMode:pixelSize:carPlayProperties:completionQueue:completionHandler:",
                        "setPowerState:completionQueue:completionHandler:", "screenProperties"]),
-        ("SimScreenProperties", ["powerState", "screenType", "pixelSize", "currentMode", "supportedScreenModes"]),
+        ("SimScreenProperties", ["powerState", "screenType", "pixelSize", "currentMode", "supportedScreenModes",
+                                 "carPlayProperties"]),
         ("SimScreenMode", ["sizeRule", "exactSize", "minSize", "maxSize", "allowedSizes", "preferredUIScale"]),
     ]
 
@@ -491,6 +533,8 @@ final class SimulatorExternalScreenConnection: SimulatorExternalScreen {
     private let setCurrentMode: NativeObjCMethod<Void, AnyObject, CGSize, NSDictionary?, DispatchQueue, Completion>
     private let setPowerState: NativeObjCMethod<Void, Int32, DispatchQueue, Completion>
     private var events: NativeSwiftValue?
+    /// The HID client that sends the CarPlay service's messages, from the first.
+    private var hidClient: AnyObject?
 
     init(device: SimulatorDevice, screen: (identifier: UInt32, object: AnyObject), runtime: SimulatorRuntime,
          changed: @escaping @MainActor () -> Void) throws {
@@ -519,6 +563,8 @@ final class SimulatorExternalScreenConnection: SimulatorExternalScreen {
 
     isolated deinit { disconnect() }
 
+    var deviceBootDate: Date? { device.lastBootDate }
+
     func state() throws -> ExternalScreenState {
         let messages = runtime.display.screenMessages
         let properties = try self.properties()
@@ -526,10 +572,11 @@ final class SimulatorExternalScreenConnection: SimulatorExternalScreen {
         return ExternalScreenState(
             isPoweredOn: try messages.send("powerState", to: properties, as: Int32.self) == 1,
             pixelSize: try messages.send("pixelSize", to: properties, as: CGSize.self),
-            scale: try currentMode.map { CGFloat(try messages.send("preferredUIScale", to: $0, as: Double.self)) } ?? 0)
+            scale: try currentMode.map { CGFloat(try messages.send("preferredUIScale", to: $0, as: Double.self)) } ?? 0,
+            isCarPlay: try messages.send("carPlayProperties", to: properties, as: NSDictionary?.self) != nil)
     }
 
-    func setMode(pixelSize size: CGSize, scale: CGFloat, carPlayProperties: NSDictionary?,
+    func setMode(pixelSize size: CGSize, scale: CGFloat, carPlay: Bool,
                  completion: @escaping @MainActor (Error?) -> Void) throws {
         let simScreen = try connectedScreen()
         let messages = runtime.display.screenMessages
@@ -547,12 +594,35 @@ final class SimulatorExternalScreenConnection: SimulatorExternalScreen {
         guard let target else {
             throw HostError.operation("The external display has no mode for \(Int(size.width))×\(Int(size.height)) at a scale of \(scale).")
         }
-        try unsafe setCurrentMode.unsafeInvoke(on: simScreen, target, size, carPlayProperties, .main,
+        try unsafe setCurrentMode.unsafeInvoke(on: simScreen, target, size,
+                                               carPlay ? runtime.display.carPlayProperties : nil, .main,
                                                Self.completed(completion))
     }
 
     func powerOff(completion: @escaping @MainActor (Error?) -> Void) throws {
         try unsafe setPowerState.unsafeInvoke(on: connectedScreen(), 0, .main, Self.completed(completion))
+    }
+
+    func saveCarPlayConfiguration(carPlay: Bool) throws {
+        try CarPlayConfiguration.save(carPlay: carPlay, to: device.extendedDisplayFile())
+    }
+
+    func setCarPlayEnabled(_ enabled: Bool, inBoot boot: Date?, completion: @escaping @MainActor (Error?) -> Void) {
+        Task { [device] in
+            do {
+                try await device.setCarPlayEnabled(enabled, inBoot: boot)
+                completion(nil)
+            } catch {
+                completion(error)
+            }
+        }
+    }
+
+    func setCarPlayService(connected: Bool, completion: @escaping @MainActor (Error?) -> Void) throws {
+        let client = try hidClient ?? runtime.input.connect(to: device)
+        hidClient = client
+        try runtime.input.sendCarPlayService(connected: connected, hasTouchScreen: CarPlayConfiguration.hasTouchScreen,
+                                             client: client, completion: completion)
     }
 
     func makeDisplay() throws -> any SimulatorDisplay {
@@ -611,6 +681,12 @@ struct SimulatorInputInterface {
     let messageForUsage: NativeFunction<OpaquePointer?, UInt32, UInt32, UInt32, UInt32>
     /// `IndigoHIDGetKeyboardType()`, the type of the Mac's keyboard.
     let keyboardType: NativeFunction<UInt32>
+    /// `IndigoHIDMessageToCreateCarPlayService(hasDigitizer)` and
+    /// `IndigoHIDMessageToRemoveCarPlayService()`: the guest's HID service for
+    /// CarPlay, at the target that SimulatorKit's display of an external
+    /// display sends its touches to.
+    let createCarPlayService: NativeFunction<OpaquePointer?, Bool>
+    let removeCarPlayService: NativeFunction<OpaquePointer?>
 
     init(runtime: ABIRuntime) throws {
         guard let clientClass = NSClassFromString("SimulatorKit.SimDeviceLegacyHIDClient") else {
@@ -628,6 +704,10 @@ struct SimulatorInputInterface {
             named: "IndigoHIDMessageForHIDArbitrary",
             as: ((UInt32, UInt32, UInt32, UInt32) -> OpaquePointer?).self)
         keyboardType = try runtime.resolveCFunctionAndWait(named: "IndigoHIDGetKeyboardType", as: (() -> UInt32).self)
+        createCarPlayService = try runtime.resolveCFunctionAndWait(
+            named: "IndigoHIDMessageToCreateCarPlayService", as: ((Bool) -> OpaquePointer?).self)
+        removeCarPlayService = try runtime.resolveCFunctionAndWait(
+            named: "IndigoHIDMessageToRemoveCarPlayService", as: (() -> OpaquePointer?).self)
     }
 
     /// The Mac keyboard's type, which `SimDevice` takes as a byte when it
@@ -661,8 +741,23 @@ struct SimulatorInputInterface {
     /// Sends a message. SimulatorKit reports delivery to `completion` on the
     /// main queue.
     func send(_ hidMessage: HIDMessage, client: AnyObject, completion: (@MainActor (Error?) -> Void)?) throws {
+        try send(hidMessage.take(), client: client, completion: completion)
+    }
+
+    /// Sends the message that creates the guest's CarPlay HID service, with a
+    /// digitizer for a touch screen, or the one that removes it. SimulatorKit
+    /// reports the send's result, not the guest's, to `completion` on the
+    /// main queue. The guest creates the service only once.
+    func sendCarPlayService(connected: Bool, hasTouchScreen: Bool, client: AnyObject,
+                            completion: @escaping @MainActor (Error?) -> Void) throws {
+        let message = try unsafe connected ? createCarPlayService.unsafeInvoke(hasTouchScreen)
+                                           : removeCarPlayService.unsafeInvoke()
+        guard let message else { throw HostError.operation("Could not allocate simulator input") }
+        try send(message, client: client, completion: completion)
+    }
+
+    private func send(_ message: OpaquePointer, client: AnyObject, completion: (@MainActor (Error?) -> Void)?) throws {
         // The send transfers ownership of the message to SimulatorKit.
-        let message = hidMessage.take()
         if let completion {
             // Build the block from a closure literal. Converting it inside
             // `Optional.map` makes Swift 6.3 emit a reabstraction thunk under

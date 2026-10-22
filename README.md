@@ -136,7 +136,7 @@ Neo currently provides:
 - I/O → Audio Input and Audio Output, which choose the Mac audio devices that
   simulators use;
 - I/O → External Displays, which connects an external display from 640×480 to
-  3840×2160 (4K) and shows it in its own window;
+  3840×2160 (4K), or a CarPlay display, and shows it in its own window;
 - Features menu controls: Touch ID, Face ID, and Optic ID enrollment and
   matching or non-matching events, the in-call status bar, StandBy, preferred
   text size, Increase Contrast, Trigger iCloud Sync (Shift-Command-I), and
@@ -294,7 +294,21 @@ that the device could not apply. The guest shows nothing on the display until an
 app presents a scene for an external display; iOS does not mirror the device's
 screen to it. A device that has no external display port cannot get one:
 CoreSimulator offers no screen that a client can add.
-CarPlay is not available yet.
+
+**I/O → External Displays → CarPlay** makes that display a car's CarPlay
+display, as Simulator.app does with its default configuration: an 800×480
+touch screen at a scale of 2. The guest's CarPlay dashboard appears in a
+window with the subtitle "CarPlay", and clicks in it are CarPlay's touches.
+The item is enabled for devices that support CarPlay, such as iPhone. The
+choice is saved and restored like the sizes, and, as Simulator.app does, Neo
+writes the device's CarPlay configuration to
+`<device data>/Library/Application Support/Simulator/extended_display.plist`,
+which the guest reads. Choosing a size or Disabled, closing the CarPlay
+window, or closing the device window ends CarPlay in the device. Unlike
+Simulator.app, Neo turns a display that shows a size off for a second before
+it becomes CarPlay, so that the guest draws CarPlay on it, and reports each
+part of CarPlay that the device could not set up. CarPlay's options panel
+(`CarPlayExtraOptions`) is not available.
 
 **NeoSimulator → Settings…** (Command-,) shows the settings window that macOS
 builds from the app's `Settings.bundle`, as it does for Simulator.app. It lists
