@@ -1732,9 +1732,9 @@ and after a restart. Simulator.app learns of the change through the Swift-only
 it where it shows or hides the bezel. Neo builds no crown message itself.
 
 A device with `SimFeatureFallDetection` (`com.apple.motion.fall-detection`)
-shows Features ▸ Simulate Fall, after Face ID. Confirmed, Dismissed, Rejected,
-and Unresponsive set the guest's `com.apple.sos.user-fell` state to 0, 1, 2,
-and 3, Simulator.app's menu tags, with `SimDevice
+shows Features ▸ Simulate Fall, before Authorize Apple Pay. Confirmed,
+Dismissed, Rejected, and Unresponsive set the guest's `com.apple.sos.user-fell`
+state to 0, 1, 2, and 3, Simulator.app's menu tags, with `SimDevice
 darwinNotificationSetState:name:error:`, and then post it with
 `postDarwinNotification:error:`, as Simulator.app's `sendFallResolutionStatus:`
 does (`0x10003BF00`). Both reach the guest's notification center, never the
