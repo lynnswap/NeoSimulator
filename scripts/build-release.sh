@@ -98,8 +98,10 @@ xcodebuild \
 host_source_app="$host_derived_data/Build/Products/Release/$host_product.app"
 host_source_path="$host_source_app/Contents/MacOS/$host_product"
 host_info_plist="$host_source_app/Contents/Info.plist"
+# AppKit builds Settings… from this schema.
+host_settings_plist="$host_source_app/Contents/Resources/Settings.bundle/Root.plist"
 
-for source_path in "$cli_source_path" "$host_source_path" "$host_info_plist"; do
+for source_path in "$cli_source_path" "$host_source_path" "$host_info_plist" "$host_settings_plist"; do
   if [[ ! -f "$source_path" ]]; then
     echo "Failed to locate release input: $source_path" >&2
     exit 1
@@ -141,13 +143,15 @@ bin_out="$stage_dir/bin"
 host_app="$stage_dir/libexec/$cli_product/$host_product.app"
 host_contents="$host_app/Contents"
 host_macos="$host_contents/MacOS"
-mkdir -p "$bin_out" "$host_macos"
+host_settings="$host_contents/Resources/Settings.bundle"
+mkdir -p "$bin_out" "$host_macos" "$host_settings"
 
 cli_target_path="$bin_out/$cli_product"
 host_target_path="$host_macos/$host_product"
 install -m 755 "$cli_source_path" "$cli_target_path"
 install -m 755 "$host_source_path" "$host_target_path"
 install -m 644 "$host_info_plist" "$host_contents/Info.plist"
+install -m 644 "$host_settings_plist" "$host_settings/Root.plist"
 
 if command -v lipo >/dev/null 2>&1; then
   for binary in "$cli_target_path" "$host_target_path"; do

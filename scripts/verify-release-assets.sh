@@ -151,6 +151,9 @@ expected_entries="$(printf '%s\n' \
   "libexec/$cli_product/$host_product.app/Contents/Info.plist" \
   "libexec/$cli_product/$host_product.app/Contents/MacOS/" \
   "libexec/$cli_product/$host_product.app/Contents/MacOS/$host_product" \
+  "libexec/$cli_product/$host_product.app/Contents/Resources/" \
+  "libexec/$cli_product/$host_product.app/Contents/Resources/Settings.bundle/" \
+  "libexec/$cli_product/$host_product.app/Contents/Resources/Settings.bundle/Root.plist" \
   "libexec/$cli_product/$host_product.app/Contents/_CodeSignature/" \
   "libexec/$cli_product/$host_product.app/Contents/_CodeSignature/CodeResources" |
   LC_ALL=C sort)"
@@ -172,6 +175,7 @@ expected_files="$(printf '%s\n' \
   "bin/$cli_product" \
   "libexec/$cli_product/$host_product.app/Contents/Info.plist" \
   "libexec/$cli_product/$host_product.app/Contents/MacOS/$host_product" \
+  "libexec/$cli_product/$host_product.app/Contents/Resources/Settings.bundle/Root.plist" \
   "libexec/$cli_product/$host_product.app/Contents/_CodeSignature/CodeResources" | LC_ALL=C sort)"
 actual_files="$(
   cd "$extracted_root"
@@ -209,6 +213,9 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
     "$installed_app/Contents/MacOS/$host_product" \
     "$extracted_host"
   cmp -s \
+    "$installed_app/Contents/Resources/Settings.bundle/Root.plist" \
+    "$extracted_app/Contents/Resources/Settings.bundle/Root.plist"
+  cmp -s \
     "$installed_app/Contents/_CodeSignature/CodeResources" \
     "$extracted_app/Contents/_CodeSignature/CodeResources"
   installed_app_files="$(
@@ -218,6 +225,7 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   expected_app_files="$(printf '%s\n' \
     "./Contents/Info.plist" \
     "./Contents/MacOS/$host_product" \
+    "./Contents/Resources/Settings.bundle/Root.plist" \
     "./Contents/_CodeSignature/CodeResources" | LC_ALL=C sort)"
   if [[ "$installed_app_files" != "$expected_app_files" ]]; then
     echo "Installed companion app file set is not expected." >&2
