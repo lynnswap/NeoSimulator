@@ -935,6 +935,29 @@ struct InputFocusTests {
         #expect(openedWindow.frame.height <= visible.height)
     }
 
+    @Test func fixedScalesAreCheckedAgainstTheTitleBarTheyWouldGiveTheWindow() throws {
+        let display = TestDisplay()
+        // Wide, so the window starts with the unified title bar.
+        display.naturalSize = NSSize(width: 600, height: 300)
+        let controller = try makeController(display)
+        defer { controller.invalidate() }
+        controller.showWindow(nil)
+        let window = try #require(controller.window)
+        let visible = try #require(window.screen?.visibleFrame)
+        let pointAccurate = DeviceCommand.command(.pointAccurate)
+        #expect(window.toolbarStyle == .unified)
+        // At Point Accurate a narrow display would take the expanded title
+        // bar, under which this height no longer fits without a bezel.
+        display.naturalSize = NSSize(width: 60, height: visible.height - 60)
+        #expect(!pointAccurate.isEnabled(controller))
+        // From an expanded window, a wide display would take the unified title
+        // bar, under which the same height fits.
+        controller.perform(.fitScreen)
+        #expect(window.toolbarStyle == .expanded)
+        display.naturalSize = NSSize(width: 600, height: visible.height - 60)
+        #expect(pointAccurate.isEnabled(controller))
+    }
+
     @Test func scaleCommandsAreValidatedAsInSimulator() throws {
         let display = TestDisplay()
         display.naturalSize = NSSize(width: 200, height: 400)

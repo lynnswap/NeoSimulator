@@ -745,6 +745,12 @@ These differ from Simulator.app:
   the window narrow enough to take the taller expanded title bar, the window
   ends up taller than the screen there. NeoSimulator measures again with the
   expanded title bar and takes the smaller scale, so the window fits.
+- Without a bezel, Simulator.app checks whether a fixed scale fits the screen
+  with the title bar the window has. NeoSimulator checks it with the title
+  bar the window would take at that scale, the height it last laid out for
+  that style (macOS 26's 52, 76, or 40 points until then), so a scale that
+  changes the style is neither enabled when it would not fit nor disabled
+  when it would.
 - The toolbar style's threshold counts the buttons NeoSimulator's toolbar
   has. Simulator.app's iPad toolbar also has Keyboard Capture and Pointer
   Capture, 27 points each, which NeoSimulator does not host, so an iPad's

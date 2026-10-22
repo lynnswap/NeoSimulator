@@ -56,6 +56,9 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     /// Set while the window takes the size of a chosen display scale, which
     /// the resize must not change.
     private var isSizingWindow = false
+    /// The title bar's height for each toolbar style, as the window last laid
+    /// it out, and macOS 26's heights for the styles it has not taken yet.
+    private var titleBarHeights: [NSWindow.ToolbarStyle: CGFloat] = [.unified: 52, .expanded: 76, .unifiedCompact: 40]
     /// I/O ▸ Touch Pressure's app-wide settings, which every window shares.
     let touchPressure: TouchPressure
     private var touchPressureObserver: (any NSObjectProtocol)?
@@ -421,6 +424,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         deviceToolbar.apply(deviceToolbar.style(forWidth: width, title: titles.title, subtitle: titles.subtitle,
                                                 preferences: preferences), to: window)
         window.layoutIfNeeded()
+        titleBarHeights[window.toolbarStyle] = content.headerHeight
         updateHeaderShape()
     }
 
@@ -851,7 +855,20 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         guard let scale = scale(for: mode), scale >= minimumScale else { return false }
         guard session.display.chromePadding == nil, let visible = window.screen?.visibleFrame else { return true }
         let size = session.display.size(for: scale)
-        return size.width <= visible.width && size.height <= visible.height - content.headerHeight
+        return size.width <= visible.width && size.height <= visible.height - titleBarHeight(forDisplayWidth: size.width)
+    }
+
+    /// The height of the title bar that a window around a display `width`
+    /// points wide takes, so that a scale is checked against the title bar it
+    /// would have. Simulator.app checks against the title bar the window has,
+    /// which a scale that changes the toolbar's style makes 24 points too
+    /// short or too tall.
+    private func titleBarHeight(forDisplayWidth width: CGFloat) -> CGFloat {
+        guard let deviceToolbar else { return content.headerHeight }
+        let titles = deviceWindowTitles(name: session.device.name, runtimeName: session.device.runtimeName)
+        let style = deviceToolbar.style(forWidth: width, title: titles.title, subtitle: titles.subtitle,
+                                        preferences: preferences)
+        return titleBarHeights[style] ?? content.headerHeight
     }
 
     /// The checkmark of a fixed scale: on while the display is at that scale,
