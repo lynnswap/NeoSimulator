@@ -7,6 +7,8 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
     private weak var application: HostApplication?
     /// File ▸ GPU Selection's policy, or nil when it is unavailable.
     private let gpuPolicy: GPUPolicy?
+    /// Edit ▸ Automatically Sync Pasteboard, or nil when it is unavailable.
+    private let pasteboardSync: PasteboardSync?
     private let openSimulator: OpenSimulatorMenu
     private let locationMenu = LocationMenu()
     /// Items whose shortcut depends on the key device.
@@ -20,9 +22,10 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
     /// which AppKit implements without declaring it.
     static let showSettings = Selector(("orderFrontPreferencesPanel:"))
 
-    init(application: HostApplication?, gpuPolicy: GPUPolicy? = nil) {
+    init(application: HostApplication?, gpuPolicy: GPUPolicy? = nil, pasteboardSync: PasteboardSync? = nil) {
         self.application = application
         self.gpuPolicy = gpuPolicy
+        self.pasteboardSync = pasteboardSync
         openSimulator = OpenSimulatorMenu(application: application)
     }
 
@@ -87,8 +90,7 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
             if title == "Copy" { commands([.copyScreen], in: edit) }
         }
         edit.addItem(.separator())
-        // Simulator.app's Automatically Sync Pasteboard comes first; NeoSimulator
-        // does not synchronize pasteboards.
+        item("Automatically Sync Pasteboard", action: #selector(togglePasteboardSync(_:)), in: edit)
         commands([.getPasteboard, .sendPasteboard], in: edit)
 
         let device = menu("Device", in: main)
@@ -254,6 +256,12 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
             item.state = UserDefaults.standard.showsDeviceBezels ? .on : .off
             return application != nil
         }
+        // Like Simulator.app's app delegate, the checkmark shows the app-wide
+        // choice, which can change without a device window.
+        if item.action == #selector(togglePasteboardSync(_:)) {
+            item.state = pasteboardSync?.isOn == true ? .on : .off
+            return pasteboardSync != nil
+        }
         // Like Simulator.app, the checkmarks follow the head of the policy
         // after a leading external GPU.
         if item.action == #selector(preferGPU(_:)) {
@@ -277,6 +285,7 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
     @objc private func showNewSimulator(_ sender: Any?) { application?.showNewSimulator() }
     @objc private func toggleShowTestingDevices(_ sender: Any?) { application?.toggleShowTestingDevices() }
     @objc private func toggleShowDeviceBezels(_ sender: Any?) { application?.toggleShowDeviceBezels() }
+    @objc private func togglePasteboardSync(_ sender: Any?) { pasteboardSync?.toggle() }
     @objc private func preferGPU(_ sender: NSMenuItem) {
         if let preference = sender.representedObject as? GPUPolicy.Preference { gpuPolicy?.prefer(preference) }
     }

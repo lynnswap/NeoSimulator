@@ -100,8 +100,8 @@ signal cannot land between a move and a separate bookkeeping update.
 | Define commands, their availability, and state | `DeviceCommand` |
 | Build and validate active-window menus | `MenuController` |
 | Run device tool subprocesses | `DeviceToolRunner` |
-| Get and Send Pasteboard over a device's SimPasteboardPlus connection | `DeviceSession` |
-| Automatic clipboard synchronization | deliberately no owner |
+| A device's SimPasteboardPlus connection, for Get and Send Pasteboard and synchronization | `DeviceSession` |
+| Edit ▸ Automatically Sync Pasteboard and the exchange between devices | `PasteboardSync` |
 
 The active simulator for a menu command is derived from `NSApp.keyWindow` each
 time. Device selection is not mirrored in a second state store.
@@ -304,7 +304,8 @@ The first parity set contains only commands with an available, validated owner:
 - File: New Simulator…, Open Simulator, Save Screen, Save Screen…, Record
   Screen, Record Screen…, Stop Recording, GPU Selection, Close Window, Close
   Window…;
-- Edit: Copy Screen, Get Pasteboard, Send Pasteboard;
+- Edit: Copy Screen, Automatically Sync Pasteboard, Get Pasteboard, Send
+  Pasteboard;
 - Device: Restart, Erase All Content and Settings…, Shut Down, Rotate
   Left/Right, Orientation, Rotate Device Automatically, Home,
   Lock, Side Button (watchOS devices only, so hidden until Neo hosts them),
@@ -675,8 +676,6 @@ or a coordinate, is not handled.
 
 The following are intentionally absent:
 
-- Edit ▸ Automatically Sync Pasteboard, and any pasteboard exchange that the
-  user did not choose;
 - Services;
 - global keyboard, pointer, or game-controller capture;
 - Device Manager, external-display, CarPlay, audio-routing, and FaceTime
@@ -693,8 +692,8 @@ inventory and classification.
 Edit ▸ Get Pasteboard replaces the Mac's general pasteboard with the active
 device's, and Edit ▸ Send Pasteboard replaces the device's pasteboard with the
 Mac's. Each command copies the whole pasteboard once, with all its types, such
-as text and images. Nothing crosses between the Mac and the device at any other
-time.
+as text and images. Unless Automatically Sync Pasteboard is on, nothing crosses
+between the Mac and the device at any other time.
 
 Both commands use Simulator.app's mechanism, `SimPasteboardInterface` from
 `SimPasteboardPlus`, a framework that CoreSimulator loads. Get Pasteboard sends
@@ -709,10 +708,12 @@ an app pastes it, which fails once the connection is closed.
 
 Each `DeviceSession` therefore connects to its device's pasteboard on the first
 Get or Send, managing the general pasteboard, and keeps the connection until
-the device closes it or the session disconnects. Connecting transfers nothing,
-and the connection never exchanges changes on its own; that needs
-`enableRemoteAutosync`, which Neo never sends. The interface's messages return
-nothing, so its delegate callbacks, on the main queue, complete the commands:
+the device closes it or the session disconnects. Connecting transfers nothing.
+Like Simulator.app, the session then tells the connection whether to
+synchronize, with `enableRemoteAutosync` or `disableRemoteAutosync`; see
+[Automatically Sync Pasteboard](#automatically-sync-pasteboard). The
+interface's messages return nothing, so its delegate callbacks, on the main
+queue, complete the commands:
 `simPasteboardDidApplySnapshot:…` completes a pull, and each
 `simPasteboardDidBecomeActive:` after the connection's first one completes a
 push, as `simctl pbsync` waits for it. A failed connection,
@@ -721,17 +722,16 @@ while a transfer is pending are reported on the device window. A connection
 closed with nothing pending is logged, and the next command connects again.
 
 Like Simulator.app, both commands are shown for every device and enabled for a
-booted iPhone, iPad, or Apple Vision whose device has `SimFeaturePasteboard`.
-Simulator.app also disables them while Automatically Sync Pasteboard is on,
-which it registers as the default; Neo never synchronizes, so the commands
-behave as Simulator.app's do with it off.
+booted iPhone, iPad, or Apple Vision whose device has `SimFeaturePasteboard`,
+while Automatically Sync Pasteboard is off.
 
 These differ from Simulator.app:
 
 - Simulator.app connects when a device connects and again as soon as the
-  connection closes, and it enables the commands only while connected. Neo
-  connects on the first command and, after the device closes the connection,
-  on the next one, so it reports why a device's pasteboard cannot connect.
+  connection closes, and it enables the commands only while connected. While
+  Automatically Sync Pasteboard is off, Neo connects on the first command and,
+  after the device closes the connection, on the next one, so it reports why a
+  device's pasteboard cannot connect.
 - Simulator.app's Send Pasteboard does nothing while the Mac pasteboard still
   holds the snapshot last received from the device, which keeps automatic
   synchronization from echoing a change back. Without automatic
@@ -743,6 +743,66 @@ A transfer that the device accepts but never completes is not reported, and
 SimPasteboardPlus drops a type too large to send, such as one of 300 MB,
 without a callback. `simctl pbsync` gives up after one second, which a push of
 260 MB can exceed.
+
+### Automatically Sync Pasteboard
+
+Edit ▸ Automatically Sync Pasteboard turns on Simulator.app's automatic
+pasteboard synchronization for every device that has a window. Neo saves the
+choice as `PasteboardAutomaticSync` and registers it off; Simulator.app
+registers it on. Like Simulator.app's, the item is enabled without a device
+window and checked while synchronization is on, and Get and Send Pasteboard
+are disabled meanwhile.
+
+`PasteboardSync` keeps the choice and owns the exchange between devices, as
+Simulator.app's app delegate does; it reads the sessions from the host's
+windows. Each `DeviceSession` owns its connection, as described in
+[Get and Send Pasteboard](#get-and-send-pasteboard). Synchronization works as
+in Simulator.app:
+
+- Turning it on sends `enableRemoteAutosync` to every device's connection,
+  connecting a device that has none; turning it off sends
+  `disableRemoteAutosync` to every connection and keeps the connections.
+  Neither transfers anything.
+- While a connection synchronizes, SimPasteboardPlus sends each change of the
+  Mac pasteboard to the device, about half a second later, and applies a copy
+  made on the device to the Mac pasteboard. It ignores the change that it
+  makes itself, so the copy is not sent back to the device that made it.
+- For the same reason, the copy does not reach the other devices. Like
+  Simulator.app's `SimDeviceChangedLocalPasteboard` observer, `PasteboardSync`
+  sends the Mac pasteboard to every other device when the run loop ends its
+  pass. Of several copies applied in one pass, only the last one's device is
+  left out, and each other device is sent the Mac pasteboard once. A device is
+  not sent a Mac pasteboard whose change count still equals the one that its
+  own last copy left, Simulator.app's
+  `lastSyncedPasteboardSnapshotLocalGeneration`; a copy that could not be
+  applied clears it.
+- A device that connects while synchronization is on, when its window opens
+  or after a restart, is connected, told to synchronize, and sent the Mac
+  pasteboard.
+- When the device closes the connection, for example because its
+  CoreSimulatorBridge restarted, the session connects again at once and tells
+  the new connection to synchronize, without sending the Mac pasteboard. A
+  device that is shutting down is not connected again.
+- Synchronization does not depend on which window is key: every device that
+  has a window takes part. Closing a window releases its connection, which
+  stops the device's synchronization.
+- Choosing a connected device in File ▸ Open Simulator tells its connection
+  the current choice again.
+
+Failures to connect or send are logged, as Simulator.app logs them; no command
+waits for them.
+
+These differ from Simulator.app:
+
+- Simulator.app synchronizes by default.
+- Simulator.app connects every device when the device connects, so turning
+  synchronization on only tells those connections. Neo connects the devices
+  then, which transfers nothing. For the same reason, choosing a connected
+  device in Open Simulator connects one whose connection could not be
+  reopened, which Simulator.app leaves without one until the device connects
+  again.
+- Simulator.app raises an assertion when a connection reports a
+  synchronization state other than the app's; Neo logs it.
 
 ### Keyboard and touch pressure
 
@@ -971,7 +1031,9 @@ hardware keyboard, the keyboard language, the digitizer's touch pressure
 settings and touch indicator draw options, the settings window, modifier
 gestures through the lifecycle cases above, resize, menu rotation, screenshot
 PNG, Get and Send Pasteboard with text and a PNG and without any exchange
-between commands, Device Hub absence, and loaded-image provenance.
+between commands, Automatically Sync Pasteboard between the Mac and two devices
+(on and off, across a CoreSimulatorBridge restart, a device restart, and a
+closed window), Device Hub absence, and loaded-image provenance.
 
 ## Non-goals
 
