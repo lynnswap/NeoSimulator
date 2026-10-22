@@ -2,7 +2,7 @@ import AppKit
 import UniformTypeIdentifiers
 
 @MainActor
-final class DeviceWindowController: NSWindowController, NSWindowDelegate {
+final class DeviceWindowController: NSWindowController, NSWindowDelegate, DisplayScaling {
     /// The device's current connection. A restart replaces it after the
     /// device boots again, keeping this window.
     private(set) var session: DeviceSession
@@ -65,7 +65,20 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     private var isKey = false
     /// Whether the display takes the Mac's keyboard.
     private var hasKeyboardInput = false
+    /// The window of the device's external display while the display is on.
+    private(set) var externalDisplayWindow: ExternalDisplayWindowController?
     var staysOnTop: Bool { window?.level == .floating }
+
+    /// The device window of the key window: the key device window, or the
+    /// device window of the key external display window, whose device the
+    /// menus act on, as Simulator.app's device coordinator handles both.
+    static var keyDeviceWindow: DeviceWindowController? {
+        switch NSApp.keyWindow?.windowController {
+        case let controller as DeviceWindowController: controller
+        case let controller as ExternalDisplayWindowController: controller.deviceWindow
+        default: nil
+        }
+    }
 
     init(session: DeviceSession, preferences: any PreferenceStore = UserDefaults.standard,
          touchPressure: TouchPressure,
@@ -204,6 +217,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         deviceToolbar = toolbar
         window.toolbar = toolbar.toolbar
         session.display.onPropertiesChange = { [weak self] in self?.displayPropertiesChanged() }
+        session.onExternalScreenChange = { [weak self] in self?.syncExternalDisplayWindow() }
         content.canImport = { [weak self] in self?.session.canPerformToolOperation == true }
         content.importFiles = { [weak self] in self?.importFiles($0) }
         window.contentView = content
@@ -224,6 +238,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         guard !closed else { return }
         if let window, let sheet = window.attachedSheet { window.endSheet(sheet, returnCode: .cancel) }
         customLocation?.close()
+        closeExternalDisplayWindow()
         session.disconnect()
         window?.subtitle = "Restarting…"
     }
@@ -296,7 +311,11 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         let command = DeviceCommand.command(id)
         guard !closed, command.isSupported(session.capabilities), command.isEnabled(self) else { return }
         command.perform(self)
-        focusInput()
+        if let externalDisplayWindow, externalDisplayWindow.isKey {
+            externalDisplayWindow.focusInput()
+        } else {
+            focusInput()
+        }
     }
 
     func send(_ input: HardwareInput) { session.send(input) { [weak self] in self?.present($0) } }
@@ -391,6 +410,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
             do { try await session.toggleHardwareKeyboard() } catch { self?.present(error) }
         }
         updateKeyboardInput()
+        externalDisplayWindow?.updateKeyboardInput()
     }
 
     /// Gives the display the Mac's keyboard while the window is key and its
@@ -402,7 +422,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         hasKeyboardInput = enabled
         if enabled {
             session.display.setKeyboardEnabled(true)
-            sendModifiers(NSEvent.modifierFlags)
+            Self.sendModifiers(NSEvent.modifierFlags)
         } else {
             releaseModifiers()
             session.display.setKeyboardEnabled(false)
@@ -420,7 +440,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     private func releaseModifiers() {
         let input = session.display.inputView
         let movesFocus = window?.firstResponder === input && window?.makeFirstResponder(nil) == true
-        sendModifiers([])
+        Self.sendModifiers([])
         if movesFocus { window?.makeFirstResponder(input) }
     }
 
@@ -429,7 +449,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     /// logged. The change starts before this returns, so that changes reach
     /// the device in order.
     private func keyboardSelectionChanged() {
-        guard !closed, isKey else { return }
+        guard !closed, isKey || externalDisplayWindow?.isKey == true else { return }
         Task.immediate { [session] in
             do { try await session.syncKeyboardLanguage() } catch {
                 hostLog("Could not set the keyboard language of \(session.device.name): \(error.localizedDescription)")
@@ -699,6 +719,56 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
                 return
             }
             self.session.run({ [session] in try await session.openURL(url) }, failure: { [weak self] in self?.present($0) })
+        }
+    }
+
+    // MARK: External display
+
+    /// I/O ▸ External Displays. A failure, also one that CoreSimulator
+    /// reports later, is presented on this window.
+    func chooseExternalDisplay(_ mode: ExternalDisplayMode) {
+        guard !closed else { return }
+        session.chooseExternalDisplay(mode) { [weak self] in self?.present($0) }
+    }
+
+    /// The window that the Window menu's scale commands scale: the external
+    /// display's window while it is key, otherwise this one.
+    var scaledWindow: any DisplayScaling {
+        guard let externalDisplayWindow, externalDisplayWindow.isKey else { return self }
+        return externalDisplayWindow
+    }
+
+    /// Like Simulator.app's screen monitor, opens the external display's
+    /// window while the display is on, whoever turned it on, sizes it to the
+    /// display's new size, and closes it once the display is off.
+    private func syncExternalDisplayWindow() {
+        guard !closed else { return }
+        guard let state = session.externalScreen, state.isPoweredOn else { return closeExternalDisplayWindow() }
+        if let externalDisplayWindow { return externalDisplayWindow.screenChanged(state) }
+        do {
+            let controller = try ExternalDisplayWindowController(
+                session: session, display: session.makeExternalDisplay(), state: state, deviceWindow: self,
+                preferences: preferences) { [weak self] in self?.externalDisplayWindowClosed() }
+            externalDisplayWindow = controller
+            controller.showNewWindow(cascadingFrom: window)
+        } catch {
+            present(HostError.operation(
+                "Could not show the external display of \(session.device.name): \(error.localizedDescription)"))
+        }
+    }
+
+    private func closeExternalDisplayWindow() {
+        externalDisplayWindow?.invalidate()
+        externalDisplayWindow = nil
+    }
+
+    /// Like Simulator.app, closing the external display's window chooses
+    /// Disabled. When turning the display off fails, its window opens again.
+    private func externalDisplayWindowClosed() {
+        externalDisplayWindow = nil
+        session.chooseExternalDisplay(.disabled) { [weak self] error in
+            self?.present(error)
+            self?.syncExternalDisplayWindow()
         }
     }
 
@@ -990,7 +1060,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     // SimulatorKit applies modifier changes to every display with keyboard input and releases
     // them only on displays that keep it. Sync them when this display gains keyboard input,
     // and release them before it loses it.
-    private func sendModifiers(_ flags: NSEvent.ModifierFlags) {
+    static func sendModifiers(_ flags: NSEvent.ModifierFlags) {
         guard let event = NSEvent.keyEvent(with: .flagsChanged, location: .zero, modifierFlags: flags,
             timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: 0, context: nil,
             characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: 0) else { return }
@@ -1111,6 +1181,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
             window.endSheet(sheet, returnCode: .cancel)
         }
         customLocation?.close()
+        closeExternalDisplayWindow()
         session.disconnect()
     }
     /// A controller released without closing its window, which

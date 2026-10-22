@@ -380,6 +380,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                             restoreLocation(of: session)
                             connectAudioRoutes(of: session)
                             session.startPasteboardSync()
+                            connectExternalDisplay(of: session)
                             return
                         }
                         let controller = try DeviceWindowController(session: session, touchPressure: touchPressure, onClose: { [weak self] in
@@ -392,6 +393,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                         restoreLocation(of: session)
                         connectAudioRoutes(of: session)
                         session.startPasteboardSync()
+                        connectExternalDisplay(of: session)
                         return
                     }
                     try await Task.sleep(for: .milliseconds(250))
@@ -435,6 +437,13 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         session.connectAudioRoutes { error in
             hostLog("Could not route the audio of \(name): \(error.localizedDescription)")
         }
+    }
+
+    /// Connects a new connection to its device's external display and
+    /// restores the device's External Displays choice, also after a restart.
+    /// Like Simulator.app, which only logs them, these failures are logged.
+    private func connectExternalDisplay(of session: DeviceSession) {
+        session.connectExternalDisplay { error in hostLog(error.localizedDescription) }
     }
 
     // MARK: Closing and quitting
