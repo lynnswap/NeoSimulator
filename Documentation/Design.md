@@ -1406,8 +1406,8 @@ These differ from Simulator.app:
   with Stage Manager before iPadOS 27. Before the session has read the
   screen's modes, as while the device restarts, only the last is known.
 - When the display has a size the guest does not show, as another tool can
-  set, the window's subtitle reads "External Display – Device Shows 720×480"
-  (with the guest's size) instead of "External Display".
+  set, the window's subtitle reads "External Display – Size Not Shown by
+  Device" instead of "External Display".
 
 #### The guest's modes
 
@@ -1423,11 +1423,15 @@ modes from 49 to 60.5 Hz, the largest by width × height × whole hertz
 mode and its exact modes, which come from the device type's
 `capabilities.plist` (720×480 at 60 Hz for the TVOut screen). So:
 
-- A 120 Hz mode of any size ends at 720×480 at 60 Hz in the guest
-  (`UIScreen` bounds, native bounds, and modes), which draws its 720×480
-  picture in the top-left corner of the larger screen, while CoreSimulator,
-  SimulatorKit's display, and the window keep the size that was set.
-  CoreAnimation in the guest never sets the screen's mode back.
+- A display that turns on with a 120 Hz mode of any size ends at 720×480 at
+  60 Hz in the guest (`UIScreen` bounds, native bounds, and modes), which
+  draws its 720×480 picture in the top-left corner of the larger screen,
+  while CoreSimulator, SimulatorKit's display, and the window keep the size
+  that was set; CoreAnimation in the guest never sets the screen's mode
+  back. When a display that is on changes to a 120 Hz mode, the guest did
+  not show the new size either: in different tries its scene went to
+  720×480, stayed at the earlier size, or was torn down, leaving the display
+  black.
 - A size at 60 Hz shows when it has more pixels than 720×480: 720×480,
   1024×768, 1280×720, 1920×1080, and 3840×2160 reached the guest's scene on
   the iOS 26.5 iPhone 17 Pro and iPad Pro 11-inch (M5); 640×480 never does,
@@ -1446,7 +1450,8 @@ mode and its exact modes, which come from the device type's
   display that wants a pointer, re-evaluate it about nine times a second, and
   their SpringBoard aborts (`SBSystemShellExtendedDisplayControllerPolicy.m:199`)
   when the display then changes or turns off; iPadOS 27.0 did not. 1920×1080
-  and smaller are not extended displays there.
+  and smaller are not extended displays there. Neo cannot avoid that abort
+  when another tool has set such a display and Neo turns it off.
 
 Simulator.app 16.0's mode choice reads no `refreshRate`, so with
 CoreSimulator 1174.9.2 it leaves the iPad, and the iPhone with iOS 27.0, at

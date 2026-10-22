@@ -704,7 +704,11 @@ The live check on the separate device set showed:
   18.5 and 26.0 runtimes has the same bounds. The guest's QuartzCore imports
   no `SFBDisplaySetCurrentMode`, so the screen keeps the mode that was set.
   At 60 Hz, 640×480 also ended at 720×480 on both devices, and on iOS 18.6
-  and 27.0; 1024×768 through 3840×2160 kept their size.
+  and 27.0; 1024×768 through 3840×2160 kept their size. A change from
+  1280×720 at 60 Hz to 1920×1080 at 120 Hz while the display was on showed
+  1920×1080 in no try: the scene went to 720×480, stayed at 1280×720, or,
+  5 seconds after the previous change, was torn down ("told display did
+  disconnect") with no new pick, leaving the display black.
 - CoreSimulator's SimRenderServer builds the TVOut screen's size
   specification with refresh rates 30, 60, 75, and 120 Hz
   (`0x100027240`–`0x1000272C0`) and lists it at 120 Hz. Passing the iPad's

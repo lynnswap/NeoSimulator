@@ -3667,24 +3667,23 @@ struct InputFocusTests {
         controller.window?.endSheet(sheet)
     }
 
-    @Test func theExternalDisplaysWindowSaysWhichSizeTheGuestShows() throws {
+    @Test func theExternalDisplaysWindowSaysWhenTheGuestDoesNotShowItsSize() throws {
         _ = NSApplication.shared
         let screen = TestExternalScreen()
         screen.modes = [.exact720x480, .allowedAt120Hertz(scale: 1)]
         let (controller, _) = try makeExternalDisplayController(screen)
         defer { controller.invalidate() }
-        // Another tool sets 1920×1080 at 120 Hz, which the guest replaces with
-        // its 720×480 mode in the display's top-left corner.
+        // Another tool sets 1920×1080 at 120 Hz, which the guest does not show.
         screen.report {
             $0 = ExternalScreenState(isPoweredOn: true, pixelSize: CGSize(width: 1920, height: 1080), scale: 1,
                                      refreshRate: 120)
         }
         let window = try #require(controller.externalDisplayWindow?.window)
-        #expect(window.subtitle == "External Display – Device Shows 720×480")
+        #expect(window.subtitle == "External Display – Size Not Shown by Device")
         screen.report { $0.refreshRate = 60 }
         #expect(window.subtitle == "External Display")
         screen.report { $0.pixelSize = CGSize(width: 640, height: 480) }
-        #expect(window.subtitle == "External Display – Device Shows 720×480")
+        #expect(window.subtitle == "External Display – Size Not Shown by Device")
     }
 
     @Test func choosingASizeSavesItForTheDeviceAndSetsTheDisplaysMode() throws {

@@ -1161,14 +1161,17 @@ final class DeviceSession {
         }
     }
 
-    /// The size the guest shows on the external display in `state` when it
-    /// is not the display's size, as when another tool set a 120 Hz mode or
-    /// 640×480 (see `ExternalScreenMode.guestSize(for:refreshRate:among:)`),
-    /// or nil. A CarPlay screen shows the guest's CarPlay.
-    func externalDisplayGuestSize(for state: ExternalScreenState) -> CGSize? {
-        guard state.isPoweredOn, !state.isCarPlay, let modes = externalScreenModes else { return nil }
-        let shown = ExternalScreenMode.guestSize(for: state.pixelSize, refreshRate: state.refreshRate, among: modes)
-        return shown == state.pixelSize ? nil : shown
+    /// Whether the guest shows the external display in `state` at the
+    /// display's size, which it does not for a size that Neo would not set but
+    /// another tool can: at 640×480 it shows its larger 720×480 mode, and at a
+    /// rate it drops it shows 720×480 when the display turns on, and its
+    /// earlier size or nothing when the mode changes while the display is on
+    /// (see `ExternalScreenMode.guestSize(for:refreshRate:among:)`). True when
+    /// the session cannot tell, and for a CarPlay screen, which shows CarPlay.
+    func externalDisplayShowsItsSize(in state: ExternalScreenState) -> Bool {
+        guard state.isPoweredOn, !state.isCarPlay, let modes = externalScreenModes else { return true }
+        return ExternalScreenMode.guestSize(for: state.pixelSize, refreshRate: state.refreshRate, among: modes)
+            == state.pixelSize
     }
 
     /// Connects to the device's external display and applies the device's
