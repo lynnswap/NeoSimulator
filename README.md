@@ -367,8 +367,11 @@ Unlike Simulator.app, Neo applies the current modifier keys when a device
 window becomes active, so an Option release that happened while another window
 or app was active does not turn the next click into a two-finger touch.
 
-Global pointer capture and arbitrary gestures with three or more fingers are
-not supported.
+Arbitrary gestures with three or more fingers are not supported. Neither are
+Simulator.app's **I/O → Input** commands, Send Pointer to Device and Send
+Keyboard Input to Device, or the matching buttons in an iPad's toolbar: macOS
+lets only apps that Apple signs capture the Mac's pointer and keyboard that way.
+See [Input capture](Documentation/Design.md#input-capture).
 
 ## Return to Device Hub
 

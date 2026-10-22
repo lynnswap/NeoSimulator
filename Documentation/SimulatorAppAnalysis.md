@@ -717,6 +717,61 @@ iPhone 17 Pro in the separate device set showed:
 NeoSimulator reproduces External Displays; its handling and differences are
 described in the [design](Design.md#external-displays).
 
+## Input capture
+
+The evidence is Simulator.app 16.0 (1063.4) from Xcode 26.6, SimulatorKit from
+Xcode 27.0, 27.1, and 27.2, whose `SimHIDCaptureManager` code is the same at the
+addresses below, macOS 26.6.2, and an iOS 26.5 iPad mini (A17 Pro) in a
+separate device set. In `MainMenu.nib`, I/O ▸ Input comes first and lists Send
+Pointer to Device (Control-Command-K, `toggleCapturingMouse:`), Send Keyboard
+Input to Device (Option-Command-K, `toggleCapturingKeyboard:`), and the hidden
+Send Game Controller to Device (tag 7007). `SimFeatureSystemPointer` is
+`com.apple.hid.pointer.system`. `DC` is `DeviceCoordinator`, `DWC` is
+`Simulator.DeviceWindowController`, and `CM` is SimulatorKit's
+`SimHIDCaptureManager`.
+
+| Reference owner | Observed behavior |
+| --- | --- |
+| `DC.deviceWindowBecameKey:` `0x10001A50C`–`0x10001A55C` | Hides Send Keyboard Input to Device without `SimFeatureKeyboard` and Send Pointer to Device without `SimFeatureSystemPointer`. |
+| `DWC.toggleCapturingMouse:` `0x10005834C`, `DWC.toggleCapturingKeyboard:` `0x100058458`, `DC.beginCapturingInputForHIDInputType:error:` `0x10001FFF0` | Send Pointer to Device captures types 3 (pointer and keyboard), Send Keyboard Input to Device type 1; choosing the command again stops the capture (`stopCapturingInput:`). The coordinator gives the manager the stop-capture keys (`CaptureEscapeKeyCodes`) and a safe pointer position, then calls `startCaptureSessionWithDevice:hidDeviceTypes:error:` (`0x100020140`). |
+| Toolbar setup `0x100049D70`, capture update `0x1000499FC` | An iPad with `SimFeatureSystemPointer` takes the iPad toolbar, whose Capture Pointer and Capture Keyboard buttons send the same two actions. The update reads the capture types (pointer 2, keyboard 1), sets each button's state and its on or off image, and while a capture runs replaces the window's subtitle with `captureEscapeString`. |
+| `+[CM localizedDescriptionForEscapeKeyCodes:]` `0xFB54` | The hint for the three settings: "Press esc to stop capture" (`[41]`), "Press both ⌘ keys to stop capture" (`[227,231]`), and "Press ⌃ ⌥ to stop capture" (`[224,226,65535]`). |
+| `-[CM init]` `0xE074` | Creates an HID event-system client of type 1 (monitor) with `IOHIDEventSystemClientCreateWithType` and schedules it on its own queue; a NULL client fails an assertion. |
+| `-[CM startCaptureSessionWithDevice:hidDeviceTypes:error:]` `0xE1D8` | On the main queue, stops a running capture and opens a `SimDeviceLegacyHIDClient`, whose failure is the only one it returns. For the pointer it detaches the pointer from the mouse (`CGAssociateMouseAndMouseCursorPosition(false)`), hides it, moves it to the safe position, and creates the guest's pointer and mouse services (`IndigoHIDMessageToCreatePointerService`, `IndigoHIDMessageToCreateMouseService`). It then creates an active event tap at the HID level (`CGEventTapCreate(kCGHIDEventTap, kCGHeadInsertEventTap, kCGEventTapOptionDefault, …)`, `0xE66C`) and passes the result unchecked to `CFMachPortCreateRunLoopSource` (`0xE68C`); registers an HID event filter at priority `0x7FFFFFFF` (`IOHIDEventSystemClientRegisterEventFilterCallbackWithPriority`, `0xF240`), which reports no result; sorts the client's services into mice, Magic Mice, and trackpads; and posts `SimHIDCaptureManagerCaptureStartedNotification`. |
+| Filter callback `0xF26C` | Sends the captured devices' keyboard events (`IndigoHIDMessageForKeyboardArbitrary`) and pointer, scroll, and trackpad events (`IndigoHIDMessageForPointerEventFromHIDEventRef`, `…ScrollEventFromHIDEventRef`, `…TrackpadEventFromHIDEventRef`) to the guest and consumes them, so they never become events for macOS or its apps. It also matches the stop-capture keys and then stops the capture on the main queue (`0x100C8`). |
+| Event tap callback `0xEF14` | Sends nothing to the guest. It swallows key downs with their repeats and key ups, and the mouse, scroll, and gesture events of the captured mice and trackpads; it passes the key ups of keys pressed before the capture. |
+| Entitlements | Simulator.app is signed with `com.apple.private.hid.client.event-filter`, `com.apple.private.hid.client.event-monitor`, and `com.apple.private.tcc.allow` for `kTCCServicePostEvent` and `kTCCServiceListenEvent`. |
+| IOKit's HID event-system server, `_io_hideventsystem_register_event_filter` | Registers a filter only for an admin connection or one whose entitlements include `com.apple.private.hid.client.event-filter`; otherwise it logs "Error: the client with pid %d is missing the '%s' entitlement." and still returns success. |
+
+The live check used an ad-hoc signed process, started from a shell, that had
+neither Accessibility nor Input Monitoring: `AXIsProcessTrusted`,
+`CGPreflightListenEventAccess`, and `CGPreflightPostEventAccess` returned false,
+`IOHIDCheckAccess` returned denied for both, and no prompt appeared. It showed:
+
+- The HID client connected as a monitor with entitlements `0x0`. Registering a
+  filter as the manager does, passing every event through for half a second,
+  made WindowServer log that the client was missing
+  `com.apple.private.hid.client.event-filter`; the filter received no event.
+- `CGEventTapCreate` with the manager's arguments returned NULL for its
+  keyboard mask and for its mouse mask (`0xE640001E`).
+- The iPad supported `SimFeatureSystemPointer` and `SimFeatureKeyboard`.
+  `startCaptureSessionWithDevice:hidDeviceTypes:error:` with type 1 crashed
+  the process with `EXC_BAD_ACCESS` in `CFMachPortCreateRunLoopSource`, called
+  from the start method at `0xE690`, before it returned or posted a
+  notification.
+
+An app without the event-filter entitlement therefore cannot use the manager.
+Without Accessibility, starting a capture crashes it. With Accessibility, the
+code shows that the tap would swallow the Mac's key downs, and for pointer
+capture freeze and hide the pointer, while nothing reaches the device and the
+stop-capture keys, which only the filter matches, are never recognized. An
+ad-hoc signature's designated requirement is its code hash (`cdhash H"…"`), so
+a privacy permission such as Accessibility granted to one ad-hoc signed build
+does not carry over to the next.
+
+NeoSimulator leaves input capture out; the reasons and the alternatives that
+were considered are in the [design](Design.md#input-capture).
+
 ## Deferred features
 
 These have viable Xcode 27+ primitives but need a dedicated state/capability
@@ -729,7 +784,8 @@ contract before being user-visible:
 - Standard Edit/Services clipboard routing.
 - Global keyboard, pointer, and game-controller capture. The reference app has
   private HID event-filter/event-monitor and TCC entitlements that the companion
-  does not have.
+  does not have; for the keyboard and pointer, see
+  [Input capture](#input-capture).
 - watchOS, tvOS, and visionOS-specific gesture, remote, camera, immersion, and
   viewport commands.
 - FaceTime menus.
