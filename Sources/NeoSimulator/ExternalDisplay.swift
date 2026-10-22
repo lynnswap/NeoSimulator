@@ -139,6 +139,15 @@ extension PreferenceStore {
 /// display that is already off without an error, so no record of the
 /// display's power, which reports and completions arriving in either order
 /// could leave wrong, decides it.
+///
+/// A change whose completion does not come must not stop the device's later
+/// sessions. CoreSimulator completed every change sent while its device shut
+/// down, after it shut down, and after it booted again, the last ones with an
+/// error and up to 4.5 seconds late. The queue still stops waiting for a
+/// change in flight when the session that sent it disconnects from a device
+/// that is no longer booted, and, as a last resort for a completion that
+/// never comes, after `completionTimeout`. It logs the change, and ignores its
+/// completion if one comes later.
 @MainActor
 final class ExternalDisplayChanges {
     private struct Change {
@@ -147,13 +156,26 @@ final class ExternalDisplayChanges {
         let report: @MainActor (Error) -> Void
     }
 
-    private var isSending = false
+    /// How long a change may wait for its completion: more than twice the
+    /// longest completion seen, through a connection made before its device
+    /// restarted.
+    static let defaultCompletionTimeout: Duration = .seconds(10)
+
+    private let completionTimeout: Duration
+    /// The change in flight, the number that its completion must match, and
+    /// the timer that abandons it.
+    private var inFlight: (change: Change, number: Int, timer: Task<Void, Never>)?
+    private var sent = 0
     private var waiting: Change?
     /// What waits for no change to be in flight or waiting.
     private var idleWaits: [@MainActor () -> Void] = []
 
+    init(completionTimeout: Duration = ExternalDisplayChanges.defaultCompletionTimeout) {
+        self.completionTimeout = completionTimeout
+    }
+
     /// Whether a change is in flight or waiting.
-    var isBusy: Bool { isSending || waiting != nil }
+    var isBusy: Bool { inFlight != nil || waiting != nil }
 
     /// Sends `mode`'s change through `screen`, or makes it wait for the change
     /// in flight. `report` receives a failure, also one CoreSimulator reports
@@ -161,13 +183,17 @@ final class ExternalDisplayChanges {
     func apply(_ mode: ExternalDisplayMode, through screen: any SimulatorExternalScreen,
                report: @escaping @MainActor (Error) -> Void) {
         let change = Change(mode: mode, screen: screen, report: report)
-        if isSending { waiting = change } else { send(change) }
+        if inFlight != nil { waiting = change } else { send(change) }
     }
 
-    /// Drops the change that waits, as when its session disconnects from a
-    /// device that is shutting down.
-    func discardWaiting() {
-        waiting = nil
+    /// Stops waiting for the changes that `screen`'s session asked for, as
+    /// when the session disconnects from a device that is no longer booted:
+    /// the change that waits is dropped, and the one in flight abandoned.
+    func abandon(changesThrough screen: any SimulatorExternalScreen) {
+        if waiting?.screen === screen { waiting = nil }
+        if let inFlight, inFlight.change.screen === screen {
+            abandon(inFlight.number, reason: "its device is no longer booted", reporting: false)
+        }
         finishIfIdle()
     }
 
@@ -186,9 +212,16 @@ final class ExternalDisplayChanges {
     }
 
     private func send(_ change: Change) {
+        sent += 1
+        let number = sent
         // The completion keeps these changes until CoreSimulator calls it.
-        let completion: @MainActor (Error?) -> Void = { error in self.completed(error: error, report: change.report) }
-        isSending = true
+        let completion: @MainActor (Error?) -> Void = { error in self.completed(number, error: error) }
+        let timeout = completionTimeout
+        let timer = Task { [weak self] in
+            guard (try? await Task.sleep(for: timeout)) != nil else { return }
+            self?.abandon(number, reason: "CoreSimulator did not complete it within \(timeout)", reporting: true)
+        }
+        inFlight = (change, number, timer)
         do {
             if let size = change.mode.pixelSize {
                 try change.screen.setMode(pixelSize: size, scale: ExternalDisplayMode.scale, carPlayProperties: nil,
@@ -197,14 +230,33 @@ final class ExternalDisplayChanges {
                 try change.screen.powerOff(completion: completion)
             }
         } catch {
-            isSending = false
+            timer.cancel()
+            inFlight = nil
             change.report(error)
         }
     }
 
-    private func completed(error: Error?, report: @MainActor (Error) -> Void) {
-        isSending = false
-        if let error { report(error) }
+    private func completed(_ number: Int, error: Error?) {
+        guard let inFlight, inFlight.number == number else {
+            hostLog("An abandoned external display change completed\(error.map { " with an error: \($0.localizedDescription)" } ?? ".")")
+            return
+        }
+        inFlight.timer.cancel()
+        self.inFlight = nil
+        if let error { inFlight.change.report(error) }
+        sendWaiting()
+    }
+
+    private func abandon(_ number: Int, reason: String, reporting: Bool) {
+        guard let inFlight, inFlight.number == number else { return }
+        inFlight.timer.cancel()
+        self.inFlight = nil
+        hostLog("Stopped waiting for the external display change to \(inFlight.change.mode.title): \(reason).")
+        if reporting { inFlight.change.report(HostError.operation("CoreSimulator did not complete the change.")) }
+        sendWaiting()
+    }
+
+    private func sendWaiting() {
         if let waiting {
             self.waiting = nil
             send(waiting)

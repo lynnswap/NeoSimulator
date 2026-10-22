@@ -1155,6 +1155,15 @@ Neo reaches the screen as Simulator.app does:
   wins. A window that disconnects during a change turns the display off after
   it, and the next session of the device, after a reopening or a restart,
   sends its changes after that power-off.
+- A change whose completion does not come must not hold the device's later
+  sessions. In the iOS 26.5 simulator every change completed: those sent while
+  the device shut down without an error, and those sent after it shut down,
+  or after it booted again through a connection made before, with `Invalid
+  argument`, up to 4.5 seconds late. The queue still stops waiting for the
+  change in flight when the session that sent it disconnects from a device
+  that is no longer booted, and, as a last resort, after 10 seconds, which it
+  reports as the change's failure. Either is logged, and a completion that
+  comes later is ignored.
 - Disabled, and closing the device window while the device is booted,
   always send the power-off, after a change in flight. No record of whether
   the display is on decides it, which reports and completions that arrive in

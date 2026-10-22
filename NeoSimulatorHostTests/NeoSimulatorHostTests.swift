@@ -3158,6 +3158,49 @@ struct InputFocusTests {
         #expect(controller.externalDisplayWindow != nil)
     }
 
+    @Test func aChangeOfADeviceThatShutDownDoesNotHoldItsNextSession() throws {
+        let preferences = MemoryPreferences()
+        let changes = ExternalDisplayChanges()
+        let screen = TestExternalScreen()
+        screen.defersChanges = true
+        let (shutDown, display) = try makeExternalDisplayController(screen, preferences: preferences,
+                                                                    externalDisplayChanges: changes)
+        // A size is in flight when the device shuts down, and its completion
+        // does not come.
+        shutDown.perform(.externalDisplay1920x1080)
+        display.isBooted = false
+        shutDown.invalidate()
+        #expect(!changes.isBusy)
+        // The device's next session restores its choice at once, and the
+        // abandoned change's late completion changes nothing.
+        preferences.setExternalDisplayTag(ExternalDisplayMode.size640x480.rawValue, forDevice: "test-device")
+        let (booted, _) = try makeExternalDisplayController(screen, preferences: preferences,
+                                                            externalDisplayChanges: changes)
+        defer { booted.invalidate() }
+        #expect(screen.requests == ["mode 1920x1080@1", "mode 640x480@1"])
+        screen.deliver()
+        #expect(!changes.isBusy && booted.session.externalDisplayMode == .size640x480)
+    }
+
+    @Test func aChangeWhoseCompletionNeverComesIsAbandonedAfterItsTimeout() async throws {
+        let changes = ExternalDisplayChanges(completionTimeout: .milliseconds(50))
+        let screen = TestExternalScreen()
+        screen.defersChanges = true
+        let (controller, _) = try makeExternalDisplayController(screen, externalDisplayChanges: changes)
+        defer { controller.invalidate() }
+        var failures: [String] = []
+        controller.session.chooseExternalDisplay(.size1920x1080) { failures.append($0.localizedDescription) }
+        controller.session.chooseExternalDisplay(.size640x480) { failures.append($0.localizedDescription) }
+        #expect(screen.requests == ["mode 1920x1080@1"])
+        // Each change is abandoned once its timeout passes, and the next goes.
+        for _ in 0..<100 where failures.count < 2 { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(screen.requests == ["mode 1920x1080@1", "mode 640x480@1"])
+        #expect(failures == [
+            "Could not set the external display of Test iPhone to 1920×1080 (1080p): CoreSimulator did not complete the change.",
+            "Could not set the external display of Test iPhone to 640×480: CoreSimulator did not complete the change.",
+        ])
+    }
+
     @Test func aDeviceWindowThatClosesTurnsTheExternalDisplayOffAndKeepsTheChoice() throws {
         let preferences = MemoryPreferences()
         let screen = TestExternalScreen()

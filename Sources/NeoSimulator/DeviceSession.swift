@@ -1177,7 +1177,9 @@ final class DeviceSession {
                     hostLog("Could not turn off the external display of \(name): \(error.localizedDescription)")
                 }
             } else {
-                externalDisplayChanges.discardWaiting()
+                // The device shut down, so the changes sent through this
+                // connection may never complete.
+                externalDisplayChanges.abandon(changesThrough: externalScreenConnection)
             }
         }
         externalScreenConnection = nil

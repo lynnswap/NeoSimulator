@@ -661,6 +661,10 @@ The live check on the separate device set showed:
   50 ms; `setPowerState:0` turned it off, and on a screen that was already
   off completed without an error and left it off; each change reported a
   properties event, which reached the main queue just before the completion.
+  Changes sent every 20 ms while `simctl shutdown` ran (146 of them)
+  completed without an error; after the shutdown, and after the device booted
+  again, changes through a screen connection made before completed with
+  `Invalid argument`, up to 4.5 seconds after they were sent.
   SimulatorKit's display of the screen has no bezel, a `displayClass` of 1,
   and takes a new size one or two main-queue turns after the event by setting
   its view's frame to that size at its scale.
