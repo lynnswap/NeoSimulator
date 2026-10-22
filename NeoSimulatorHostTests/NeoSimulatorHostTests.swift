@@ -3916,25 +3916,37 @@ struct InputFocusTests {
         #expect(preferences.externalDisplayTag(forDevice: "test-device") == 2714)
     }
 
-    @Test func connectingRestoresCarPlayAndAShutDownEndsTheGuestsSession() throws {
+    @Test func connectingRestoresCarPlayAndANewBootHasNoSessionToEnd() throws {
         let preferences = MemoryPreferences()
         preferences.setExternalDisplayTag(ExternalDisplayMode.carPlay.rawValue, forDevice: "test-device")
         let changes = ExternalDisplayChanges()
         let screen = TestExternalScreen()
-        let (first, display) = try makeExternalDisplayController(screen, features: Self.carPlayFeatures,
-                                                                 preferences: preferences, externalDisplayChanges: changes)
-        #expect(screen.requests == ["save carplay", "mode 800x480@2 carplay", "start carplay", "connect service"])
+        let restored = ["save carplay", "mode 800x480@2 carplay", "start carplay", "connect service"]
+        let (first, _) = try makeExternalDisplayController(screen, features: Self.carPlayFeatures,
+                                                           preferences: preferences, externalDisplayChanges: changes)
+        #expect(screen.requests == restored)
         #expect(first.externalDisplayWindow?.window?.subtitle == "CarPlay")
-        // The device shuts down, and the guest's CarPlay with it: the next
-        // boot's connection starts CarPlay without ending one first.
-        display.isBooted = false
+        // The device shuts down as its window closes, as a restart does, and
+        // the display does not turn off, so the session is not ended. The
+        // next boot starts without it: its connection ends nothing first.
+        screen.completionError = HostError.operation("Invalid argument")
         first.invalidate()
-        #expect(screen.requests.count == 4)
+        #expect(Array(screen.requests.dropFirst(4)) == ["off"])
         let rebooted = TestExternalScreen()
-        let (second, _) = try makeExternalDisplayController(rebooted, features: Self.carPlayFeatures,
-                                                            preferences: preferences, externalDisplayChanges: changes)
-        defer { second.invalidate() }
-        #expect(rebooted.requests == ["save carplay", "mode 800x480@2 carplay", "start carplay", "connect service"])
+        rebooted.deviceBootDate = Date(timeIntervalSinceReferenceDate: 1)
+        let (second, secondDisplay) = try makeExternalDisplayController(
+            rebooted, features: Self.carPlayFeatures, preferences: preferences, externalDisplayChanges: changes)
+        #expect(rebooted.requests == restored)
+        // Nor after a window that disconnects from a device that shut down.
+        secondDisplay.isBooted = false
+        second.invalidate()
+        #expect(rebooted.requests.count == 4)
+        let third = TestExternalScreen()
+        third.deviceBootDate = Date(timeIntervalSinceReferenceDate: 2)
+        let (last, _) = try makeExternalDisplayController(third, features: Self.carPlayFeatures,
+                                                          preferences: preferences, externalDisplayChanges: changes)
+        defer { last.invalidate() }
+        #expect(third.requests == restored)
     }
 
     @Test func carPlayFailuresAreReportedTogether() throws {
@@ -5415,6 +5427,8 @@ private final class TestAudioRoutes: SimulatorAudioRoutes {
 @MainActor
 private final class TestExternalScreen: SimulatorExternalScreen {
     let screenID: UInt32 = 2
+    /// The device's boot; a screen of another boot needs another date.
+    var deviceBootDate: Date? = Date(timeIntervalSinceReferenceDate: 0)
     var current = ExternalScreenState(isPoweredOn: false, pixelSize: CGSize(width: 720, height: 480), scale: 1)
     private(set) var requests: [String] = []
     /// Completes each change with this error, without applying it.

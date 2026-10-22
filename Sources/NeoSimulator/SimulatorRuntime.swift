@@ -428,6 +428,9 @@ final class ProxyMessages {
 @MainActor
 protocol SimulatorExternalScreen: AnyObject {
     var screenID: UInt32 { get }
+    /// When the device last booted. The guest's CarPlay session belongs to
+    /// the boot that started it.
+    var deviceBootDate: Date? { get }
     /// The screen's power, size, scale, and CarPlay as CoreSimulator reports them now.
     func state() throws -> ExternalScreenState
     /// `SimScreen setCurrentMode:pixelSize:carPlayProperties:…` with the mode
@@ -514,6 +517,8 @@ final class SimulatorExternalScreenConnection: SimulatorExternalScreen {
     }
 
     isolated deinit { disconnect() }
+
+    var deviceBootDate: Date? { device.lastBootDate }
 
     func state() throws -> ExternalScreenState {
         let messages = runtime.display.screenMessages

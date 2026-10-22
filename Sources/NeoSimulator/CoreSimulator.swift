@@ -23,6 +23,8 @@ struct CoreSimulatorInterface {
     let name: NativeObjCMethod<String?>
     let descriptiveName: NativeObjCMethod<String?>
     let identifier: NativeObjCMethod<NSUUID?>
+    /// `lastBootedAt`, when the device last booted.
+    let lastBootedAt: NativeObjCMethod<NSDate?>
     let deviceRuntimeIdentifier: NativeObjCMethod<String?>
     let deviceRuntime: NativeObjCMethod<AnyObject?>
     let deviceType: NativeObjCMethod<AnyObject?>
@@ -113,6 +115,7 @@ struct CoreSimulatorInterface {
         descriptiveName = try runtime.resolveObjCMethodAndWait(
             on: device, selector: "descriptiveName", as: (() -> String?).self)
         identifier = try runtime.resolveObjCMethodAndWait(on: device, selector: "UDID", as: (() -> NSUUID?).self)
+        lastBootedAt = try runtime.resolveObjCMethodAndWait(on: device, selector: "lastBootedAt", as: (() -> NSDate?).self)
         deviceRuntimeIdentifier = try runtime.resolveObjCMethodAndWait(
             on: device, selector: "runtimeIdentifier", as: (() -> String?).self)
         deviceRuntime = try runtime.resolveObjCMethodAndWait(
@@ -257,6 +260,10 @@ final class SimulatorDevice {
     /// `SimDeviceState`; 3 is Booted. A device whose state cannot be read is
     /// treated as shut down.
     var state: UInt { (try? unsafe interface.state.unsafeInvoke(on: object)) ?? 0 }
+
+    /// When the device last booted, which tells its boots apart, or nil when
+    /// it cannot be read.
+    var lastBootDate: Date? { (try? unsafe interface.lastBootedAt.unsafeInvoke(on: object)).flatMap { $0 as Date? } }
 
     func supportsFeature(_ feature: String) -> Bool {
         (try? unsafe interface.supportsFeature.unsafeInvoke(on: object, feature)) ?? false

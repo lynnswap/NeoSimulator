@@ -1432,8 +1432,11 @@ Simulator.app does before it reconfigures a CarPlay screen. Disabled writes
 Simulator.app does once the screen reports it is off. Each choice goes
 through `ExternalDisplayChanges` as one change, which keeps whether this host
 started the guest's CarPlay (`startedCarPlay`) for the device across its
-sessions, and forgets it when a session disconnects from a device that is no
-longer booted, whose CarPlay ended with it. The tag 2714 is saved like the
+sessions, with the device's boot then (`SimDevice.lastBootedAt`). A session
+belongs to its boot: a restart can shut the device down before its window's
+power-off and the session's end reach the guest, and the next boot's bridge
+starts with no session, where an end would count below zero and stop the next
+start, so only a session of the current boot is ended. The tag 2714 is saved like the
 others, and a connection restores it, also after the device restarts; the
 file on the device's disk keeps the configuration for the guest.
 

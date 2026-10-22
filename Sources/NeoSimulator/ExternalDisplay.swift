@@ -265,9 +265,13 @@ final class ExternalDisplayChanges {
     /// What waits for no change to be in flight or waiting.
     private var idleWaits: [@MainActor () -> Void] = []
     /// Whether this host started the guest's CarPlay session, with its HID
-    /// service, and has not ended it. The guest's CoreSimulatorBridge counts
-    /// the sessions that hosts start, so a change ends only this one.
-    private(set) var startedCarPlay = false
+    /// service, and has not ended it, and the device's boot then. The guest's
+    /// CoreSimulatorBridge counts the sessions that hosts start, and a new
+    /// boot starts it again without any, so a change ends only this session
+    /// and only in that boot: an end without a session would count below
+    /// zero and stop the next start.
+    private var startedCarPlay = false
+    private var carPlayBoot: Date?
     /// When a change last turned the display off.
     private var lastPowerOff: ContinuousClock.Instant?
 
@@ -294,11 +298,8 @@ final class ExternalDisplayChanges {
 
     /// Stops waiting for the changes that `screen`'s session asked for, as
     /// when the session disconnects from a device that is no longer booted:
-    /// the change that waits is dropped, and the one in flight abandoned. The
-    /// guest's CarPlay session ended with the device.
+    /// the change that waits is dropped, and the one in flight abandoned.
     func abandon(changesThrough screen: any SimulatorExternalScreen) {
-        startedCarPlay = false
-        lastPowerOff = nil
         if waiting?.screen === screen { waiting = nil }
         if let inFlight, inFlight.change.screen === screen {
             abandon(inFlight, reason: "its device is no longer booted", reporting: false)
@@ -354,11 +355,15 @@ final class ExternalDisplayChanges {
     }
 
     /// Like Simulator.app before the display changes, ends the CarPlay
-    /// session that this host started: removes its HID service, then ends the
-    /// session. Their failures are reported, and the change goes on.
+    /// session that this host started in the device's current boot: removes
+    /// its HID service, then ends the session. Their failures are reported,
+    /// and the change goes on.
     private func endCarPlay(in run: Run, then next: @escaping @MainActor () -> Void) {
-        guard startedCarPlay else { return next() }
         let screen = run.change.screen
+        guard startedCarPlay, carPlayBoot == screen.deviceBootDate else {
+            startedCarPlay = false
+            return next()
+        }
         perform(.carPlayService(creating: false), in: run, { try screen.setCarPlayService(connected: false, completion: $0) }) { [self] _ in
             perform(.carPlaySession(starting: false), in: run, { screen.setCarPlayEnabled(false, completion: $0) }) { [self] ended in
                 if ended { startedCarPlay = false }
@@ -376,6 +381,7 @@ final class ExternalDisplayChanges {
         perform(.carPlaySession(starting: true), in: run, { screen.setCarPlayEnabled(true, completion: $0) }) { [self] started in
             guard started else { return next() }
             startedCarPlay = true
+            carPlayBoot = screen.deviceBootDate
             perform(.carPlayService(creating: true), in: run, { try screen.setCarPlayService(connected: true, completion: $0) }) { _ in next() }
         }
     }
