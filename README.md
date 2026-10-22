@@ -110,6 +110,10 @@ Neo currently provides:
   Switcher, Trigger Screenshot, Increase and Decrease Volume, and Authorize
   Apple Pay. The Side Button command is defined for watchOS devices, which Neo
   does not host yet;
+- I/O → Keyboard: Connect Hardware Keyboard (Shift-Command-K), Toggle Software
+  Keyboard (Command-K), and Use the Same Keyboard Language as macOS; and I/O →
+  Touch Pressure for devices with 3D Touch: Use Trackpad Force, Shallow Press
+  (Shift-Command-1), and Deep Press (Shift-Command-2);
 - Features menu controls: Touch ID and Face ID enrollment and matching or
   non-matching events, the in-call status bar, StandBy, preferred text size,
   Increase Contrast, Trigger iCloud Sync (Shift-Command-I), and Location;
@@ -178,8 +182,26 @@ Save Screen and Record Screen then use. Use the red stop control or **File →
 Stop Recording** to finish a recording. If a save fails, the error includes the
 capture's location for recovery. **Edit → Copy Screen** (Control-Command-C)
 puts a PNG of the screen, without the mask, on the Mac pasteboard.
-Toggle the software keyboard through **I/O → Keyboard → Toggle Software
-Keyboard** (Command-K).
+
+**I/O → Keyboard → Connect Hardware Keyboard** (Shift-Command-K) connects or
+disconnects the active device's hardware keyboard. As in Simulator.app, each
+device keeps its own choice (`DevicePreferences[UDID].ConnectHardwareKeyboard`),
+which is on until you turn it off. While it is off, the Mac's keyboard does not
+type into the device, and the device shows its software keyboard; while it is
+on, **Toggle Software Keyboard** (Command-K) shows or hides it. **Use the Same
+Keyboard Language as macOS** (`EnableKeyboardSync`, on by default) gives a
+device's keyboard the language of the Mac's input source when the device
+connects, and gives the active device's keyboard the new language when you
+switch input sources; like Simulator.app, turning it on waits for the next of
+these. Unlike Simulator.app, which connects the hardware keyboard again on a
+device's next connection, such as after a restart, Neo keeps the device's
+choice, and it reports a failed change.
+
+**I/O → Touch Pressure** appears for devices with 3D Touch, such as iPhone XS
+on iOS 18. **Use Trackpad Force** (`UseTrackpadForce`) passes the pressure of a
+Force Touch trackpad's click to the device; it needs such a trackpad. Shallow
+Press and Deep Press choose the pressure of a click for a watch, which Neo does
+not host yet. The settings apply to every device window, as in Simulator.app.
 
 **Features → Location** simulates the active device's location: **None**
 clears it, **Custom Location…** asks for a latitude and longitude, and the
