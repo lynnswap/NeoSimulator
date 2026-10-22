@@ -959,7 +959,10 @@ struct InputFocusTests {
         ]]
         func open() throws -> (DeviceWindowController, TestDisplay) {
             let display = TestDisplay()
-            display.naturalSize = NSSize(width: 160, height: 320)
+            // Wide enough that a window fitted to any screen keeps the unified
+            // title bar that Fit Screen measured; a narrower one would take
+            // the taller expanded style after the scale is chosen.
+            display.naturalSize = NSSize(width: 320, height: 160)
             return (try makeController(display, preferences: preferences), display)
         }
         let (first, display) = try open()
