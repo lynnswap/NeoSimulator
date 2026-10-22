@@ -98,8 +98,11 @@ struct SimulatorDisplayInterface {
     let displayClass: NativeSwiftMethod<() -> UInt16>
     /// `SimDevice.screenAdapter`, the device's `SimDeviceScreenAdapter`.
     let screenAdapter = ScreenAdapterGetter()
-    /// `SimDeviceScreenAdapter.screens`, a `[UInt32: SimDeviceScreen]` by screen ID.
-    let adapterScreens: NativeSwiftMethod<() -> NativeSwiftValue>
+    typealias AdapterEventHandler = NativeSwiftClosure<(NativeSwiftValue) -> Void>
+    /// `SimDeviceScreenAdapter.register(screenID:queue:handler:)`, whose
+    /// handler receives a `SimDeviceScreenAdapter.ScreenEvent`. Releasing the
+    /// returned registration ends it.
+    let registerAdapterEvents: NativeSwiftMethod<(UInt32?, DispatchQueue, AdapterEventHandler) -> AnyObject>
     /// Messages to CoreSimDeviceIO's screen proxies: `SimScreenProperties`
     /// and `SimScreenMode`.
     let screenMessages = ProxyMessages()
@@ -218,13 +221,9 @@ struct SimulatorDisplayInterface {
             named: "register(types:queue:handler:)",
             as: ((NativeSwiftValue, DispatchQueue, ScreenEventHandler) -> NativeSwiftValue).self,
             valueABIs: eventABIs)
-        // Swift's Dictionary is a single reference.
-        let screensByID = try runtime.resolveSwiftTypeAndWait(
-            named: "Swift.Dictionary",
-            genericArguments: [.type(try runtime.resolveSwiftTypeAndWait(named: "Swift.UInt32")), .type(deviceScreen)])
-        adapterScreens = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimDeviceScreenAdapter")
-            .resolveGetterAndWait(named: "screens", as: (() -> NativeSwiftValue).self,
-                                  valueABIs: [screensByID: try .structure(named: "Dictionary", fields: [.pointer])])
+        registerAdapterEvents = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimDeviceScreenAdapter")
+            .resolveMethodAndWait(named: "register(screenID:queue:handler:)",
+                                  as: ((UInt32?, DispatchQueue, AdapterEventHandler) -> AnyObject).self)
         // The screens and their properties are proxies, so these messages are
         // bound to each proxy class when a screen connects; their protocols
         // must declare them.
@@ -390,22 +389,37 @@ struct SimulatorDisplayInterface {
     /// Displays configures. 0 is a device's own screen and 2 is CarPlay.
     static let externalScreenType: UInt64 = 1
 
-    /// The device's external display: of the screens its screen adapter
-    /// lists, the first by ID that is connected and of the TVOut type, as
-    /// Simulator.app waits for one. Nil for a device without one.
-    func externalScreen(of device: SimulatorDevice) throws -> (identifier: UInt32, object: AnyObject)? {
+    /// Registers with the device's screen adapter for its TVOut screens, as
+    /// Simulator.app's `SDS.configureExternalDisplay(withSize:scale:carPlayProperties:)`
+    /// waits for one: with no screen ID, the adapter reports each of the
+    /// device's screens that is connected, and each that connects later, as a
+    /// `ScreenEvent` on the main queue. `found` receives each connected screen
+    /// of the TVOut type with its ID, or the error that kept an event from
+    /// being read. Releasing the returned registration ends the reports,
+    /// except those already queued. Nil for a device without an adapter.
+    func registerForExternalScreens(
+        of device: SimulatorDevice,
+        found: @escaping @MainActor (Result<(identifier: UInt32, object: AnyObject), any Error>) -> Void
+    ) throws -> AnyObject? {
         guard let adapter = try screenAdapter.adapter(of: device.object) else { return nil }
-        let value = try unsafe adapterScreens.unsafeInvoke(on: adapter)
-        guard let screens = try value.withCopy({ $0 as? [UInt32: AnyObject] }) else {
-            throw HostError.unavailable("SimulatorKit listed the device's screens as \(value.type.name)")
+        let handler = try AdapterEventHandler { event in
+            // The adapter reports on the main queue, which the event never leaves.
+            nonisolated(unsafe) let event = event
+            MainActor.assumeIsolated {
+                do {
+                    // A disconnection also carries its screen.
+                    guard let screen = try event.resolveEnumPayloadAndWait(forCase: "connected")?
+                        .withCopy({ $0 as AnyObject }) else { return }
+                    let properties = try unsafe screenProperties.unsafeInvoke(on: screen)
+                    guard try screenMessages.send("screenType", to: properties, as: UInt64.self) == Self.externalScreenType
+                    else { return }
+                    found(.success((try screenMessages.send("screenID", to: properties, as: UInt32.self), screen)))
+                } catch {
+                    found(.failure(error))
+                }
+            }
         }
-        for (identifier, screen) in screens.sorted(by: { $0.key < $1.key }) {
-            guard try unsafe self.screen.unsafeInvoke(on: screen) != nil,
-                  try screenMessages.send("screenType", to: unsafe screenProperties.unsafeInvoke(on: screen),
-                                          as: UInt64.self) == Self.externalScreenType else { continue }
-            return (identifier, screen)
-        }
-        return nil
+        return try unsafe registerAdapterEvents.unsafeInvoke(on: adapter, UInt32?.none, .main, handler)
     }
 }
 
@@ -526,8 +540,8 @@ final class SimulatorExternalScreenConnection: SimulatorExternalScreen {
     static let selectors = [
         ("SimScreen", ["setCurrentMode:pixelSize:carPlayProperties:completionQueue:completionHandler:",
                        "setPowerState:completionQueue:completionHandler:", "screenProperties"]),
-        ("SimScreenProperties", ["powerState", "screenType", "pixelSize", "currentMode", "supportedScreenModes",
-                                 "carPlayProperties"]),
+        ("SimScreenProperties", ["screenID", "powerState", "screenType", "pixelSize", "currentMode",
+                                 "supportedScreenModes", "carPlayProperties"]),
         ("SimScreenMode", ["sizeRule", "exactSize", "minSize", "maxSize", "allowedSizes", "preferredUIScale",
                            "refreshRate"]),
     ]
@@ -1382,10 +1396,19 @@ protocol SimulatorDisplay: AnyObject {
     /// Connects to the device's audio route port. `changed` runs on the main
     /// actor after each change the port reports, until it disconnects.
     func connectAudioRoutes(changed: @escaping @MainActor () -> Void) throws -> any SimulatorAudioRoutes
-    /// Connects to the device's external display, or returns nil for a
-    /// device without one. `changed` runs on the main actor after each change
-    /// of its properties, such as its power and size, until it disconnects.
-    func connectExternalScreen(changed: @escaping @MainActor () -> Void) throws -> (any SimulatorExternalScreen)?
+    /// Registers with the device's screen adapter for its external display,
+    /// as Simulator.app waits for it: the adapter reports the device's TVOut
+    /// screen once it is connected, also when it already is, on a later turn
+    /// of the main queue. For each report, `found` runs on the main actor with
+    /// a connection to the screen, whose `changed` runs on the main actor after
+    /// each change of its properties, such as its power and size, until it
+    /// disconnects; or with the error that kept the session from connecting.
+    /// Releasing the returned registration ends the reports, except those
+    /// already queued. Returns nil for a device without a screen adapter.
+    func registerForExternalScreen(
+        changed: @escaping @MainActor () -> Void,
+        found: @escaping @MainActor (Result<any SimulatorExternalScreen, any Error>) -> Void
+    ) throws -> AnyObject?
     func setChromeVisible(_ visible: Bool)
     func setActive(_ active: Bool)
     func setKeyboardEnabled(_ enabled: Bool)
@@ -1618,9 +1641,15 @@ final class SimulatorConnection: SimulatorDisplay {
     func connectAudioRoutes(changed: @escaping @MainActor () -> Void) throws -> any SimulatorAudioRoutes {
         try runtime.audio.connect(to: device, changed: changed)
     }
-    func connectExternalScreen(changed: @escaping @MainActor () -> Void) throws -> (any SimulatorExternalScreen)? {
-        try runtime.display.externalScreen(of: device).map {
-            try SimulatorExternalScreenConnection(device: device, screen: $0, runtime: runtime, changed: changed)
+    func registerForExternalScreen(
+        changed: @escaping @MainActor () -> Void,
+        found: @escaping @MainActor (Result<any SimulatorExternalScreen, any Error>) -> Void
+    ) throws -> AnyObject? {
+        try runtime.display.registerForExternalScreens(of: device) { [device, runtime] screen in
+            found(Result {
+                try SimulatorExternalScreenConnection(device: device, screen: try screen.get(), runtime: runtime,
+                                                      changed: changed)
+            })
         }
     }
     func setChromeVisible(_ visible: Bool) {

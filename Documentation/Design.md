@@ -1279,17 +1279,34 @@ choices report that the device has no external display port.
 
 Neo reaches the screen as Simulator.app does:
 
-- SimulatorKit's `SimDevice.screenAdapter` lists the device's screens by ID in
-  `SimDeviceScreenAdapter.screens`. The external display is the first, by ID,
-  whose `SimScreen` is connected and whose properties' `screenType` is TVOut,
-  as Simulator.app waits for the first TVOut screen to connect. The adapter
-  fills `screens` from an enumeration that ends asynchronously, possibly after
-  the device's own screen connects. A device's screens exist from its
-  creation, so the TVOut screen is in that enumeration or the device has none:
-  the session looks for it every 250 ms for as long as the host waits for the
-  device's own screen (10 seconds), then applies the saved choice, or a choice
-  made meanwhile. A later choice looks again; until the display is found, the
-  items check nothing.
+- SimulatorKit's `SimDevice.screenAdapter` reports the device's screens to
+  `SimDeviceScreenAdapter.register(screenID:queue:handler:)`. With a nil
+  screen ID, as Simulator.app registers in
+  `SDS.configureExternalDisplay(withSize:scale:carPlayProperties:)` and
+  `SimDeviceScreenMonitor`, the handler receives a `ScreenEvent` on the main
+  queue: `.connected` for each screen the adapter has, right after the
+  registration, and for each screen that connects later, and `.disconnected`
+  for each that disconnects. The external display is the first screen
+  reported connected whose properties' `screenType` is TVOut; like
+  Simulator.app, the session then releases its registration and follows the
+  screen's own events. Live, on the iOS 26.5 iPhone 17 Pro and iPad Pro
+  11-inch (M5) with Xcode 27.0, 27.1, and 27.2, the reports came within 10 ms
+  of the registration, in an order that varied between runs, and the session
+  had the display 30 to 80 ms after it connected, also right after a boot.
+- The adapter fills its screens from an enumeration that ends asynchronously,
+  possibly after the device's own screen connects. A device's screens exist
+  from its creation, so the TVOut screen is in that enumeration or the device
+  has none. The session holds the choices made while it waits for the report
+  for as long as the host waits for the device's own screen (10 seconds),
+  then applies the last of them, or the saved choice, which for a device
+  without the display reports that it has none. Its registration stays, so a
+  display reported later still connects and gets the saved choice; until
+  then, a choice reports at once, and the items check nothing. A device
+  without a screen adapter has no display to wait for.
+- A failure to connect to the reported display, or to register, is reported
+  and ends the wait. The next choice registers again and waits with it as at
+  connection, so a passing failure does not leave the session without the
+  display; a failure that recurs is reported again.
 - `SimDeviceScreen.screen`'s `setCurrentMode:pixelSize:carPlayProperties:completionQueue:completionHandler:`
   sets a size and turns the screen on; `setPowerState:completionQueue:completionHandler:`
   with 0 turns it off. The mode follows Simulator.app's choice, the current
@@ -1334,20 +1351,20 @@ Neo reaches the screen as Simulator.app does:
 
 `screenAdapter` is declared in SimulatorKit's extension of the Objective-C
 class `SimDevice`. ABIBridge finds such a member only through an instance, so
-it is bound to the first device that needs it and reused for the others;
-`screens`, a `Dictionary`, is passed as its single reference. The screens,
-their properties, and their modes are proxies, so `SimulatorRuntime` checks at
-startup that `SimScreen`, `SimScreenProperties`, and `SimScreenMode` declare
-the messages Neo sends, and they are bound to each proxy class when they are
-first sent. `SimDeviceScreenAdapter.register(screenID:queue:handler:)`, which
-Simulator.app uses to learn of screens, is not used: the pinned ABIBridge has
-no support for a value `Optional` such as its `UInt32?` parameter. A host
-description of `Optional<UInt32>`'s layout passes it, but ABIBridge does not
-check that description against the declaration; an indirect one registers
-without an error and never reports a screen. A device's screens exist from its
-creation, so looking in `screens` until the enumeration ends finds the
-external display, and the screen's own property reports cover the changes Neo
-needs.
+it is bound to the first device that needs it and reused for the others.
+`register(screenID:queue:handler:)` is resolved at startup; ABIBridge passes
+its `UInt32?` by value, and infers from SimulatorKit's exported enum case
+symbols that the resilient `ScreenEvent` arrives indirectly. The session reads
+the `SimDeviceScreen` of the `.connected` case, and the screen's ID and type
+from its properties. Releasing the returned `Registration` ends the reports:
+live, a released registration received nothing when the device later shut
+down and booted, while a held one received `.disconnected` and then
+`.connected` for each screen. Reports already queued on the main queue hold
+the registration and still arrive; the session ignores them once it has the
+display or has disconnected. The screens, their properties, and their modes
+are proxies, so `SimulatorRuntime` checks at startup that `SimScreen`,
+`SimScreenProperties`, and `SimScreenMode` declare the messages Neo sends, and
+they are bound to each proxy class when they are first sent.
 
 Like Simulator.app:
 
@@ -1399,8 +1416,9 @@ Like Simulator.app:
   windows that closed earlier; a display whose changes have not completed by
   then is listed in the alert that quitting shows for its failures.
 
-`DeviceSession` owns its connection to the device's external display, the
-look-up for it, and its last reported state; `DeviceWindowController` opens
+`DeviceSession` owns its connection to the device's external display, its
+registration with the screen adapter while it waits for the display, and the
+display's last reported state; `DeviceWindowController` opens
 and closes the `ExternalDisplayWindowController` from that state. The changes
 sent to the display belong to the device instead: `HostApplication` keeps one
 `ExternalDisplayChanges` for each device, which the device's successive
@@ -1422,6 +1440,13 @@ These differ from Simulator.app:
   choice on connection logs its failures. When turning the display off from
   its window fails, the window opens again. Quitting logs a failed power-off
   and lists a display that did not turn off within `TerminationTimeout`.
+- Simulator.app waits for the TVOut screen's report without a limit, and
+  `SimDeviceScreenMonitor` keeps its registration for the connection, which
+  closes a window whose screen disconnects. Neo stops holding choices after
+  10 seconds without the report, so that a device without the display reports
+  its choice as failed, and keeps its registration only until the report: a
+  screen disconnects when its device shuts down, which disconnects the
+  session.
 - A window without a saved place cascades from its device window, where
   Simulator.app cascades from its app-wide cascade point.
 - Simulator.app sends `setPowerState:0` only while the display's window is
