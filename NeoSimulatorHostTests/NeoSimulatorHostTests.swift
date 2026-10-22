@@ -3974,17 +3974,57 @@ struct InputFocusTests {
         #expect(screen.carPlaySessions == 0 && failures.count == 1)
     }
 
-    /// A controller whose CarPlay session requests time out after 50 ms.
-    private func makeSlowCarPlayController(_ screen: TestExternalScreen) throws -> DeviceWindowController {
-        try makeExternalDisplayController(
+    @Test func aCarPlayStartWithoutAnAnswerStopsSessionRequestsUntilTheDeviceRestarts() async throws {
+        let preferences = MemoryPreferences()
+        let changes = ExternalDisplayChanges(completionTimeout: .milliseconds(50), carPlayReconnectionDelay: .zero)
+        let screen = TestExternalScreen()
+        let (controller, _) = try makeExternalDisplayController(screen, features: Self.carPlayFeatures,
+                                                                preferences: preferences, externalDisplayChanges: changes)
+        var failures: [String] = []
+        func choose(_ mode: ExternalDisplayMode, on controller: DeviceWindowController,
+                    screen: TestExternalScreen) -> [String] {
+            let count = screen.requests.count
+            controller.session.chooseExternalDisplay(mode) { failures.append($0.localizedDescription) }
+            return Array(screen.requests.dropFirst(count))
+        }
+        // The guest does not answer the start before the change stops
+        // waiting, which leaves the session unknown and is reported once.
+        screen.defersCarPlaySessions = true
+        #expect(choose(.carPlay, on: controller, screen: screen)
+            == ["save carplay", "mode 800x480@2 carplay", "start carplay"])
+        for _ in 0..<100 where failures.isEmpty { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(failures == [
+            "Could not start CarPlay on Test iPhone: The device did not answer, so NeoSimulator leaves its CarPlay session as it is until the device restarts.",
+        ])
+        // Its late answer changes nothing.
+        screen.deliverCarPlaySessions()
+        screen.defersCarPlaySessions = false
+        // Until the device restarts, no session request is sent, while the
+        // screen and the HID service still follow the choices.
+        #expect(choose(.disabled, on: controller, screen: screen) == ["save off", "off"])
+        #expect(choose(.carPlay, on: controller, screen: screen)
+            == ["save carplay", "mode 800x480@2 carplay", "connect service"])
+        #expect(choose(.size1920x1080, on: controller, screen: screen)
+            == ["save off", "remove service", "mode 1920x1080@1"])
+        #expect(failures.count == 1)
+        controller.invalidate()
+        // The next boot, which restores the size, starts CarPlay again.
+        let rebooted = TestExternalScreen()
+        rebooted.deviceBootDate = Date(timeIntervalSinceReferenceDate: 1)
+        let (next, _) = try makeExternalDisplayController(rebooted, features: Self.carPlayFeatures,
+                                                          preferences: preferences, externalDisplayChanges: changes)
+        defer { next.invalidate() }
+        #expect(choose(.carPlay, on: next, screen: rebooted)
+            == ["save carplay", "off", "mode 800x480@2 carplay", "start carplay", "connect service"])
+        #expect(rebooted.carPlaySessions == 1 && failures.count == 1)
+    }
+
+    @Test func aCarPlayEndWithoutAnAnswerStopsSessionRequestsToo() async throws {
+        let screen = TestExternalScreen()
+        let (controller, _) = try makeExternalDisplayController(
             screen, features: Self.carPlayFeatures,
             externalDisplayChanges: ExternalDisplayChanges(completionTimeout: .milliseconds(50),
-                                                           carPlayReconnectionDelay: .zero)).0
-    }
-
-    @Test func aCarPlayStartWithoutAnAnswerIsNotEnded() async throws {
-        let screen = TestExternalScreen()
-        let controller = try makeSlowCarPlayController(screen)
+                                                           carPlayReconnectionDelay: .zero))
         defer { controller.invalidate() }
         var failures: [String] = []
         func choose(_ mode: ExternalDisplayMode) -> [String] {
@@ -3992,90 +4032,58 @@ struct InputFocusTests {
             controller.session.chooseExternalDisplay(mode) { failures.append($0.localizedDescription) }
             return Array(screen.requests.dropFirst(count))
         }
-        // The guest does not answer the start before the change stops waiting.
-        screen.defersCarPlaySessions = true
-        #expect(choose(.carPlay) == ["save carplay", "mode 800x480@2 carplay", "start carplay"])
-        for _ in 0..<100 where failures.isEmpty { try await Task.sleep(for: .milliseconds(20)) }
-        #expect(failures == ["Could not start CarPlay on Test iPhone: CoreSimulator did not complete the change."])
-        // Disabled ends no session that may never have started.
-        #expect(choose(.disabled) == ["save off", "off"])
-        // The start fails after all, and the guest has no session; the next
-        // CarPlay starts one as usual.
-        screen.carPlayErrors = ["start carplay": HostError.operation("no CarPlay")]
-        screen.deliverCarPlaySessions()
-        screen.carPlayErrors = [:]
-        screen.defersCarPlaySessions = false
-        #expect(screen.carPlaySessions == 0)
-        #expect(choose(.carPlay) == ["save carplay", "mode 800x480@2 carplay", "start carplay", "connect service"])
-        #expect(screen.carPlaySessions == 1 && failures.count == 1)
-    }
-
-    @Test func aCarPlayStartThatSucceedsLateIsEndedByALaterChange() async throws {
-        let screen = TestExternalScreen()
-        let controller = try makeSlowCarPlayController(screen)
-        defer { controller.invalidate() }
-        var failures: [String] = []
-        func choose(_ mode: ExternalDisplayMode) -> [String] {
-            let count = screen.requests.count
-            controller.session.chooseExternalDisplay(mode) { failures.append($0.localizedDescription) }
-            return Array(screen.requests.dropFirst(count))
-        }
-        func timeOut() async throws {
-            let count = failures.count
-            for _ in 0..<100 where failures.count == count { try await Task.sleep(for: .milliseconds(20)) }
-        }
-        // CarPlay chosen again while its start has no answer keeps that start
-        // instead of another, and the session it gives ends with Disabled.
-        screen.defersCarPlaySessions = true
         _ = choose(.carPlay)
-        try await timeOut()
-        #expect(choose(.carPlay) == ["save carplay", "mode 800x480@2 carplay", "connect service"])
-        screen.deliverCarPlaySessions()
         #expect(screen.carPlaySessions == 1)
-        screen.defersCarPlaySessions = false
+        screen.defersCarPlaySessions = true
         #expect(choose(.disabled) == ["save off", "off", "remove service", "stop carplay"])
-        #expect(screen.carPlaySessions == 0)
-        // A start that succeeds after Disabled already ran leaves a session,
-        // which the next change that ends CarPlay ends.
-        screen.defersCarPlaySessions = true
-        _ = choose(.carPlay)
-        try await timeOut()
-        #expect(choose(.disabled) == ["save off", "off"])
+        for _ in 0..<100 where failures.isEmpty { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(failures == [
+            "Could not stop CarPlay on Test iPhone: The device did not answer, so NeoSimulator leaves its CarPlay session as it is until the device restarts.",
+        ])
+        // The end succeeds late, which changes nothing: CarPlay chosen again
+        // starts no session beside one that may still run, and Disabled ends
+        // none that may have ended.
         screen.deliverCarPlaySessions()
-        #expect(screen.carPlaySessions == 1)
         screen.defersCarPlaySessions = false
-        #expect(choose(.size1920x1080) == ["save off", "remove service", "stop carplay", "mode 1920x1080@1"])
-        #expect(screen.carPlaySessions == 0 && failures.count == 2)
+        #expect(screen.carPlaySessions == 0)
+        #expect(choose(.carPlay) == ["save carplay", "mode 800x480@2 carplay", "connect service"])
+        #expect(choose(.disabled) == ["save off", "off", "remove service"])
+        #expect(screen.carPlaySessions == 0 && failures.count == 1)
     }
 
-    @Test func aCarPlaySessionThatEndsAfterItsChangeTimedOutIsNotEndedAgain() async throws {
-        let screen = TestExternalScreen()
-        let controller = try makeSlowCarPlayController(screen)
-        defer { controller.invalidate() }
-        var failures: [String] = []
-        func choose(_ mode: ExternalDisplayMode) -> [String] {
-            let count = screen.requests.count
-            controller.session.chooseExternalDisplay(mode) { failures.append($0.localizedDescription) }
-            return Array(screen.requests.dropFirst(count))
-        }
-        for late in [true, false] {
-            _ = choose(.carPlay)
-            #expect(screen.carPlaySessions == 1)
-            // Disabled's end of the session is answered after the change
-            // stopped waiting for it.
-            screen.defersCarPlaySessions = true
-            #expect(choose(.disabled) == ["save off", "off", "remove service", "stop carplay"])
-            let reported = failures.count
-            for _ in 0..<100 where failures.count == reported { try await Task.sleep(for: .milliseconds(20)) }
-            #expect(failures.last == "Could not stop CarPlay on Test iPhone: CoreSimulator did not complete the change.")
-            // Whether the answer comes before the next choice or after it,
-            // that choice ends no session again.
-            if late { screen.deliverCarPlaySessions() }
-            screen.defersCarPlaySessions = false
-            #expect(choose(.size1920x1080) == ["save off", "mode 1920x1080@1"])
-            screen.deliverCarPlaySessions()
-            #expect(screen.carPlaySessions == 0)
-        }
+    @Test func carPlaySessionStateMovesOnlyOnAnswersOfItsBoot() {
+        let first = Date(timeIntervalSinceReferenceDate: 0)
+        let second = Date(timeIntervalSinceReferenceDate: 1)
+        var state = CarPlaySessionState()
+        #expect(state.session(in: first) == .none && !state.hasService(in: first))
+        // A start that fails leaves none; one that succeeds starts it, with
+        // its HID service. An end that fails leaves it started.
+        state.willSend(in: first)
+        state.sessionAnswered(starting: true, succeeded: false, in: first)
+        #expect(state.session(in: first) == .none)
+        state.sessionAnswered(starting: true, succeeded: true, in: first)
+        state.serviceAnswered(created: true, succeeded: true, in: first)
+        state.sessionAnswered(starting: false, succeeded: false, in: first)
+        #expect(state.session(in: first) == .started && state.hasService(in: first))
+        // A new boot has no session or service, and answers from the earlier
+        // boot, for the session or the service, change nothing in it.
+        #expect(state.session(in: second) == .none && !state.hasService(in: second))
+        state.willSend(in: second)
+        state.sessionAnswered(starting: true, succeeded: true, in: second)
+        state.serviceAnswered(created: true, succeeded: true, in: second)
+        state.sessionAnswered(starting: false, succeeded: true, in: first)
+        state.serviceAnswered(created: false, succeeded: true, in: first)
+        state.timedOut(in: first)
+        #expect(state.session(in: second) == .started && state.hasService(in: second))
+        // An answer that did not come in time leaves the session unknown,
+        // which later answers do not change, until another boot.
+        state.timedOut(in: second)
+        state.sessionAnswered(starting: false, succeeded: true, in: second)
+        #expect(state.session(in: second) == .unknown && state.hasService(in: second))
+        state.serviceAnswered(created: false, succeeded: true, in: second)
+        #expect(!state.hasService(in: second))
+        let third = Date(timeIntervalSinceReferenceDate: 2)
+        #expect(state.session(in: third) == .none)
     }
 
     @Test func carPlayFailuresAreReportedTogether() throws {

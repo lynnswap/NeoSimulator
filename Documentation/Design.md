@@ -1432,18 +1432,23 @@ Simulator.app does before it reconfigures a CarPlay screen. Disabled writes
 Simulator.app does once the screen reports it is off. Each choice goes
 through `ExternalDisplayChanges` as one change. An end without a session
 would count below zero in the bridge, which keeps that count and refuses the
-next start, so the queue ends only sessions whose start it saw succeed in the
-device's current boot (`CarPlaySessions`, by `SimDevice.lastBootedAt`). Each
-start's and end's own answer updates that count, also an answer that comes
-after its change stopped waiting. A start that has not been answered may
-still fail, so it is never ended on speculation; if it succeeds late, the
-session stays until the next change that ends CarPlay. Ending CarPlay ends
-the confirmed sessions one at a time and stops at one that does not end,
-which stays counted for the next change. CarPlay starts no session while one
-of this host's sessions or starts remains: it keeps that one, recreating the
-HID service. A session also belongs to its boot, because a restart can shut
-the device down before its window's power-off and the session's end reach
-the guest, and the next boot's bridge starts with none. The tag 2714 is saved
+next start, so the queue keeps this host's session in the device's current
+boot as a state (`CarPlaySessionState`, by `SimDevice.lastBootedAt`): none,
+started, or unknown. Session requests go out only from the queue, one at a
+time, and the change waits for each answer before it decides the next step,
+so no decision is made while a request has no answer. A start goes out only
+with none and an end only for a started session; a start that succeeds makes
+it started, an end that succeeds makes it none, and a failure leaves it as it
+was: CarPlay chosen again then keeps a session that did not end, recreating
+the HID service, and a later change tries the end again. A request without an
+answer within the change's 10 seconds leaves the session unknown for the rest
+of the boot, which is reported once: Neo then sends no session request until
+the device restarts, while the screen and the HID service still follow the
+choices, and a late answer changes nothing. A new boot starts with none, and
+answers from an earlier boot, for the session or the HID service, change
+nothing, because a restart can shut the device down before its window's
+power-off and the session's end reach the guest, and the next boot's bridge
+starts with no session. The tag 2714 is saved
 like the others, and a connection restores it, also after the device
 restarts; the file on the device's disk keeps the configuration for the
 guest.
@@ -1466,14 +1471,13 @@ These differ from Simulator.app:
 - A session that did not start gets no HID service; Simulator.app creates it
   either way. A step that fails does not stop the others, except that a
   screen that did not change ends the change.
-- Neo ends only the sessions it saw start, as `CarPlaySessions` counts them,
-  and keeps a session that did not end, or a start without an answer,
-  instead of starting another. A start that succeeds only after its change
-  stopped waiting leaves its session until the next change that ends CarPlay.
-  Simulator.app ends a session whenever the screen it reconfigures or
-  disconnects is a CarPlay screen, which can end another host's session, and
-  starts one after each CarPlay screen, also beside a session it could not
-  end.
+- Neo ends only a session it saw start, and keeps one that did not end
+  instead of starting another. After a start or an end that the device did
+  not answer in time, Neo leaves the session alone until the device
+  restarts, and says so. Simulator.app tracks no session: it ends one
+  whenever the screen it reconfigures or disconnects is a CarPlay screen,
+  which can end another host's session, and starts one after each CarPlay
+  screen, also beside a session it could not end.
 - Closing the device window, quitting, and restarting, which turn the display
   off, also end the CarPlay that this host started, keeping the saved choice
   and the file. Simulator.app's disconnection powers the screen off without
