@@ -124,9 +124,9 @@ Neo currently provides:
 - the hardware inputs the active device supports: Side Button, Action Button,
   Siri, App Switcher, Trigger Screenshot, Increase and Decrease Volume, and
   Authorize Apple Pay;
-- for watches, Device → Gestures (Double Tap, and Wrist Flick from watchOS 12),
-  and the Digital Crown, which turns when you scroll with the mouse wheel or
-  trackpad over the watch's screen;
+- for watches, Device → Gestures (Double Tap, and Wrist Flick on watchOS 12 or
+  later), and the Digital Crown, which turns when you scroll with the mouse
+  wheel or trackpad over the watch's screen;
 - I/O → Keyboard: Connect Hardware Keyboard (Shift-Command-K), Toggle Software
   Keyboard (Command-K), and Use the Same Keyboard Language as macOS; and I/O →
   Touch Pressure for devices with 3D Touch: Use Trackpad Force, Shallow Press
