@@ -29,6 +29,10 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     /// The display scale the device's window last closed at in the current
     /// arrangement of screens.
     private let savedScale: CGFloat?
+    /// How a new window is placed until the first orientation reading, and
+    /// the frame it has while only that placement and the guest's rotations
+    /// have changed it.
+    private var initialPlacement: (place: ((NSWindow) -> Void)?, frame: NSRect)?
     /// Whether the window is in full screen or moving into or out of it,
     /// where Simulator.app's scale commands are unavailable and the bezel
     /// shows no resize cursors.
@@ -143,7 +147,8 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         showWindow(nil)
         window.makeKeyAndOrderFront(nil)
         moveWindowOntoScreen()
-        readInitialOrientation(placing: (place: place, frame: window.frame))
+        initialPlacement = (place, window.frame)
+        readInitialOrientation()
     }
 
     required init?(coder: NSCoder) { nil }
@@ -211,22 +216,28 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// Reads the orientation once for each connection and turns the window
-    /// to it. A new window that still has `placement.frame` then takes the
-    /// scale it opens at in that shape and is placed again with
-    /// `placement.place`.
-    private func readInitialOrientation(placing placement: (place: ((NSWindow) -> Void)?, frame: NSRect)? = nil) {
-        guard !didReadOrientation, session.capabilities.controlsOrientation else { return }
+    /// to it. A new window that still has its `initialPlacement` frame then
+    /// takes the scale it opens at in that shape and is placed again.
+    private func readInitialOrientation() {
+        guard !didReadOrientation, session.capabilities.controlsOrientation else {
+            initialPlacement = nil
+            return
+        }
         didReadOrientation = true
         session.run({ [weak self] in
             guard let self else { return }
+            defer { self.initialPlacement = nil }
             try await self.session.readOrientation()
-            if let placement, self.window?.frame == placement.frame {
+            if let placement = self.initialPlacement, self.window?.frame == placement.frame {
                 self.session.display.setRenderScale(self.initialScale)
                 self.didRotate(placing: placement.place)
             } else {
                 self.didRotate()
             }
-        }, failure: { hostLog($0.localizedDescription) })
+        }, failure: { [weak self] in
+            self?.initialPlacement = nil
+            hostLog($0.localizedDescription)
+        })
     }
 
     // MARK: Commands
@@ -538,7 +549,11 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     private func displayPropertiesChanged() {
         let enabled = UserDefaults.standard.bool(forKey: HostPreferences.rotateWindowWhenSignaledByGuest)
         guard !closed, session.followGuestInterfaceOrientation(enabled: enabled) else { return }
+        // A guest rotation before the first orientation reading does not
+        // count as a change to the new window's placement.
+        let untouched = initialPlacement.map { window?.frame == $0.frame } ?? false
         didRotate()
+        if untouched, let frame = window?.frame { initialPlacement?.frame = frame }
     }
 
     /// Like Simulator.app, the rotated display keeps its scale, and the

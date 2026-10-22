@@ -923,6 +923,26 @@ struct InputFocusTests {
         let rescaledWindow = try #require(rescaled.window)
         #expect(rescaledWindow.contentLayoutRect.width == landscape.width * 0.5)
         #expect(abs(rescaledWindow.frame.midX - center.x) < 1 && abs(rescaledWindow.frame.midY - center.y) < 1)
+        // A guest rotation before the reading, with Rotate Device
+        // Automatically on, is not a change to the window's placement.
+        let key = HostPreferences.rotateWindowWhenSignaledByGuest
+        let follows = UserDefaults.standard.object(forKey: key)
+        defer { UserDefaults.standard.set(follows, forKey: key) }
+        UserDefaults.standard.set(true, forKey: key)
+        preferences.setWindowGeometry(center: center, scale: 0.5, forDevice: "E", screens: screens)
+        let guestDisplay = TestDisplay()
+        guestDisplay.naturalSize = tall
+        guestDisplay.onRotation = { [unowned guestDisplay] in guestDisplay.naturalSize = $0 == 0 ? tall : landscape }
+        let guestRotated = try makeController(guestDisplay, devicectl: devicectl, device: "E", preferences: preferences)
+        defer { guestRotated.invalidate() }
+        guestRotated.showNewWindow(cascadingFrom: &cascade)
+        guestDisplay.guestInterfaceAngle = 90
+        guestDisplay.onPropertiesChange?()
+        #expect(guestDisplay.rotations == [90] && guestRotated.session.isBusy)
+        try await readOrientation(guestRotated)
+        #expect(guestDisplay.renderScale == 0.5)
+        let guestWindow = try #require(guestRotated.window)
+        #expect(abs(guestWindow.frame.midX - center.x) < 1 && abs(guestWindow.frame.midY - center.y) < 1)
     }
 
     @Test func fullScreenFillsTheScreenAndRestoresTheWindowAfter() throws {

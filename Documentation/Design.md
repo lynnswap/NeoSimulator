@@ -601,7 +601,8 @@ Screen's) and is placed again: centered at the saved center, or with
 `center()` for the first cascading window, then moved back inside the visible
 frame. A window that cascades from another keeps its top-left corner. A window
 moved or resized before the reading keeps its scale and its top-left corner,
-as after any rotation.
+as after any rotation; a rotation that follows the guest with Rotate Device
+Automatically does not count as such a change.
 
 These differ from Simulator.app:
 
