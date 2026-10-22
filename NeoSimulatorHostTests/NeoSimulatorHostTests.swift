@@ -1726,11 +1726,13 @@ struct InputFocusTests {
         try drag(window, from: try point(of: .lowerLeft, in: display), by: NSSize(width: -30, height: -55)) {
             #expect(display.isResizing)
         }
-        // A press outside the display, in the gap below the header, moves nothing.
+        // Like Simulator.app, where no view takes a press outside the display,
+        // a press in the gap below the header that reaches the window moves it.
         let content = try #require(window.contentView)
-        let gap = content.convert(NSPoint(x: view.frame.midX, y: view.frame.maxY + 6), to: nil)
+        let gap = content.convert(NSPoint(
+            x: view.frame.midX, y: view.frame.maxY + WindowScale.displayGap(bezelPadding: display.chromePadding) / 2), to: nil)
         #expect(try press(window, at: gap) === content)
-        #expect(drags.count == 2)
+        #expect(drags.map(\.event.locationInWindow) == [edge, nextToScreen, gap])
     }
 
     @Test func allowsMoveByDragOnWindowChromeTurnsMovingByTheBezelOff() throws {

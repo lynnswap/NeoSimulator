@@ -872,11 +872,10 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: Bezel dragging
 
-    /// Handles the presses on the bezel that SimulatorKit's views leave to
-    /// the window, as Simulator.app's `DeviceWindow` does: a drag on a corner
-    /// of the bezel, in `SimDisplayView.typedResizeRects`, resizes the
-    /// window, and a press elsewhere on the bezel moves it. Returns whether
-    /// `event` belongs to such a drag.
+    /// Handles the presses that no view in the window takes, as
+    /// Simulator.app's `DeviceWindow` does: a drag on a corner of the bezel,
+    /// in `SimDisplayView.typedResizeRects`, resizes the window, and any
+    /// other press moves it. Returns whether `event` belongs to such a drag.
     private func handleBezelDrag(_ event: NSEvent) -> Bool {
         switch event.type {
         case .leftMouseDown: return beginBezelResize(with: event) || moveWindow(with: event)
@@ -887,17 +886,18 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         return true
     }
 
-    /// Moves the window with a press on the display outside the bezel's
+    /// Moves the window with a press that reaches it outside the bezel's
     /// corners while `AllowsMoveByDragOnWindowChrome` is on, outside full
-    /// screen. SimulatorKit passes the window only presses on the bezel: its
-    /// digitizer, which also covers the bezel around the screen, passes on a
-    /// press there once the pointer moves away from the screen, and keeps the
-    /// presses on the screen, as the bezel's buttons keep theirs. A press on
-    /// the window outside the display, such as below the header, moves nothing.
+    /// screen. On the display, SimulatorKit passes the window only presses on
+    /// the bezel: its digitizer, which also covers the bezel around the
+    /// screen, passes on a press there once the pointer moves away from the
+    /// screen, and keeps the presses on the screen, as the bezel's buttons
+    /// keep theirs. Like Simulator.app, a press that AppKit gives the window
+    /// outside the display, such as in the gap below the header, moves it
+    /// too; the window server gives a press on the gap's transparent pixels
+    /// to the window behind.
     private func moveWindow(with event: NSEvent) -> Bool {
         guard !closed, !isFullScreen, preferences.movesWindowByDraggingBezel, let window else { return false }
-        let display = session.display.view
-        guard display.bounds.contains(display.convert(event.locationInWindow, from: nil)) else { return false }
         performWindowDrag(window, event)
         return true
     }
