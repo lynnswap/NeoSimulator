@@ -300,7 +300,8 @@ shutdown on close abandons a restart in progress. Launch follows
 CoreSimulator's order, or the first device.
 
 The header and window shell follow the owner behavior found in Simulator.app:
-DarkAqua, transparent titlebar, native traffic lights, device chrome, render
+DarkAqua, a title bar that AppKit draws with the toolbar style Simulator.app
+chooses for the window's width, native traffic lights, device chrome, render
 scaling during resize, and shadow invalidation. Simulator.app itself is an
 analysis source only and is not a runtime dependency.
 
@@ -480,7 +481,8 @@ edge; the device's screen does not change.
 - Pixel Accurate is `SimDeviceScreen.scale` over the window screen's
   `backingScaleFactor`, each 1 when unknown.
 - Fit Screen asks `SimDisplayView.scale(for:)` for the visible frame less the
-  window header, the gap above the display, and 20 points, so it can exceed 1.
+  window's title bar at its current toolbar style, the gap above the display,
+  and 20 points, so it can exceed 1.
 
 Fit Screen then centers the window on its screen, and the fixed scales move it
 back inside the visible frame. The commands need a connected display outside
@@ -489,9 +491,9 @@ full screen, including the full screen transitions. Physical Size also needs
 at least the device's minimum (0.4 for an iPhone and 0.25 for an iPad on its
 own screen, 0.6 for a watch, otherwise the scale at which the display fits 240
 by 240 points). Like Simulator.app, a display without a bezel must also fit
-the visible frame below the window's header, leaving out the gap above the
-display, while a window with a bezel may extend past the screen. The bezel is
-the display's `SimDisplayChromeView.chrome`, which NeoSimulator reads through
+the visible frame below the window's title bar, while a window with a bezel
+may extend past the screen. The bezel is the display's
+`SimDisplayChromeView.chrome`, which NeoSimulator reads through
 ABIBridge with its `images.padding`. It is nil while Show Device Bezels is
 off, because SimulatorKit then clears the chrome view's device type, and for
 a device type whose chrome SimulatorKit cannot load. A fixed scale is checked while `renderScale` is within 0.001 of it, also
@@ -535,18 +537,62 @@ window does:
   display's scale stays below the top of the visible frame. Otherwise AppKit
   constrains the frame. This applies to programmatic frame changes and to
   moving the window.
-- The window's header is the unified toolbar's title bar area, 52 points
-  high, as is the title bar of Simulator.app's titled window with its
-  unified toolbar. Below it, the window keeps Simulator.app's gap above the
-  display: 10 points less the top padding of the bezel's images, so 10
-  points without a bezel and for the iPhone 17 Pro's bezel, and 1 point for
-  the iPad bezels, whose images have 9 points of top padding. The gap does
+- The window's header is its title bar, which holds the toolbar. Like
+  Simulator.app's geometry update, each size change gives the toolbar a
+  style for the display's width: the compact unified style when
+  `UseCompactTitleBar` is on; otherwise the unified style while `UseMonobar`
+  is on and the display is at least as wide as the toolbar needs, and the
+  expanded style below that. The toolbar needs the width of each of its
+  buttons in Simulator.app's toolbar nib plus 4 points (Home 31, Save Screen
+  32, and Rotate Right 25 points), the wider of the window's title in the
+  headline font and its subtitle in the subheadline font, and 130 points:
+  317.3 points for the iPhone 17 Pro and 351.4 for the iPad mini (A17 Pro),
+  and 29 points less outside the default device set, where the toolbar has
+  no Rotate Right. The title bar is 52 points high with the unified style, 76 with the
+  expanded one, and 40 with the compact one, and the window's height follows
+  it. As in Simulator.app's toolbar nibs, the buttons sit between two
+  flexible spaces, and the last one is hidden unless the style is expanded,
+  so that the buttons follow the title in a unified title bar and are
+  centered in their own row in an expanded one. Like Simulator.app's, the
+  toolbar's minimum inline title width is 0, so a unified title bar
+  truncates the title before it moves buttons into the overflow menu, and
+  all the buttons stay in the title bar from the threshold up. Both
+  preferences are
+  registered as in Simulator.app, `UseMonobar` on and `UseCompactTitleBar`
+  off, in NeoSimulator's own defaults, and each size change reads them
+  again.
+- As in Simulator.app, a recording adds no item to the toolbar. While it
+  runs, the Save Screen button shows `stop.circle`, untinted, with the
+  tooltip and image description Stop Recording, and a click stops the
+  recording; the item keeps its Save Screen label. The button is Save Screen
+  again as soon as the recording stops, before the movie is finished, and
+  when the recording ends on its own or fails. The toolbar keeps its items,
+  so the threshold does not change. AppKit sizes the button to its image, as
+  it does Simulator.app's, so the button is narrower while it shows
+  `stop.circle`.
+- A resize the window does not make itself, such as a manual one, also gives
+  the toolbar the style for the new width outside full screen and keeps the
+  window's height below the title bar, as Simulator.app's
+  `windowDidResize:` does.
+- Below the title bar, the window keeps Simulator.app's gap above the
+  display: with a bezel, 10 points less the top padding of the bezel's
+  images, so 10 points for the iPhone 17 Pro's bezel and 1 point for the
+  iPad bezels, whose images have 9 points of top padding; without a bezel,
+  none, as Simulator.app's chrome refresh turns the gap off. The gap does
   not change with the display's scale. While the window has the display's
   size, the display fills the window below the gap, as Simulator.app's
   constraints pin its display view; SimulatorKit keeps the device at the
   view's lower-left corner when the view is a fraction of a point larger. In
   full screen and after a manual resize, the display keeps its own size,
   centered below the gap.
+- As in Simulator.app's window, AppKit draws the title bar, which is not
+  transparent. Around a bezel, the window is clear, and the title bar's
+  lower corners are rounded with the window's corner radius, which follows
+  the toolbar's style (26 points unified, 16 expanded, and 20 compact on
+  macOS 26), so that the header floats above the bezel. Without a bezel, the
+  window is black, which shows wherever the display leaves it uncovered,
+  and the title bar is square below; so it is in full screen, which keeps
+  the window's color until it leaves full screen.
 - Each size change takes the display's size plus the header and the gap,
   keeps the window's bottom-left corner, unless a drag on the bezel's corners
   (below) moves it, takes the smallest integral frame around that
@@ -563,6 +609,27 @@ window does:
   its screen's visible frame the same way, as Simulator.app's
   `screenParametersChanged` does for every device window. No scale is
   reapplied.
+
+The title bar uses two private AppKit members, as Simulator.app does,
+because no public API gives the same result on macOS 26:
+
+- `NSToolbar.minimumInlineWindowTitleWidth`, which NeoSimulator sets to 0
+  through key-value coding. With AppKit's default, a unified title bar
+  keeps the whole title and moves buttons into the overflow menu: an
+  iPhone's window 320 points wide shows none of its three buttons, and one
+  402 points wide only Home. `NSToolbarItem.visibilityPriority` does not
+  change that.
+- `NSWindow._cornerRadius`, which NeoSimulator calls, as a method that
+  returns a `CGFloat`, each time it rounds the title bar's corners. No public
+  API reports a window's corner radius before macOS 27's
+  `NSView.cornerConfiguration`.
+
+NeoSimulator uses each only when the toolbar or the window responds to its
+selector. Without the first, the title bar keeps AppKit's minimum title
+width, so near the threshold buttons move into the overflow menu; without
+the second, the corners take the radius macOS 26 gives each toolbar style.
+Both were checked on macOS 26.6.2 (25G83) and appear in AppKit's class
+dumps of macOS 26.2 through 26.6.2.
 
 Like Simulator.app's `DeviceWindow`, a window with a bezel resizes by
 dragging the bezel's corners:
@@ -688,14 +755,27 @@ These differ from Simulator.app:
   display, as in Simulator.app, also when that is narrower.
 - Simulator.app's minimum for a tvOS or visionOS display with a bezel, 240
   points over the screen's pixel height, is not reproduced.
-- Simulator.app's geometry update switches its toolbar to the expanded
-  style, whose title bar is 76 points instead of 52, while the display is
-  narrower than its toolbar's buttons at their nib widths plus 4 points
-  each, the wider of the title and subtitle, and 130 points: about 317
-  points for an iPhone 17 Pro and 413 for an iPad mini (A17 Pro).
-  NeoSimulator keeps the unified toolbar, so a window that narrow is 24
-  points shorter than Simulator.app's, and Fit Screen chosen in it gives a
-  larger scale, where Simulator.app subtracts the taller title bar.
+- Simulator.app measures Fit Screen, and a new window's scale, with the
+  title bar the window has before the scale is applied. When that scale makes
+  the window narrow enough to take the taller expanded title bar, the window
+  ends up taller than the screen there. NeoSimulator measures again with the
+  expanded title bar and takes the smaller scale, so the window fits.
+- Without a bezel, Simulator.app checks whether a fixed scale fits the screen
+  with the title bar the window has. NeoSimulator checks it with the title
+  bar the window would take at that scale, the height it last laid out for
+  that style (macOS 26's 52, 76, or 40 points until then), so a scale that
+  changes the style is neither enabled when it would not fit nor disabled
+  when it would.
+- The toolbar style's threshold counts the buttons NeoSimulator's toolbar
+  has. Simulator.app's iPad toolbar also has Keyboard Capture and Pointer
+  Capture, 27 points each, which NeoSimulator does not host, so an iPad's
+  window keeps the unified style down to a display 62 points narrower than
+  in Simulator.app: 351.4 points instead of 413.4 for the iPad mini (A17
+  Pro).
+- Simulator.app's Save Screen button already shows `stop.circle` while
+  Record Screen… asks where to save, and, when the recorder cannot start,
+  until the error is dismissed. NeoSimulator's shows it only while a
+  recording runs.
 - Simulator.app animates the window into and out of full screen itself.
   NeoSimulator uses AppKit's transition, so the window is resizable in full
   screen.

@@ -55,37 +55,63 @@ struct InputFocusTests {
         #expect(commands.allSatisfy { !$0.isEnabled })
     }
 
-    @Test func toolbarShowsRecordingStopAndHidesItAfterCompletion() async throws {
+    @Test func theSaveScreenButtonStopsARecordingAsInSimulatorApp() async throws {
+        // The first recording runs until it is stopped and then takes half a
+        // second to finish; the second fails.
+        var recordings = 0
         let controller = try makeController(TestDisplay()) { _, _ in
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/bin/sh")
-            process.arguments = ["-c", """
-                trap 'exit 0' INT
-                echo 'Recording started' >&2
-                while :; do sleep 0.05; done
-                """]
-            return process
+            recordings += 1
+            return Self.recorder(then: recordings == 1 ? "trap 'sleep 0.5; exit 0' INT; while :; do sleep 0.05; done"
+                                                       : "sleep 0.3; exit 1")
         }
         defer { controller.invalidate() }
         let toolbar = try #require(controller.window?.toolbar)
-        let item = try #require(toolbar.items.first { $0.itemIdentifier.rawValue == "stopRecording" })
-        #expect(item.isHidden)
+        let items = toolbar.items.map(\.itemIdentifier.rawValue)
+        #expect(items == ["NSToolbarFlexibleSpaceItem", "home", "saveScreen", "rotateRight", "NSToolbarFlexibleSpaceItem"])
+        let item = try #require(toolbar.items.first { $0.itemIdentifier.rawValue == "saveScreen" })
+        func shows(_ symbol: String, _ label: String) -> Bool {
+            item.toolTip == label && item.image?.accessibilityDescription == label && item.image?.tiffRepresentation
+                == NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?.tiffRepresentation
+        }
+        func wait(until condition: () -> Bool) async throws {
+            for _ in 0..<200 where !condition() { try await Task.sleep(for: .milliseconds(10)) }
+        }
+        #expect(shows("camera.on.rectangle", "Save Screen"))
 
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         try controller.session.startRecording(to: .file(directory.appendingPathComponent("Recording.mov")), mask: .ignored)
         let recording = try #require(controller.session.recording)
-        for _ in 0..<100 where item.isHidden { try await Task.sleep(for: .milliseconds(10)) }
-        #expect(!item.isHidden)
+        // Like Simulator.app's, the Save Screen button shows `stop.circle`,
+        // untinted, and stops the recording; the toolbar adds no item, and the
+        // item keeps its label.
+        try await wait { shows("stop.circle", "Stop Recording") }
+        #expect(shows("stop.circle", "Stop Recording"))
+        #expect(item.label == "Save Screen")
         #expect(item.isEnabled)
+        #expect(toolbar.items.map(\.itemIdentifier.rawValue) == items)
         #expect(NSApp.sendAction(try #require(item.action), to: item.target, from: item))
-        for _ in 0..<100 where item.isEnabled { try await Task.sleep(for: .milliseconds(10)) }
-        #expect(recording.isStopping)
-        #expect(!item.isEnabled)
+        try #require(recording.isStopping)
+        // It is Save Screen again as soon as the recording stops, while the
+        // movie is still being finished.
+        try await wait { shows("camera.on.rectangle", "Save Screen") }
+        #expect(shows("camera.on.rectangle", "Save Screen"))
+        #expect(controller.session.recording === recording)
+        #expect(item.isEnabled)
         try await recording.waitUntilFinished()
-        for _ in 0..<100 where !item.isHidden { try await Task.sleep(for: .milliseconds(10)) }
-        #expect(item.isHidden)
+        try await wait { controller.session.recording == nil }
+        #expect(shows("camera.on.rectangle", "Save Screen"))
+        #expect(toolbar.items.map(\.itemIdentifier.rawValue) == items)
+
+        // A recording that fails also gives the button back.
+        try controller.session.startRecording(to: .file(directory.appendingPathComponent("Failed.mov")), mask: .ignored)
+        try await wait { shows("stop.circle", "Stop Recording") }
+        #expect(shows("stop.circle", "Stop Recording"))
+        try await wait { controller.session.recording == nil }
+        #expect(controller.session.recording == nil)
+        try await wait { shows("camera.on.rectangle", "Save Screen") }
+        #expect(shows("camera.on.rectangle", "Save Screen"))
     }
 
     @Test func quickSaveScreenUsesTheScreenshotFolderAndMaskPreference() async throws {
@@ -141,7 +167,7 @@ struct InputFocusTests {
             #expect(frame.minX >= 0)
             #expect(frame.minY >= 0)
             #expect(frame.maxX <= content.bounds.maxX)
-            #expect(frame.maxY <= window.contentLayoutRect.maxY - 10)
+            #expect(frame.maxY <= window.contentLayoutRect.maxY)
             // The display keeps its own size, centered across the window,
             // instead of filling it as when the window has the display's size.
             #expect(frame.size == display.size(for: display.renderScale))
@@ -676,7 +702,7 @@ struct InputFocusTests {
         defer { controller.invalidate() }
         let toolbar = try #require(controller.window?.toolbar)
         #expect(toolbar.items.compactMap { DeviceCommand.ID(rawValue: $0.itemIdentifier.rawValue) } ==
-            [.home, .saveScreen, .stopRecording])
+            [.home, .saveScreen])
         let device = try #require(NSApp.mainMenu?.items.first { $0.title == "Device" }?.submenu)
         menus.updateVisibility(in: device, for: controller.session.capabilities)
         let visible = device.items.filter { !$0.isHidden }
@@ -811,13 +837,12 @@ struct InputFocusTests {
                 DeviceCommand.command($0).state?(controller) == .on
             }
         }
-        // The window takes the display's size at the scale, 10 points below
-        // its header without a bezel, also when the display is narrower than
-        // a manual resize can make the window.
+        // The window takes the display's size at the scale, right below its
+        // header without a bezel, also when the display is narrower than a
+        // manual resize can make the window.
         func fitsDisplay() -> Bool {
             display.view.frame.size == display.size(for: display.renderScale)
-                && window.contentLayoutRect.size == NSSize(width: display.view.frame.width,
-                                                           height: display.view.frame.height + 10)
+                && window.contentLayoutRect.size == display.view.frame.size
         }
         controller.perform(.pointAccurate)
         #expect(display.renderScale == 1)
@@ -882,22 +907,81 @@ struct InputFocusTests {
 
     @Test func fitScreenFillsTheScreenAndCentersTheWindow() throws {
         let display = TestDisplay()
-        display.naturalSize = NSSize(width: 200, height: 400)
+        // Wide enough that the fitted window keeps the unified title bar.
+        display.naturalSize = NSSize(width: 400, height: 300)
         let controller = try makeController(display)
         defer { controller.invalidate() }
         controller.showWindow(nil)
         let window = try #require(controller.window)
         let visible = try #require((window.screen ?? NSScreen.main)?.visibleFrame)
         // Like Simulator.app, the space is the visible frame less the window's
-        // header and the 10 points above a display without a bezel.
-        let above = window.frame.height - window.contentLayoutRect.height + 10
+        // header, which a display without a bezel sits right below.
+        let above = window.frame.height - window.contentLayoutRect.height
         controller.perform(.fitScreen)
         // Unlike NeoSimulator's earlier Fit Screen, the scale can exceed 1.
-        let expected = min((visible.width - 20) / 200, (visible.height - above - 20) / 400)
+        let expected = min((visible.width - 20) / 400, (visible.height - above - 20) / 300)
         #expect(abs(display.renderScale - expected) < 0.000_001)
         #expect(abs(window.frame.midX - visible.midX) < 1 && abs(window.frame.midY - visible.midY) < 1)
         #expect(visible.contains(window.frame))
         #expect(DeviceCommand.command(.fitScreen).state == nil)
+    }
+
+    @Test func fitScreenFitsAWindowThatTakesTheExpandedTitleBar() throws {
+        let display = TestDisplay()
+        // Wide, so the window starts with the unified title bar.
+        display.naturalSize = NSSize(width: 600, height: 300)
+        let controller = try makeController(display)
+        defer { controller.invalidate() }
+        controller.showWindow(nil)
+        let window = try #require(controller.window)
+        let visible = try #require((window.screen ?? NSScreen.main)?.visibleFrame)
+        #expect(window.toolbarStyle == .unified)
+        // Fitted to the screen, a tall and narrow display makes the window far
+        // narrower than the unified style allows, and the taller expanded
+        // title bar must still leave the window inside the screen.
+        let tall = NSSize(width: 60, height: visible.height * 2)
+        display.naturalSize = tall
+        controller.perform(.fitScreen)
+        #expect(window.toolbarStyle == .expanded)
+        // AppKit keeps a window without a bezel inside the screen, so the
+        // scale shows whether the display fits below the expanded title bar.
+        func fitted(_ window: NSWindow) -> CGFloat {
+            (visible.height - (window.frame.height - window.contentLayoutRect.height) - 20) / tall.height
+        }
+        #expect(abs(display.renderScale - fitted(window)) < 0.000_001)
+        #expect(window.frame.height <= visible.height)
+        // A new window of such a display opens fitted the same way.
+        let other = TestDisplay()
+        other.naturalSize = tall
+        let opened = try makeController(other)
+        defer { opened.invalidate() }
+        let openedWindow = try #require(opened.window)
+        #expect(openedWindow.toolbarStyle == .expanded)
+        #expect(abs(other.renderScale - fitted(openedWindow)) < 0.000_001)
+        #expect(openedWindow.frame.height <= visible.height)
+    }
+
+    @Test func fixedScalesAreCheckedAgainstTheTitleBarTheyWouldGiveTheWindow() throws {
+        let display = TestDisplay()
+        // Wide, so the window starts with the unified title bar.
+        display.naturalSize = NSSize(width: 600, height: 300)
+        let controller = try makeController(display)
+        defer { controller.invalidate() }
+        controller.showWindow(nil)
+        let window = try #require(controller.window)
+        let visible = try #require(window.screen?.visibleFrame)
+        let pointAccurate = DeviceCommand.command(.pointAccurate)
+        #expect(window.toolbarStyle == .unified)
+        // At Point Accurate a narrow display would take the expanded title
+        // bar, under which this height no longer fits without a bezel.
+        display.naturalSize = NSSize(width: 60, height: visible.height - 60)
+        #expect(!pointAccurate.isEnabled(controller))
+        // From an expanded window, a wide display would take the unified title
+        // bar, under which the same height fits.
+        controller.perform(.fitScreen)
+        #expect(window.toolbarStyle == .expanded)
+        display.naturalSize = NSSize(width: 600, height: visible.height - 60)
+        #expect(pointAccurate.isEnabled(controller))
     }
 
     @Test func scaleCommandsAreValidatedAsInSimulator() throws {
@@ -935,8 +1019,8 @@ struct InputFocusTests {
         #expect(!enabled().contains(.pixelAccurate))
         display.screenScale = 0.41 * backing
         #expect(enabled().contains(.pixelAccurate))
-        // A fixed scale must fit the screen below the window's header. Like
-        // Simulator.app, the check leaves out the 10 points above the display.
+        // A fixed scale must fit the screen below the window's header, which
+        // a display without a bezel sits right below.
         let visible = try #require(window.screen?.visibleFrame)
         let above = window.frame.height - window.contentLayoutRect.height
         display.naturalSize = NSSize(width: 200, height: visible.height - above)
@@ -960,7 +1044,10 @@ struct InputFocusTests {
         ]]
         func open() throws -> (DeviceWindowController, TestDisplay) {
             let display = TestDisplay()
-            display.naturalSize = NSSize(width: 160, height: 320)
+            // Wide enough that a window fitted to any screen keeps the unified
+            // title bar that Fit Screen measured; a narrower one would take
+            // the taller expanded style after the scale is chosen.
+            display.naturalSize = NSSize(width: 320, height: 160)
             return (try makeController(display, preferences: preferences), display)
         }
         let (first, display) = try open()
@@ -1480,7 +1567,8 @@ struct InputFocusTests {
         controller.showWindow(nil)
         let window = try #require(controller.window)
         // The window takes the display's size, 1 point below its header with
-        // the bezel, whose images have 9 points of top padding, and 10 without.
+        // the bezel, whose images have 9 points of top padding, and right
+        // below it without.
         func showsDisplay(_ size: NSSize, below gap: CGFloat) -> Bool {
             display.view.frame.size == size
                 && window.contentLayoutRect.size == NSSize(width: size.width, height: size.height + gap)
@@ -1493,7 +1581,7 @@ struct InputFocusTests {
         controller.setDeviceBezelVisible(false)
         #expect(display.renderScale == 1)
         #expect(DeviceCommand.command(.pointAccurate).state?(controller) == .on)
-        #expect(showsDisplay(NSSize(width: 360, height: 400), below: 10))
+        #expect(showsDisplay(NSSize(width: 360, height: 400), below: 0))
         #expect(window.frame.origin == origin)
         #expect(window.styleMask.contains(.resizable))
         // Showing it keeps a scale chosen without the bezel and grows the window.
@@ -1516,10 +1604,11 @@ struct InputFocusTests {
         #expect(window.frame.maxY <= visible.maxY)
     }
 
-    @Test func theDisplaySitsTenPointsLessTheBezelsTopPaddingBelowTheHeader() throws {
-        // Without a bezel, with an iPhone 17 Pro's bezel, which has no top
-        // padding, and with an iPad's, which has 9 points.
-        for (padding, gap) in [(nil, CGFloat(10)), (NSSize(width: 9, height: 0), 10), (NSSize(width: 10, height: 9), 1)] {
+    @Test func theGapAboveTheDisplayFollowsTheBezelsTopPadding() throws {
+        // With an iPhone 17 Pro's bezel, which has no top padding, with an
+        // iPad's, which has 9 points, and without a bezel, where Simulator.app's
+        // chrome refresh turns the gap off and the display meets the header.
+        for (padding, gap) in [(NSSize(width: 9, height: 0), CGFloat(10)), (NSSize(width: 10, height: 9), 1), (nil, 0)] {
             let display = TestDisplay()
             display.naturalSize = NSSize(width: 200, height: 300)
             display.bezel = padding == nil ? .zero : NSSize(width: 20, height: 20)
@@ -1537,6 +1626,282 @@ struct InputFocusTests {
             #expect(window.contentLayoutRect.maxY - display.view.frame.maxY == gap)
             #expect(window.contentLayoutRect.size == NSSize(width: size.width, height: size.height + gap))
         }
+    }
+
+    @Test func theToolbarTakesSimulatorAppsStyleForTheDisplaysWidth() throws {
+        let threshold = Self.unifiedWidth()
+        let display = TestDisplay()
+        display.naturalSize = NSSize(width: threshold, height: 300)
+        let controller = try makeController(display)
+        defer { controller.invalidate() }
+        controller.showWindow(nil)
+        let window = try #require(controller.window)
+        let toolbar = try #require(window.toolbar)
+        func header() -> CGFloat { window.frame.height - window.contentLayoutRect.height }
+        // Like Simulator.app's toolbar nibs, the buttons sit between two
+        // flexible spaces.
+        #expect(toolbar.items.first?.itemIdentifier == .flexibleSpace)
+        #expect(toolbar.items.last?.itemIdentifier == .flexibleSpace)
+        // A display as wide as the buttons, the title, and 130 points keeps
+        // the unified style, which hides the last flexible space, so that the
+        // buttons follow the title.
+        controller.perform(.pointAccurate)
+        #expect(window.toolbarStyle == .unified)
+        #expect(toolbar.items.last?.isHidden == true)
+        // Like Simulator.app's, the title truncates so that every button stays
+        // in the title bar instead of the overflow menu.
+        window.layoutIfNeeded()
+        #expect(toolbar.visibleItems?.compactMap { DeviceCommand.ID(rawValue: $0.itemIdentifier.rawValue) }
+            == [.home, .saveScreen, .rotateRight])
+        let unified = header()
+        #expect(window.frame.height == 300 + unified)
+        #expect((0..<1).contains(window.frame.width - threshold))
+        // A narrower display takes the expanded style, which centers the
+        // buttons in a row below the title. The window is as tall as the
+        // display and the taller title bar.
+        display.naturalSize = NSSize(width: threshold - 0.01, height: 300)
+        controller.perform(.pointAccurate)
+        #expect(window.toolbarStyle == .expanded)
+        #expect(toolbar.items.last?.isHidden == false)
+        let expanded = header()
+        #expect(expanded > unified)
+        #expect(window.frame.height == 300 + expanded)
+        #expect(display.view.frame.size == NSSize(width: window.frame.width, height: 300))
+        // Every geometry update, such as Show Device Bezels', chooses the
+        // style again.
+        display.naturalSize = NSSize(width: threshold + 1, height: 300)
+        controller.setDeviceBezelVisible(false)
+        #expect(window.toolbarStyle == .unified)
+        #expect(header() == unified)
+        #expect(window.frame.height == 300 + unified)
+    }
+
+    @Test func aRecordingKeepsTheToolbarsButtonsAndStyle() async throws {
+        let threshold = Self.unifiedWidth()
+        let display = TestDisplay()
+        display.naturalSize = NSSize(width: threshold, height: 300)
+        let controller = try makeController(display, recordingProcess: { _, _ in
+            Self.recorder(then: "while :; do sleep 0.05; done")
+        })
+        defer { controller.invalidate() }
+        controller.showWindow(nil)
+        let window = try #require(controller.window)
+        let toolbar = try #require(window.toolbar)
+        func buttons() -> [DeviceCommand.ID]? {
+            window.layoutIfNeeded()
+            return toolbar.visibleItems?.compactMap { DeviceCommand.ID(rawValue: $0.itemIdentifier.rawValue) }
+        }
+        controller.perform(.pointAccurate)
+        #expect(window.toolbarStyle == .unified)
+        #expect(buttons() == [.home, .saveScreen, .rotateRight])
+
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try controller.session.startRecording(to: .file(directory.appendingPathComponent("Recording.mov")), mask: .ignored)
+        let recording = try #require(controller.session.recording)
+        let saveScreen = try #require(toolbar.items.first { $0.itemIdentifier.rawValue == "saveScreen" })
+        for _ in 0..<200 where saveScreen.toolTip != "Stop Recording" { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(saveScreen.toolTip == "Stop Recording")
+        // Simulator.app adds no item and does not measure its toolbar again,
+        // so a display at the threshold keeps the unified style through the
+        // next geometry update, with every button in the title bar.
+        controller.setDeviceBezelVisible(false)
+        #expect(window.toolbarStyle == .unified)
+        #expect(buttons() == [.home, .saveScreen, .rotateRight])
+        recording.stop()
+        try await recording.waitUntilFinished()
+    }
+
+    @Test func titleBarPreferencesChooseTheCompactOrExpandedStyle() throws {
+        // Simulator.app registers UseMonobar on and UseCompactTitleBar off.
+        HostPreferences.registerDefaults()
+        let registered = UserDefaults.standard.volatileDomain(forName: UserDefaults.registrationDomain)
+        #expect(registered["UseMonobar"] as? Bool == true)
+        #expect(registered["UseCompactTitleBar"] as? Bool == false)
+        // Without values, as before the app registers them, the same.
+        #expect(MemoryPreferences().usesMonobar)
+        #expect(!MemoryPreferences().usesCompactTitleBar)
+        // A value that `defaults write` saved as a string reads as
+        // `boolForKey:` reads it.
+        let defaults = RegisteredDefaults()
+        defaults.set("NO", forKey: HostPreferences.useMonobar)
+        defaults.set("YES", forKey: HostPreferences.useCompactTitleBar)
+        #expect(!defaults.usesMonobar)
+        #expect(defaults.usesCompactTitleBar)
+
+        let preferences = MemoryPreferences()
+        let display = TestDisplay()
+        let controller = try makeController(display, preferences: preferences)
+        defer { controller.invalidate() }
+        controller.showWindow(nil)
+        let window = try #require(controller.window)
+        let wide = (Self.unifiedWidth() + 50).rounded(), narrow = (Self.unifiedWidth() - 50).rounded()
+        // Each geometry update reads the preferences again.
+        var headers: [NSWindow.ToolbarStyle: CGFloat] = [:]
+        for (compact, monobar, wideStyle, narrowStyle) in [
+            (false, true, NSWindow.ToolbarStyle.unified, NSWindow.ToolbarStyle.expanded),
+            (true, true, .unifiedCompact, .unifiedCompact),
+            (true, false, .unifiedCompact, .unifiedCompact),
+            (false, false, .expanded, .expanded),
+        ] {
+            preferences.set(compact, forKey: HostPreferences.useCompactTitleBar)
+            preferences.set(monobar, forKey: HostPreferences.useMonobar)
+            for (width, style) in [(wide, wideStyle), (narrow, narrowStyle)] {
+                display.naturalSize = NSSize(width: width, height: 300)
+                controller.perform(.pointAccurate)
+                #expect(window.toolbarStyle == style, "compact \(compact) monobar \(monobar) width \(width)")
+                // The display fills the window below the title bar.
+                #expect(display.view.frame == NSRect(x: 0, y: 0, width: width, height: 300))
+                headers[style] = window.frame.height - 300
+            }
+        }
+        // The compact title bar is the lowest and the expanded one the tallest.
+        let compact = try #require(headers[.unifiedCompact]), unified = try #require(headers[.unified])
+        let expanded = try #require(headers[.expanded])
+        #expect(compact < unified && unified < expanded)
+    }
+
+    @Test func scaleCommandsLeaveRoomForTheTitleBarOfTheToolbarsStyle() throws {
+        let display = TestDisplay()
+        display.naturalSize = NSSize(width: 200, height: 400)
+        let controller = try makeController(display)
+        defer { controller.invalidate() }
+        controller.showWindow(nil)
+        let window = try #require(controller.window)
+        let visible = try #require(window.screen?.visibleFrame)
+        // A display narrower than the toolbar needs has the expanded title bar.
+        controller.perform(.pointAccurate)
+        #expect(window.toolbarStyle == .expanded)
+        let header = window.frame.height - window.contentLayoutRect.height
+        #expect(window.frame.height == 400 + header)
+        // Fit Screen leaves room for that title bar and 20 points.
+        let fit = try #require(controller.scale(for: .fitScreen))
+        #expect(abs(fit - min((visible.width - 20) / 200, (visible.height - header - 20) / 400)) < 0.000_001)
+        // A fixed scale must fit below it.
+        display.naturalSize = NSSize(width: 200, height: visible.height - header)
+        #expect(controller.canSetScale(.pointAccurate))
+        display.naturalSize = NSSize(width: 200, height: visible.height - header + 1)
+        #expect(!controller.canSetScale(.pointAccurate))
+    }
+
+    @Test func aManualResizeTakesTheStyleForItsWidthAndKeepsTheHeightBelowTheTitleBar() throws {
+        let controller = try makeController(TestDisplay())
+        defer { controller.invalidate() }
+        controller.showWindow(nil)
+        let window = try #require(controller.window)
+        func header() -> CGFloat { window.frame.height - window.contentLayoutRect.height }
+        func resize(width: CGFloat) {
+            window.setContentSize(NSSize(width: width, height: window.frame.height))
+            controller.windowDidResize(Notification(name: NSWindow.didResizeNotification, object: window))
+        }
+        let wide = (Self.unifiedWidth() + 40).rounded(), narrow = (Self.unifiedWidth() - 40).rounded()
+        window.setContentSize(NSSize(width: wide, height: 600))
+        controller.windowDidResize(Notification(name: NSWindow.didResizeNotification, object: window))
+        #expect(window.toolbarStyle == .unified)
+        let below = window.frame.height - header()
+        // Like Simulator.app's windowDidResize:, the window grows by the
+        // taller title bar when it becomes too narrow for the unified style,
+        // and shrinks back.
+        resize(width: narrow)
+        #expect(window.toolbarStyle == .expanded)
+        #expect(window.frame.height - header() == below)
+        resize(width: wide)
+        #expect(window.toolbarStyle == .unified)
+        #expect(window.frame.height - header() == below)
+        // In full screen, the style stays as it is.
+        controller.windowWillEnterFullScreen(Notification(name: NSWindow.willEnterFullScreenNotification, object: window))
+        resize(width: narrow)
+        #expect(window.toolbarStyle == .unified)
+        controller.windowDidExitFullScreen(Notification(name: NSWindow.didExitFullScreenNotification, object: window))
+    }
+
+    @Test func theWindowIsBlackWithoutABezelAndClearAroundOne() throws {
+        let display = TestDisplay()
+        display.naturalSize = NSSize(width: 200, height: 300)
+        display.bezel = NSSize(width: 20, height: 20)
+        display.bezelPadding = NSSize(width: 9, height: 0)
+        let controller = try makeController(display)
+        defer { controller.invalidate() }
+        controller.showWindow(nil)
+        let window = try #require(controller.window)
+        #expect(!window.isOpaque)
+        #expect(window.backgroundColor == .clear)
+        controller.setDeviceBezelVisible(false)
+        #expect(window.backgroundColor == .black)
+        controller.setDeviceBezelVisible(true)
+        #expect(window.backgroundColor == .clear)
+        // Like Simulator.app, full screen keeps the window's color when the
+        // bezel is hidden, and leaving full screen turns it black.
+        controller.windowWillEnterFullScreen(Notification(name: NSWindow.willEnterFullScreenNotification, object: window))
+        controller.setDeviceBezelVisible(false)
+        #expect(window.backgroundColor == .clear)
+        controller.windowDidExitFullScreen(Notification(name: NSWindow.didExitFullScreenNotification, object: window))
+        #expect(window.backgroundColor == .black)
+        // A window that opens without its bezel is black.
+        let preferences = MemoryPreferences()
+        preferences.set(false, forKey: HostPreferences.showChrome)
+        let other = TestDisplay()
+        other.bezel = NSSize(width: 20, height: 20)
+        other.bezelPadding = NSSize(width: 9, height: 0)
+        let bezelless = try makeController(other, preferences: preferences)
+        defer { bezelless.invalidate() }
+        #expect(bezelless.window?.backgroundColor == .black)
+    }
+
+    @Test func theTitleBarIsRoundedBelowOnlyAboveABezel() throws {
+        let display = TestDisplay()
+        display.bezel = NSSize(width: 20, height: 20)
+        display.bezelPadding = NSSize(width: 9, height: 0)
+        let controller = try makeController(display)
+        defer { controller.invalidate() }
+        controller.showWindow(nil)
+        let window = try #require(controller.window)
+        // As in Simulator.app's window, AppKit draws the title bar.
+        #expect(!window.titlebarAppearsTransparent)
+        // Like Simulator.app, the window rounds the layer of the
+        // NSTitlebarContainerView that holds the title bar with the radius it
+        // reads from the window's private `_cornerRadius`.
+        var view: NSView? = window.standardWindowButton(.closeButton)
+        while let current = view, current.className != "NSTitlebarContainerView" { view = current.superview }
+        let layer = try #require(view?.layer)
+        try #require(window.responds(to: NSSelectorFromString("_cornerRadius")))
+        func windowRadius() throws -> CGFloat {
+            CGFloat(try #require(window.value(forKey: "_cornerRadius") as? NSNumber).doubleValue)
+        }
+        for (width, style) in [((Self.unifiedWidth() + 40).rounded(), NSWindow.ToolbarStyle.unified),
+                               ((Self.unifiedWidth() - 40).rounded(), .expanded)] {
+            display.naturalSize = NSSize(width: width - 20, height: 300)
+            controller.perform(.pointAccurate)
+            #expect(window.toolbarStyle == style)
+            #expect(layer.cornerRadius == (try windowRadius()))
+            #expect(layer.cornerRadius > 0)
+            #expect(layer.maskedCorners == [.layerMinXMinYCorner, .layerMaxXMinYCorner])
+            #expect(layer.masksToBounds)
+        }
+        // Without the bezel, the title bar is square below.
+        controller.setDeviceBezelVisible(false)
+        #expect(layer.cornerRadius == 0)
+        controller.setDeviceBezelVisible(true)
+        #expect(layer.cornerRadius == (try windowRadius()))
+        // So it is in full screen.
+        controller.windowWillEnterFullScreen(Notification(name: NSWindow.willEnterFullScreenNotification, object: window))
+        #expect(layer.cornerRadius == 0)
+        controller.windowDidExitFullScreen(Notification(name: NSWindow.didExitFullScreenNotification, object: window))
+        #expect(layer.cornerRadius == (try windowRadius()))
+        // The radius is the window's own: a window that reports another one
+        // rounds the title bar with it.
+        let selector = NSSelectorFromString("_cornerRadius")
+        let original = try #require(class_getInstanceMethod(NSWindow.self, selector))
+        let radius: @convention(block) (AnyObject) -> CGFloat = { _ in 7 }
+        class_replaceMethod(DeviceWindow.self, selector, imp_implementationWithBlock(radius),
+                            method_getTypeEncoding(original))
+        defer {
+            class_replaceMethod(DeviceWindow.self, selector, method_getImplementation(original),
+                                method_getTypeEncoding(original))
+        }
+        controller.perform(.pointAccurate)
+        #expect(layer.cornerRadius == 7)
     }
 
     @Test func windowFramesAreIntegralAtAFractionalScale() async throws {
@@ -1567,12 +1932,12 @@ struct InputFocusTests {
         let controller = try makeController(display, devicectl: devicectl, preferences: preferences)
         defer { controller.invalidate() }
         let window = try #require(controller.window)
-        let header = window.frame.height - window.contentLayoutRect.height
         // Like Simulator.app's geometry update, the window takes the smallest
         // integral frame around the display and the space above it, and the
         // display fills the window below the gap.
         func isSizedToDisplay(gap: CGFloat = 1) -> Bool {
             let frame = window.frame, size = display.size(for: display.renderScale)
+            let header = frame.height - window.contentLayoutRect.height
             let extra = NSSize(width: frame.width - size.width, height: frame.height - header - gap - size.height)
             return display.renderScale != display.renderScale.rounded()
                 && [frame.minX, frame.minY, frame.width, frame.height].allSatisfy { $0 == $0.rounded() }
@@ -1588,7 +1953,7 @@ struct InputFocusTests {
         #expect(display.rotations == [90])
         #expect(isSizedToDisplay(), "rotation")
         controller.setDeviceBezelVisible(false)
-        #expect(isSizedToDisplay(gap: 10), "bezel hidden")
+        #expect(isSizedToDisplay(gap: 0), "bezel hidden")
         controller.setDeviceBezelVisible(true)
         #expect(isSizedToDisplay(), "bezel shown")
         let visible = try #require(window.screen?.visibleFrame)
@@ -3945,6 +4310,27 @@ struct InputFocusTests {
 
     /// The features of an iPhone that the tests need unless they choose others.
     private static let defaultFeatures: Set<String> = [DeviceCapabilities.displayRotation, DeviceCapabilities.keyboard]
+
+    /// A `simctl io recordVideo` stand-in that acknowledges the first frame,
+    /// then runs `script`, and that a stop ends normally.
+    private static func recorder(then script: String) -> Process {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", "trap 'exit 0' INT; echo 'Recording started' >&2; \(script)"]
+        return process
+    }
+
+    /// Simulator.app's toolbar style threshold for the test device's window:
+    /// the buttons of its iPhone toolbar nib (Home 31, Save Screen 32, and
+    /// Rotate 25 points) with 4 points each, the wider of the title in the
+    /// headline font and the subtitle in the subheadline font, and 130 points.
+    private static func unifiedWidth(title: String = "Test iPhone", subtitle: String = "iOS") -> CGFloat {
+        func width(_ text: String, _ style: NSFont.TextStyle) -> CGFloat {
+            let font = NSFont.preferredFont(forTextStyle: style, options: [:])
+            return NSAttributedString(string: text, attributes: [.font: font]).size().width
+        }
+        return (31 + 4) + (32 + 4) + (25 + 4) + max(width(title, .headline), width(subtitle, .subheadline)) + 130
+    }
 
     /// A shown window whose display, 100 by 200 points at scale 1, has a
     /// 10-point bezel without top padding, like an iPhone's.
