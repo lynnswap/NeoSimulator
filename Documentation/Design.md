@@ -801,10 +801,10 @@ These differ from Simulator.app:
   when it would.
 - The toolbar style's threshold counts the buttons NeoSimulator's toolbar
   has. Simulator.app's iPad toolbar also has Keyboard Capture and Pointer
-  Capture, 27 points each, which NeoSimulator does not host, so an iPad's
-  window keeps the unified style down to a display 62 points narrower than
-  in Simulator.app: 351.4 points instead of 413.4 for the iPad mini (A17
-  Pro).
+  Capture, 27 points each, which NeoSimulator does not host (see
+  [Input capture](#input-capture)), so an iPad's window keeps the unified
+  style down to a display 62 points narrower than in Simulator.app: 351.4
+  points instead of 413.4 for the iPad mini (A17 Pro).
 - Simulator.app's Save Screen button already shows `stop.circle` while
   Record Screen… asks where to save, and, when the recorder cannot start,
   until the error is dismissed. NeoSimulator's shows it only while a
@@ -873,7 +873,8 @@ or a coordinate, is not handled.
 The following are intentionally absent:
 
 - Services;
-- global keyboard, pointer, or game-controller capture;
+- global keyboard, pointer, or game-controller capture (for the keyboard and
+  pointer, see [Input capture](#input-capture));
 - Device Manager, CarPlay, and FaceTime menus;
 - platform-specific watchOS, tvOS, and visionOS commands, such as Debug ▸ Show
   Gaze Target;
@@ -1069,6 +1070,53 @@ These differ from Simulator.app:
 - Connect Hardware Keyboard needs a connected, booted device, like
   NeoSimulator's other device commands; Simulator.app enables it for any
   device with a keyboard.
+
+### Input capture
+
+Simulator.app's I/O ▸ Input ▸ Send Pointer to Device (Control-Command-K) and
+Send Keyboard Input to Device (Option-Command-K), and the Capture Pointer and
+Capture Keyboard buttons of an iPad's toolbar, send the Mac's pointer and
+keyboard to the device until the stop-capture keys are pressed. During the
+capture, the device also receives the shortcuts and trackpad gestures that
+macOS would otherwise act on, and the window's subtitle names the stop-capture
+keys, such as "Press esc to stop capture". NeoSimulator has neither the
+commands nor the buttons, and its settings leave out the stop-capture keys
+(`CaptureEscapeKeyCodes`).
+
+Simulator.app captures with SimulatorKit's `SimHIDCaptureManager`, which sends
+the input to the device from an HID event-system filter; the filter also keeps
+the input from macOS and recognizes the stop-capture keys. The HID event system
+registers a filter only for an app signed with
+`com.apple.private.hid.client.event-filter`, which an ad-hoc or Developer ID
+signature cannot carry; for any other app it logs the missing entitlement, and
+the filter receives nothing. The manager also
+installs an active event tap, which needs Accessibility, and does not check
+whether the tap was created: without Accessibility, starting a capture crashes
+the app. With Accessibility but without the filter, the manager would swallow
+the Mac's keystrokes, and for pointer capture hide and freeze the pointer,
+while nothing reaches the device and the stop-capture keys go unrecognized.
+
+Two replacements were considered and not built:
+
+- An active event tap of NeoSimulator's own, with Accessibility granted by the
+  user, could keep keyboard and mouse events from macOS and send them to the
+  device. It receives no raw trackpad input, which the filter forwards for an
+  iPad's trackpad gestures, and turning mouse events into the device's pointer
+  events would take the private `CGEventCopyIOHIDEvent`. NeoSimulator's release
+  is ad-hoc signed, and macOS records a permission for an ad-hoc signed app by
+  its code hash, so the user would grant Accessibility again after every
+  update. Without that permission, whether such a tap keeps shortcuts like
+  Command-Tab from macOS could not be verified.
+- Capturing only the input that reaches NeoSimulator, with the pointer hidden
+  and detached from the mouse, needs no permission. But macOS acts on its own
+  shortcuts, such as Command-Tab and Command-Space, and on trackpad gestures,
+  such as Mission Control's, before any app receives them, and the capture
+  would end whenever another app became active.
+
+Without capture, a device window still sends typing to its device while the
+window is key and the device's hardware keyboard is connected (see
+[Keyboard and touch pressure](#keyboard-and-touch-pressure)). The evidence is
+in the [Simulator.app analysis](SimulatorAppAnalysis.md#input-capture).
 
 ### Audio Input and Audio Output
 
@@ -1348,12 +1396,12 @@ validation finds no responder and disables the item. NeoSimulator's
 `Settings.bundle` has Simulator.app's items, titles, controls, and order,
 without the ones Neo has no consumer for: the stop-capture shortcut
 (`CaptureEscapeKeyCodes`), because Neo does not capture the pointer and
-keyboard, and the empty group before it. "When Simulator starts" names
-NeoSimulator. Every other item already has a reader that reads the standard
-defaults when it acts: launch, window close, quit, Save Screen and Record
-Screen, and GIF export. The release archive, the installer, and the release
-verification carry `Contents/Resources/Settings.bundle/Root.plist` as one of
-the app's files.
+keyboard (see [Input capture](#input-capture)), and the empty group before it.
+"When Simulator starts" names NeoSimulator. Every other item already has a
+reader that reads the standard defaults when it acts: launch, window close,
+quit, Save Screen and Record Screen, and GIF export. The release archive, the
+installer, and the release verification carry
+`Contents/Resources/Settings.bundle/Root.plist` as one of the app's files.
 
 Simulator.app registers `ShowPinches` on and `ShowSingleTouches`,
 `ShowPinchPivotPoint`, and `HighlightEdgeGestures` off, while its
