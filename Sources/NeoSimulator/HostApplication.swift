@@ -50,6 +50,10 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     private var nextWindowPosition = NSPoint.zero
     /// I/O ▸ Touch Pressure's settings, which every device window shares.
     private let touchPressure = TouchPressure()
+    /// Edit ▸ Automatically Sync Pasteboard, for the devices that have windows.
+    private lazy var pasteboardSync = PasteboardSync { [weak self] in
+        self?.sessions.values.map(\.session) ?? []
+    }
     /// Reports changes to the touch indicator preferences, from Settings or
     /// `defaults write`, to the device windows.
     private var touchIndicatorObservation: DefaultsObservation?
@@ -77,7 +81,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     func start() throws {
         try conflicts.check()
         menu = MenuController(application: self,
-                              gpuPolicy: UserDefaults(suiteName: GPUPolicy.suiteName).map(GPUPolicy.init))
+                              gpuPolicy: UserDefaults(suiteName: GPUPolicy.suiteName).map(GPUPolicy.init),
+                              pasteboardSync: pasteboardSync)
         menu?.install()
         touchIndicatorObservation = DefaultsObservation(
             .standard, keys: TouchIndicator.allCases.map(\.preferenceKey)) {
@@ -294,7 +299,11 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             try await tools.boot()
         }
         rescan()
-        sessions[identifier]?.showAndActivate()
+        guard let controller = sessions[identifier] else { return }
+        // Like Simulator.app, choosing a connected device tells its
+        // pasteboard connection again whether to synchronize.
+        controller.session.updatePasteboardSync()
+        controller.showAndActivate()
     }
 
     private func rescan() {
@@ -360,7 +369,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                             display: connection,
                             tools: try DeviceTools(identifier: identifier, xcodeURL: runtime.xcodeURL,
                                                    deviceSetPath: device.deviceSetPath),
-                            recordings: recordings)
+                            recordings: recordings, pasteboardSync: pasteboardSync)
                         do { try session.applyDebugSettings() } catch {
                             hostLog("Could not apply debug settings to \(device.name): \(error.localizedDescription)")
                         }
@@ -369,6 +378,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                             controller.reconnect(session)
                             applyKeyboardSettings(of: session)
                             restoreLocation(of: session)
+                            session.startPasteboardSync()
                             return
                         }
                         let controller = try DeviceWindowController(session: session, touchPressure: touchPressure, onClose: { [weak self] in
@@ -379,6 +389,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                         controller.showNewWindow(cascadingFrom: &nextWindowPosition)
                         applyKeyboardSettings(of: session)
                         restoreLocation(of: session)
+                        session.startPasteboardSync()
                         return
                     }
                     try await Task.sleep(for: .milliseconds(250))

@@ -261,16 +261,50 @@ struct InputFocusTests {
         #expect(NSApp.mainMenu?.performKeyEquivalent(with: editing[3]) == true)
     }
 
-    @Test func editMenuEndsWithSimulatorAppsPasteboardTransfers() throws {
+    @Test func editMenuEndsWithSimulatorAppsPasteboardCommands() throws {
         _ = NSApplication.shared
         MenuController(application: nil).install()
         defer { NSApp.mainMenu = nil }
         let edit = try #require(NSApp.mainMenu?.items.first { $0.title == "Edit" }?.submenu)
         #expect(edit.items.map { $0.isSeparatorItem ? "-" : $0.title } == [
             "Undo", "Redo", "-", "Cut", "Copy", "Copy Screen", "Paste", "Select All", "-",
-            "Get Pasteboard", "Send Pasteboard",
+            "Automatically Sync Pasteboard", "Get Pasteboard", "Send Pasteboard",
         ])
-        #expect(edit.items.suffix(2).allSatisfy { $0.keyEquivalent.isEmpty })
+        #expect(edit.items.suffix(3).allSatisfy { $0.keyEquivalent.isEmpty })
+    }
+
+    @Test func automaticPasteboardSyncIsOffUntilChosen() throws {
+        _ = NSApplication.shared
+        // Simulator.app registers PasteboardAutomaticSync on; NeoSimulator
+        // registers it off. Registered values are not saved.
+        HostPreferences.registerDefaults()
+        #expect(UserDefaults.standard.volatileDomain(forName: UserDefaults.registrationDomain)[
+            HostPreferences.pasteboardAutomaticSync] as? Bool == false)
+        let preferences = MemoryPreferences()
+        let sync = PasteboardSync(preferences: preferences) { [] }
+        #expect(!sync.isOn)
+        let menu = MenuController(application: nil, pasteboardSync: sync)
+        menu.install()
+        defer { NSApp.mainMenu = nil }
+        let edit = try #require(NSApp.mainMenu?.items.first { $0.title == "Edit" }?.submenu)
+        let item = try #require(edit.items.first { $0.title == "Automatically Sync Pasteboard" })
+        let action = try #require(item.action)
+        // Like Simulator.app's, the item is enabled without a device window
+        // and checked while synchronization is on, which it saves.
+        #expect(menu.validateMenuItem(item))
+        #expect(item.state == .off)
+        #expect(NSApp.sendAction(action, to: item.target, from: item))
+        #expect(sync.isOn)
+        #expect(preferences.values[HostPreferences.pasteboardAutomaticSync] as? Bool == true)
+        #expect(menu.validateMenuItem(item))
+        #expect(item.state == .on)
+        #expect(PasteboardSync(preferences: preferences) { [] }.isOn)
+        #expect(NSApp.sendAction(action, to: item.target, from: item))
+        #expect(!sync.isOn)
+        #expect(preferences.values[HostPreferences.pasteboardAutomaticSync] as? Bool == false)
+        #expect(menu.validateMenuItem(item))
+        #expect(item.state == .off)
+        #expect(!MenuController(application: nil).validateMenuItem(item))
     }
 
     @Test func pasteboardTransfersNeedADeviceThatExchangesItsPasteboard() throws {
@@ -311,6 +345,8 @@ struct InputFocusTests {
         #expect(display.pasteboards.count == 1)
         #expect(connection.pasteboard === pasteboard)
         #expect(connection.transfers == [.get, .send, .get])
+        // Like Simulator.app, the connection is told not to synchronize.
+        #expect(connection.automaticSync == [false])
         // The connection stays until the window disconnects, so that the Mac
         // pasteboard can read the device's data when an app pastes it.
         #expect(!connection.isDisconnected)
@@ -347,7 +383,7 @@ struct InputFocusTests {
         first.send(.failedToApply(HostError.operation("pasteboard communication failure")))
         #expect(failures.last == get + "pasteboard communication failure")
         transfer(.get)
-        first.send(.applied)
+        first.send(.applied(generation: 1))
         // With nothing pending, the device closing the connection is no failure.
         first.send(.lostConnection)
         #expect(failures.count == 2)
@@ -387,6 +423,9 @@ struct InputFocusTests {
                                                             error: NSError(domain: "CFPasteboardErrorDomain", code: -25130),
                                                             toPasteboard: pasteboard)
             }),
+            ("simPasteboardDidChangeAutoNotifyState:forPasteboard:toStatus:", {
+                delegate.simPasteboardDidChangeAutoNotifyState(interface, forPasteboard: pasteboard, toStatus: true)
+            }),
         ]
         for (name, call) in callbacks {
             let selector = NSSelectorFromString(name)
@@ -395,9 +434,188 @@ struct InputFocusTests {
             #expect(declared.types.map { String(cString: $0) } == String(cString: method_getTypeEncoding(method)!))
             call()
         }
-        #expect(events.count == 4)
-        #expect(events.prefix(3) == ["activated", "lostConnection", "applied"])
-        #expect(events.last?.hasPrefix("failedToApply") == true)
+        #expect(events.count == 5)
+        #expect(events.prefix(3) == ["activated", "lostConnection", "applied(generation: 2)"])
+        #expect(events[3].hasPrefix("failedToApply"))
+        #expect(events.last == "synchronizationChanged(true)")
+    }
+
+    @Test func devicesConnectingWhileSynchronizingReceiveTheMacPasteboard() throws {
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("dev.lynnswap.NeoSimulatorTests.\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        var sessions: [DeviceSession] = []
+        let sync = PasteboardSync(preferences: MemoryPreferences()) { sessions }
+        func start(_ family: DeviceCapabilities.Family = .iPhone, features: Set<String> = [DeviceCapabilities.pasteboard],
+                   _ change: (TestDisplay) -> Void = { _ in }) throws -> (DeviceSession, TestDisplay) {
+            let display = TestDisplay()
+            change(display)
+            let session = try makeSession(display, family: family, features: features, pasteboard: pasteboard,
+                                          pasteboardSync: sync)
+            sessions.append(session)
+            session.startPasteboardSync()
+            return (session, display)
+        }
+        defer { sessions.forEach { $0.disconnect() } }
+
+        // Off, a device that connects is not even connected to.
+        #expect(try start().1.pasteboards.isEmpty)
+
+        sync.toggle()
+        // On, like Simulator.app when a device connects: its connection
+        // synchronizes and is sent the Mac pasteboard.
+        let (session, display) = try start()
+        let connection = try #require(display.pasteboards.first)
+        #expect(display.pasteboards.count == 1)
+        #expect(connection.pasteboard === pasteboard)
+        #expect(connection.automaticSync == [true])
+        #expect(connection.transfers == [.send])
+        // Get Pasteboard and Send Pasteboard are unavailable meanwhile.
+        #expect(!session.canTransferPasteboard)
+        session.transferPasteboard(.get) { _ in Issue.record("no transfer") }
+        #expect(connection.transfers == [.send])
+        // Devices that do not exchange pasteboards are left alone.
+        #expect(try start(.tv).1.pasteboards.isEmpty)
+        #expect(try start(features: []).1.pasteboards.isEmpty)
+        #expect(try start { $0.isBooted = false }.1.pasteboards.isEmpty)
+    }
+
+    @Test func turningPasteboardSyncOnAndOffReachesEveryDevice() throws {
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("dev.lynnswap.NeoSimulatorTests.\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        var sessions: [DeviceSession] = []
+        let sync = PasteboardSync(preferences: MemoryPreferences()) { sessions }
+        func add(_ family: DeviceCapabilities.Family) throws -> (DeviceSession, TestDisplay) {
+            let display = TestDisplay()
+            let session = try makeSession(display, family: family, features: [DeviceCapabilities.pasteboard],
+                                          pasteboard: pasteboard, pasteboardSync: sync)
+            sessions.append(session)
+            return (session, display)
+        }
+        let (phone, phoneDisplay) = try add(.iPhone)
+        let (pad, padDisplay) = try add(.iPad)
+        let (_, tvDisplay) = try add(.tv)
+        defer { sessions.forEach { $0.disconnect() } }
+        phone.transferPasteboard(.get) { _ in }
+        let phoneConnection = try #require(phoneDisplay.pasteboards.first)
+
+        // Turning it on tells every device's connection and connects the
+        // devices not yet connected, without transferring anything.
+        sync.toggle()
+        #expect(phoneConnection.automaticSync == [false, true])
+        let padConnection = try #require(padDisplay.pasteboards.first)
+        #expect(padConnection.automaticSync == [true])
+        #expect(padConnection.transfers.isEmpty)
+        #expect(tvDisplay.pasteboards.isEmpty)
+        #expect(!phone.canTransferPasteboard && !pad.canTransferPasteboard)
+
+        // Turning it off stops every connection's synchronization and keeps
+        // the connections for Get and Send Pasteboard.
+        sync.toggle()
+        #expect(phoneConnection.automaticSync == [false, true, false])
+        #expect(padConnection.automaticSync == [true, false])
+        #expect(!phoneConnection.isDisconnected && !padConnection.isDisconnected)
+        #expect(phoneConnection.transfers == [.get])
+        #expect(padConnection.transfers.isEmpty)
+        #expect(phone.canTransferPasteboard && pad.canTransferPasteboard)
+        #expect(phoneDisplay.pasteboards.count == 1 && padDisplay.pasteboards.count == 1)
+    }
+
+    @Test func aDevicesCopyReachesTheOtherDevicesWithoutEcho() async throws {
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("dev.lynnswap.NeoSimulatorTests.\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        let preferences = MemoryPreferences()
+        preferences.values[HostPreferences.pasteboardAutomaticSync] = true
+        var sessions: [DeviceSession] = []
+        let sync = PasteboardSync(preferences: preferences) { sessions }
+        var connections: [TestPasteboard] = []
+        for index in 0..<3 {
+            let display = TestDisplay()
+            let session = try makeSession(display, features: [DeviceCapabilities.pasteboard], device: "device-\(index)",
+                                          pasteboard: pasteboard, pasteboardSync: sync)
+            sessions.append(session)
+            session.startPasteboardSync()
+            connections.append(try #require(display.pasteboards.first))
+        }
+        defer { sessions.forEach { $0.disconnect() } }
+        let (first, second, third) = (connections[0], connections[1], connections[2])
+        func pushes() -> [Int] { connections.map { $0.transfers.count - 1 } }
+        /// The device's copy replaces the Mac pasteboard, as SimPasteboardPlus applies it.
+        func copy(on connection: TestPasteboard, _ text: String) {
+            pasteboard.clearContents()
+            pasteboard.setString(text, forType: .string)
+            connection.send(.applied(generation: pasteboard.changeCount))
+        }
+        func settle() async throws {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+
+        // The other devices are sent the Mac pasteboard once the run loop
+        // ends its pass, and the device that copied is not.
+        copy(on: first, "first")
+        #expect(pushes() == [0, 0, 0])
+        try await settle()
+        #expect(pushes() == [0, 1, 1])
+
+        // Of copies in one pass, the last one's device is left out, and each
+        // other device is sent the Mac pasteboard once.
+        copy(on: first, "first again")
+        copy(on: second, "second")
+        try await settle()
+        #expect(pushes() == [1, 1, 2])
+
+        // A device whose copy the Mac pasteboard still holds is not sent it
+        // back, also when another device's late report starts the exchange.
+        first.send(.applied(generation: pasteboard.changeCount - 1))
+        try await settle()
+        #expect(pushes() == [1, 1, 3])
+        // After a copy that could not be applied, it is sent again.
+        second.send(.failedToApply(HostError.operation("pasteboard communication failure")))
+        first.send(.applied(generation: pasteboard.changeCount - 1))
+        try await settle()
+        #expect(pushes() == [1, 2, 4])
+
+        // Off, a device's copy reaches no other device.
+        sync.toggle()
+        copy(on: third, "third")
+        try await settle()
+        #expect(pushes() == [1, 2, 4])
+    }
+
+    @Test func synchronizedDevicesReconnectAtOnceWhenTheConnectionCloses() throws {
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("dev.lynnswap.NeoSimulatorTests.\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        let preferences = MemoryPreferences()
+        preferences.values[HostPreferences.pasteboardAutomaticSync] = true
+        var sessions: [DeviceSession] = []
+        let sync = PasteboardSync(preferences: preferences) { sessions }
+        let display = TestDisplay()
+        let session = try makeSession(display, features: [DeviceCapabilities.pasteboard], pasteboard: pasteboard,
+                                      pasteboardSync: sync)
+        sessions.append(session)
+        defer { session.disconnect() }
+        session.startPasteboardSync()
+        let first = try #require(display.pasteboards.first)
+
+        // Like Simulator.app, for example after CoreSimulatorBridge restarts:
+        // the new connection synchronizes without being sent the Mac pasteboard.
+        first.send(.lostConnection)
+        #expect(first.isDisconnected)
+        #expect(display.pasteboards.count == 2)
+        let second = try #require(display.pasteboards.last)
+        #expect(second.automaticSync == [true])
+        #expect(second.transfers.isEmpty)
+
+        // A device that is shutting down is not connected again.
+        display.isBooted = false
+        second.send(.lostConnection)
+        #expect(display.pasteboards.count == 2)
+        // Off, the next transfer connects instead.
+        display.isBooted = true
+        sync.toggle()
+        session.transferPasteboard(.get) { _ in }
+        #expect(display.pasteboards.count == 3)
+        try #require(display.pasteboards.last).send(.lostConnection)
+        #expect(display.pasteboards.count == 3)
     }
 
     @Test func commandHeldKeyUpReachesTheNativeInputUntilTheWindowCloses() throws {
@@ -2767,6 +2985,7 @@ struct InputFocusTests {
                                 keyboardLanguage: @escaping @MainActor () -> String? = { "fr" },
                                 openLog: @escaping (URL) async throws -> Void = { _ in },
                                 pasteboard: NSPasteboard? = nil,
+                                pasteboardSync: PasteboardSync? = nil,
                                 onClose: @escaping (DeviceWindowController, DeviceLifetimeChoice?) -> Void = { _, _ in },
                                 onRestart: @escaping (DeviceWindowController, Bool) -> Void = { _, _ in })
         throws -> DeviceWindowController {
@@ -2774,7 +2993,7 @@ struct InputFocusTests {
                                       simctl: simctl, devicectl: devicectl, recordingProcess: recordingProcess,
                                       openLog: openLog, screenPointsPerInch: screenPointsPerInch, device: identifier,
                                       preferences: preferences, keyboardLanguage: keyboardLanguage,
-                                      pasteboard: pasteboard)
+                                      pasteboard: pasteboard, pasteboardSync: pasteboardSync)
         return try DeviceWindowController(
             session: session, preferences: preferences,
             touchPressure: touchPressure ?? TouchPressure(preferences: preferences, forceTouchTrackpad: { false }),
@@ -2834,7 +3053,8 @@ struct InputFocusTests {
                              device identifier: String = "test-device",
                              preferences: MemoryPreferences = MemoryPreferences(),
                              keyboardLanguage: @escaping @MainActor () -> String? = { "fr" },
-                             pasteboard: NSPasteboard? = nil) throws -> DeviceSession {
+                             pasteboard: NSPasteboard? = nil,
+                             pasteboardSync: PasteboardSync? = nil) throws -> DeviceSession {
         DeviceSession(
             device: availableDevice(identifier, "Test iPhone", runtime: "iOS", state: 3),
             capabilities: DeviceCapabilities(family: family, runtimeVersion: 0x1B_00_00,
@@ -2845,7 +3065,7 @@ struct InputFocusTests {
             tools: try DeviceTools(identifier: "test-device", xcodeURL: URL(fileURLWithPath: "/Applications/Xcode.app"),
                                    simctl: simctl, devicectl: devicectl),
             recordingProcess: recordingProcess, openLog: openLog, preferences: preferences,
-            hostKeyboardLanguage: keyboardLanguage, pasteboard: pasteboard)
+            hostKeyboardLanguage: keyboardLanguage, pasteboard: pasteboard, pasteboardSync: pasteboardSync)
     }
 }
 
@@ -3119,6 +3339,8 @@ private final class TestPasteboard: SimulatorPasteboard {
     let pasteboard: NSPasteboard
     private let events: (SimulatorPasteboardEvent) -> Void
     private(set) var transfers: [PasteboardTransfer] = []
+    /// Each value automatic synchronization was set to, in order.
+    private(set) var automaticSync: [Bool] = []
     private(set) var isDisconnected = false
 
     init(pasteboard: NSPasteboard, events: @escaping @MainActor (SimulatorPasteboardEvent) -> Void) {
@@ -3128,6 +3350,7 @@ private final class TestPasteboard: SimulatorPasteboard {
 
     func pull() throws { transfers.append(.get) }
     func push() throws { transfers.append(.send) }
+    func setAutomaticSync(_ enabled: Bool) throws { automaticSync.append(enabled) }
     func disconnect() { isDisconnected = true }
     func send(_ event: SimulatorPasteboardEvent) { events(event) }
 }
