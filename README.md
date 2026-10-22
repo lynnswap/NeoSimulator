@@ -298,11 +298,22 @@ app presents a scene for an external display; iOS does not mirror the device's
 screen to it. A device that has no external display port cannot get one:
 CoreSimulator offers no screen that a client can add.
 
+iOS keeps an external display's mode only at up to 60 Hz and otherwise switches
+it to its own 720×480 mode, while the window keeps the chosen size. Neo
+therefore sets each size at 60 Hz, also where CoreSimulator lists it only at
+120 Hz, as on iPad and on iPhone with iOS 27.0, where Simulator.app leaves the
+device at 720×480. A size the device cannot show is disabled, and its subtitle
+says why: 640×480, for which iOS shows its larger 720×480 mode, and 3840×2160
+on an iPad with Stage Manager before iPadOS 27, whose SpringBoard quits when
+such a display later changes or turns off. When another tool sets a size the
+device does not show, the window's subtitle says so.
+
 **I/O → External Displays → CarPlay** makes that display a car's CarPlay
 display, as Simulator.app does with its default configuration: an 800×480
 touch screen at a scale of 2. The guest's CarPlay dashboard appears in a
 window with the subtitle "CarPlay", and clicks in it are CarPlay's touches.
-The item is enabled for devices that support CarPlay, such as iPhone. The
+The item is enabled for devices that support CarPlay, such as iPhone, whose
+external display has a mode for it; an iPhone with iOS 27.0 has none. The
 choice is saved and restored like the sizes, and, as Simulator.app does, Neo
 writes the device's CarPlay configuration to
 `<device data>/Library/Application Support/Simulator/extended_display.plist`,
