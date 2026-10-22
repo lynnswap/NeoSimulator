@@ -127,6 +127,9 @@ final class DisplayFitting {
     private var observer: (any NSObjectProtocol)?
     /// Whether the window is in full screen or moving into or out of it.
     private(set) var isFullScreen = false
+    /// Whether the window is between `windowWillStartLiveResize` and
+    /// `windowDidEndLiveResize`.
+    private var isLiveResizing = false
     /// The display's scale and the window's origin when the window entered
     /// full screen, which Simulator.app restores when the window leaves it.
     private var geometryBeforeFullScreen: (scale: CGFloat, origin: NSPoint)?
@@ -151,7 +154,7 @@ final class DisplayFitting {
 
     /// Whether the display fits the window instead of the window taking the
     /// display's size.
-    var fitsWindow: Bool { isFullScreen || content.window?.inLiveResize == true }
+    var fitsWindow: Bool { isFullScreen || isLiveResizing }
 
     /// Gives the display the largest scale at which it fits the content.
     func fit() {
@@ -167,9 +170,13 @@ final class DisplayFitting {
         content.window?.invalidateShadow()
     }
 
-    func willStartLiveResize() { display.beginResize() }
+    func willStartLiveResize() {
+        isLiveResizing = true
+        display.beginResize()
+    }
 
     func didEndLiveResize() {
+        isLiveResizing = false
         fit()
         display.endResize()
     }

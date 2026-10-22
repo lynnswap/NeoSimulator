@@ -243,18 +243,23 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
     /// display, the window keeps its bottom-left corner, takes
     /// the smallest integral frame around that, and moves down when its top
     /// would be above the screen. A drag on the window's edges keeps the
-    /// screen's aspect ratio and stops at the minimum scale. In full screen
-    /// and during a live resize, the display fits the window instead.
+    /// screen's aspect ratio and stops at the minimum scale, which follow a
+    /// new size of the screen outside full screen, also during the drag. In
+    /// full screen and during a live resize, the display fits the window
+    /// instead.
     private func updateWindowSize() {
-        guard !closed, let window, !fitting.fitsWindow else { return resizeDisplay() }
+        guard !closed, let window else { return }
+        if !fitting.isFullScreen {
+            window.contentAspectRatio = screenSize
+            window.contentMinSize = displaySize(at: minimumScale)
+        }
+        guard !fitting.fitsWindow else { return resizeDisplay() }
         let size = displaySize(at: display.renderScale)
         let sized = window.frameRect(forContentRect: NSRect(origin: .zero, size: size))
         var frame = NSIntegralRect(NSRect(origin: window.frame.origin, size: sized.size))
         if let visible = window.screen?.visibleFrame, visible.maxY < frame.maxY {
             frame.origin.y = visible.maxY - frame.height
         }
-        window.contentAspectRatio = screenSize
-        window.contentMinSize = displaySize(at: minimumScale)
         content.isSizedToDisplay = true
         isSizingWindow = true
         window.setFrame(frame, display: true)

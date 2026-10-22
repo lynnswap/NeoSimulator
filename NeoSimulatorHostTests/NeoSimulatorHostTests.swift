@@ -3480,6 +3480,26 @@ struct InputFocusTests {
         #expect(fits())
     }
 
+    @Test func aNewSizeDuringALiveResizeConstrainsTheExternalDisplaysWindowToIt() throws {
+        _ = NSApplication.shared
+        let screen = TestExternalScreen()
+        screen.current = ExternalScreenState(isPoweredOn: true, pixelSize: CGSize(width: 640, height: 480), scale: 1)
+        let (controller, _) = try makeExternalDisplayController(screen)
+        defer { controller.invalidate() }
+        let external = try #require(controller.externalDisplayWindow)
+        let window = try #require(external.window)
+        #expect(window.contentAspectRatio == NSSize(width: 640, height: 480))
+        // Another tool changes the resolution while the window's edge is
+        // dragged: the rest of the drag keeps the new aspect ratio and minimum.
+        external.windowWillStartLiveResize(Notification(name: NSWindow.willStartLiveResizeNotification, object: window))
+        screen.report { $0.pixelSize = CGSize(width: 1920, height: 1080) }
+        #expect(window.contentAspectRatio == NSSize(width: 1920, height: 1080))
+        let minimum = window.contentMinSize
+        #expect(abs(minimum.width / minimum.height - 1920.0 / 1080.0) < 0.01)
+        external.windowDidEndLiveResize(Notification(name: NSWindow.didEndLiveResizeNotification, object: window))
+        #expect(window.contentAspectRatio == NSSize(width: 1920, height: 1080))
+    }
+
     @Test func theExternalDisplaysWindowGivesItsDisplayTheMacsModifiersWithTheFocus() throws {
         _ = NSApplication.shared
         let preferences = MemoryPreferences()

@@ -1215,7 +1215,8 @@ Like Simulator.app:
   scale is chosen and placed again at its new size.
 - A new size keeps the display's scale. A drag on the window's edges keeps the
   screen's aspect ratio and stops at the scale that fits the display in 240 by
-  240 points. While the window is key, Point Accurate, Pixel Accurate (the
+  240 points, both of which follow a new size during the drag, as
+  Simulator.app's geometry update sets them on each resize. While the window is key, Point Accurate, Pixel Accurate (the
   screen's scale over the Mac screen's), and Fit Screen scale it; Physical
   Size is unavailable, as for every screen that is not a device's own.
 - The display takes the pointer as touches and, while its window is key and
