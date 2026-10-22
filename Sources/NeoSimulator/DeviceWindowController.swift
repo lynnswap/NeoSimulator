@@ -27,8 +27,14 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     /// screens, which a new window is centered at.
     private let savedCenter: NSPoint?
     /// Whether the window is in full screen or moving into or out of it,
-    /// where Simulator.app's scale commands are unavailable.
-    private var isFullScreen = false
+    /// where Simulator.app's scale commands are unavailable and the bezel
+    /// shows no resize cursors.
+    private var isFullScreen = false {
+        didSet { showResizeCursors() }
+    }
+    /// The drag on a corner of the bezel in progress, and the largest scale it
+    /// may give the display.
+    private var bezelResize: (drag: BezelResize, maximumScale: CGFloat)?
     /// The display's scale and the window's origin when the window entered
     /// full screen, which Simulator.app restores when the window leaves it.
     private var geometryBeforeFullScreen: (scale: CGFloat, origin: NSPoint)?
@@ -74,6 +80,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         window.collectionBehavior = [.fullScreenPrimary, .fullScreenAllowsTiling]
         window.delegate = self
         window.displayScale = { [weak self] in self?.session.display.renderScale ?? 1 }
+        window.handleMouseEvent = { [weak self] in self?.handleBezelResize($0) ?? false }
         attachSession()
         // Like Simulator.app, each window shows the bezel as the app-wide
         // Show Device Bezels preference says, before it takes its scale.
@@ -144,6 +151,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         content.canImport = { [weak self] in self?.session.canPerformToolOperation == true }
         content.importFiles = { [weak self] in self?.importFiles($0) }
         window.contentView = content
+        showResizeCursors()
     }
 
     // MARK: Restart
@@ -284,9 +292,10 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// Follows the bezel the display shows, as Simulator.app's chrome refresh
-    /// does: a window with a bezel is not resizable, and the bezel's top
-    /// padding lets the window extend above the screen. In full screen the
-    /// window stays resizable until it leaves full screen.
+    /// does: AppKit does not resize a window with a bezel, whose corners
+    /// resize it instead, and the bezel's top padding lets the window extend
+    /// above the screen. In full screen the window stays resizable until it
+    /// leaves full screen.
     private func bezelChanged() {
         guard let window = window as? DeviceWindow else { return }
         let padding = session.display.chromePadding
@@ -574,6 +583,13 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         return NSSize(width: visible.width, height: visible.height - content.heightAboveDisplay)
     }
 
+    /// The smallest scale that Simulator.app lets a fixed scale or a drag on
+    /// the bezel give the display.
+    private var minimumScale: CGFloat {
+        WindowScale.minimum(family: session.capabilities.family, displayClass: session.display.displayClass,
+                            fitting240: session.display.scale(for: NSSize(width: 240, height: 240)))
+    }
+
     /// Whether Simulator.app's validation of a scale command gets past its
     /// first checks: a connected display outside full screen, and for
     /// Physical Size, the device's own screen. Otherwise the command is
@@ -590,10 +606,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     func canSetScale(_ mode: WindowScaleMode) -> Bool {
         guard validatesScale(mode), let window else { return false }
         guard mode != .fitScreen else { return true }
-        guard let scale = scale(for: mode),
-              scale >= WindowScale.minimum(family: session.capabilities.family, displayClass: session.display.displayClass,
-                                           fitting240: session.display.scale(for: NSSize(width: 240, height: 240)))
-        else { return false }
+        guard let scale = scale(for: mode), scale >= minimumScale else { return false }
         guard session.display.chromePadding == nil, let space = displaySpace(on: window.screen) else { return true }
         let size = session.display.size(for: scale)
         return size.width <= space.width && size.height <= space.height
@@ -646,10 +659,11 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
 
     /// Sizes the window to the display at its scale, as Simulator.app's
     /// geometry update does: the window is as wide as the display, also
-    /// below `contentMinSize`, keeps its bottom-left corner, and moves down
-    /// when its top would be above the screen. In full screen and during a
-    /// live resize, the display fits the window instead.
-    private func updateWindowSize() {
+    /// below `contentMinSize`, keeps its bottom-left corner or moves it to
+    /// `origin`, and moves down when its top would be above the screen. In
+    /// full screen and during a live resize, the display fits the window
+    /// instead.
+    private func updateWindowSize(origin: NSPoint? = nil) {
         guard !closed, let window, !window.inLiveResize, !isFullScreen else {
             resizeDisplay()
             return
@@ -657,7 +671,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         let size = session.display.size(for: session.display.renderScale)
         var frame = window.frameRect(forContentRect: NSRect(x: 0, y: 0,
             width: size.width, height: size.height + content.heightAboveDisplay))
-        frame.origin = window.frame.origin
+        frame.origin = origin ?? window.frame.origin
         if let visible = window.screen?.visibleFrame, visible.maxY < frame.maxY {
             frame.origin.y = visible.maxY - frame.height
         }
@@ -665,6 +679,77 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         window.setFrame(frame, display: true)
         isSizingWindow = false
         layoutDisplay()
+    }
+
+    // MARK: Bezel resizing
+
+    /// Resizes the window by a drag on a corner of the bezel, as
+    /// Simulator.app's `DeviceWindow` does with the clicks that SimulatorKit
+    /// leaves to the window in `SimDisplayView.typedResizeRects`. Returns
+    /// whether `event` belongs to such a drag.
+    private func handleBezelResize(_ event: NSEvent) -> Bool {
+        switch event.type {
+        case .leftMouseDown: return beginBezelResize(with: event)
+        case .leftMouseDragged where bezelResize != nil: continueBezelResize(with: event)
+        case .leftMouseUp where bezelResize != nil: endBezelResize()
+        default: return false
+        }
+        return true
+    }
+
+    /// Starts a drag when `event` presses a corner of the bezel, outside full
+    /// screen. The display may grow until the dragged corner reaches the
+    /// edges of the screen's visible frame.
+    private func beginBezelResize(with event: NSEvent) -> Bool {
+        guard !closed, !isFullScreen, let window else { return false }
+        let display = session.display
+        let point = display.view.convert(event.locationInWindow, from: nil)
+        guard let corner = display.resizeRects.first(where: { $0.rect.contains(point) })?.corner else { return false }
+        let drag = BezelResize(corner: corner,
+                               start: NSRect(origin: window.frame.origin,
+                                             size: NSSize(width: window.frame.width, height: display.view.frame.height)),
+                               pointer: Self.screenLocation(of: event, in: window))
+        let maximumScale = (window.screen ?? NSScreen.main).map {
+            display.scale(for: drag.largestSize(within: $0.visibleFrame))
+        } ?? 1000
+        bezelResize = (drag, maximumScale)
+        display.beginResize()
+        return true
+    }
+
+    /// Gives the display the largest scale at which it fits the size the drag
+    /// asks for, from the device's minimum to the drag's maximum, and moves
+    /// the window so that the display's opposite corner stays where it was.
+    private func continueBezelResize(with event: NSEvent) {
+        guard let resize = bezelResize, let window else { return }
+        let display = session.display
+        let requested = resize.drag.requestedSize(pointerAt: Self.screenLocation(of: event, in: window))
+        display.setRenderScale(min(resize.maximumScale, max(minimumScale, display.scale(for: requested))))
+        updateWindowSize(origin: resize.drag.origin(for: display.size(for: display.renderScale)))
+    }
+
+    /// Ends the drag. Like Simulator.app, a window that the drag left
+    /// mostly off its screen then moves back within reach.
+    private func endBezelResize() {
+        bezelResize = nil
+        session.display.endResize()
+        guard let window, !window.styleMask.contains(.fullScreen),
+              let visible = (window.screen ?? NSScreen.main)?.visibleFrame else { return }
+        let origin = WindowScale.origin(of: window.frame, reaching: visible)
+        if origin != window.frame.origin { window.setFrameOrigin(origin) }
+    }
+
+    /// Where `event` happened on the screen. A window server event keeps
+    /// where the pointer was then, unlike its location in the window, which
+    /// a move of the window during the drag can leave behind.
+    private static func screenLocation(of event: NSEvent, in window: NSWindow) -> NSPoint {
+        event.cgEvent?.unflippedLocation ?? window.convertPoint(toScreen: event.locationInWindow)
+    }
+
+    /// Shows the bezel's resize cursors outside full screen, as Simulator.app does.
+    private func showResizeCursors() {
+        session.display.setShowsResizeCursors(!isFullScreen)
+        window?.invalidateCursorRects(for: session.display.view)
     }
 
     private func resizeDisplay() {
@@ -819,7 +904,8 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
 }
 
 /// Simulator.app's `DeviceWindow`, which lets a window whose bezel has top
-/// padding extend past the screen.
+/// padding extend past the screen and receives the drags on the bezel's
+/// corners that resize the window.
 @MainActor
 final class DeviceWindow: NSWindow {
     /// The top padding of the display's bezel at scale 1,
@@ -827,6 +913,22 @@ final class DeviceWindow: NSWindow {
     var chromeTopPadding: CGFloat = 0
     /// The display's scale, which the padding scales with.
     var displayScale: () -> CGFloat = { 1 }
+    /// Receives each mouse down, drag, and up that no view in the window
+    /// handles, such as a press on a corner of the bezel, and returns whether
+    /// it handled the event.
+    var handleMouseEvent: (NSEvent) -> Bool = { _ in false }
+
+    override func mouseDown(with event: NSEvent) {
+        if !handleMouseEvent(event) { super.mouseDown(with: event) }
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        if !handleMouseEvent(event) { super.mouseDragged(with: event) }
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        if !handleMouseEvent(event) { super.mouseUp(with: event) }
+    }
 
     /// Like Simulator.app, while the bezel has top padding, the frame keeps
     /// its size and moves down only as far as the top of the bezel, below the

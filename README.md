@@ -85,8 +85,8 @@ xcode-simulator-host use neo
 Neo currently provides:
 
 - a searchable device browser to start simulators or reopen their windows;
-- one window for each booted iOS simulator, resizable while it shows no device
-  bezel;
+- one window for each booted iOS simulator, resized by dragging the corners of
+  its device bezel, or its edges while it shows no bezel;
 - device bezel, touch, accessibility, and focused keyboard input;
 - a Simulator-style window header with the device name, runtime, Home,
   Save Screen, and Rotate Right controls;

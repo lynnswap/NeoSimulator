@@ -28,7 +28,7 @@ source of behavioral assumptions.
 | --- | --- | --- |
 | `DeviceWindow.awakeFromNib` at `0x100035B28` | DarkAqua, clear non-opaque window, disabled tabbing, titlebar separator setup, layer-backed content, shadow invalidation | public AppKit window with full-size transparent titlebar, native traffic lights, DarkAqua, clear background, explicit shadow invalidation |
 | `DeviceWindowController.setShowChrome:` at `0x100048374` | calls SimulatorKit `SimDisplayView.showDeviceChrome` setter | dlsym the same thunk from the selected Xcode 27+ and set it explicitly |
-| `windowDidResize:` at `0x10004BEF4` | derives display scale and invalidates the shadow | existing `beginResize` / `resizeTo` / `endResize` bridge, excluding the detached header area |
+| `windowDidResize:` at `0x10004BEF4`, `windowDidEndLiveResize:` at `0x10004C040` | outside full screen, `windowDidResize:` runs the geometry update without a size or origin and invalidates the shadow; `windowDidEndLiveResize:` sets `renderScale` to `scale(for:)` of the display view's frame | existing `beginResize` / `resizeTo` / `endResize` bridge for a live resize, excluding the detached header area |
 | `WindowTitleHelper` around `0x10005AE20` | owns title/subtitle and Window menu naming | device name in `NSWindow.title`, runtime in `NSWindow.subtitle` |
 
 The reference app's toolbar is app-local (`SimToolbar`,
@@ -174,6 +174,41 @@ checkmarks follow the window's screen at the next validation.
 Simulator.app 16.0 calls them.
 
 NeoSimulator reproduces these commands; its differences are listed in the
+[design](Design.md#commands-and-menus).
+
+## Bezel corner resizing
+
+The evidence is Simulator.app 16.0 (1063.4) from Xcode 26.6 and SimulatorKit
+from Xcode 27.1. Simulator.app's `DeviceWindow` tracks the drag itself; its
+window is not resizable while it shows a bezel.
+
+| Reference owner | Observed behavior |
+| --- | --- |
+| `DeviceWindow.mouseDown:` `0x100037290` → `0x100036E70` | In full screen (`styleMask` bit 14) without a chrome, skips the corners; otherwise looks for the first of `displayView.typedResizeRects` whose `rect` contains `event.locationInWindow` (the display view sits at the window's origin). On a corner: sets `_allowResize`; saves `_initialFrame` (`contentRect(forFrameRect: frame)` with the display view's height), `_initialScale` (`renderScale`), `_initialMouse` (`NSEvent.mouseLocation`), `_resizeRectType`, and `_maxResizeScale` (`0x100037BB0`); calls `beginResize()` and posts `NSWindowWillStartLiveResizeNotification`. Otherwise, with `AllowsMoveByDragOnWindowChrome` (registered YES), calls `performWindowDrag(with:)`. It never calls `super`. |
+| Maximum `0x100037BB0` | `scale(for:)` of the size from the opposite corner of `_initialFrame` to the edges of `(screen ?? NSScreen.main).visibleFrame`: width `initial.maxX − visible.minX` for the left corners, `visible.maxX − initial.minX` for the right; height `initial.maxY − visible.minY` for the lower corners, `visible.maxY − initial.minY` for the upper. 1000 without a screen. |
+| `DeviceWindow.mouseDragged:` `0x100037860` → `0x100037448` | Without a chrome or `_allowResize`, calls `super`. Otherwise the width is the initial width minus the pointer's x movement (`NSEvent.mouseLocation − _initialMouse`) for the left corners and plus it for the right; the height minus the y movement for the lower corners and plus it for the upper. Sets `renderScale = min(_maxResizeScale, max(minimum, scale(for: size)))` with the minimum of the scale commands (`0x100047884`), then calls the geometry update (`0x10004B2E4`) with the content size of the display's `intrinsicContentSize` and the origin that keeps the opposite corner: `x = initial.maxX − width` for the left corners, else `initial.minX`; `y = initial.maxY − height` for the lower corners, else `initial.minY`. |
+| `DeviceWindow.mouseUp:` `0x1000373F8` → `0x1000372E0` | Without a chrome or `_allowResize`, calls `super`. Otherwise calls `endResize()`, clears `_allowResize`, posts `NSWindowDidEndLiveResizeNotification` (so `DWC.windowDidEndLiveResize:` sets `renderScale` from the display view's frame), and runs `0x10003853C`: outside full screen, when the frame does not intersect the visible frame inset by 128 points (`0x100038638`), moves it along each axis until it touches that inset frame. |
+| Geometry update `0x10004B2E4(size:origin:)` | Both arguments are optional; without them it uses the current content rect. The frame is the content size plus the title bar at the origin, `NSIntegralRect`, moved down when its top is above the visible frame, then `setFrame:display:NO animate:NO`. A flag ignores calls made while it runs, such as from `windowDidResize:`. |
+| Resize cursors: the window's setup `0x100035B50` (from `awakeFromNib` and the initializer), `fullScreenState` `didSet` `0x100036184` | The setup turns `displayView.showResizeCursors` on (`0x100036010`); each full screen change sets it to `fullScreenState == none`, followed by `invalidateCursorRectsForView:`. |
+
+SimulatorKit (Xcode 27.1):
+
+| Owner | Observed behavior |
+| --- | --- |
+| `typedResizeRects` getter `0x63F7C` | Empty without a chrome. Otherwise one `TypedResizeRect` (`type`, `rect`) per entry of `SimDeviceChrome.resizeRects` (`chrome.json`'s `resizeRects`: `type`, `scales`, `centerPoint`, `size`): the size is multiplied by `renderScale` when `scales` is set, the center plus the chrome images' `padding` by `renderScale`, and a negative center coordinate, whose padding is negated, counts from the view's frame width or height. The rects are in the display view's coordinates. The iPhone 17 Pro's bezel has two rects at each corner, such as 40 by 20 and 20 by 40 points at scale 1. |
+| `SimDeviceChrome.ResizeRectType` | Cases `lowerLeft` 0, `lowerRight` 1, `upperRight` 2, `upperLeft` 3, whose raw values are their names. |
+| `SimChromeResizeRectsExcludeView`, created in `SimDisplayView.init` (`0x660B8`); `hitTest:` `0x34684` → `0x34504` | Returns itself for a point inside any `typedResizeRects` while the chrome exists, otherwise nil. It does not handle the mouse, so the press reaches the window through the responder chain. |
+| `resetCursorRects` `0x6440C` → `0x642D0` | When `showResizeCursors` is on (it starts off), adds `_windowResizeNorthEastSouthWestCursor` over the `lowerLeft` and `upperRight` rects and `_windowResizeNorthWestSouthEastCursor` over the others. |
+
+NeoSimulator reads `typedResizeRects` through ABIBridge: the getter returns
+the array as a runtime value, `Array.count` and `Array.subscript` bound to
+`TypedResizeRect` read its elements, and `TypedResizeRect.rect`, `type`, and
+`ResizeRectType.rawValue` read each one. `DeviceWindow` passes the mouse
+events that reach it to `DeviceWindowController`, which tracks the drag as
+above. Unlike Simulator.app, it converts the press to the display view's
+coordinates, reads the pointer from each event's `CGEvent` location instead of
+`NSEvent.mouseLocation`, does not post the live resize notifications, and
+starts no drag in full screen. The user-visible differences are listed in the
 [design](Design.md#commands-and-menus).
 
 ## Deferred features

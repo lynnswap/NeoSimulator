@@ -73,6 +73,21 @@ enum WindowScale {
                        y: position(frame.minY, frame.height, visible.minY, visible.maxY))
     }
 
+    /// Where Simulator.app moves a window after a drag on a corner of its
+    /// bezel: a window that does not reach into `visible` inset by 128
+    /// points moves along each axis until it touches that inset frame.
+    static func origin(of frame: NSRect, reaching visible: NSRect) -> NSPoint {
+        let inset = visible.insetBy(dx: 128, dy: 128)
+        guard !frame.intersects(inset) else { return frame.origin }
+        func position(_ origin: CGFloat, _ length: CGFloat, _ lower: CGFloat, _ upper: CGFloat) -> CGFloat {
+            if origin > upper { return upper }
+            if origin + length < lower { return lower - length }
+            return origin
+        }
+        return NSPoint(x: position(frame.minX, frame.width, inset.minX, inset.maxX),
+                       y: position(frame.minY, frame.height, inset.minY, inset.maxY))
+    }
+
     /// Simulator.app's `DeviceWindow.constrainFrameRect(_:to:)` for a window
     /// whose bezel has top padding: `frame` keeps its size and moves down only
     /// when its top, less `inset`, is above `visible`. The window may extend
@@ -83,6 +98,39 @@ enum WindowScale {
         var constrained = frame
         constrained.origin.y = visible.minY + (visible.height - height)
         return constrained
+    }
+}
+
+/// A drag on a corner of the bezel, as Simulator.app's `DeviceWindow`
+/// tracks it: the dragged corner of the display follows the pointer, and the
+/// opposite corner stays where it was.
+struct BezelResize {
+    let corner: DisplayResizeRect.Corner
+    /// The window's frame on the screen when the drag began, as tall as the
+    /// display below the window's header.
+    let start: NSRect
+    /// Where the pointer was on the screen when the drag began.
+    let pointer: NSPoint
+
+    /// The display's size the drag asks for with the pointer at `location`.
+    func requestedSize(pointerAt location: NSPoint) -> NSSize {
+        let dx = location.x - pointer.x, dy = location.y - pointer.y
+        return NSSize(width: start.width + (corner.isLeft ? -dx : dx),
+                      height: start.height + (corner.isLower ? -dy : dy))
+    }
+
+    /// The display's largest size: the dragged corner may reach the edges of
+    /// `visible`, the screen's visible frame.
+    func largestSize(within visible: NSRect) -> NSSize {
+        NSSize(width: corner.isLeft ? start.maxX - visible.minX : visible.maxX - start.minX,
+               height: corner.isLower ? start.maxY - visible.minY : visible.maxY - start.minY)
+    }
+
+    /// The window's origin for a display of `size`, which keeps the opposite
+    /// corner where it was.
+    func origin(for size: NSSize) -> NSPoint {
+        NSPoint(x: corner.isLeft ? start.maxX - size.width : start.minX,
+                y: corner.isLower ? start.maxY - size.height : start.minY)
     }
 }
 

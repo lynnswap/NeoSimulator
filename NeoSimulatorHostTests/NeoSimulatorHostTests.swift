@@ -1066,6 +1066,93 @@ struct InputFocusTests {
         #expect(window.frame.maxY <= visible.maxY)
     }
 
+    @Test func draggingACornerOfTheBezelScalesTheDisplayAroundTheOppositeCorner() throws {
+        let (controller, display) = try makeBezelController()
+        defer { controller.invalidate() }
+        let window = try #require(controller.window)
+        let visible = try #require(window.screen?.visibleFrame)
+        #expect(!window.styleMask.contains(.resizable))
+        // A drag elsewhere on the display resizes nothing.
+        controller.perform(.pointAccurate)
+        let middle = window.convertPoint(toScreen: display.view.convert(
+            NSPoint(x: display.view.bounds.midX, y: display.view.bounds.midY), to: nil))
+        try drag(window, from: middle, by: NSSize(width: 30, height: -55))
+        #expect(display.renderScale == 1)
+        for corner in [DisplayResizeRect.Corner.lowerLeft, .lowerRight, .upperRight, .upperLeft] {
+            controller.perform(.pointAccurate)
+            window.setFrameOrigin(NSPoint(x: (visible.midX - window.frame.width / 2).rounded(),
+                                          y: (visible.midY - window.frame.height / 2).rounded()))
+            let start = window.frame
+            // Moving the corner outward by a quarter of the display's 120 by
+            // 220 points, a quarter larger, as Simulator.app's DeviceWindow does.
+            let outward = NSSize(width: corner.isLeft ? -30 : 30, height: corner.isLower ? -55 : 55)
+            try drag(window, from: try point(of: corner, in: display), by: outward) {
+                #expect(display.isResizing)
+                #expect(display.renderScale == 1.25)
+                // The window takes the display's size, 12 points below its
+                // header, and keeps the display's opposite corner.
+                #expect(window.contentLayoutRect.size
+                    == NSSize(width: display.view.frame.width, height: display.view.frame.height + 12))
+                #expect(corner.isLeft ? window.frame.maxX == start.maxX : window.frame.minX == start.minX)
+                #expect(corner.isLower ? window.frame.maxY == start.maxY : window.frame.minY == start.minY)
+            }
+            #expect(!display.isResizing)
+            #expect(display.renderScale == 1.25)
+        }
+    }
+
+    @Test func aBezelDragStopsAtTheDevicesMinimumAndTheScreensEdge() throws {
+        let (controller, display) = try makeBezelController()
+        defer { controller.invalidate() }
+        let window = try #require(controller.window)
+        let visible = try #require(window.screen?.visibleFrame)
+        controller.perform(.pointAccurate)
+        window.setFrameOrigin(NSPoint(x: visible.midX - window.frame.width / 2, y: visible.midY - window.frame.height / 2))
+        try drag(window, from: try point(of: .lowerRight, in: display), by: NSSize(width: -1000, height: 1000)) {
+            // An iPhone's minimum, which the fixed scales also keep.
+            #expect(display.renderScale == 0.4)
+        }
+        try drag(window, from: try point(of: .lowerRight, in: display), by: NSSize(width: 10_000, height: -10_000)) {
+            // The dragged corner stops at an edge of the screen's visible frame.
+            let frame = window.frame
+            #expect(frame.maxX <= visible.maxX + 0.001 && frame.minY >= visible.minY - 0.001)
+            #expect(abs(frame.maxX - visible.maxX) < 0.001 || abs(frame.minY - visible.minY) < 0.001)
+        }
+    }
+
+    @Test func aWindowThatABezelDragLeavesOffTheScreenComesBackWithinReach() throws {
+        let (controller, display) = try makeBezelController()
+        defer { controller.invalidate() }
+        let window = try #require(controller.window)
+        let visible = try #require(window.screen?.visibleFrame)
+        controller.perform(.pointAccurate)
+        window.setFrameOrigin(NSPoint(x: visible.maxX - 50, y: visible.minY - window.frame.height + 50))
+        let reach = visible.insetBy(dx: 128, dy: 128)
+        try #require(!window.frame.intersects(reach))
+        try drag(window, from: try point(of: .upperLeft, in: display), by: NSSize(width: -30, height: 55)) {
+            #expect(!window.frame.intersects(reach))
+        }
+        // Like Simulator.app, the window moves until it reaches 128 points
+        // into the screen's visible frame.
+        #expect(abs(window.frame.minX - reach.maxX) < 0.001 && abs(window.frame.maxY - reach.minY) < 0.001)
+    }
+
+    @Test func theBezelShowsResizeCursorsOutsideFullScreen() throws {
+        let (controller, display) = try makeBezelController()
+        defer { controller.invalidate() }
+        let window = try #require(controller.window)
+        #expect(display.showsResizeCursors)
+        controller.windowWillEnterFullScreen(Notification(name: NSWindow.willEnterFullScreenNotification, object: window))
+        #expect(!display.showsResizeCursors)
+        // In full screen, where the display fits the window, a drag on a
+        // corner of the bezel resizes nothing.
+        try drag(window, from: try point(of: .lowerRight, in: display), by: NSSize(width: 30, height: -55)) {
+            #expect(!display.isResizing)
+        }
+        controller.windowDidExitFullScreen(Notification(name: NSWindow.didExitFullScreenNotification, object: window))
+        #expect(display.showsResizeCursors)
+    }
+
     @Test func orientationCommandsSetTheDeviceAndKeepManualRotation() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -1193,6 +1280,7 @@ struct InputFocusTests {
         controller.reconnect(try makeSession(shown))
         #expect(shown.chromePadding == NSSize(width: 9, height: 0))
         #expect(!window.styleMask.contains(.resizable))
+        #expect(shown.showsResizeCursors)
         #expect(shown.view.frame.size == NSSize(width: 220, height: 320))
     }
 
@@ -2149,6 +2237,44 @@ struct InputFocusTests {
                                           onRestart: onRestart)
     }
 
+    /// A shown window whose display, 100 by 200 points at scale 1, has a
+    /// 10-point bezel without top padding, like an iPhone's.
+    private func makeBezelController() throws -> (DeviceWindowController, TestDisplay) {
+        let display = TestDisplay()
+        display.naturalSize = NSSize(width: 100, height: 200)
+        display.bezel = NSSize(width: 20, height: 20)
+        display.bezelPadding = NSSize(width: 9, height: 0)
+        let controller = try makeController(display)
+        controller.showWindow(nil)
+        return (controller, display)
+    }
+
+    /// The middle of a resize corner of `display`'s bezel, on the screen.
+    private func point(of corner: DisplayResizeRect.Corner, in display: TestDisplay) throws -> NSPoint {
+        let rect = try #require(display.resizeRects.first { $0.corner == corner }).rect
+        let window = try #require(display.view.window)
+        return window.convertPoint(toScreen: display.view.convert(NSPoint(x: rect.midX, y: rect.midY), to: nil))
+    }
+
+    /// Presses the mouse at `start` on the screen, drags it by `offset`, runs
+    /// `during`, and releases it. `window` receives the events as AppKit
+    /// passes it the events that no view handles, such as a press on a corner
+    /// of the bezel.
+    private func drag(_ window: NSWindow, from start: NSPoint, by offset: NSSize,
+                      during: () throws -> Void = {}) throws {
+        func event(_ type: NSEvent.EventType, at location: NSPoint) throws -> NSEvent {
+            try #require(NSEvent.mouseEvent(
+                with: type, location: window.convertPoint(fromScreen: location), modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil,
+                eventNumber: 0, clickCount: 1, pressure: 1))
+        }
+        let end = NSPoint(x: start.x + offset.width, y: start.y + offset.height)
+        window.mouseDown(with: try event(.leftMouseDown, at: start))
+        window.mouseDragged(with: try event(.leftMouseDragged, at: end))
+        try during()
+        window.mouseUp(with: try event(.leftMouseUp, at: end))
+    }
+
     private func makeSession(_ display: TestDisplay,
                              family: DeviceCapabilities.Family = .iPhone,
                              features: Set<String> = [DeviceCapabilities.displayRotation],
@@ -2352,6 +2478,20 @@ private final class TestDisplay: SimulatorDisplay {
         showsBezel ? NSSize(width: naturalSize.width + bezel.width, height: naturalSize.height + bezel.height) : naturalSize
     }
     func setChromeVisible(_ visible: Bool) { showsBezel = visible }
+    /// A 20-point square at each corner of the bezel, as SimulatorKit places
+    /// resize corners in the display's coordinates.
+    var resizeRects: [DisplayResizeRect] {
+        guard chromePadding != nil else { return [] }
+        let size = size(for: renderScale)
+        return [DisplayResizeRect.Corner.lowerLeft, .lowerRight, .upperRight, .upperLeft].map {
+            DisplayResizeRect(corner: $0, rect: NSRect(x: $0.isLeft ? 0 : size.width - 20,
+                                                       y: $0.isLower ? 0 : size.height - 20, width: 20, height: 20))
+        }
+    }
+    private(set) var showsResizeCursors = false
+    func setShowsResizeCursors(_ shows: Bool) { showsResizeCursors = shows }
+    /// Whether the display is between SimDisplayView's beginResize() and endResize().
+    private(set) var isResizing = false
     func setRenderScale(_ scale: CGFloat) {
         renderScale = scale
         view.setFrameSize(size(for: scale))
@@ -2368,9 +2508,9 @@ private final class TestDisplay: SimulatorDisplay {
         rotations.append(degrees)
         onRotation(degrees)
     }
-    func beginResize() {}
+    func beginResize() { isResizing = true }
     func resize(to size: NSSize) { setRenderScale(scale(for: size)) }
-    func endResize() {}
+    func endResize() { isResizing = false }
     func disconnect() { disconnectCount += 1; onDisconnect() }
 }
 
@@ -2415,6 +2555,21 @@ struct HostBehaviorTests {
         // A window larger than the screen lines up with the edge opposite the one it crossed.
         #expect(origin(-50, -100, 1200, 1000) == NSPoint(x: -200, y: -200))
         #expect(origin(100, 100, 1200, 1000) == NSPoint(x: 0, y: 0))
+    }
+
+    @Test func aBezelDragLeavesTheWindowWithinReachOfItsScreen() {
+        let visible = NSRect(x: 0, y: 0, width: 1000, height: 800)
+        func origin(_ x: CGFloat, _ y: CGFloat) -> NSPoint {
+            WindowScale.origin(of: NSRect(x: x, y: y, width: 300, height: 400), reaching: visible)
+        }
+        // A window that reaches 128 points into the visible frame stays,
+        // also mostly past its edges.
+        #expect(origin(-150, 600) == NSPoint(x: -150, y: 600))
+        // Otherwise it moves along each axis until it reaches that far.
+        #expect(origin(900, 300) == NSPoint(x: 872, y: 300))
+        #expect(origin(-250, 300) == NSPoint(x: -172, y: 300))
+        #expect(origin(300, 700) == NSPoint(x: 300, y: 672))
+        #expect(origin(300, -350) == NSPoint(x: 300, y: -272))
     }
 
     @Test func showDeviceBezelsReadsShowChromeAsSimulatorDoes() {

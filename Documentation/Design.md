@@ -277,8 +277,9 @@ devices.
 A session discovers the default integrated `SimDeviceScreen`; screen ID zero is
 not assumed. It creates a connected `SimDisplayView` and one
 `SimDeviceLegacyHIDClient`, and installs the view in a transparent AppKit
-window, which shows the device bezel as Window ▸ Show Device Bezels says and is
-resizable only while the display shows no bezel (see window scale below).
+window, which shows the device bezel as Window ▸ Show Device Bezels says. A
+window with a bezel resizes by dragging the bezel's corners, and a window
+without one by its edges (see window scale below).
 Shutdown removes the session. Closing a window
 shuts the device down, as Simulator.app does with `DetachOnWindowClose` off;
 a close that keeps the device running suppresses reopening until the device
@@ -503,7 +504,8 @@ window does:
 
 - While the display shows a bezel, the window is not resizable, so AppKit
   keeps the window's top edge on the screen without shrinking a window taller
-  than the screen. Without a bezel, the window is resizable. Full screen stays
+  than the screen; the bezel's corners resize it instead, as described below.
+  Without a bezel, the window is resizable. Full screen stays
   available through the `fullScreenPrimary` collection behavior. AppKit's full
   screen transition fills the screen only with a resizable window, so the
   window is resizable from `windowWillEnterFullScreen(_:)` until it leaves
@@ -518,9 +520,10 @@ window does:
   display's scale stays below the top of the visible frame. Otherwise AppKit
   constrains the frame. This applies to programmatic frame changes and to
   moving the window.
-- Each size change keeps the window's bottom-left corner and moves the window
-  down when its top would be above the visible frame, as Simulator.app's
-  geometry update does. A scale command then puts the top edge back where it
+- Each size change keeps the window's bottom-left corner, unless a drag on
+  the bezel's corners (below) moves it, and moves the window down when its
+  top would be above the visible frame, as Simulator.app's geometry update
+  does. A scale command then puts the top edge back where it
   was, and a rotation keeps the top edge, moving the window down only when that
   edge would be above the visible frame. After a rotation, as after a fixed
   scale, the window moves back inside the visible frame along each axis where
@@ -530,6 +533,31 @@ window does:
   its screen's visible frame the same way, as Simulator.app's
   `screenParametersChanged` does for every device window. No scale is
   reapplied.
+
+Like Simulator.app's `DeviceWindow`, a window with a bezel resizes by
+dragging the bezel's corners:
+
+- The corners are `SimDisplayView.typedResizeRects`, which SimulatorKit builds
+  from the `resizeRects` of the bezel's `chrome.json` in the display view's
+  coordinates at its scale; there are none without a bezel. SimulatorKit's
+  `SimChromeResizeRectsExcludeView` takes the clicks there, so they reach the
+  window through the responder chain, and `SimDisplayView.showResizeCursors`
+  shows diagonal resize cursors over them. NeoSimulator reads the corners
+  through ABIBridge and turns the cursors on outside full screen, as
+  Simulator.app does.
+- A press in a corner, outside full screen, starts a drag between
+  `beginResize()` and `endResize()`. The drag asks for the display's size at
+  the press, grown by how far the pointer has moved away from the opposite
+  corner. The display takes the largest scale at which it fits that size
+  (`scale(for:)`), no smaller than the minimum of the fixed scales and no
+  larger than the scale at which the dragged corner reaches the edges of the
+  screen's visible frame (1000 without a screen).
+- The window then takes the display's size with the display's opposite corner
+  where it was, through the same geometry update as the scale commands, so it
+  moves down when its top would be above the visible frame. Like a manual
+  resize, the drag clears the checkmark of a fixed scale it leaves.
+- When the drag ends, a window that does not reach 128 points into the
+  visible frame moves along each axis until it does.
 
 A rotation, Show Device Bezels, and a restart keep the display's scale and
 resize the window, even when the window no longer fits the screen, as in
@@ -579,10 +607,11 @@ These differ from Simulator.app:
   where Simulator.app divides by zero.
 - A `ScreenConfigurations` entry whose name is not a UUID matches no
   arrangement, where Simulator.app stops.
-- Simulator.app resizes a window with a bezel by dragging the bezel's corners
-  (`SimDisplayView.typedResizeRects`). NeoSimulator does not, so such a window
-  changes size only through the scale commands, rotation, and Show Device
-  Bezels.
+- Simulator.app also starts a drag on a corner of the bezel in full screen,
+  which then sets the full screen window's frame. NeoSimulator starts none in
+  full screen, where the display fits the window.
+- Simulator.app moves the window by a drag elsewhere on the bezel
+  (`AllowsMoveByDragOnWindowChrome`, registered on). NeoSimulator does not.
 - A manual resize, possible without a bezel, does not keep the display's
   aspect ratio and stops at 320 by 300 points instead of the display's size at
   the minimum scale; the display is centered in the window. The scale
