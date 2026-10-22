@@ -1132,8 +1132,9 @@ final class DeviceSession {
     /// sessions share.
     @ObservationIgnored private let externalDisplayChanges: ExternalDisplayChanges
     /// The session's registration with the device's screen adapter, from
-    /// when the session connects until the adapter reports the external
-    /// display or the session disconnects.
+    /// when the session connects, or a choice follows a failure to connect to
+    /// the external display, until the adapter reports the display or the
+    /// session disconnects.
     @ObservationIgnored private var externalScreenRegistration: AnyObject?
     /// Ends the session's wait for the adapter's report after
     /// `externalScreenTimeout`; nil when the session does not wait.
@@ -1197,12 +1198,22 @@ final class DeviceSession {
     func connectExternalDisplay(failure: @escaping @MainActor (Error) -> Void) {
         guard capabilities.supportsExternalDisplays, !isDisconnected, externalScreenConnection == nil,
               externalScreenRegistration == nil else { return }
+        waitForExternalScreen(failure: failure)
+    }
+
+    /// Registers with the device's screen adapter and waits for its report of
+    /// the external display, applying the choice held meanwhile, or the saved
+    /// choice, once the display is reported or the wait ends. Failures go to
+    /// the held choice's handler, or else to `failure`.
+    private func waitForExternalScreen(failure: @escaping @MainActor (Error) -> Void) {
         do {
             externalScreenRegistration = try display.registerForExternalScreen(
                 changed: { [weak self] in self?.externalScreenChanged() },
                 found: { [weak self] in self?.externalScreenReported($0, failure: failure) })
         } catch {
-            return failure(Self.connectionFailure(error, deviceName: device.name))
+            let choice = choiceDuringWait
+            choiceDuringWait = nil
+            return (choice?.failure ?? failure)(Self.connectionFailure(error, deviceName: device.name))
         }
         // A device without a screen adapter has no external display.
         guard externalScreenRegistration != nil else { return applyExternalDisplayAfterWait(failure: failure) }
@@ -1260,12 +1271,18 @@ final class DeviceSession {
     /// turns it on, or turns it off for Disabled; CarPlay also starts the
     /// guest's CarPlay (see `ExternalDisplayChanges`). Because the choice is
     /// saved first, a device that is restarting applies it when it connects,
-    /// and choosing again retries a failure. Failures, also those CoreSimulator
-    /// reports later, go to `failure`, those of one choice together.
+    /// and choosing again retries a failure, also a failure to connect to the
+    /// display: the session then registers again and waits for the display
+    /// with the choice. Failures, also those CoreSimulator reports later, go
+    /// to `failure`, those of one choice together.
     func chooseExternalDisplay(_ mode: ExternalDisplayMode, failure: @escaping @MainActor (Error) -> Void) {
         guard capabilities.supportsExternalDisplays, mode != .carPlay || capabilities.supportsCarPlay else { return }
         preferences.setExternalDisplayTag(mode.rawValue, forDevice: device.id)
         guard canPerformCommands else { return }
+        if externalScreenConnection == nil, externalScreenRegistration == nil {
+            choiceDuringWait = (mode, failure)
+            return waitForExternalScreen(failure: failure)
+        }
         guard externalScreenWait == nil else {
             choiceDuringWait = (mode, failure)
             return

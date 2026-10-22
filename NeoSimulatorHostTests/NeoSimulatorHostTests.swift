@@ -3968,14 +3968,37 @@ struct InputFocusTests {
         }
         defer { restoring.invalidate() }
         #expect(restored == ["Could not set the external display of Test iPhone to 640×480: restore failed"])
-        // A display the session cannot connect to fails the choice made meanwhile.
-        let (unconnectable, display) = try makeExternalDisplayController(nil, device: "D", preferences: preferences)
-        defer { unconnectable.invalidate() }
-        choose(.size1024x768, on: unconnectable)
+    }
+
+    @Test func aChoiceAfterAFailedConnectionToTheExternalDisplayConnectsAgain() throws {
+        var failures: [String] = []
+        let (controller, display) = try makeExternalDisplayController(nil) { failures.append($0.localizedDescription) }
+        defer { controller.invalidate() }
+        func choose(_ mode: ExternalDisplayMode) {
+            controller.session.chooseExternalDisplay(mode) { failures.append($0.localizedDescription) }
+        }
+        // The session cannot connect to the reported display, which fails the
+        // choice made meanwhile and ends the wait.
+        choose(.size1024x768)
         display.externalScreenError = HostError.operation("no proxy")
-        display.connectExternalScreen(TestExternalScreen())
+        let screen = TestExternalScreen()
+        display.connectExternalScreen(screen)
         display.deliverScreenReports()
-        #expect(failures.last == "Could not connect to the external display of Test iPhone: no proxy")
+        let reason = "Could not connect to the external display of Test iPhone: no proxy"
+        #expect(failures == [reason] && !display.isRegisteredForExternalScreen)
+        // A later choice registers again and waits for the display; the
+        // error recurs and is reported again.
+        choose(.size1024x768)
+        #expect(failures.count == 1)
+        display.deliverScreenReports()
+        #expect(failures == [reason, reason])
+        // Once the error is gone, the next choice connects and applies.
+        display.externalScreenError = nil
+        choose(.size1280x720)
+        #expect(screen.requests.isEmpty)
+        display.deliverScreenReports()
+        #expect(screen.requests == ["mode 1280x720@1"] && controller.externalDisplayWindow != nil)
+        #expect(failures.count == 2 && display.externalScreenRegistrations == 3)
         #expect(!display.isRegisteredForExternalScreen)
     }
 

@@ -1287,6 +1287,10 @@ Neo reaches the screen as Simulator.app does:
   display reported later still connects and gets the saved choice; until
   then, a choice reports at once, and the items check nothing. A device
   without a screen adapter has no display to wait for.
+- A failure to connect to the reported display, or to register, is reported
+  and ends the wait. The next choice registers again and waits with it as at
+  connection, so a passing failure does not leave the session without the
+  display; a failure that recurs is reported again.
 - `SimDeviceScreen.screen`'s `setCurrentMode:pixelSize:carPlayProperties:completionQueue:completionHandler:`
   sets a size and turns the screen on; `setPowerState:completionQueue:completionHandler:`
   with 0 turns it off. The mode follows Simulator.app's choice, the current
