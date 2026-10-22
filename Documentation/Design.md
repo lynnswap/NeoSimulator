@@ -473,7 +473,7 @@ edge; the device's screen does not change.
 - Pixel Accurate is `SimDeviceScreen.scale` over the window screen's
   `backingScaleFactor`, each 1 when unknown.
 - Fit Screen asks `SimDisplayView.scale(for:)` for the visible frame less the
-  window header and 20 points, so it can exceed 1.
+  window header, the gap above the display, and 20 points, so it can exceed 1.
 
 Fit Screen then centers the window on its screen, and the fixed scales move it
 back inside the visible frame. The commands need a connected display outside
@@ -482,12 +482,12 @@ full screen, including the full screen transitions. Physical Size also needs
 at least the device's minimum (0.4 for an iPhone and 0.25 for an iPad on its
 own screen, 0.6 for a watch, otherwise the scale at which the display fits 240
 by 240 points). Like Simulator.app, a display without a bezel must also fit
-the visible frame below the window's header, while a window with a bezel may
-extend past the screen. The bezel is the display's `SimDisplayChromeView.chrome`,
-which NeoSimulator reads through ABIBridge with its `images.padding`. It is nil
-while Show Device Bezels is off, because SimulatorKit then clears the chrome
-view's device type, and for a device type whose chrome SimulatorKit cannot
-load. A fixed scale is checked while `renderScale` is within 0.001 of it, also
+the visible frame below the window's header, leaving out the gap above the
+display, while a window with a bezel may extend past the screen. The bezel is
+the display's `SimDisplayChromeView.chrome`, which NeoSimulator reads through
+ABIBridge with its `images.padding`. It is nil while Show Device Bezels is
+off, because SimulatorKit then clears the chrome view's device type, and for
+a device type whose chrome SimulatorKit cannot load. A fixed scale is checked while `renderScale` is within 0.001 of it, also
 when it is below the minimum or does not fit. The menu computes the target from
 the window's current screen each time it validates, so a manual resize, or a
 move to a screen with another resolution or size, clears the checkmark without
@@ -528,10 +528,25 @@ window does:
   display's scale stays below the top of the visible frame. Otherwise AppKit
   constrains the frame. This applies to programmatic frame changes and to
   moving the window.
-- Each size change keeps the window's bottom-left corner, unless a drag on
-  the bezel's corners (below) moves it, and moves the window down when its
-  top would be above the visible frame, as Simulator.app's geometry update
-  does. A scale command then puts the top edge back where it
+- The window's header is the unified toolbar's title bar area, 52 points
+  high, as is the title bar of Simulator.app's titled window with its
+  unified toolbar. Below it, the window keeps Simulator.app's gap above the
+  display: 10 points less the top padding of the bezel's images, so 10
+  points without a bezel and for the iPhone 17 Pro's bezel, and 1 point for
+  the iPad bezels, whose images have 9 points of top padding. The gap does
+  not change with the display's scale. While the window has the display's
+  size, the display fills the window below the gap, as Simulator.app's
+  constraints pin its display view; SimulatorKit keeps the device at the
+  view's lower-left corner when the view is a fraction of a point larger. In
+  full screen and after a manual resize, the display keeps its own size,
+  centered below the gap.
+- Each size change takes the display's size plus the header and the gap,
+  keeps the window's bottom-left corner, unless a drag on the bezel's corners
+  (below) moves it, takes the smallest integral frame around that
+  (`NSIntegralRect`), and moves the window down when its top would be above
+  the visible frame, as Simulator.app's geometry update does. AppKit on
+  macOS 26 also rounds window frames to whole points, the same way for every
+  frame these paths set. A scale command then puts the top edge back where it
   was, and a rotation keeps the top edge, moving the window down only when that
   edge would be above the visible frame. After a rotation, as after a fixed
   scale, the window moves back inside the visible frame along each axis where
@@ -631,6 +646,14 @@ These differ from Simulator.app:
   display, as in Simulator.app, also when that is narrower.
 - Simulator.app's minimum for a tvOS or visionOS display with a bezel, 240
   points over the screen's pixel height, is not reproduced.
+- Simulator.app's geometry update switches its toolbar to the expanded
+  style, whose title bar is 76 points instead of 52, while the display is
+  narrower than its toolbar's buttons at their nib widths plus 4 points
+  each, the wider of the title and subtitle, and 130 points: about 317
+  points for an iPhone 17 Pro and 413 for an iPad mini (A17 Pro).
+  NeoSimulator keeps the unified toolbar, so a window that narrow is 24
+  points shorter than Simulator.app's, and Fit Screen chosen in it gives a
+  larger scale, where Simulator.app subtracts the taller title bar.
 - Simulator.app animates the window into and out of full screen itself.
   NeoSimulator uses AppKit's transition, so the window is resizable in full
   screen.
