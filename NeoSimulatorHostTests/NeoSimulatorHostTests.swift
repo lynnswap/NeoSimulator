@@ -857,7 +857,8 @@ struct InputFocusTests {
         let items = NSApp.mainMenu?.items.compactMap(\.submenu).flatMap { menu in
             menu.items + menu.items.compactMap(\.submenu).flatMap(\.items)
         } ?? []
-        let commands = try ["Re-Center Open Apps", "Orbit Mode", "75%", "Show Gaze Target"].map { title in
+        let commands = try ["Re-Center Open Apps", "Orbit Mode", "75%", "Show Gaze Target",
+                            "User and 2 Spatial Participants"].map { title in
             try #require(items.first { $0.title == title })
         }
         let display = TestDisplay()
@@ -880,7 +881,7 @@ struct InputFocusTests {
             #expect(NSApp.sendAction(action, to: target, from: command))
         }
         #expect(overlay.actions == ["recenterAllOpenApps:", "viewportModeChangedToOrbit:", "setImmersionTo75:",
-                                    "toggleShowGazeTarget:"])
+                                    "toggleShowGazeTarget:", "configureSimulatedFaceTimeSession1x2:"])
         #expect(overlay.validateMenuItem(commands[3]) && commands[3].state == .on)
         // Without the plugin, no responder of the window takes them, so AppKit
         // disables them.
@@ -1148,10 +1149,24 @@ struct InputFocusTests {
             ["setImmersionTo50:", "setImmersionTo75:", "setImmersionTo100:"])
         #expect(immersion.items.allSatisfy { $0.target == nil && $0.keyEquivalent.isEmpty })
         // Optic ID follows the device's feature and, on Apple Vision Pro, has
-        // no shortcut.
+        // no shortcut. FaceTime is for Apple Vision, and its items send the
+        // overlay's actions without shortcuts.
         let features = try menu("Features")
-        #expect(visible(features, vision) == ["Optic ID", "-", "Trigger iCloud Sync", "-", "Location"])
+        #expect(visible(features, vision) == ["Optic ID", "-", "FaceTime", "-", "Trigger iCloud Sync", "-", "Location"])
         #expect(!visible(features, phone).contains("Optic ID"))
+        #expect(!visible(features, phone).contains("FaceTime"))
+        let faceTime = try menu("FaceTime", in: features)
+        #expect(faceTime.items.map(\.title) == [
+            "User and 1 Spatial Participant", "User and 2 Spatial Participants", "User and 3 Spatial Participants",
+            "User and 4 Spatial Participants", "User, 1 Participant and 4 Spatial Participants",
+            "User, 8 Participants and 4 Spatial Participants",
+        ])
+        #expect(faceTime.items.map { $0.action.map(NSStringFromSelector) } == [
+            "configureSimulatedFaceTimeSession1x1:", "configureSimulatedFaceTimeSession1x2:",
+            "configureSimulatedFaceTimeSession1x3:", "configureSimulatedFaceTimeSession1x4:",
+            "configureSimulatedFaceTimeSession1x4x1:", "configureSimulatedFaceTimeSession1x4x8:",
+        ])
+        #expect(faceTime.items.allSatisfy { $0.target == nil && $0.keyEquivalent.isEmpty })
         menus.updateKeyEquivalents(for: vision)
         let opticID = try menu("Optic ID", in: features)
         #expect(opticID.items.map(\.title) == ["Enrolled", "Matching Eye", "Non-matching Eye"])
@@ -5958,6 +5973,9 @@ private final class PluginOverlay: NSView, NSMenuItemValidation {
     @objc func recenterAllOpenApps(_ sender: Any?) { actions.append("recenterAllOpenApps:") }
     @objc func viewportModeChangedToOrbit(_ sender: Any?) { actions.append("viewportModeChangedToOrbit:") }
     @objc func setImmersionTo75(_ sender: Any?) { actions.append("setImmersionTo75:") }
+    @objc func configureSimulatedFaceTimeSession1x2(_ sender: Any?) {
+        actions.append("configureSimulatedFaceTimeSession1x2:")
+    }
     @objc func toggleShowGazeTarget(_ sender: NSMenuItem) {
         actions.append("toggleShowGazeTarget:")
         showsGazeTarget.toggle()

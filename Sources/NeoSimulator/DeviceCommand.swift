@@ -460,7 +460,7 @@ struct DeviceCommand {
 }
 
 /// A menu command that the device's user-interface plugin performs: Apple
-/// Vision Pro's camera, scene, immersion, and gaze commands, which
+/// Vision Pro's camera, scene, immersion, gaze, and FaceTime commands, which
 /// `XROS.VirtualHMDInputView`, the overlay of the selected Xcode's
 /// `XROS.simdeviceui`, implements. As in Simulator.app's MainMenu.nib, the
 /// item sends its action to the first responder, which is the overlay while it
@@ -509,12 +509,30 @@ struct PluginCommand {
         PluginCommand(title: "75%", action: Selector(("setImmersionTo75:"))),
         PluginCommand(title: "100%", action: Selector(("setImmersionTo100:"))),
     ]
+    // Features ▸ FaceTime. Each item has the overlay start a simulated
+    // FaceTime call in the guest with the local user and that many spatial
+    // and other participants.
+    static let faceTimeSessions = [
+        PluginCommand(title: "User and 1 Spatial Participant",
+                      action: Selector(("configureSimulatedFaceTimeSession1x1:"))),
+        PluginCommand(title: "User and 2 Spatial Participants",
+                      action: Selector(("configureSimulatedFaceTimeSession1x2:"))),
+        PluginCommand(title: "User and 3 Spatial Participants",
+                      action: Selector(("configureSimulatedFaceTimeSession1x3:"))),
+        PluginCommand(title: "User and 4 Spatial Participants",
+                      action: Selector(("configureSimulatedFaceTimeSession1x4:"))),
+        PluginCommand(title: "User, 1 Participant and 4 Spatial Participants",
+                      action: Selector(("configureSimulatedFaceTimeSession1x4x1:"))),
+        PluginCommand(title: "User, 8 Participants and 4 Spatial Participants",
+                      action: Selector(("configureSimulatedFaceTimeSession1x4x8:"))),
+    ]
     // Debug
     static let showGazeTarget = PluginCommand(title: "Show Gaze Target", action: Selector(("toggleShowGazeTarget:")),
                                               isShown: { $0.supportsFeature(DeviceCapabilities.hoverboard) })
 
     private static let byAction = Dictionary(uniqueKeysWithValues: (
         [recenterOpenApps, resetCamera, simulatedScenes, showGazeTarget] + viewportModes + immersionLevels
+            + faceTimeSessions
     ).map { ($0.action, $0) })
 }
 
