@@ -6460,7 +6460,7 @@ struct HostBehaviorTests {
             // CarPlay's 800×480 at a scale of 2.
             #expect(try choice(800, 480, scale: 2, modes) == .rangeAt60Hertz(scale: 2))
         }
-        // An iPad's screen, and an iPhone's from iOS 27, takes the menu's sizes
+        // An iPad's screen, and an iPhone's with iOS 27.0, takes the menu's sizes
         // only at 120 Hz; the exact 60 Hz mode of the scale sets them at 60 Hz.
         let iPad: [ExternalScreenMode] = [.exact720x480, .allowedAt120Hertz(scale: 2), .allowedAt120Hertz(scale: 1)]
         for modes in [iPad, Array(iPad.reversed())] {

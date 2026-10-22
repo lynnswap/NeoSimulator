@@ -183,7 +183,7 @@ struct ExternalScreenMode: Equatable {
     /// keeps, whatever the order of `modes`. When the only modes that take the
     /// size are at rates the guest drops, such as the 120 Hz modes of
     /// `allowedSizes` that are a TVOut screen's only modes on an iPad, or on an
-    /// iPhone from iOS 27, the first mode of that scale at a rate the guest
+    /// iPhone with iOS 27.0, the first mode of that scale at a rate the guest
     /// keeps is set with the size instead. CoreSimulator makes the screen's
     /// mode from the size and that mode's scale, refresh rate, and format, and
     /// takes it when the screen's size specification does: the TVOut screen's

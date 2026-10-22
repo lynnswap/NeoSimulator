@@ -630,7 +630,7 @@ Decrease Volume and is followed by a separator. `DC` is `DeviceCoordinator`,
 | `DC.configureExternalDisplay:` `0x100020C00` | Maps the tag to a pixel size at scale 1; CarPlay takes the Stark configuration's size, scale, and `carPlayPropertiesDictionary`, and becomes 2114 without `SimFeatureCarPlay`; another tag is 2114. Calls `starkConfigWriteToDisk:` (`0x100021628`), which for a device with `SimFeatureCarPlay` writes `<dataPath>/Library/Application Support/Simulator/extended_display.plist`, `{stark: false}` for every item but CarPlay. A device without both display features gets 2114. It then saves the tag with `setExternalDisplayMode:forDevice:` (`0x100020F2C`), so a choice is saved before it is applied, saves the external window's geometry when it has a connected screen (`0x100020FBC`), and runs the session block on the coordinator's session queue. |
 | Session block `0x100021090` | With the display features: 2114 with a connected external window powers its screen off (`setPowerState:0 completionQueue:completionHandler:`, `0x100021184`; the completion `0x100021470` only logs), and without one takes no action. Another tag with a connected window removes a CarPlay HID service and calls `enableCarPlay:NO` when that screen is CarPlay (`0x100021268`–`0x100021280`), then calls `reconfigureScreen:toSize:scale:carPlayProperties:completionQueue:completion:` (`0x100021440`), whose completion (`0x1000214E0`) logs and, for CarPlay, enables CarPlay and its HID service. Without a connected window it calls `configureExternalDisplayWithSize:scale:carPlayProperties:` (`0x10002136C`). |
 | `SDS.configureExternalDisplay(withSize:scale:carPlayProperties:)`, Objective-C entry `0x100030F20`, handler `0x100030BF4` | Needs `SimFeatureCarPlay` with CarPlay properties, otherwise `SimFeatureExternalDisplay`. Registers `SimDevice.screenAdapter`'s `register(screenID: nil, …)` and, on the first `.connected` screen whose properties' `screenType` is **1** (`0x100030D04`–`0x100030D08`; TVOut, also for CarPlay), registers that screen's lifecycle events (`0x10002EF2C`) and releases the adapter registration. On the screen's `.connected` event (`0x10002F0B4`) it calls `0x10002F3DC` on its queue. Without an adapter it logs "Failed to get screen adapter for device". |
-| Mode choice `0x10002F688`, setter `0x10002F3DC` | The current mode when `pixelSize` equals the size and `currentMode.preferredUIScale` the scale; otherwise the first `supportedScreenModes` entry with that `preferredUIScale` whose `sizeRule` takes the size: 0 `exactSize`, 1 `minSize` ≤ size ≤ `maxSize`, 2 one of `allowedSizes` (`NSEqualSizes`); another rule traps. Then `setCurrentMode:pixelSize:carPlayProperties:completionQueue:completionHandler:` (`0x10002F540`); without a mode it logs "unable to find target mode matching size". The completion (`0x10002FA78`) only logs. No power call follows: setting the mode turns the screen on. |
+| Mode choice `0x10002F688`, setter `0x10002F3DC` | The current mode when `pixelSize` equals the size and `currentMode.preferredUIScale` the scale; otherwise the first `supportedScreenModes` entry with that `preferredUIScale` whose `sizeRule` takes the size: 0 `exactSize`, 1 `minSize` ≤ size ≤ `maxSize`, 2 one of `allowedSizes` (`NSEqualSizes`); another rule traps. It reads no `refreshRate`; no code in the app sends it. Then `setCurrentMode:pixelSize:carPlayProperties:completionQueue:completionHandler:` (`0x10002F540`) with that mode and the size; without a mode it logs "unable to find target mode matching size". The completion (`0x10002FA78`) only logs. No power call follows: setting the mode turns the screen on. |
 | `SDS.reconfigureScreen` `0x10002FCE4`, `0x100030218` | The same mode choice and setter "without power cycling" (`0x10002FF7C`, `0x1000303DC`); without a mode the completion receives "No matching mode found". |
 | `SimDeviceScreenMonitor` `startMonitoring` `0x100032A20`, property handler `0x100032DB4` | Started by `DC._onSessionQueue_connect` (`0x10001B684`–`0x10001B708`). Registers `register(screenID: nil, …)` on the adapter; on `.connected` records power, size, scale, and CarPlay properties, registers `.properties` events, and calls `screenConnected:`. A properties event compares `powerState` (1 is on) and calls `screenPoweredOn:` or `screenPoweredOff:`, then `geometryChangedForScreen:dimensions:scale:` and `carPlayPropertiesChangedForScreen:carPlayProperties:` on changes. |
 | `DC.screenConnected:` `0x10001BAF0`, `screenPoweredOn:` `0x10001BDAC` | A screen that connects powered on is handled as powered on. Powering on creates `DWC` `initWithCoordinator:` for the screen ID, kept in `windowControllers`, and calls `connectTo:starkConfig:completionQueue:completion:` (the Stark configuration only for CarPlay); the completion logs and, for CarPlay, enables CarPlay and its HID service. The device's own screen and an external screen use the same path. |
@@ -667,9 +667,13 @@ The live check on the separate device set showed:
   refused `createScreenWithProperties:…` with each existing screen's
   properties and current mode (`Swift.String` error, code 1).
 - The TVOut screen starts off at 720×480 with a scale of 1. It advertises an
-  exact 720×480 mode, 120 Hz modes allowing the six menu sizes at scales 1 and
-  2, and on the iPhone 60 Hz ranges from 320×200 to 3840×2160 at scales 1, 2,
-  and 3. The order of `supportedScreenModes` differed between reads.
+  exact 720×480 mode at 60 Hz, the TVOut entry of the device type's
+  `capabilities.plist`; 120 Hz modes allowing the six menu sizes at scales 1
+  and 2; and on the iPhone 60 Hz ranges from 320×200 to 3840×2160 at scales 1,
+  2, and 3. The order of `supportedScreenModes` differed between reads.
+  `refreshRate` is in hundredths of a hertz (6000, 12000). On iOS 27.0 the
+  iPhone 17 Pro's TVOut screen had no ranges, only the exact mode and the
+  120 Hz modes, as the iPad's.
 - `setCurrentMode:…` turned the screen on at the size and completed within
   50 ms; `setPowerState:0` turned it off, and on a screen that was already
   off completed without an error and left it off; each change reported a
@@ -682,7 +686,34 @@ The live check on the separate device set showed:
   and takes a new size one or two main-queue turns after the event by setting
   its view's frame to that size at its scale.
 - The guest left the screen black until an app presented an external display
-  scene, and its `UIScreen` took the size only for a 60 Hz mode.
+  scene, and its `UIScreen` took the size only for a 60 Hz mode. With a
+  120 Hz mode the guest's SpringBoard switched the display to 720×480 at
+  60 Hz itself: its log shows the display connecting at "1920x1080 120Hz"
+  with the other mode "720x480 60Hz", then "preferred_mode_with_criteria: …
+  target rate (0) … target high refresh rate (0) … --> 720x480@60" and a
+  display change to 720×480. In the iOS 26.5 runtime's QuartzCore,
+  `ModeSet::preferred_mode_with_criteria_internal` skips modes below 49 Hz
+  (without a target rate) or above 60.5 Hz, and `Display::Mode::operator<`
+  orders modes by width × height × whole hertz; the QuartzCore of the iOS
+  18.5 and 26.0 runtimes has the same bounds. The guest's QuartzCore imports
+  no `SFBDisplaySetCurrentMode`, so the screen keeps the mode that was set.
+  At 60 Hz, 640×480 also ended at 720×480 on both devices, and on iOS 18.6
+  and 27.0; 1024×768 through 3840×2160 kept their size.
+- CoreSimulator's SimRenderServer builds the TVOut screen's size
+  specification with refresh rates 30, 60, 75, and 120 Hz
+  (`0x100027240`–`0x1000272C0`) and lists it at 120 Hz. Passing the iPad's
+  exact 720×480 mode with 1920×1080 set the screen to 1920×1080 at 60 Hz
+  (`currentMode` an exact 1920×1080 mode at 6000), which the guest's scene
+  took; 1000×700 with either mode failed with "Unsupported Mode: { 1000.0x700.0@…hz 1X … }".
+- On the iPad Pro 11-inch (M5) with iOS 26.5, and the iPad Pro 11-inch (M4)
+  with iOS 26.0 and 18.6, 3840×2160 at 60 Hz made the display an extended
+  display (`SBSystemShellExtendedDisplayControllerPolicy`, wanting a pointer),
+  which SpringBoard re-evaluated about nine times a second; turning the
+  display off, or changing it to 1920×1080, then aborted SpringBoard on an
+  assertion (`SBSystemShellExtendedDisplayControllerPolicy.m:199`), which
+  launchd restarted. The iPad with iOS 27.0 kept SpringBoard. These iPads'
+  device types have `DeviceSupportsEnhancedMultitasking`; the iPhone 17 Pro's
+  does not.
 
 For CarPlay, CoreSimulator's `SimDevice environment` gives the guest the
 file's path as `SIMULATOR_EXTENDED_DISPLAY_PROPERTIES` (and
