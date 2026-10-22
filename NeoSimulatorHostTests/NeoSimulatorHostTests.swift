@@ -906,6 +906,23 @@ struct InputFocusTests {
         let placed = centeredWindow.frame
         centeredWindow.center()
         #expect(centeredWindow.frame == placed)
+        // The saved scale is reduced to Fit Screen's in the shape of the
+        // device's orientation, where Simulator.app chooses it: a display too
+        // tall upright opens at the saved scale once it reads landscape.
+        let tall = NSSize(width: 100, height: visible.height * 4)
+        preferences.setWindowGeometry(center: center, scale: 0.5, forDevice: "D", screens: screens)
+        let tallDisplay = TestDisplay()
+        tallDisplay.naturalSize = tall
+        tallDisplay.onRotation = { [unowned tallDisplay] in tallDisplay.naturalSize = $0 == 0 ? tall : landscape }
+        let rescaled = try makeController(tallDisplay, devicectl: devicectl, device: "D", preferences: preferences)
+        defer { rescaled.invalidate() }
+        #expect(tallDisplay.renderScale < 0.5)
+        rescaled.showNewWindow(cascadingFrom: &cascade)
+        try await readOrientation(rescaled)
+        #expect(tallDisplay.renderScale == 0.5)
+        let rescaledWindow = try #require(rescaled.window)
+        #expect(rescaledWindow.contentLayoutRect.width == landscape.width * 0.5)
+        #expect(abs(rescaledWindow.frame.midX - center.x) < 1 && abs(rescaledWindow.frame.midY - center.y) < 1)
     }
 
     @Test func fullScreenFillsTheScreenAndRestoresTheWindowAfter() throws {

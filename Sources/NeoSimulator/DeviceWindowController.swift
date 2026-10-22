@@ -26,6 +26,9 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     /// Where the device's window last closed in the current arrangement of
     /// screens, which a new window is centered at.
     private let savedCenter: NSPoint?
+    /// The display scale the device's window last closed at in the current
+    /// arrangement of screens.
+    private let savedScale: CGFloat?
     /// Whether the window is in full screen or moving into or out of it,
     /// where Simulator.app's scale commands are unavailable and the bezel
     /// shows no resize cursors.
@@ -53,6 +56,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         // connects, for the current arrangement of screens.
         let saved = preferences.windowGeometry(forDevice: session.device.id, screens: Self.screenFrames)
         savedCenter = saved.center
+        savedScale = saved.scale
         self.onClose = onClose
         self.onRestart = onRestart
         content = DeviceContentView(display: session.display.view)
@@ -102,10 +106,12 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
             forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.moveWindowOntoScreen() }
         }
-        // Like Simulator.app, the window opens at the saved scale or Point
-        // Accurate, reduced to Fit Screen's.
-        showDisplay(at: min(scale(for: .fitScreen) ?? .infinity, saved.scale ?? 1))
+        showDisplay(at: initialScale)
     }
+
+    /// Like Simulator.app, a new window opens at the saved scale or Point
+    /// Accurate, reduced to Fit Screen's.
+    private var initialScale: CGFloat { min(scale(for: .fitScreen) ?? .infinity, savedScale ?? 1) }
 
     /// The frames of the Mac's screens, whose arrangement keys the saved
     /// window geometry.
@@ -118,8 +124,9 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     /// screen where it crosses an edge.
     ///
     /// Simulator.app turns the display to the device's orientation before
-    /// placing the window. NeoSimulator reads the orientation afterwards, so
-    /// that reading places a centered window again in its new shape, unless
+    /// choosing the window's scale and placing it. NeoSimulator reads the
+    /// orientation afterwards, so that reading gives the window the scale it
+    /// opens at in its new shape and places a centered window again, unless
     /// the window has moved or changed size in the meantime. A window that
     /// cascades from another keeps its top-left corner, as there.
     func showNewWindow(cascadingFrom cascadePoint: inout NSPoint) {
@@ -136,7 +143,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         showWindow(nil)
         window.makeKeyAndOrderFront(nil)
         moveWindowOntoScreen()
-        readInitialOrientation(placing: place.map { (place: $0, frame: window.frame) })
+        readInitialOrientation(placing: (place: place, frame: window.frame))
     }
 
     required init?(coder: NSCoder) { nil }
@@ -204,15 +211,17 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// Reads the orientation once for each connection and turns the window
-    /// to it, placing it again with `placement.place` while the window still
-    /// has `placement.frame`.
-    private func readInitialOrientation(placing placement: (place: (NSWindow) -> Void, frame: NSRect)? = nil) {
+    /// to it. A new window that still has `placement.frame` then takes the
+    /// scale it opens at in that shape and is placed again with
+    /// `placement.place`.
+    private func readInitialOrientation(placing placement: (place: ((NSWindow) -> Void)?, frame: NSRect)? = nil) {
         guard !didReadOrientation, session.capabilities.controlsOrientation else { return }
         didReadOrientation = true
         session.run({ [weak self] in
             guard let self else { return }
             try await self.session.readOrientation()
             if let placement, self.window?.frame == placement.frame {
+                self.session.display.setRenderScale(self.initialScale)
                 self.didRotate(placing: placement.place)
             } else {
                 self.didRotate()
