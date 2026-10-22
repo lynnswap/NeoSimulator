@@ -44,6 +44,12 @@ struct DeviceCapabilities {
     static let applePayAuthorization = "com.apple.hid.applepay.authorize"
     static let touchID = "com.apple.touch-id"
     static let faceID = "com.apple.pearl-id"
+    /// `SimFeatureOysterID`: Optic ID, Apple Vision Pro's.
+    static let opticID = "com.apple.oyster-id"
+    /// `SimFeatureHoverboard95880941`, which only Apple Vision Pro's device
+    /// types declare. Simulator.app shows Debug ▸ Show Gaze Target only with
+    /// it.
+    static let hoverboard = "com.apple.hid.hoverboard.95880941"
     static let standBy = "com.apple.display.ambient-overlay"
     /// `SimFeatureUIKitSlowMotionStateful`: the guest keeps slow animations on
     /// until they are turned off.
@@ -548,12 +554,24 @@ final class DeviceSession {
 
     // MARK: Guest features
 
-    enum Biometric { case touchID, faceID }
+    enum Biometric {
+        case touchID, faceID, opticID
+
+        /// The `SimDevice` feature of the biometric.
+        var feature: String {
+            switch self {
+            case .touchID: DeviceCapabilities.touchID
+            case .faceID: DeviceCapabilities.faceID
+            case .opticID: DeviceCapabilities.opticID
+            }
+        }
+    }
 
     private static let biometricEnrollment = "com.apple.BiometricKit.enrollmentChanged"
     private static let standBy = "com.apple.springboard.ambient.presentation"
 
-    /// Whether biometrics are enrolled. Touch ID and Face ID share this guest state.
+    /// Whether biometrics are enrolled. Touch ID, Face ID, and Optic ID share
+    /// this guest state.
     var isBiometricEnrolled: Bool {
         canPerformCommands && (try? display.notificationState(Self.biometricEnrollment)) == 1
     }
@@ -563,10 +581,14 @@ final class DeviceSession {
         try toggleState(of: Self.biometricEnrollment)
     }
 
-    /// Presents a matching or non-matching finger or face to the guest.
+    /// Presents a matching or non-matching finger, face, or eye to the guest.
     func sendBiometric(_ biometric: Biometric, matching: Bool) throws {
         guard canPerformCommands else { return }
-        let source = biometric == .touchID ? "fingerTouch" : "pearl"
+        let source = switch biometric {
+        case .touchID: "fingerTouch"
+        case .faceID: "pearl"
+        case .opticID: "oyster"
+        }
         try display.postNotification("com.apple.BiometricKit_Sim.\(source).\(matching ? "match" : "nomatch")")
     }
 

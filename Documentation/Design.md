@@ -326,22 +326,26 @@ The first parity set contains only commands with an available, validated owner:
 - Edit: Copy Screen, Automatically Sync Pasteboard, Get Pasteboard, Send
   Pasteboard;
 - Device: Restart, Erase All Content and Settings…, Shut Down, Rotate
-  Left/Right, Orientation, Rotate Device Automatically, Home,
-  Lock (iPhones, iPads, and watches), Side Button (watches),
-  Action Button, Siri, Shake, App Switcher, Trigger Screenshot;
+  Left/Right, Orientation, Rotate Device Automatically, Home, Re-Center Open
+  Apps, Lock (iPhones, iPads, and watches), Side Button (watches),
+  Action Button, Siri, Shake, App Switcher, Interaction, Look Around, Pan,
+  Orbit, and Dolly Mode, Reset Camera, Trigger Screenshot, Simulated Scenes;
 - I/O: Keyboard (Use the Same Keyboard Language as macOS, Connect Hardware
   Keyboard, Toggle Software Keyboard), Touch Pressure (Use Trackpad Force, and
   Shallow Press and Deep Press, which only a watch enables), Audio Input,
   Audio Output, Increase Volume, Decrease Volume,
-  External Displays (Disabled, Simulator.app's six sizes, and CarPlay);
-- Features: Touch ID and Face ID (Enrolled, Matching, Non-matching),
+  External Displays (Disabled, Simulator.app's six sizes, and CarPlay), Set
+  Immersion To (50%, 75%, 100%);
+- Features: Touch ID, Face ID, and Optic ID (Enrolled, Matching,
+  Non-matching),
   Authorize Apple Pay, Toggle Appearance, Toggle In-call Status Bar,
   Show/Hide StandBy, Increase and Decrease Preferred Text Size, Toggle
   Increase Contrast, Trigger iCloud Sync, Location (None, Custom Location…,
   and the runtime's scenarios);
 - Debug: Slow Animations, Graphics Quality Override, Color Blended Layers,
   Color Copied Images, Color Misaligned Images, Color Off-screen Rendered, Open
-  System Log…, Simulate Memory Warning, Show Parallel Testing Devices;
+  System Log…, Simulate Memory Warning, Show Gaze Target, Show Parallel
+  Testing Devices;
 - Window: standard minimize/zoom/full screen, Show Device Bezels (not for
   Apple Vision), Stay on Top, Physical Size, Point Accurate, Pixel Accurate,
   Fit Screen, Simulators, Bring All to Front.
@@ -1720,9 +1724,54 @@ capture, excluded above. The toolbar style threshold counts Neo's own Home
 and Save Screen for Apple Vision, where Simulator.app counts its iPhone nib's
 three buttons; the display is wide enough for the unified style either way.
 
-Watch gestures and Digital Crown scrolling, Simulate Fall, the Apple TV
-Remote, and the visionOS camera, scene, immersion, Optic ID, and Show Gaze
-Target commands build on this hosting and are not implemented yet.
+Apple Vision Pro's camera, scene, immersion, and gaze commands are the
+plugin's. As in Simulator.app's MainMenu.nib, their items have no target and
+send the overlay's actions up the responder chain: Device ▸ Re-Center Open
+Apps (`recenterAllOpenApps:`), Interaction, Look Around, Pan, Orbit, and Dolly
+Mode (`viewportModeChangedToInteraction:` to `viewportModeChangedToDolly:`,
+Control-Command-1 to 5), Reset Camera (`resetViewportCamera:`,
+Control-Command-0), and Simulated Scenes (`selectSimulatedScene:`); I/O ▸ Set
+Immersion To ▸ 50%, 75%, and 100% (`setImmersionTo50:`, `setImmersionTo75:`,
+`setImmersionTo100:`); and Debug ▸ Show Gaze Target (`toggleShowGazeTarget:`).
+The overlay is the window's first responder, so AppKit has it validate each
+item and sends it the action, which the plugin carries out over its own
+connection to the guest. The validation is therefore Simulator.app's: Show
+Gaze Target is checked while the gaze target shows; Set Immersion To is
+enabled only while the guest reports immersion style 2, which neither the Home
+View nor the Settings app did in the live checks; the camera modes and Reset
+Camera have no checkmark, and the plugin's toolbar shows the mode; Simulated
+Scenes gets a submenu of the runtime's scenes with the current one checked,
+and stays disabled until the device has reported its scene. In the live
+checks, a device that booted while its window connected reported it, and one
+that was already booted did not.
+
+As `deviceWindowBecameKey:` does, Neo shows the camera, scene, and Set
+Immersion To items for Apple Vision, Show Gaze Target for a device with
+`SimFeatureHoverboard95880941` (`com.apple.hid.hoverboard.95880941`), and
+Re-Center Open Apps for every device. Simulator.app also has Increase
+Immersion, Decrease Immersion, 0%, and 25%, which it hides for every device;
+Neo leaves them out. No private member is resolved for these commands: AppKit
+sends the actions, so `--validate-runtime` does not check them, and a plugin
+without one of them leaves its item disabled. The plugins of Xcode 27.0, 27.1,
+and 27.2 have all of them. Without the overlay in the key window's responder
+chain, for example before the plugin loads, Re-Center Open Apps is disabled,
+where Simulator.app's device window takes it and does nothing (its
+`recenterAllOpenApps:` is empty).
+
+Features ▸ Optic ID (Enrolled, Matching Eye, Non-matching Eye) is shown with
+`SimFeatureOysterID` (`com.apple.oyster-id`), which only Apple Vision Pro's
+device types declare. Like Touch ID and Face ID, it posts Simulator.app's
+notifications in the guest with `SimDevice postDarwinNotification:error:`:
+Enrolled flips the shared `com.apple.BiometricKit.enrollmentChanged` state and
+posts it, and Matching Eye and Non-matching Eye post
+`com.apple.BiometricKit_Sim.oyster.match` and `.nomatch`, which the guest's
+BiometricKit observes. The Enrolled checkmark shows that guest state, where
+Simulator.app keeps a flag for each window that starts off. Simulator.app
+gives Matching Eye and Non-matching Eye Option-Command-M and N only on a device
+with Face ID, so on Apple Vision Pro they have no shortcut, in Neo as well.
+
+Watch gestures and Digital Crown scrolling, Simulate Fall, and the Apple TV
+Remote build on this hosting and are not implemented yet.
 
 ## Failure semantics
 
@@ -1785,8 +1834,9 @@ and restoring the saved choice on an iPhone and an iPad, CarPlay on an iPhone
 with a click reaching the guest, switched with a size, Disabled, a closed
 window, and restored after a restart, watchOS, tvOS, and visionOS windows
 with their toolbars, menus, titles, and Always On following the backlight,
-Apple Vision Pro's plugin overlay and toolbar, Device Hub absence, and
-loaded-image provenance.
+Apple Vision Pro's plugin overlay and toolbar, its camera modes, Reset Camera,
+Re-Center Open Apps, Simulated Scenes, Set Immersion To, Show Gaze Target, and
+Optic ID, Device Hub absence, and loaded-image provenance.
 
 ## Non-goals
 
