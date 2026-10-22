@@ -102,6 +102,7 @@ Representative coordinator actions:
 | Location | `0x100022390` | implemented with `SimDevice availableLocationScenarios`, `clearSimulatedLocationWithError:`, `setLocationWithLatitude:andLongitude:error:`, and `setLocationScenario:error:`, restored at each connection from `LocationMode`/`LocationScenario`/`LocationLatitude`/`LocationLongitude`; the menu lists the key device's scenarios rather than the last connected device's; the `com.apple.iphonesimulator.simulateLocation` notification is not handled |
 | Get Pasteboard / Send Pasteboard | `0x10001FC3C` / `0x10001FC80` | implemented with SimPasteboardPlus `pull` / `push` on a connection opened at the first command; see [Pasteboard](#pasteboard) |
 | Audio Input / Audio Output | `0x1000142C8` (app delegate) | implemented with CoreSimDeviceIO's `SimAudioHostRoutable` port; see [Audio routing](#audio-routing) |
+| External Displays | `0x1000208CC` | implemented with SimulatorKit's screen adapter and `SimScreen`'s mode and power setters; see [External displays](#external-displays) |
 | Automatically Sync Pasteboard | `0x100012ABC` (app delegate) | implemented with `enableRemoteAutosync` / `disableRemoteAutosync` and the forwarding of a device's copy to the other devices, off by default; see [Pasteboard](#pasteboard) |
 
 ## Implemented parity set
@@ -123,7 +124,7 @@ semantics:
 - I/O: Keyboard (Use the Same Keyboard Language as macOS, Connect Hardware
   Keyboard, Toggle Software Keyboard), Touch Pressure (Use Trackpad Force,
   Shallow Press, Deep Press), Audio Input, Audio Output, Increase Volume,
-  Decrease Volume;
+  Decrease Volume, External Displays (Disabled and six sizes);
 - Features: Touch ID and Face ID (Enrolled, Matching, Non-matching),
   Authorize Apple Pay, Toggle Appearance, Toggle In-call Status Bar,
   Show/Hide StandBy, Increase and Decrease Preferred Text Size, Toggle
@@ -574,13 +575,78 @@ The live check on the separate device set showed:
 NeoSimulator reproduces Audio Input and Audio Output; its handling and
 differences are described in the [design](Design.md#audio-input-and-audio-output).
 
+## External displays
+
+The evidence is Simulator.app 16.0 (1063.4) from Xcode 26.6, SimulatorKit from
+Xcode 27.1, CoreSimulator 1174.9.2 with its CoreSimDeviceIO, and an iOS 26.5
+iPhone 17 Pro and iPad Pro 11-inch (M5) in a separate device set. In
+`MainMenu.nib`, I/O ▸ External Displays (tag 2014) follows a separator after
+Decrease Volume and is followed by a separator. `DC` is `DeviceCoordinator`,
+`DWC` is `Simulator.DeviceWindowController`, and `SDS` is the app's
+`SimDevice+Screens.swift` extension.
+
+| Reference owner | Observed behavior |
+| --- | --- |
+| Menu items, `DC.tvOutModeChanged:` `0x1000208CC` | Disabled (2114), a separator, 640×480 (2214), 720×480 (2514), 1024×768 (2314), 1280×720 (720p) (2414), 1920×1080 (1080p) (2614), 3840×2160 (4K) (2664), a separator, and CarPlay (2714). The action records an analytics event per tag, opens the Stark options panel for CarPlay when `CarPlayExtraOptions` is on, and otherwise calls `configureExternalDisplay:` with the tag. |
+| `DC.deviceWindowBecameKey:` `0x10001A5A8` … `0x10001A614` | Hides the submenu item and its separator unless the device supports `SimFeatureExternalDisplay` (`com.apple.display.supports-external`) and `SimFeatureInternalDisplay` (`com.apple.display.integrated`). |
+| `DC.validateMenuItem:` `0x10001F578` … `0x10001F6DC` | Enabled with both features, and for CarPlay also `SimFeatureCarPlay`. The checkmark compares the item's tag with `externalDisplayModeForDevice:` (`0x10001F608`); without the features, the item is disabled and unchecked. There is no connection check. |
+| `NSUserDefaults(Indigo)` `externalDisplayModeForDevice:` `0x10003B744` → `0x100079A70`, `setExternalDisplayMode:forDevice:` `0x10003B7D0` → `0x100073214` | `DevicePreferences[UDID].SimulatorExternalDisplay`, an integer tag; missing or not an integer reads as 2114. |
+| `DC.configureExternalDisplay:` `0x100020C00` | Maps the tag to a pixel size at scale 1; CarPlay takes the Stark configuration's size, scale, and `carPlayPropertiesDictionary`, and becomes 2114 without `SimFeatureCarPlay`; another tag is 2114. Calls `starkConfigWriteToDisk:` (`0x100021628`), which for a device with `SimFeatureCarPlay` writes `<dataPath>/Library/Application Support/Simulator/extended_display.plist`, `{stark: false}` for every item but CarPlay. A device without both display features gets 2114. It then saves the tag with `setExternalDisplayMode:forDevice:` (`0x100020F2C`), so a choice is saved before it is applied, saves the external window's geometry when it has a connected screen (`0x100020FBC`), and runs the session block on the coordinator's session queue. |
+| Session block `0x100021090` | With the display features: 2114 with a connected external window powers its screen off (`setPowerState:0 completionQueue:completionHandler:`, `0x100021184`; the completion `0x100021470` only logs), and without one takes no action. Another tag with a connected window removes a CarPlay HID service and calls `enableCarPlay:NO` when that screen is CarPlay (`0x100021268`–`0x100021280`), then calls `reconfigureScreen:toSize:scale:carPlayProperties:completionQueue:completion:` (`0x100021440`), whose completion (`0x1000214E0`) logs and, for CarPlay, enables CarPlay and its HID service. Without a connected window it calls `configureExternalDisplayWithSize:scale:carPlayProperties:` (`0x10002136C`). |
+| `SDS.configureExternalDisplay(withSize:scale:carPlayProperties:)`, Objective-C entry `0x100030F20`, handler `0x100030BF4` | Needs `SimFeatureCarPlay` with CarPlay properties, otherwise `SimFeatureExternalDisplay`. Registers `SimDevice.screenAdapter`'s `register(screenID: nil, …)` and, on the first `.connected` screen whose properties' `screenType` is **1** (`0x100030D04`–`0x100030D08`; TVOut, also for CarPlay), registers that screen's lifecycle events (`0x10002EF2C`) and releases the adapter registration. On the screen's `.connected` event (`0x10002F0B4`) it calls `0x10002F3DC` on its queue. Without an adapter it logs "Failed to get screen adapter for device". |
+| Mode choice `0x10002F688`, setter `0x10002F3DC` | The current mode when `pixelSize` equals the size and `currentMode.preferredUIScale` the scale; otherwise the first `supportedScreenModes` entry with that `preferredUIScale` whose `sizeRule` takes the size: 0 `exactSize`, 1 `minSize` ≤ size ≤ `maxSize`, 2 one of `allowedSizes` (`NSEqualSizes`); another rule traps. Then `setCurrentMode:pixelSize:carPlayProperties:completionQueue:completionHandler:` (`0x10002F540`); without a mode it logs "unable to find target mode matching size". The completion (`0x10002FA78`) only logs. No power call follows: setting the mode turns the screen on. |
+| `SDS.reconfigureScreen` `0x10002FCE4`, `0x100030218` | The same mode choice and setter "without power cycling" (`0x10002FF7C`, `0x1000303DC`); without a mode the completion receives "No matching mode found". |
+| `SimDeviceScreenMonitor` `startMonitoring` `0x100032A20`, property handler `0x100032DB4` | Started by `DC._onSessionQueue_connect` (`0x10001B684`–`0x10001B708`). Registers `register(screenID: nil, …)` on the adapter; on `.connected` records power, size, scale, and CarPlay properties, registers `.properties` events, and calls `screenConnected:`. A properties event compares `powerState` (1 is on) and calls `screenPoweredOn:` or `screenPoweredOff:`, then `geometryChangedForScreen:dimensions:scale:` and `carPlayPropertiesChangedForScreen:carPlayProperties:` on changes. |
+| `DC.screenConnected:` `0x10001BAF0`, `screenPoweredOn:` `0x10001BDAC` | A screen that connects powered on is handled as powered on. Powering on creates `DWC` `initWithCoordinator:` for the screen ID, kept in `windowControllers`, and calls `connectTo:starkConfig:completionQueue:completion:` (the Stark configuration only for CarPlay); the completion logs and, for CarPlay, enables CarPlay and its HID service. The device's own screen and an external screen use the same path. |
+| `DC.screenPoweredOff:` `0x10001C1A8`, `screenRemoved:` `0x10001C288`, `screenDisconnected:` `0x10001BC6C` | Powering off or disconnecting disconnects that screen's window (`disconnectWithCompletionGroup:completionQueue:completionHandler:`); its completion disables CarPlay for a CarPlay screen and drops the controller of a screen that is not the default. |
+| `DC.geometryChangedForScreen:dimensions:scale:` `0x10001C5B0` | Calls the window's `updateWindowGeometry` on the main queue, keeping its `renderScale`. |
+| `DC.externalDisplayWindowController` `0x10001923C` | The first window controller whose connected screen is not the default. |
+| `DC._onSessionQueue_connect` `0x10001B75C` … `0x10001B7BC`, block `0x10001B970` | After starting the monitor, dispatches `configureExternalDisplay:` with the saved tag to the main queue. An Apple TV instead configures its screen at the device type's main screen size and scale (`0x10001B408`). |
+| `DC.deviceWindowWillClose:` `0x100019720` | Closing the external window calls `configureExternalDisplay:2114`, which saves Disabled and powers the screen off. Closing the device's window disconnects the coordinator, whose `_onSessionQueue_disconnectWithCompletionGroup:` (`0x10001AEB0`) stops the monitor and disconnects every window controller; the saved tag stays. |
+| `DWC` disconnect `0x10004FDB8` … `0x1000506A8` | A window whose screen's `displayClass` is not 0, on a device with `SimFeatureInternalDisplay` that is neither shut down nor shutting down (`state` 1 or 4), enumerates the screen adapter port's screens (`enumerateScreensWithCompletionQueue:completionHandler:`) and powers off each of `screenType` 1, except on Apple TV. It saves the window's geometry before `orderOut:` (`0x100050D84`): `ExternalWindowGeometry` for a screen that is not the default (`0x100050EB8`, `0x10007B254`). |
+| `DWC` connection `0x10004E24C` … `0x10004E9F4`, chrome refresh `0x10005B254` | Reads `SimulatorWindowGeometry` and `ExternalWindowGeometry`; the scale is 1 for CarPlay, the default geometry's for the default screen, and the external geometry's otherwise. Every screen's display connects with the digitizer and hardware buttons (`0x10004E620`–`0x10004E6C4`); `supportTouchPressure` is off for a display class other than 0. Only the default screen's window gets a toolbar (`0x10005B260`–`0x10005B274`). |
+| `DWC` title `0x10005A9C8` … `0x10005AA1C` | The subtitle's label is `CarPlay` for a CarPlay screen and `External Display` for another screen that is not the default. |
+
+CoreSimDeviceIO's `SimScreenAdapter` declares
+`createScreenWithProperties:currentMode:pixelSize:carPlayProperties:completionQueue:completionHandler:`
+(completion `(UInt32 screenID, NSError *)`), `removeScreenWithID:…`,
+`enumerateScreensWithCompletionQueue:completionHandler:`,
+`registerScreenAdapterCallbacksWithUUID:callbackQueue:screenConnectedCallback:screenWillDisconnectCallback:`,
+and `creatableScreenProperties`. `SimScreen` declares
+`setCurrentMode:pixelSize:carPlayProperties:completionQueue:completionHandler:`
+and `setPowerState:completionQueue:completionHandler:`, each completing with an
+`NSError`. Neither Simulator.app nor SimulatorKit calls the creation method.
+
+The live check on the separate device set showed:
+
+- `simctl io <UDID> enumerate`, also on a shut-down device, lists the
+  iPhone's screens 1 LCD (Integrated), 2 TVOut, and 3 Wireless (CarPlay), and
+  the iPad's 1 LCD and 2 TVOut. `SimScreenProperties.screenType` is 0, 1, and
+  2 for these. Both adapters list no creatable screen properties, and both
+  refused `createScreenWithProperties:…` with each existing screen's
+  properties and current mode (`Swift.String` error, code 1).
+- The TVOut screen starts off at 720×480 with a scale of 1. It advertises an
+  exact 720×480 mode, 120 Hz modes allowing the six menu sizes at scales 1 and
+  2, and on the iPhone 60 Hz ranges from 320×200 to 3840×2160 at scales 1, 2,
+  and 3. The order of `supportedScreenModes` differed between reads.
+- `setCurrentMode:…` turned the screen on at the size and completed within
+  50 ms; `setPowerState:0` turned it off; each change reported a properties
+  event. SimulatorKit's display of the screen has no bezel, a `displayClass`
+  of 1, and takes a new size one or two main-queue turns after the event.
+- The guest left the screen black until an app presented an external display
+  scene, and its `UIScreen` took the size only for a 60 Hz mode.
+
+NeoSimulator reproduces External Displays; its handling and differences are
+described in the [design](Design.md#external-displays).
+
 ## Deferred features
 
 These have viable Xcode 27+ primitives but need a dedicated state/capability
 contract before being user-visible:
 
 - status-bar overrides;
-- external displays and CarPlay.
+- CarPlay, which configures the external display's TVOut screen with CarPlay
+  properties (see [External displays](#external-displays)).
 
 ## Excluded features
 
