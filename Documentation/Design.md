@@ -353,9 +353,29 @@ for booting or booted devices with a visible window and mixed without one. File 
 Simulator… rebuilds Simulator.app's creation form: every supported device type
 and available runtime in CoreSimulator's order, selection corrected to the first
 compatible choice, the device type's name as the default name, and `simctl
-create` without booting. Its Paired Apple Watch page is not implemented yet.
-Window ▸ Simulators is NeoSimulator's own device list; Simulator.app has no such
-window.
+create` without booting. Window ▸ Simulators is NeoSimulator's own device list;
+Simulator.app has no such window.
+
+The form's Paired Apple Watch option is enabled only for an iPhone device type
+(`productFamilyID` 1); another device type also turns it off. While it is on,
+Create becomes Next, which shows the watch's page, and Previous returns. That
+page lists the watch device types (family 4) without separators and, at first,
+the runtimes that support any of them. Choosing a runtime that does not support
+the watch selects the first device type it supports; choosing a device type
+that the runtime does not support lists only the runtimes that do. The watch's
+name defaults to its device type's name. Create is enabled only while the
+watch's runtime supports its device type and `+[SimDevicePair
+testPossiblePairingWithDeviceTypeA:RuntimeA:DeviceTypeB:RuntimeB:error:]`
+accepts the watch and the iPhone, in that order. That check does not test
+whether a runtime supports its device type, so the runtime check comes first,
+as in Simulator.app; the class method is looked up at startup, so
+`--validate-runtime` requires it. Create then runs `simctl create` for the
+iPhone and for the watch and `simctl pair <watch> <iPhone>`, the steps
+Simulator.app takes with `createDeviceAsyncWithType:runtime:name:completionQueue:completionHandler:`
+and `createDevicePairAsyncWithGizmo:companion:completionQueue:completionHandler:`.
+A failure is shown on the form, and the devices already created are kept, as
+in Simulator.app; Neo's alert also names them, where Simulator.app shows only
+the failed call's error.
 
 Parallel testing devices come from a second device set, opened with
 `SimServiceContext.deviceSetWithPath:error:` at `TestingDeviceSetPath` or
@@ -1701,9 +1721,8 @@ and Save Screen for Apple Vision, where Simulator.app counts its iPhone nib's
 three buttons; the display is wide enough for the unified style either way.
 
 Watch gestures and Digital Crown scrolling, Simulate Fall, the Apple TV
-Remote, the visionOS camera, scene, immersion, Optic ID, and Show Gaze Target
-commands, and creating a paired Apple Watch build on this hosting and are not
-implemented yet.
+Remote, and the visionOS camera, scene, immersion, Optic ID, and Show Gaze
+Target commands build on this hosting and are not implemented yet.
 
 ## Failure semantics
 
