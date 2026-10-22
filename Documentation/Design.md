@@ -103,10 +103,16 @@ signal cannot land between a move and a separate bookkeeping update.
 | A device's SimPasteboardPlus connection, for Get and Send Pasteboard and synchronization | `DeviceSession` |
 | Edit ▸ Automatically Sync Pasteboard and the exchange between devices | `PasteboardSync` |
 | Route a device's audio over its `SimAudioHostRoutable` port | `DeviceSession` |
+| Configure a device's external display and follow its state | `DeviceSession` |
+| Order the changes sent to a device's external display across its sessions | `ExternalDisplayChanges`, one per device in `HostApplication` |
+| Present an external display's window | `ExternalDisplayWindowController` |
+| Give a window's display the Mac's keyboard and the focus, as both windows do | `DisplayKeyboardInput` |
+| Fit a window's display in full screen and during a live resize, as both windows do | `DisplayFitting` |
 | Keep the app-wide recent audio routes | `PreferenceStore` (`RecentAudio…DeviceUIDs`) |
 
 The active simulator for a menu command is derived from `NSApp.keyWindow` each
-time. Device selection is not mirrored in a second state store.
+time; an external display's window stands for its device window. Device
+selection is not mirrored in a second state store.
 
 ## Compatibility gates
 
@@ -317,7 +323,8 @@ The first parity set contains only commands with an available, validated owner:
 - I/O: Keyboard (Use the Same Keyboard Language as macOS, Connect Hardware
   Keyboard, Toggle Software Keyboard), Touch Pressure (Use Trackpad Force, and
   Shallow Press and Deep Press, which need a watch and so stay disabled until
-  Neo hosts one), Audio Input, Audio Output, Increase Volume, Decrease Volume;
+  Neo hosts one), Audio Input, Audio Output, Increase Volume, Decrease Volume,
+  External Displays (Disabled and Simulator.app's six sizes);
 - Features: Touch ID and Face ID (Enrolled, Matching, Non-matching),
   Authorize Apple Pay, Toggle Appearance, Toggle In-call Status Bar,
   Show/Hide StandBy, Increase and Decrease Preferred Text Size, Toggle
@@ -867,7 +874,7 @@ The following are intentionally absent:
 
 - Services;
 - global keyboard, pointer, or game-controller capture;
-- Device Manager, external-display, CarPlay, and FaceTime menus;
+- Device Manager, CarPlay, and FaceTime menus;
 - platform-specific watchOS, tvOS, and visionOS commands, such as Debug ▸ Show
   Gaze Target;
 - commands whose remaining private implementation silently discards failure.
@@ -1152,6 +1159,181 @@ no channels in that direction: it routes the guest to the Mac's default device
 by that device's UID. Neo, like Simulator.app, routes only to devices that the
 port lists.
 
+### External displays
+
+I/O ▸ External Displays connects a device's external display and shows it in
+a window of its own. A device that supports external displays has a TVOut
+screen from its creation: `SimScreenType` 1 among the screens of its
+CoreSimDeviceIO screen adapter (0 is the device's own screen and 2 is CarPlay),
+turned off at 720×480. On the iOS 26.5 iPhone 17 Pro and iPad Pro 11-inch (M5)
+it is screen 2; the iPhone also has a CarPlay screen, 3. `simctl io <UDID>
+enumerate` lists these screens on a device that is shut down.
+
+The adapter declares
+`createScreenWithProperties:currentMode:pixelSize:carPlayProperties:completionQueue:completionHandler:`,
+but its `creatableScreenProperties` is empty on these devices, neither
+Simulator.app nor SimulatorKit calls it, and it refused the properties and
+current mode of each existing screen (an `NSError` of domain `Swift.String`,
+code 1). A device without the TVOut screen therefore cannot get one; its
+choices report that the device has no external display port.
+
+Neo reaches the screen as Simulator.app does:
+
+- SimulatorKit's `SimDevice.screenAdapter` lists the device's screens by ID in
+  `SimDeviceScreenAdapter.screens`. The external display is the first, by ID,
+  whose `SimScreen` is connected and whose properties' `screenType` is TVOut,
+  as Simulator.app waits for the first TVOut screen to connect. The adapter
+  fills `screens` from an enumeration that ends asynchronously, possibly after
+  the device's own screen connects. A device's screens exist from its
+  creation, so the TVOut screen is in that enumeration or the device has none:
+  the session looks for it every 250 ms for as long as the host waits for the
+  device's own screen (10 seconds), then applies the saved choice, or a choice
+  made meanwhile. A later choice looks again; until the display is found, the
+  items check nothing.
+- `SimDeviceScreen.screen`'s `setCurrentMode:pixelSize:carPlayProperties:completionQueue:completionHandler:`
+  sets a size and turns the screen on; `setPowerState:completionQueue:completionHandler:`
+  with 0 turns it off. The mode is Simulator.app's choice: the current mode
+  when the screen already has the size and that mode has the scale, otherwise
+  the first of `supportedScreenModes` whose size rule takes the size at its
+  `preferredUIScale` (0 `exactSize`, 1 from `minSize` through `maxSize`, 2 one
+  of `allowedSizes`). A size that no mode takes is reported.
+- CoreSimulator completes a change later, so a device's changes go one at a
+  time, also across its sessions. A change asked for while one is in flight
+  waits for it and replaces an earlier change that waits, so the last one
+  wins. A window that disconnects during a change turns the display off after
+  it, and the next session of the device, after a reopening or a restart,
+  sends its changes after that power-off.
+- A change whose completion does not come must not hold the device's later
+  sessions. In the iOS 26.5 simulator every change completed: those sent while
+  the device shut down without an error, and those sent after it shut down,
+  or after it booted again through a connection made before, with `Invalid
+  argument`, up to 4.5 seconds late. The queue still stops waiting for the
+  change in flight when the session that sent it disconnects from a device
+  that is no longer booted, and, as a last resort, after 10 seconds, which it
+  reports as the change's failure. Either is logged, and a completion that
+  comes later is ignored.
+- Disabled, and closing the device window while the device is booted,
+  always send the power-off, after a change in flight. No record of whether
+  the display is on decides it, which reports and completions that arrive in
+  either order, and other tools' changes, could leave wrong.
+- `SimDeviceScreen.register(types:queue:handler:)` with `.properties` reports
+  each change of the screen's `powerState`, `pixelSize`, and
+  `currentMode.preferredUIScale`, also those another tool makes.
+- The window shows the screen through the display factory, with the screen's
+  ID. SimulatorKit's display takes a new size one or two main-queue turns
+  after the properties event, so the window takes the size CoreSimulator
+  reports instead of the display's. In full screen and during a live resize,
+  where the display fits the window, the display fits it again once
+  SimulatorKit's display takes the new size, which sets its view's frame.
+
+`screenAdapter` is declared in SimulatorKit's extension of the Objective-C
+class `SimDevice`. ABIBridge finds such a member only through an instance, so
+it is bound to the first device that needs it and reused for the others;
+`screens`, a `Dictionary`, is passed as its single reference. The screens,
+their properties, and their modes are proxies, so `SimulatorRuntime` checks at
+startup that `SimScreen`, `SimScreenProperties`, and `SimScreenMode` declare
+the messages Neo sends, and they are bound to each proxy class when they are
+first sent. `SimDeviceScreenAdapter.register(screenID:queue:handler:)`, which
+Simulator.app uses to learn of screens, is not used: the pinned ABIBridge has
+no support for a value `Optional` such as its `UInt32?` parameter. A host
+description of `Optional<UInt32>`'s layout passes it, but ABIBridge does not
+check that description against the declaration; an indirect one registers
+without an error and never reports a screen. A device's screens exist from its
+creation, so looking in `screens` until the enumeration ends finds the
+external display, and the screen's own property reports cover the changes Neo
+needs.
+
+Like Simulator.app:
+
+- The submenu follows Increase and Decrease Volume and a separator: Disabled
+  (tag 2114), a separator, 640×480 (2214), 720×480 (2514), 1024×768 (2314),
+  1280×720 (720p) (2414), 1920×1080 (1080p) (2614), and 3840×2160 (4K) (2664).
+  It is shown for a key device with `SimFeatureExternalDisplay`
+  (`com.apple.display.supports-external`) and `SimFeatureInternalDisplay`
+  (`com.apple.display.integrated`), and its items are enabled with a key
+  device window, also while the device restarts.
+- A choice is saved for the device first, as its tag in
+  `DevicePreferences[UDID].SimulatorExternalDisplay`, which is Disabled while
+  missing or not an integer. A size then sets the screen's mode at a scale of
+  1, which also turns it on; Disabled turns it off.
+- Each connection, including after a restart, applies the saved choice: a
+  size sets the mode. Simulator.app's Disabled powers off only a display whose
+  window is connected, which a new connection does not have yet, so Disabled
+  leaves the display as it is, and a display that is on gets its window. A tag
+  Neo does not know, CarPlay's, is kept and not applied.
+- The window opens while the display is on, whoever turned it on, and closes
+  once the display is off. It has the device window's title, with `External
+  Display` where the runtime goes, no toolbar and no bezel, and a black
+  background. Simulator.app's window for it is its device window class, whose
+  chrome refresh, without a bezel, keeps no gap and sets the black
+  background, so the display meets AppKit's plain title bar, which a window
+  without a toolbar has whatever the toolbar style.
+  It opens centered where it last closed in the current arrangement of
+  screens, at the scale it closed at, reduced to Fit Screen's on the screen
+  it is placed on, from `DevicePreferences[UDID].ExternalWindowGeometry`,
+  which closing saves. As for the device window, it is placed before its
+  scale is chosen and placed again at its new size.
+- A new size keeps the display's scale. A drag on the window's edges keeps the
+  screen's aspect ratio and stops at the scale that fits the display in 240 by
+  240 points, both of which follow a new size during the drag, as
+  Simulator.app's geometry update sets them on each resize. While the window is key, Point Accurate, Pixel Accurate (the
+  screen's scale over the Mac screen's), and Fit Screen scale it; Physical
+  Size is unavailable, as for every screen that is not a device's own.
+- The display takes the pointer as touches and, while its window is key and
+  the device's hardware keyboard is connected, the Mac's keyboard. It takes no
+  touch pressure and draws the touch indicators the preferences turn on.
+- Closing the window chooses Disabled. Closing the device window, quitting, or
+  restarting closes it and, while the device is booted, turns the display off,
+  keeping the choice for the next connection. Quitting, also with
+  `DetachOnAppQuit` on, waits for every device's changes within
+  `TerminationTimeout` before the app exits, including the power-offs of
+  windows that closed earlier; a display whose changes have not completed by
+  then is listed in the alert that quitting shows for its failures.
+
+`DeviceSession` owns its connection to the device's external display, the
+look-up for it, and its last reported state; `DeviceWindowController` opens
+and closes the `ExternalDisplayWindowController` from that state. The changes
+sent to the display belong to the device instead: `HostApplication` keeps one
+`ExternalDisplayChanges` for each device, which the device's successive
+sessions share, each change going through the connection of the session that
+asked for it. A session's pending changes thereby outlive it: the next
+session's changes follow them, and quitting waits for them. While an external
+display's window is key, the other menus act on its device window.
+
+These differ from Simulator.app:
+
+- Simulator.app checks the saved choice. Neo checks the display's actual state:
+  Disabled while it is off, and otherwise the size it shows at a scale of 1, or
+  no item for another size or scale. A failed choice or a size that `simctl`
+  set therefore does not show as the saved one.
+- Simulator.app only logs failures. Neo presents on the device window the
+  failure of a choice, including a device without the TVOut screen, a size
+  that no mode takes, and an error CoreSimulator reports later; restoring the
+  choice on connection logs its failures. When turning the display off from
+  its window fails, the window opens again. Quitting logs a failed power-off
+  and lists a display that did not turn off within `TerminationTimeout`.
+- A window without a saved place cascades from its device window, where
+  Simulator.app cascades from its app-wide cascade point.
+- Simulator.app sends `setPowerState:0` only while the display's window is
+  connected. Neo sends it for every Disabled and every close of a booted
+  device's window: in the iOS 26.5 simulator, turning off a display that is
+  already off completes without an error and leaves it off, so the power-off
+  needs no state to decide on.
+- For a device with CarPlay, Simulator.app's choice also writes
+  `<dataPath>/Library/Application Support/Simulator/extended_display.plist`
+  (`{stark: false}` for these items), its CarPlay boot configuration. Neo
+  leaves that file to CarPlay.
+
+In the iOS 26.5 simulator, the guest leaves the display black until an app
+presents a scene for it (`UIWindowSceneSessionRoleExternalDisplayNonInteractive`),
+which does not take touches. The guest's `UIScreen` took the requested size
+when the mode had a `refreshRate` of 60 Hz; with the 120 Hz `allowedSizes`
+modes it stayed at 720×480 and drew in that corner of a larger display, with
+or without a display view connected. The iPad's TVOut screen advertised only
+those 120 Hz modes, and the iPhone's `supportedScreenModes` listed them before
+or after its 60 Hz ranges in different reads. The result of Simulator.app's
+choice, which Neo keeps, therefore depends on that order.
+
 ### Settings and touch indicators
 
 NeoSimulator ▸ Settings… (Command-,) sends `orderFrontPreferencesPanel:` to the
@@ -1217,7 +1399,9 @@ Simulator.app has no such step: its digitizer asks for focus when the pointer
 enters it and keeps the last modifiers it saw. There, an Option release that
 reaches another window or app leaves the digitizer with Option down, and the
 next plain click becomes a two-finger touch. NeoSimulator deliberately
-reconciles the modifiers instead.
+reconciles the modifiers instead. An external display's window does the same:
+both windows give their display the keyboard and the focus through
+`DisplayKeyboardInput`.
 
 When the window resigns key, it releases the guest's held modifier keys before
 its display stops taking the Mac's keyboard, as Simulator.app's
@@ -1311,7 +1495,10 @@ loopback device and back with the guest's audio reaching it, resize, menu rotati
 PNG, Get and Send Pasteboard with text and a PNG and without any exchange
 between commands, Automatically Sync Pasteboard between the Mac and two devices
 (on and off, across a CoreSimulatorBridge restart, a device restart, and a
-closed window), Device Hub absence, and loaded-image provenance.
+closed window), external displays at 1920×1080 and 640×480 with a guest app's
+external scene in their windows, Disabled, closing their windows, a restart,
+and restoring the saved choice on an iPhone and an iPad, Device Hub absence, and
+loaded-image provenance.
 
 ## Non-goals
 

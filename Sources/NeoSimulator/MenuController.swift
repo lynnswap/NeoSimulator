@@ -16,9 +16,7 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
     /// Items whose shortcut depends on the key device.
     private var keyedItems: [NSMenuItem] = []
     private var keyWindowObserver: (any NSObjectProtocol)?
-    private var activeWindow: DeviceWindowController? {
-        NSApp.keyWindow?.windowController as? DeviceWindowController
-    }
+    private var activeWindow: DeviceWindowController? { DeviceWindowController.keyDeviceWindow }
 
     /// `-[NSApplication(NSSimplePreferences) orderFrontPreferencesPanel:]`,
     /// which AppKit implements without declaring it.
@@ -120,6 +118,12 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
         for audio in audioMenus { io.addItem(audio.item) }
         updateAudioMenus(for: nil)
         commands([.increaseVolume, .decreaseVolume], in: io)
+        io.addItem(.separator())
+        let externalDisplays = menu("External Displays", in: io)
+        commands([ExternalDisplayMode.disabled.commandID], in: externalDisplays)
+        externalDisplays.addItem(.separator())
+        commands(ExternalDisplayMode.allCases.dropFirst().map(\.commandID), in: externalDisplays)
+        // Simulator.app's CarPlay item follows a separator here.
         io.addItem(.separator())
         commands([.openURL], in: io)
 
@@ -256,8 +260,10 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
             return true
         }
         if item.action == #selector(quitAsking(_:)) { return application != nil }
-        // Asking applies to a connected device window.
-        if item.action == #selector(closeAsking(_:)) { return activeWindow?.session.canPerformCommands == true }
+        // Asking applies to a connected device window, not to an external display's.
+        if item.action == #selector(closeAsking(_:)) {
+            return (NSApp.keyWindow?.windowController as? DeviceWindowController)?.session.canPerformCommands == true
+        }
         if item.action == #selector(toggleShowTestingDevices(_:)) {
             item.state = application?.showsTestingDevices == true ? .on : .off
             return application != nil
@@ -303,7 +309,9 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
     }
     @objc private func togglePrefersExternalGPU(_ sender: Any?) { gpuPolicy?.togglePrefersExternal() }
     @objc private func closeWindow(_ sender: Any?) { NSApp.keyWindow?.performClose(sender) }
-    @objc private func closeAsking(_ sender: Any?) { activeWindow?.closeAsking() }
+    @objc private func closeAsking(_ sender: Any?) {
+        (NSApp.keyWindow?.windowController as? DeviceWindowController)?.closeAsking()
+    }
     @objc private func quitAsking(_ sender: Any?) { application?.quitAsking() }
     @objc private func minimizeWindow(_ sender: Any?) { NSApp.keyWindow?.performMiniaturize(sender) }
     @objc private func fullScreen(_ sender: Any?) { NSApp.keyWindow?.toggleFullScreen(sender) }
@@ -393,7 +401,7 @@ final class OpenSimulatorMenu: NSObject, NSMenuDelegate {
 @MainActor
 final class LocationMenu: NSObject, NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
-        update(menu, for: NSApp.keyWindow?.windowController as? DeviceWindowController)
+        update(menu, for: DeviceWindowController.keyDeviceWindow)
     }
 
     /// Lists `window`'s choices, checking its selection. They are enabled
@@ -415,7 +423,7 @@ final class LocationMenu: NSObject, NSMenuDelegate {
 
     @objc private func select(_ sender: NSMenuItem) {
         guard let selection = sender.representedObject as? LocationSelection else { return }
-        (NSApp.keyWindow?.windowController as? DeviceWindowController)?.selectLocation(selection)
+        DeviceWindowController.keyDeviceWindow?.selectLocation(selection)
     }
 }
 
@@ -452,7 +460,7 @@ final class AudioRouteMenu: NSObject, NSMenuDelegate {
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
-        update(menu, for: NSApp.keyWindow?.windowController as? DeviceWindowController)
+        update(menu, for: DeviceWindowController.keyDeviceWindow)
     }
 
     /// Lists `window`'s routes. Like Simulator.app, they are enabled with a
@@ -480,7 +488,7 @@ final class AudioRouteMenu: NSObject, NSMenuDelegate {
 
     @objc private func select(_ sender: NSMenuItem) {
         guard let route = sender.representedObject as? String else { return }
-        (NSApp.keyWindow?.windowController as? DeviceWindowController)?.selectAudioRoute(route, in: scope)
+        DeviceWindowController.keyDeviceWindow?.selectAudioRoute(route, in: scope)
     }
 }
 
@@ -490,8 +498,11 @@ private final class EditMenu: NSMenu {
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let window = event.window
         let simulatorHasFocus = MainActor.assumeIsolated {
-            guard let window, let controller = window.windowController as? DeviceWindowController else { return false }
-            return window.firstResponder === controller.session.display.inputView
+            switch window?.windowController {
+            case let controller as DeviceWindowController: window?.firstResponder === controller.session.display.inputView
+            case let controller as ExternalDisplayWindowController: window?.firstResponder === controller.display.inputView
+            default: false
+            }
         }
         // Copy Screen's Control-Command-C is not an editing shortcut.
         return (!simulatorHasFocus || event.modifierFlags.contains(.control)) && super.performKeyEquivalent(with: event)

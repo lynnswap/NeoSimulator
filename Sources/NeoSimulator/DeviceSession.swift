@@ -23,6 +23,9 @@ struct DeviceCapabilities {
 
     var isPhoneOrPad: Bool { family == .iPhone || family == .iPad }
     var rotates: Bool { controlsOrientation && supportsFeature(Self.displayRotation) }
+    /// Whether I/O ▸ External Displays applies: like Simulator.app, the device
+    /// supports external displays and has its own screen.
+    var supportsExternalDisplays: Bool { supportsFeature(Self.externalDisplay) && supportsFeature(Self.integratedDisplay) }
 
     static let displayRotation = "com.apple.CoreSimulator.display.rotation"
     static let actionButtonSting = "com.apple.hid.sting"
@@ -48,6 +51,10 @@ struct DeviceCapabilities {
     /// `SimFeaturePasteboard`: the guest runs the pasteboard service that Get
     /// and Send Pasteboard connect to. `simctl pbsync` requires it.
     static let pasteboard = "com.apple.CoreSimulator.pasteboard"
+    /// `SimFeatureExternalDisplay`: the device has an external display port.
+    static let externalDisplay = "com.apple.display.supports-external"
+    /// `SimFeatureInternalDisplay`: the device has its own screen.
+    static let integratedDisplay = "com.apple.display.integrated"
 }
 
 /// Preferences Simulator.app keeps in its standard user defaults.
@@ -357,14 +364,21 @@ final class DeviceSession {
     ///     session uses only once a transfer or synchronization starts.
     ///   - pasteboardSync: Edit ▸ Automatically Sync Pasteboard, which every
     ///     device shares. Without it, the session never synchronizes.
+    ///   - externalScreenLookUp: How often and how long to look for the
+    ///     external display after the device connects. Defaults to the host's
+    ///     wait for the device's own screen.
     init(device: AvailableDevice, capabilities: DeviceCapabilities, display: any SimulatorDisplay,
          tools: DeviceTools, recordings: RecordingStore = RecordingStore(),
          recordingProcess: ((URL, DeviceTools.ScreenMask) -> Process)? = nil,
          openLog: @escaping (URL) async throws -> Void = DeviceSession.openInConsole,
          preferences: any PreferenceStore = UserDefaults.standard,
          hostKeyboardLanguage: @escaping @MainActor () -> String? = HostKeyboard.language,
-         pasteboard: NSPasteboard? = nil, pasteboardSync: PasteboardSync? = nil) {
+         pasteboard: NSPasteboard? = nil, pasteboardSync: PasteboardSync? = nil,
+         externalDisplayChanges: ExternalDisplayChanges = ExternalDisplayChanges(),
+         externalScreenLookUp: (attempts: Int, interval: Duration) = (40, .milliseconds(250))) {
         self.device = device
+        self.externalDisplayChanges = externalDisplayChanges
+        externalScreenLookUpSchedule = externalScreenLookUp
         self.capabilities = capabilities
         self.display = display
         self.tools = tools
@@ -1000,6 +1014,179 @@ final class DeviceSession {
         }
     }
 
+    // MARK: External displays
+
+    /// The device's external display as CoreSimulator last reported it; nil
+    /// before it connects, after the session disconnects, and for a device
+    /// without one.
+    private(set) var externalScreen: ExternalScreenState?
+    /// The session's connection to the device's external display.
+    @ObservationIgnored private var externalScreenConnection: (any SimulatorExternalScreen)?
+    /// The changes sent to the device's external display, which the device's
+    /// sessions share.
+    @ObservationIgnored private let externalDisplayChanges: ExternalDisplayChanges
+    /// Whether the session is looking for the external display, which
+    /// SimulatorKit's screen adapter may not have listed yet, and the task
+    /// that looks.
+    @ObservationIgnored private var isLookingUpExternalScreen = false
+    @ObservationIgnored private var externalScreenLookUp: Task<Void, Never>?
+    /// The latest choice made while the session looks, which it applies when it ends.
+    @ObservationIgnored private var choiceDuringLookUp: (mode: ExternalDisplayMode, failure: @MainActor (Error) -> Void)?
+    @ObservationIgnored private let externalScreenLookUpSchedule: (attempts: Int, interval: Duration)
+    /// Runs on the main actor after `externalScreen` changes.
+    @ObservationIgnored var onExternalScreenChange: (() -> Void)?
+
+    /// The External Displays item that the external display's actual state
+    /// checks, or nil when no item does. Simulator.app checks the device's
+    /// saved choice instead, which a failure or `simctl` leaves behind.
+    var externalDisplayMode: ExternalDisplayMode? { externalScreen?.mode }
+
+    /// Connects to the device's external display and applies the device's
+    /// saved choice, as Simulator.app does when a device connects: a size
+    /// sets the display's mode, which also turns it on. Disabled leaves the
+    /// display as it is, so a display that another tool turned on keeps its
+    /// window, as in Simulator.app. Failures go to `failure`.
+    ///
+    /// SimulatorKit's screen adapter lists a device's screens from an
+    /// enumeration that ends asynchronously, possibly after the device's own
+    /// screen connects. A device's screens exist from its creation, so the
+    /// external display is in that enumeration or the device has none. The
+    /// session therefore looks for it as long as the host waits for the
+    /// device's own screen, and applies the saved choice, or a choice made
+    /// meanwhile, when it appears or the look-up ends.
+    func connectExternalDisplay(failure: @escaping @MainActor (Error) -> Void) {
+        guard capabilities.supportsExternalDisplays, !isDisconnected, externalScreenConnection == nil,
+              !isLookingUpExternalScreen else { return }
+        isLookingUpExternalScreen = true
+        let schedule = externalScreenLookUpSchedule
+        let name = device.name
+        externalScreenLookUp = Task.immediate { [weak self] in
+            var attempt = 1
+            while true {
+                guard let self, !Task.isCancelled, !self.isDisconnected else { return }
+                let found: Bool
+                do { found = try self.attachExternalScreen() } catch {
+                    self.isLookingUpExternalScreen = false
+                    let choice = self.choiceDuringLookUp
+                    self.choiceDuringLookUp = nil
+                    let reason = HostError.operation(
+                        "Could not connect to the external display of \(name): \(error.localizedDescription)")
+                    (choice?.failure ?? failure)(reason)
+                    return
+                }
+                if found || attempt == schedule.attempts { break }
+                attempt += 1
+                try? await Task.sleep(for: schedule.interval)
+            }
+            self?.externalScreenLookUpEnded(failure: failure)
+        }
+    }
+
+    private func externalScreenLookUpEnded(failure: @escaping @MainActor (Error) -> Void) {
+        isLookingUpExternalScreen = false
+        if let choice = choiceDuringLookUp {
+            choiceDuringLookUp = nil
+            applyExternalDisplay(choice.mode, failure: choice.failure)
+        } else if let mode = ExternalDisplayMode(rawValue: preferences.externalDisplayTag(forDevice: device.id)),
+                  mode != .disabled {
+            applyExternalDisplay(mode, failure: failure)
+        }
+    }
+
+    /// I/O ▸ External Displays: saves the choice for the device, as
+    /// Simulator.app does, then sets the external display's mode, which also
+    /// turns it on, or turns it off for Disabled. Because the choice is saved
+    /// first, a device that is restarting applies it when it connects, and
+    /// choosing again retries a failure. Failures, also those CoreSimulator
+    /// reports later, go to `failure`.
+    func chooseExternalDisplay(_ mode: ExternalDisplayMode, failure: @escaping @MainActor (Error) -> Void) {
+        guard capabilities.supportsExternalDisplays else { return }
+        preferences.setExternalDisplayTag(mode.rawValue, forDevice: device.id)
+        guard canPerformCommands else { return }
+        guard !isLookingUpExternalScreen else {
+            choiceDuringLookUp = (mode, failure)
+            return
+        }
+        applyExternalDisplay(mode, failure: failure)
+    }
+
+    /// A display of the external display for its window.
+    func makeExternalDisplay() throws -> any SimulatorDisplay {
+        guard let externalScreenConnection else { throw HostError.unavailable("The external display is not connected.") }
+        return try externalScreenConnection.makeDisplay()
+    }
+
+    private func applyExternalDisplay(_ mode: ExternalDisplayMode, failure: @escaping @MainActor (Error) -> Void) {
+        let name = device.name
+        let report: @MainActor (Error) -> Void = { reason in
+            failure(HostError.operation(mode == .disabled
+                ? "Could not turn off the external display of \(name): \(reason.localizedDescription)"
+                : "Could not set the external display of \(name) to \(mode.title): \(reason.localizedDescription)"))
+        }
+        do {
+            // A device whose external display was not listed is asked again.
+            if externalScreenConnection == nil { _ = try attachExternalScreen() }
+            guard let externalScreenConnection else { throw HostError.unavailable("The device has no external display port.") }
+            externalDisplayChanges.apply(mode, through: externalScreenConnection, report: report)
+        } catch {
+            report(error)
+        }
+    }
+
+    /// Connects to the external display when SimulatorKit lists it, and
+    /// returns whether it did.
+    private func attachExternalScreen() throws -> Bool {
+        guard let screen = try display.connectExternalScreen(changed: { [weak self] in self?.externalScreenChanged() })
+        else { return false }
+        externalScreenConnection = screen
+        externalScreenChanged()
+        return true
+    }
+
+    private func externalScreenChanged() {
+        guard let externalScreenConnection, !isDisconnected else { return }
+        let state: ExternalScreenState?
+        do { state = try externalScreenConnection.state() } catch {
+            hostLog("Could not read the external display of \(device.name): \(error.localizedDescription)")
+            state = nil
+        }
+        guard state != externalScreen else { return }
+        externalScreen = state
+        onExternalScreenChange?()
+    }
+
+    /// Whether the session has an external display, which disconnecting turns
+    /// off, as quitting waits for.
+    var hasExternalDisplay: Bool { externalScreenConnection != nil }
+
+    /// Like Simulator.app, a disconnecting window turns off the external
+    /// display of a device that stays booted, after a change in flight,
+    /// keeping the device's choice for its next connection; unlike
+    /// Simulator.app, also a display that is off (see
+    /// `ExternalDisplayChanges`). Simulator.app only logs a failure.
+    private func disconnectExternalScreen() {
+        externalScreenLookUp?.cancel()
+        externalScreenLookUp = nil
+        isLookingUpExternalScreen = false
+        choiceDuringLookUp = nil
+        let name = device.name
+        if let externalScreenConnection {
+            externalScreenConnection.disconnect()
+            if display.isBooted {
+                externalDisplayChanges.apply(.disabled, through: externalScreenConnection) { error in
+                    hostLog("Could not turn off the external display of \(name): \(error.localizedDescription)")
+                }
+            } else {
+                // The device shut down, so the changes sent through this
+                // connection may never complete.
+                externalDisplayChanges.abandon(changesThrough: externalScreenConnection)
+            }
+        }
+        externalScreenConnection = nil
+        externalScreen = nil
+        onExternalScreenChange = nil
+    }
+
     // MARK: Device tool operations
 
     /// Holds the single device-operation slot for a modal step, such as a save
@@ -1178,6 +1365,8 @@ final class DeviceSession {
         closePasteboard()
         audioConnection?.disconnect()
         audioConnection = nil
+        // While the display is connected, its device reports whether it is booted.
+        disconnectExternalScreen()
         display.disconnect()
     }
 

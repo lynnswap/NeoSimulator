@@ -18,6 +18,8 @@ struct DeviceCommand {
         case syncKeyboardLanguage, connectHardwareKeyboard, toggleSoftwareKeyboard
         case useTrackpadForce, shallowPress, deepPress
         case increaseVolume, decreaseVolume, openURL
+        case externalDisplayDisabled, externalDisplay640x480, externalDisplay720x480, externalDisplay1024x768
+        case externalDisplay1280x720, externalDisplay1920x1080, externalDisplay3840x2160
         case touchIDEnrolled, touchIDMatching, touchIDNonMatching
         case faceIDEnrolled, faceIDMatching, faceIDNonMatching
         case authorizeApplePay, toggleAppearance, toggleInCallStatusBar, toggleStandBy
@@ -114,7 +116,7 @@ struct DeviceCommand {
         return isEnabled(controller)
     }
 
-    static let catalog: [ID: DeviceCommand] = Dictionary(uniqueKeysWithValues: [
+    static let catalog: [ID: DeviceCommand] = Dictionary(uniqueKeysWithValues: ([
         // File
         // Like Simulator.app's, the Save Screen button records the screen with
         // Option, and stops a recording while it runs, showing `stop.circle`,
@@ -302,16 +304,28 @@ struct DeviceCommand {
         scale(.pointAccurate, title: "Point Accurate", key: "2"),
         scale(.pixelAccurate, title: "Pixel Accurate", key: "3"),
         scale(.fitScreen, title: "Fit Screen", key: "4"),
-    ].map { ($0.id, $0) })
+    ] + ExternalDisplayMode.allCases.map { externalDisplay($0) }).map { ($0.id, $0) })
 
     /// A window scale command. Like Simulator.app, Fit Screen has no checkmark,
     /// and the others keep theirs while they are unavailable, including
     /// without a device window, where Simulator.app does not validate them.
     private static func scale(_ mode: WindowScaleMode, title: String, key: String) -> DeviceCommand {
         DeviceCommand(id: ID(rawValue: mode.rawValue)!, title: title, key: key,
-                      isEnabled: { $0.canSetScale(mode) },
-                      state: mode == .fitScreen ? nil : { $0.scaleState(mode) },
-                      keepsStateWithoutWindow: true) { $0.setScale(mode) }
+                      isEnabled: { $0.scaledWindow.canSetScale(mode) },
+                      state: mode == .fitScreen ? nil : { $0.scaledWindow.scaleState(mode) },
+                      keepsStateWithoutWindow: true) { $0.scaledWindow.setScale(mode) }
+    }
+
+    /// An I/O ▸ External Displays item, shown, as in Simulator.app, for a
+    /// device that supports external displays and has its own screen. Like
+    /// Simulator.app, the items stay enabled while the device restarts, and a
+    /// choice then applies when it connects. The checkmark is the external
+    /// display's actual state, where Simulator.app checks the saved choice.
+    private static func externalDisplay(_ mode: ExternalDisplayMode) -> DeviceCommand {
+        DeviceCommand(id: mode.commandID, title: mode.title,
+                      isSupported: { $0.supportsExternalDisplays },
+                      isEnabled: { _ in true },
+                      state: { $0.session.externalDisplayMode == mode ? .on : .off }) { $0.chooseExternalDisplay(mode) }
     }
 
     /// Shallow Press or Deep Press, checked when it is the app's touch mode.
@@ -409,4 +423,19 @@ func deviceWindowTitles(name: String, runtimeName: String) -> (title: String, su
         .filter { $0 != "(" && $0 != ")" }
         .trimmingCharacters(in: .whitespaces)
     return (title, suffix.isEmpty ? runtimeName : "\(suffix) – \(runtimeName)")
+}
+
+extension ExternalDisplayMode {
+    /// The command of the mode's I/O ▸ External Displays item.
+    var commandID: DeviceCommand.ID {
+        switch self {
+        case .disabled: .externalDisplayDisabled
+        case .size640x480: .externalDisplay640x480
+        case .size720x480: .externalDisplay720x480
+        case .size1024x768: .externalDisplay1024x768
+        case .size1280x720: .externalDisplay1280x720
+        case .size1920x1080: .externalDisplay1920x1080
+        case .size3840x2160: .externalDisplay3840x2160
+        }
+    }
 }

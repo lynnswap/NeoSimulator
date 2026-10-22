@@ -7,6 +7,17 @@ enum WindowScaleMode: String {
     case physicalSize, pointAccurate, pixelAccurate, fitScreen
 }
 
+/// A window whose display the Window menu's scale commands scale: a device
+/// window, or the window of its external display.
+@MainActor
+protocol DisplayScaling: AnyObject {
+    /// Whether the command can run, as Simulator.app validates it.
+    func canSetScale(_ mode: WindowScaleMode) -> Bool
+    /// The command's checkmark, or nil to leave it as it is.
+    func scaleState(_ mode: WindowScaleMode) -> NSControl.StateValue?
+    func setScale(_ mode: WindowScaleMode)
+}
+
 /// Simulator.app's arithmetic for the window scale modes.
 enum WindowScale {
     /// The points per inch Physical Size assumes for a Mac screen and for a
@@ -183,13 +194,22 @@ extension PreferenceStore {
     }
 }
 
-private let windowGeometryKey = "SimulatorWindowGeometry"
 private let windowScaleKey = "WindowScale"
 private let windowCenterKey = "WindowCenter"
 
+/// Which of a device's windows a saved geometry belongs to: the device window,
+/// under Simulator.app's `SimulatorWindowGeometry`, or the window of its
+/// external display, under `ExternalWindowGeometry`.
+enum WindowGeometryKind {
+    case device, externalDisplay
+
+    fileprivate var key: String { self == .device ? "SimulatorWindowGeometry" : "ExternalWindowGeometry" }
+}
+
 /// A device's window geometry under Simulator.app's keys, saved separately
 /// for each arrangement of the Mac's screens:
-/// `DevicePreferences[UDID].SimulatorWindowGeometry[configuration]`, where
+/// `DevicePreferences[UDID].SimulatorWindowGeometry[configuration]`, or
+/// `ExternalWindowGeometry` for an external display's window, where
 /// `configuration` names the arrangement in `ScreenConfigurations`.
 extension PreferenceStore {
     /// Where the device's window last closed while the Mac's screens had
@@ -202,9 +222,10 @@ extension PreferenceStore {
     /// the window has not closed in this arrangement of screens. Like
     /// Simulator.app, reading saves a new arrangement, as
     /// `screenConfiguration(for:)` does.
-    func windowGeometry(forDevice identifier: String, screens: [NSRect]) -> (center: NSPoint?, scale: CGFloat?) {
+    func windowGeometry(forDevice identifier: String, screens: [NSRect],
+                        kind: WindowGeometryKind = .device) -> (center: NSPoint?, scale: CGFloat?) {
         let configuration = screenConfiguration(for: screens)
-        let geometry = (preferences(forDevice: identifier)?[windowGeometryKey] as? [String: Any])?[configuration]
+        let geometry = (preferences(forDevice: identifier)?[kind.key] as? [String: Any])?[configuration]
             as? [String: Any]
         let center = (geometry?[windowCenterKey] as? String).map(NSPointFromString)
         let scale = (geometry?[windowScaleKey] as? NSNumber).map { CGFloat($0.doubleValue) }
@@ -215,14 +236,15 @@ extension PreferenceStore {
     /// scale, for the arrangement of screens with `screens` as their frames.
     /// Like Simulator.app, this replaces what was saved for the arrangement
     /// and keeps what was saved for others and the device's other preferences.
-    func setWindowGeometry(center: NSPoint, scale: CGFloat?, forDevice identifier: String, screens: [NSRect]) {
+    func setWindowGeometry(center: NSPoint, scale: CGFloat?, forDevice identifier: String, screens: [NSRect],
+                           kind: WindowGeometryKind = .device) {
         let configuration = screenConfiguration(for: screens)
         var saved: [String: Any] = [windowCenterKey: NSStringFromPoint(center)]
         if let scale { saved[windowScaleKey] = Double(scale) }
         updatePreferences(forDevice: identifier) { device in
-            var geometry = device[windowGeometryKey] as? [String: Any] ?? [:]
+            var geometry = device[kind.key] as? [String: Any] ?? [:]
             geometry[configuration] = saved
-            device[windowGeometryKey] = geometry
+            device[kind.key] = geometry
         }
     }
 

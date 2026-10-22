@@ -25,6 +25,10 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     private var suppressed: Set<String> = []
     /// Shutdowns of devices whose windows closed, which quitting waits for.
     private var closingShutdowns: [String: Task<Void, Never>] = [:]
+    /// The changes sent to each device's external display, which the
+    /// device's successive sessions share and quitting waits for, also those
+    /// of a session whose window closed.
+    private var externalDisplayQueues: [String: (name: String, changes: ExternalDisplayChanges)] = [:]
     /// Whether another simulator host took over, which leaves devices running.
     private var yieldedToAnotherHost = false
     /// Quitting's device shutdowns, which another host appearing cancels.
@@ -369,7 +373,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                             display: connection,
                             tools: try DeviceTools(identifier: identifier, xcodeURL: runtime.xcodeURL,
                                                    deviceSetPath: device.deviceSetPath),
-                            recordings: recordings, pasteboardSync: pasteboardSync)
+                            recordings: recordings, pasteboardSync: pasteboardSync,
+                            externalDisplayChanges: externalDisplayChanges(of: device))
                         do { try session.applyDebugSettings() } catch {
                             hostLog("Could not apply debug settings to \(device.name): \(error.localizedDescription)")
                         }
@@ -380,6 +385,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                             restoreLocation(of: session)
                             connectAudioRoutes(of: session)
                             session.startPasteboardSync()
+                            connectExternalDisplay(of: session)
                             return
                         }
                         let controller = try DeviceWindowController(session: session, touchPressure: touchPressure, onClose: { [weak self] in
@@ -392,6 +398,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                         restoreLocation(of: session)
                         connectAudioRoutes(of: session)
                         session.startPasteboardSync()
+                        connectExternalDisplay(of: session)
                         return
                     }
                     try await Task.sleep(for: .milliseconds(250))
@@ -435,6 +442,21 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         session.connectAudioRoutes { error in
             hostLog("Could not route the audio of \(name): \(error.localizedDescription)")
         }
+    }
+
+    /// The changes sent to `device`'s external display, which every session of
+    /// the device shares.
+    private func externalDisplayChanges(of device: SimulatorDevice) -> ExternalDisplayChanges {
+        let changes = externalDisplayQueues[device.identifier]?.changes ?? ExternalDisplayChanges()
+        externalDisplayQueues[device.identifier] = (device.name, changes)
+        return changes
+    }
+
+    /// Connects a new connection to its device's external display and
+    /// restores the device's External Displays choice, also after a restart.
+    /// Like Simulator.app, which only logs them, these failures are logged.
+    private func connectExternalDisplay(of session: DeviceSession) {
+        session.connectExternalDisplay { error in hostLog(error.localizedDescription) }
     }
 
     // MARK: Closing and quitting
@@ -531,6 +553,21 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             for: alert.runModal(), of: alert, rememberingAs: HostPreferences.detachOnAppQuit) else { return }
         quitChoice = choice
         NSApp.terminate(nil)
+    }
+
+    /// Waits, within `TerminationTimeout`, for every device's external display
+    /// changes to complete, including the power-offs of the windows that
+    /// closed, as Simulator.app waits for its windows to disconnect, and
+    /// returns the displays that did not. Their power-off failures are logged.
+    private func finishExternalDisplayChanges() async -> [String] {
+        let timeout = UserDefaults.standard.double(forKey: HostPreferences.terminationTimeout)
+        let deadline = ContinuousClock.now + .seconds(timeout)
+        var failures: [String] = []
+        for (name, changes) in externalDisplayQueues.values {
+            guard await !changes.idle(before: deadline) else { continue }
+            failures.append("The external display of \(name) did not turn off within \(Int(timeout)) seconds of quitting.")
+        }
+        return failures
     }
 
     /// Shuts down the devices that have windows, as Simulator.app does when
@@ -670,9 +707,10 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         return true
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
-    /// Quitting finishes recordings, then, like Simulator.app, shuts down the
-    /// devices that have windows unless the quit chose to keep them running or
-    /// `DetachOnAppQuit` is on. Devices another host takes over keep running.
+    /// Quitting finishes recordings, then, like Simulator.app, disconnects the
+    /// windows, waits for their external displays to turn off, and shuts down
+    /// the devices that have windows unless the quit chose to keep them running
+    /// or `DetachOnAppQuit` is on. Devices another host takes over keep running.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !isTerminating else { return .terminateLater }
         // Pending captures are saved now, and those that recordings finish
@@ -684,7 +722,9 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         let devices = keepsRunning ? [] : sessions.values.map {
             (identifier: $0.session.device.id, deviceSetPath: $0.session.tools.deviceSetPath)
         }
-        guard recordings.hasActiveRecordings || !devices.isEmpty || !closingShutdowns.isEmpty else {
+        guard recordings.hasActiveRecordings || !devices.isEmpty || !closingShutdowns.isEmpty
+                || sessions.values.contains(where: { $0.session.hasExternalDisplay })
+                || externalDisplayQueues.values.contains(where: { $0.changes.isBusy }) else {
             if !captureFailures.isEmpty, !handoverRequested { Self.alert(captureFailures) }
             return .terminateNow
         }
@@ -707,12 +747,15 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             for session in sessions.values { session.invalidate() }
             sessions.removeAll()
             awaitingReconnect.removeAll()
+            let displayFailures = await finishExternalDisplayChanges()
             let failures = await shutDownForTermination(devices)
             shutdown()
-            if !failures.isEmpty, !handoverRequested {
+            if !displayFailures.isEmpty || !failures.isEmpty, !handoverRequested {
                 let alert = NSAlert()
-                alert.messageText = "Some simulated devices could not be shut down."
-                alert.informativeText = failures.joined(separator: "\n")
+                alert.messageText = failures.isEmpty
+                    ? "Some external displays could not be turned off."
+                    : "Some simulated devices could not be shut down."
+                alert.informativeText = (displayFailures + failures).joined(separator: "\n")
                 alert.runModal()
             }
             sender.reply(toApplicationShouldTerminate: true)

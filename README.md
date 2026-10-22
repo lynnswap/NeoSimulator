@@ -121,6 +121,8 @@ Neo currently provides:
   (Shift-Command-1), and Deep Press (Shift-Command-2);
 - I/O → Audio Input and Audio Output, which choose the Mac audio devices that
   simulators use;
+- I/O → External Displays, which connects an external display from 640×480 to
+  3840×2160 (4K) and shows it in its own window;
 - Features menu controls: Touch ID and Face ID enrollment and matching or
   non-matching events, the in-call status bar, StandBy, preferred text size,
   Increase Contrast, Trigger iCloud Sync (Shift-Command-I), and Location;
@@ -249,6 +251,25 @@ it is plugged back in. A device whose route another tool changes, such as
 devices that support audio routing, including parallel testing devices.
 Unlike Simulator.app, which only logs it, Neo reports a choice that a device
 could not apply.
+
+**I/O → External Displays** connects the active device's external display at
+one of Simulator.app's sizes, from 640×480 to 3840×2160 (4K); **Disabled**
+turns it off. The menu appears for devices that support external displays,
+such as iPhone and iPad. The display opens in its own window, titled with the
+device and "External Display", without a toolbar or bezel, and the Window menu's
+scales apply to it while it is the active window. Closing that window turns the
+display off, as Disabled does. A display that another tool turns on, such as
+`xcrun simctl io <device> screenConfig`, opens its window too. As in
+Simulator.app, the choice is saved for each device (`DevicePreferences`,
+`SimulatorExternalDisplay`) and applied when the device connects, including
+after a restart, and closing the device window while the device keeps running
+turns the display off. Unlike Simulator.app, which checks the saved choice,
+the checkmark shows the size the display actually has, and Neo reports a choice
+that the device could not apply. The guest shows nothing on the display until an
+app presents a scene for an external display; iOS does not mirror the device's
+screen to it. A device that has no external display port cannot get one:
+CoreSimulator offers no screen that a client can add.
+CarPlay is not available yet.
 
 **NeoSimulator → Settings…** (Command-,) shows the settings window that macOS
 builds from the app's `Settings.bundle`, as it does for Simulator.app. It lists
