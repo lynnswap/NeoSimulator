@@ -93,6 +93,9 @@ Neo currently provides:
 - Simulator.app's Save Screen, Record Screen, and Copy Screen commands, with
   its file names, save folders, and device-mask option; recordings are
   finalized when a window closes or the app quits;
+- Edit → Get Pasteboard and Send Pasteboard, which copy the whole pasteboard
+  between the Mac and the active device when you choose them; Neo never
+  synchronizes pasteboards on its own;
 - simulator app installation and image, video, and vCard import through a file
   picker or drag and drop;
 - opening web addresses and custom app URL schemes on the selected device;
@@ -182,6 +185,14 @@ Save Screen and Record Screen then use. Use the red stop control or **File →
 Stop Recording** to finish a recording. If a save fails, the error includes the
 capture's location for recovery. **Edit → Copy Screen** (Control-Command-C)
 puts a PNG of the screen, without the mask, on the Mac pasteboard.
+
+**Edit → Get Pasteboard** replaces the Mac pasteboard with the active device's,
+and **Edit → Send Pasteboard** replaces the device's pasteboard with the Mac's,
+with all their types, such as text and images. They are available for iPhone
+and iPad devices. Nothing crosses between the Mac and a device otherwise:
+Simulator.app synchronizes pasteboards automatically by default, but Neo does
+not. As in Simulator.app, the Mac reads what Get Pasteboard brings from the
+device when an app pastes it, so paste it while the device's window is open.
 
 **I/O → Keyboard → Connect Hardware Keyboard** (Shift-Command-K) connects or
 disconnects the active device's hardware keyboard. As in Simulator.app, each
