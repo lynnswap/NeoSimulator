@@ -1276,11 +1276,15 @@ Neo reaches the screen as Simulator.app does:
   items check nothing.
 - `SimDeviceScreen.screen`'s `setCurrentMode:pixelSize:carPlayProperties:completionQueue:completionHandler:`
   sets a size and turns the screen on; `setPowerState:completionQueue:completionHandler:`
-  with 0 turns it off. The mode is Simulator.app's choice: the current mode
-  when the screen already has the size and that mode has the scale, otherwise
-  the first of `supportedScreenModes` whose size rule takes the size at its
-  `preferredUIScale` (0 `exactSize`, 1 from `minSize` through `maxSize`, 2 one
-  of `allowedSizes`). A size that no mode takes is reported.
+  with 0 turns it off. The mode follows Simulator.app's choice, the current
+  mode when the screen already has the size and that mode has the scale,
+  otherwise the first of `supportedScreenModes` whose size rule takes the size
+  at its `preferredUIScale` (0 `exactSize`, 1 from `minSize` through
+  `maxSize`, 2 one of `allowedSizes`), but takes only a mode whose
+  `refreshRate` the guest keeps (see [the guest's modes](#the-guests-modes)).
+  When only modes at other rates take the size, the first mode of the scale
+  at a rate the guest keeps is set with the size. A size that no mode takes,
+  or that the guest would not show, is not set and is reported.
 - CoreSimulator completes a change later, so a device's changes go one at a
   time, also across its sessions. A change asked for while one is in flight
   waits for it and replaces an earlier change that waits, so the last one
@@ -1302,8 +1306,9 @@ Neo reaches the screen as Simulator.app does:
   either order, and other tools' changes, could leave wrong.
 - `SimDeviceScreen.register(types:queue:handler:)` with `.properties` reports
   each change of the screen's `powerState`, `pixelSize`,
-  `currentMode.preferredUIScale`, and `carPlayProperties`, also those another
-  tool makes.
+  `currentMode.preferredUIScale` and `refreshRate`, and `carPlayProperties`,
+  also those another tool makes. The session reads `supportedScreenModes` once
+  when it connects to the screen; only their order changes between reads.
 - The window shows the screen through the display factory, with the screen's
   ID. SimulatorKit's display takes a new size one or two main-queue turns
   after the properties event, so the window takes the size CoreSimulator
@@ -1408,16 +1413,71 @@ These differ from Simulator.app:
   device's window: in the iOS 26.5 simulator, turning off a display that is
   already off completes without an error and leaves it off, so the power-off
   needs no state to decide on.
+- Simulator.app sets the first mode that takes the size whatever its refresh
+  rate, and a size only with a mode whose size rule takes it. Neo takes a mode
+  at a rate the guest keeps, and sets a size that only 120 Hz modes take with
+  the screen's 60 Hz mode of the scale, so that the guest shows every size it
+  can (see [the guest's modes](#the-guests-modes)).
+- Simulator.app offers every item and sets the size. Neo disables an item the
+  device cannot show, with a subtitle that says why, and reports the choice
+  when it comes from the saved choice: "This device shows 720×480" for
+  640×480, and "Not available on this device" for a size that no mode takes,
+  such as CarPlay's on an iPhone with iOS 27.0, and for 3840×2160 on an iPad
+  with Stage Manager before iPadOS 27. Before the session has read the
+  screen's modes, as while the device restarts, only the last is known.
+- When the display has a size the guest does not show, as another tool can
+  set, the window's subtitle reads "External Display – Size Not Shown by
+  Device" instead of "External Display".
+
+#### The guest's modes
 
 In the iOS 26.5 simulator, the guest leaves the display black until an app
 presents a scene for it (`UIWindowSceneSessionRoleExternalDisplayNonInteractive`),
-which does not take touches. The guest's `UIScreen` took the requested size
-when the mode had a `refreshRate` of 60 Hz; with the 120 Hz `allowedSizes`
-modes it stayed at 720×480 and drew in that corner of a larger display, with
-or without a display view connected. The iPad's TVOut screen advertised only
-those 120 Hz modes, and the iPhone's `supportedScreenModes` listed them before
-or after its 60 Hz ranges in different reads. The result of Simulator.app's
-choice, which Neo keeps, therefore depends on that order.
+which does not take touches. When the screen's mode changes, the guest's
+SpringBoard picks the display's mode itself: it asks CoreAnimation for a
+preferred mode without a refresh rate ("preferred_mode_with_criteria: … target
+rate (0) … target high refresh rate (0) … --> 720x480@60" in its log), and
+CoreAnimation's `ModeSet::preferred_mode_with_criteria_internal` takes only
+modes from 49 to 60.5 Hz, the largest by width × height × whole hertz
+(`Display::Mode::operator<`). The guest's display lists the screen's current
+mode and its exact modes, which come from the device type's
+`capabilities.plist` (720×480 at 60 Hz for the TVOut screen). So:
+
+- A display that turns on with a 120 Hz mode of any size ends at 720×480 at
+  60 Hz in the guest (`UIScreen` bounds, native bounds, and modes), which
+  draws its 720×480 picture in the top-left corner of the larger screen,
+  while CoreSimulator, SimulatorKit's display, and the window keep the size
+  that was set; CoreAnimation in the guest never sets the screen's mode
+  back. When a display that is on changes to a 120 Hz mode, the guest did
+  not show the new size either: in different tries its scene went to
+  720×480, stayed at the earlier size, or was torn down, leaving the display
+  black.
+- A size at 60 Hz shows when it has more pixels than 720×480: 720×480,
+  1024×768, 1280×720, 1920×1080, and 3840×2160 reached the guest's scene on
+  the iOS 26.5 iPhone 17 Pro and iPad Pro 11-inch (M5); 640×480 never does,
+  at any rate, and the guest's 720×480 picture is cut to the screen's 640×480.
+- CoreSimulator (SimRenderServer 1174.9.2) lists the TVOut screen's
+  `allowedSizes` once per scale at 120 Hz, but its size specification takes
+  30, 60, 75, and 120 Hz, and it makes the screen's mode from the size passed
+  with the passed mode's scale, rate, and format: the iPad's exact 720×480
+  mode at 60 Hz passed with 1920×1080 set 1920×1080 at 60 Hz, and a size
+  outside the specification, such as 1000×700, failed with "Unsupported
+  Mode". The iPhone 17 Pro also lists 60 Hz ranges at scales 1, 2, and 3 on
+  iOS 26.5, but not on iOS 27.0, where its screen has only the exact mode and
+  the 120 Hz `allowedSizes`, and CarPlay's 800×480 at a scale of 2 has no mode.
+- On an iPad with Stage Manager (`DeviceSupportsEnhancedMultitasking`),
+  iPadOS 18.6, 26.0, and 26.5 make a 3840×2160 display at 60 Hz an extended
+  display that wants a pointer, re-evaluate it about nine times a second, and
+  their SpringBoard aborts (`SBSystemShellExtendedDisplayControllerPolicy.m:199`)
+  when the display then changes or turns off; iPadOS 27.0 did not. 1920×1080
+  and smaller are not extended displays there. Neo cannot avoid that abort
+  when another tool has set such a display and Neo turns it off.
+
+Simulator.app 16.0's mode choice reads no `refreshRate`, so with
+CoreSimulator 1174.9.2 it leaves the iPad, and the iPhone with iOS 27.0, at
+720×480 for every size but 720×480, and the iPhone with iOS 26.5 at 720×480
+whenever its `supportedScreenModes`, in an order that changes between reads,
+lists the 120 Hz mode first.
 
 #### CarPlay
 
