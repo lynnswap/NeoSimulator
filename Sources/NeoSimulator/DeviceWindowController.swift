@@ -58,6 +58,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     private var touchPressureObserver: (any NSObjectProtocol)?
     private var touchIndicatorObserver: (any NSObjectProtocol)?
     private var keyboardSelectionObserver: (any NSObjectProtocol)?
+    private var audioRouteObserver: (any NSObjectProtocol)?
     /// Whether the window is key, which makes its device the one that
     /// Simulator.app's keyboard controller types into and that a change of
     /// the Mac's input source applies to.
@@ -142,6 +143,13 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         keyboardSelectionObserver = NotificationCenter.default.addObserver(
             forName: NSTextInputContext.keyboardSelectionDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.keyboardSelectionChanged() }
+        }
+        // Like Simulator.app, an audio route chosen in any window applies to
+        // every device window.
+        audioRouteObserver = NotificationCenter.default.addObserver(
+            forName: AudioRouting.didChangeNotification, object: preferences, queue: .main) { [weak self] notification in
+            let scope = (notification.userInfo?[AudioRouting.scopeKey] as? UInt64).flatMap(AudioScope.init(rawValue:))
+            MainActor.assumeIsolated { if let scope { self?.audioRouteChosen(in: scope) } }
         }
         showDisplay(at: initialScale)
     }
@@ -355,12 +363,14 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
 
     /// Follows the bezel the display shows, as Simulator.app's chrome refresh
     /// does: AppKit does not resize a window with a bezel, whose corners
-    /// resize it instead, and the bezel's top padding lets the window extend
-    /// above the screen. In full screen the window stays resizable until it
+    /// resize it instead, the bezel's top padding lets the window extend
+    /// above the screen, and the gap above the display is 10 points less
+    /// that padding. In full screen the window stays resizable until it
     /// leaves full screen.
     private func bezelChanged() {
         guard let window = window as? DeviceWindow else { return }
         let padding = session.display.chromePadding
+        content.displayGap = WindowScale.displayGap(bezelPadding: padding)
         window.chromeTopPadding = padding?.height ?? 0
         guard !isFullScreen else { return }
         if padding == nil { window.styleMask.insert(.resizable) } else { window.styleMask.remove(.resizable) }
@@ -479,6 +489,20 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         let defaults = UserDefaults.standard
         customLocation.show(latitude: defaults.double(forKey: HostPreferences.locationLatitude),
                             longitude: defaults.double(forKey: HostPreferences.locationLongitude))
+    }
+
+    /// I/O ▸ Audio Input or Audio Output: saves `route` as the app's most
+    /// recent route for `scope`, which every device window then applies.
+    func selectAudioRoute(_ route: String, in scope: AudioScope) {
+        guard !closed else { return }
+        preferences.chooseAudioRoute(route, in: scope)
+        focusInput()
+    }
+
+    /// Routes the device to the app's new choice, presenting a failure on this window.
+    private func audioRouteChosen(in scope: AudioScope) {
+        guard !closed else { return }
+        session.synchronizeAudioRoute(in: scope) { [weak self] in self?.present($0) }
     }
 
     /// Starts a location change before returning, so that changes reach the
@@ -738,7 +762,8 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// The largest display that fits `screen` in this window: the visible
-    /// frame below the window's header.
+    /// frame below the window's header and the gap above the display, which
+    /// is the window's frame less the display's in Simulator.app.
     private func displaySpace(on screen: NSScreen?) -> NSSize? {
         guard let visible = screen?.visibleFrame else { return nil }
         return NSSize(width: visible.width, height: visible.height - content.heightAboveDisplay)
@@ -762,15 +787,16 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     /// Whether a scale command can run, as Simulator.app validates it: on a
     /// connected display outside full screen, Physical Size only on the
     /// device's own screen, and a fixed scale only from the device's minimum.
-    /// A display without a bezel must also fit its screen; a window with a
-    /// bezel may extend past it.
+    /// A display without a bezel must also fit its screen's visible frame
+    /// below the window's header, where Simulator.app leaves out the gap
+    /// above the display; a window with a bezel may extend past the screen.
     func canSetScale(_ mode: WindowScaleMode) -> Bool {
         guard validatesScale(mode), let window else { return false }
         guard mode != .fitScreen else { return true }
         guard let scale = scale(for: mode), scale >= minimumScale else { return false }
-        guard session.display.chromePadding == nil, let space = displaySpace(on: window.screen) else { return true }
+        guard session.display.chromePadding == nil, let visible = window.screen?.visibleFrame else { return true }
         let size = session.display.size(for: scale)
-        return size.width <= space.width && size.height <= space.height
+        return size.width <= visible.width && size.height <= visible.height - content.headerHeight
     }
 
     /// The checkmark of a fixed scale: on while the display is at that scale,
@@ -821,21 +847,23 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     /// Sizes the window to the display at its scale, as Simulator.app's
     /// geometry update does: the window is as wide as the display, also
     /// below `contentMinSize`, keeps its bottom-left corner or moves it to
-    /// `origin`, and moves down when its top would be above the screen. In
-    /// full screen and during a live resize, the display fits the window
-    /// instead.
+    /// `origin`, takes the smallest integral frame around that
+    /// (`NSIntegralRect`), and moves down when its top would be above the
+    /// screen. In full screen and during a live resize, the display fits the
+    /// window instead.
     private func updateWindowSize(origin: NSPoint? = nil) {
         guard !closed, let window, !window.inLiveResize, !isFullScreen else {
             resizeDisplay()
             return
         }
         let size = session.display.size(for: session.display.renderScale)
-        var frame = window.frameRect(forContentRect: NSRect(x: 0, y: 0,
+        let sized = window.frameRect(forContentRect: NSRect(x: 0, y: 0,
             width: size.width, height: size.height + content.heightAboveDisplay))
-        frame.origin = origin ?? window.frame.origin
+        var frame = NSIntegralRect(NSRect(origin: origin ?? window.frame.origin, size: sized.size))
         if let visible = window.screen?.visibleFrame, visible.maxY < frame.maxY {
             frame.origin.y = visible.maxY - frame.height
         }
+        content.isSizedToDisplay = true
         isSizingWindow = true
         window.setFrame(frame, display: true)
         isSizingWindow = false
@@ -931,6 +959,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
 
     private func resizeDisplay() {
         guard !closed else { return }
+        content.isSizedToDisplay = false
         session.display.resize(to: content.availableDisplaySize)
         layoutDisplay()
     }
@@ -1070,13 +1099,14 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         if let commandKeyUpMonitor { NSEvent.removeMonitor(commandKeyUpMonitor) }
         commandKeyUpMonitor = nil
         for observer in [screenParametersObserver, touchPressureObserver, touchIndicatorObserver,
-                         keyboardSelectionObserver].compactMap(\.self) {
+                         keyboardSelectionObserver, audioRouteObserver].compactMap(\.self) {
             NotificationCenter.default.removeObserver(observer)
         }
         screenParametersObserver = nil
         touchPressureObserver = nil
         touchIndicatorObserver = nil
         keyboardSelectionObserver = nil
+        audioRouteObserver = nil
         if let window, let sheet = window.attachedSheet {
             window.endSheet(sheet, returnCode: .cancel)
         }
@@ -1131,16 +1161,28 @@ final class DeviceWindow: NSWindow {
 
 @MainActor
 private final class DeviceContentView: NSView {
-    static let displayGap: CGFloat = 12
     let display: NSView
     var canImport: () -> Bool = { false }
     var importFiles: ([URL]) -> Void = { _ in }
+    /// The space between the header and the display, which follows the bezel.
+    var displayGap = WindowScale.displayGap(bezelPadding: nil) {
+        didSet { needsLayout = true }
+    }
+    /// Whether the window has the display's size, as Simulator.app's
+    /// geometry update gives it. The display then fills the window below the
+    /// gap, as Simulator.app's constraints pin its display view, also where
+    /// the integral frame leaves a fraction of a point. In full screen and
+    /// after a manual resize, the display keeps its own size, centered below
+    /// the gap.
+    var isSizedToDisplay = false {
+        didSet { needsLayout = true }
+    }
     var headerHeight: CGFloat {
         guard let window else { return 52 }
         return max(0, bounds.height - window.contentLayoutRect.height)
     }
     /// The window's height above the display: the header and the gap below it.
-    var heightAboveDisplay: CGFloat { headerHeight + Self.displayGap }
+    var heightAboveDisplay: CGFloat { headerHeight + displayGap }
     init(display: NSView) {
         self.display = display
         super.init(frame: .zero)
@@ -1177,11 +1219,15 @@ private final class DeviceContentView: NSView {
 
     override func layout() {
         super.layout()
-        let intrinsic = display.intrinsicContentSize
-        let size = intrinsic.width > 0 && intrinsic.height > 0 ? intrinsic : display.frame.size
         let available = NSRect(origin: .zero, size: availableDisplaySize)
-        display.frame = NSRect(x: available.midX - size.width / 2, y: available.midY - size.height / 2,
-                               width: size.width, height: size.height)
+        if isSizedToDisplay {
+            display.frame = available
+        } else {
+            let intrinsic = display.intrinsicContentSize
+            let size = intrinsic.width > 0 && intrinsic.height > 0 ? intrinsic : display.frame.size
+            display.frame = NSRect(x: available.midX - size.width / 2, y: available.midY - size.height / 2,
+                                   width: size.width, height: size.height)
+        }
         needsDisplay = true
     }
 }

@@ -101,6 +101,7 @@ Representative coordinator actions:
 | StandBy | `0x1000202D4` | implemented by flipping and posting the `com.apple.springboard.ambient.presentation` notification state |
 | Location | `0x100022390` | implemented with `SimDevice availableLocationScenarios`, `clearSimulatedLocationWithError:`, `setLocationWithLatitude:andLongitude:error:`, and `setLocationScenario:error:`, restored at each connection from `LocationMode`/`LocationScenario`/`LocationLatitude`/`LocationLongitude`; the menu lists the key device's scenarios rather than the last connected device's; the `com.apple.iphonesimulator.simulateLocation` notification is not handled |
 | Get Pasteboard / Send Pasteboard | `0x10001FC3C` / `0x10001FC80` | implemented with SimPasteboardPlus `pull` / `push` on a connection opened at the first command; see [Pasteboard](#pasteboard) |
+| Audio Input / Audio Output | `0x1000142C8` (app delegate) | implemented with CoreSimDeviceIO's `SimAudioHostRoutable` port; see [Audio routing](#audio-routing) |
 | Automatically Sync Pasteboard | `0x100012ABC` (app delegate) | implemented with `enableRemoteAutosync` / `disableRemoteAutosync` and the forwarding of a device's copy to the other devices, off by default; see [Pasteboard](#pasteboard) |
 
 ## Implemented parity set
@@ -121,7 +122,8 @@ semantics:
   Siri, Shake, App Switcher, Trigger Screenshot;
 - I/O: Keyboard (Use the Same Keyboard Language as macOS, Connect Hardware
   Keyboard, Toggle Software Keyboard), Touch Pressure (Use Trackpad Force,
-  Shallow Press, Deep Press), Increase Volume, Decrease Volume;
+  Shallow Press, Deep Press), Audio Input, Audio Output, Increase Volume,
+  Decrease Volume;
 - Features: Touch ID and Face ID (Enrolled, Matching, Non-matching),
   Authorize Apple Pay, Toggle Appearance, Toggle In-call Status Bar,
   Show/Hide StandBy, Increase and Decrease Preferred Text Size, Toggle
@@ -152,8 +154,8 @@ The evidence is Simulator.app 16.0 (1063.4) from Xcode 26.6. `DWC` is
 | `DWC.windowScaleChanged:` `0x100054BBC`, body `0x1000548B0` | Menu tags 4108 Physical Size, 4109 Pixel Accurate, 4110 Point Accurate, 4111 Fit Screen. Sets `renderScale`, updates the window geometry (`0x10005B4A0`), then `setFrameOrigin:` back to the previous top edge. Fit Screen then centers the window in the visible frame (`0x10003872C`); the others move it back inside (`0x100038840`), along each axis it crosses, using `window.screen ?? NSScreen.main` and skipping full screen. |
 | Physical Size helper `0x100038260` | `NSDeviceSize.width / (CGDisplayScreenSize(NSScreenNumber).width / 25.4)` over `mainScreenDPI.width / mainScreenScale`. 110 replaces the Mac's value only without a window screen, `NSScreenNumber`, or `NSDeviceSize`; 163 replaces the device's only without a device type. A zero size is divided by as is. |
 | Pixel Accurate helper `0x100038488` | `SimDeviceScreen.scale / window.screen.backingScaleFactor`, each 1 when missing. |
-| Fit Screen helper `0x100037E08` | `scale(for:)` of the visible frame less the window's chrome (`window.frame − displayView.frame`) and 20 points; 1000 without any screen. Not clamped to 1. |
-| `DWC.validateMenuItem:` scale branch `0x100051D4C` | Needs `connectedScreen` and `DeviceWindow.fullScreenState == 3`. The `FullScreenState` cases are `entering`, `fullScreen`, `exiting`, and `none`, so 3 is `none`. Fit Screen is then enabled with its state untouched. Physical Size needs `displayClass & 0xFFFF == 0`. Each of these checks returns NO through `0x100051B10` without `setState:`, so the checkmark stays as it was; so does a menu without a device window, where no window controller validates the items. A fixed scale then sets its checkmark (`setState:` at `0x100051F50`) from `CGFloat.isAlmost(_:precision:)`, `abs(a − b) < 0.001`, and only afterwards requires the minimum (`0x100047884`). The fit check runs only when `chromeView.chrome` is nil (`getEnumTagSinglePayload == 1` at `0x100051FD0`); it compares `size(for:)` with the visible frame less the title bar. |
+| Fit Screen helper `0x100037E08` | `scale(for:)` of the visible frame less the window's chrome (`window.frame − displayView.frame`) and 20 points; 1000 without any screen. Not clamped to 1. Outside full screen the display view fills the content view below the gap (see [Window layout](#window-layout)), so the chrome is the title bar and the gap. |
+| `DWC.validateMenuItem:` scale branch `0x100051D4C` | Needs `connectedScreen` and `DeviceWindow.fullScreenState == 3`. The `FullScreenState` cases are `entering`, `fullScreen`, `exiting`, and `none`, so 3 is `none`. Fit Screen is then enabled with its state untouched. Physical Size needs `displayClass & 0xFFFF == 0`. Each of these checks returns NO through `0x100051B10` without `setState:`, so the checkmark stays as it was; so does a menu without a device window, where no window controller validates the items. A fixed scale then sets its checkmark (`setState:` at `0x100051F50`) from `CGFloat.isAlmost(_:precision:)`, `abs(a − b) < 0.001`, and only afterwards requires the minimum (`0x100047884`). The fit check runs only when `chromeView.chrome` is nil (`getEnumTagSinglePayload == 1` at `0x100051FD0`); it compares `size(for:)` with the visible frame less the title bar, `window.frame.height − contentRect(forFrameRect: window.frame).height` (`0x1000520C8`–`0x100052150`), which leaves out the gap above the display. |
 | What makes `SimDisplayChromeView.chrome` nil (SimulatorKit of Xcode 26.6) | `SimDisplayView.showDeviceChrome`'s `didSet` (`0x35510`) sets `chromeView.deviceType` to the device's type, or to nil when the bezel is hidden. `set(deviceType:)` (`0x56384`) reloads the chrome (`0x579CC`), which is nil without a device type, a context, `supportedChromeProfileBundles`, a `chromeIdentifier`, or a matching profile bundle. Simulator.app's `setShowChrome:` sets `showDeviceChrome`, and each connection sets it from the app-wide `ShowChrome` default. |
 | Show Device Bezels: `-[SimulatorAppDelegate toggleShowChrome:]` `0x10001356C`, the app delegate's validation `0x100012518`, defaults `0x100025218` | Saves the negation of `boolForKey:@"ShowChrome"` and sends `setShowChrome:` to the window controller of every device coordinator whose `windowExists` (`0x100013730`). The validation sets the checkmark from `ShowChrome` and returns YES, also without a device window. `ShowChrome` is registered as YES. |
 | Minimum scale `0x100047884` | iOS on display class 0: 0.4 for an iPhone, 0.25 otherwise; watchOS 0.6; otherwise `scale(for: 240×240)`, or 240 over the screen's pixel height for a display with chrome on other platforms. |
@@ -161,7 +163,7 @@ The evidence is Simulator.app 16.0 (1063.4) from Xcode 26.6. `DWC` is
 | Screen configuration `0x10007A9B0` | Collects the `frame` of each of `NSScreen.screens` and reads `ScreenConfigurations` (`dictionaryForKey:`) as `[String: [String]]`, or as empty when any value is not a list of strings. The configuration is the first entry, in the dictionary's iteration order, with as many strings as screens where each screen's frame is `CGRectEqualToRect` to one of the entry's `NSRectFromString` rectangles, in any order; its name becomes an `NSUUID` (`initWithUUIDString:`, which traps when it is not a UUID). Without a match, it creates an `NSUUID`, sets `ScreenConfigurations[UUIDString]` to the frames as `NSStringFromRect` strings, and saves the dictionary, so reading the geometry also registers a new configuration. |
 | Connected display, main-queue block `0x10004E9F8` … `0x10004F2B8` | Sets `showDeviceChrome` from `ShowChrome` and runs the chrome refresh. After a restart (`isRebooting`, which `-[DeviceCoordinator rebootDeviceWithErase:]` sets), an iOS display of class 0 turns to angle 0 through `0x100053DAC` (the Orientation path below); the block then clears the flag and skips the rest, so the window keeps its scale and takes the upright shape below its top edge (`0x10005BA50`), then moves back inside the visible frame. Otherwise: `renderScale = min(fit, scale)` (`0x10004EDF8`); `deviceRotation` is set to the device's current angle for an iOS device on display class 0 that was booted outside Simulator.app (`wasBootedExternally`, `0x10004EF68`), and to 0 for a device Simulator.app booted (`0x10004F04C`); then the geometry update (`0x10004F064`), so that the window has its final shape before the center: at (0, 0) the cascade `0x10007A95C` (`center` when the app-wide `lastCascadePoint` is zero, then `lastCascadePoint = cascadeTopLeftFromPoint:`), otherwise `setFrameOrigin:` at the center less half the size. Then the chrome refresh, `makeKeyAndOrderFront:`, and the move back inside the visible frame (`0x100038840`). |
 | Disconnect `0x10004FDB8` → `0x100050D84`, saving `0x10007B254` | Before `orderOut:`, saves the frame's center as `WindowCenter` (`NSStringFromPoint`) and `renderScale` as `WindowScale` when the window exists and the device is not rebooting. The two form a new dictionary that replaces `SimulatorWindowGeometry[UUIDString]` for the current screen configuration (`0x100073098`); the device's other configurations stay, and the result is written back to `DevicePreferences[UDID]` (`0x100073844`). The closure takes `isRebooting` when it is created (`0x10004F9F0`). `windowExists` is set when the window controller's `window` getter creates the window (`0x1000493BC`) and cleared when the window is set to nil (`0x1000494CC`). |
-| Geometry update `0x10005B4A0` → `0x10004B2E4` | Sizes the window to the display's `intrinsicContentSize`, as wide as the display with no minimum, keeping its bottom-left corner, applies `NSIntegralRect`, and moves it down when its top is above the visible frame, then `setFrame:display:NO animate:NO`. It never sets `renderScale`. |
+| Geometry update `0x10005B4A0` → `0x10004B2E4` | Sizes the window's content to the display's `intrinsicContentSize` plus the gap above the display (`0x100036364`), as wide as the display with no minimum, keeping its bottom-left corner, sets the toolbar style for that width, adds the title bar, applies `NSIntegralRect`, and moves it down when its top is above the visible frame, then `setFrame:display:NO animate:NO`. It never sets `renderScale`. The steps are in [Window layout](#window-layout). |
 | Rotation `0x10005BA50` | Outside full screen: keeps `renderScale`, runs the geometry update, and sets the origin to the rounded previous x and previous top less the new height, moved down when the top is above the visible frame. Every caller then moves the window back inside the visible frame (`0x100038840`): the guest's rotation (`0x10004DDB8`), `0x10005151C`, Rotate Left and Right (`0x100053D4C`), and the Orientation items (`0x100053F0C`), which the restart path reaches through `0x100053DAC`. |
 | Chrome refresh `0x10005AFFC`, from `DWC.setShowChrome:` `0x100048374` | With a chrome, removes `NSWindowStyleMaskResizable` and clears the background; without one, adds it (`styleMask | 0xF`) and uses black. Runs the geometry update when `fullScreenState == 3` (`0x10005B41C`), so Show Device Bezels keeps the scale. |
 | Full screen `0x10004868C` | With `AllowFullscreenMode`, sets `collectionBehavior` to `fullScreenPrimary | fullScreenAllowsTiling` (0x880), which keeps full screen available for a window that is not resizable; otherwise `fullScreenAuxiliary`. |
@@ -181,6 +183,42 @@ Simulator.app 16.0 calls them.
 NeoSimulator reproduces these commands; its differences are listed in the
 [design](Design.md#commands-and-menus).
 
+## Window layout
+
+The evidence is Simulator.app 16.0 (1063.4) from Xcode 26.6. `DWC` is
+`Simulator.DeviceWindowController`; ivar offsets are the values stored at the
+listed addresses.
+
+| Reference owner | Observed behavior |
+| --- | --- |
+| `DWC` window getter `0x1000492FC` | Creates a `DeviceWindow` with content rect (0, 25, 500, 1200), `styleMask` 0x7 (titled, closable, miniaturizable), buffered, not deferred. Nothing sets `NSWindowStyleMaskFullSizeContentView`, `titlebarAppearsTransparent`, or `titleVisibility`, so the content view sits below the title bar and toolbar. The chrome refresh adds and removes `resizable` (row above). |
+| `DeviceWindow` initializer `0x100035880` (from `initWithContentRect:styleMask:backing:defer:` `0x100035A9C`), setup `0x100035B50` | The initializer turns on the gap flag (offset at `0x1000DA3C0`), sets alpha 1, not opaque, and a clear background, then runs the setup: collection behavior 0x100, tabbing disallowed, DarkAqua, `titlebarSeparatorStyle` none, a layer-backed content view, and a `SimDisplayView` created with the content view's bounds and added to it without autoresizing constraints. |
+| Constraints, setup `0x100035D84`–`0x100036014` | `display.top = content.top + gap` (`NSLayoutConstraint(item:attribute:relatedBy:toItem:attribute:multiplier:constant:)` through `0x10007BB0C`, kept at `0x1000DA3C8`); `content.bottom`, `content.left`, and `content.right` equal the display's (`0x1000DA3D0`, `0x1000DA3D8`, `0x1000DA3E0`); `display.centerX` and `display.centerY` equal the content's (`0x1000DA3E8`, `0x1000DA3F0`), created inactive. The content view's hugging and compression resistance are 490 on both axes. The display view therefore fills the content view below the gap. |
+| Full screen state `didSet` `0x100036184` | Outside full screen (state 3, none), activates the top, bottom, left, and right constraints and deactivates the centers; while entering, in, or leaving full screen, the reverse, so the display keeps its intrinsic size centered in the content view. |
+| Gap `0x10003570C`, uses `0x100036364`, `0x100035814`, `0x1000363A4` | The gap is `10 − (chromeView.chrome?.images.padding.height ?? 0)`, at the scale-1 padding whatever the display's scale. `0x100036364` adds it to a content height while the flag is on; `0x100035814` sets the top constraint's constant to it, or to 0 with the flag off. The chrome refresh sets the flag and calls `0x100035814` (`0x10005B3D4`–`0x10005B3F4`), and `simDisplayView(_:changedChrome:)` (`0x10005F644` → `0x1000363A4`) sets the constant again. Nothing in 16.0 clears the flag. The gap is 10 points without a bezel and for the iPhone 17 Pro's bezel (padding 9 by 0), and 1 point for the iPad bezels (padding 10 by 9). |
+| Geometry update `0x10004B2E4(size:origin:)`, from `0x10005B4A0` | A flag ignores calls made while it runs. Without arguments it takes the size and origin of `contentRect(forFrameRect: frame)`. It sets `toolbarStyle`: `unifiedCompact` with `UseCompactTitleBar` (registered NO); otherwise `unified` when `UseMonobar` (registered YES) is on and the width is at least the threshold below, else `expanded`. On macOS 26 and later it hides the toolbar's last item, a flexible space, unless the style is `expanded`. It then reads the title bar as `frame.height − contentView.frame.height`, takes `NSIntegralRect(x, y, width, height + title bar)`, moves the frame down when its top is above the visible frame, calls `setFrame:display:NO animate:NO`, and invalidates the shadow. `0x10005B4A0` passes the display's `intrinsicContentSize` plus the gap (for CarPlay, with an adjusted height). Before that, without a chrome it sets `contentAspectRatio` to the screen's pixel size, turned for landscape, and `contentMinSize` to `size(for:)` at the minimum scale; with a chrome it clears both. |
+| Toolbar style threshold `0x100049D38` | `DWC` offset `0x1000DAB68` plus offset `0x1000DABB8` plus 130. The first is the sum, over the toolbar's items whose view is an `NSButton`, of the view's width plus 4 (`0x100049F90`–`0x10004A160`), measured when the chrome refresh first gives the window its toolbar (`0x10005B274`, only while `window.toolbar` is nil and the screen is the default), before the window shows: 31, 32, and 25 points for the iPhone toolbar nib's buttons, and also 27 and 27 for the iPad's. The second is the wider of the title in `NSFont.preferredFont(forTextStyle: .headline)` and the subtitle in `.subheadline` (`0x10005AD00`–`0x10005ADA0`). |
+| Title bar corners `0x100036518` | While the display view's `showDeviceChrome` is on outside full screen, rounds the corners of the `NSTitlebarContainerView` above the toolbar view with `maskedCorners` 3 and the window's `_cornerRadius` on macOS 26 and later (10 earlier); otherwise the radius is 0. |
+
+Measured on macOS 26.6 with Simulator.app's own `IndigoiPhoneToolbar.nib`
+and `IndigoiPadToolbar.nib` in a window built as above, the title bar is 52
+points with the `unified` style and 76 with `expanded`. Right after
+`setToolbar:`, before the window shows, the buttons still have the nib's
+widths, so the threshold is 317.3 points for an iPhone 17 Pro titled
+"iPhone 17 Pro" with the subtitle "iOS 26.5", and 413.4 for an iPad mini
+(A17 Pro). AppKit itself gives an `NSWindow` an integral frame: it rounds the
+origin down and the size up, which equals `NSIntegralRect` whenever the
+origin is integral or the origin's fraction and the size's add up to a whole
+point. When a `SimDisplayView` is up to a point larger than `size(for:)` at
+its scale, SimulatorKit keeps the bezel, the screen, and the digitizer at
+the view's lower-left corner, rounded to half points.
+
+NeoSimulator's window keeps its full-size content view and transparent
+unified toolbar; its header, `contentLayoutRect`'s inset, is the same 52
+points. The gap, the display filling the window below it, and the fit
+checks follow the table above; the differences are listed in the
+[design](Design.md#commands-and-menus).
+
 ## Bezel resizing and moving
 
 The evidence is Simulator.app 16.0 (1063.4) from Xcode 26.6 and SimulatorKit
@@ -192,7 +230,7 @@ server; its window is not resizable while it shows a bezel.
 | --- | --- |
 | `DeviceWindow.mouseDown:` `0x100037290` → `0x100036E70` | In full screen (`styleMask` bit 14) without a chrome, skips the corners; otherwise looks for the first of `displayView.typedResizeRects` whose `rect` contains `event.locationInWindow` (the display view sits at the window's origin). On a corner: sets `_allowResize`; saves `_initialFrame` (`contentRect(forFrameRect: frame)` with the display view's height), `_initialScale` (`renderScale`), `_initialMouse` (`NSEvent.mouseLocation`), `_resizeRectType`, and `_maxResizeScale` (`0x100037BB0`); calls `beginResize()` and posts `NSWindowWillStartLiveResizeNotification`. Then (`0x100037208`), unless `_allowResize` is set, reads `[[NSUserDefaults standardUserDefaults] boolForKey:@"AllowsMoveByDragOnWindowChrome"]` (`0x100037234`) and, when it is YES, calls `performWindowDragWithEvent:` with the event (`0x10003724C`), also in full screen. It never calls `super`. |
 | Maximum `0x100037BB0` | `scale(for:)` of the size from the opposite corner of `_initialFrame` to the edges of `(screen ?? NSScreen.main).visibleFrame`: width `initial.maxX − visible.minX` for the left corners, `visible.maxX − initial.minX` for the right; height `initial.maxY − visible.minY` for the lower corners, `visible.maxY − initial.minY` for the upper. 1000 without a screen. |
-| `DeviceWindow.mouseDragged:` `0x100037860` → `0x100037448` | Without a chrome or `_allowResize`, calls `super`. Otherwise the width is the initial width minus the pointer's x movement (`NSEvent.mouseLocation − _initialMouse`) for the left corners and plus it for the right; the height minus the y movement for the lower corners and plus it for the upper. Sets `renderScale = min(_maxResizeScale, max(minimum, scale(for: size)))` with the minimum of the scale commands (`0x100047884`), then calls the geometry update (`0x10004B2E4`) with the content size of the display's `intrinsicContentSize` and the origin that keeps the opposite corner: `x = initial.maxX − width` for the left corners, else `initial.minX`; `y = initial.maxY − height` for the lower corners, else `initial.minY`. |
+| `DeviceWindow.mouseDragged:` `0x100037860` → `0x100037448` | Without a chrome or `_allowResize`, calls `super`. Otherwise the width is the initial width minus the pointer's x movement (`NSEvent.mouseLocation − _initialMouse`) for the left corners and plus it for the right; the height minus the y movement for the lower corners and plus it for the upper. Sets `renderScale = min(_maxResizeScale, max(minimum, scale(for: size)))` with the minimum of the scale commands (`0x100047884`), then calls the geometry update (`0x10004B2E4`) with the content size of the display's `intrinsicContentSize` plus the gap above the display (`0x1000377CC` → `0x100036364`) and the origin that keeps the display's opposite corner, computed from the display's size alone: `x = initial.maxX − width` for the left corners, else `initial.minX`; `y = initial.maxY − height` for the lower corners, else `initial.minY`. |
 | `DeviceWindow.mouseUp:` `0x1000373F8` → `0x1000372E0` | Without a chrome or `_allowResize`, calls `super`. Otherwise calls `endResize()`, clears `_allowResize`, posts `NSWindowDidEndLiveResizeNotification` (so `DWC.windowDidEndLiveResize:` sets `renderScale` from the display view's frame), and runs `0x10003853C`: outside full screen, when the frame does not intersect the visible frame inset by 128 points (`0x100038638`), moves it along each axis until it touches that inset frame. |
 | Geometry update `0x10004B2E4(size:origin:)` | Both arguments are optional; without them it uses the current content rect. The frame is the content size plus the title bar at the origin, `NSIntegralRect`, moved down when its top is above the visible frame, then `setFrame:display:NO animate:NO`. A flag ignores calls made while it runs, such as from `windowDidResize:`. |
 | Resize cursors: the window's setup `0x100035B50` (from `awakeFromNib` and the initializer), `fullScreenState` `didSet` `0x100036184` | The setup turns `displayView.showResizeCursors` on (`0x100036010`); each full screen change sets it to `fullScreenState == none`, followed by `invalidateCursorRectsForView:`. |
@@ -443,6 +481,84 @@ tracking, so they do not replace a check with a physical keyboard and trackpad.
 NeoSimulator reproduces this behavior; its handling is described in the
 [design](Design.md#modifier-gestures).
 
+## Audio routing
+
+The evidence is Simulator.app 16.0 (1063.4) and SimulatorKit from Xcode 26.6,
+CoreSimulator 1174.9.2 with its CoreSimDeviceIO and SimAudioProcessorService,
+CoreDevice 651.13.5, and an iOS 26.5 iPhone 17 Pro in a separate device set. In
+`MainMenu.nib`, I/O ▸ Audio Input and Audio Output follow the separator after
+Touch Pressure and precede Increase Volume and Decrease Volume. `DC` is
+`DeviceCoordinator`.
+
+| Reference owner | Observed behavior |
+| --- | --- |
+| `-[DC initWithDevice:]` `0x100018914`, block `0x100018ECC` | Each coordinator owns an Audio Input and an Audio Output submenu with one item, `System`, whose action is `changeSelectedAudioDevice:` and whose tag is `0x20000001` (input) or `0x40000001` (output). |
+| `-[DC _onSessionQueue_connect]` `0x10001B314`, at `0x10001B528` … `0x10001B65C` | With `SimFeatureRoutableAudio` (`com.apple.CoreSimulator.audio.routable`), creates `SimDeviceAudioClient initWithDevice:eventHandlerQueue:error:changedEventHandler:` with the main queue. A failure logs "Unable to start Audio Client, will be unable to change audio routing. Error: %@", and the submenus keep only System. |
+| Changed handler `0x10001B900` | On each state the client reports: `updateAudioMenuWithState:`, then `synchronizeSelectedAudioDevicesInScope:` with 1 and 2. |
+| `-[DC deviceWindowBecameKey:]` `0x100019B0C`, at `0x100019F9C`; `-[DC deviceWindowWillClose:]` `0x100019720`, at `0x1000198E8` | Send `connectAudioSubmenus:` YES and NO. |
+| `-[DC connectAudioSubmenus:]` `0x10001D0DC` | With YES and `SimFeatureRoutableAudio`, enables the app delegate's `audioInputMenuItem` and `audioOutputMenuItem` and gives them this coordinator's submenus; otherwise disables them and removes their submenus. They are never hidden. |
+| `-[DC updateAudioMenuWithState:]` `0x10001CA38` | For each direction: finds System by its tag, removes all items, adds System back, then adds an item per `inputDevices` or `outputDevices` entry: `displayName`, `changeSelectedAudioDevice:`, the device as `representedObject`, tag `0x20000000` or `0x40000000`. A device is checked when the client does not use the default and its `uniqueIdentifier` equals the selected device's. When a device's identifier equals the effective default device's, System's title becomes `System (%@)` with its `displayName`; otherwise the title stays. System is checked from `useDefaultInputDevice` or `useDefaultOutputDevice`. No separator is added. |
+| `SimulatorAppDelegate.validateMenuItem:` `0x10001202C`, at `0x1000121A8` → `0x100012720` | `changeSelectedAudioDevice:` is enabled while `keyDeviceCoordinator.device` is not nil. |
+| `-[SimulatorAppDelegate changeSelectedAudioDevice:]` `0x1000142C8` | Tag `0x20000001` or `0x40000001` chooses `SimAudioHostUseSystemDefaultDeviceUID`; another item's `representedObject`, which must conform to `SimAudioHostDevice`, gives its `uniqueIdentifier`, and tag bit 29 tells input from output. Records an analytics event, inserts the route at index 0 of the recent list (`arrayByInsertingObject:` `0x10003B8FC`), saves it, and sends `synchronizeSelectedAudioDevicesInScope:` with that direction to every coordinator in `deviceCoordinators`. |
+| `NSUserDefaults(Indigo)` `recentAudioInputDeviceUIDs` `0x10003AD64`, `recentAudioOutputDeviceUIDs` `0x10003B0D0` → `0x10003B13C` | `RecentAudioInputDeviceUIDs` or `RecentAudioOutputDeviceUIDs` cast to `[String]`; when missing, not of strings, or empty, `[SimAudioHostUseSystemDefaultDeviceUID]`. |
+| Setters `0x10003AD7C`, `0x10003B240` → `0x10003B2A0` | Keep the first occurrence of each route (`0x10003ADDC`), keep the first five (`0x10003B004`), and `setObject:forKey:`. |
+| `-[DC synchronizeSelectedAudioDevicesInScope:]` `0x10001D2A4`, block `0x10001D324` | On the session queue, passes the recent list, the client state's devices, selected device, and default flag of that direction to `_onQueue_synchronizeSelectedAudioDevices:hostDevices:currentlySelectedDevice:currentlyUsingDefaultDevice:inScope:`. |
+| `_onQueue_synchronize…` `0x10001D46C` | For each recent route in order: System while using the default, or the selected device's identifier while not, logs "already selected" and stops. Otherwise the first host device with that identifier, or for System the first host device whose `isDefaultInScopes` has the direction's bit, makes it call `routeGuestWithScope:to:completionQueue:completionHandler:` (`0x10001D7C0`) on the main queue and stop. With none, it logs "Unable to find the preferred audio device for scope %@!". The completion (`0x10001D8FC`) only logs the error or success. |
+
+SimulatorKit 26.6's `SimDeviceAudioClient` (`SimAudioHostRouteClient.swift`):
+
+| Owner | Observed behavior |
+| --- | --- |
+| `init(device:eventHandlerQueue:changedEventHandler:)` `0x813B0` | Takes `SimDevice.io`, its `ioPorts`, and the first port whose `descriptor` conforms to `SimAudioHostRoutable`; without one it throws `noAudioPort`. On its serial queue `com.apple.SimulatorKit.AudioHostRouteClient.<UDID>`, it reads the port (`0x81DE8`) and reports that state, then registers `availableDevicesChangedCallback` (`0x81EF4`) and `selectedDeviceUIDChangedCallback` (`0x820E4`, scope and route). |
+| State `0x8267C`, `0x82B30`, `0x83388` | `inputDevices` and `outputDevices` are `availableHostDevices` with at least one input or output channel. The effective default device has the identifier of `effectiveDefaultInputDeviceUID` or `effectiveDefaultOutputDeviceUID`. The selected device is the device of the guest's route, or else the device that is the default in that direction. `useDefaultInputDevice` and `useDefaultOutputDevice` compare the guest's route with `SimAudioHostUseSystemDefaultDeviceUID`. |
+| `routeGuest(scope:to:completionQueue:completionHandler:)` `0x83B9C` | Sends `routeGuestDeviceScope:toHostDeviceUID:completionQueue:completionHandler:` to the port. |
+
+Xcode 27's SimulatorKit has no `SimDeviceAudioClient`. The port remains:
+
+- CoreSimDeviceIO declares `SimAudioHostRoutable` with `availableHostDevices`,
+  `guestInputHostDeviceUID`, `guestOutputHostDeviceUID`,
+  `effectiveDefaultInputDeviceUID`, `effectiveDefaultOutputDeviceUID`,
+  `routeGuestDeviceScope:toHostDeviceUID:completionQueue:completionHandler:`
+  (`v48@0:8Q16@"NSString"24@"NSObject<OS_dispatch_queue>"32@?<v@?@"NSError">40`),
+  `registerCallbackWithUUID:availableDevicesChangedCallback:` (a block taking
+  an array), `registerCallbackWithUUID:selectedDeviceUIDChangedCallback:` (a
+  block taking a scope and a route), and `unregisterCallbackWithUUID:`.
+  `SimAudioHostDevice` has `uniqueIdentifier`, `name`, `displayName`,
+  `dataSourceID`, `dataSourceName`, `scope`, `inputChannels`,
+  `outputChannels`, and `isDefaultInScopes`. It exports
+  `SimAudioHostUseSystemDefaultDeviceUID`, whose value is
+  `__sim__hostUseSystemDefaultDeviceUID`.
+- SimAudioProcessorService handles CoreAudio's device-list, default-input, and
+  default-output changes (`0x10000C824`, `0x10000C900`, `0x10000CA04`); each
+  calls `0x10000CB08`, which calls the `availableDevicesChangedCallbacks`
+  (`0x10000CBBC`).
+- CoreDevice's SimulatorCoreDevicePlugin implements `devicectl device settings
+  audio` and `device info audio` with `io`, `ioPorts`, `descriptor`,
+  `conformsToProtocol:` `SimAudioHostRoutable`, the guest's routes, and the
+  route message ("No audio routable port found on the device"). CoreDeviceService
+  implements `devicectl list audioDevices` with CoreAudio
+  (`AudioObjectGetPropertyData` and a device-list listener).
+
+The live check on the separate device set showed:
+
+- The device had 14 I/O port proxies; finding the routable one took 7 ms and
+  reading its state 2 to 7 ms. `availableHostDevices` gave the identifiers
+  that `devicectl list audioDevices` gives, with CoreAudio's names.
+- Routes completed in 3 to 50 ms without an error, and
+  `selectedDeviceUIDChangedCallback` reported each scope and route. The
+  callbacks and the completion arrived on the proxies' own queues, although the
+  completion queue was the main queue. Registering reported nothing.
+- A route to an identifier that the Mac lacked, and an input route to an
+  output-only device, completed without an error; the guest then used the
+  Mac's default device by its identifier.
+- With the output routed to BlackHole 2ch, an existing loopback device,
+  BlackHole's `kAudioDevicePropertyDeviceIsRunningSomewhere` changed from 0 to
+  1 while a guest process played a tone and back to 0 after it; the guest's
+  `AVAudioSession` still reported its own Speaker route.
+
+NeoSimulator reproduces Audio Input and Audio Output; its handling and
+differences are described in the [design](Design.md#audio-input-and-audio-output).
+
 ## Deferred features
 
 These have viable Xcode 27+ primitives but need a dedicated state/capability
@@ -459,7 +575,7 @@ contract before being user-visible:
   does not have.
 - watchOS, tvOS, and visionOS-specific gesture, remote, camera, immersion, and
   viewport commands.
-- FaceTime/audio-routing menus.
+- FaceTime menus.
 - Device Manager or any Device Hub URL handoff.
 
 These exclusions are part of the Neo-mode safety boundary, not missing
