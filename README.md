@@ -253,6 +253,7 @@ Use these controls over the simulated screen:
 
 | Control | Interaction |
 | --- | --- |
+| Hold Option | Show two fingers mirrored around the point where Option went down |
 | Hold Option, then drag | Pinch by changing the distance between the two fingers; rotate by moving around their center |
 | Hold Option and Shift, then move the pointer | Reposition the two-finger gesture center |
 | Hold Option and Shift, then drag | Move both fingers together |
@@ -261,9 +262,33 @@ Use these controls over the simulated screen:
 To release a pinned finger, release Control, click the pinned position, and
 release the mouse button. Releasing Control alone leaves the finger pinned.
 
-Finish gestures and release pinned fingers before closing the window. Closing
-mid-gesture can leave a touch active in the simulated app. Global pointer
-capture and arbitrary gestures with three or more fingers are not supported.
+SimulatorKit handles these gestures in Neo as in Simulator.app, so they behave
+the same way in both:
+
+- Pressing or releasing Shift during an Option drag switches between pinching
+  and moving both fingers. Pressing Option during a one-finger drag adds the
+  second finger.
+- Release the mouse button before Option. Releasing Option first stops both
+  fingers where they are, and they stay down after the button comes up until
+  the next click.
+- A gesture in progress continues when another window or app becomes active;
+  releasing the mouse button lifts the fingers.
+- A change of window scale or a drag on the bezel keeps a pinned finger at its
+  place on the device's screen. After a rotation, the pinned finger stays at
+  its place in the window, so it moves on the device's screen; click that place
+  in the window to release it.
+- Closing the window or quitting Neo while a finger is down or pinned leaves
+  the touch active in a device that keeps running. The next touch from a
+  device window ends it first and can become that touch's end, so finish
+  gestures and release pinned fingers before closing. Restarting the device
+  clears it.
+
+Unlike Simulator.app, Neo applies the current modifier keys when a device
+window becomes active, so an Option release that happened while another window
+or app was active does not turn the next click into a two-finger touch.
+
+Global pointer capture and arbitrary gestures with three or more fingers are
+not supported.
 
 ## Return to Device Hub
 

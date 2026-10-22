@@ -808,6 +808,59 @@ These differ from Simulator.app:
   menu and applies a change to any of the four preferences, from Settings or
   from another process, to every open window.
 
+### Modifier gestures
+
+SimulatorKit's `SimDigitizerInputView` owns the Option, Option-Shift, and
+Control gestures in both apps. It takes the modifiers from the modifier and
+mouse events it receives, draws the finger indicators, keeps a pinned finger,
+and sends the touches to the guest. NeoSimulator keeps no contact state; it
+decides only which events reach the digitizer.
+
+The window makes the digitizer its first responder when it becomes key and
+after each device command, and sends it the current modifier flags.
+Simulator.app has no such step: its digitizer asks for focus when the pointer
+enters it and keeps the last modifiers it saw. There, an Option release that
+reaches another window or app leaves the digitizer with Option down, and the
+next plain click becomes a two-finger touch. NeoSimulator deliberately
+reconciles the modifiers instead.
+
+When the window resigns key, it releases the guest's held modifier keys before
+its display stops taking the Mac's keyboard, as Simulator.app's
+`clearModifiers()` does; SimulatorKit itself releases modifiers only on
+displays that still take the keyboard. NeoSimulator sends the release as a
+modifier event through the app, where SimulatorKit's keyboard monitor reads it.
+AppKit passes such an event to the app's key window, and while the app
+deactivates that is still the device window. Its digitizer would take the
+release as Option going up, stop an Option gesture in progress, and keep both
+touches down until the next click. The window therefore becomes its own first
+responder for the release and then gives focus back to the digitizer, which
+sees nothing, as in Simulator.app.
+
+The finger indicators that `drawOptions` turns on follow the touch indicator
+preferences, as described under
+[Settings and touch indicators](#settings-and-touch-indicators); pinned touches
+stay drawn.
+
+Because both apps give the digitizer the same events, the gestures behave the
+same way in each of these cases:
+
+| Case | Behavior in both apps |
+| --- | --- |
+| Shift pressed or released during an Option drag | Switches between pinching and moving both fingers |
+| Option pressed during a one-finger drag | Adds the mirrored second finger; releasing the button lifts both |
+| Option released before the mouse button | Both fingers stop and stay down after the button comes up, until the next click |
+| Control pressed during an Option drag | Releasing the button lifts both fingers; nothing is pinned |
+| Another window or app becomes active during a gesture | The gesture continues; releasing the button lifts the fingers. A pinned finger stays pinned |
+| Scale command or bezel-corner drag | The gesture continues; a pinned finger keeps its place on the device's screen |
+| Display rotation | Touches follow the new mapping; a pinned finger keeps its place in the window, which moves it on the device's screen, and a click at that place releases it |
+| Pointer leaving the screen during a drag | The touch stops at the edge and ends when the button comes up |
+| Window close, quit, or disconnect | `SimDisplayView.disconnect(completion:)` turns the digitizer off without sending touch ends, so a finger that is down or pinned stays active in a device that keeps running. The next touch from a new connection ends it first and can become that touch's end |
+| Device restart | The guest restarts; no touch remains |
+
+Neither app ends active touches before disconnecting, and NeoSimulator does
+not synthesize touches that Simulator.app does not send. The evidence is in the
+[Simulator.app analysis](SimulatorAppAnalysis.md#modifier-gestures).
+
 ## Failure semantics
 
 The executable follows BSD `sysexits` categories:
@@ -857,7 +910,8 @@ files with the archive.
 Live validation additionally covers framebuffer/touch/accessibility, focused
 keyboard input, Home, Software Keyboard, connecting and disconnecting the
 hardware keyboard, the keyboard language, the digitizer's touch pressure
-settings and touch indicator draw options, the settings window, resize, menu
+settings and touch indicator draw options, the settings window, modifier
+gestures through the lifecycle cases above, resize, menu
 rotation, screenshot PNG, Device Hub absence, and loaded-image provenance.
 
 ## Non-goals

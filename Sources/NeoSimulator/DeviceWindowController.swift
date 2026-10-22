@@ -388,9 +388,24 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
             session.display.setKeyboardEnabled(true)
             sendModifiers(NSEvent.modifierFlags)
         } else {
-            sendModifiers([])
+            releaseModifiers()
             session.display.setKeyboardEnabled(false)
         }
+    }
+
+    /// Releases the guest's modifier keys before the display stops taking the
+    /// Mac's keyboard, as Simulator.app's `clearModifiers()` does when its
+    /// window resigns key. SimulatorKit takes the release from the event the
+    /// app sends, which AppKit passes to the app's key window; while the app
+    /// deactivates, that is still this window. Like Simulator.app's, the
+    /// digitizer does not see the release, which would stop a gesture in
+    /// progress from following the pointer and keep its touches down after
+    /// the button comes up.
+    private func releaseModifiers() {
+        let input = session.display.inputView
+        let movesFocus = window?.firstResponder === input && window?.makeFirstResponder(nil) == true
+        sendModifiers([])
+        if movesFocus { window?.makeFirstResponder(input) }
     }
 
     /// Like Simulator.app, a change of the Mac's input source gives the key
