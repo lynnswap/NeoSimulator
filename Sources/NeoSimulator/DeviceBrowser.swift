@@ -229,22 +229,42 @@ final class DeviceBrowserWindowController: NSWindowController {
 /// compatible choice. An empty name creates the device with its device type's
 /// name, shown as the placeholder. Creating closes the window without booting
 /// the device.
+///
+/// Paired Apple Watch, enabled only for an iPhone, turns Create into Next,
+/// which shows the watch's page: its name, a watch device type, and a runtime
+/// that supports it, kept compatible the same way, except that choosing a
+/// device type the runtime does not support lists only the runtimes that do.
+/// There Create is enabled only while CoreSimulator can pair the two devices;
+/// it creates the iPhone, then the watch, and pairs them. Like Simulator.app,
+/// a failure keeps the devices already created; the alert names them.
 @MainActor
 final class NewSimulatorWindowController: NSWindowController, NSWindowDelegate {
-    typealias Create = @MainActor (_ name: String, _ deviceType: String, _ runtime: String) async throws -> Void
+    /// Creates a device and returns its identifier.
+    typealias Create = @MainActor (_ name: String, _ deviceType: String, _ runtime: String) async throws -> String
+    typealias Pair = @MainActor (_ watch: String, _ phone: String) async throws -> Void
 
     let nameField = NSTextField()
     let deviceTypes = NSPopUpButton()
     let runtimes = NSPopUpButton()
-    let createButton = NSButton(title: "Create", target: nil, action: nil)
+    let pairedWatchButton = NSButton(checkboxWithTitle: "Paired Apple Watch", target: nil, action: nil)
+    let watchNameField = NSTextField()
+    let watchDeviceTypes = NSPopUpButton()
+    let watchRuntimes = NSPopUpButton()
+    let previousButton = NSButton(title: "Previous", target: nil, action: nil)
+    /// Create, or Next while the first page leads to the watch's page.
+    let forwardButton = NSButton(title: "Create", target: nil, action: nil)
+    private let simulatorPage = NSGridView()
+    private let watchPage = NSGridView()
     private let catalog: SimulatorCatalog
     private let create: Create
+    private let pair: Pair
     private let onClose: () -> Void
     private var creation: Task<Void, Never>?
 
-    init(catalog: SimulatorCatalog, create: @escaping Create, onClose: @escaping () -> Void = {}) {
+    init(catalog: SimulatorCatalog, create: @escaping Create, pair: @escaping Pair, onClose: @escaping () -> Void = {}) {
         self.catalog = catalog
         self.create = create
+        self.pair = pair
         self.onClose = onClose
         let window = NSWindow(contentRect: NSRect(x: 196, y: 240, width: 618, height: 258),
                               styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
@@ -254,9 +274,13 @@ final class NewSimulatorWindowController: NSWindowController, NSWindowDelegate {
         window.delegate = self
         window.contentView = makeContent()
         fillMenus()
+        fillWatchMenus()
     }
 
     required init?(coder: NSCoder) { nil }
+
+    /// Whether the watch's page is showing.
+    var showsWatchPage: Bool { !watchPage.isHidden }
 
     private func makeContent() -> NSView {
         func label(_ title: String) -> NSTextField {
@@ -264,39 +288,62 @@ final class NewSimulatorWindowController: NSWindowController, NSWindowDelegate {
             label.alignment = .right
             return label
         }
-        nameField.translatesAutoresizingMaskIntoConstraints = false
-        nameField.widthAnchor.constraint(equalToConstant: 200).isActive = true
-        deviceTypes.target = self
-        deviceTypes.action = #selector(deviceTypeChanged(_:))
-        runtimes.target = self
-        runtimes.action = #selector(runtimeChanged(_:))
-        let grid = NSGridView(views: [
+        func layOut(_ page: NSGridView, _ rows: [[NSView]]) {
+            for row in rows { page.addRow(with: row) }
+            page.column(at: 0).xPlacement = .trailing
+            page.rowAlignment = .firstBaseline
+            page.rowSpacing = 8
+        }
+        for field in [nameField, watchNameField] {
+            field.translatesAutoresizingMaskIntoConstraints = false
+            field.widthAnchor.constraint(equalToConstant: 200).isActive = true
+        }
+        for (popUp, action) in [(deviceTypes, #selector(deviceTypeChanged(_:))), (runtimes, #selector(runtimeChanged(_:))),
+                                (watchDeviceTypes, #selector(watchDeviceTypeChanged(_:))),
+                                (watchRuntimes, #selector(watchRuntimeChanged(_:)))] {
+            popUp.target = self
+            popUp.action = action
+        }
+        pairedWatchButton.target = self
+        pairedWatchButton.action = #selector(pairedWatchChanged(_:))
+        layOut(simulatorPage, [
             [label("Simulator Name:"), nameField],
             [label("Device Type:"), deviceTypes],
             [label("OS Version:"), runtimes],
+            [NSGridCell.emptyContentView, pairedWatchButton],
         ])
-        grid.column(at: 0).xPlacement = .trailing
-        grid.rowAlignment = .firstBaseline
-        grid.rowSpacing = 8
+        layOut(watchPage, [
+            [label("Paired Watch Name:"), watchNameField],
+            [label("Device Type:"), watchDeviceTypes],
+            [label("OS Version:"), watchRuntimes],
+        ])
+        watchPage.isHidden = true
         let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancel(_:)))
         cancel.keyEquivalent = "\u{1b}"
-        createButton.target = self
-        createButton.action = #selector(createSimulator(_:))
+        previousButton.target = self
+        previousButton.action = #selector(previous(_:))
+        previousButton.isEnabled = false
+        forwardButton.target = self
+        forwardButton.action = #selector(forward(_:))
         let heading = NSTextField(labelWithString: "Create a new simulator:")
         let content = NSView()
-        for view in [heading, grid, cancel, createButton] {
+        for view in [heading, simulatorPage, watchPage, cancel, previousButton, forwardButton] {
             view.translatesAutoresizingMaskIntoConstraints = false
             content.addSubview(view)
         }
         NSLayoutConstraint.activate([
             heading.topAnchor.constraint(equalTo: content.topAnchor, constant: 20),
             heading.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
-            grid.topAnchor.constraint(equalTo: heading.bottomAnchor, constant: 20),
-            grid.centerXAnchor.constraint(equalTo: content.centerXAnchor),
+            simulatorPage.topAnchor.constraint(equalTo: heading.bottomAnchor, constant: 20),
+            simulatorPage.centerXAnchor.constraint(equalTo: content.centerXAnchor),
+            watchPage.topAnchor.constraint(equalTo: heading.bottomAnchor, constant: 20),
+            watchPage.centerXAnchor.constraint(equalTo: content.centerXAnchor),
             cancel.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
             cancel.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -20),
-            createButton.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
-            createButton.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -20),
+            previousButton.trailingAnchor.constraint(equalTo: forwardButton.leadingAnchor, constant: -12),
+            previousButton.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -20),
+            forwardButton.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
+            forwardButton.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -20),
         ])
         return content
     }
@@ -310,10 +357,9 @@ final class NewSimulatorWindowController: NSWindowController, NSWindowDelegate {
             deviceTypes.menu?.addItem(item(type.name, representing: type.identifier))
         }
         guard !catalog.runtimes.isEmpty else {
-            let none = NSMenuItem(title: "No Runtimes Available", action: nil, keyEquivalent: "")
-            none.isEnabled = false
-            runtimes.menu?.addItem(none)
-            for control in [runtimes, deviceTypes, createButton] as [NSControl] { control.isEnabled = false }
+            addNoRuntimesItem(to: runtimes)
+            for control in [runtimes, deviceTypes, pairedWatchButton] as [NSControl] { control.isEnabled = false }
+            updateForwardButton()
             return
         }
         for runtime in catalog.runtimes {
@@ -325,6 +371,34 @@ final class NewSimulatorWindowController: NSWindowController, NSWindowDelegate {
         runtimeChanged(nil)
     }
 
+    /// The watch's page lists the watch device types without separators and,
+    /// at first, the runtimes that support any of them.
+    private func fillWatchMenus() {
+        let watchTypes = catalog.deviceTypes.filter { $0.productFamily == DeviceCapabilities.Family.watch.rawValue }
+        // Without watch device types Simulator.app leaves both menus empty.
+        guard !watchTypes.isEmpty else { return }
+        for type in watchTypes { watchDeviceTypes.menu?.addItem(item(type.name, representing: type.identifier)) }
+        let runtimes = catalog.runtimes.filter { runtime in
+            watchTypes.contains { catalog.runtime(runtime.identifier, supports: $0.identifier) }
+        }
+        guard !runtimes.isEmpty else {
+            addNoRuntimesItem(to: watchRuntimes)
+            watchRuntimes.isEnabled = false
+            watchDeviceTypes.isEnabled = false
+            return
+        }
+        for runtime in runtimes { watchRuntimes.menu?.addItem(item(runtime.name, representing: runtime.identifier)) }
+        watchDeviceTypes.selectItem(at: 0)
+        watchRuntimes.selectItem(at: 0)
+        watchRuntimeChanged(nil)
+    }
+
+    private func addNoRuntimesItem(to popUp: NSPopUpButton) {
+        let none = NSMenuItem(title: "No Runtimes Available", action: nil, keyEquivalent: "")
+        none.isEnabled = false
+        popUp.menu?.addItem(none)
+    }
+
     private func item(_ title: String, representing identifier: String) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
         item.representedObject = identifier
@@ -333,6 +407,8 @@ final class NewSimulatorWindowController: NSWindowController, NSWindowDelegate {
 
     private var deviceType: String? { deviceTypes.selectedItem?.representedObject as? String }
     private var runtime: String? { runtimes.selectedItem?.representedObject as? String }
+    private var watchType: String? { watchDeviceTypes.selectedItem?.representedObject as? String }
+    private var watchRuntime: String? { watchRuntimes.selectedItem?.representedObject as? String }
 
     // An empty selection counts as incompatible, as a nil selection does in
     // Simulator.app, so choosing again restores a compatible one.
@@ -340,14 +416,47 @@ final class NewSimulatorWindowController: NSWindowController, NSWindowDelegate {
         if let deviceType, runtime.map({ catalog.runtime($0, supports: deviceType) }) != true {
             select(in: runtimes) { catalog.runtime($0, supports: deviceType) }
         }
-        nameField.placeholderString = deviceTypes.selectedItem?.title
+        simulatorSelectionDidChange()
     }
 
     @objc private func runtimeChanged(_ sender: Any?) {
         if let runtime, deviceType.map({ catalog.runtime(runtime, supports: $0) }) != true {
             select(in: deviceTypes) { catalog.runtime(runtime, supports: $0) }
         }
+        simulatorSelectionDidChange()
+    }
+
+    /// Like Simulator.app, Paired Apple Watch is enabled only for an iPhone and
+    /// turns off for another device type; an empty selection leaves it as it is.
+    private func simulatorSelectionDidChange() {
         nameField.placeholderString = deviceTypes.selectedItem?.title
+        if let family = deviceType.flatMap(catalog.deviceType)?.productFamily {
+            pairedWatchButton.isEnabled = family == DeviceCapabilities.Family.iPhone.rawValue
+            if !pairedWatchButton.isEnabled { pairedWatchButton.state = .off }
+        }
+        updateForwardButton()
+    }
+
+    /// Like Simulator.app, a watch that the runtime does not support replaces
+    /// the runtime menu with the runtimes that support it.
+    @objc private func watchDeviceTypeChanged(_ sender: Any?) {
+        if let watchType, watchRuntime.map({ catalog.runtime($0, supports: watchType) }) != true {
+            watchRuntimes.removeAllItems()
+            for runtime in catalog.runtimes where catalog.runtime(runtime.identifier, supports: watchType) {
+                watchRuntimes.menu?.addItem(item(runtime.name, representing: runtime.identifier))
+            }
+            watchRuntimes.select(watchRuntimes.itemArray.first)
+        }
+        watchNameField.placeholderString = watchDeviceTypes.selectedItem?.title
+        updateForwardButton()
+    }
+
+    @objc private func watchRuntimeChanged(_ sender: Any?) {
+        if let watchRuntime, watchType.map({ catalog.runtime(watchRuntime, supports: $0) }) != true {
+            select(in: watchDeviceTypes) { catalog.runtime(watchRuntime, supports: $0) }
+        }
+        watchNameField.placeholderString = watchDeviceTypes.selectedItem?.title
+        updateForwardButton()
     }
 
     /// Selects the first item whose identifier matches, or nothing.
@@ -355,20 +464,71 @@ final class NewSimulatorWindowController: NSWindowController, NSWindowDelegate {
         popUp.select(popUp.itemArray.first { ($0.representedObject as? String).map(matches) == true })
     }
 
-    @objc private func createSimulator(_ sender: Any?) {
+    @objc private func pairedWatchChanged(_ sender: Any?) { updateForwardButton() }
+
+    /// Whether Create also creates a watch, which Simulator.app decides from
+    /// the option being enabled and on.
+    private var pairsWatch: Bool { pairedWatchButton.isEnabled && pairedWatchButton.state == .on }
+
+    /// Whether the four choices make a pair that CoreSimulator can create.
+    private var canPair: Bool {
+        guard let deviceType, let runtime, let watchType, let watchRuntime,
+              catalog.runtime(watchRuntime, supports: watchType) else { return false }
+        return catalog.canPair(watchType, watchRuntime, deviceType, runtime)
+    }
+
+    private func updateForwardButton() {
+        forwardButton.title = pairsWatch && !showsWatchPage ? "Next" : "Create"
+        forwardButton.isEnabled = !catalog.runtimes.isEmpty && creation == nil && (!showsWatchPage || canPair)
+    }
+
+    private func showWatchPage(_ shows: Bool) {
+        simulatorPage.isHidden = shows
+        watchPage.isHidden = !shows
+        previousButton.isEnabled = shows
+        updateForwardButton()
+    }
+
+    @objc private func forward(_ sender: Any?) {
+        if pairsWatch && !showsWatchPage { showWatchPage(true) } else { createSimulator() }
+    }
+
+    @objc private func previous(_ sender: Any?) { showWatchPage(false) }
+
+    /// An empty name field names the device after its placeholder.
+    private static func name(in field: NSTextField) -> String {
+        field.stringValue.isEmpty ? field.placeholderString ?? "" : field.stringValue
+    }
+
+    private func createSimulator() {
         guard creation == nil, let deviceType, let runtime else { return }
-        let name = nameField.stringValue.isEmpty ? nameField.placeholderString ?? "" : nameField.stringValue
-        createButton.isEnabled = false
+        let name = Self.name(in: nameField)
+        var watch: (name: String, deviceType: String, runtime: String)?
+        if pairsWatch {
+            guard let watchType, let watchRuntime else { return }
+            watch = (Self.name(in: watchNameField), watchType, watchRuntime)
+        }
         creation = Task {
             defer {
                 creation = nil
-                createButton.isEnabled = true
+                updateForwardButton()
             }
             do {
-                try await create(name, deviceType, runtime)
+                let phone = try await create(name, deviceType, runtime)
+                if let watch {
+                    let identifier: String
+                    do { identifier = try await create(watch.name, watch.deviceType, watch.runtime) } catch {
+                        throw HostError.operation(
+                            "Created “\(name)”, but could not create its paired Apple Watch: \(error.localizedDescription)")
+                    }
+                    do { try await pair(identifier, phone) } catch {
+                        throw HostError.operation(
+                            "Created “\(name)” and “\(watch.name)”, but could not pair them: \(error.localizedDescription)")
+                    }
+                }
                 close()
             } catch {
-                // The window may have been closed while the device was being created.
+                // The window may have been closed while the devices were being created.
                 if let window, window.isVisible {
                     NSAlert(error: error).beginSheetModal(for: window, completionHandler: nil)
                 } else {
@@ -376,6 +536,7 @@ final class NewSimulatorWindowController: NSWindowController, NSWindowDelegate {
                 }
             }
         }
+        updateForwardButton()
     }
 
     @objc private func cancel(_ sender: Any?) { close() }

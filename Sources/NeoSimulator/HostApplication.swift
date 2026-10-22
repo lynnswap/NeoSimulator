@@ -668,6 +668,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             newSimulator = NewSimulatorWindowController(catalog: catalog, create: { name, deviceType, runtime in
                 try await DeviceTools.createDevice(named: name, deviceType: deviceType, runtime: runtime,
                                                    xcodeURL: xcodeURL)
+            }, pair: { watch, phone in
+                try await DeviceTools.pairDevices(watch: watch, phone: phone, xcodeURL: xcodeURL)
             }, onClose: { [weak self] in self?.newSimulator = nil })
         }
         newSimulator?.showWindow(nil)

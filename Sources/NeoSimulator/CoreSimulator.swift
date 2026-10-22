@@ -73,6 +73,10 @@ struct CoreSimulatorInterface {
     let mainScreenDPI: NativeObjCMethod<CGSize>
     let mainScreenScale: NativeObjCMethod<Float>
     let userInterfaceIdentifier: NativeObjCMethod<String?>
+    let devicePairClass: AnyClass
+    /// `+[SimDevicePair testPossiblePairingWithDeviceTypeA:RuntimeA:DeviceTypeB:RuntimeB:error:]`,
+    /// whether a device of one type and runtime can pair with a device of another.
+    let testPossiblePairing: NativeObjCMethod<Void, AnyObject, AnyObject, AnyObject, AnyObject>
 
     typealias NotificationHandler = @convention(block) (NSDictionary) -> Void
     typealias CloudSyncCompletion = @convention(block) (NSError?) -> Void
@@ -197,6 +201,10 @@ struct CoreSimulatorInterface {
             on: simDeviceType, selector: "mainScreenScale", as: (() -> Float).self)
         userInterfaceIdentifier = try runtime.resolveObjCMethodAndWait(
             on: simDeviceType, selector: "userInterfaceIdentifier", as: (() -> String?).self)
+        devicePairClass = try requireClass("SimDevicePair")
+        testPossiblePairing = try runtime.resolveObjCMethodAndWait(
+            on: devicePairClass, selector: "testPossiblePairingWithDeviceTypeA:RuntimeA:DeviceTypeB:RuntimeB:error:",
+            as: ((AnyObject, AnyObject, AnyObject, AnyObject) throws -> Void).self, classMethod: true)
     }
 }
 
@@ -484,10 +492,18 @@ struct SimulatorCatalog {
     let runtimes: [Runtime]
     /// The device types each runtime supports, by identifier.
     let supportedDeviceTypes: [String: Set<String>]
+    /// Whether CoreSimulator can pair a watch of `watchType` on `watchRuntime`
+    /// with a phone of `phoneType` on `phoneRuntime`, as
+    /// `SimDevicePair testPossiblePairingWithDeviceTypeA:RuntimeA:DeviceTypeB:RuntimeB:error:`
+    /// decides; Simulator.app passes the watch first.
+    let canPair: @MainActor (_ watchType: String, _ watchRuntime: String,
+                             _ phoneType: String, _ phoneRuntime: String) -> Bool
 
     func runtime(_ runtime: String, supports deviceType: String) -> Bool {
         supportedDeviceTypes[runtime]?.contains(deviceType) == true
     }
+
+    func deviceType(_ identifier: String) -> DeviceType? { deviceTypes.first { $0.identifier == identifier } }
 }
 
 /// A CoreSimulator device set of one developer directory: the default set,
@@ -526,18 +542,30 @@ final class SimulatorDeviceSet {
                 productFamily: Int(try unsafe interface.productFamily.unsafeInvoke(on: object)))))
         }
         var runtimes: [SimulatorCatalog.Runtime] = []
+        var runtimeObjects: [String: AnyObject] = [:]
         var supported: [String: Set<String>] = [:]
         for object in try unsafe interface.supportedRuntimes.unsafeInvoke(on: context) {
             guard try unsafe interface.runtimeAvailable.unsafeInvoke(on: object),
                   let identifier = try unsafe interface.runtimeIdentifier.unsafeInvoke(on: object) else { continue }
             runtimes.append(SimulatorCatalog.Runtime(
                 identifier: identifier, name: try unsafe interface.runtimeName.unsafeInvoke(on: object) ?? identifier))
+            runtimeObjects[identifier] = object
             supported[identifier] = Set(try deviceTypes.filter {
                 try unsafe interface.runtimeSupportsDeviceType.unsafeInvoke(on: object, $0.object)
             }.map(\.type.identifier))
         }
+        let typeObjects = Dictionary(deviceTypes.map { ($0.type.identifier, $0.object) }) { first, _ in first }
+        let interface = interface
         return SimulatorCatalog(deviceTypes: deviceTypes.map(\.type), runtimes: runtimes,
-                                supportedDeviceTypes: supported)
+                                supportedDeviceTypes: supported) { watchType, watchRuntime, phoneType, phoneRuntime in
+            guard let watchType = typeObjects[watchType], let watchRuntime = runtimeObjects[watchRuntime],
+                  let phoneType = typeObjects[phoneType], let phoneRuntime = runtimeObjects[phoneRuntime] else {
+                return false
+            }
+            // Like Simulator.app, an error only means that the pairing is not possible.
+            return (try? unsafe interface.testPossiblePairing.unsafeInvoke(
+                on: interface.devicePairClass as AnyObject, watchType, watchRuntime, phoneType, phoneRuntime)) != nil
+        }
     }
 
     /// The set's available devices in CoreSimulator's order: by runtime, then
