@@ -55,37 +55,63 @@ struct InputFocusTests {
         #expect(commands.allSatisfy { !$0.isEnabled })
     }
 
-    @Test func toolbarShowsRecordingStopAndHidesItAfterCompletion() async throws {
+    @Test func theSaveScreenButtonStopsARecordingAsInSimulatorApp() async throws {
+        // The first recording runs until it is stopped and then takes half a
+        // second to finish; the second fails.
+        var recordings = 0
         let controller = try makeController(TestDisplay()) { _, _ in
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/bin/sh")
-            process.arguments = ["-c", """
-                trap 'exit 0' INT
-                echo 'Recording started' >&2
-                while :; do sleep 0.05; done
-                """]
-            return process
+            recordings += 1
+            return Self.recorder(then: recordings == 1 ? "trap 'sleep 0.5; exit 0' INT; while :; do sleep 0.05; done"
+                                                       : "sleep 0.3; exit 1")
         }
         defer { controller.invalidate() }
         let toolbar = try #require(controller.window?.toolbar)
-        let item = try #require(toolbar.items.first { $0.itemIdentifier.rawValue == "stopRecording" })
-        #expect(item.isHidden)
+        let items = toolbar.items.map(\.itemIdentifier.rawValue)
+        #expect(items == ["NSToolbarFlexibleSpaceItem", "home", "saveScreen", "rotateRight", "NSToolbarFlexibleSpaceItem"])
+        let item = try #require(toolbar.items.first { $0.itemIdentifier.rawValue == "saveScreen" })
+        func shows(_ symbol: String, _ label: String) -> Bool {
+            item.toolTip == label && item.image?.accessibilityDescription == label && item.image?.tiffRepresentation
+                == NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?.tiffRepresentation
+        }
+        func wait(until condition: () -> Bool) async throws {
+            for _ in 0..<200 where !condition() { try await Task.sleep(for: .milliseconds(10)) }
+        }
+        #expect(shows("camera.on.rectangle", "Save Screen"))
 
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         try controller.session.startRecording(to: .file(directory.appendingPathComponent("Recording.mov")), mask: .ignored)
         let recording = try #require(controller.session.recording)
-        for _ in 0..<100 where item.isHidden { try await Task.sleep(for: .milliseconds(10)) }
-        #expect(!item.isHidden)
+        // Like Simulator.app's, the Save Screen button shows `stop.circle`,
+        // untinted, and stops the recording; the toolbar adds no item, and the
+        // item keeps its label.
+        try await wait { shows("stop.circle", "Stop Recording") }
+        #expect(shows("stop.circle", "Stop Recording"))
+        #expect(item.label == "Save Screen")
         #expect(item.isEnabled)
+        #expect(toolbar.items.map(\.itemIdentifier.rawValue) == items)
         #expect(NSApp.sendAction(try #require(item.action), to: item.target, from: item))
-        for _ in 0..<100 where item.isEnabled { try await Task.sleep(for: .milliseconds(10)) }
-        #expect(recording.isStopping)
-        #expect(!item.isEnabled)
+        try #require(recording.isStopping)
+        // It is Save Screen again as soon as the recording stops, while the
+        // movie is still being finished.
+        try await wait { shows("camera.on.rectangle", "Save Screen") }
+        #expect(shows("camera.on.rectangle", "Save Screen"))
+        #expect(controller.session.recording === recording)
+        #expect(item.isEnabled)
         try await recording.waitUntilFinished()
-        for _ in 0..<100 where !item.isHidden { try await Task.sleep(for: .milliseconds(10)) }
-        #expect(item.isHidden)
+        try await wait { controller.session.recording == nil }
+        #expect(shows("camera.on.rectangle", "Save Screen"))
+        #expect(toolbar.items.map(\.itemIdentifier.rawValue) == items)
+
+        // A recording that fails also gives the button back.
+        try controller.session.startRecording(to: .file(directory.appendingPathComponent("Failed.mov")), mask: .ignored)
+        try await wait { shows("stop.circle", "Stop Recording") }
+        #expect(shows("stop.circle", "Stop Recording"))
+        try await wait { controller.session.recording == nil }
+        #expect(controller.session.recording == nil)
+        try await wait { shows("camera.on.rectangle", "Save Screen") }
+        #expect(shows("camera.on.rectangle", "Save Screen"))
     }
 
     @Test func quickSaveScreenUsesTheScreenshotFolderAndMaskPreference() async throws {
@@ -676,7 +702,7 @@ struct InputFocusTests {
         defer { controller.invalidate() }
         let toolbar = try #require(controller.window?.toolbar)
         #expect(toolbar.items.compactMap { DeviceCommand.ID(rawValue: $0.itemIdentifier.rawValue) } ==
-            [.home, .saveScreen, .stopRecording])
+            [.home, .saveScreen])
         let device = try #require(NSApp.mainMenu?.items.first { $0.title == "Device" }?.submenu)
         menus.updateVisibility(in: device, for: controller.session.capabilities)
         let visible = device.items.filter { !$0.isHidden }
@@ -1618,8 +1644,7 @@ struct InputFocusTests {
         #expect(toolbar.items.last?.itemIdentifier == .flexibleSpace)
         // A display as wide as the buttons, the title, and 130 points keeps
         // the unified style, which hides the last flexible space, so that the
-        // buttons follow the title. The stop recording item, which
-        // Simulator.app's toolbar does not have, does not count.
+        // buttons follow the title.
         controller.perform(.pointAccurate)
         #expect(window.toolbarStyle == .unified)
         #expect(toolbar.items.last?.isHidden == true)
@@ -1649,6 +1674,43 @@ struct InputFocusTests {
         #expect(window.toolbarStyle == .unified)
         #expect(header() == unified)
         #expect(window.frame.height == 300 + unified)
+    }
+
+    @Test func aRecordingKeepsTheToolbarsButtonsAndStyle() async throws {
+        let threshold = Self.unifiedWidth()
+        let display = TestDisplay()
+        display.naturalSize = NSSize(width: threshold, height: 300)
+        let controller = try makeController(display, recordingProcess: { _, _ in
+            Self.recorder(then: "while :; do sleep 0.05; done")
+        })
+        defer { controller.invalidate() }
+        controller.showWindow(nil)
+        let window = try #require(controller.window)
+        let toolbar = try #require(window.toolbar)
+        func buttons() -> [DeviceCommand.ID]? {
+            window.layoutIfNeeded()
+            return toolbar.visibleItems?.compactMap { DeviceCommand.ID(rawValue: $0.itemIdentifier.rawValue) }
+        }
+        controller.perform(.pointAccurate)
+        #expect(window.toolbarStyle == .unified)
+        #expect(buttons() == [.home, .saveScreen, .rotateRight])
+
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try controller.session.startRecording(to: .file(directory.appendingPathComponent("Recording.mov")), mask: .ignored)
+        let recording = try #require(controller.session.recording)
+        let saveScreen = try #require(toolbar.items.first { $0.itemIdentifier.rawValue == "saveScreen" })
+        for _ in 0..<200 where saveScreen.toolTip != "Stop Recording" { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(saveScreen.toolTip == "Stop Recording")
+        // Simulator.app adds no item and does not measure its toolbar again,
+        // so a display at the threshold keeps the unified style through the
+        // next geometry update, with every button in the title bar.
+        controller.setDeviceBezelVisible(false)
+        #expect(window.toolbarStyle == .unified)
+        #expect(buttons() == [.home, .saveScreen, .rotateRight])
+        recording.stop()
+        try await recording.waitUntilFinished()
     }
 
     @Test func titleBarPreferencesChooseTheCompactOrExpandedStyle() throws {
@@ -3694,6 +3756,15 @@ struct InputFocusTests {
 
     /// The features of an iPhone that the tests need unless they choose others.
     private static let defaultFeatures: Set<String> = [DeviceCapabilities.displayRotation, DeviceCapabilities.keyboard]
+
+    /// A `simctl io recordVideo` stand-in that acknowledges the first frame,
+    /// then runs `script`, and that a stop ends normally.
+    private static func recorder(then script: String) -> Process {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", "trap 'exit 0' INT; echo 'Recording started' >&2; \(script)"]
+        return process
+    }
 
     /// Simulator.app's toolbar style threshold for the test device's window:
     /// the buttons of its iPhone toolbar nib (Home 31, Save Screen 32, and

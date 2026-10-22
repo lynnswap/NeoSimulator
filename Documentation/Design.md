@@ -555,6 +555,15 @@ window does:
   registered as in Simulator.app, `UseMonobar` on and `UseCompactTitleBar`
   off, in NeoSimulator's own defaults, and each size change reads them
   again.
+- As in Simulator.app, a recording adds no item to the toolbar. While it
+  runs, the Save Screen button shows `stop.circle`, untinted, with the
+  tooltip and image description Stop Recording, and a click stops the
+  recording; the item keeps its Save Screen label. The button is Save Screen
+  again as soon as the recording stops, before the movie is finished, and
+  when the recording ends on its own or fails. The toolbar keeps its items,
+  so the threshold does not change. AppKit sizes the button to its image, as
+  it does Simulator.app's, so the button is narrower while it shows
+  `stop.circle`.
 - A resize the window does not make itself, such as a manual one, also gives
   the toolbar the style for the new width outside full screen and keeps the
   window's height below the title bar, as Simulator.app's
@@ -756,12 +765,11 @@ These differ from Simulator.app:
   Capture, 27 points each, which NeoSimulator does not host, so an iPad's
   window keeps the unified style down to a display 62 points narrower than
   in Simulator.app: 351.4 points instead of 413.4 for the iPad mini (A17
-  Pro). NeoSimulator's Stop Recording item, which Simulator.app does not
-  have, does not count either.
-- While a recording runs, Simulator.app's Save Screen button shows
-  `stop.circle` and stops the recording. NeoSimulator instead shows a
-  separate red Stop Recording item, which takes room in the toolbar that the
-  threshold does not count.
+  Pro).
+- Simulator.app's Save Screen button already shows `stop.circle` while
+  Record Screen… asks where to save, and, when the recorder cannot start,
+  until the error is dismissed. NeoSimulator's shows it only while a
+  recording runs.
 - Simulator.app animates the window into and out of full screen itself.
   NeoSimulator uses AppKit's transition, so the window is resizable in full
   screen.

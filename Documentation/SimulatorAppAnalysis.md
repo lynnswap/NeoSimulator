@@ -140,8 +140,9 @@ semantics:
   Simulator.app hides Zoom.
 
 The detached window header exposes Home, Save Screen, and Rotate Right using
-the same session actions as the menus. A red stop control appears while a video
-is recording; Software Keyboard is available from I/O and Command-K.
+the same session actions as the menus. While a video is recording, Save Screen
+shows `stop.circle` and stops it, as in Simulator.app; Software Keyboard is
+available from I/O and Command-K.
 
 Menu commands are validated against the active device window at dispatch time.
 Rotation and screenshot work is single-flight and cancelled when the owning
@@ -204,7 +205,8 @@ listed addresses.
 | Title bar corners `0x100036518` | Finds the `NSTitlebarContainerView` by walking up from the toolbar's private `_toolbarView` and comparing class names (`0x1000363E4`). While the display view's `showDeviceChrome` is on and `fullScreenState` is none, sets its layer's `cornerRadius` to the window's private `_cornerRadius` on macOS 26 and later (10 earlier), `maskedCorners` to 3, the lower corners, and `masksToBounds`; otherwise only sets the radius to 0. It runs from the geometry update, the toolbar setup (`0x10004A18C`), each `fullScreenState` change (`0x100036198`), and `simDisplayView(_:changedChrome:)` (`0x1000363A4`). |
 | `windowDidResize:` `0x10004BEF4` | When `fullScreenState` is none, runs the geometry update without arguments (`0x10004BEB0`), so a resize the geometry update did not make, such as a manual one, takes the style for the new width and keeps the height below the title bar, then invalidates the shadow. |
 | Defaults `0x100024F48` (registration at `0x1000253E8`) | Registers `UseMonobar` as YES and `UseCompactTitleBar` as NO among 45 keys; only the geometry update reads them. |
-| Recording | Simulator.app's toolbar has no Stop Recording item: while recording, its Save Screen button shows `stop.circle` (`0x1000588F8`), which changes no width, and nothing measures the toolbar again. |
+| Save Screen button, toolbar setup `0x10004A208`–`0x10004A318` | The nib's button is an `OptionSwitchingButton`, an `NSButton` with an up and a down state. The setup gives it up: the nib's `camera.on.rectangle`, `saveFramebufferImage:`, momentary push-in (7), and the tooltip Save Screen; and down: `NSImage(systemSymbolName: "record.circle", accessibilityDescription: "Start Recording")`, `toggleVideoRecording:`, toggle (2), and the tooltip Record Screen. It shows the up state, turned off. While the pointer is over the toolbar (`SimToolbar` `mouseEntered:` → `0x10005F848`, `mouseExited:` → `0x10005F8CC`) and no recording runs, the button follows the Option key (`0x10002E6D8`), which `sendEvent:` reports with `OptionKeyDown` and `OptionKeyUp`. |
+| Recording, `startCapturingVideo:` body `0x1000587FC`, `stopCapturingVideo:` body `0x100059764` | The toolbar has no Stop Recording item. Before its save panel or recorder, Record Screen stops the button from following Option (`0x10002E7B8`), gives it the down state (`0x10002E550`), turns it on (`0x1000588EC`), and sets `NSImage(systemSymbolName: "stop.circle", accessibilityDescription: "Stop Recording")` with no configuration or tint (`0x1000588F8`) and the tooltip Stop Recording (`0x100058948`). The toggle type has no alternate image, so the on state shows that image. A click, with or without Option, sends `toggleVideoRecording:` (`0x1000587D4`), which stops the recording while `isCapturingVideo` is set. Stop clears `isCapturingVideo` and, before the recorder finishes, turns the button off and lets it follow Option again (`0x10005983C`–`0x100059840`), which shows the up state unless Option is down; a cancelled save panel (`0x100058D88`–`0x100058D90`) and the dismissal of the error that a failed recorder start shows (`0x100059644`–`0x10005964C`) do the same. The item stays, its width counts in the threshold as before, and nothing measures the toolbar again. File ▸ Record Screen is enabled while `isCapturingVideo` is off and Stop Recording while it is on (`0x100052560`, `0x100052584`). |
 
 Measured on macOS 26.6 with Simulator.app's own `IndigoiPhoneToolbar.nib`
 and `IndigoiPadToolbar.nib` in a window built as above, the title bar is 52
