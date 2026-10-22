@@ -85,13 +85,23 @@ xcode-simulator-host use neo
 Neo currently provides:
 
 - a searchable device browser to start simulators or reopen their windows;
-- one window for each booted iOS simulator, resized by dragging the corners of
-  its device bezel, or its edges while it shows no bezel, and moved by
-  dragging its bezel away from the screen;
+- one window for each booted iOS, watchOS, tvOS, and visionOS simulator,
+  resized by dragging the corners of its device bezel, or its edges while it
+  shows no bezel, and moved by dragging its bezel away from the screen;
 - device bezel, touch, accessibility, and focused keyboard input;
 - a Simulator-style window header with the device name, runtime, Home,
   Save Screen, and Rotate controls, which become Record Screen and Rotate
-  Left while Option is held with the pointer over the toolbar;
+  Left while Option is held with the pointer over the toolbar. Watches and
+  Apple TV have Home and Save Screen, and a watch with an always-on display
+  also has Always On, which locks the watch and stays on while its display is
+  dimmed or off. As in Simulator.app, a watch's title leaves out
+  "Apple Watch";
+- Apple Vision Pro with the spatial controls and toolbar of the selected
+  Xcode's visionOS simulator plugin (`XROS.simdeviceui`), as in Simulator.app:
+  the plugin's view over the screen takes the pointer and the keyboard, and
+  its toolbar has Home, Save Screen, Capture Pointer, Capture Keyboard, and
+  Simulated Scenes. Capture Pointer and Capture Keyboard do not capture the
+  Mac's input, which Neo leaves out;
 - Simulator.app's Save Screen, Record Screen, and Copy Screen commands, with
   its file names, save folders, and device-mask option; recordings are
   finalized when a window closes or the app quits;
@@ -111,10 +121,9 @@ Neo currently provides:
   device's window reopens, in the arrangement of displays it closed in,
   centered where it closed, at the scale it closed reduced to fit the screen,
   and moved inside the screen where it crosses an edge;
-- the hardware inputs the active device supports: Action Button, Siri, App
-  Switcher, Trigger Screenshot, Increase and Decrease Volume, and Authorize
-  Apple Pay. The Side Button command is defined for watchOS devices, which Neo
-  does not host yet;
+- the hardware inputs the active device supports: Side Button, Action Button,
+  Siri, App Switcher, Trigger Screenshot, Increase and Decrease Volume, and
+  Authorize Apple Pay;
 - I/O → Keyboard: Connect Hardware Keyboard (Shift-Command-K), Toggle Software
   Keyboard (Command-K), and Use the Same Keyboard Language as macOS; and I/O →
   Touch Pressure for devices with 3D Touch: Use Trackpad Force, Shallow Press
@@ -139,8 +148,14 @@ Use **File → Open Simulator** to choose a device, **File → New Simulator…*
 to create one, and **Device → Shut Down** to stop it. As in Simulator.app, Open
 Simulator groups devices by runtime and marks booted devices: a checkmark when
 the device has a window, a dash when it does not; hold Option to see each
-device's runtime and type. Neo lists only iOS devices until it hosts other
-platforms.
+device's runtime and type.
+
+Watches, Apple TV, and Apple Vision Pro show the commands Simulator.app shows
+for them: Lock and Side Button for watches, and no Lock for Apple TV or Apple
+Vision Pro. Watch gestures and Digital Crown scrolling, the Apple TV Remote
+window, and the visionOS camera, scene, and immersion commands of the Device,
+I/O, and Debug menus are not available yet. File → New Simulator… does not
+create a paired Apple Watch yet.
 
 Neo also shows the devices Xcode boots for parallel testing, from
 `~/Library/Developer/XCTestDevices` (or the `TestingDeviceSetPath` default).
@@ -199,8 +214,8 @@ puts a PNG of the screen, without the mask, on the Mac pasteboard.
 
 **Edit → Get Pasteboard** replaces the Mac pasteboard with the active device's,
 and **Edit → Send Pasteboard** replaces the device's pasteboard with the Mac's,
-with all their types, such as text and images. They are available for iPhone
-and iPad devices while Automatically Sync Pasteboard is off. As in
+with all their types, such as text and images. They are available for iPhone,
+iPad, and Apple Vision Pro devices while Automatically Sync Pasteboard is off. As in
 Simulator.app, the Mac reads what Get Pasteboard brings from the device when an
 app pastes it, so paste it while the device's window is open.
 
@@ -235,8 +250,8 @@ choice, and it reports a failed change.
 **I/O → Touch Pressure** appears for devices with 3D Touch, such as iPhone XS
 on iOS 18. **Use Trackpad Force** (`UseTrackpadForce`) passes the pressure of a
 Force Touch trackpad's click to the device; it needs such a trackpad. Shallow
-Press and Deep Press choose the pressure of a click for a watch, which Neo does
-not host yet. The settings apply to every device window, as in Simulator.app.
+Press and Deep Press choose the pressure of a click on a watch with touch
+pressure. The settings apply to every device window, as in Simulator.app.
 
 **I/O → Audio Input** and **I/O → Audio Output** choose the Mac audio device
 that simulators record from and play to. **System** follows the Mac's default

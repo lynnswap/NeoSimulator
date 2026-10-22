@@ -14,6 +14,16 @@ struct AvailableDevice: Identifiable {
     var state: UInt
     var id: String { identifier }
     var isBooted: Bool { state == 3 }
+    /// The SF Symbol of the device's product family.
+    var symbolName: String {
+        switch DeviceCapabilities.Family(rawValue: productFamily) {
+        case .iPad: "ipad"
+        case .tv: "appletv"
+        case .watch: "applewatch"
+        case .vision: "visionpro"
+        case .iPhone, nil: "iphone"
+        }
+    }
     var canOpen: Bool { state == 1 || state == 3 }
     var stateLabel: String {
         switch state {
@@ -119,8 +129,8 @@ struct DeviceBrowserView: View {
             .padding(.bottom, 16)
 
             if model.devices.isEmpty {
-                ContentUnavailableView("No iOS Simulators", systemImage: "iphone",
-                    description: Text("Install an iOS runtime and create a simulator in Xcode, then refresh."))
+                ContentUnavailableView("No Simulators", systemImage: "iphone",
+                    description: Text("Install a simulator runtime and create a simulator in Xcode, then refresh."))
             } else if devices.isEmpty {
                 ContentUnavailableView.search(text: search)
             } else {
@@ -131,7 +141,7 @@ struct DeviceBrowserView: View {
                         Section(runtime) {
                             ForEach(devices.filter { $0.runtimeName == runtime }) { device in
                                 HStack(spacing: 14) {
-                                    Image(systemName: device.name.localizedCaseInsensitiveContains("iPad") ? "ipad" : "iphone")
+                                    Image(systemName: device.symbolName)
                                         .font(.title2)
                                         .foregroundStyle(.secondary)
                                         .frame(width: 32)

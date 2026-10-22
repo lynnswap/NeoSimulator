@@ -64,6 +64,9 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
     private var isKey = false
     /// The window of the device's external display while the display is on.
     private(set) var externalDisplayWindow: ExternalDisplayWindowController?
+    /// How often and how long the window looks for its display's
+    /// user-interface plugin.
+    private let userInterfacePluginLookUp: (attempts: Int, interval: Duration)
     var staysOnTop: Bool { window?.level == .floating }
 
     /// The device window of the key window: the key device window, or the
@@ -80,9 +83,11 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
     init(session: DeviceSession, preferences: any PreferenceStore = UserDefaults.standard,
          touchPressure: TouchPressure,
          performWindowDrag: @escaping (NSWindow, NSEvent) -> Void = { $0.performDrag(with: $1) },
+         userInterfacePluginLookUp: (attempts: Int, interval: Duration) = (40, .milliseconds(250)),
          onClose: @escaping (DeviceWindowController, DeviceLifetimeChoice?) -> Void,
          onRestart: @escaping (DeviceWindowController, _ erasing: Bool) -> Void = { _, _ in }) throws {
         self.session = session
+        self.userInterfacePluginLookUp = userInterfacePluginLookUp
         self.preferences = preferences
         self.touchPressure = touchPressure
         self.performWindowDrag = performWindowDrag
@@ -241,6 +246,71 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
         showResizeCursors()
         connectTouchPressure()
         showTouchIndicators()
+        session.followBacklight()
+        attachUserInterfacePlugin()
+    }
+
+    // MARK: User-interface plugin
+
+    private var pluginLookUp: Task<Void, Never>?
+
+    /// Shows the toolbar of the display's user-interface plugin, as
+    /// Simulator.app does when SimulatorKit reports the plugin, once the
+    /// display has loaded it. SimulatorKit places the plugin's overlay over
+    /// the screen itself; the overlay then takes the window's focus. A plugin
+    /// that does not load, or that cannot be used, is reported: the device
+    /// then shows its screen without the plugin's controls.
+    private func attachUserInterfacePlugin() {
+        pluginLookUp?.cancel()
+        pluginLookUp = nil
+        guard session.capabilities.hasUserInterfacePlugin else { return }
+        let session = self.session
+        let schedule = userInterfacePluginLookUp
+        pluginLookUp = Task.immediate { [weak self] in
+            for attempt in 1...schedule.attempts {
+                guard let self, !self.closed, self.session === session, session.isConnected else { return }
+                do {
+                    if let plugin = try session.display.userInterfacePlugin() {
+                        self.showUserInterfacePlugin(plugin)
+                        return
+                    }
+                } catch {
+                    self.present(HostError.operation(
+                        "The controls of \(session.device.name) are unavailable: \(error.localizedDescription)"))
+                    return
+                }
+                if attempt < schedule.attempts { try? await Task.sleep(for: schedule.interval) }
+            }
+            guard let self, !self.closed, self.session === session, session.isConnected else { return }
+            self.present(HostError.unavailable(
+                "The controls of \(session.device.name) are unavailable: SimulatorKit did not load its user interface plugin."))
+        }
+    }
+
+    private func showUserInterfacePlugin(_ plugin: SimulatorUserInterfacePlugin) {
+        guard let window else { return }
+        if let toolbar = plugin.toolbar {
+            window.toolbar = toolbar
+            // The plugin's toolbar takes the window's toolbar style.
+            deviceToolbar?.apply(window.toolbarStyle, to: window)
+        }
+        // The overlay is the display's input view now.
+        if window.isKeyWindow { focusInput() }
+    }
+
+    /// Home on a user-interface plugin's toolbar, Simulator.app's
+    /// `homeButtonPressed:`.
+    @objc func homeButtonPressed(_ sender: Any?) { perform(.home) }
+
+    /// Save Screen on a user-interface plugin's toolbar, Simulator.app's
+    /// `saveFramebufferImage:`.
+    @objc func saveFramebufferImage(_ sender: Any?) { perform(.saveScreen) }
+
+    /// Save Screen on a user-interface plugin's toolbar with Option, or
+    /// while recording, Simulator.app's `toggleVideoRecording:`: starts or
+    /// stops recording the screen.
+    @objc func toggleVideoRecording(_ sender: Any?) {
+        perform(session.recording == nil ? .recordScreen : .stopRecording)
     }
 
     // MARK: Restart
@@ -298,9 +368,11 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
 
     /// Reads the orientation once for each connection and turns the window
     /// to it. A new window that still has its `initialPlacement` frame then
-    /// takes the scale it opens at in that shape and is placed again.
+    /// takes the scale it opens at in that shape and is placed again. Like
+    /// Simulator.app, which turns only an iPhone's or iPad's display, a
+    /// device that does not rotate keeps its upright display.
     private func readInitialOrientation() {
-        guard session.capabilities.controlsOrientation else {
+        guard session.capabilities.rotates else {
             initialPlacement = nil
             return
         }
@@ -799,8 +871,10 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
     // interface orientation and the window follows the display. Other
     // property changes, such as the backlight, keep the window size.
     private func displayPropertiesChanged() {
+        guard !closed else { return }
+        session.followBacklight()
         let enabled = UserDefaults.standard.bool(forKey: HostPreferences.rotateWindowWhenSignaledByGuest)
-        guard !closed, session.followGuestInterfaceOrientation(enabled: enabled) else { return }
+        guard session.followGuestInterfaceOrientation(enabled: enabled) else { return }
         // A guest rotation before the first orientation reading does not
         // count as a change to the new window's placement.
         let untouched = initialPlacement.map { window?.frame == $0.frame } ?? false
@@ -1202,6 +1276,8 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
     private func disconnect() {
         guard !closed else { return }
         closed = true
+        pluginLookUp?.cancel()
+        pluginLookUp = nil
         keyboard.invalidate()
         fitting.invalidate()
         for observer in [screenParametersObserver, touchPressureObserver, touchIndicatorObserver,

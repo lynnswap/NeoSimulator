@@ -49,6 +49,9 @@ final class SimulatorRuntime {
         }
     }
 
+    /// Checks the images loaded so far, also those that SimulatorKit loads
+    /// when it connects a display, such as a device type's user-interface
+    /// plugin (`.simdeviceui`), which must come from the selected Xcode.
     func validateLoadedImages() throws {
         let prefix = xcodeURL.path + "/"
         for index in 0..<_dyld_image_count() {
@@ -57,9 +60,9 @@ final class SimulatorRuntime {
             if path.contains("/DeviceKit.framework/") || path.contains("/DeviceHub.app/") {
                 throw HostError.unavailable("Forbidden Device Hub component is loaded: \(path)")
             }
-            if (path.contains("/SimulatorKit.framework/") || path.contains("/IDEPlaygroundSimulator.framework/")),
-               !path.hasPrefix(prefix) {
-                throw HostError.unavailable("Private simulator framework came from a different Xcode: \(path)")
+            if (path.contains("/SimulatorKit.framework/") || path.contains("/IDEPlaygroundSimulator.framework/")
+                || path.contains(".simdeviceui/")), !path.hasPrefix(prefix) {
+                throw HostError.unavailable("Private simulator code came from a different Xcode: \(path)")
             }
         }
     }
@@ -139,6 +142,14 @@ struct SimulatorDisplayInterface {
     let chromeImagesPadding: NativeSwiftMethod<() -> CGSize>
     let setKeyboardEnabled: NativeSwiftMethod<(Bool) -> Void>
     let keyboardDelegate: Ivar
+    /// `SimDisplayView._userInterfacePlugin`: the `SimDeviceUserInterfacePlugin`
+    /// that the display loads, while it connects, for a device type with a
+    /// user-interface profile, such as Apple Vision Pro's `XROS.simdeviceui`.
+    /// SimulatorKit has no getter for it; the field holds one object.
+    let userInterfacePlugin: Ivar
+    /// Messages to a plugin, whose class its bundle provides only once loaded;
+    /// `SimDeviceUserInterfacePlugin` must declare them.
+    let pluginMessages = ProxyMessages()
     /// `SimDigitizerInputView.supportTouchPressure`.
     let setSupportsTouchPressure: NativeSwiftMethod<(Bool) -> Void>
     /// `SimDigitizerInputView.useForceTrackpadForPressure`.
@@ -210,7 +221,7 @@ struct SimulatorDisplayInterface {
         // The screens and their properties are proxies, so these messages are
         // bound to each proxy class when a screen connects; their protocols
         // must declare them.
-        for (name, selectors) in SimulatorExternalScreenConnection.selectors {
+        for (name, selectors) in SimulatorExternalScreenConnection.selectors + SimulatorConnection.backlightSelectors {
             guard let declared = objc_getProtocol(name) else {
                 throw HostError.unavailable("Required private protocol \(name) is unavailable")
             }
@@ -289,6 +300,18 @@ struct SimulatorDisplayInterface {
             throw HostError.unavailable("\(displayViewClass) does not provide _defaultKeyboardDelegate")
         }
         self.keyboardDelegate = keyboardDelegate
+        guard let userInterfacePlugin = class_getInstanceVariable(displayViewClass, "_userInterfacePlugin") else {
+            throw HostError.unavailable("\(displayViewClass) does not provide _userInterfacePlugin")
+        }
+        self.userInterfacePlugin = userInterfacePlugin
+        let pluginProtocol = "_TtP12SimulatorKit28SimDeviceUserInterfacePlugin_"
+        guard let declared = objc_getProtocol(pluginProtocol) else {
+            throw HostError.unavailable("Required private protocol \(pluginProtocol) is unavailable")
+        }
+        for selector in SimulatorUserInterfacePlugin.selectors
+        where unsafe protocol_getMethodDescription(declared, NSSelectorFromString(selector), true, true).name == nil {
+            throw HostError.unavailable("\(pluginProtocol) does not declare \(selector)")
+        }
         let digitizer = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimDigitizerInputView")
         setSupportsTouchPressure = try digitizer.resolveSetterAndWait(named: "supportTouchPressure", as: Bool.self)
         setUsesTrackpadForce = try digitizer.resolveSetterAndWait(named: "useForceTrackpadForPressure", as: Bool.self)
@@ -386,10 +409,10 @@ final class ScreenAdapterGetter {
     }
 }
 
-/// Messages without arguments to CoreSimDeviceIO's proxies, such as screen
-/// properties and modes, whose classes exist only at run time. A message is
-/// bound to the first proxy of a class that receives it and reused for the
-/// others.
+/// Messages without arguments to objects whose classes exist only at run
+/// time, such as CoreSimDeviceIO's proxies of screen properties and modes,
+/// and a device type's user-interface plugin. A message is bound to the first
+/// object of a class that receives it and reused for the others.
 @MainActor
 final class ProxyMessages {
     private var methods: [String: Any] = [:]
@@ -401,6 +424,21 @@ final class ProxyMessages {
         methods[key] = method
         return try unsafe method.unsafeInvoke(on: object)
     }
+}
+
+/// The user-interface plugin that SimulatorKit attached to a display, a
+/// `SimDeviceUserInterfacePlugin` from the selected Xcode's profile of the
+/// device type, such as Apple Vision Pro's `XROS.simdeviceui`, whose
+/// principal class is `PalomaSimSupport`. The display adds the plugin's
+/// overlay over its screen; the overlay takes the device's input and handles
+/// the plugin's commands. Simulator.app shows the plugin's toolbar in the
+/// device's window.
+struct SimulatorUserInterfacePlugin {
+    /// The messages the host sends to a plugin.
+    static let selectors = ["overlayView", "toolbar"]
+
+    let overlayView: NSView?
+    let toolbar: NSToolbar?
 }
 
 /// A device's external display: CoreSimulator's TVOut screen, which a device
@@ -1113,7 +1151,24 @@ struct DisplayResizeRect {
 protocol SimulatorDisplay: AnyObject {
     var isBooted: Bool { get }
     var view: NSView { get }
+    /// The view that takes the device's input in the window: the screen's
+    /// digitizer, or the overlay of the display's user-interface plugin once
+    /// `userInterfacePlugin()` found it.
     var inputView: NSView { get }
+    /// The user-interface plugin SimulatorKit attached to the display, or nil
+    /// for a device type without one and until the display loaded it. A
+    /// thrown error means that the plugin cannot be used, for example
+    /// because it loaded code from another Xcode.
+    func userInterfacePlugin() throws -> SimulatorUserInterfacePlugin?
+    /// The state of the screen's backlight as CoreSimulator reports it now,
+    /// `SimScreenProperties.backlight.state`, or nil when it cannot be read.
+    /// A watch's is 2 while its display is on, 1 while an always-on display
+    /// is dimmed, and 0 while the display is off.
+    var backlightState: Int32? { get }
+    /// Posts Simulator.app's `SimulatorVideoRecordingStartedNotification` or
+    /// `SimulatorVideoRecordingStoppedNotification` for the device, which a
+    /// user-interface plugin observes to show the recording on its toolbar.
+    func announceRecording(started: Bool)
     /// `SimDisplayView.renderScale`: the display's size relative to the
     /// device's screen in points, which the screen's resolution does not change.
     var renderScale: CGFloat { get }
@@ -1222,7 +1277,10 @@ protocol SimulatorDisplay: AnyObject {
 @MainActor
 final class SimulatorConnection: SimulatorDisplay {
     let view: NSView
-    let inputView: NSView
+    /// `SimDisplayView.digitizerView`.
+    private let digitizerView: NSView
+    /// The display's user-interface plugin, once found.
+    private var plugin: SimulatorUserInterfacePlugin?
     private let runtime: SimulatorRuntime
     private let chromeView: NSView
     private let device: SimulatorDevice
@@ -1248,7 +1306,7 @@ final class SimulatorConnection: SimulatorDisplay {
         self.view = view
         do {
             try runtime.validateLoadedImages()
-            inputView = try unsafe display.digitizerView.unsafeInvoke(on: view)
+            digitizerView = try unsafe display.digitizerView.unsafeInvoke(on: view)
             chromeView = try unsafe display.chromeView.unsafeInvoke(on: view)
         } catch {
             try? unsafe display.disconnect.unsafeInvoke(on: view, NativeSwiftClosure {})
@@ -1265,6 +1323,46 @@ final class SimulatorConnection: SimulatorDisplay {
     }
 
     var isBooted: Bool { !disconnected && device.state == 3 }
+
+    var inputView: NSView { plugin?.overlayView ?? digitizerView }
+
+    func userInterfacePlugin() throws -> SimulatorUserInterfacePlugin? {
+        if let plugin { return plugin }
+        let display = runtime.display
+        guard !disconnected, let object = object_getIvar(view, display.userInterfacePlugin) as AnyObject? else {
+            return nil
+        }
+        // The plugin's bundle and what it loaded are checked as the display's
+        // own frameworks are.
+        try runtime.validateLoadedImages()
+        let plugin = SimulatorUserInterfacePlugin(
+            overlayView: try display.pluginMessages.send("overlayView", to: object, as: NSView?.self),
+            toolbar: try display.pluginMessages.send("toolbar", to: object, as: NSToolbar?.self))
+        self.plugin = plugin
+        return plugin
+    }
+
+    /// The messages that read the backlight, by protocol.
+    static let backlightSelectors = [("SimScreenProperties", ["backlight"]), ("SimScreenBacklight", ["state"])]
+
+    // SimDisplayView's `backlightState` follows the screen's properties only
+    // after their change is reported, so the properties are read instead, as
+    // Simulator.app reads them when they change.
+    var backlightState: Int32? {
+        guard !disconnected else { return nil }
+        let display = runtime.display
+        return read("read the backlight", otherwise: nil) {
+            let properties = try unsafe display.screenProperties.unsafeInvoke(on: screen)
+            return try display.screenMessages.send("backlight", to: properties, as: AnyObject?.self)
+                .map { try display.screenMessages.send("state", to: $0, as: Int32.self) }
+        }
+    }
+
+    func announceRecording(started: Bool) {
+        let name = started ? "SimulatorVideoRecordingStartedNotification" : "SimulatorVideoRecordingStoppedNotification"
+        NotificationCenter.default.post(name: Notification.Name(name), object: nil,
+                                        userInfo: [name + "DeviceUserInfoKey": device.object])
+    }
 
     var renderScale: CGFloat {
         read("read the display scale", otherwise: 0) { try unsafe runtime.display.renderScale.unsafeInvoke(on: view) }
@@ -1396,29 +1494,29 @@ final class SimulatorConnection: SimulatorDisplay {
     func setSupportsTouchPressure(_ supports: Bool) {
         guard !disconnected else { return }
         perform("enable touch pressure") {
-            try unsafe runtime.display.setSupportsTouchPressure.unsafeInvoke(on: inputView, supports)
+            try unsafe runtime.display.setSupportsTouchPressure.unsafeInvoke(on: digitizerView, supports)
         }
     }
     func setUsesTrackpadForce(_ uses: Bool) {
         guard !disconnected else { return }
         perform("use the trackpad's force") {
-            try unsafe runtime.display.setUsesTrackpadForce.unsafeInvoke(on: inputView, uses)
+            try unsafe runtime.display.setUsesTrackpadForce.unsafeInvoke(on: digitizerView, uses)
         }
     }
     func setSimulatedTouchMode(_ mode: SimulatedTouchMode) {
         guard !disconnected else { return }
         perform("set the touch pressure") {
-            try unsafe runtime.display.setSimulatedTouchMode.unsafeInvoke(on: inputView, mode.rawValue)
+            try unsafe runtime.display.setSimulatedTouchMode.unsafeInvoke(on: digitizerView, mode.rawValue)
         }
     }
     func setTouchIndicator(_ indicator: TouchIndicator, shown: Bool) {
         guard !disconnected else { return }
         let display = runtime.display
         perform("show touch indicators") {
-            let options = try unsafe display.drawOptionRawValue.unsafeInvoke(on: display.drawOptions.unsafeInvoke(on: inputView))
+            let options = try unsafe display.drawOptionRawValue.unsafeInvoke(on: display.drawOptions.unsafeInvoke(on: digitizerView))
             let option = display.drawOption(for: indicator)
             try unsafe display.setDrawOptions.unsafeInvoke(
-                on: inputView, display.makeDrawOption.unsafeInvoke(shown ? options | option : options & ~option))
+                on: digitizerView, display.makeDrawOption.unsafeInvoke(shown ? options | option : options & ~option))
         }
     }
     func setRotation(degrees: Double) {
