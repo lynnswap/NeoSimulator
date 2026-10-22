@@ -1068,9 +1068,15 @@ Neo reaches the screen as Simulator.app does:
   of `allowedSizes`). A size that no mode takes is reported.
 - CoreSimulator completes a change later, so the session sends one change at
   a time. A choice made while a change is in flight waits for it and replaces
-  an earlier choice that waits, so the last choice wins. Disabled turns off a
-  display that its last report, or a change completed since, left on, and a
-  window that disconnects during a change turns the display off after it.
+  an earlier choice that waits, so the last choice wins. A window that
+  disconnects during a change turns the display off after it.
+- CoreSimulator reports a change before or after completing it, and another
+  tool can change the display meanwhile. Disabled turns off a display that is
+  on as far as the session knows: as the last change leaves it until the
+  display reports a state newer than that change, and otherwise as the display
+  last reported. A report after the change completed is newer; one during the
+  change is newer only when it shows the change's result, since it can
+  predate the change.
 - `SimDeviceScreen.register(types:queue:handler:)` with `.properties` reports
   each change of the screen's `powerState`, `pixelSize`, and
   `currentMode.preferredUIScale`, also those another tool makes.

@@ -130,7 +130,9 @@ extension PreferenceStore {
 /// CoreSimulator completes each change later, so they are sent one at a
 /// time and the last choice wins: a choice made while a change is in flight
 /// waits for it and replaces an earlier choice that waits. Disabled turns off
-/// a display that its last report, or a change completed since, left on.
+/// a display that is on as far as the session knows: as the last change left
+/// it until the display reports a state newer than that change, and otherwise
+/// as the display last reported.
 @MainActor
 final class ExternalDisplayChanges {
     let screen: any SimulatorExternalScreen
@@ -138,17 +140,23 @@ final class ExternalDisplayChanges {
     private var waiting: (mode: ExternalDisplayMode, report: @MainActor (Error) -> Void)?
     /// Whether the display was on when it last reported its state.
     private var reportedOn = false
-    /// Whether the last change completed since that report left it on.
-    private var completedOn: Bool?
+    /// Whether the last change sent turns the display on, until the display
+    /// reports a state newer than that change.
+    private var unreportedOn: Bool?
     private var isClosed = false
 
     init(screen: any SimulatorExternalScreen) { self.screen = screen }
 
-    /// The display's state as it reported it, which supersedes the changes
-    /// completed before.
+    private var isOn: Bool { unreportedOn ?? reportedOn }
+
+    /// The display's state as it reported it. CoreSimulator reports a change
+    /// and completes it in either order, and another tool can change the
+    /// display meanwhile. A report during the change is newer than it only
+    /// when it shows the change's result; a report after the change
+    /// completed always is.
     func reported(_ state: ExternalScreenState?) {
         reportedOn = state?.isPoweredOn ?? false
-        completedOn = nil
+        if !isSending || unreportedOn == reportedOn { unreportedOn = nil }
     }
 
     /// Sends `mode`'s change, or makes it wait for the change in flight.
@@ -170,26 +178,33 @@ final class ExternalDisplayChanges {
     }
 
     private func send(_ mode: ExternalDisplayMode, report: @escaping @MainActor (Error) -> Void) {
+        guard mode.pixelSize != nil || isOn else { return }
         // The completion keeps these changes until CoreSimulator calls it.
-        let completion: @MainActor (Error?) -> Void = { error in self.completed(mode, error: error, report: report) }
+        let completion: @MainActor (Error?) -> Void = { error in self.completed(error: error, report: report) }
+        let known = unreportedOn
+        isSending = true
+        unreportedOn = mode.pixelSize != nil
         do {
             if let size = mode.pixelSize {
-                isSending = true
                 try screen.setMode(pixelSize: size, scale: ExternalDisplayMode.scale, carPlayProperties: nil,
                                    completion: completion)
-            } else if completedOn ?? reportedOn {
-                isSending = true
+            } else {
                 try screen.powerOff(completion: completion)
             }
         } catch {
             isSending = false
+            unreportedOn = known
             report(error)
         }
     }
 
-    private func completed(_ mode: ExternalDisplayMode, error: Error?, report: @MainActor (Error) -> Void) {
+    private func completed(error: Error?, report: @MainActor (Error) -> Void) {
         isSending = false
-        if let error { report(error) } else { completedOn = mode.pixelSize != nil }
+        if let error {
+            // The display keeps the state it reports.
+            unreportedOn = nil
+            report(error)
+        }
         sendWaiting()
     }
 

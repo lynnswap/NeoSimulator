@@ -3020,6 +3020,36 @@ struct InputFocusTests {
         #expect(controller.session.externalDisplayMode == .size3840x2160)
     }
 
+    @Test func disabledFollowsTheNewerOfTheDisplaysReportsAndItsLastChange() throws {
+        let screen = TestExternalScreen()
+        let (controller, _) = try makeExternalDisplayController(screen)
+        defer { controller.invalidate() }
+        controller.perform(.externalDisplay1920x1080)
+        // Turning the display off is reported before it completes, and another
+        // tool turns the display on in between: Disabled turns it off again.
+        screen.defersChanges = true
+        controller.perform(.externalDisplayDisabled)
+        screen.deliverReports()
+        screen.report { $0.isPoweredOn = true }
+        screen.deliverCompletions()
+        #expect(controller.session.externalDisplayMode == .size1920x1080)
+        controller.perform(.externalDisplayDisabled)
+        screen.deliver()
+        #expect(screen.requests == ["mode 1920x1080@1", "off", "off"])
+        #expect(!screen.current.isPoweredOn && controller.session.externalDisplayMode == .disabled)
+        // A size completes before it is reported, after another tool's report
+        // from before it: Disabled, waiting for the size, turns the display off.
+        controller.perform(.externalDisplay640x480)
+        screen.deliver()
+        controller.perform(.externalDisplay1920x1080)
+        screen.report { $0.isPoweredOn = false }
+        controller.perform(.externalDisplayDisabled)
+        screen.deliverCompletions()
+        screen.deliver()
+        #expect(Array(screen.requests.dropFirst(3)) == ["mode 640x480@1", "mode 1920x1080@1", "off"])
+        #expect(!screen.current.isPoweredOn && controller.session.externalDisplayMode == .disabled)
+    }
+
     @Test func aDeviceWindowThatClosesDuringAChangeTurnsTheDisplayOffAfterIt() throws {
         let screen = TestExternalScreen()
         screen.defersChanges = true
@@ -4317,10 +4347,12 @@ private final class TestExternalScreen: SimulatorExternalScreen {
     var completionError: Error?
     /// Refuses each change with this error, as for a size that no mode takes.
     var refusal: Error?
-    /// Holds each change until `deliver()`, as CoreSimulator completes and
-    /// reports a change later.
+    /// Holds each change's report and completion until `deliver()`, or
+    /// `deliverReports()` and `deliverCompletions()` apart, as CoreSimulator
+    /// reports and completes a change later, in either order.
     var defersChanges = false
-    private var pendingChanges: [() -> Void] = []
+    private var pendingReports: [() -> Void] = []
+    private var pendingCompletions: [() -> Void] = []
     var changed: (() -> Void)?
     /// The displays made for the display's windows, in order.
     private(set) var displays: [TestDisplay] = []
@@ -4342,23 +4374,37 @@ private final class TestExternalScreen: SimulatorExternalScreen {
         complete(completion) { $0.isPoweredOn = false }
     }
 
-    /// Applies a change and completes it, at once or when `deliver()` runs.
+    /// Applies and reports a change and completes it, at once or when it is delivered.
     private func complete(_ completion: @escaping @MainActor (Error?) -> Void,
                           _ change: @escaping (inout ExternalScreenState) -> Void) {
         let error = completionError
-        let finish = { [self] in
-            guard error == nil else { return completion(error) }
-            report(change)
-            completion(nil)
+        let report = { [self] in if error == nil { self.report(change) } }
+        guard defersChanges else {
+            report()
+            return completion(error)
         }
-        if defersChanges { pendingChanges.append(finish) } else { finish() }
+        pendingReports.append(report)
+        pendingCompletions.append { completion(error) }
+    }
+
+    /// Delivers the held reports, then the held completions.
+    func deliver() {
+        deliverReports()
+        deliverCompletions()
+    }
+
+    /// Applies and reports the held changes in the order they were asked for.
+    func deliverReports() {
+        let reports = pendingReports
+        pendingReports = []
+        for report in reports { report() }
     }
 
     /// Completes the held changes in the order they were asked for.
-    func deliver() {
-        let changes = pendingChanges
-        pendingChanges = []
-        for change in changes { change() }
+    func deliverCompletions() {
+        let completions = pendingCompletions
+        pendingCompletions = []
+        for completion in completions { completion() }
     }
 
     func makeDisplay() throws -> any SimulatorDisplay {
