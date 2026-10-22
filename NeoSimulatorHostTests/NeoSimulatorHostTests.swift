@@ -4871,13 +4871,14 @@ struct InputFocusTests {
                           .init(identifier: "c", name: "iPad C", productFamily: 2)],
             runtimes: [.init(identifier: "old", name: "iOS 26.0"), .init(identifier: "new", name: "iOS 27.0"),
                        .init(identifier: "empty", name: "iOS 28.0")],
-            supportedDeviceTypes: ["old": ["b"], "new": ["a", "c"]])
+            supportedDeviceTypes: ["old": ["b"], "new": ["a", "c"]], canPair: { _, _, _, _ in true })
         var created: [[String]] = []
         var failure: Error?
         let form = NewSimulatorWindowController(catalog: catalog, create: { name, deviceType, runtime in
             if let failure { throw failure }
             created.append([name, deviceType, runtime])
-        })
+            return "device"
+        }, pair: { _, _ in Issue.record("paired without a watch") })
         defer { form.close() }
         let window = try #require(form.window)
         form.showWindow(nil)
@@ -4908,13 +4909,13 @@ struct InputFocusTests {
         #expect(selection() == ["iPhone B", "iOS 26.0"])
 
         failure = HostError.operation("creation failed")
-        form.createButton.performClick(nil)
+        form.forwardButton.performClick(nil)
         for _ in 0..<100 where window.attachedSheet == nil { try await Task.sleep(for: .milliseconds(10)) }
         #expect(window.isVisible && created.isEmpty)
         window.endSheet(try #require(window.attachedSheet))
         failure = nil
         // An empty name uses the device type's name.
-        form.createButton.performClick(nil)
+        form.forwardButton.performClick(nil)
         for _ in 0..<100 where window.isVisible { try await Task.sleep(for: .milliseconds(10)) }
         #expect(created == [["iPhone B", "b", "old"]])
         #expect(!window.isVisible)
@@ -4923,10 +4924,152 @@ struct InputFocusTests {
     @Test func newSimulatorWithoutRuntimesCannotCreate() throws {
         let form = NewSimulatorWindowController(
             catalog: SimulatorCatalog(deviceTypes: [.init(identifier: "a", name: "iPhone A", productFamily: 1)],
-                                      runtimes: [], supportedDeviceTypes: [:]),
-            create: { _, _, _ in Issue.record("created without a runtime") })
+                                      runtimes: [], supportedDeviceTypes: [:], canPair: { _, _, _, _ in true }),
+            create: { _, _, _ in
+                Issue.record("created without a runtime")
+                return ""
+            }, pair: { _, _ in Issue.record("paired without a runtime") })
         #expect(form.runtimes.itemTitles == ["No Runtimes Available"])
-        #expect(!form.runtimes.isEnabled && !form.deviceTypes.isEnabled && !form.createButton.isEnabled)
+        #expect(!form.runtimes.isEnabled && !form.deviceTypes.isEnabled && !form.forwardButton.isEnabled)
+        #expect(!form.pairedWatchButton.isEnabled)
+    }
+
+    /// A catalog of one iPhone, one iPad, and three watches, where only the
+    /// first watch pairs; `pairings` records each pairing check.
+    private func pairingCatalog(_ pairings: PairingChecks? = nil) -> SimulatorCatalog {
+        SimulatorCatalog(
+            deviceTypes: [.init(identifier: "phone", name: "iPhone A", productFamily: 1),
+                          .init(identifier: "pad", name: "iPad A", productFamily: 2),
+                          .init(identifier: "w1", name: "Apple Watch One", productFamily: 4),
+                          .init(identifier: "w2", name: "Apple Watch Two", productFamily: 4),
+                          .init(identifier: "w3", name: "Apple Watch Old", productFamily: 4)],
+            runtimes: [.init(identifier: "ios", name: "iOS 27.0"), .init(identifier: "old", name: "watchOS 10.0"),
+                       .init(identifier: "new", name: "watchOS 27.0"), .init(identifier: "tv", name: "tvOS 27.0")],
+            supportedDeviceTypes: ["ios": ["phone", "pad"], "old": ["w3"], "new": ["w1", "w2"]],
+            canPair: { watchType, watchRuntime, phoneType, phoneRuntime in
+                pairings?.entries.append([watchType, watchRuntime, phoneType, phoneRuntime].joined(separator: " "))
+                return watchType == "w1"
+            })
+    }
+
+    @Test func newSimulatorOffersAPairedWatchOnlyForAnIPhone() throws {
+        _ = NSApplication.shared
+        let form = NewSimulatorWindowController(catalog: pairingCatalog(), create: { _, _, _ in "" }, pair: { _, _ in })
+        defer { form.close() }
+        form.showWindow(nil)
+        func choose(_ title: String, in popUp: NSPopUpButton) {
+            popUp.selectItem(withTitle: title)
+            popUp.sendAction(popUp.action, to: popUp.target)
+        }
+        #expect(form.deviceTypes.titleOfSelectedItem == "iPhone A")
+        #expect(form.pairedWatchButton.isEnabled && form.pairedWatchButton.state == .off)
+        #expect(form.forwardButton.title == "Create" && form.forwardButton.isEnabled && !form.previousButton.isEnabled)
+        form.pairedWatchButton.performClick(nil)
+        #expect(form.forwardButton.title == "Next")
+        // Another family turns the option off.
+        choose("iPad A", in: form.deviceTypes)
+        #expect(!form.pairedWatchButton.isEnabled && form.pairedWatchButton.state == .off)
+        #expect(form.forwardButton.title == "Create")
+        choose("iPhone A", in: form.deviceTypes)
+        #expect(form.pairedWatchButton.isEnabled && form.pairedWatchButton.state == .off)
+        form.pairedWatchButton.performClick(nil)
+        #expect(form.forwardButton.title == "Next")
+        form.pairedWatchButton.performClick(nil)
+        #expect(form.forwardButton.title == "Create")
+    }
+
+    @Test func newSimulatorWatchPageKeepsTheWatchCompatibleAndPairable() throws {
+        _ = NSApplication.shared
+        let pairings = PairingChecks()
+        let form = NewSimulatorWindowController(catalog: pairingCatalog(pairings), create: { _, _, _ in "" },
+                                                pair: { _, _ in })
+        defer { form.close() }
+        form.showWindow(nil)
+        func choose(_ title: String, in popUp: NSPopUpButton) {
+            popUp.selectItem(withTitle: title)
+            popUp.sendAction(popUp.action, to: popUp.target)
+        }
+        func selection() -> [String?] {
+            [form.watchDeviceTypes.titleOfSelectedItem, form.watchRuntimes.titleOfSelectedItem]
+        }
+        form.pairedWatchButton.performClick(nil)
+        form.forwardButton.performClick(nil)
+        #expect(form.showsWatchPage && form.previousButton.isEnabled && form.forwardButton.title == "Create")
+        // Only watches, without separators, and the runtimes that support any of them.
+        #expect(form.watchDeviceTypes.itemArray.map(\.title) == ["Apple Watch One", "Apple Watch Two", "Apple Watch Old"])
+        #expect(form.watchRuntimes.itemTitles == ["watchOS 10.0", "watchOS 27.0"])
+        // The first runtime stays, and the watch becomes the first it supports.
+        #expect(selection() == ["Apple Watch Old", "watchOS 10.0"])
+        #expect(form.watchNameField.placeholderString == "Apple Watch Old")
+        #expect(!form.forwardButton.isEnabled && pairings.entries.last == "w3 old phone ios")
+        choose("watchOS 27.0", in: form.watchRuntimes)
+        #expect(selection() == ["Apple Watch One", "watchOS 27.0"])
+        #expect(form.forwardButton.isEnabled && pairings.entries.last == "w1 new phone ios")
+        // A watch the runtime does not support lists only the runtimes that support it.
+        choose("Apple Watch Old", in: form.watchDeviceTypes)
+        #expect(form.watchRuntimes.itemTitles == ["watchOS 10.0"] && selection() == ["Apple Watch Old", "watchOS 10.0"])
+        #expect(form.watchNameField.placeholderString == "Apple Watch Old" && !form.forwardButton.isEnabled)
+        choose("Apple Watch Two", in: form.watchDeviceTypes)
+        #expect(form.watchRuntimes.itemTitles == ["watchOS 27.0"] && selection() == ["Apple Watch Two", "watchOS 27.0"])
+        #expect(!form.forwardButton.isEnabled && pairings.entries.last == "w2 new phone ios")
+        choose("Apple Watch One", in: form.watchDeviceTypes)
+        #expect(form.watchRuntimes.itemTitles == ["watchOS 27.0"] && form.forwardButton.isEnabled)
+        form.previousButton.performClick(nil)
+        #expect(!form.showsWatchPage && !form.previousButton.isEnabled)
+        #expect(form.forwardButton.title == "Next" && form.forwardButton.isEnabled)
+    }
+
+    @Test func newSimulatorCreatesAndPairsTheWatchAndKeepsTheDevicesOnFailure() async throws {
+        _ = NSApplication.shared
+        @MainActor final class Failures { var watch: Error?, pair: Error? }
+        let failures = Failures()
+        var operations: [String] = []
+        let form = NewSimulatorWindowController(catalog: pairingCatalog(), create: { name, deviceType, runtime in
+            if deviceType.hasPrefix("w"), let failure = failures.watch { throw failure }
+            operations.append("create \(name) \(deviceType) \(runtime)")
+            return deviceType == "phone" ? "phone-\(operations.count)" : "watch-\(operations.count)"
+        }, pair: { watch, phone in
+            if let failure = failures.pair { throw failure }
+            operations.append("pair \(watch) \(phone)")
+        })
+        defer { form.close() }
+        let window = try #require(form.window)
+        form.showWindow(nil)
+        form.pairedWatchButton.performClick(nil)
+        form.forwardButton.performClick(nil)
+        form.watchRuntimes.selectItem(withTitle: "watchOS 27.0")
+        form.watchRuntimes.sendAction(form.watchRuntimes.action, to: form.watchRuntimes.target)
+        #expect(form.forwardButton.isEnabled)
+
+        // A failed pairing keeps both devices and the window.
+        failures.pair = HostError.operation("pairing failed")
+        form.forwardButton.performClick(nil)
+        try await wait { window.attachedSheet != nil }
+        let pairingAlert = try #require(window.attachedSheet)
+        #expect(texts(in: pairingAlert.contentView).contains(
+            "Created “iPhone A” and “Apple Watch One”, but could not pair them: pairing failed"))
+        window.endSheet(pairingAlert)
+        #expect(window.isVisible && form.forwardButton.isEnabled)
+        #expect(operations == ["create iPhone A phone ios", "create Apple Watch One w1 new"])
+        // A watch that is not created is not paired.
+        operations.removeAll()
+        failures.watch = HostError.operation("watch failed")
+        form.forwardButton.performClick(nil)
+        try await wait { window.attachedSheet != nil }
+        let watchAlert = try #require(window.attachedSheet)
+        #expect(texts(in: watchAlert.contentView).contains(
+            "Created “iPhone A”, but could not create its paired Apple Watch: watch failed"))
+        window.endSheet(watchAlert)
+        #expect(operations == ["create iPhone A phone ios"])
+
+        operations.removeAll()
+        failures.watch = nil
+        failures.pair = nil
+        form.watchNameField.stringValue = "My Watch"
+        form.forwardButton.performClick(nil)
+        try await wait { !window.isVisible }
+        #expect(operations == ["create iPhone A phone ios", "create My Watch w1 new", "pair watch-2 phone-1"])
+        #expect(!window.isVisible)
     }
 
     @Test func hardwareCommandsSendSimulatorAppEvents() throws {
@@ -5651,6 +5794,12 @@ struct InputFocusTests {
 @MainActor
 private final class ChangeLog {
     var onMainThread: [Bool] = []
+}
+
+/// The pairing checks a New Simulator form made, as "watch-type watch-runtime phone-type phone-runtime".
+@MainActor
+private final class PairingChecks {
+    var entries: [String] = []
 }
 
 /// What a device window's toolbar button shows: its image's symbol and
@@ -6791,12 +6940,21 @@ struct DeviceToolTests {
         try """
             #!/bin/sh
             printf '%s\\n' "$DEVELOPER_DIR" "$@" > "\(log.path)"
+            echo 0D6B2C3A-0000-4000-8000-000000000001
             """.write(to: simctl, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: simctl.path)
-        try await DeviceTools.createDevice(named: "My Phone", deviceType: "type", runtime: "runtime",
-                                           xcodeURL: URL(fileURLWithPath: "/Applications/Xcode.app"), simctl: simctl)
+        let xcode = URL(fileURLWithPath: "/Applications/Xcode.app")
+        let identifier = try await DeviceTools.createDevice(named: "My Phone", deviceType: "type", runtime: "runtime",
+                                                            xcodeURL: xcode, simctl: simctl)
+        #expect(identifier == "0D6B2C3A-0000-4000-8000-000000000001")
         #expect(try String(contentsOf: log, encoding: .utf8).split(separator: "\n") == [
             "/Applications/Xcode.app/Contents/Developer", "create", "My Phone", "type", "runtime",
+        ])
+        // The watch comes first, as `simctl pair` expects.
+        try await DeviceTools.pairDevices(watch: "watch", phone: "phone", xcodeURL: xcode,
+                                          deviceSetPath: "/tmp/Devices", simctl: simctl)
+        #expect(try String(contentsOf: log, encoding: .utf8).split(separator: "\n") == [
+            "/Applications/Xcode.app/Contents/Developer", "--set", "/tmp/Devices", "pair", "watch", "phone",
         ])
     }
 

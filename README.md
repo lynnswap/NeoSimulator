@@ -157,7 +157,8 @@ Use **File → Open Simulator** to choose a device, **File → New Simulator…*
 to create one, and **Device → Shut Down** to stop it. As in Simulator.app, Open
 Simulator groups devices by runtime and marks booted devices: a checkmark when
 the device has a window, a dash when it does not; hold Option to see each
-device's runtime and type.
+device's runtime and type. For an iPhone, New Simulator's **Paired Apple Watch**
+option leads to a second page that creates an Apple Watch paired with it.
 
 Watches, Apple TV, and Apple Vision Pro show the commands Simulator.app shows
 for them: Lock and Side Button for watches, Gestures and Simulate Fall for
@@ -167,8 +168,7 @@ Apple Vision Pro, Set Immersion To is available only while the guest lets the
 immersion change, and Simulated Scenes lists the scenes once the device
 reports its current scene; a device that was already booted when its window
 opened may not report it, which leaves Simulated Scenes disabled. The Apple TV
-Remote window is not available yet. File → New Simulator… does not create a
-paired Apple Watch yet.
+Remote window is not available yet.
 
 Neo also shows the devices Xcode boots for parallel testing, from
 `~/Library/Developer/XCTestDevices` (or the `TestingDeviceSetPath` default).

@@ -825,6 +825,35 @@ does not carry over to the next.
 NeoSimulator leaves input capture out; the reasons and the alternatives that
 were considered are in the [design](Design.md#input-capture).
 
+## New Simulator's Paired Apple Watch
+
+Simulator.app's File ▸ New Simulator… form is SimulatorKit's
+`SimDeviceCreationView`. The addresses below are in SimulatorKit 16.0 (955.7)
+from Xcode 26.6, arm64e slice; the nib is its
+`SimDeviceCreationView.nib`.
+
+| Reference owner | Observed behavior | Neo |
+| --- | --- | --- |
+| `SimDeviceCreationView.nib` | Under OS Version, the first page has a `Paired Apple Watch` checkbox (`pairedWatchButton`, action `_updateForwardButtonTitle:`). The second page, `pairedWatchCreationView`, has Paired Watch Name, Device Type, and OS Version (`gizmoDeviceNameField`, `gizmoDeviceList`, `gizmoRuntimeList`). Both pages replace each other in one box under "Create a new simulator:". Previous (`previousButton`) sits left of the forward button and starts disabled. | The same controls and titles in two grids, one hidden at a time. |
+| Main-page update `0x7AE64` (`0x7B030`…`0x7B08C`), device-type correction `0x7AA7C` (`0x7AD40`…`0x7ADA4`) | Enables the option when the selected device type's `productFamilyID` is 1; otherwise also turns it off and updates the forward button. | The same after each device type or runtime choice. |
+| `_updateForwardButtonTitle:` `0x7D700`, `0x78E18` | When the option is enabled and on, the forward button is "Next" with `nextPageButtonPressed:`; otherwise "Create" with `createSimulatorButtonPressed:`. | One action that checks the same state. |
+| Next `0x7BF90`, Previous `0x7C0C8` | Next shows the second page, enables Previous, titles the button "Create", and enables it by the pairing check. Previous shows the first page, disables Previous, enables the button, and updates its title. | The same. |
+| Watch menus, `0x7A098`…`0x7A4D8` | Device types with `productFamilyID` 4 in the service context's order, without separators, and the available runtimes that support any of them. Without watch device types both menus stay empty; without such a runtime, the runtime menu gets a disabled "No Runtimes Available" and both menus are disabled. The first update runs with the runtime menu as the sender. | The same. |
+| Watch update `0x7BB98`, runtime menu rebuild `0x7B1A8`, device-type correction `0x7B880` | Sets the name's placeholder to the watch device type's name. When the runtime does not support the device type, a device-type choice (or an empty runtime) rebuilds the runtime menu with the runtimes that support it and selects the first, and a runtime choice selects the first device type it supports. | The same. |
+| Create enabling `0x7BE80`, check `0x78E94` | Only on the second page: enabled when the four selections exist, the watch's runtime `supportsDeviceType:` its device type (`0x79158`), and `+[SimDevicePair testPossiblePairingWithDeviceTypeA:RuntimeA:DeviceTypeB:RuntimeB:error:]` returns YES for the watch's device type and runtime, then the phone's (`0x79184`). The error is dropped. | `SimulatorCatalog.canPair`, resolved at startup. |
+| Create `0x7C200`; completions `0x7CA34`, `0x7CD9C`, `0x7D2D0`, `0x7D578` | Creates the phone with `SimDeviceSet createDeviceAsyncWithType:runtime:name:completionQueue:completionHandler:`. When the option is enabled and on, it then creates the watch the same way (`0x7CD04`), named by the field or else its placeholder (`0x78D5C`), and pairs them with `createDevicePairAsyncWithGizmo:companion:completionQueue:completionHandler:` (`0x7D1F8`). Each failure goes to `deviceCreationDidFail:error:`, an alert sheet on the form; nothing deletes the devices already created. Success closes the form. | `simctl create` for each device and `simctl pair <watch> <phone>`, which calls `createDevicePairWithGizmo:companion:error:`. The alert also names the devices already created. |
+
+The live check used Xcode 27.1 and CoreSimulator 1174.9.2 in a separate device
+set, through NeoSimulator's form. An iPad turned the option off. With an iPhone
+17 Pro on iOS 27.0, the second page listed 32 watch device types and watchOS
+26.5 and 27.0. Create made the iPhone and an Apple Watch Series 11 (46mm) on
+watchOS 27.0, and `simctl list pairs` showed them as an active pair. Pairing
+them again failed with CoreSimulator error 403 and left both devices.
+`testPossiblePairing…` accepted every installed iOS runtime (18.0 through 27.2)
+with watchOS 26.5 and 27.0 and rejected Apple TV and Apple Vision Pro as the
+phone. It also accepted watch device types that the watch runtime does not
+support, which is why the runtime check comes first.
+
 ## Deferred features
 
 These have viable Xcode 27+ primitives but need a dedicated state/capability
