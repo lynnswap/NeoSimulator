@@ -260,6 +260,51 @@ a few milliseconds.
 NeoSimulator reproduces these commands; its differences are listed in the
 [design](Design.md#keyboard-and-touch-pressure).
 
+## Modifier gestures
+
+The evidence is Simulator.app 16.0 (1063.4) from Xcode 26.6 and SimulatorKit
+from Xcode 27.1. Simulator.app has no gesture code of its own: SimulatorKit's
+digitizer receives the mouse and modifier events through AppKit, and
+Simulator.app calls nothing on it when focus changes or a window closes.
+
+| Reference owner | Observed behavior |
+| --- | --- |
+| `DWC.windowDidBecomeKey:` `0x10004AFD0`, body `0x10004ACB8` | Calls `KeyboardController.becomeKey(coordinator:)` (`0x10004ADD0` → `0x100073C30`), sets the chrome `active`, and sends `deviceWindowBecameKey:`. It neither changes the first responder nor sends a modifier event. |
+| `DWC.windowDidResignKey:` `0x10004B170`, closure `0x10004B074` | Calls `KeyboardController.resignKey(coordinator:)` (`0x10004B0DC` → `0x100073DE8`), which calls `SimKeyboardInputController.clearModifiers()` (`0x100073F00`), then sets the chrome `inactive` and sends `stopCapturingInput:`. Nothing reaches the digitizer. |
+| `SimulatorApp.sendEvent:` `0x1000240FC` | For a modifier event, posts `OptionKeyDown` or `OptionKeyUp` for the toolbar; forwards a Command key-up to the key `DeviceWindow`. Every event then takes AppKit's normal route. |
+| Defaults `0x1000251B0` … `0x1000251DC`; window setup `0x10004A794` … `0x10004A830` through `0x100048A24` | Registers `ShowSingleTouches` NO, `ShowPinches` YES, `ShowPinchPivotPoint` NO, and `HighlightEdgeGestures` NO, and inserts or removes the matching `SimDigitizerInputView.DrawOption` for each window. The Internal menu that toggles them (tag 7000) is shown only when `os_variant_has_internal_ui` (`0x100024894`). |
+| `DWC.windowWillClose:` `0x10004B2D8` → `-[DeviceCoordinator deviceWindowWillClose:]` `0x100019720` → `_onSessionQueue_disconnectWithCompletionGroup:` `0x10001AEB0` | Disconnects the window controllers through `DWC.disconnectWithCompletionGroup:completionQueue:completionHandler:` `0x100050998`, which calls `SimDisplayView.disconnect(completion:)` at `0x100050360`, then sends `resetHIDSession` to the coordinator's legacy HID client (`0x10001B19C`). No touch end is sent. |
+
+SimulatorKit (Xcode 27.1):
+
+| Owner | Observed behavior |
+| --- | --- |
+| `EventHandlingView` mouse, key, and `flagsChanged:` methods `0x2CA1C` … `0x2CA80` → `0x2C75C` | Pass every event to the subclass handler (vtable `0x70`; `SimDigitizerInputView` `0x1E510`), whose state machine takes the modifiers from the events it receives. |
+| `SimDigitizerInputViewDelegate` defaults `0x1988C`, `0x19828` | `wantsFirstResponder` makes the digitizer its window's first responder; `wantsMouseMovedEvents` sets the window's `acceptsMouseMovedEvents`. |
+| `SimDigitizerInputView.DrawOption` `0x1B8CC` … `0x1B988` | `normalTouch` 2, `pinchTouches` 4, `pinchPivotPoint` 8, `edgeGestures` 16, `lockedTouches` 32; `defaults` is 36, the set that Simulator.app's registered defaults produce. |
+| `SimDisplayView.disconnect(completion:)` `0x69A44` | Sets the digitizer's `isEnabled` to NO (setter `0x1A190`, whose observer `0x1A030` clears the drawn points without sending events), clears its `delegate` and `wakeOnTouchDelegate`, and resets the display's HID session (`0x17648`). Active contacts are not ended. |
+| `SimKeyboardInputDefaultDelegate.isEnabled` observer `0x2A654` | On NO, calls the shared `SimKeyboardInputController.clearModifiers()` (`0x28BE0`) after the display has stopped taking the keyboard, so that display keeps its held modifiers. |
+| `SimKeyboardInputController` init `0x28604`, `applicationDidResignActive:` `0x28C40` | The only SimulatorKit observer of `NSApplicationDidResignActiveNotification`; it releases keyboard modifiers. Nothing in SimulatorKit observes key-window changes. |
+
+A guest app on an iOS 26.5 iPhone 17 Pro in a separate device set recorded
+`UITouch` phases and pinch, rotation, and two-finger pan recognizers while
+NeoSimulator's window controller received generated AppKit events. Option
+pinches and rotations, Option-Shift moves and recentering, and Control pinning
+and release behaved as the README describes, with modifiers that the real
+keyboard did not hold, so the digitizer took them from the events. Releasing
+Option before the button left both touches down until the next click. Closing
+or disconnecting the window left the touches down; the next connection's first
+touch ended them and, for a pinned finger, became that touch's end. A restart
+cleared them. Before NeoSimulator kept its modifier release from the digitizer,
+deactivating the app during an Option drag stopped the fingers and left them
+down until the next click; Simulator.app does not send the digitizer that
+release, and the drag now continues as it does there. The generated events
+cover AppKit's routing inside the app but not the window server's pointer
+tracking, so they do not replace a check with a physical keyboard and trackpad.
+
+NeoSimulator reproduces this behavior; its handling is described in the
+[design](Design.md#modifier-gestures).
+
 ## Deferred features
 
 These have viable Xcode 27+ primitives but need a dedicated state/capability
