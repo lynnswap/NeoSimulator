@@ -102,11 +102,13 @@ Neo currently provides:
   its toolbar has Home, Save Screen, Capture Pointer, Capture Keyboard, and
   Simulated Scenes. Capture Pointer and Capture Keyboard do not capture the
   Mac's input, which Neo leaves out;
-- Apple Vision Pro's camera, scene, immersion, and gaze commands, which the
-  plugin performs, enables, and checks as in Simulator.app: Device →
+- Apple Vision Pro's camera, scene, immersion, gaze, and FaceTime commands,
+  which the plugin performs, enables, and checks as in Simulator.app: Device →
   Interaction, Look Around, Pan, Orbit, and Dolly Mode (Control-Command-1 to
   Control-Command-5), Reset Camera (Control-Command-0), Re-Center Open Apps,
-  and Simulated Scenes; I/O → Set Immersion To; and Debug → Show Gaze Target;
+  and Simulated Scenes; I/O → Set Immersion To; Features → FaceTime, which
+  starts a simulated FaceTime call with one to four spatial participants; and
+  Debug → Show Gaze Target;
 - Simulator.app's Save Screen, Record Screen, and Copy Screen commands, with
   its file names, save folders, and device-mask option; recordings are
   finalized when a window closes or the app quits;

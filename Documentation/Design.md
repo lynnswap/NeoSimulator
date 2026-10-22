@@ -342,9 +342,9 @@ The first parity set contains only commands with an available, validated owner:
 - Features: Touch ID, Face ID, and Optic ID (Enrolled, Matching,
   Non-matching), Simulate Fall (Confirmed, Dismissed, Rejected, Unresponsive),
   Authorize Apple Pay, Toggle Appearance, Toggle In-call Status Bar,
-  Show/Hide StandBy, Increase and Decrease Preferred Text Size, Toggle
-  Increase Contrast, Trigger iCloud Sync, Location (None, Custom Location…,
-  and the runtime's scenarios);
+  Show/Hide StandBy, FaceTime (six simulated sessions), Increase and Decrease
+  Preferred Text Size, Toggle Increase Contrast, Trigger iCloud Sync, Location
+  (None, Custom Location…, and the runtime's scenarios);
 - Debug: Slow Animations, Graphics Quality Override, Color Blended Layers,
   Color Copied Images, Color Misaligned Images, Color Off-screen Rendered, Open
   System Log…, Simulate Memory Warning, Show Gaze Target, Show Parallel
@@ -911,7 +911,7 @@ The following are intentionally absent:
 - Services;
 - global keyboard, pointer, or game-controller capture (for the keyboard and
   pointer, see [Input capture](#input-capture));
-- Device Manager, CarPlay, and FaceTime menus;
+- Device Manager and CarPlay menus;
 - commands whose remaining private implementation silently discards failure.
 
 See [Simulator.app analysis](SimulatorAppAnalysis.md) for the complete menu
@@ -1853,15 +1853,22 @@ Simulator.app discards both errors; Neo reports them, a failed post as a
 partial change. Gestures and Simulate Fall are momentary and have no
 checkmarks.
 
-Apple Vision Pro's camera, scene, immersion, and gaze commands are the
-plugin's. As in Simulator.app's MainMenu.nib, their items have no target and
-send the overlay's actions up the responder chain: Device ▸ Re-Center Open
+Apple Vision Pro's camera, scene, immersion, gaze, and FaceTime commands are
+the plugin's. As in Simulator.app's MainMenu.nib, their items have no target
+and send the overlay's actions up the responder chain: Device ▸ Re-Center Open
 Apps (`recenterAllOpenApps:`), Interaction, Look Around, Pan, Orbit, and Dolly
 Mode (`viewportModeChangedToInteraction:` to `viewportModeChangedToDolly:`,
 Control-Command-1 to 5), Reset Camera (`resetViewportCamera:`,
 Control-Command-0), and Simulated Scenes (`selectSimulatedScene:`); I/O ▸ Set
 Immersion To ▸ 50%, 75%, and 100% (`setImmersionTo50:`, `setImmersionTo75:`,
-`setImmersionTo100:`); and Debug ▸ Show Gaze Target (`toggleShowGazeTarget:`).
+`setImmersionTo100:`); Features ▸ FaceTime ▸ User and 1, 2, 3, and 4 Spatial
+Participants, User, 1 Participant and 4 Spatial Participants, and User, 8
+Participants and 4 Spatial Participants
+(`configureSimulatedFaceTimeSession1x1:` to
+`configureSimulatedFaceTimeSession1x4:`,
+`configureSimulatedFaceTimeSession1x4x1:`, and
+`configureSimulatedFaceTimeSession1x4x8:`); and Debug ▸ Show Gaze Target
+(`toggleShowGazeTarget:`).
 The overlay is the window's first responder, so AppKit has it validate each
 item and sends it the action, which the plugin carries out over its own
 connection to the guest. The validation is therefore Simulator.app's: Show
@@ -1874,8 +1881,15 @@ and stays disabled until the device has reported its scene. In the live
 checks, a device that booted while its window connected reported it, and one
 that was already booted did not.
 
-As `deviceWindowBecameKey:` does, Neo shows the camera, scene, and Set
-Immersion To items for Apple Vision, Show Gaze Target for a device with
+Simulator.app implements none of the FaceTime actions; the overlay does. Each
+one asks the plugin's service to send the guest `simulate_facetime_session`
+with the numbers of other and spatial participants in its title, and the
+guest's `vhmdd` joins a simulated FaceTime call with that many test members.
+The overlay enables the six items and gives them no checkmark, and the plugin
+does not report whether the call started.
+
+As `deviceWindowBecameKey:` does, Neo shows the camera, scene, Set Immersion
+To, and FaceTime items for Apple Vision, Show Gaze Target for a device with
 `SimFeatureHoverboard95880941` (`com.apple.hid.hoverboard.95880941`), and
 Re-Center Open Apps for every device. Simulator.app also has Increase
 Immersion, Decrease Immersion, 0%, and 25%, which it hides for every device;
@@ -1963,10 +1977,10 @@ with a click reaching the guest, switched with a size, Disabled, a closed
 window, and restored after a restart, watchOS, tvOS, and visionOS windows
 with their toolbars, menus, titles, and Always On following the backlight,
 Apple Vision Pro's plugin overlay and toolbar, its camera modes, Reset Camera,
-Re-Center Open Apps, Simulated Scenes, Set Immersion To, Show Gaze Target, and
-Optic ID, watch gestures, Digital Crown scrolling with a mouse wheel and a
-trackpad, Simulate Fall's guest notification, Device Hub absence, and
-loaded-image provenance.
+Re-Center Open Apps, Simulated Scenes, Set Immersion To, Show Gaze Target,
+FaceTime, and Optic ID, watch gestures, Digital Crown scrolling with a mouse
+wheel and a trackpad, Simulate Fall's guest notification, Device Hub absence,
+and loaded-image provenance.
 
 ## Non-goals
 
