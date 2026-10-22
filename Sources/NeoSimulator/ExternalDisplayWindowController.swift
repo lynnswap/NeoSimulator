@@ -28,9 +28,6 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
     private let savedCenter: NSPoint?
     private let savedScale: CGFloat?
     private var closed = false
-    /// Whether the window is in full screen or moving into or out of it.
-    private var isFullScreen = false
-    private var geometryBeforeFullScreen: (scale: CGFloat, origin: NSPoint)?
     /// Set while the window takes the display's size, which the resize must not change.
     private var isSizingWindow = false
     /// The screen's size in points. Without a bezel, the display's size at a
@@ -40,8 +37,8 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
     private var screenSize: NSSize
     /// Whether the window is key, while the display can take the Mac's keyboard.
     private(set) var isKey = false
-    private var hasKeyboardInput = false
-    private var commandKeyUpMonitor: Any?
+    private let keyboard: DisplayKeyboardInput
+    private let fitting: DisplayFitting
     private var observers: [any NSObjectProtocol] = []
 
     /// - Parameter state: The external display's state, which gives its size.
@@ -68,6 +65,8 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
         let window = NSWindow(contentRect: NSRect(origin: .zero, size: screenSize),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable],
                               backing: .buffered, defer: false)
+        keyboard = DisplayKeyboardInput(window: window, display: display)
+        fitting = DisplayFitting(display: display, content: content)
         super.init(window: window)
         (window.title, window.subtitle) = deviceWindowTitles(name: session.device.name, runtimeName: Self.subtitle)
         window.appearance = NSAppearance(named: .darkAqua)
@@ -84,14 +83,6 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
         // Simulator.app takes touch pressure only on a device's own screen.
         display.setSupportsTouchPressure(false)
         showTouchIndicators()
-        // AppKit never dispatches key-ups while Command is held; forward them
-        // so the simulator does not keep the key pressed.
-        commandKeyUpMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyUp) { [weak self] event in
-            guard let self, event.modifierFlags.contains(.command), event.window === self.window,
-                  self.window?.firstResponder === self.display.inputView else { return event }
-            self.display.inputView.keyUp(with: event)
-            return nil
-        }
         observers = [
             NotificationCenter.default.addObserver(
                 forName: TouchIndicator.didChangeNotification, object: preferences, queue: .main) { [weak self] _ in
@@ -206,7 +197,7 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
     /// Like Simulator.app: a connected display outside full screen, and for
     /// Physical Size, a device's own screen, which an external display is not.
     private func validatesScale(_ mode: WindowScaleMode) -> Bool {
-        !closed && display.isBooted && !isFullScreen && (mode != .physicalSize || display.displayClass == 0)
+        !closed && display.isBooted && !fitting.isFullScreen && (mode != .physicalSize || display.displayClass == 0)
     }
 
     /// Whether a scale command can run, as Simulator.app validates it for a
@@ -254,7 +245,7 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
     /// screen's aspect ratio and stops at the minimum scale. In full screen
     /// and during a live resize, the display fits the window instead.
     private func updateWindowSize() {
-        guard !closed, let window, !window.inLiveResize, !isFullScreen else { return resizeDisplay() }
+        guard !closed, let window, !fitting.fitsWindow else { return resizeDisplay() }
         let size = displaySize(at: display.renderScale)
         let sized = window.frameRect(forContentRect: NSRect(
             x: 0, y: 0, width: size.width, height: size.height + ExternalDisplayContentView.gap))
@@ -269,7 +260,7 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
         isSizingWindow = true
         window.setFrame(frame, display: true)
         isSizingWindow = false
-        layoutDisplay()
+        fitting.layout()
     }
 
     /// Like Simulator.app, the window takes the display's new size when the
@@ -292,15 +283,7 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
 
     private func resizeDisplay() {
         guard !closed else { return }
-        content.isSizedToDisplay = false
-        display.resize(to: content.availableDisplaySize)
-        layoutDisplay()
-    }
-
-    private func layoutDisplay() {
-        content.needsLayout = true
-        content.layoutSubtreeIfNeeded()
-        window?.invalidateShadow()
+        fitting.fit()
     }
 
     // MARK: Input
@@ -315,25 +298,12 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
     /// Gives the display the Mac's keyboard while the window is key and the
     /// device's hardware keyboard is connected, as the device window does.
     func updateKeyboardInput() {
-        let enabled = !closed && isKey && session.connectsHardwareKeyboard
-        guard enabled != hasKeyboardInput else { return }
-        hasKeyboardInput = enabled
-        if enabled {
-            display.setKeyboardEnabled(true)
-            DeviceWindowController.sendModifiers(NSEvent.modifierFlags)
-        } else {
-            // The device window's release: the digitizer does not see it.
-            let input = display.inputView
-            let movesFocus = window?.firstResponder === input && window?.makeFirstResponder(nil) == true
-            DeviceWindowController.sendModifiers([])
-            if movesFocus { window?.makeFirstResponder(input) }
-            display.setKeyboardEnabled(false)
-        }
+        keyboard.setEnabled(!closed && isKey && session.connectsHardwareKeyboard)
     }
 
     func focusInput() {
         guard !closed, display.isBooted else { return }
-        window?.makeFirstResponder(display.inputView)
+        keyboard.focus()
     }
 
     // MARK: NSWindowDelegate
@@ -351,29 +321,18 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
         updateKeyboardInput()
     }
 
-    func windowWillStartLiveResize(_ notification: Notification) { if !closed { display.beginResize() } }
+    func windowWillStartLiveResize(_ notification: Notification) { if !closed { fitting.willStartLiveResize() } }
     func windowDidResize(_ notification: Notification) { if !isSizingWindow { resizeDisplay() } }
-    func windowDidEndLiveResize(_ notification: Notification) {
-        if !closed { resizeDisplay(); display.endResize() }
-    }
+    func windowDidEndLiveResize(_ notification: Notification) { if !closed { fitting.didEndLiveResize() } }
 
-    func windowWillEnterFullScreen(_ notification: Notification) {
-        isFullScreen = true
-        guard let window else { return }
-        geometryBeforeFullScreen = (display.renderScale, window.frame.origin)
-    }
+    func windowWillEnterFullScreen(_ notification: Notification) { fitting.willEnterFullScreen() }
 
-    func windowDidFailToEnterFullScreen(_ window: NSWindow) {
-        isFullScreen = false
-        geometryBeforeFullScreen = nil
-    }
+    func windowDidFailToEnterFullScreen(_ window: NSWindow) { fitting.didFailToEnterFullScreen() }
 
     /// Like Simulator.app, the window returns to the display's scale and the
     /// window's origin from before full screen.
     func windowDidExitFullScreen(_ notification: Notification) {
-        isFullScreen = false
-        guard let geometry = geometryBeforeFullScreen else { return }
-        geometryBeforeFullScreen = nil
+        guard let geometry = fitting.didExitFullScreen() else { return }
         showDisplay(at: geometry.scale)
         window?.setFrameOrigin(geometry.origin)
         moveWindowOntoScreen()
@@ -399,8 +358,8 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
     private func disconnect() {
         guard !closed else { return }
         closed = true
-        if let commandKeyUpMonitor { NSEvent.removeMonitor(commandKeyUpMonitor) }
-        commandKeyUpMonitor = nil
+        keyboard.invalidate()
+        fitting.invalidate()
         for observer in observers { NotificationCenter.default.removeObserver(observer) }
         observers = []
         if let window, let sheet = window.attachedSheet { window.endSheet(sheet, returnCode: .cancel) }
@@ -413,7 +372,7 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
 /// The external display's window content: the display below a gap, on the
 /// window's black background.
 @MainActor
-private final class ExternalDisplayContentView: NSView {
+private final class ExternalDisplayContentView: NSView, DisplayContentView {
     /// The space Simulator.app keeps between the title bar and a display
     /// without a bezel.
     static let gap = WindowScale.displayGap(bezelPadding: nil)

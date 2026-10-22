@@ -3100,6 +3100,55 @@ struct InputFocusTests {
         #expect(reopened !== display && reopened.renderScale == 1 / backing)
     }
 
+    @Test func theExternalDisplayFitsItsFullScreenWindowAgainWhenItTakesANewSize() throws {
+        _ = NSApplication.shared
+        let screen = TestExternalScreen()
+        screen.current = ExternalScreenState(isPoweredOn: true, pixelSize: CGSize(width: 640, height: 480), scale: 1)
+        let (controller, _) = try makeExternalDisplayController(screen)
+        defer { controller.invalidate() }
+        let external = try #require(controller.externalDisplayWindow)
+        let window = try #require(external.window)
+        let display = try #require(screen.displays.last)
+        external.windowWillEnterFullScreen(Notification(name: NSWindow.willEnterFullScreenNotification, object: window))
+        window.setFrame(NSRect(x: 0, y: 0, width: 800, height: 600), display: true)
+        let content = window.contentRect(forFrameRect: window.frame).size
+        let available = NSSize(width: content.width, height: content.height - 10)
+        func fits() -> Bool {
+            let size = display.size(for: display.renderScale)
+            return size.width <= available.width + 0.5 && size.height <= available.height + 0.5
+                && (abs(size.width - available.width) <= 0.5 || abs(size.height - available.height) <= 0.5)
+        }
+        #expect(fits())
+        // SimulatorKit's display takes the new resolution after CoreSimulator
+        // reports it; the display then fits the window again.
+        controller.perform(.externalDisplay1920x1080)
+        display.takeScreenSize(NSSize(width: 1920, height: 1080))
+        #expect(fits())
+    }
+
+    @Test func theExternalDisplaysWindowGivesItsDisplayTheMacsModifiersWithTheFocus() throws {
+        _ = NSApplication.shared
+        let preferences = MemoryPreferences()
+        preferences.updatePreferences(forDevice: "test-device") { $0["ConnectHardwareKeyboard"] = false }
+        let screen = TestExternalScreen()
+        screen.current = ExternalScreenState(isPoweredOn: true, pixelSize: CGSize(width: 640, height: 480), scale: 1)
+        let (controller, _) = try makeExternalDisplayController(screen, preferences: preferences)
+        defer { controller.invalidate() }
+        let external = try #require(controller.externalDisplayWindow)
+        let window = try #require(external.window)
+        let display = try #require(screen.displays.last)
+        // Without the Mac's keyboard, the digitizer still takes the modifiers
+        // the Mac holds whenever the window becomes key, which it missed while
+        // another window had the focus.
+        external.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification, object: window))
+        external.windowDidResignKey(Notification(name: NSWindow.didResignKeyNotification, object: window))
+        external.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification, object: window))
+        #expect(display.keyboard.isEmpty)
+        #expect(window.firstResponder === display.inputView)
+        #expect(display.input.modifiers.count == 2)
+        #expect(display.input.modifiers.last?.modifierFlags == NSEvent.modifierFlags)
+    }
+
     @Test func customLocationAcceptsOnlyCoordinatesThatParse() throws {
         _ = NSApplication.shared
         var accepted: [[Double]] = []
@@ -4281,6 +4330,13 @@ private final class TestDisplay: SimulatorDisplay {
     func setRotation(degrees: Double) {
         rotations.append(degrees)
         onRotation(degrees)
+    }
+    /// Takes a new size of its screen as SimulatorKit's display does, a
+    /// moment after CoreSimulator reports it: its view takes that size at
+    /// the display's scale.
+    func takeScreenSize(_ size: NSSize) {
+        naturalSize = size
+        view.setFrameSize(self.size(for: renderScale))
     }
     func beginResize() { isResizing = true }
     func resize(to size: NSSize) { setRenderScale(scale(for: size)) }

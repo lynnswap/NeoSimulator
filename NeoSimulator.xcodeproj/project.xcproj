@@ -164,6 +164,12 @@
             "NeoSimulator/compile-sources",
             "NeoSimulatorHostTests/compile-sources",
           ],
+        }, {
+          "path": "DisplayHosting.swift",
+          "target-membership": [
+            "NeoSimulator/compile-sources",
+            "NeoSimulatorHostTests/compile-sources",
+          ],
         },
       ],
     },

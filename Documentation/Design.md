@@ -105,6 +105,8 @@ signal cannot land between a move and a separate bookkeeping update.
 | Route a device's audio over its `SimAudioHostRoutable` port | `DeviceSession` |
 | Configure a device's external display and follow its state | `DeviceSession` |
 | Present an external display's window | `ExternalDisplayWindowController` |
+| Give a window's display the Mac's keyboard and the focus, as both windows do | `DisplayKeyboardInput` |
+| Fit a window's display in full screen and during a live resize, as both windows do | `DisplayFitting` |
 | Keep the app-wide recent audio routes | `PreferenceStore` (`RecentAudio…DeviceUIDs`) |
 
 The active simulator for a menu command is derived from `NSApp.keyWindow` each
@@ -1083,7 +1085,9 @@ Neo reaches the screen as Simulator.app does:
 - The window shows the screen through the display factory, with the screen's
   ID. SimulatorKit's display takes a new size one or two main-queue turns
   after the properties event, so the window takes the size CoreSimulator
-  reports instead of the display's.
+  reports instead of the display's. In full screen and during a live resize,
+  where the display fits the window, the display fits it again once
+  SimulatorKit's display takes the new size, which sets its view's frame.
 
 `screenAdapter` is declared in SimulatorKit's extension of the Objective-C
 class `SimDevice`. ABIBridge finds such a member only through an instance, so
@@ -1239,7 +1243,9 @@ Simulator.app has no such step: its digitizer asks for focus when the pointer
 enters it and keeps the last modifiers it saw. There, an Option release that
 reaches another window or app leaves the digitizer with Option down, and the
 next plain click becomes a two-finger touch. NeoSimulator deliberately
-reconciles the modifiers instead.
+reconciles the modifiers instead. An external display's window does the same:
+both windows give their display the keyboard and the focus through
+`DisplayKeyboardInput`.
 
 When the window resigns key, it releases the guest's held modifier keys before
 its display stops taking the Mac's keyboard, as Simulator.app's
