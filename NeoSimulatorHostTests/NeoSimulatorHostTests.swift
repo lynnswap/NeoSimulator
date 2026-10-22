@@ -4051,6 +4051,34 @@ struct InputFocusTests {
         #expect(screen.carPlaySessions == 0 && failures.count == 1)
     }
 
+    @Test func aDeviceThatRestartsDuringACarPlayChangeGetsNoEndOfASessionItLost() throws {
+        let screen = TestExternalScreen()
+        let (controller, _) = try makeExternalDisplayController(
+            screen, features: Self.carPlayFeatures,
+            externalDisplayChanges: ExternalDisplayChanges(carPlayReconnectionDelay: .zero))
+        defer { controller.invalidate() }
+        func choose(_ mode: ExternalDisplayMode) -> [String] {
+            let count = screen.requests.count
+            controller.session.chooseExternalDisplay(mode) { Issue.record($0) }
+            return Array(screen.requests.dropFirst(count))
+        }
+        _ = choose(.carPlay)
+        #expect(screen.carPlaySessions == 1)
+        // The device restarts while Disabled waits for the HID service's
+        // removal, as a restart that follows a closed window can.
+        screen.defersCarPlayServices = true
+        #expect(choose(.disabled) == ["save off", "off", "remove service"])
+        screen.restart(boot: Date(timeIntervalSinceReferenceDate: 1))
+        let count = screen.requests.count
+        screen.deliverCarPlayServices()
+        screen.defersCarPlayServices = false
+        // The new boot gets no end of the session the restart took, and
+        // CarPlay starts there as usual.
+        #expect(screen.requests.count == count && screen.carPlaySessions == 0)
+        #expect(Array(choose(.carPlay).suffix(2)) == ["start carplay", "connect service"])
+        #expect(screen.carPlaySessions == 1)
+    }
+
     @Test func carPlaySessionStateMovesOnlyOnAnswersOfItsBoot() {
         let first = Date(timeIntervalSinceReferenceDate: 0)
         let second = Date(timeIntervalSinceReferenceDate: 1)
@@ -5583,6 +5611,9 @@ private final class TestExternalScreen: SimulatorExternalScreen {
     /// guest that answers after the change stopped waiting.
     var defersCarPlaySessions = false
     private var pendingSessions: [() -> Void] = []
+    /// Holds the HID service requests until `deliverCarPlayServices()`.
+    var defersCarPlayServices = false
+    private var pendingServices: [() -> Void] = []
     /// Holds each change's report and completion until `deliver()`, or
     /// `deliverReports()` and `deliverCompletions()` apart, as CoreSimulator
     /// reports and completes a change later, in either order.
@@ -5638,7 +5669,20 @@ private final class TestExternalScreen: SimulatorExternalScreen {
     func setCarPlayService(connected: Bool, completion: @escaping @MainActor (Error?) -> Void) throws {
         let request = connected ? "connect service" : "remove service"
         requests.append(request)
-        completion(carPlayErrors[request])
+        let answer = { [self] in completion(carPlayErrors[request]) }
+        if defersCarPlayServices { pendingServices.append(answer) } else { answer() }
+    }
+
+    func deliverCarPlayServices() {
+        let answers = pendingServices
+        pendingServices = []
+        for answer in answers { answer() }
+    }
+
+    /// The device restarts: a new boot, whose guest has no CarPlay session.
+    func restart(boot: Date) {
+        deviceBootDate = boot
+        carPlaySessions = 0
     }
 
     /// Applies and reports a change and completes it, at once or when it is delivered.

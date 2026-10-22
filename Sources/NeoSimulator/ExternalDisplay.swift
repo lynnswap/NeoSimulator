@@ -357,6 +357,11 @@ final class ExternalDisplayChanges {
     /// service, then ends the session. Their failures are reported, and the
     /// change goes on; a session that does not end stays started for the
     /// next change.
+    ///
+    /// Each request is decided for the boot read when the step begins, and is
+    /// not sent once the device has restarted since, as it can while a change
+    /// waits: the new boot starts without a session or a HID service of this
+    /// host.
     private func endCarPlay(in run: Run, then next: @escaping @MainActor () -> Void) {
         let screen = run.change.screen
         let boot = screen.deviceBootDate
@@ -366,7 +371,7 @@ final class ExternalDisplayChanges {
         }) { [self] removed in
             carPlay.serviceAnswered(created: false, succeeded: removed, in: boot)
             guard carPlay.session(in: boot) == .started else { return next() }
-            sendCarPlaySession(starting: false, in: run) { _ in next() }
+            sendCarPlaySession(starting: false, for: boot, in: run) { _ in next() }
         }
     }
 
@@ -381,6 +386,7 @@ final class ExternalDisplayChanges {
         let screen = run.change.screen
         let boot = screen.deviceBootDate
         let createService: @MainActor () -> Void = { [self] in
+            guard screen.deviceBootDate == boot else { return next() }
             perform(.carPlayService(creating: true), in: run, {
                 try screen.setCarPlayService(connected: true, completion: $0)
             }) { [self] created in
@@ -389,19 +395,23 @@ final class ExternalDisplayChanges {
             }
         }
         guard carPlay.session(in: boot) == .none else { return createService() }
-        sendCarPlaySession(starting: true, in: run) { started in
+        sendCarPlaySession(starting: true, for: boot, in: run) { started in
             guard started else { return next() }
             createService()
         }
     }
 
-    /// Sends a start or an end of the guest's CarPlay session, and notes its
-    /// answer. The change waits for the answer, so no other session request
-    /// is ever sent while one has none; an answer that does not come in time
-    /// leaves the session unknown (see `abandon(_:reason:reporting:)`).
-    private func sendCarPlaySession(starting: Bool, in run: Run, then next: @escaping @MainActor (Bool) -> Void) {
+    /// Sends a start or an end of the guest's CarPlay session, decided for
+    /// `boot`, and notes its answer. The change waits for the answer, so no
+    /// other session request is ever sent while one has none; an answer that
+    /// does not come in time leaves the session unknown (see
+    /// `abandon(_:reason:reporting:)`). A device that has restarted since
+    /// `boot` gets nothing: the request is moot in a boot that starts without
+    /// a session, and an end there would count below zero.
+    private func sendCarPlaySession(starting: Bool, for boot: Date?, in run: Run,
+                                    then next: @escaping @MainActor (Bool) -> Void) {
         let screen = run.change.screen
-        let boot = screen.deviceBootDate
+        guard screen.deviceBootDate == boot else { return next(false) }
         carPlay.willSend(in: boot)
         run.sessionBoot = boot
         perform(.carPlaySession(starting: starting), in: run, {

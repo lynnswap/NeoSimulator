@@ -1448,7 +1448,9 @@ choices, and a late answer changes nothing. A new boot starts with none, and
 answers from an earlier boot, for the session or the HID service, change
 nothing, because a restart can shut the device down before its window's
 power-off and the session's end reach the guest, and the next boot's bridge
-starts with no session. The tag 2714 is saved
+starts with no session. For the same reason each request is decided for the
+boot read when its step begins and is not sent once the device has restarted
+since, as it can while the change waits for the step before. The tag 2714 is saved
 like the others, and a connection restores it, also after the device
 restarts; the file on the device's disk keeps the configuration for the
 guest.
