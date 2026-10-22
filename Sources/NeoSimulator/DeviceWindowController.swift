@@ -1195,15 +1195,20 @@ final class DeviceWindow: NSWindow {
                                  topInset: chromeTopPadding * displayScale())
     }
 
-    /// The corner radius of a titled window with `style` on macOS 26: 26
-    /// points with the unified style, 20 with the compact one, and 16 with
-    /// the expanded one. Simulator.app reads it from the window
-    /// (`NSWindow._cornerRadius`) for the lower corners of the title bar.
-    private static func cornerRadius(for style: NSWindow.ToolbarStyle) -> CGFloat {
-        switch style {
-        case .unified: 26
-        case .unifiedCompact: 20
-        default: 16
+    /// The window's corner radius, which Simulator.app reads from the private
+    /// `NSWindow._cornerRadius` for the lower corners of the title bar. Without
+    /// that method, the radius macOS 26 gives a titled window with its toolbar
+    /// style: 26 points unified, 20 compact, and 16 expanded.
+    private var cornerRadius: CGFloat {
+        let selector = NSSelectorFromString("_cornerRadius")
+        if responds(to: selector) {
+            typealias Getter = @convention(c) (NSWindow, Selector) -> CGFloat
+            return unsafe unsafeBitCast(method(for: selector), to: Getter.self)(self, selector)
+        }
+        switch toolbarStyle {
+        case .unified: return 26
+        case .unifiedCompact: return 20
+        default: return 16
         }
     }
 
@@ -1228,7 +1233,7 @@ final class DeviceWindow: NSWindow {
             layer.cornerRadius = 0
             return
         }
-        layer.cornerRadius = Self.cornerRadius(for: toolbarStyle)
+        layer.cornerRadius = cornerRadius
         layer.maskedCorners = [.layerMinXMinYCorner, .layerMaxXMinYCorner]
         layer.masksToBounds = true
     }

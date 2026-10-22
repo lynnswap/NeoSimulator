@@ -1561,6 +1561,11 @@ struct InputFocusTests {
         controller.perform(.pointAccurate)
         #expect(window.toolbarStyle == .unified)
         #expect(toolbar.items.last?.isHidden == true)
+        // Like Simulator.app's, the title truncates so that every button stays
+        // in the title bar instead of the overflow menu.
+        window.layoutIfNeeded()
+        #expect(toolbar.visibleItems?.compactMap { DeviceCommand.ID(rawValue: $0.itemIdentifier.rawValue) }
+            == [.home, .saveScreen, .rotateRight])
         let unified = header()
         #expect(window.frame.height == 300 + unified)
         #expect((0..<1).contains(window.frame.width - threshold))
@@ -1730,9 +1735,9 @@ struct InputFocusTests {
         let window = try #require(controller.window)
         // As in Simulator.app's window, AppKit draws the title bar.
         #expect(!window.titlebarAppearsTransparent)
-        // Simulator.app rounds the layer of the NSTitlebarContainerView that
-        // holds the title bar, with the radius it reads from the window's
-        // `_cornerRadius`, which the test reads too to notice a change in macOS.
+        // Like Simulator.app, the window rounds the layer of the
+        // NSTitlebarContainerView that holds the title bar with the radius it
+        // reads from the window's private `_cornerRadius`.
         var view: NSView? = window.standardWindowButton(.closeButton)
         while let current = view, current.className != "NSTitlebarContainerView" { view = current.superview }
         let layer = try #require(view?.layer)
@@ -1760,6 +1765,19 @@ struct InputFocusTests {
         #expect(layer.cornerRadius == 0)
         controller.windowDidExitFullScreen(Notification(name: NSWindow.didExitFullScreenNotification, object: window))
         #expect(layer.cornerRadius == (try windowRadius()))
+        // The radius is the window's own: a window that reports another one
+        // rounds the title bar with it.
+        let selector = NSSelectorFromString("_cornerRadius")
+        let original = try #require(class_getInstanceMethod(NSWindow.self, selector))
+        let radius: @convention(block) (AnyObject) -> CGFloat = { _ in 7 }
+        class_replaceMethod(DeviceWindow.self, selector, imp_implementationWithBlock(radius),
+                            method_getTypeEncoding(original))
+        defer {
+            class_replaceMethod(DeviceWindow.self, selector, method_getImplementation(original),
+                                method_getTypeEncoding(original))
+        }
+        controller.perform(.pointAccurate)
+        #expect(layer.cornerRadius == 7)
     }
 
     @Test func windowFramesAreIntegralAtAFractionalScale() async throws {

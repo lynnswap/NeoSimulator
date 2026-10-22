@@ -17,6 +17,12 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
         toolbar.delegate = self
         toolbar.displayMode = .iconOnly
         toolbar.allowsUserCustomization = false
+        // Like Simulator.app, a unified title bar truncates the title before
+        // it moves buttons into the overflow menu. The property is private
+        // AppKit API; without it, AppKit keeps its own minimum.
+        if toolbar.responds(to: NSSelectorFromString("setMinimumInlineWindowTitleWidth:")) {
+            toolbar.setValue(0.0, forKey: "minimumInlineWindowTitleWidth")
+        }
         updateItems()
     }
 
