@@ -87,6 +87,8 @@ Representative per-window actions in the reference binary:
 | Copy Screen | `0x100053A68` | `simctl io … screenshot --mask=ignored`, written to the general pasteboard as PNG only |
 | Capture thumbnail | `0x100063CD8` / `0x1000637A8` | AppKit child window: white flash and shrink to a quarter size plus 10 points, 5-second or movie-length timer paused by hover, menus, and window moves; dismissal saves to the default folder; file-promise drag; GIF export at up to `GifMaxFramerate` 10 fps and `GifMaxFrameSize` 640 px with `CIDither` |
 | Volume Up / Down | `0x100058224` / `0x10005823C` | `IndigoHIDMessageForHIDArbitrary`, consumer page `0x0c`, usages `0xe9` / `0xea`, shown with `com.apple.CoreSimulator.audio.routable` |
+| Double Tap / Wrist Flick | `0x100054358` | `IndigoHIDMessageForWatchGesture` with `0` / `1`, one message; see [watchOS, tvOS, and visionOS](#watchos-tvos-and-visionos) |
+| Simulate Fall | `0x10005485C` | `SimDevice darwinNotificationSetState:name:error:` with `com.apple.sos.user-fell` 0–3, then `postDarwinNotification:error:` |
 | Window scale | `0x100054BBC` | `SimDisplayView.renderScale`, `size(for:)`, and `scale(for:)`; see [Window scale modes](#window-scale-modes) |
 
 Representative coordinator actions:
@@ -122,17 +124,17 @@ semantics:
 - Edit: Copy Screen, Automatically Sync Pasteboard (off by default), Get
   Pasteboard, Send Pasteboard;
 - Device: Rotate Left, Rotate Right, Orientation, Rotate Device Automatically,
-  Home, Lock, Side Button, Action Button,
+  Home, Lock, Side Button, Action Button, Gestures (Double Tap, Wrist Flick),
   Siri, Shake, App Switcher, Trigger Screenshot;
 - I/O: Keyboard (Use the Same Keyboard Language as macOS, Connect Hardware
   Keyboard, Toggle Software Keyboard), Touch Pressure (Use Trackpad Force,
   Shallow Press, Deep Press), Audio Input, Audio Output, Increase Volume,
   Decrease Volume, External Displays (Disabled and six sizes);
-- Features: Touch ID and Face ID (Enrolled, Matching, Non-matching),
-  Authorize Apple Pay, Toggle Appearance, Toggle In-call Status Bar,
-  Show/Hide StandBy, Increase and Decrease Preferred Text Size, Toggle
-  Increase Contrast, Trigger iCloud Sync, Location (None, Custom Location…,
-  and the runtime's scenarios);
+- Features: Touch ID and Face ID (Enrolled, Matching, Non-matching), Simulate
+  Fall (Confirmed, Dismissed, Rejected, Unresponsive), Authorize Apple Pay,
+  Toggle Appearance, Toggle In-call Status Bar, Show/Hide StandBy, Increase and
+  Decrease Preferred Text Size, Toggle Increase Contrast, Trigger iCloud Sync,
+  Location (None, Custom Location…, and the runtime's scenarios);
 - Debug: Slow Animations, Graphics Quality Override, Color Blended Layers,
   Color Copied Images, Color Misaligned Images, Color Off-screen Rendered, Open
   System Log…, Simulate Memory Warning, Show Parallel Testing Devices;
@@ -705,6 +707,23 @@ separate device set, through NeoSimulator's code.
 | XROS `VirtualHMDInputView.toggleCapturingMouse:` and `mouseUp:` (Xcode 27.1 `0x2943C`…`0x29640`) | Capture Pointer starts choosing the gaze target; the click that ends it passes `toggleCapturingMouse:` to the next responder when the overlay's `client` is `.simulatorApp`, and otherwise starts `SimHIDCaptureManager` itself (`startCaptureSessionWithDevice:hidDeviceTypes:error:`, type 2). | Live, the overlay's `client` was `.simulatorApp`; Capture Keyboard left `_captureKeyboardEnabled` off, and a click after Capture Pointer ended the gaze choice without a capture, because no responder in Neo captures. |
 | DWC `homeButtonPressed:`, `saveFramebufferImage:`, `toggleVideoRecording:`; recording notifications `0x1000594B4` / `0x10005991C` | The plugin's toolbar actions reach the device window through the responder chain. Starting and stopping a recording posts `SimulatorVideoRecordingStartedNotification` / `…StoppedNotification` with the `SimDevice` under `…DeviceUserInfoKey`. | The device window implements the three actions; the session posts both notifications. Live, they turned the plugin's Save Screen button into Stop Recording (`toggleVideoRecording:`) and back. |
 
+The watch controls below were checked live with Xcode 27.0, 27.1, and 27.2 on
+an Apple Watch Series 11 (46mm) on watchOS 27.0 and an Apple Watch Series 9
+(45mm) and an Apple Watch SE (44mm) (2nd generation) on watchOS 26.5, in a
+separate device set, through NeoSimulator's code. The Series 11 and Series 9
+support `SimFeatureWatchGestures` (`com.apple.hid.watch.gestures`), all three
+`SimFeatureDigitalCrown` (`com.apple.hid.digital-crown`) and
+`SimFeatureFallDetection` (`com.apple.motion.fall-detection`).
+
+| Reference owner | Observed behavior | Neo |
+| --- | --- | --- |
+| `DC.deviceWindowBecameKey:` `0x10001A3B4`…`0x10001A44C`, `0x10001A7AC` | Hides Gestures (`watchGestureMenuMenuItem`) without `SimFeatureWatchGestures`, Wrist Flick (`watchGestureWristFlickMenuItem`) when `device.runtime.version` is below `0xC0000` (watchOS 12), whatever the feature, and Simulate Fall without `SimFeatureFallDetection`. | The same rules through `DeviceCommand.isSupported`; a submenu whose items are all hidden is hidden. |
+| `DWC.validateMenuItem:` `0x100051B6C`, `0x10005273C` | Enables `watchGestureTriggered:` with `SimFeatureWatchGestures` and `sendFallResolutionStatus:` with `SimFeatureFallDetection`. No checkmarks. | Shown only with the feature, enabled while the device is connected and booted. |
+| `DWC.watchGestureTriggered:` `0x100054358`, body `0x1000542C0`; `DC sendIndigoHIDData:freeWhenDone:` `0x10001ABB4` | Passes the sender's tag (Double Tap 0, Wrist Flick 1) to `IndigoHIDMessageForWatchGesture`, which allocates one message with event subtype `0x46` (SimulatorKit 27.1 `0xBDC0`), and sends it through the coordinator's `legacyHIDClient` with `sendWithMessage:freeWhenDone:NO completionQueue:nil completion:nil`, so the message is never freed and its delivery is ignored. | Sends the same message through the display's `SimDeviceLegacyHIDClient` with `freeWhenDone:` YES and a completion that reports a failure. Live, Wrist Flick went from the app grid to the watch face and from the Smart Stack back to the face, and Double Tap on the face opened the Smart Stack. |
+| `simDisplayView(_:changedChrome:)` witness `0x10005F828` → `0x10005F4C0` | Sets `digitizerView.supportScrolling` when the chrome is nil or the device supports `SimFeatureDigitalCrown` or `SimFeatureDigitalDial`. | The same rule each time the window shows or hides the bezel, also when the display connects and after a restart. |
+| SimulatorKit `SimDeviceLegacyHIDClient.simDigitizerInputView(_:scrollEvent:)` (27.1 `0x18BF8`) | Sends `IndigoHIDMessageForDigitalCrownEvent` with the negated vertical delta for a device with a crown, `IndigoHIDMessageForDigitalDialEvent` for one with a dial, and nothing otherwise. | Live, the factory's display had this client as the digitizer's delegate; scrolling with a mouse wheel (line deltas) and a trackpad (pixel deltas with phases) over the screen zoomed the app grid and opened the Smart Stack from the watch face, and with `supportScrolling` off it changed nothing. |
+| `DWC.sendFallResolutionStatus:` `0x10005485C`, body `0x1000547F0`, dispatch `0x10003CB80`, helper `0x10003BF00` | Maps the sender's tag (Confirmed 0, Dismissed 1, Rejected 2, Unresponsive 3) to the state of `com.apple.sos.user-fell`, sets it with `SimDevice darwinNotificationSetState:name:error:`, posts it with `postDarwinNotification:error:`, and discards both errors. | The same calls; a failure is reported. Live, `notifyutil -1` and `-g` spawned in the device received each post and read states 0 to 3, the Mac's own state stayed 0, and the guest's Carousel (`com.apple.NanoPhone`, `sos_newton`) logged "simulating fall event with resolution: 0" to 3. |
+
 ## Input capture
 
 The evidence is Simulator.app 16.0 (1063.4) from Xcode 26.6, SimulatorKit from
@@ -768,10 +787,9 @@ contract before being user-visible:
 - status-bar overrides;
 - CarPlay, which configures the external display's TVOut screen with CarPlay
   properties (see [External displays](#external-displays));
-- watch gestures, Digital Crown scrolling, and Simulate Fall; the Apple TV
-  Remote; and the visionOS viewport, camera, scene, immersion, Optic ID, and
-  gaze commands, which build on [watchOS, tvOS, and visionOS](#watchos-tvos-and-visionos)
-  hosting.
+- the Apple TV Remote, and the visionOS viewport, camera, scene, immersion,
+  Optic ID, and gaze commands, which build on
+  [watchOS, tvOS, and visionOS](#watchos-tvos-and-visionos) hosting.
 
 ## Excluded features
 

@@ -32,6 +32,9 @@ struct DeviceCapabilities {
     /// Whether I/O ▸ External Displays applies: like Simulator.app, the device
     /// supports external displays and has its own screen.
     var supportsExternalDisplays: Bool { supportsFeature(Self.externalDisplay) && supportsFeature(Self.integratedDisplay) }
+    /// Whether the device has a Digital Crown or Digital Dial, which the
+    /// pointer's scrolling turns.
+    var hasCrownOrDial: Bool { supportsFeature(Self.digitalCrown) || supportsFeature(Self.digitalDial) }
 
     static let displayRotation = "com.apple.CoreSimulator.display.rotation"
     static let actionButtonSting = "com.apple.hid.sting"
@@ -64,6 +67,15 @@ struct DeviceCapabilities {
     /// `SimFeatureAlwaysOnDisplay`: the watch dims its display instead of
     /// turning it off, which Simulator.app's Always On button shows.
     static let alwaysOnDisplay = "com.apple.display.aot"
+    /// `SimFeatureWatchGestures`: the watch takes Device ▸ Gestures.
+    static let watchGestures = "com.apple.hid.watch.gestures"
+    /// `SimFeatureDigitalCrown`, which watches have, and
+    /// `SimFeatureDigitalDial`, which Apple Vision Pro has: the device takes
+    /// the pointer's scrolling as turns of the crown or dial.
+    static let digitalCrown = "com.apple.hid.digital-crown"
+    static let digitalDial = "com.apple.hid.digital-dial"
+    /// `SimFeatureFallDetection`: the watch takes Features ▸ Simulate Fall.
+    static let fallDetection = "com.apple.motion.fall-detection"
 }
 
 /// Preferences Simulator.app keeps in its standard user defaults.
@@ -293,6 +305,15 @@ enum HardwareInput {
     case hold(HIDInput, for: Duration)
     /// Pressed and released twice, the second time after a delay.
     case pressTwice(HIDInput, interval: Duration)
+    /// A watch gesture, sent as one message.
+    case watchGesture(WatchGesture)
+}
+
+/// How a simulated fall ended, Features ▸ Simulate Fall, as the state of the
+/// guest's `com.apple.sos.user-fell` notification numbers it, which is also
+/// Simulator.app's menu tag.
+enum FallResolution: UInt64 {
+    case confirmed = 0, dismissed = 1, rejected = 2, unresponsive = 3
 }
 
 /// One connected simulator: its display and input, its device tools, and every
@@ -423,6 +444,14 @@ final class DeviceSession {
         case .pressTwice(let event, let interval):
             guard press(event, report) else { return }
             after(interval) { session in session.press(event, report) }
+        case .watchGesture(let gesture):
+            do {
+                try display.send(gesture) { error in
+                    if let error { report(error) }
+                }
+            } catch {
+                report(error)
+            }
         }
     }
 
@@ -568,6 +597,13 @@ final class DeviceSession {
     func toggleInCallStatusBar() throws {
         guard canPerformCommands else { return }
         try display.postNotification("com.apple.iphonesimulator.toggleincallstatusbar")
+    }
+
+    /// Features ▸ Simulate Fall: tells the guest that its user fell and how
+    /// the fall ended, as Simulator.app does.
+    func simulateFall(_ resolution: FallResolution) throws {
+        guard canPerformCommands else { return }
+        try send(resolution.rawValue, to: "com.apple.sos.user-fell")
     }
 
     var showsStandBy: Bool { canPerformCommands && (try? display.notificationState(Self.standBy)) == 1 }

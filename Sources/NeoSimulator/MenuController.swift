@@ -103,8 +103,9 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
         commands([.faceUp, .faceDown], in: orientation)
         commands([.rotateDeviceAutomatically], in: device)
         device.addItem(.separator())
-        commands([.home, .lock, .sideButton, .actionButtonSting, .actionButtonStaccato, .siri, .shake, .appSwitcher],
-                 in: device)
+        commands([.home, .lock, .sideButton, .actionButtonSting, .actionButtonStaccato], in: device)
+        commands([.doubleTap, .wristFlick], in: menu("Gestures", in: device))
+        commands([.siri, .shake, .appSwitcher], in: device)
         device.addItem(.separator())
         commands([.triggerScreenshot], in: device)
 
@@ -132,6 +133,7 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
         let features = menu("Features", in: main)
         commands([.touchIDEnrolled, .touchIDMatching, .touchIDNonMatching], in: menu("Touch ID", in: features))
         commands([.faceIDEnrolled, .faceIDMatching, .faceIDNonMatching], in: menu("Face ID", in: features))
+        commands([.fallConfirmed, .fallDismissed, .fallRejected, .fallUnresponsive], in: menu("Simulate Fall", in: features))
         commands([.authorizeApplePay], in: features)
         features.addItem(.separator())
         commands([.toggleAppearance, .toggleInCallStatusBar, .toggleStandBy], in: features)

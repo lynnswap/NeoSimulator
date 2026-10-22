@@ -14,7 +14,7 @@ struct DeviceCommand {
         case portrait, landscapeRight, portraitUpsideDown, landscapeLeft, faceUp, faceDown
         case rotateDeviceAutomatically
         case home, lock, alwaysOn, sideButton, actionButtonSting
-        case actionButtonStaccato, siri, shake, appSwitcher, triggerScreenshot
+        case actionButtonStaccato, doubleTap, wristFlick, siri, shake, appSwitcher, triggerScreenshot
         case syncKeyboardLanguage, connectHardwareKeyboard, toggleSoftwareKeyboard
         case useTrackpadForce, shallowPress, deepPress
         case increaseVolume, decreaseVolume, openURL
@@ -22,6 +22,7 @@ struct DeviceCommand {
         case externalDisplay1280x720, externalDisplay1920x1080, externalDisplay3840x2160
         case touchIDEnrolled, touchIDMatching, touchIDNonMatching
         case faceIDEnrolled, faceIDMatching, faceIDNonMatching
+        case fallConfirmed, fallDismissed, fallRejected, fallUnresponsive
         case authorizeApplePay, toggleAppearance, toggleInCallStatusBar, toggleStandBy
         case increaseTextSize, decreaseTextSize, toggleIncreaseContrast, triggerCloudSync
         case toggleSlowAnimations, graphicsQualityDefault, graphicsQualityLow, graphicsQualityHigh
@@ -211,6 +212,9 @@ struct DeviceCommand {
                       isSupported: { $0.supportsFeature(DeviceCapabilities.actionButtonStaccato) }) {
             $0.send(.hold(.button(.actionStaccato), for: .milliseconds(500)))
         },
+        watchGesture(.doubleTap, title: "Double Tap", .doubleTap),
+        // Simulator.app hides Wrist Flick before watchOS 12.
+        watchGesture(.wristFlick, title: "Wrist Flick", .wristFlick, minimumRuntime: 0x0C_00_00),
         DeviceCommand(id: .siri, title: "Siri", key: "h", modifiers: [.command, .option, .shift],
                       isSupported: { $0.supportsFeature(DeviceCapabilities.siri) }) { $0.send(.press(.button(.siri))) },
         DeviceCommand(id: .shake, title: "Shake", key: "z", modifiers: [.command, .control],
@@ -264,6 +268,10 @@ struct DeviceCommand {
         biometricEnrollment(.faceIDEnrolled, feature: DeviceCapabilities.faceID),
         biometric(.faceIDMatching, title: "Matching Face", .faceID, matching: true),
         biometric(.faceIDNonMatching, title: "Non-matching Face", .faceID, matching: false),
+        fall(.fallConfirmed, title: "Confirmed", .confirmed),
+        fall(.fallDismissed, title: "Dismissed", .dismissed),
+        fall(.fallRejected, title: "Rejected", .rejected),
+        fall(.fallUnresponsive, title: "Unresponsive", .unresponsive),
         DeviceCommand(id: .authorizeApplePay, title: "Authorize Apple Pay", key: "a", modifiers: [.command, .option],
                       isSupported: { $0.supportsFeature(DeviceCapabilities.applePayAuthorization) }) {
             $0.send(.press(.button(.applePay)))
@@ -349,6 +357,24 @@ struct DeviceCommand {
                       isEnabled: { $0.session.capabilities.family == .watch },
                       state: { $0.session.capabilities.family == .watch && $0.touchPressure.mode == mode ? .on : .off }) {
             $0.touchPressure.setMode(mode)
+        }
+    }
+
+    /// A Device ▸ Gestures item, for a watch with `SimFeatureWatchGestures`
+    /// whose runtime is `minimumRuntime` or later.
+    private static func watchGesture(_ id: ID, title: String, _ gesture: WatchGesture,
+                                     minimumRuntime: UInt32 = 0) -> DeviceCommand {
+        DeviceCommand(id: id, title: title,
+                      isSupported: {
+                          $0.supportsFeature(DeviceCapabilities.watchGestures) && $0.runtimeVersion >= minimumRuntime
+                      }) { $0.send(.watchGesture(gesture)) }
+    }
+
+    /// A Features ▸ Simulate Fall item, for a device with `SimFeatureFallDetection`.
+    private static func fall(_ id: ID, title: String, _ resolution: FallResolution) -> DeviceCommand {
+        DeviceCommand(id: id, title: title,
+                      isSupported: { $0.supportsFeature(DeviceCapabilities.fallDetection) }) { controller in
+            controller.run { try controller.session.simulateFall(resolution) }
         }
     }
 

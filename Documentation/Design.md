@@ -146,8 +146,10 @@ and loaded-image checks used by the GUI process, without creating an
 application, CoreSimulator device set, or display session. This keeps the runtime contract in one owner while still
 rejecting a changed Xcode before preference mutation. Those lookups include
 `SimDisplayView._userInterfacePlugin`, the `overlayView` and `toolbar`
-messages of `SimDeviceUserInterfacePlugin`, and the `backlight` and `state`
-messages of `SimScreenProperties` and `SimScreenBacklight`. A device type's
+messages of `SimDeviceUserInterfacePlugin`, the `backlight` and `state`
+messages of `SimScreenProperties` and `SimScreenBacklight`,
+`IndigoHIDMessageForWatchGesture`, and the `SimDigitizerInputView.supportScrolling`
+setter. A device type's
 user-interface plugin, such as Apple Vision Pro's `XROS.simdeviceui`, is loaded
 only by SimulatorKit when it connects a display, so the gate does not load it;
 the loaded-image check then requires the plugin's bundle to come from the
@@ -328,14 +330,16 @@ The first parity set contains only commands with an available, validated owner:
 - Device: Restart, Erase All Content and Settings…, Shut Down, Rotate
   Left/Right, Orientation, Rotate Device Automatically, Home,
   Lock (iPhones, iPads, and watches), Side Button (watches),
-  Action Button, Siri, Shake, App Switcher, Trigger Screenshot;
+  Action Button, Gestures (Double Tap and Wrist Flick), Siri, Shake, App
+  Switcher, Trigger Screenshot;
 - I/O: Keyboard (Use the Same Keyboard Language as macOS, Connect Hardware
   Keyboard, Toggle Software Keyboard), Touch Pressure (Use Trackpad Force, and
   Shallow Press and Deep Press, which only a watch enables), Audio Input,
   Audio Output, Increase Volume, Decrease Volume,
   External Displays (Disabled and Simulator.app's six sizes);
-- Features: Touch ID and Face ID (Enrolled, Matching, Non-matching),
-  Authorize Apple Pay, Toggle Appearance, Toggle In-call Status Bar,
+- Features: Touch ID and Face ID (Enrolled, Matching, Non-matching), Simulate
+  Fall (Confirmed, Dismissed, Rejected, Unresponsive), Authorize Apple Pay,
+  Toggle Appearance, Toggle In-call Status Bar,
   Show/Hide StandBy, Increase and Decrease Preferred Text Size, Toggle
   Increase Contrast, Trigger iCloud Sync, Location (None, Custom Location…,
   and the runtime's scenarios);
@@ -423,7 +427,8 @@ device window; whether a running device changes GPU at once is not established.
 Hardware inputs send Indigo HID messages to the connected screen's
 `buttonTarget` through `SimDeviceLegacyHIDClient`: button messages for Home,
 Lock, Software Keyboard, Side Button, Action Button, Siri, and Authorize Apple
-Pay, and consumer-page usages for Trigger Screenshot and volume. Each command
+Pay, consumer-page usages for Trigger Screenshot and volume, and a single
+`IndigoHIDMessageForWatchGesture` message for each watch gesture. Each command
 follows Simulator.app's timing: the staccato Action Button is released after
 0.5 seconds, and App Switcher presses Home twice 150 ms apart. The session
 reports the first failed event of a command, including a delivery failure
@@ -1566,10 +1571,49 @@ capture, excluded above. The toolbar style threshold counts Neo's own Home
 and Save Screen for Apple Vision, where Simulator.app counts its iPhone nib's
 three buttons; the display is wide enough for the unified style either way.
 
-Watch gestures and Digital Crown scrolling, Simulate Fall, the Apple TV
-Remote, the visionOS camera, scene, immersion, Optic ID, and Show Gaze Target
-commands, and creating a paired Apple Watch build on this hosting and are not
-implemented yet.
+A watch with `SimFeatureWatchGestures` (`com.apple.hid.watch.gestures`) shows
+Device ▸ Gestures, after the Action Button and before Siri, as
+`deviceWindowBecameKey:` does (`0x10001A3B4`); Wrist Flick also needs watchOS
+12, by `SimRuntime.version` (`0x10001A414`). Double Tap and Wrist Flick send
+`IndigoHIDMessageForWatchGesture` with 0 and 1, Simulator.app's menu tags, as
+one message without down and up events. Simulator.app sends it with
+`sendIndigoHIDData:freeWhenDone:NO`, never freeing it, and ignores its
+delivery; Neo lets SimulatorKit free it and reports a delivery failure, as for
+the other hardware inputs. Live, Wrist Flick went from the app grid to the
+watch face and from the Smart Stack back to it, and Double Tap on the watch
+face opened the Smart Stack.
+
+Scrolling with the mouse wheel or the trackpad turns the Digital Crown.
+SimulatorKit's digitizer passes the pointer's scrolling to its delegate, the
+display's `SimDeviceLegacyHIDClient`, only while its `supportScrolling` is on;
+the client sends `IndigoHIDMessageForDigitalCrownEvent` with the negated
+vertical delta to a device with `SimFeatureDigitalCrown`, the matching dial
+event to one with `SimFeatureDigitalDial` (Apple Vision Pro), and nothing to
+others. As Simulator.app's `simDisplayView(_:changedChrome:)` does
+(`0x10005F4C0`), the window turns `supportScrolling` on for a device with
+either feature, and for any device while its display shows no bezel, whenever
+the bezel changes: when the display connects, when Show Device Bezels changes,
+and after a restart. Simulator.app learns of the change through the Swift-only
+`SimDisplayViewDelegate`, which the display factory leaves unset; Neo applies
+it where it shows or hides the bezel. Neo builds no crown message itself.
+
+A device with `SimFeatureFallDetection` (`com.apple.motion.fall-detection`)
+shows Features ▸ Simulate Fall, after Face ID. Confirmed, Dismissed, Rejected,
+and Unresponsive set the guest's `com.apple.sos.user-fell` state to 0, 1, 2,
+and 3, Simulator.app's menu tags, with `SimDevice
+darwinNotificationSetState:name:error:`, and then post it with
+`postDarwinNotification:error:`, as Simulator.app's `sendFallResolutionStatus:`
+does (`0x10003BF00`). Both reach the guest's notification center, never the
+Mac's. In the guest, Carousel's fall detection (`com.apple.NanoPhone`,
+`sos_newton`) logs "simulating fall event with resolution" with the state and,
+as its messages describe, notifies the apps authorized for fall detection.
+Simulator.app discards both errors; Neo reports them, a failed post as a
+partial change. Gestures and Simulate Fall are momentary and have no
+checkmarks.
+
+The Apple TV Remote, the visionOS camera, scene, immersion, Optic ID, and Show
+Gaze Target commands, and creating a paired Apple Watch build on this hosting
+and are not implemented yet.
 
 ## Failure semantics
 
@@ -1630,8 +1674,9 @@ closed window), external displays at 1920×1080 and 640×480 with a guest app's
 external scene in their windows, Disabled, closing their windows, a restart,
 and restoring the saved choice on an iPhone and an iPad, watchOS, tvOS, and
 visionOS windows with their toolbars, menus, titles, and Always On following
-the backlight, Apple Vision Pro's plugin overlay and toolbar, Device Hub
-absence, and loaded-image provenance.
+the backlight, Apple Vision Pro's plugin overlay and toolbar, watch gestures,
+Digital Crown scrolling with a mouse wheel and a trackpad, Simulate Fall's
+guest notification, Device Hub absence, and loaded-image provenance.
 
 ## Non-goals
 
