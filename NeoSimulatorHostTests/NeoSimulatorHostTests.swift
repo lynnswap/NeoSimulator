@@ -850,6 +850,47 @@ struct InputFocusTests {
         #expect(display.buttons == [.home])
     }
 
+    @Test func visionOSMenuCommandsGoToThePluginsOverlay() throws {
+        _ = NSApplication.shared
+        MenuController(application: nil).install()
+        defer { NSApp.mainMenu = nil }
+        let items = NSApp.mainMenu?.items.compactMap(\.submenu).flatMap { menu in
+            menu.items + menu.items.compactMap(\.submenu).flatMap(\.items)
+        } ?? []
+        let commands = try ["Re-Center Open Apps", "Orbit Mode", "75%", "Show Gaze Target"].map { title in
+            try #require(items.first { $0.title == title })
+        }
+        let display = TestDisplay()
+        let overlay = PluginOverlay()
+        display.view.addSubview(overlay)
+        display.plugin = SimulatorUserInterfacePlugin(overlayView: overlay, toolbar: nil)
+        let controller = try makeController(display, family: .vision, features: [DeviceCapabilities.hoverboard],
+                                            userInterfacePlugin: true)
+        defer { controller.invalidate() }
+        let window = try #require(controller.window)
+        controller.focusInput()
+        // AppKit sends each item's action to the overlay, the first responder
+        // of the device's window, and has it validate the item: the overlay
+        // checks Show Gaze Target while it shows the gaze target.
+        for command in commands {
+            let action = try #require(command.action)
+            let target = try #require(responder(in: window, taking: action))
+            #expect(target === overlay, "\(command.title)")
+            #expect((target as? NSMenuItemValidation)?.validateMenuItem(command) == true)
+            #expect(NSApp.sendAction(action, to: target, from: command))
+        }
+        #expect(overlay.actions == ["recenterAllOpenApps:", "viewportModeChangedToOrbit:", "setImmersionTo75:",
+                                    "toggleShowGazeTarget:"])
+        #expect(overlay.validateMenuItem(commands[3]) && commands[3].state == .on)
+        // Without the plugin, no responder of the window takes them, so AppKit
+        // disables them.
+        let phone = try makeController(TestDisplay())
+        defer { phone.invalidate() }
+        phone.focusInput()
+        let phoneWindow = try #require(phone.window)
+        #expect(commands.allSatisfy { responder(in: phoneWindow, taking: $0.action!) == nil })
+    }
+
     @Test func aWindowWaitsForItsDisplaysUserInterfacePluginAndReportsOneThatDoesNotLoad() async throws {
         _ = NSApplication.shared
         let display = TestDisplay()
@@ -937,8 +978,8 @@ struct InputFocusTests {
         menus.updateVisibility(in: device, for: controller.session.capabilities)
         let visible = device.items.filter { !$0.isHidden }
         #expect(visible.map { $0.isSeparatorItem ? "-" : $0.title } ==
-            ["Restart", "Erase All Content and Settings…", "Shut Down", "-", "Home", "Lock", "Shake",
-             "App Switcher", "-", "Trigger Screenshot"])
+            ["Restart", "Erase All Content and Settings…", "Shut Down", "-", "Home", "Re-Center Open Apps", "Lock",
+             "Shake", "App Switcher", "-", "Trigger Screenshot"])
         controller.perform(.rotateRight)
         #expect(!controller.session.isBusy)
     }
@@ -1009,14 +1050,82 @@ struct InputFocusTests {
                                                                      supportsFeature: { _ in false }))
             return menu.items.filter { !$0.isHidden }.map { $0.isSeparatorItem ? "-" : $0.title }
         }
-        let commands = ["Restart", "Erase All Content and Settings…", "Shut Down", "-", "Home"]
+        // Re-Center Open Apps is shown for every device.
+        let commands = ["Restart", "Erase All Content and Settings…", "Shut Down", "-", "Home", "Re-Center Open Apps"]
         // Lock is for iPhones, iPads, and watches, and Side Button for watches.
         #expect(try visible("Device", .watch) == commands + ["Lock", "Side Button"])
         #expect(try visible("Device", .tv) == commands)
-        #expect(try visible("Device", .vision) == commands)
+        // The camera and scene commands are for Apple Vision.
+        #expect(try visible("Device", .vision) == commands + [
+            "-", "Interaction Mode", "Look Around Mode", "Pan Mode", "Orbit Mode", "Dolly Mode", "-", "Reset Camera", "-",
+            "Simulated Scenes",
+        ])
         // Apple Vision's display has no bezel to show.
         #expect(try !visible("Window", .vision).contains("Show Device Bezels"))
         #expect(try visible("Window", .watch).contains("Show Device Bezels"))
+    }
+
+    @Test func visionOSCommandsFollowSimulatorAppsMainMenu() throws {
+        _ = NSApplication.shared
+        let menus = MenuController(application: nil)
+        menus.install()
+        defer { NSApp.mainMenu = nil }
+        func menu(_ title: String, in parent: NSMenu? = NSApp.mainMenu) throws -> NSMenu {
+            try #require(parent?.items.first { $0.title == title }?.submenu)
+        }
+        func visible(_ menu: NSMenu, _ capabilities: DeviceCapabilities) -> [String] {
+            menus.updateVisibility(in: menu, for: capabilities)
+            return menu.items.filter { !$0.isHidden }.map { $0.isSeparatorItem ? "-" : $0.title }
+        }
+        func device(_ family: DeviceCapabilities.Family, _ features: Set<String>) -> DeviceCapabilities {
+            DeviceCapabilities(family: family, runtimeVersion: 0x1A_05_00, supportsFeature: { features.contains($0) })
+        }
+        let vision = device(.vision, [DeviceCapabilities.opticID, DeviceCapabilities.hoverboard])
+        let phone = device(.iPhone, [])
+        // As in Simulator.app's MainMenu.nib, the items send the actions of
+        // the plugin's overlay to the first responder, the camera modes with
+        // Control-Command-1 to 5 and Reset Camera with Control-Command-0.
+        let deviceMenu = try menu("Device")
+        let deviceCommands = try ["Re-Center Open Apps", "Interaction Mode", "Look Around Mode", "Pan Mode", "Orbit Mode",
+                                  "Dolly Mode", "Reset Camera", "Simulated Scenes"].map { title in
+            try #require(deviceMenu.items.first { $0.title == title })
+        }
+        #expect(deviceCommands.map { $0.action.map(NSStringFromSelector) } == [
+            "recenterAllOpenApps:", "viewportModeChangedToInteraction:", "viewportModeChangedToLookAround:",
+            "viewportModeChangedToPan:", "viewportModeChangedToOrbit:", "viewportModeChangedToDolly:",
+            "resetViewportCamera:", "selectSimulatedScene:",
+        ])
+        #expect(deviceCommands.allSatisfy { $0.target == nil && $0.submenu == nil })
+        #expect(deviceCommands.map(\.keyEquivalent) == ["", "1", "2", "3", "4", "5", "0", ""])
+        #expect(deviceCommands.filter { !$0.keyEquivalent.isEmpty }.allSatisfy {
+            $0.keyEquivalentModifierMask == [.control, .command]
+        })
+        // Set Immersion To has 50%, 75%, and 100%; Simulator.app hides its
+        // Increase and Decrease Immersion, 0%, and 25% for every device.
+        let io = try menu("I/O")
+        #expect(visible(io, vision) == ["Audio Input", "Audio Output", "-", "Set Immersion To", "-", "Open URL…"])
+        #expect(!visible(io, phone).contains("Set Immersion To"))
+        let immersion = try menu("Set Immersion To", in: io)
+        #expect(immersion.items.map(\.title) == ["50%", "75%", "100%"])
+        #expect(immersion.items.map { $0.action.map(NSStringFromSelector) } ==
+            ["setImmersionTo50:", "setImmersionTo75:", "setImmersionTo100:"])
+        #expect(immersion.items.allSatisfy { $0.target == nil && $0.keyEquivalent.isEmpty })
+        // Optic ID follows the device's feature and, on Apple Vision Pro, has
+        // no shortcut.
+        let features = try menu("Features")
+        #expect(visible(features, vision) == ["Optic ID", "-", "Trigger iCloud Sync", "-", "Location"])
+        #expect(!visible(features, phone).contains("Optic ID"))
+        menus.updateKeyEquivalents(for: vision)
+        let opticID = try menu("Optic ID", in: features)
+        #expect(opticID.items.map(\.title) == ["Enrolled", "Matching Eye", "Non-matching Eye"])
+        #expect(opticID.items.map(\.keyEquivalent) == ["", "", ""])
+        // Show Gaze Target follows the device's gaze feature.
+        let debug = try menu("Debug")
+        #expect(visible(debug, vision).suffix(5) ==
+            ["Simulate Memory Warning", "-", "Show Gaze Target", "-", "Show Parallel Testing Devices"])
+        #expect(!visible(debug, device(.vision, [DeviceCapabilities.opticID])).contains("Show Gaze Target"))
+        let gaze = try #require(debug.items.first { $0.title == "Show Gaze Target" })
+        #expect(gaze.action == Selector(("toggleShowGazeTarget:")) && gaze.target == nil)
     }
 
     @Test func onlyADeviceThatRotatesReadsItsOrientation() async throws {
@@ -2661,8 +2770,8 @@ struct InputFocusTests {
         // File ▸ Open Simulator is built when it opens, so its empty submenu stays visible.
         #expect(try visibleTitles("File").prefix(3) == ["New Simulator…", "Open Simulator", "-"])
         #expect(try visibleTitles("Device") == ["Restart", "Erase All Content and Settings…", "Shut Down", "-",
-                                                 "Home", "Lock", "Action Button", "Siri", "Shake",
-                                                 "App Switcher", "-", "Trigger Screenshot"])
+                                                 "Home", "Re-Center Open Apps", "Lock", "Action Button", "Siri",
+                                                 "Shake", "App Switcher", "-", "Trigger Screenshot"])
         #expect(try visibleTitles("I/O") == ["Keyboard", "-", "Audio Input", "Audio Output", "Increase Volume",
                                               "Decrease Volume", "-", "Open URL…"])
         #expect(try visibleTitles("Features") == ["Authorize Apple Pay", "-", "Toggle Appearance",
@@ -2695,17 +2804,41 @@ struct InputFocusTests {
             DeviceCapabilities(family: .iPhone, runtimeVersion: 0x1B_00_00, supportsFeature: { $0 == feature })
         }
         #expect(try shortcuts("Touch ID") == ["", "m", "n"] && shortcuts("Face ID") == ["", "", ""])
+        #expect(try shortcuts("Optic ID") == ["", "", ""])
+        // Simulator.app also gives Optic ID the shortcuts with Face ID's
+        // support, where Face ID, which comes first, takes them.
         menus.updateKeyEquivalents(for: device(DeviceCapabilities.faceID))
         #expect(try shortcuts("Touch ID") == ["", "", ""] && shortcuts("Face ID") == ["", "m", "n"])
+        #expect(try shortcuts("Optic ID") == ["", "m", "n"])
         menus.updateVisibility(in: features, for: device(DeviceCapabilities.faceID))
         #expect(features.items.filter { !$0.isHidden }.prefix(2).map { $0.isSeparatorItem ? "-" : $0.title }
                 == ["Face ID", "-"])
         menus.updateKeyEquivalents(for: device(DeviceCapabilities.touchID))
         #expect(try shortcuts("Touch ID") == ["", "m", "n"] && shortcuts("Face ID") == ["", "", ""])
+        #expect(try shortcuts("Optic ID") == ["", "", ""])
         // Shift-Command-I belongs to Trigger iCloud Sync, as in Simulator.app.
         let items = NSApp.mainMenu?.items.compactMap(\.submenu).flatMap(\.items) ?? []
         #expect(items.filter { $0.keyEquivalent == "i" && $0.keyEquivalentModifierMask == [.command, .shift] }
             .map(\.title) == ["Trigger iCloud Sync"])
+    }
+
+    @Test func opticIDPostsSimulatorAppsGuestNotifications() throws {
+        let display = TestDisplay()
+        let controller = try makeController(display, family: .vision, features: [DeviceCapabilities.opticID])
+        defer { controller.invalidate() }
+        let enrolled = NSMenuItem()
+        controller.perform(.opticIDEnrolled)
+        #expect(DeviceCommand.command(.opticIDEnrolled).validate(enrolled, for: controller) && enrolled.state == .on)
+        controller.perform(.opticIDMatching)
+        controller.perform(.opticIDNonMatching)
+        // A device without Face ID ignores its commands.
+        controller.perform(.faceIDMatching)
+        controller.perform(.opticIDEnrolled)
+        #expect(DeviceCommand.command(.opticIDEnrolled).validate(enrolled, for: controller) && enrolled.state == .off)
+        #expect(display.postedNotifications == [
+            "com.apple.BiometricKit.enrollmentChanged", "com.apple.BiometricKit_Sim.oyster.match",
+            "com.apple.BiometricKit_Sim.oyster.nomatch", "com.apple.BiometricKit.enrollmentChanged",
+        ])
     }
 
     @Test func featureCommandsChangeTheGuestState() throws {
@@ -3335,7 +3468,8 @@ struct InputFocusTests {
             menu.items.filter { !visibleOnly || !$0.isHidden }.map { $0.isSeparatorItem ? "-" : $0.title }
         }
         // Like Simulator.app, the submenu follows the volume commands and a separator.
-        #expect(titles(io).suffix(5) == ["Decrease Volume", "-", "External Displays", "-", "Open URL…"])
+        #expect(titles(io).suffix(7) == ["Decrease Volume", "-", "External Displays", "-", "Set Immersion To", "-",
+                                         "Open URL…"])
         let item = try #require(io.items.first { $0.title == "External Displays" })
         #expect(titles(try #require(item.submenu)) == [
             "Disabled", "-", "640×480", "720×480", "1024×768", "1280×720 (720p)", "1920×1080 (1080p)", "3840×2160 (4K)",
@@ -5205,6 +5339,13 @@ struct InputFocusTests {
         #expect(NSApp.target(forAction: action, to: nil, from: settings) as AnyObject === NSApp)
     }
 
+    /// The responder that AppKit sends a menu item's `action` to when the item
+    /// has no target and `window` is key: the first one in the window's
+    /// responder chain that implements it. Tests do not make windows key.
+    private func responder(in window: NSWindow, taking action: Selector) -> NSResponder? {
+        window.firstResponder.flatMap { sequence(first: $0, next: \.nextResponder).first { $0.responds(to: action) } }
+    }
+
     /// A controller whose session and touch pressure settings keep their
     /// preferences in `preferences`. Without `touchPressure`, the Mac has no
     /// Force Touch trackpad.
@@ -5542,6 +5683,26 @@ private final class InputView: NSView {
     override func mouseDown(with event: NSEvent) {
         presses.append(event)
         if passesOnPresses { super.mouseDown(with: event) }
+    }
+}
+/// Apple Vision Pro's plugin overlay, `XROS.VirtualHMDInputView`, for some of
+/// the menu commands it takes. It records their actions and, like the
+/// overlay, checks Show Gaze Target while the gaze target shows.
+@MainActor
+private final class PluginOverlay: NSView, NSMenuItemValidation {
+    var actions: [String] = []
+    private var showsGazeTarget = false
+    override var acceptsFirstResponder: Bool { true }
+    @objc func recenterAllOpenApps(_ sender: Any?) { actions.append("recenterAllOpenApps:") }
+    @objc func viewportModeChangedToOrbit(_ sender: Any?) { actions.append("viewportModeChangedToOrbit:") }
+    @objc func setImmersionTo75(_ sender: Any?) { actions.append("setImmersionTo75:") }
+    @objc func toggleShowGazeTarget(_ sender: NSMenuItem) {
+        actions.append("toggleShowGazeTarget:")
+        showsGazeTarget.toggle()
+    }
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if item.action == #selector(toggleShowGazeTarget(_:)) { item.state = showsGazeTarget ? .on : .off }
+        return true
     }
 }
 /// A hardware button on the bezel, which takes its presses as SimulatorKit's

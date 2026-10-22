@@ -22,6 +22,7 @@ struct DeviceCommand {
         case externalDisplay1280x720, externalDisplay1920x1080, externalDisplay3840x2160, externalDisplayCarPlay
         case touchIDEnrolled, touchIDMatching, touchIDNonMatching
         case faceIDEnrolled, faceIDMatching, faceIDNonMatching
+        case opticIDEnrolled, opticIDMatching, opticIDNonMatching
         case authorizeApplePay, toggleAppearance, toggleInCallStatusBar, toggleStandBy
         case increaseTextSize, decreaseTextSize, toggleIncreaseContrast, triggerCloudSync
         case toggleSlowAnimations, graphicsQualityDefault, graphicsQualityLow, graphicsQualityHigh
@@ -264,6 +265,9 @@ struct DeviceCommand {
         biometricEnrollment(.faceIDEnrolled, feature: DeviceCapabilities.faceID),
         biometric(.faceIDMatching, title: "Matching Face", .faceID, matching: true),
         biometric(.faceIDNonMatching, title: "Non-matching Face", .faceID, matching: false),
+        biometricEnrollment(.opticIDEnrolled, feature: DeviceCapabilities.opticID),
+        biometric(.opticIDMatching, title: "Matching Eye", .opticID, matching: true),
+        biometric(.opticIDNonMatching, title: "Non-matching Eye", .opticID, matching: false),
         DeviceCommand(id: .authorizeApplePay, title: "Authorize Apple Pay", key: "a", modifiers: [.command, .option],
                       isSupported: { $0.supportsFeature(DeviceCapabilities.applePayAuthorization) }) {
             $0.send(.press(.button(.applePay)))
@@ -357,7 +361,8 @@ struct DeviceCommand {
         }
     }
 
-    /// Touch ID ▸ Enrolled or Face ID ▸ Enrolled. The two share one guest state.
+    /// Touch ID ▸ Enrolled, Face ID ▸ Enrolled, or Optic ID ▸ Enrolled. They
+    /// share one guest state.
     private static func biometricEnrollment(_ id: ID, feature: String) -> DeviceCommand {
         DeviceCommand(id: id, title: "Enrolled", isSupported: { $0.supportsFeature(feature) },
                       state: { $0.session.isBiometricEnrolled ? .on : .off }) { controller in
@@ -367,16 +372,17 @@ struct DeviceCommand {
 
     /// A matching or non-matching biometric event. Option-Command-M and N go
     /// to Face ID on a device with Face ID, and otherwise to Touch ID, as
-    /// Simulator.app assigns them when a device window becomes key.
+    /// Simulator.app assigns them when a device window becomes key. Simulator.app
+    /// also gives them to Optic ID only on a device with Face ID, so Apple
+    /// Vision Pro's Optic ID has no shortcut.
     private static func biometric(_ id: ID, title: String, _ biometric: DeviceSession.Biometric,
                                   matching: Bool) -> DeviceCommand {
-        let feature = biometric == .touchID ? DeviceCapabilities.touchID : DeviceCapabilities.faceID
-        return DeviceCommand(id: id, title: title, key: matching ? "m" : "n", modifiers: [.command, .option],
-                             hasKey: { capabilities in
-                                 let faceID = capabilities?.supportsFeature(DeviceCapabilities.faceID) ?? false
-                                 return biometric == .faceID ? faceID : !faceID
-                             },
-                             isSupported: { $0.supportsFeature(feature) }) { controller in
+        DeviceCommand(id: id, title: title, key: matching ? "m" : "n", modifiers: [.command, .option],
+                      hasKey: { capabilities in
+                          let faceID = capabilities?.supportsFeature(DeviceCapabilities.faceID) ?? false
+                          return biometric == .touchID ? !faceID : faceID
+                      },
+                      isSupported: { $0.supportsFeature(biometric.feature) }) { controller in
             controller.run { try controller.session.sendBiometric(biometric, matching: matching) }
         }
     }
@@ -425,6 +431,65 @@ struct DeviceCommand {
     /// an always-on display. Unsupported items are omitted, so a watch
     /// without one and an Apple TV show Home and Save Screen.
     static let toolbarItems: [ID] = [.home, .saveScreen, .rotateRight, .alwaysOn]
+}
+
+/// A menu command that the device's user-interface plugin performs: Apple
+/// Vision Pro's camera, scene, immersion, and gaze commands, which
+/// `XROS.VirtualHMDInputView`, the overlay of the selected Xcode's
+/// `XROS.simdeviceui`, implements. As in Simulator.app's MainMenu.nib, the
+/// item sends its action to the first responder, which is the overlay while it
+/// is the display's input view. AppKit has the overlay validate the item, which
+/// enables it, sets its checkmark, and fills the Simulated Scenes submenu, and
+/// sends it the action. Without the overlay in the key window's responder
+/// chain, nothing takes the action, and AppKit disables the item.
+@MainActor
+struct PluginCommand {
+    let title: String
+    let action: Selector
+    var key = ""
+    var modifiers: NSEvent.ModifierFlags = []
+    /// Whether the key device shows the item, as Simulator.app's
+    /// `deviceWindowBecameKey:` decides. By default, only Apple Vision shows it.
+    var isShown: (DeviceCapabilities) -> Bool = { $0.family == .vision }
+
+    /// The command whose item sends `action`.
+    static func command(for action: Selector) -> PluginCommand? { byAction[action] }
+
+    // Device. Simulator.app shows Re-Center Open Apps for every device, where
+    // only Apple Vision Pro's overlay takes it.
+    static let recenterOpenApps = PluginCommand(title: "Re-Center Open Apps", action: Selector(("recenterAllOpenApps:")),
+                                                isShown: { _ in true })
+    static let viewportModes = [
+        PluginCommand(title: "Interaction Mode", action: Selector(("viewportModeChangedToInteraction:")), key: "1",
+                      modifiers: [.control, .command]),
+        PluginCommand(title: "Look Around Mode", action: Selector(("viewportModeChangedToLookAround:")), key: "2",
+                      modifiers: [.control, .command]),
+        PluginCommand(title: "Pan Mode", action: Selector(("viewportModeChangedToPan:")), key: "3",
+                      modifiers: [.control, .command]),
+        PluginCommand(title: "Orbit Mode", action: Selector(("viewportModeChangedToOrbit:")), key: "4",
+                      modifiers: [.control, .command]),
+        PluginCommand(title: "Dolly Mode", action: Selector(("viewportModeChangedToDolly:")), key: "5",
+                      modifiers: [.control, .command]),
+    ]
+    static let resetCamera = PluginCommand(title: "Reset Camera", action: Selector(("resetViewportCamera:")), key: "0",
+                                           modifiers: [.control, .command])
+    /// The overlay gives the item a submenu of the runtime's scenes when it
+    /// validates it.
+    static let simulatedScenes = PluginCommand(title: "Simulated Scenes", action: Selector(("selectSimulatedScene:")))
+    // I/O ▸ Set Immersion To. Simulator.app also has Increase Immersion and
+    // Decrease Immersion, and 0% and 25% here, but hides them for every device.
+    static let immersionLevels = [
+        PluginCommand(title: "50%", action: Selector(("setImmersionTo50:"))),
+        PluginCommand(title: "75%", action: Selector(("setImmersionTo75:"))),
+        PluginCommand(title: "100%", action: Selector(("setImmersionTo100:"))),
+    ]
+    // Debug
+    static let showGazeTarget = PluginCommand(title: "Show Gaze Target", action: Selector(("toggleShowGazeTarget:")),
+                                              isShown: { $0.supportsFeature(DeviceCapabilities.hoverboard) })
+
+    private static let byAction = Dictionary(uniqueKeysWithValues: (
+        [recenterOpenApps, resetCamera, simulatedScenes, showGazeTarget] + viewportModes + immersionLevels
+    ).map { ($0.action, $0) })
 }
 
 /// Splits a device name the way Simulator.app titles its windows: the name up
