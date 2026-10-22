@@ -979,6 +979,23 @@ struct InputFocusTests {
         #expect(!window.styleMask.contains(.resizable))
     }
 
+    @Test func leavingFullScreenMovesTheWindowBackInsideItsScreen() throws {
+        let display = TestDisplay()
+        display.naturalSize = NSSize(width: 200, height: 300)
+        // An iPad's bezel, whose top padding keeps AppKit from moving the window.
+        display.bezelPadding = NSSize(width: 10, height: 9)
+        let controller = try makeController(display)
+        defer { controller.invalidate() }
+        controller.showWindow(nil)
+        let window = try #require(controller.window)
+        let visible = try #require(window.screen?.visibleFrame)
+        // The window entered full screen from a screen that is gone when it leaves.
+        window.setFrameOrigin(NSPoint(x: visible.maxX + 100, y: visible.minY + 10))
+        controller.windowWillEnterFullScreen(Notification(name: NSWindow.willEnterFullScreenNotification, object: window))
+        controller.windowDidExitFullScreen(Notification(name: NSWindow.didExitFullScreenNotification, object: window))
+        #expect(visible.contains(window.frame))
+    }
+
     @Test func aScreenChangeMovesTheWindowBackInsideItsScreen() throws {
         let display = TestDisplay()
         display.naturalSize = NSSize(width: 200, height: 300)

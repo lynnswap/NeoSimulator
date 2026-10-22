@@ -146,7 +146,10 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         }
         showWindow(nil)
         window.makeKeyAndOrderFront(nil)
-        moveWindowOntoScreen()
+        // The window opened at the scale for the main screen; it takes the
+        // scale for the screen it is placed on.
+        session.display.setRenderScale(initialScale)
+        didRotate(placing: place)
         initialPlacement = (place, window.frame)
         readInitialOrientation()
     }
@@ -862,6 +865,9 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         geometryBeforeFullScreen = nil
         showDisplay(at: geometry.scale)
         window?.setFrameOrigin(geometry.origin)
+        // The screen the window was on may be gone, and the screen changes
+        // that happened meanwhile did not move it.
+        moveWindowOntoScreen()
     }
     func windowDidEndLiveResize(_ notification: Notification) {
         if !closed { resizeDisplay(); session.display.endResize() }

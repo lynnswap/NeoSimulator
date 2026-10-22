@@ -584,7 +584,8 @@ simulator host appears first.
 
 A new window reads the geometry saved for the current arrangement once, when
 it connects. It opens at the saved scale, or at Point Accurate, reduced to Fit
-Screen's scale, and is centered at the saved center. A window saved in another
+Screen's scale on the screen it is placed on, and is centered at the saved
+center. A window saved in another
 arrangement, such as before a display was connected, removed, or moved, opens
 as one that was never saved. Without a saved center, or at the zero point,
 which is also what an unreadable value gives, it cascades as in Simulator.app:
