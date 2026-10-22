@@ -364,8 +364,12 @@ final class ExternalDisplayChanges {
             startedCarPlay = false
             return next()
         }
-        perform(.carPlayService(creating: false), in: run, { try screen.setCarPlayService(connected: false, completion: $0) }) { [self] _ in
-            perform(.carPlaySession(starting: false), in: run, { screen.setCarPlayEnabled(false, completion: $0) }) { [self] ended in
+        perform(.carPlayService(creating: false), in: run, {
+            try screen.setCarPlayService(connected: false, completion: $0)
+        }) { [self] _ in
+            perform(.carPlaySession(starting: false), in: run, {
+                screen.setCarPlayEnabled(false, completion: $0)
+            }) { [self] ended in
                 if ended { startedCarPlay = false }
                 next()
             }
@@ -378,11 +382,15 @@ final class ExternalDisplayChanges {
     /// the service waits for a session that started.
     private func startCarPlay(in run: Run, then next: @escaping @MainActor () -> Void) {
         let screen = run.change.screen
-        perform(.carPlaySession(starting: true), in: run, { screen.setCarPlayEnabled(true, completion: $0) }) { [self] started in
+        perform(.carPlaySession(starting: true), in: run, {
+            screen.setCarPlayEnabled(true, completion: $0)
+        }) { [self] started in
             guard started else { return next() }
             startedCarPlay = true
             carPlayBoot = screen.deviceBootDate
-            perform(.carPlayService(creating: true), in: run, { try screen.setCarPlayService(connected: true, completion: $0) }) { _ in next() }
+            perform(.carPlayService(creating: true), in: run, {
+                try screen.setCarPlayService(connected: true, completion: $0)
+            }) { _ in next() }
         }
     }
 
