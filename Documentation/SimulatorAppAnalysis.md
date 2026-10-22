@@ -237,9 +237,10 @@ bar, which is no longer transparent, so that its background matches with
 and without a bezel. Its geometry update chooses the toolbar style as above
 from the widths of its own buttons in Simulator.app's nibs, lays the title
 bar out before it reads the height, and runs on a resize it did not make, as
-`windowDidResize:` does. It finds the title bar container as the close
-button's ancestor among the frame view's subviews and rounds its lower
-corners with the radius macOS 26 gives each style. The gap, the black
+`windowDidResize:` does. Like Simulator.app, it sets the toolbar's
+`minimumInlineWindowTitleWidth` to 0 and rounds the lower corners of the
+title bar container with the window's `_cornerRadius`; it finds the
+container as the close button's ancestor among the frame view's subviews. The gap, the black
 background, the display filling the window below the gap, and the fit
 checks follow the table above; the differences are listed in the
 [design](Design.md#commands-and-menus).

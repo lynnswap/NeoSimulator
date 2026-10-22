@@ -546,7 +546,11 @@ window does:
   it. As in Simulator.app's toolbar nibs, the buttons sit between two
   flexible spaces, and the last one is hidden unless the style is expanded,
   so that the buttons follow the title in a unified title bar and are
-  centered in their own row in an expanded one. Both preferences are
+  centered in their own row in an expanded one. Like Simulator.app's, the
+  toolbar's minimum inline title width is 0, so a unified title bar
+  truncates the title before it moves buttons into the overflow menu, and
+  all the buttons stay in the title bar from the threshold up. Both
+  preferences are
   registered as in Simulator.app, `UseMonobar` on and `UseCompactTitleBar`
   off, in NeoSimulator's own defaults, and each size change reads them
   again.
@@ -567,8 +571,8 @@ window does:
   centered below the gap.
 - As in Simulator.app's window, AppKit draws the title bar, which is not
   transparent. Around a bezel, the window is clear, and the title bar's
-  lower corners are rounded with the window's corner radius for the
-  toolbar's style (26 points unified, 16 expanded, and 20 compact on
+  lower corners are rounded with the window's corner radius, which follows
+  the toolbar's style (26 points unified, 16 expanded, and 20 compact on
   macOS 26), so that the header floats above the bezel. Without a bezel, the
   window is black, which shows wherever the display leaves it uncovered,
   and the title bar is square below; so it is in full screen, which keeps
@@ -589,6 +593,27 @@ window does:
   its screen's visible frame the same way, as Simulator.app's
   `screenParametersChanged` does for every device window. No scale is
   reapplied.
+
+The title bar uses two private AppKit members, as Simulator.app does,
+because no public API gives the same result on macOS 26:
+
+- `NSToolbar.minimumInlineWindowTitleWidth`, which NeoSimulator sets to 0
+  through key-value coding. With AppKit's default, a unified title bar
+  keeps the whole title and moves buttons into the overflow menu: an
+  iPhone's window 320 points wide shows none of its three buttons, and one
+  402 points wide only Home. `NSToolbarItem.visibilityPriority` does not
+  change that.
+- `NSWindow._cornerRadius`, which NeoSimulator calls, as a method that
+  returns a `CGFloat`, each time it rounds the title bar's corners. No public
+  API reports a window's corner radius before macOS 27's
+  `NSView.cornerConfiguration`.
+
+NeoSimulator uses each only when the toolbar or the window responds to its
+selector. Without the first, the title bar keeps AppKit's minimum title
+width, so near the threshold buttons move into the overflow menu; without
+the second, the corners take the radius macOS 26 gives each toolbar style.
+Both were checked on macOS 26.6.2 (25G83) and appear in AppKit's class
+dumps of macOS 26.2 through 26.6.2.
 
 Like Simulator.app's `DeviceWindow`, a window with a bezel resizes by
 dragging the bezel's corners:
@@ -685,17 +710,11 @@ These differ from Simulator.app:
   window keeps the unified style down to a display 62 points narrower than
   in Simulator.app: 351.4 points instead of 413.4 for the iPad mini (A17
   Pro). NeoSimulator's Stop Recording item, which Simulator.app does not
-  have (it shows `stop.circle` in its Save Screen button while recording),
-  does not count either.
-- Simulator.app sets its toolbar's private `minimumInlineWindowTitleWidth`
-  to 0, so that a unified title bar truncates the title before it moves
-  buttons into the overflow menu. NeoSimulator uses AppKit's default, so
-  near the threshold AppKit shows fewer buttons, or none, and the overflow
-  chevron; an iPhone 17 Pro's window shows all three only from about 450
-  points.
-- Simulator.app reads the window's corner radius from the private
-  `NSWindow._cornerRadius`; NeoSimulator uses the values macOS 26 gives for
-  each toolbar style.
+  have, does not count either.
+- While a recording runs, Simulator.app's Save Screen button shows
+  `stop.circle` and stops the recording. NeoSimulator instead shows a
+  separate red Stop Recording item, which takes room in the toolbar that the
+  threshold does not count.
 - Simulator.app animates the window into and out of full screen itself.
   NeoSimulator uses AppKit's transition, so the window is resizable in full
   screen.
