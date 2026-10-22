@@ -106,7 +106,7 @@ Representative coordinator actions:
 The first set contains only actions with a concrete owner and observable failure
 semantics:
 
-- Application: About, Hide, Hide Others, Show All, Quit, Quit…;
+- Application: About, Settings…, Hide, Hide Others, Show All, Quit, Quit…;
 - File: New Simulator…, Open Simulator, Save Screen, Save Screen…, Record
   Screen, Record Screen…, Stop Recording, GPU Selection
   (`FramebufferServerGPUPolicy` in `com.apple.CoreSimulator`, rewritten as
@@ -259,6 +259,42 @@ a few milliseconds.
 
 NeoSimulator reproduces these commands; its differences are listed in the
 [design](Design.md#keyboard-and-touch-pressure).
+
+## Settings and touch indicators
+
+The evidence is Simulator.app 16.0 (1063.4) from Xcode 26.6, AppKit of macOS
+26.6.2 (25G83), and SimulatorKit from Xcode 27.1. `MainMenu.nib` has
+Simulator ▸ Preferences… (Command-,) sending `orderFrontPreferencesPanel:` to
+the first responder; no class of Simulator.app implements it.
+
+| Reference owner | Observed behavior |
+| --- | --- |
+| AppKit `-[NSApplication(NSSimplePreferences) orderFrontPreferencesPanel:]` | Asks the delegate's `applicationOrderFrontPreferencesPanel:`; unless it returns YES, calls `[[NSSimplePreferences sharedPreferences] showPreferencesPanel]`. The category is in no public header. |
+| `-[NSSimplePreferences settingsBundlePathToUse]`, `loadFromSettingsBundle`, `showPreferencesPanelForOwner:` | Uses `Settings.bundle` from the main bundle (or a bundle given to `+setBundleToSearch:`) and adds one pane from its `Root.plist`. Without the bundle it logs that nothing will be displayed. |
+| `-[NSSimplePreferences _viewForItems:rootBundle:module:]` | Lays out `PSGroupSpecifier` titles as labels, `PSToggleSwitchSpecifier` as checkboxes, and `PSRadioGroupSpecifier` as radio buttons, binds each to `NSUserDefaultsController.sharedUserDefaultsController` at `values.<Key>`, and sets the controller's `initialValues` from each item's `DefaultValue`. |
+| `Settings.bundle/Root.plist` | One flat pane: an untitled group with the stop-capture shortcut (`CaptureEscapeKeyCodes`: `[41]` esc, `[227,231]` both Command keys, `[224,226,65535]` Control-Option); Simulator lifetime (`StartLastDeviceOnLaunch`, `DetachOnWindowClose`, `DetachOnAppQuit`); Visual indicators (`ShowSingleTouches`, `ShowPinches`, `ScreenShotUseMask`); `GifMaxFrameSize` 320/640/1280; `GifMaxFramerate` 10/15. `ShowPinches` has `DefaultValue` false. |
+| `+[PreferencesController registerDefaults]` `0x100024F48` … `0x1000253E8` | Registers `ShowSingleTouches` NO, `ShowPinches` YES, `ShowPinchPivotPoint` NO, `HighlightEdgeGestures` NO, and the other settings with the Settings.bundle's defaults. |
+| `DWC` window creation `0x10004A59C`, from the `window` getter `0x1000492C8`, at `0x10004A794` … `0x10004A834` | Reads the four preferences (`NSUserDefaults(Indigo)` `0x10003A1F0` onward) and inserts or removes `.normalTouch`, `.pinchTouches`, `.pinchPivotPoint`, and `.edgeGestures` in `digitizerView.drawOptions` through `drawOptions.modify` (`0x100048A24`). Then it observes `NSUserDefaultsDidChangeNotification` on the main queue (`0x10004A9CC`). |
+| Observer `0x10004AA5C` | While the window exists, reapplies `ShowPinches` and `ShowSingleTouches` only, then updates the window's geometry (`0x10004B2E4`); once the window controller is gone, it removes itself. |
+| Internal menu, tag 7000; `toggleShowSingleTouches:` `0x100012C5C`, `toggleShowPinches:` `0x100012EA0`, `toggleShowPinchPivotPoint:` `0x1000130E4`, `toggleHighlightEdgeGestures:` `0x100013328` | `applicationDidFinishLaunching:` hides the menu unless `os_variant_has_internal_ui` (`0x10000EDD0`). Each action saves the negation of the preference and calls `DWC.setShowSingleTouches:` (`0x100048024`) and its siblings on every window controller whose `windowExists`. |
+
+A registered value wins over the controller's initial value: in a probe on
+macOS 26.6.2, a key registered YES with an initial value of NO read 1 through
+`values`, and a key with no registered value read the initial value. So
+Simulator.app's panel shows Show pinch gestures checked, and pinches are drawn.
+Foundation posts `NSUserDefaultsDidChangeNotification` only for changes the
+process makes, so by its code Simulator.app applies a `defaults write` to open
+windows only when it next changes a default itself or opens a window; this was
+not run.
+
+SimulatorKit from Xcode 27.0, 27.1, and 27.2 exports `drawOptions` getter and
+setter dispatch thunks, `DrawOption.rawValue`, `DrawOption(rawValue:)`, and the
+four options' static getters. With Xcode 27.1, their raw values are 0x2, 0x4,
+0x8, and 0x10, and a new iOS 26.5 display starts with `drawOptions` 0x24:
+`.pinchTouches` and `.lockedTouches` (0x20).
+
+NeoSimulator's settings window and touch indicators are described, with their
+differences, in the [design](Design.md#settings-and-touch-indicators).
 
 ## Deferred features
 

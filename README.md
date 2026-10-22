@@ -122,7 +122,9 @@ Neo currently provides:
   Rendered, Open System Log… (Command-/), and Simulate Memory Warning
   (Shift-Command-M);
 - File → GPU Selection, the GPU that CoreSimulator prefers for rendering
-  simulators.
+  simulators;
+- NeoSimulator → Settings… (Command-,), Simulator.app's settings for starting
+  and leaving simulators, touch indicators, the device mask, and animated GIFs.
 
 Use **File → Open Simulator** to choose a device, **File → New Simulator…**
 to create one, and **Device → Shut Down** to stop it. As in Simulator.app, Open
@@ -202,6 +204,22 @@ on iOS 18. **Use Trackpad Force** (`UseTrackpadForce`) passes the pressure of a
 Force Touch trackpad's click to the device; it needs such a trackpad. Shallow
 Press and Deep Press choose the pressure of a click for a watch, which Neo does
 not host yet. The settings apply to every device window, as in Simulator.app.
+
+**NeoSimulator → Settings…** (Command-,) shows the settings window that macOS
+builds from the app's `Settings.bundle`, as it does for Simulator.app. It lists
+Simulator.app's settings that Neo uses: booting the most recently used
+simulator at launch (`StartLastDeviceOnLaunch`), leaving simulators running
+when a window closes or Neo quits (`DetachOnWindowClose`, `DetachOnAppQuit`),
+showing single touches and pinch gestures (`ShowSingleTouches`,
+`ShowPinches`), applying the device mask to Save Screen and Record Screen
+(`ScreenShotUseMask`), and the size and frame rate of animated GIFs
+(`GifMaxFrameSize`, `GifMaxFramerate`). Simulator.app's stop-capture shortcut
+is left out, because Neo does not capture the Mac's pointer and keyboard. As in
+Simulator.app, pinch gestures are shown and single touches are not until you
+change them, and every device window follows a change at once. Neo also follows
+`ShowPinchPivotPoint` and `HighlightEdgeGestures`, which only Apple's internal
+builds of Simulator.app show in a menu, and changes that `defaults write
+dev.lynnswap.NeoSimulator` makes while Neo runs.
 
 **Features → Location** simulates the active device's location: **None**
 clears it, **Custom Location…** asks for a latitude and longitude, and the

@@ -299,6 +299,7 @@ analysis source only and is not a runtime dependency.
 
 The first parity set contains only commands with an available, validated owner:
 
+- NeoSimulator: Settings…;
 - File: New Simulator…, Open Simulator, Save Screen, Save Screen…, Record
   Screen, Record Screen…, Stop Recording, GPU Selection, Close Window, Close
   Window…;
@@ -756,6 +757,57 @@ These differ from Simulator.app:
   NeoSimulator's other device commands; Simulator.app enables it for any
   device with a keyboard.
 
+### Settings and touch indicators
+
+NeoSimulator ▸ Settings… (Command-,) sends `orderFrontPreferencesPanel:` to the
+first responder, as Simulator.app's menu item does. AppKit's
+`NSApplication(NSSimplePreferences)` category answers it: unless the app
+delegate's `applicationOrderFrontPreferencesPanel:` handles it, AppKit builds a
+settings window from the main bundle's `Settings.bundle/Root.plist`, binds each
+control to `NSUserDefaultsController.shared` (`values.<Key>`), and gives the
+controller each item's `DefaultValue` as an initial value. The category is not
+in the public SDK; macOS 26 has it. Where it is missing, AppKit's menu
+validation finds no responder and disables the item. NeoSimulator's
+`Settings.bundle` has Simulator.app's items, titles, controls, and order,
+without the ones Neo has no consumer for: the stop-capture shortcut
+(`CaptureEscapeKeyCodes`), because Neo does not capture the pointer and
+keyboard, and the empty group before it. "When Simulator starts" names
+NeoSimulator. Every other item already has a reader that reads the standard
+defaults when it acts: launch, window close, quit, Save Screen and Record
+Screen, and GIF export. The release archive, the installer, and the release
+verification carry `Contents/Resources/Settings.bundle/Root.plist` as one of
+the app's files.
+
+Simulator.app registers `ShowPinches` on and `ShowSingleTouches`,
+`ShowPinchPivotPoint`, and `HighlightEdgeGestures` off, while its
+Settings.bundle gives `ShowPinches` the default `false`. The controller uses an
+initial value only for a key without any value, and a registered key always
+has one, so pinch gestures are on in Simulator.app. NeoSimulator registers the
+same defaults, and its Settings.bundle states `true` for `ShowPinches` to match.
+
+`TouchIndicator` maps the four preferences to `SimDigitizerInputView.DrawOption`
+`.normalTouch`, `.pinchTouches`, `.pinchPivotPoint`, and `.edgeGestures`.
+`DrawOption` is a resilient option set, so `SimulatorDisplayInterface` reads its
+`rawValue`, makes one with `init(rawValue:)`, and reads the four options' raw
+values when the host starts. Showing or hiding an indicator reads the
+digitizer's `drawOptions`, sets or clears that option's bits, and writes the
+result back, so the other options stay, such as `.lockedTouches`, which a
+new display starts with. Each display connection, including after a restart,
+applies all four preferences. `HostApplication` observes the four keys of the
+standard defaults with key-value observing and posts
+`TouchIndicator.didChangeNotification`; every open window then applies them
+again.
+
+These differ from Simulator.app:
+
+- Simulator.app reapplies only `ShowPinches` and `ShowSingleTouches` when the
+  process posts `NSUserDefaultsDidChangeNotification`, which a change from
+  another process, such as `defaults write`, does not post. Its pivot point and
+  edge gesture preferences change open windows only through the Internal
+  menu, which only Apple's internal builds show. NeoSimulator has no Internal
+  menu and applies a change to any of the four preferences, from Settings or
+  from another process, to every open window.
+
 ## Failure semantics
 
 The executable follows BSD `sysexits` categories:
@@ -805,8 +857,8 @@ files with the archive.
 Live validation additionally covers framebuffer/touch/accessibility, focused
 keyboard input, Home, Software Keyboard, connecting and disconnecting the
 hardware keyboard, the keyboard language, the digitizer's touch pressure
-settings, resize, menu rotation, screenshot PNG, Device Hub absence, and
-loaded-image provenance.
+settings and touch indicator draw options, the settings window, resize, menu
+rotation, screenshot PNG, Device Hub absence, and loaded-image provenance.
 
 ## Non-goals
 
