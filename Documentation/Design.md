@@ -275,9 +275,12 @@ subscribes to the default device set. It creates sessions only for booted iOS
 devices.
 
 A session discovers the default integrated `SimDeviceScreen`; screen ID zero is
-not assumed. It creates a connected `SimDisplayView`, enables device chrome,
-creates one `SimDeviceLegacyHIDClient`, and installs the view in a resizable
-transparent AppKit window. Shutdown removes the session. Closing a window
+not assumed. It creates a connected `SimDisplayView` and one
+`SimDeviceLegacyHIDClient`, and installs the view in a transparent AppKit
+window, which shows the device bezel as Window ▸ Show Device Bezels says. A
+window with a bezel resizes by dragging the bezel's corners, and a window
+without one by its edges (see window scale below).
+Shutdown removes the session. Closing a window
 shuts the device down, as Simulator.app does with `DetachOnWindowClose` off;
 a close that keeps the device running suppresses reopening until the device
 leaves the booted state. File ▸ Close Window… (or Control-closing) asks with
@@ -314,7 +317,8 @@ The first parity set contains only commands with an available, validated owner:
   Color Copied Images, Color Misaligned Images, Color Off-screen Rendered, Open
   System Log…, Simulate Memory Warning, Show Parallel Testing Devices;
 - Window: standard minimize/zoom/full screen, Show Device Bezels, Stay on Top,
-  Fit Screen, Simulators, Bring All to Front.
+  Physical Size, Point Accurate, Pixel Accurate, Fit Screen, Simulators, Bring
+  All to Front.
 
 File ▸ Open Simulator follows Simulator.app's menu delegate: CoreSimulator's
 available-device order, a submenu per runtime (none for a single runtime), the
@@ -420,7 +424,8 @@ when the guest changes its interface orientation. Each connection registers for
 `SimDeviceScreen` property events (`register(types:queue:handler:)` with
 `.properties`). When the preference is on and the guest's interface orientation
 (`SimScreenProperties.uiOrientation`) changes, the session shows the display at
-that orientation's angle and the window refits. Other property changes, such as
+that orientation's angle and the window takes its new shape at the display's
+scale (see window scale below). Other property changes, such as
 the backlight, keep the window size. A window opened while the preference is on
 also starts at the guest's interface orientation. Releasing the registration on
 disconnect ends the events. The Orientation checkmark keeps showing the physical
@@ -445,6 +450,185 @@ temporary file that is checked and then atomically renamed, so cancellation
 or failure preserves an existing destination.
 Device-tool operations are single-flight, drain both output pipes, have a
 bounded timeout, and are cancelled when their window closes.
+
+Window ▸ Physical Size (Command-1), Point Accurate (Command-2), Pixel Accurate
+(Command-3), and Fit Screen (Command-4) follow Simulator.app's
+`windowScaleChanged:`. Each sets `SimDisplayView.renderScale` and sizes the
+window to `SimDisplayView.size(for:)` at that scale below the window's top
+edge; the device's screen does not change.
+
+- Physical Size divides the Mac screen's points per inch (`NSDeviceSize` width
+  over the `CGDisplayScreenSize` width in inches of the window's screen) by the
+  device's (`SimDeviceType.mainScreenDPI` width over `mainScreenScale`). An
+  unknown value counts as 110 for the Mac and 163 for the device.
+- Point Accurate is 1.
+- Pixel Accurate is `SimDeviceScreen.scale` over the window screen's
+  `backingScaleFactor`, each 1 when unknown.
+- Fit Screen asks `SimDisplayView.scale(for:)` for the visible frame less the
+  window header and 20 points, so it can exceed 1.
+
+Fit Screen then centers the window on its screen, and the fixed scales move it
+back inside the visible frame. The commands need a connected display outside
+full screen, including the full screen transitions. Physical Size also needs
+`SimDeviceScreen.displayClass` 0, the device's own screen. A fixed scale needs
+at least the device's minimum (0.4 for an iPhone and 0.25 for an iPad on its
+own screen, 0.6 for a watch, otherwise the scale at which the display fits 240
+by 240 points). Like Simulator.app, a display without a bezel must also fit
+the visible frame below the window's header, while a window with a bezel may
+extend past the screen. The bezel is the display's `SimDisplayChromeView.chrome`,
+which NeoSimulator reads through ABIBridge with its `images.padding`. It is nil
+while Show Device Bezels is off, because SimulatorKit then clears the chrome
+view's device type, and for a device type whose chrome SimulatorKit cannot
+load. A fixed scale is checked while `renderScale` is within 0.001 of it, also
+when it is below the minimum or does not fit. The menu computes the target from
+the window's current screen each time it validates, so a manual resize, or a
+move to a screen with another resolution or size, clears the checkmark without
+changing the scale. A checkmark stays as it was without a connected display,
+in full screen and its transitions, for Physical Size on another screen than
+the device's own, and without a device window, where Simulator.app's
+validation returns before setting it or does not run. Fit Screen has no
+checkmark.
+
+Show Device Bezels is Simulator.app's app-wide `ShowChrome` preference,
+registered on, which NeoSimulator keeps in its own defaults. Like
+Simulator.app's `boolForKey:`, NeoSimulator reads it with
+`UserDefaults.bool(forKey:)`, so a string that `defaults write` saves, such as
+`NO`, turns the bezels off. As in Simulator.app, changing it applies to every
+open device window, including one whose device is restarting, and a window
+shows the bezel as the preference says when it opens, before it takes its
+first scale, and when it reconnects after a restart. The menu's checkmark
+shows the preference, also without a device window.
+
+The device window is a `DeviceWindow`, which follows its bezel as Simulator.app's
+window does:
+
+- While the display shows a bezel, the window is not resizable, so AppKit
+  keeps the window's top edge on the screen without shrinking a window taller
+  than the screen; the bezel's corners resize it instead, as described below.
+  Without a bezel, the window is resizable. Full screen stays
+  available through the `fullScreenPrimary` collection behavior. AppKit's full
+  screen transition fills the screen only with a resizable window, so the
+  window is resizable from `windowWillEnterFullScreen(_:)` until it leaves
+  full screen, also when the bezel changes there. Like Simulator.app, leaving
+  full screen restores the display's scale and the window's origin from
+  before it entered, which AppKit's own return does not keep for a window
+  taller than the screen.
+- When the bezel's images have top padding (`SimDeviceChrome.images.padding.height`
+  in the bezel's `chrome.json`: 9 points for the iPad bezels, 0 for the bezels
+  of most iPhones, including the iPhone 17 Pro), `constrainFrameRect(_:to:)` keeps the frame's size and
+  only moves it down, so that the window's top less the padding at the
+  display's scale stays below the top of the visible frame. Otherwise AppKit
+  constrains the frame. This applies to programmatic frame changes and to
+  moving the window.
+- Each size change keeps the window's bottom-left corner, unless a drag on
+  the bezel's corners (below) moves it, and moves the window down when its
+  top would be above the visible frame, as Simulator.app's geometry update
+  does. A scale command then puts the top edge back where it
+  was, and a rotation keeps the top edge, moving the window down only when that
+  edge would be above the visible frame. After a rotation, as after a fixed
+  scale, the window moves back inside the visible frame along each axis where
+  it crosses an edge.
+- A change to the screens (`NSApplication.didChangeScreenParametersNotification`),
+  such as a display removed or the Dock resized, moves the window back inside
+  its screen's visible frame the same way, as Simulator.app's
+  `screenParametersChanged` does for every device window. No scale is
+  reapplied.
+
+Like Simulator.app's `DeviceWindow`, a window with a bezel resizes by
+dragging the bezel's corners:
+
+- The corners are `SimDisplayView.typedResizeRects`, which SimulatorKit builds
+  from the `resizeRects` of the bezel's `chrome.json` in the display view's
+  coordinates at its scale; there are none without a bezel. SimulatorKit's
+  `SimChromeResizeRectsExcludeView` takes the clicks there, so they reach the
+  window through the responder chain, and `SimDisplayView.showResizeCursors`
+  shows diagonal resize cursors over them. NeoSimulator reads the corners
+  through ABIBridge and turns the cursors on outside full screen, as
+  Simulator.app does.
+- A press in a corner, outside full screen, starts a drag between
+  `beginResize()` and `endResize()`. The drag asks for the display's size at
+  the press, grown by how far the pointer has moved away from the opposite
+  corner. The display takes the largest scale at which it fits that size
+  (`scale(for:)`), no smaller than the minimum of the fixed scales and no
+  larger than the scale at which the dragged corner reaches the edges of the
+  screen's visible frame (1000 without a screen).
+- The window then takes the display's size with the display's opposite corner
+  where it was, through the same geometry update as the scale commands, so it
+  moves down when its top would be above the visible frame. Like a manual
+  resize, the drag clears the checkmark of a fixed scale it leaves.
+- When the drag ends, a window that does not reach 128 points into the
+  visible frame moves along each axis until it does.
+
+A rotation, Show Device Bezels, and a restart keep the display's scale and
+resize the window, even when the window no longer fits the screen, as in
+Simulator.app. Without a bezel, AppKit then shrinks a window taller than the
+screen while the display keeps its scale. After a restart, the device's next
+connection shows a new, upright display; like Simulator.app, which turns its
+display upright then, the window takes that display's shape as after a
+rotation, below its top edge, and moves back inside the visible frame.
+
+Like Simulator.app, a window's geometry is saved for each arrangement of the
+Mac's screens, under Simulator.app's keys in NeoSimulator's own defaults.
+`ScreenConfigurations` names each arrangement with a UUID and lists the
+screens' frames (`NSStringFromRect`). The arrangement of `NSScreen.screens` is
+the entry with as many frames, each of the screens' frames among them in any
+order; without one, a new UUID is saved with the frames, also when a window is
+only reading its geometry. Closing a window saves its center
+(`NSStringFromPoint`) and scale as `WindowCenter` and `WindowScale` in
+`DevicePreferences[UDID].SimulatorWindowGeometry[UUID]`, replacing what was
+saved for that arrangement and keeping the others. Like Simulator.app, which
+saves nothing while its device is rebooting, a window that closes from the
+start of a restart until the device reconnects saves nothing. Neither does a
+new window that `HostApplication` discards before it shows, when another
+simulator host appears first.
+
+A new window reads the geometry saved for the current arrangement once, when
+it connects. It opens at the saved scale, or at Point Accurate, reduced to Fit
+Screen's scale on the screen it is placed on, and is centered at the saved
+center. A window saved in another
+arrangement, such as before a display was connected, removed, or moved, opens
+as one that was never saved. Without a saved center, or at the zero point,
+which is also what an unreadable value gives, it cascades as in Simulator.app:
+the first such window is centered on its screen with `center()`, and each takes
+`cascadeTopLeft(from:)` from the app-wide point the previous one returned. A
+new window then moves back inside the visible frame where it crosses an edge.
+
+Simulator.app turns the display to the device's orientation before it chooses
+a new window's scale and places it. NeoSimulator reads the orientation with
+`devicectl` after the window shows, so when that first reading arrives, a
+window that is still where it was placed and as large takes the scale it opens
+at in the new shape (the saved scale or Point Accurate, reduced to Fit
+Screen's) and is placed again: centered at the saved center, or with
+`center()` for the first cascading window, then moved back inside the visible
+frame. A window that cascades from another keeps its top-left corner. A window
+moved or resized before the reading keeps its scale and its top-left corner,
+as after any rotation; a rotation that follows the guest with Rotate Device
+Automatically does not count as such a change.
+
+These differ from Simulator.app:
+
+- Physical Size also uses the default densities for a zero or non-finite value,
+  where Simulator.app divides by zero.
+- A `ScreenConfigurations` entry whose name is not a UUID matches no
+  arrangement, where Simulator.app stops.
+- Simulator.app also starts a drag on a corner of the bezel in full screen,
+  which then sets the full screen window's frame. NeoSimulator starts none in
+  full screen, where the display fits the window.
+- Simulator.app moves the window by a drag elsewhere on the bezel
+  (`AllowsMoveByDragOnWindowChrome`, registered on). NeoSimulator does not.
+- A manual resize, possible without a bezel, does not keep the display's
+  aspect ratio and stops at 320 by 300 points instead of the display's size at
+  the minimum scale; the display is centered in the window. The scale
+  commands, rotation, and Show Device Bezels make the window as wide as the
+  display, as in Simulator.app, also when that is narrower.
+- Simulator.app's minimum for a tvOS or visionOS display with a bezel, 240
+  points over the screen's pixel height, is not reproduced.
+- Simulator.app animates the window into and out of full screen itself.
+  NeoSimulator uses AppKit's transition, so the window is resizable in full
+  screen.
+- Because the first window that cascades is placed before the orientation is
+  read, the point the next window cascades from follows that window's shape
+  before the reading.
 
 Features ▸ Location follows Simulator.app's split between a per-device
 selection and app-wide saved settings. Each `DeviceSession` owns its device's

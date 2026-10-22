@@ -18,6 +18,8 @@ struct DeviceCapabilities {
     var hasFramebufferMask = false
     /// The screen's corner radius in points; 0 for a square screen.
     var screenCornerRadius = 0.0
+    /// The screen's points per inch, for Physical Size; nil when unknown.
+    var screenPointsPerInch: Double?
 
     var isPhoneOrPad: Bool { family == .iPhone || family == .iPad }
     var rotates: Bool { controlsOrientation && supportsFeature(Self.displayRotation) }
@@ -46,6 +48,9 @@ enum HostPreferences {
     static let rotateWindowWhenSignaledByGuest = "RotateWindowWhenSignaledByGuest"
     /// Debug ▸ Show Parallel Testing Devices, on unless turned off.
     static let showTestingDevices = "ShowTestingDevices"
+    /// Window ▸ Show Device Bezels, on unless turned off. It applies to every
+    /// device window: see `PreferenceStore.showsDeviceBezels`.
+    static let showChrome = "ShowChrome"
     /// Overrides the path of Xcode's parallel testing device set.
     static let testingDeviceSetPath = "TestingDeviceSetPath"
     /// Whether closing a device window leaves the device running instead of
@@ -84,11 +89,17 @@ enum HostPreferences {
     /// The coordinate Custom Location… last set.
     static let locationLatitude = "LocationLatitude"
     static let locationLongitude = "LocationLongitude"
+    /// A dictionary of each device's own preferences, by UDID: see
+    /// `PreferenceStore.windowGeometry(forDevice:screens:)`.
+    static let devicePreferences = "DevicePreferences"
+    /// The arrangements of the Mac's screens that device windows were saved
+    /// in, by UUID: see `PreferenceStore.screenConfiguration(for:)`.
+    static let screenConfigurations = "ScreenConfigurations"
 
     /// Registers Simulator.app's defaults for these preferences.
     static func registerDefaults() {
         UserDefaults.standard.register(defaults: [
-            showTestingDevices: true, detachOnWindowClose: false, detachOnAppQuit: false,
+            showTestingDevices: true, showChrome: true, detachOnWindowClose: false, detachOnAppQuit: false,
             attachBootedOnStart: true, sessionOnLaunch: true, startLastDeviceOnLaunch: true,
             terminationTimeout: 60.0, screenShotSaveLocation: defaultScreenshotLocation(), screenShotUseMask: false,
             slowMotionAnimation: false, graphicsQualityOverride: GraphicsQuality.deviceDefault.rawValue,

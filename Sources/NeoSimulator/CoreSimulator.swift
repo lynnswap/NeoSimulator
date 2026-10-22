@@ -58,6 +58,8 @@ struct CoreSimulatorInterface {
     let framebufferMaskURL: NativeObjCMethod<NSURL?>
     let deviceTypeCapabilities: NativeObjCMethod<NSDictionary?>
     let deviceTypeIdentifier: NativeObjCMethod<String?>
+    let mainScreenDPI: NativeObjCMethod<CGSize>
+    let mainScreenScale: NativeObjCMethod<Float>
 
     typealias NotificationHandler = @convention(block) (NSDictionary) -> Void
     typealias CloudSyncCompletion = @convention(block) (NSError?) -> Void
@@ -167,6 +169,10 @@ struct CoreSimulatorInterface {
             on: simDeviceType, selector: "capabilities", as: (() -> NSDictionary?).self)
         deviceTypeIdentifier = try runtime.resolveObjCMethodAndWait(
             on: simDeviceType, selector: "identifier", as: (() -> String?).self)
+        mainScreenDPI = try runtime.resolveObjCMethodAndWait(
+            on: simDeviceType, selector: "mainScreenDPI", as: (() -> CGSize).self)
+        mainScreenScale = try runtime.resolveObjCMethodAndWait(
+            on: simDeviceType, selector: "mainScreenScale", as: (() -> Float).self)
     }
 }
 
@@ -192,6 +198,9 @@ final class SimulatorDevice {
     /// The screen's corner radius in points, from the device type's
     /// `DeviceCornerRadius` capability; 0 for a square screen.
     let screenCornerRadius: Double
+    /// The screen's points per inch, `SimDeviceType.mainScreenDPI`'s width
+    /// over `mainScreenScale`, or nil without a device type.
+    let screenPointsPerInch: Double?
     /// `SimRuntime.version`, packed as major << 16 | minor << 8 | patch.
     let runtimeVersion: UInt32
     /// The path of the device's set, or nil for the default set.
@@ -218,6 +227,10 @@ final class SimulatorDevice {
         hasFramebufferMask = try deviceType.flatMap { try unsafe interface.framebufferMaskURL.unsafeInvoke(on: $0) } != nil
         let capabilities = try deviceType.flatMap { try unsafe interface.deviceTypeCapabilities.unsafeInvoke(on: $0) }
         screenCornerRadius = ((capabilities?["capabilities"] as? NSDictionary)?["DeviceCornerRadius"] as? NSNumber)?.doubleValue ?? 0
+        screenPointsPerInch = try deviceType.map {
+            Double(try unsafe interface.mainScreenDPI.unsafeInvoke(on: $0).width)
+                / Double(try unsafe interface.mainScreenScale.unsafeInvoke(on: $0))
+        }
     }
 
     /// `SimDeviceState`; 3 is Booted. A device whose state cannot be read is

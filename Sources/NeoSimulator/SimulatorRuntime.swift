@@ -85,26 +85,54 @@ struct SimulatorDisplayInterface {
     let screenPropertyEvents: NativeSwiftValue
     /// `SimDeviceScreen.properties`, an `id<SimScreenProperties>`.
     let screenProperties: NativeSwiftMethod<() -> AnyObject>
+    /// `SimDeviceScreen.scale`, the screen's pixels per point.
+    let screenScale: NativeSwiftMethod<() -> CGFloat>
+    /// `SimDeviceScreen.displayClass`.
+    let displayClass: NativeSwiftMethod<() -> UInt16>
     let factoryClass: AnyClass
     let createDisplay: NativeObjCMethod<NSView?, AnyObject, UInt32>
     let showChrome: NativeSwiftMethod<(Bool) -> Void>
     let chromeView: NativeSwiftMethod<() -> NSView>
     let digitizerView: NativeSwiftMethod<() -> NSView>
     let renderScale: NativeSwiftMethod<() -> CGFloat>
+    let setRenderScale: NativeSwiftMethod<(CGFloat) -> Void>
+    /// `SimDisplayView.size(for:)`.
+    let sizeForScale: NativeSwiftMethod<(CGFloat) -> CGSize>
+    /// `SimDisplayView.scale(for:)`.
+    let scaleForSize: NativeSwiftMethod<(CGSize) -> CGFloat>
     let rotation: NativeSwiftMethod<(Measurement<UnitAngle>) -> Void>
     let disconnect: NativeSwiftMethod<(NativeSwiftClosure<() -> Void>) -> Void>
     let beginResize: NativeSwiftMethod<() -> Void>
     let resize: NativeSwiftMethod<(CGSize) -> Void>
     let endResize: NativeSwiftMethod<() -> Void>
+    /// `SimDisplayView.typedResizeRects`, an array of `SimDisplayView.TypedResizeRect`.
+    let resizeRects: NativeSwiftMethod<() -> NativeSwiftValue>
+    /// That array's `count` and subscript.
+    let resizeRectCount: NativeSwiftMethod<() -> Int>
+    let resizeRectAtIndex: NativeSwiftMethod<(Int) -> NativeSwiftValue>
+    /// `SimDisplayView.TypedResizeRect.rect`.
+    let resizeRectFrame: NativeSwiftMethod<() -> CGRect>
+    /// `SimDisplayView.TypedResizeRect.type`, a `SimDeviceChrome.ResizeRectType`.
+    let resizeRectType: NativeSwiftMethod<() -> NativeSwiftValue>
+    /// `SimDeviceChrome.ResizeRectType.rawValue`.
+    let resizeRectTypeName: NativeSwiftMethod<() -> String>
+    /// `SimDisplayView.showResizeCursors`.
+    let showResizeCursors: NativeSwiftMethod<(Bool) -> Void>
     let chromeState: NativeSwiftType
     let setChromeState: NativeSwiftMethod<(NativeSwiftValue) -> Void>
+    /// `SimDisplayChromeView.chrome`, an optional `SimDeviceChrome`.
+    let chrome: NativeSwiftMethod<() -> NativeSwiftValue>
+    /// `SimDeviceChrome.images`.
+    let chromeImages: NativeSwiftMethod<() -> NativeSwiftValue>
+    /// `SimDeviceChrome.Images.padding`.
+    let chromeImagesPadding: NativeSwiftMethod<() -> CGSize>
     let setKeyboardEnabled: NativeSwiftMethod<(Bool) -> Void>
     let keyboardDelegate: Ivar
 
     init(runtime: ABIRuntime) throws {
         guard let screenClass = NSClassFromString("SimulatorKit.SimDeviceScreen"),
             let factoryClass = NSClassFromString("IDEPlaygroundSimulator.IDESimulatorPlaygroundUntil"),
-            let displayClass = NSClassFromString("SimulatorKit.SimDisplayView")
+            let displayViewClass = NSClassFromString("SimulatorKit.SimDisplayView")
         else {
             throw HostError.unavailable("SimulatorKit display classes are unavailable")
         }
@@ -129,6 +157,11 @@ struct SimulatorDisplayInterface {
             .unsafeInvoke()
         screenProperties = try deviceScreen.resolveGetterAndWait(
             named: "properties.getter : __C.SimScreenProperties", as: (() -> AnyObject).self)
+        screenScale = try deviceScreen.resolveGetterAndWait(
+            named: "scale.getter : CoreGraphics.CGFloat", as: (() -> CGFloat).self)
+        // CoreSimulator declares `SimDisplayClass` as an unsigned short.
+        displayClass = try deviceScreen.resolveGetterAndWait(
+            named: "displayClass.getter : __C.SimDisplayClass", as: (() -> UInt16).self)
         registerScreenEvents = try deviceScreen.resolveMethodAndWait(
             named: "register(types:queue:handler:)",
             as: ((NativeSwiftValue, DispatchQueue, ScreenEventHandler) -> NativeSwiftValue).self,
@@ -145,6 +178,9 @@ struct SimulatorDisplayInterface {
         digitizerView = try view.resolveGetterAndWait(
             named: "digitizerView.getter : SimulatorKit.SimDigitizerInputView", as: (() -> NSView).self)
         renderScale = try view.resolveGetterAndWait(named: "renderScale", as: (() -> CGFloat).self)
+        setRenderScale = try view.resolveSetterAndWait(named: "renderScale", as: CGFloat.self)
+        sizeForScale = try view.resolveMethodAndWait(named: "size(for:)", as: ((CGFloat) -> CGSize).self)
+        scaleForSize = try view.resolveMethodAndWait(named: "scale(for:)", as: ((CGSize) -> CGFloat).self)
         rotation = try view.resolveSetterAndWait(named: "deviceRotation", as: Measurement<UnitAngle>.self)
         disconnect = try view.resolveMethodAndWait(
             named: "disconnect(completion: (() -> ())?) -> ()",
@@ -152,17 +188,52 @@ struct SimulatorDisplayInterface {
         beginResize = try view.resolveMethodAndWait(named: "beginResize()", as: (() -> Void).self)
         resize = try view.resolveMethodAndWait(named: "resizeTo(size:)", as: ((CGSize) -> Void).self)
         endResize = try view.resolveMethodAndWait(named: "endResize()", as: (() -> Void).self)
+        // The resize corners and their types are resilient, so they are passed
+        // indirectly, and the array's own members read its elements.
+        let typedResizeRect = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimDisplayView.TypedResizeRect")
+        let typedResizeRects = try runtime.resolveSwiftTypeAndWait(
+            named: "Swift.Array", genericArguments: [.type(typedResizeRect)])
+        let resizeRectType = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimDeviceChrome.ResizeRectType")
+        resizeRects = try view.resolveGetterAndWait(
+            named: "typedResizeRects.getter : [SimulatorKit.SimDisplayView.TypedResizeRect]",
+            as: (() -> NativeSwiftValue).self)
+        resizeRectCount = try typedResizeRects.resolveGetterAndWait(named: "count", as: (() -> Int).self)
+        resizeRectAtIndex = try typedResizeRects.resolveMethodAndWait(
+            named: "Swift.Array.subscript.getter : (Swift.Int) -> A", as: ((Int) -> NativeSwiftValue).self)
+        resizeRectFrame = try typedResizeRect.resolveGetterAndWait(
+            named: "rect.getter : __C.CGRect", as: (() -> CGRect).self, receiverABI: .opaque(named: typedResizeRect.name))
+        self.resizeRectType = try typedResizeRect.resolveGetterAndWait(
+            named: "type.getter : SimulatorKit.SimDeviceChrome.ResizeRectType", as: (() -> NativeSwiftValue).self,
+            valueABIs: [resizeRectType: try .opaque(named: resizeRectType.name)],
+            receiverABI: .opaque(named: typedResizeRect.name))
+        resizeRectTypeName = try resizeRectType.resolveGetterAndWait(
+            named: "rawValue.getter : Swift.String", as: (() -> String).self,
+            receiverABI: .opaque(named: resizeRectType.name))
+        showResizeCursors = try view.resolveSetterAndWait(named: "showResizeCursors", as: Bool.self)
 
         chromeState = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimDisplayChromeView.State")
-        setChromeState = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimDisplayChromeView")
-            .resolveSetterAndWait(
-                named: "state.setter : SimulatorKit.SimDisplayChromeView.State",
-                as: NativeSwiftValue.self,
-                valueABIs: [chromeState: try .opaque(named: chromeState.name)])
+        let chromeViewType = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimDisplayChromeView")
+        setChromeState = try chromeViewType.resolveSetterAndWait(
+            named: "state.setter : SimulatorKit.SimDisplayChromeView.State",
+            as: NativeSwiftValue.self,
+            valueABIs: [chromeState: try .opaque(named: chromeState.name)])
+        // The chrome and its images are resilient, so they are passed indirectly.
+        let deviceChrome = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimDeviceChrome")
+        let optionalChrome = try runtime.resolveSwiftTypeAndWait(named: "Swift.Optional",
+                                                                 genericArguments: [.type(deviceChrome)])
+        let images = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimDeviceChrome.Images")
+        chrome = try chromeViewType.resolveGetterAndWait(
+            named: "chrome.getter : SimulatorKit.SimDeviceChrome?", as: (() -> NativeSwiftValue).self,
+            valueABIs: [optionalChrome: try .opaque(named: optionalChrome.name)])
+        chromeImages = try deviceChrome.resolveGetterAndWait(
+            named: "images.getter : SimulatorKit.SimDeviceChrome.Images", as: (() -> NativeSwiftValue).self,
+            valueABIs: [images: try .opaque(named: images.name)], receiverABI: .opaque(named: deviceChrome.name))
+        chromeImagesPadding = try images.resolveGetterAndWait(
+            named: "padding.getter : __C.CGSize", as: (() -> CGSize).self, receiverABI: .opaque(named: images.name))
         setKeyboardEnabled = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimKeyboardInputDefaultDelegate")
             .resolveSetterAndWait(named: "isEnabled", as: Bool.self)
-        guard let keyboardDelegate = class_getInstanceVariable(displayClass, "_defaultKeyboardDelegate") else {
-            throw HostError.unavailable("\(displayClass) does not provide _defaultKeyboardDelegate")
+        guard let keyboardDelegate = class_getInstanceVariable(displayViewClass, "_defaultKeyboardDelegate") else {
+            throw HostError.unavailable("\(displayViewClass) does not provide _defaultKeyboardDelegate")
         }
         self.keyboardDelegate = keyboardDelegate
     }
@@ -334,12 +405,51 @@ final class HIDMessage {
     deinit { free(UnsafeMutableRawPointer(pointer)) }
 }
 
+/// An area at a corner of the bezel whose drag resizes the window,
+/// `SimDisplayView.TypedResizeRect`.
+struct DisplayResizeRect {
+    /// `SimDeviceChrome.ResizeRectType`, by its raw value: the corner of the
+    /// display that the drag moves.
+    enum Corner: String {
+        case lowerLeft, lowerRight, upperRight, upperLeft
+
+        var isLeft: Bool { self == .lowerLeft || self == .upperLeft }
+        var isLower: Bool { self == .lowerLeft || self == .lowerRight }
+    }
+
+    var corner: Corner
+    var rect: NSRect
+}
+
 @MainActor
 protocol SimulatorDisplay: AnyObject {
     var isBooted: Bool { get }
     var view: NSView { get }
     var inputView: NSView { get }
-    var naturalSize: NSSize { get }
+    /// `SimDisplayView.renderScale`: the display's size relative to the
+    /// device's screen in points, which the screen's resolution does not change.
+    var renderScale: CGFloat { get }
+    func setRenderScale(_ scale: CGFloat)
+    /// The display's size at `scale`, with the bezel when it is shown.
+    func size(for scale: CGFloat) -> NSSize
+    /// The largest scale at which the display fits `size`.
+    func scale(for size: NSSize) -> CGFloat
+    /// `SimDeviceScreen.scale`, the screen's pixels per point, or nil when unknown.
+    var screenScale: CGFloat? { get }
+    /// `SimDeviceScreen.displayClass`, or nil when unknown; 0 is a device's own screen.
+    var displayClass: UInt16? { get }
+    /// The padding of the bezel the display shows, `SimDeviceChrome.images.padding`,
+    /// or nil when it shows none: `SimDisplayChromeView.chrome` is nil while the
+    /// bezel is hidden and for a device type without one.
+    var chromePadding: NSSize? { get }
+    /// The areas at the bezel's corners whose drag resizes the window,
+    /// `SimDisplayView.typedResizeRects`, in `view`'s coordinates at the
+    /// display's scale; none without a bezel. SimulatorKit leaves clicks in
+    /// them to the window.
+    var resizeRects: [DisplayResizeRect] { get }
+    /// `SimDisplayView.showResizeCursors`: whether the view shows resize
+    /// cursors over `resizeRects`.
+    func setShowsResizeCursors(_ shows: Bool)
     /// Called on the main actor when the screen's properties change, such as
     /// the interface orientation of the guest.
     var onPropertiesChange: (() -> Void)? { get set }
@@ -427,7 +537,6 @@ final class SimulatorConnection: SimulatorDisplay {
             try? unsafe display.disconnect.unsafeInvoke(on: view, NativeSwiftClosure {})
             throw error
         }
-        setChromeVisible(true)
         let handler = try SimulatorDisplayInterface.ScreenEventHandler { [weak self] _, _ in
             MainActor.assumeIsolated { self?.onPropertiesChange?() }
         }
@@ -440,11 +549,58 @@ final class SimulatorConnection: SimulatorDisplay {
 
     var isBooted: Bool { !disconnected && device.state == 3 }
 
-    var naturalSize: NSSize {
-        let scale = (try? unsafe runtime.display.renderScale.unsafeInvoke(on: view)) ?? 0
-        let size = view.intrinsicContentSize
-        let actual = size.width > 0 && size.height > 0 ? size : view.frame.size
-        return scale > 0 ? NSSize(width: actual.width / scale, height: actual.height / scale) : actual
+    var renderScale: CGFloat {
+        read("read the display scale", otherwise: 0) { try unsafe runtime.display.renderScale.unsafeInvoke(on: view) }
+    }
+
+    func setRenderScale(_ scale: CGFloat) {
+        perform("scale the display") { try unsafe runtime.display.setRenderScale.unsafeInvoke(on: view, scale) }
+        view.invalidateIntrinsicContentSize()
+    }
+
+    func size(for scale: CGFloat) -> NSSize {
+        read("measure the display", otherwise: .zero) { try unsafe runtime.display.sizeForScale.unsafeInvoke(on: view, scale) }
+    }
+
+    func scale(for size: NSSize) -> CGFloat {
+        read("measure the display", otherwise: 0) { try unsafe runtime.display.scaleForSize.unsafeInvoke(on: view, size) }
+    }
+
+    var screenScale: CGFloat? {
+        read("read the screen scale", otherwise: nil) { try unsafe runtime.display.screenScale.unsafeInvoke(on: screen) }
+    }
+
+    var displayClass: UInt16? {
+        read("read the display class", otherwise: nil) { try unsafe runtime.display.displayClass.unsafeInvoke(on: screen) }
+    }
+
+    var chromePadding: NSSize? {
+        let display = runtime.display
+        return read("read the device bezel", otherwise: nil) {
+            guard let chrome = try unsafe display.chrome.unsafeInvoke(on: chromeView)
+                .resolveEnumPayloadAndWait(forCase: "some") else { return nil }
+            return try unsafe display.chromeImagesPadding.unsafeInvoke(on: display.chromeImages.unsafeInvoke(on: chrome))
+        }
+    }
+
+    var resizeRects: [DisplayResizeRect] {
+        let display = runtime.display
+        return read("read the bezel's resize corners", otherwise: []) {
+            let rects = try unsafe display.resizeRects.unsafeInvoke(on: view)
+            var result: [DisplayResizeRect] = []
+            for index in 0..<(try unsafe display.resizeRectCount.unsafeInvoke(on: rects)) {
+                let rect = try unsafe display.resizeRectAtIndex.unsafeInvoke(on: rects, index)
+                let type = try unsafe display.resizeRectTypeName.unsafeInvoke(on: display.resizeRectType.unsafeInvoke(on: rect))
+                // A corner type that this host does not know resizes nothing.
+                guard let corner = DisplayResizeRect.Corner(rawValue: type) else { continue }
+                result.append(DisplayResizeRect(corner: corner, rect: try unsafe display.resizeRectFrame.unsafeInvoke(on: rect)))
+            }
+            return result
+        }
+    }
+
+    func setShowsResizeCursors(_ shows: Bool) {
+        perform("show resize cursors") { try unsafe runtime.display.showResizeCursors.unsafeInvoke(on: view, shows) }
     }
 
     var guestInterfaceAngle: Double? {
@@ -532,6 +688,13 @@ final class SimulatorConnection: SimulatorDisplay {
     // These members were prepared during startup; a failure here means
     // SimulatorKit rejected the value, which the display cannot recover from.
     private func perform(_ operation: String, _ body: () throws -> Void) {
-        do { try body() } catch { hostLog("Could not \(operation): \(error.localizedDescription)") }
+        read(operation, otherwise: (), body)
+    }
+
+    private func read<Value>(_ operation: String, otherwise fallback: Value, _ body: () throws -> Value) -> Value {
+        do { return try body() } catch {
+            hostLog("Could not \(operation): \(error.localizedDescription)")
+            return fallback
+        }
     }
 }

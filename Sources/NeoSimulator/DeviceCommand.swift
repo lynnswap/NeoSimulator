@@ -22,7 +22,7 @@ struct DeviceCommand {
         case toggleSlowAnimations, graphicsQualityDefault, graphicsQualityLow, graphicsQualityHigh
         case colorBlendedLayers, colorCopiedImages, colorMisalignedImages, colorOffscreenRendered
         case openSystemLog, simulateMemoryWarning
-        case showDeviceBezels, stayOnTop, fitScreen
+        case stayOnTop, physicalSize, pointAccurate, pixelAccurate, fitScreen
     }
 
     struct Toolbar {
@@ -45,12 +45,34 @@ struct DeviceCommand {
     var isSupported: (DeviceCapabilities) -> Bool = { _ in true }
     /// Whether the command can run now. Defaults to a connected, booted device.
     var isEnabled: (DeviceWindowController) -> Bool = { $0.session.canPerformCommands }
-    var state: ((DeviceWindowController) -> NSControl.StateValue)?
+    /// The checkmark for the active window, or nil to leave it as it is.
+    var state: ((DeviceWindowController) -> NSControl.StateValue?)?
+    /// Whether the checkmark stays as it is without an active device window,
+    /// instead of turning off.
+    var keepsStateWithoutWindow = false
     /// The title for the current state, when it changes with the state.
     var stateTitle: ((DeviceWindowController) -> String)?
     let perform: (DeviceWindowController) -> Void
 
     static func command(_ id: ID) -> DeviceCommand { catalog[id]! }
+
+    /// Sets the checkmark and title of the command's menu item for the
+    /// active device window, or for none, and returns whether the command can
+    /// run.
+    func validate(_ item: NSMenuItem, for controller: DeviceWindowController?) -> Bool {
+        guard let controller else {
+            if !keepsStateWithoutWindow { item.state = .off }
+            item.title = title
+            return false
+        }
+        if let state {
+            if let value = state(controller) { item.state = value }
+        } else {
+            item.state = .off
+        }
+        item.title = stateTitle?(controller) ?? title
+        return isEnabled(controller)
+    }
 
     static let catalog: [ID: DeviceCommand] = Dictionary(uniqueKeysWithValues: [
         // File
@@ -194,13 +216,23 @@ struct DeviceCommand {
             controller.run { try controller.session.simulateMemoryWarning() }
         },
         // Window
-        DeviceCommand(id: .showDeviceBezels, title: "Show Device Bezels",
-                      state: { $0.showsDeviceBezel ? .on : .off }) { $0.toggleDeviceBezel() },
         DeviceCommand(id: .stayOnTop, title: "Stay On Top",
                       state: { $0.staysOnTop ? .on : .off }) { $0.toggleStayOnTop() },
-        DeviceCommand(id: .fitScreen, title: "Fit Screen", key: "4",
-                      isEnabled: { $0.canFitScreen }) { $0.fitScreen() },
+        scale(.physicalSize, title: "Physical Size", key: "1"),
+        scale(.pointAccurate, title: "Point Accurate", key: "2"),
+        scale(.pixelAccurate, title: "Pixel Accurate", key: "3"),
+        scale(.fitScreen, title: "Fit Screen", key: "4"),
     ].map { ($0.id, $0) })
+
+    /// A window scale command. Like Simulator.app, Fit Screen has no checkmark,
+    /// and the others keep theirs while they are unavailable, including
+    /// without a device window, where Simulator.app does not validate them.
+    private static func scale(_ mode: WindowScaleMode, title: String, key: String) -> DeviceCommand {
+        DeviceCommand(id: ID(rawValue: mode.rawValue)!, title: title, key: key,
+                      isEnabled: { $0.canSetScale(mode) },
+                      state: mode == .fitScreen ? nil : { $0.scaleState(mode) },
+                      keepsStateWithoutWindow: true) { $0.setScale(mode) }
+    }
 
     /// Touch ID ▸ Enrolled or Face ID ▸ Enrolled. The two share one guest state.
     private static func biometricEnrollment(_ id: ID, feature: String) -> DeviceCommand {

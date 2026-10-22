@@ -85,7 +85,8 @@ xcode-simulator-host use neo
 Neo currently provides:
 
 - a searchable device browser to start simulators or reopen their windows;
-- one resizable window for each booted iOS simulator;
+- one window for each booted iOS simulator, resized by dragging the corners of
+  its device bezel, or its edges while it shows no bezel;
 - device bezel, touch, accessibility, and focused keyboard input;
 - a Simulator-style window header with the device name, runtime, Home,
   Save Screen, and Rotate Right controls;
@@ -98,8 +99,13 @@ Neo currently provides:
 - File, Edit, Device, I/O, Features, Debug, Window, and Help menus in
   Simulator.app's order, showing only the commands the active device supports;
 - Home, Lock, Shake, rotation, the six device orientations, Rotate Device
-  Automatically, appearance, bezel, Stay on Top, Fit Screen, and standard
-  window commands;
+  Automatically, appearance, bezel, Stay on Top, and standard window commands;
+- Simulator.app's window scales: Physical Size (Command-1), Point Accurate
+  (Command-2), Pixel Accurate (Command-3), and Fit Screen (Command-4). As in
+  Simulator.app, a window with a bezel may extend past the screen, and a
+  device's window reopens, in the arrangement of displays it closed in,
+  centered where it closed, at the scale it closed reduced to fit the screen,
+  and moved inside the screen where it crosses an edge;
 - the hardware inputs the active device supports: Action Button, Siri, App
   Switcher, Trigger Screenshot, Increase and Decrease Volume, and Authorize
   Apple Pay. The Side Button command is defined for watchOS devices, which Neo
