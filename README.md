@@ -94,8 +94,8 @@ Neo currently provides:
   its file names, save folders, and device-mask option; recordings are
   finalized when a window closes or the app quits;
 - Edit → Get Pasteboard and Send Pasteboard, which copy the whole pasteboard
-  between the Mac and the active device when you choose them; Neo never
-  synchronizes pasteboards on its own;
+  between the Mac and the active device when you choose them, and
+  Automatically Sync Pasteboard, which stays off until you turn it on;
 - simulator app installation and image, video, and vCard import through a file
   picker or drag and drop;
 - opening web addresses and custom app URL schemes on the selected device;
@@ -191,10 +191,23 @@ puts a PNG of the screen, without the mask, on the Mac pasteboard.
 **Edit → Get Pasteboard** replaces the Mac pasteboard with the active device's,
 and **Edit → Send Pasteboard** replaces the device's pasteboard with the Mac's,
 with all their types, such as text and images. They are available for iPhone
-and iPad devices. Nothing crosses between the Mac and a device otherwise:
-Simulator.app synchronizes pasteboards automatically by default, but Neo does
-not. As in Simulator.app, the Mac reads what Get Pasteboard brings from the
-device when an app pastes it, so paste it while the device's window is open.
+and iPad devices while Automatically Sync Pasteboard is off. As in
+Simulator.app, the Mac reads what Get Pasteboard brings from the device when an
+app pastes it, so paste it while the device's window is open.
+
+**Edit → Automatically Sync Pasteboard** synchronizes pasteboards as
+Simulator.app does: what you copy on the Mac reaches every device that has a
+window, and what an app copies on one device reaches the Mac and the other
+devices. A device that connects while it is on, for example after a restart,
+receives the Mac pasteboard; turning it on sends nothing until something is
+copied. Neo remembers the choice (`PasteboardAutomaticSync`).
+
+Simulator.app turns automatic synchronization on by default; Neo leaves it off
+until you turn it on. While it is on, everything you copy on the Mac, including
+passwords and other private text, goes to every open simulator, where any app
+can read it, and a copy made inside a simulator, for example by an app under
+test, replaces what you copied on the Mac. While it is off, nothing crosses
+between the Mac and a device unless you choose Get or Send Pasteboard.
 
 **I/O → Keyboard → Connect Hardware Keyboard** (Shift-Command-K) connects or
 disconnects the active device's hardware keyboard. As in Simulator.app, each
