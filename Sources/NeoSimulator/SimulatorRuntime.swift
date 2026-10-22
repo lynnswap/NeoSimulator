@@ -165,8 +165,13 @@ struct SimulatorDisplayInterface {
         isDefault = try runtime.resolveObjCMethodAndWait(on: screenClass, selector: "isDefault", as: (() -> Bool).self)
         isCarPlay = try runtime.resolveObjCMethodAndWait(on: screenClass, selector: "isCarPlay", as: (() -> Bool).self)
         let deviceScreen = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimDeviceScreen")
-        buttonTarget = try deviceScreen
-            .resolveGetterAndWait(named: "buttonTarget.getter : __C.IndigoHIDTarget", as: (() -> UInt32).self)
+        // SimulatorKit does not export the descriptors of the imported C types
+        // these getters return, so the host integers state their conventions.
+        let uint32 = try runtime.resolveSwiftTypeAndWait(named: "Swift.UInt32")
+        let uint16 = try runtime.resolveSwiftTypeAndWait(named: "Swift.UInt16")
+        buttonTarget = try deviceScreen.resolveGetterAndWait(
+            named: "buttonTarget.getter : __C.IndigoHIDTarget", as: (() -> UInt32).self,
+            valueABIs: [uint32: .uint32])
         // The event types and events are resilient, so they are passed indirectly.
         let eventTypes = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimDeviceScreen.ScreenEventTypes")
         let event = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimDeviceScreen.ScreenEvent")
@@ -182,7 +187,8 @@ struct SimulatorDisplayInterface {
             named: "scale.getter : CoreGraphics.CGFloat", as: (() -> CGFloat).self)
         // CoreSimulator declares `SimDisplayClass` as an unsigned short.
         displayClass = try deviceScreen.resolveGetterAndWait(
-            named: "displayClass.getter : __C.SimDisplayClass", as: (() -> UInt16).self)
+            named: "displayClass.getter : __C.SimDisplayClass", as: (() -> UInt16).self,
+            valueABIs: [uint16: .uint16])
         registerScreenEvents = try deviceScreen.resolveMethodAndWait(
             named: "register(types:queue:handler:)",
             as: ((NativeSwiftValue, DispatchQueue, ScreenEventHandler) -> NativeSwiftValue).self,
@@ -260,8 +266,11 @@ struct SimulatorDisplayInterface {
         let digitizer = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimDigitizerInputView")
         setSupportsTouchPressure = try digitizer.resolveSetterAndWait(named: "supportTouchPressure", as: Bool.self)
         setUsesTrackpadForce = try digitizer.resolveSetterAndWait(named: "useForceTrackpadForPressure", as: Bool.self)
+        // TouchMode has no field metadata to establish its convention.
+        let touchMode = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimDigitizerInputView.TouchMode")
         setSimulatedTouchMode = try digitizer.resolveSetterAndWait(
-            named: "simulatedTouchMode.setter : SimulatorKit.SimDigitizerInputView.TouchMode", as: Int.self)
+            named: "simulatedTouchMode.setter : SimulatorKit.SimDigitizerInputView.TouchMode", as: Int.self,
+            valueABIs: [touchMode: .int])
         let drawOption = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimDigitizerInputView.DrawOption")
         let drawOptionABIs: [NativeSwiftType: NativeType] = [drawOption: try .opaque(named: drawOption.name)]
         drawOptions = try digitizer.resolveGetterAndWait(
