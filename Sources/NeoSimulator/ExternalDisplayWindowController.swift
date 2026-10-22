@@ -15,8 +15,12 @@ import AppKit
 @MainActor
 final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegate, DisplayScaling {
     /// The subtitle's label, which Simulator.app shows where a device window
-    /// shows the runtime.
-    static func subtitle(isCarPlay: Bool) -> String { isCarPlay ? "CarPlay" : "External Display" }
+    /// shows the runtime. Unlike Simulator.app's, it also says when the guest
+    /// does not show the display's size, so that the display's picture, such
+    /// as 720×480 in its top-left corner, is not taken for that size's.
+    static func subtitle(isCarPlay: Bool, showsSize: Bool = true) -> String {
+        isCarPlay ? "CarPlay" : showsSize ? "External Display" : "External Display – Size Not Shown by Device"
+    }
 
     /// Like Simulator.app, a CarPlay window takes no full screen space of its
     /// own and may accompany a window in full screen.
@@ -45,6 +49,8 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
     private var screenSize: NSSize
     /// Whether the display is a CarPlay screen, which the subtitle names.
     private var isCarPlay: Bool
+    /// Whether the guest shows the display's size, which the subtitle says when it does not.
+    private var showsSize: Bool
     /// Whether the window is key, while the display can take the Mac's keyboard.
     private(set) var isKey = false
     private let keyboard: DisplayKeyboardInput
@@ -67,6 +73,7 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
         content = ExternalDisplayContentView(display: display.view)
         screenSize = Self.points(of: state) ?? .zero
         isCarPlay = state.isCarPlay
+        showsSize = session.externalDisplayShowsItsSize(in: state)
         guard screenSize.width > 0, screenSize.height > 0 else {
             display.disconnect()
             throw HostError.unavailable("The external display has no usable size")
@@ -79,8 +86,8 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
         keyboard = DisplayKeyboardInput(window: window, display: display)
         fitting = DisplayFitting(display: display, content: content)
         super.init(window: window)
-        (window.title, window.subtitle) = deviceWindowTitles(name: session.device.name,
-                                                             runtimeName: Self.subtitle(isCarPlay: isCarPlay))
+        (window.title, window.subtitle) = deviceWindowTitles(
+            name: session.device.name, runtimeName: Self.subtitle(isCarPlay: isCarPlay, showsSize: showsSize))
         window.appearance = NSAppearance(named: .darkAqua)
         window.titlebarSeparatorStyle = .none
         window.tabbingMode = .disallowed
@@ -284,11 +291,15 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
     /// display becoming a CarPlay screen or another.
     func screenChanged(_ state: ExternalScreenState) {
         guard !closed else { return }
-        if state.isCarPlay != isCarPlay, let window {
+        let showsSize = session.externalDisplayShowsItsSize(in: state)
+        if state.isCarPlay != isCarPlay || showsSize != self.showsSize, let window {
+            if state.isCarPlay != isCarPlay {
+                window.collectionBehavior = Self.collectionBehavior(isCarPlay: state.isCarPlay)
+            }
             isCarPlay = state.isCarPlay
-            (window.title, window.subtitle) = deviceWindowTitles(name: session.device.name,
-                                                                 runtimeName: Self.subtitle(isCarPlay: isCarPlay))
-            window.collectionBehavior = Self.collectionBehavior(isCarPlay: isCarPlay)
+            self.showsSize = showsSize
+            (window.title, window.subtitle) = deviceWindowTitles(
+                name: session.device.name, runtimeName: Self.subtitle(isCarPlay: isCarPlay, showsSize: showsSize))
         }
         guard let size = Self.points(of: state), size != screenSize else { return }
         screenSize = size
