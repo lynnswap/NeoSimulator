@@ -73,9 +73,6 @@ struct InputFocusTests {
             item.toolTip == label && item.image?.accessibilityDescription == label && item.image?.tiffRepresentation
                 == NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?.tiffRepresentation
         }
-        func wait(until condition: () -> Bool) async throws {
-            for _ in 0..<200 where !condition() { try await Task.sleep(for: .milliseconds(10)) }
-        }
         #expect(shows("camera.on.rectangle", "Save Screen"))
 
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -177,9 +174,6 @@ struct InputFocusTests {
         }
         defer { controller.invalidate() }
         let pointer = try ToolbarPointer(controller)
-        func wait(until condition: () -> Bool) async throws {
-            for _ in 0..<200 where !condition() { try await Task.sleep(for: .milliseconds(10)) }
-        }
         // With Option down over the toolbar, Save Screen records the screen as
         // File ▸ Record Screen does.
         pointer.enter()
@@ -3892,6 +3886,18 @@ struct InputFocusTests {
             session: session, preferences: preferences,
             touchPressure: touchPressure ?? TouchPressure(preferences: preferences, forceTouchTrackpad: { false }),
             performWindowDrag: performWindowDrag, onClose: onClose, onRestart: onRestart)
+    }
+
+    /// Waits up to two seconds for `condition`, checking it every 10 ms. It
+    /// stops checking once the condition holds: a `for … where` loop would
+    /// check it on every remaining pass without suspending, and a check that
+    /// renders images then holds up the main actor that tests running
+    /// alongside share.
+    private func wait(until condition: () -> Bool) async throws {
+        for _ in 0..<200 {
+            if condition() { return }
+            try await Task.sleep(for: .milliseconds(10))
+        }
     }
 
     /// The features of an iPhone that the tests need unless they choose others.
