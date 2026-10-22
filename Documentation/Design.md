@@ -741,6 +741,12 @@ These differ from Simulator.app:
   for until the device has one.
 - Simulator.app leaves a newly connected display at Shallow Press whatever the
   checkmark shows; NeoSimulator gives it the app's mode.
+- Simulator.app applies Use Trackpad Force to a window only when it opens or
+  the setting changes, so a window that opened before a Force Touch trackpad
+  was connected ignores its force while the checkmark shows the option on.
+  NeoSimulator watches the I/O Registry for HID event services and applies the
+  option again to every window when a Force Touch trackpad appears or goes
+  away.
 - NeoSimulator presents a failed Connect Hardware Keyboard on the window, where
   Simulator.app only prints it, and logs failures of a connection's keyboard
   settings and of a language change, which Simulator.app discards. As in
