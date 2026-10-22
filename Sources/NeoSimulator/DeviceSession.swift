@@ -38,6 +38,13 @@ struct DeviceCapabilities {
     static let slowMotionStateful = "com.apple.UIKit.SimulatorSlowMotionStateful"
     /// `SimFeatureUIKitGraphicsQualityOverride`.
     static let graphicsQualityOverride = "com.apple.UIKit.SimulatorGraphicsQualityOverride"
+    /// `SimFeatureKeyboard`: the guest takes a hardware keyboard, and the
+    /// Mac's keyboard types into it. Simulator.app shows I/O ▸ Keyboard only
+    /// with it.
+    static let keyboard = "com.apple.hid.keyboard"
+    /// `SimFeatureTouchPressure`: the guest takes the pressure of a touch,
+    /// such as 3D Touch. Simulator.app shows I/O ▸ Touch Pressure only with it.
+    static let touchPressure = "com.apple.hid.touch-pressure"
 }
 
 /// Preferences Simulator.app keeps in its standard user defaults.
@@ -90,8 +97,19 @@ enum HostPreferences {
     static let locationLatitude = "LocationLatitude"
     static let locationLongitude = "LocationLongitude"
     /// A dictionary of each device's own preferences, by UDID: see
-    /// `PreferenceStore.windowGeometry(forDevice:screens:)`.
+    /// `PreferenceStore.windowGeometry(forDevice:screens:)` and
+    /// `PreferenceStore.connectsHardwareKeyboard(forDevice:)`.
     static let devicePreferences = "DevicePreferences"
+    /// I/O ▸ Keyboard ▸ Use the Same Keyboard Language as macOS, on unless
+    /// turned off: see `PreferenceStore.syncsKeyboardLanguage`.
+    static let enableKeyboardSync = "EnableKeyboardSync"
+    /// I/O ▸ Keyboard ▸ Connect Hardware Keyboard, on unless turned off. The
+    /// command saves each device's choice under this key in its
+    /// `DevicePreferences`; see `PreferenceStore.connectsHardwareKeyboard(forDevice:)`.
+    static let connectHardwareKeyboard = "ConnectHardwareKeyboard"
+    /// I/O ▸ Touch Pressure ▸ Use Trackpad Force, on unless turned off; it
+    /// applies only with a Force Touch trackpad. See `TouchPressure`.
+    static let useTrackpadForce = "UseTrackpadForce"
     /// The arrangements of the Mac's screens that device windows were saved
     /// in, by UUID: see `PreferenceStore.screenConfiguration(for:)`.
     static let screenConfigurations = "ScreenConfigurations"
@@ -105,6 +123,7 @@ enum HostPreferences {
             slowMotionAnimation: false, graphicsQualityOverride: GraphicsQuality.deviceDefault.rawValue,
             gifMaxFramerate: 10, gifMaxFrameSize: 640, gifUseDither: true, gifDitherDepth: 4.0,
             locationMode: LocationSelection.customMode, locationLatitude: 37.785834, locationLongitude: -122.406417,
+            enableKeyboardSync: true, connectHardwareKeyboard: true, useTrackpadForce: true,
         ])
     }
 
@@ -228,6 +247,11 @@ final class DeviceSession {
     let capabilities: DeviceCapabilities
     @ObservationIgnored let display: any SimulatorDisplay
     @ObservationIgnored let tools: DeviceTools
+    /// Keeps the device's keyboard preferences and the app-wide ones.
+    @ObservationIgnored private let preferences: any PreferenceStore
+    /// The Mac keyboard's language, which Use the Same Keyboard Language as
+    /// macOS gives the guest, or nil when it cannot be determined.
+    @ObservationIgnored private let hostKeyboardLanguage: @MainActor () -> String?
     @ObservationIgnored private let recordings: RecordingStore
     @ObservationIgnored private let makeRecordingProcess: (URL, DeviceTools.ScreenMask) -> Process
     @ObservationIgnored private let openLog: (URL) async throws -> Void
@@ -266,14 +290,20 @@ final class DeviceSession {
     ///   - recordingProcess: Creates the recording process for a destination
     ///     and mask. Defaults to the device's direct `simctl` recorder.
     ///   - openLog: Opens the device's system log. Defaults to Console.
+    ///   - preferences: Where the keyboard preferences are kept.
+    ///   - hostKeyboardLanguage: Reads the Mac keyboard's language.
     init(device: AvailableDevice, capabilities: DeviceCapabilities, display: any SimulatorDisplay,
          tools: DeviceTools, recordings: RecordingStore = RecordingStore(),
          recordingProcess: ((URL, DeviceTools.ScreenMask) -> Process)? = nil,
-         openLog: @escaping (URL) async throws -> Void = DeviceSession.openInConsole) {
+         openLog: @escaping (URL) async throws -> Void = DeviceSession.openInConsole,
+         preferences: any PreferenceStore = UserDefaults.standard,
+         hostKeyboardLanguage: @escaping @MainActor () -> String? = HostKeyboard.language) {
         self.device = device
         self.capabilities = capabilities
         self.display = display
         self.tools = tools
+        self.preferences = preferences
+        self.hostKeyboardLanguage = hostKeyboardLanguage
         self.recordings = recordings
         // Simulator.app records Apple Vision Pro in HEVC and other devices in H.264.
         let codec: DeviceTools.VideoCodec = capabilities.family == .vision ? .hevc : .h264
@@ -477,6 +507,67 @@ final class DeviceSession {
     }
 
     func triggerCloudSync() async throws { try await display.triggerCloudSync() }
+
+    // MARK: Keyboard
+
+    /// Whether the device takes a hardware keyboard, which Simulator.app's
+    /// I/O ▸ Keyboard needs.
+    var supportsKeyboard: Bool { capabilities.supportsFeature(DeviceCapabilities.keyboard) }
+
+    /// Connect Hardware Keyboard's checkmark: the device's choice. Like
+    /// Simulator.app's keyboard controller, the Mac's keyboard types into the
+    /// device only while it is on, and Toggle Software Keyboard needs it.
+    var connectsHardwareKeyboard: Bool {
+        supportsKeyboard && preferences.connectsHardwareKeyboard(forDevice: device.id)
+    }
+
+    /// Connect Hardware Keyboard: flips the device's choice and saves it, as
+    /// Simulator.app does, then connects or disconnects the guest's keyboard.
+    /// The choice is saved first, so it stays when applying fails, and
+    /// choosing again retries. Simulator.app only logs the failure.
+    func toggleHardwareKeyboard() async throws {
+        guard canPerformCommands else { return }
+        let connects = !preferences.connectsHardwareKeyboard(forDevice: device.id)
+        preferences.setConnectsHardwareKeyboard(connects, forDevice: device.id)
+        try await display.setHardwareKeyboardConnected(connects)
+    }
+
+    /// Use the Same Keyboard Language as macOS, an app-wide preference.
+    var syncsKeyboardLanguage: Bool { preferences.syncsKeyboardLanguage }
+
+    /// Like Simulator.app, changes only the preference. The guest takes the
+    /// Mac's language on its next connection or input-source change.
+    func toggleKeyboardLanguageSync() {
+        preferences.set(!preferences.syncsKeyboardLanguage, forKey: HostPreferences.enableKeyboardSync)
+    }
+
+    /// Gives the guest's keyboard the language of the Mac's while Use the
+    /// Same Keyboard Language as macOS is on, as Simulator.app does when the
+    /// device connects and when the Mac's input source changes.
+    func syncKeyboardLanguage() async throws {
+        guard canPerformCommands, preferences.syncsKeyboardLanguage else { return }
+        guard let language = hostKeyboardLanguage() else {
+            throw HostError.operation("Could not determine the language of the Mac's keyboard.")
+        }
+        try await display.setKeyboardLanguage(language)
+    }
+
+    /// Applies the keyboard settings to a device that was just connected, as
+    /// Simulator.app does on each connection: the hardware keyboard, then the
+    /// Mac's keyboard language. Each failure goes to `failure`, and one does
+    /// not stop the other.
+    ///
+    /// Simulator.app connects the hardware keyboard as the app-wide
+    /// `ConnectHardwareKeyboard` says, while its checkmark and keyboard input
+    /// follow the device's choice, so a device whose keyboard was disconnected
+    /// gets it back on its next connection. NeoSimulator applies the choice
+    /// the checkmark shows, which the app-wide value only stands in for.
+    func applyKeyboardSettings(failure: (Error) -> Void) async {
+        guard canPerformCommands else { return }
+        do { try await display.setHardwareKeyboardConnected(preferences.connectsHardwareKeyboard(forDevice: device.id)) }
+        catch { failure(error) }
+        do { try await syncKeyboardLanguage() } catch { failure(error) }
+    }
 
     // MARK: Debug
 

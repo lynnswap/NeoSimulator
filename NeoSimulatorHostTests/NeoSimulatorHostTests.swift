@@ -1406,7 +1406,7 @@ struct InputFocusTests {
         defer { NSApp.mainMenu = nil }
         let features: Set<String> = [
             DeviceCapabilities.actionButtonStaccato, DeviceCapabilities.siri,
-            DeviceCapabilities.routableAudio, DeviceCapabilities.applePayAuthorization,
+            DeviceCapabilities.routableAudio, DeviceCapabilities.applePayAuthorization, DeviceCapabilities.keyboard,
         ]
         let controller = try makeController(TestDisplay(), features: features)
         defer { controller.invalidate() }
@@ -2284,9 +2284,236 @@ struct InputFocusTests {
         #expect(failures.count == 1)
     }
 
+    // MARK: Keyboard and touch pressure
+
+    @Test func keyboardAndTouchPressureMenusFollowSimulatorApp() throws {
+        _ = NSApplication.shared
+        let menus = MenuController(application: nil)
+        menus.install()
+        defer { NSApp.mainMenu = nil }
+        let io = try #require(NSApp.mainMenu?.items.first { $0.title == "I/O" }?.submenu)
+        func visible(_ features: Set<String>) -> [String] {
+            menus.updateVisibility(in: io, for: DeviceCapabilities(family: .iPhone, runtimeVersion: 0x1B_00_00,
+                                                                   supportsFeature: { features.contains($0) }))
+            return io.items.filter { !$0.isHidden }.map { $0.isSeparatorItem ? "-" : $0.title }
+        }
+        #expect(visible([DeviceCapabilities.keyboard, DeviceCapabilities.touchPressure])
+            == ["Keyboard", "Touch Pressure", "-", "Open URL…"])
+        // Each submenu needs its feature.
+        #expect(visible([DeviceCapabilities.touchPressure]) == ["Touch Pressure", "-", "Open URL…"])
+        #expect(visible([]) == ["Open URL…"])
+        func items(_ title: String) throws -> [NSMenuItem] {
+            try #require(io.items.first { $0.title == title }?.submenu).items
+        }
+        let keyboard = try items("Keyboard"), pressure = try items("Touch Pressure")
+        #expect(keyboard.map(\.title) == ["Use the Same Keyboard Language as macOS", "Connect Hardware Keyboard",
+                                          "Toggle Software Keyboard"])
+        #expect(pressure.map(\.title) == ["Use Trackpad Force", "Shallow Press", "Deep Press"])
+        let shortcuts = (keyboard + pressure).filter { !$0.keyEquivalent.isEmpty }
+        #expect(shortcuts.map(\.title) == ["Connect Hardware Keyboard", "Toggle Software Keyboard", "Shallow Press",
+                                           "Deep Press"])
+        #expect(shortcuts.map(\.keyEquivalent) == ["k", "k", "1", "2"])
+        #expect(shortcuts.map(\.keyEquivalentModifierMask) == [[.command, .shift], .command, [.command, .shift],
+                                                                [.command, .shift]])
+    }
+
+    @Test func connectHardwareKeyboardIsEachDevicesChoiceAndKeepsTheMacsKeyboardWithIt() async throws {
+        let preferences = MemoryPreferences()
+        let first = TestDisplay(), second = TestDisplay()
+        let a = try makeController(first, device: "A", preferences: preferences)
+        let b = try makeController(second, device: "B", preferences: preferences)
+        defer { a.invalidate(); b.invalidate() }
+        let connect = DeviceCommand.command(.connectHardwareKeyboard)
+        let software = DeviceCommand.command(.toggleSoftwareKeyboard)
+        a.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification, object: a.window))
+        #expect(connect.state?(a) == .on && first.keyboard == [true])
+
+        a.perform(.connectHardwareKeyboard)
+        for _ in 0..<100 where first.hardwareKeyboard.isEmpty { await Task.yield() }
+        #expect(first.hardwareKeyboard == [false])
+        // Simulator.app's key: DevicePreferences[UDID].ConnectHardwareKeyboard.
+        let devices = preferences.values[HostPreferences.devicePreferences] as? [String: [String: Any]]
+        #expect(devices?["A"]?[HostPreferences.connectHardwareKeyboard] as? Bool == false)
+        #expect(connect.state?(a) == .off && connect.state?(b) == .on)
+        // Without a hardware keyboard, the Mac's keyboard does not type into
+        // the device, also when its window becomes key again, and the
+        // software keyboard cannot be toggled.
+        #expect(first.keyboard == [true, false])
+        a.windowDidResignKey(Notification(name: NSWindow.didResignKeyNotification, object: a.window))
+        a.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification, object: a.window))
+        #expect(first.keyboard == [true, false])
+        #expect(!software.isEnabled(a) && software.isEnabled(b))
+        a.perform(.toggleSoftwareKeyboard)
+        #expect(first.events.isEmpty)
+        #expect(second.hardwareKeyboard.isEmpty)
+
+        a.perform(.connectHardwareKeyboard)
+        for _ in 0..<100 where first.hardwareKeyboard.count < 2 { await Task.yield() }
+        #expect(first.hardwareKeyboard == [false, true] && first.keyboard == [true, false, true])
+        #expect(connect.state?(a) == .on && software.isEnabled(a))
+    }
+
+    @Test func aFailedHardwareKeyboardChangeIsReportedAndKept() async throws {
+        let preferences = MemoryPreferences()
+        let display = TestDisplay()
+        display.hardwareKeyboardError = HostError.operation("keyboard failed")
+        let controller = try makeController(display, preferences: preferences)
+        defer { controller.invalidate() }
+        controller.showWindow(nil)
+        let window = try #require(controller.window)
+        controller.perform(.connectHardwareKeyboard)
+        for _ in 0..<100 where window.attachedSheet == nil { await Task.yield() }
+        #expect(try #require(window.attachedSheet).isVisible)
+        // Like Simulator.app, the choice is saved before it is applied, so it
+        // stays; choosing again retries.
+        #expect(!preferences.connectsHardwareKeyboard(forDevice: "test-device"))
+        window.endSheet(try #require(window.attachedSheet))
+    }
+
+    @Test func connectingAppliesTheDevicesKeyboardChoiceAndTheMacsLanguage() async throws {
+        func apply(_ preferences: MemoryPreferences, device: String = "A", language: String? = "ja",
+                   failing display: TestDisplay = TestDisplay()) async throws -> (TestDisplay, [String]) {
+            let session = try makeSession(display, device: device, preferences: preferences,
+                                          keyboardLanguage: { language })
+            var failures: [String] = []
+            await session.applyKeyboardSettings { failures.append($0.localizedDescription) }
+            return (display, failures)
+        }
+        // Without choices, the device gets a hardware keyboard and the Mac's language.
+        var (display, failures) = try await apply(MemoryPreferences())
+        #expect(display.hardwareKeyboard == [true] && display.keyboardLanguages == ["ja"] && failures.isEmpty)
+        // The device's own choice comes first, then the app-wide value.
+        let preferences = MemoryPreferences()
+        preferences.setConnectsHardwareKeyboard(false, forDevice: "A")
+        preferences.set(true, forKey: HostPreferences.connectHardwareKeyboard)
+        (display, _) = try await apply(preferences)
+        #expect(display.hardwareKeyboard == [false])
+        preferences.set(false, forKey: HostPreferences.connectHardwareKeyboard)
+        (display, _) = try await apply(preferences, device: "B")
+        #expect(display.hardwareKeyboard == [false])
+        preferences.setConnectsHardwareKeyboard(true, forDevice: "B")
+        (display, _) = try await apply(preferences, device: "B")
+        #expect(display.hardwareKeyboard == [true])
+
+        // Use the Same Keyboard Language as macOS off leaves the language alone.
+        preferences.set(false, forKey: HostPreferences.enableKeyboardSync)
+        (display, failures) = try await apply(preferences)
+        #expect(display.keyboardLanguages.isEmpty && failures.isEmpty)
+
+        // A language that cannot be determined, and each failed change, are
+        // reported without stopping the other change.
+        (display, failures) = try await apply(MemoryPreferences(), language: nil)
+        #expect(display.hardwareKeyboard == [true] && display.keyboardLanguages.isEmpty && failures.count == 1)
+        let failing = TestDisplay()
+        failing.hardwareKeyboardError = HostError.operation("keyboard failed")
+        failing.keyboardLanguageError = HostError.operation("language failed")
+        (display, failures) = try await apply(MemoryPreferences(), failing: failing)
+        #expect(display.hardwareKeyboard == [true] && display.keyboardLanguages == ["ja"])
+        #expect(failures == ["keyboard failed", "language failed"])
+    }
+
+    @Test func theMacsInputSourceReachesTheKeyDeviceWhileLanguageSyncIsOn() async throws {
+        let preferences = MemoryPreferences()
+        var language = "en"
+        let first = TestDisplay(), second = TestDisplay()
+        let a = try makeController(first, device: "A", preferences: preferences, keyboardLanguage: { language })
+        let b = try makeController(second, device: "B", preferences: preferences, keyboardLanguage: { language })
+        defer { a.invalidate(); b.invalidate() }
+        func changeInputSource(to new: String) async {
+            language = new
+            NotificationCenter.default.post(name: NSTextInputContext.keyboardSelectionDidChangeNotification, object: nil)
+            for _ in 0..<10 { await Task.yield() }
+        }
+        await changeInputSource(to: "en")
+        #expect(first.keyboardLanguages.isEmpty && second.keyboardLanguages.isEmpty)
+        a.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification, object: a.window))
+        await changeInputSource(to: "ja")
+        #expect(first.keyboardLanguages == ["ja"] && second.keyboardLanguages.isEmpty)
+        a.windowDidResignKey(Notification(name: NSWindow.didResignKeyNotification, object: a.window))
+        b.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification, object: b.window))
+        await changeInputSource(to: "de")
+        #expect(first.keyboardLanguages == ["ja"] && second.keyboardLanguages == ["de"])
+
+        // Like Simulator.app, the command changes only the app-wide preference.
+        let sync = DeviceCommand.command(.syncKeyboardLanguage)
+        #expect(sync.state?(a) == .on)
+        b.perform(.syncKeyboardLanguage)
+        #expect(preferences.values[HostPreferences.enableKeyboardSync] as? Bool == false)
+        #expect(sync.state?(a) == .off && sync.state?(b) == .off)
+        await changeInputSource(to: "fr")
+        #expect(second.keyboardLanguages == ["de"])
+        b.perform(.syncKeyboardLanguage)
+        #expect(second.keyboardLanguages == ["de"])
+        b.invalidate()
+        await changeInputSource(to: "it")
+        #expect(second.keyboardLanguages == ["de"])
+    }
+
+    @Test func touchPressureFollowsTheAppsSettingsInEveryWindowThatTakesIt() async throws {
+        let preferences = MemoryPreferences()
+        var trackpad = true
+        let touchPressure = TouchPressure(preferences: preferences, forceTouchTrackpad: { trackpad })
+        let pressure: Set = [DeviceCapabilities.touchPressure]
+        let watch = TestDisplay(), phone = TestDisplay(), other = TestDisplay(), external = TestDisplay()
+        external.displayClass = 1
+        func controller(_ display: TestDisplay, family: DeviceCapabilities.Family,
+                        features: Set<String>) throws -> DeviceWindowController {
+            try makeController(display, family: family, features: features, preferences: preferences,
+                               touchPressure: touchPressure)
+        }
+        let w = try controller(watch, family: .watch, features: pressure)
+        let p = try controller(phone, family: .iPhone, features: pressure)
+        let o = try controller(other, family: .iPhone, features: [])
+        let e = try controller(external, family: .iPhone, features: pressure)
+        defer { for c in [w, p, o, e] { c.invalidate() } }
+        // Like Simulator.app, a display takes pressure on the own screen of a
+        // device that takes it, and the trackpad's force with a Force Touch trackpad.
+        #expect([watch, phone, other, external].map(\.supportsTouchPressure) == [[true], [true], [false], [false]])
+        #expect(watch.usesTrackpadForce == [true] && watch.touchModes == [.shallow])
+
+        let force = DeviceCommand.command(.useTrackpadForce)
+        #expect(force.isEnabled(p) && force.state?(p) == .on)
+        p.perform(.useTrackpadForce)
+        #expect(preferences.values[HostPreferences.useTrackpadForce] as? Bool == false)
+        #expect(force.state?(w) == .off)
+        #expect(watch.usesTrackpadForce == [true, false] && phone.usesTrackpadForce == [true, false])
+        #expect(other.usesTrackpadForce == [true])
+        // Without a Force Touch trackpad, the option is off and unavailable.
+        p.perform(.useTrackpadForce)
+        #expect(force.state?(p) == .on)
+        trackpad = false
+        #expect(!force.isEnabled(p) && force.state?(p) == .off)
+
+        // Shallow and Deep Press need a watch, and change every window that
+        // takes touch pressure.
+        let shallow = DeviceCommand.command(.shallowPress), deep = DeviceCommand.command(.deepPress)
+        #expect(shallow.isEnabled(w) && deep.isEnabled(w) && !deep.isEnabled(p))
+        #expect(shallow.state?(w) == .on && deep.state?(w) == .off && shallow.state?(p) == .off)
+        p.perform(.deepPress)
+        #expect(watch.touchModes.last == .shallow)
+        w.perform(.deepPress)
+        #expect(watch.touchModes.last == .deep && phone.touchModes.last == .deep && other.touchModes == [.shallow])
+        #expect(shallow.state?(w) == .off && deep.state?(w) == .on && deep.state?(p) == .off)
+        // A window that opens later, or reconnects after a restart, takes the
+        // app's settings.
+        let later = TestDisplay()
+        let l = try controller(later, family: .watch, features: pressure)
+        defer { l.invalidate() }
+        #expect(later.touchModes == [.deep] && later.usesTrackpadForce == [false])
+        await w.prepareForRestart()
+        let restarted = TestDisplay()
+        w.reconnect(try makeSession(restarted, family: .watch, features: pressure, preferences: preferences))
+        #expect(restarted.supportsTouchPressure == [true] && restarted.touchModes == [.deep])
+        w.perform(.shallowPress)
+        #expect(restarted.touchModes == [.deep, .shallow] && watch.touchModes.last == .deep)
+    }
+
+    /// A controller whose session and touch pressure settings keep their
+    /// preferences in `preferences`. Without `touchPressure`, the Mac has no
+    /// Force Touch trackpad.
     private func makeController(_ display: TestDisplay,
                                 family: DeviceCapabilities.Family = .iPhone,
-                                features: Set<String> = [DeviceCapabilities.displayRotation],
+                                features: Set<String> = Self.defaultFeatures,
                                 framebufferMask: Bool = false,
                                 simctl: URL = DeviceTools.simctl,
                                 devicectl: URL = DeviceTools.devicectl,
@@ -2294,16 +2521,24 @@ struct InputFocusTests {
                                 screenPointsPerInch: Double? = nil,
                                 device identifier: String = "test-device",
                                 preferences: MemoryPreferences = MemoryPreferences(),
+                                touchPressure: TouchPressure? = nil,
+                                keyboardLanguage: @escaping @MainActor () -> String? = { "fr" },
                                 openLog: @escaping (URL) async throws -> Void = { _ in },
                                 onClose: @escaping (DeviceWindowController, DeviceLifetimeChoice?) -> Void = { _, _ in },
                                 onRestart: @escaping (DeviceWindowController, Bool) -> Void = { _, _ in })
         throws -> DeviceWindowController {
         let session = try makeSession(display, family: family, features: features, framebufferMask: framebufferMask,
                                       simctl: simctl, devicectl: devicectl, recordingProcess: recordingProcess,
-                                      openLog: openLog, screenPointsPerInch: screenPointsPerInch, device: identifier)
-        return try DeviceWindowController(session: session, preferences: preferences, onClose: onClose,
-                                          onRestart: onRestart)
+                                      openLog: openLog, screenPointsPerInch: screenPointsPerInch, device: identifier,
+                                      preferences: preferences, keyboardLanguage: keyboardLanguage)
+        return try DeviceWindowController(
+            session: session, preferences: preferences,
+            touchPressure: touchPressure ?? TouchPressure(preferences: preferences, forceTouchTrackpad: { false }),
+            onClose: onClose, onRestart: onRestart)
     }
+
+    /// The features of an iPhone that the tests need unless they choose others.
+    private static let defaultFeatures: Set<String> = [DeviceCapabilities.displayRotation, DeviceCapabilities.keyboard]
 
     /// A shown window whose display, 100 by 200 points at scale 1, has a
     /// 10-point bezel without top padding, like an iPhone's.
@@ -2345,14 +2580,16 @@ struct InputFocusTests {
 
     private func makeSession(_ display: TestDisplay,
                              family: DeviceCapabilities.Family = .iPhone,
-                             features: Set<String> = [DeviceCapabilities.displayRotation],
+                             features: Set<String> = Self.defaultFeatures,
                              framebufferMask: Bool = false,
                              simctl: URL = DeviceTools.simctl,
                              devicectl: URL = DeviceTools.devicectl,
                              recordingProcess: ((URL, DeviceTools.ScreenMask) -> Process)? = nil,
                              openLog: @escaping (URL) async throws -> Void = { _ in },
                              screenPointsPerInch: Double? = nil,
-                             device identifier: String = "test-device") throws -> DeviceSession {
+                             device identifier: String = "test-device",
+                             preferences: MemoryPreferences = MemoryPreferences(),
+                             keyboardLanguage: @escaping @MainActor () -> String? = { "fr" }) throws -> DeviceSession {
         DeviceSession(
             device: availableDevice(identifier, "Test iPhone", runtime: "iOS", state: 3),
             capabilities: DeviceCapabilities(family: family, runtimeVersion: 0x1B_00_00,
@@ -2362,7 +2599,8 @@ struct InputFocusTests {
             display: display,
             tools: try DeviceTools(identifier: "test-device", xcodeURL: URL(fileURLWithPath: "/Applications/Xcode.app"),
                                    simctl: simctl, devicectl: devicectl),
-            recordingProcess: recordingProcess, openLog: openLog)
+            recordingProcess: recordingProcess, openLog: openLog, preferences: preferences,
+            hostKeyboardLanguage: keyboardLanguage)
     }
 }
 
@@ -2568,6 +2806,28 @@ private final class TestDisplay: SimulatorDisplay {
     func scale(for size: NSSize) -> CGFloat { min(size.width / outerSize.width, size.height / outerSize.height) }
     func setActive(_ active: Bool) { activations.append(active) }
     func setKeyboardEnabled(_ enabled: Bool) { keyboard.append(enabled) }
+    /// Each hardware keyboard connection and keyboard language the device
+    /// was given, in order.
+    var hardwareKeyboard: [Bool] = []
+    var keyboardLanguages: [String] = []
+    /// Fail these keyboard changes after recording them.
+    var hardwareKeyboardError: Error?
+    var keyboardLanguageError: Error?
+    func setHardwareKeyboardConnected(_ connected: Bool) async throws {
+        hardwareKeyboard.append(connected)
+        if let hardwareKeyboardError { throw hardwareKeyboardError }
+    }
+    func setKeyboardLanguage(_ language: String) async throws {
+        keyboardLanguages.append(language)
+        if let keyboardLanguageError { throw keyboardLanguageError }
+    }
+    /// Each value the digitizer's touch pressure settings were given, in order.
+    var supportsTouchPressure: [Bool] = []
+    var usesTrackpadForce: [Bool] = []
+    var touchModes: [SimulatedTouchMode] = []
+    func setSupportsTouchPressure(_ supports: Bool) { supportsTouchPressure.append(supports) }
+    func setUsesTrackpadForce(_ uses: Bool) { usesTrackpadForce.append(uses) }
+    func setSimulatedTouchMode(_ mode: SimulatedTouchMode) { touchModes.append(mode) }
     var rotations: [Double] = []
     /// Called with each angle the display turns to, as SimulatorKit then
     /// gives the display its rotated size.
@@ -2652,6 +2912,31 @@ struct HostBehaviorTests {
         }
         // Without a value, as before the app registers its default, it is on.
         #expect(RegisteredDefaults().showsDeviceBezels)
+    }
+
+    @Test func keyboardAndTrackpadPreferencesUseSimulatorAppsKeys() {
+        // Each is on unless it was turned off.
+        let preferences = MemoryPreferences()
+        #expect(preferences.syncsKeyboardLanguage && preferences.prefersTrackpadForce)
+        #expect(preferences.connectsHardwareKeyboard(forDevice: "A"))
+        // A device's choice keeps its other preferences and the other devices'.
+        preferences.setWindowGeometry(center: NSPoint(x: 1, y: 2), scale: 1, forDevice: "A", screens: [.zero])
+        preferences.setConnectsHardwareKeyboard(false, forDevice: "A")
+        #expect(!preferences.connectsHardwareKeyboard(forDevice: "A"))
+        #expect(preferences.connectsHardwareKeyboard(forDevice: "B"))
+        #expect(preferences.windowGeometry(forDevice: "A", screens: [.zero]).center == NSPoint(x: 1, y: 2))
+        // A device without a choice, or with one that is not a Boolean,
+        // follows the app-wide value.
+        preferences.set(false, forKey: HostPreferences.connectHardwareKeyboard)
+        #expect(!preferences.connectsHardwareKeyboard(forDevice: "B"))
+        preferences.values[HostPreferences.devicePreferences] = ["B": [HostPreferences.connectHardwareKeyboard: "YES"]]
+        #expect(!preferences.connectsHardwareKeyboard(forDevice: "B"))
+        // A value that `defaults write` saved as a string reads as
+        // `boolForKey:` reads it.
+        let defaults = RegisteredDefaults()
+        defaults.set("NO", forKey: HostPreferences.enableKeyboardSync)
+        defaults.set("0", forKey: HostPreferences.useTrackpadForce)
+        #expect(!defaults.syncsKeyboardLanguage && !defaults.prefersTrackpadForce)
     }
 
     @Test func windowGeometryIsSavedForEachArrangementOfScreens() throws {

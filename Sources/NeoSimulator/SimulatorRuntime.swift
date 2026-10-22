@@ -128,6 +128,13 @@ struct SimulatorDisplayInterface {
     let chromeImagesPadding: NativeSwiftMethod<() -> CGSize>
     let setKeyboardEnabled: NativeSwiftMethod<(Bool) -> Void>
     let keyboardDelegate: Ivar
+    /// `SimDigitizerInputView.supportTouchPressure`.
+    let setSupportsTouchPressure: NativeSwiftMethod<(Bool) -> Void>
+    /// `SimDigitizerInputView.useForceTrackpadForPressure`.
+    let setUsesTrackpadForce: NativeSwiftMethod<(Bool) -> Void>
+    /// `SimDigitizerInputView.simulatedTouchMode`, a `TouchMode` passed as
+    /// its raw value: see `SimulatedTouchMode`.
+    let setSimulatedTouchMode: NativeSwiftMethod<(Int) -> Void>
 
     init(runtime: ABIRuntime) throws {
         guard let screenClass = NSClassFromString("SimulatorKit.SimDeviceScreen"),
@@ -236,6 +243,11 @@ struct SimulatorDisplayInterface {
             throw HostError.unavailable("\(displayViewClass) does not provide _defaultKeyboardDelegate")
         }
         self.keyboardDelegate = keyboardDelegate
+        let digitizer = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimDigitizerInputView")
+        setSupportsTouchPressure = try digitizer.resolveSetterAndWait(named: "supportTouchPressure", as: Bool.self)
+        setUsesTrackpadForce = try digitizer.resolveSetterAndWait(named: "useForceTrackpadForPressure", as: Bool.self)
+        setSimulatedTouchMode = try digitizer.resolveSetterAndWait(
+            named: "simulatedTouchMode.setter : SimulatorKit.SimDigitizerInputView.TouchMode", as: Int.self)
     }
 
     /// The device's default non-CarPlay screen, or nil while it is not ready.
@@ -267,6 +279,8 @@ struct SimulatorInputInterface {
     let messageForButton: NativeFunction<OpaquePointer?, UInt32, UInt32, UInt32>
     /// `IndigoHIDMessageForHIDArbitrary(target, usagePage, usage, state)`.
     let messageForUsage: NativeFunction<OpaquePointer?, UInt32, UInt32, UInt32, UInt32>
+    /// `IndigoHIDGetKeyboardType()`, the type of the Mac's keyboard.
+    let keyboardType: NativeFunction<UInt32>
 
     init(runtime: ABIRuntime) throws {
         guard let clientClass = NSClassFromString("SimulatorKit.SimDeviceLegacyHIDClient") else {
@@ -283,6 +297,18 @@ struct SimulatorInputInterface {
         messageForUsage = try runtime.resolveCFunctionAndWait(
             named: "IndigoHIDMessageForHIDArbitrary",
             as: ((UInt32, UInt32, UInt32, UInt32) -> OpaquePointer?).self)
+        keyboardType = try runtime.resolveCFunctionAndWait(named: "IndigoHIDGetKeyboardType", as: (() -> UInt32).self)
+    }
+
+    /// The Mac keyboard's type, which `SimDevice` takes as a byte when it
+    /// connects the guest's hardware keyboard. Simulator.app traps on a type
+    /// that does not fit; this reports it.
+    func currentKeyboardType() throws -> UInt8 {
+        let type = try unsafe keyboardType.unsafeInvoke()
+        guard let byte = UInt8(exactly: type) else {
+            throw HostError.operation("SimulatorKit reported keyboard type \(type), which the device cannot take.")
+        }
+        return byte
     }
 
     func connect(to device: SimulatorDevice) throws -> AnyObject {
@@ -381,6 +407,13 @@ enum SimScreenUIOrientation {
         default: 0
         }
     }
+}
+
+/// `SimDigitizerInputView.TouchMode`, by its raw value: how hard a click
+/// presses while the trackpad's force does not decide, I/O ▸ Touch Pressure ▸
+/// Shallow Press or Deep Press.
+enum SimulatedTouchMode: Int {
+    case shallow = 0, deep = 1
 }
 
 /// An Indigo HID message for one event. Sending transfers it to SimulatorKit;
@@ -492,9 +525,24 @@ protocol SimulatorDisplay: AnyObject {
     func setLocation(latitude: Double, longitude: Double) async throws
     /// Runs the route a `LocationScenario.name` names.
     func setLocationScenario(_ name: String) async throws
+    // Keyboard calls run off the main actor and reach the device in the
+    // order they are made.
+    /// Connects or disconnects the guest's hardware keyboard, of the Mac
+    /// keyboard's type.
+    func setHardwareKeyboardConnected(_ connected: Bool) async throws
+    /// Sets the language of the guest's keyboard, such as `en` or `ja`.
+    func setKeyboardLanguage(_ language: String) async throws
     func setChromeVisible(_ visible: Bool)
     func setActive(_ active: Bool)
     func setKeyboardEnabled(_ enabled: Bool)
+    /// `SimDigitizerInputView.supportTouchPressure`: whether clicks press
+    /// the screen with a pressure.
+    func setSupportsTouchPressure(_ supports: Bool)
+    /// `SimDigitizerInputView.useForceTrackpadForPressure`: whether the
+    /// pressure follows the force on a Force Touch trackpad.
+    func setUsesTrackpadForce(_ uses: Bool)
+    /// `SimDigitizerInputView.simulatedTouchMode`.
+    func setSimulatedTouchMode(_ mode: SimulatedTouchMode)
     func setRotation(degrees: Double)
     func beginResize()
     func resize(to size: NSSize)
@@ -642,6 +690,10 @@ final class SimulatorConnection: SimulatorDisplay {
         try await device.setLocation(latitude: latitude, longitude: longitude)
     }
     func setLocationScenario(_ name: String) async throws { try await device.setLocationScenario(name) }
+    func setHardwareKeyboardConnected(_ connected: Bool) async throws {
+        try await device.setHardwareKeyboardEnabled(connected, keyboardType: runtime.input.currentKeyboardType())
+    }
+    func setKeyboardLanguage(_ language: String) async throws { try await device.setKeyboardLanguage(language) }
     func setChromeVisible(_ visible: Bool) {
         perform("show device chrome") { try unsafe runtime.display.showChrome.unsafeInvoke(on: view, visible) }
         view.invalidateIntrinsicContentSize()
@@ -658,6 +710,24 @@ final class SimulatorConnection: SimulatorDisplay {
         guard !disconnected, let keyboard = object_getIvar(view, runtime.display.keyboardDelegate) else { return }
         perform("enable keyboard input") {
             try unsafe runtime.display.setKeyboardEnabled.unsafeInvoke(on: keyboard as AnyObject, enabled)
+        }
+    }
+    func setSupportsTouchPressure(_ supports: Bool) {
+        guard !disconnected else { return }
+        perform("enable touch pressure") {
+            try unsafe runtime.display.setSupportsTouchPressure.unsafeInvoke(on: inputView, supports)
+        }
+    }
+    func setUsesTrackpadForce(_ uses: Bool) {
+        guard !disconnected else { return }
+        perform("use the trackpad's force") {
+            try unsafe runtime.display.setUsesTrackpadForce.unsafeInvoke(on: inputView, uses)
+        }
+    }
+    func setSimulatedTouchMode(_ mode: SimulatedTouchMode) {
+        guard !disconnected else { return }
+        perform("set the touch pressure") {
+            try unsafe runtime.display.setSimulatedTouchMode.unsafeInvoke(on: inputView, mode.rawValue)
         }
     }
     func setRotation(degrees: Double) {

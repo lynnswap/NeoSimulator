@@ -48,6 +48,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     /// Where the next device window without a saved center cascades from,
     /// app-wide as Simulator.app keeps it; zero until a window cascades.
     private var nextWindowPosition = NSPoint.zero
+    /// I/O ▸ Touch Pressure's settings, which every device window shares.
+    private let touchPressure = TouchPressure()
 
     init(runtime: SimulatorRuntime, conflicts: HostConflictMonitor) throws {
         try conflicts.check()
@@ -358,15 +360,17 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                         if let controller = awaitingReconnect.removeValue(forKey: identifier) {
                             try conflicts.check()
                             controller.reconnect(session)
+                            applyKeyboardSettings(of: session)
                             restoreLocation(of: session)
                             return
                         }
-                        let controller = try DeviceWindowController(session: session, onClose: { [weak self] in
+                        let controller = try DeviceWindowController(session: session, touchPressure: touchPressure, onClose: { [weak self] in
                             self?.deviceWindowClosed($0, choice: $1)
                         }, onRestart: { [weak self] in self?.restartDevice($0, erasing: $1) })
                         try conflicts.check()
                         sessions[identifier] = controller
                         controller.showNewWindow(cascadingFrom: &nextWindowPosition)
+                        applyKeyboardSettings(of: session)
                         restoreLocation(of: session)
                         return
                     }
@@ -377,6 +381,17 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             } catch {
                 reportedFailures.insert(identifier)
                 report(error)
+            }
+        }
+    }
+
+    /// Applies the keyboard settings to a new connection, also after a
+    /// restart, without waiting for them. Simulator.app ignores their
+    /// failures; they are logged.
+    private func applyKeyboardSettings(of session: DeviceSession) {
+        Task.immediate {
+            await session.applyKeyboardSettings { error in
+                hostLog("Could not apply keyboard settings to \(session.device.name): \(error.localizedDescription)")
             }
         }
     }

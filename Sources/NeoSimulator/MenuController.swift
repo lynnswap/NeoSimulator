@@ -94,8 +94,10 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
         commands([.triggerScreenshot], in: device)
 
         let io = menu("I/O", in: main)
-        let keyboard = menu("Keyboard", in: io)
-        commands([.toggleSoftwareKeyboard], in: keyboard)
+        // Simulator.app's Input submenu, which captures the Mac's pointer and
+        // keyboard, comes first; NeoSimulator does not capture them.
+        commands([.syncKeyboardLanguage, .connectHardwareKeyboard, .toggleSoftwareKeyboard], in: menu("Keyboard", in: io))
+        commands([.useTrackpadForce, .shallowPress, .deepPress], in: menu("Touch Pressure", in: io))
         io.addItem(.separator())
         commands([.increaseVolume, .decreaseVolume], in: io)
         io.addItem(.separator())
