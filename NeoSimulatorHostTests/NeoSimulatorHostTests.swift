@@ -3363,6 +3363,7 @@ struct InputFocusTests {
 
     /// A controller whose device has `screen` as its external display, connected as a new connection connects it.
     private func makeExternalDisplayController(_ screen: TestExternalScreen? = TestExternalScreen(),
+                                               features: Set<String> = Self.externalDisplayFeatures,
                                                device: String = "test-device",
                                                preferences: MemoryPreferences = MemoryPreferences(),
                                                externalDisplayChanges: ExternalDisplayChanges = ExternalDisplayChanges(),
@@ -3370,7 +3371,7 @@ struct InputFocusTests {
         throws -> (DeviceWindowController, TestDisplay) {
         let display = TestDisplay()
         display.externalScreen = screen
-        let controller = try makeController(display, features: Self.externalDisplayFeatures, device: device,
+        let controller = try makeController(display, features: features, device: device,
                                             preferences: preferences, externalDisplayChanges: externalDisplayChanges)
         controller.session.connectExternalDisplay(failure: failure)
         return (controller, display)
@@ -3399,6 +3400,7 @@ struct InputFocusTests {
         let item = try #require(io.items.first { $0.title == "External Displays" })
         #expect(titles(try #require(item.submenu)) == [
             "Disabled", "-", "640×480", "720×480", "1024×768", "1280×720 (720p)", "1920×1080 (1080p)", "3840×2160 (4K)",
+            "-", "CarPlay",
         ])
         #expect(item.submenu?.items.allSatisfy { $0.keyEquivalent.isEmpty } == true)
         // Shown for a device with an external display port and its own screen.
@@ -3426,6 +3428,7 @@ struct InputFocusTests {
         preferences.setExternalDisplayTag(ExternalDisplayMode.size1920x1080.rawValue, forDevice: "test-device")
         #expect(externalDisplayItems(for: controller) == [
             "Disabled ✓", "640×480", "720×480", "1024×768", "1280×720 (720p)", "1920×1080 (1080p)", "3840×2160 (4K)",
+            "CarPlay (disabled)",
         ])
         // Another tool turns the display on.
         screen.report { $0 = ExternalScreenState(isPoweredOn: true, pixelSize: CGSize(width: 1280, height: 720), scale: 1) }
@@ -3441,6 +3444,7 @@ struct InputFocusTests {
         controller.session.disconnect()
         #expect(externalDisplayItems(for: controller) == [
             "Disabled", "640×480", "720×480", "1024×768", "1280×720 (720p)", "1920×1080 (1080p)", "3840×2160 (4K)",
+            "CarPlay (disabled)",
         ])
         // Without a device window, the items are disabled and unchecked.
         #expect(externalDisplayItems(for: nil).allSatisfy { $0.hasSuffix("(disabled)") && !$0.contains("✓") })
@@ -3635,7 +3639,7 @@ struct InputFocusTests {
         let (second, _) = try makeExternalDisplayController(on, preferences: preferences)
         #expect(on.requests.isEmpty && second.externalDisplayWindow != nil)
         second.invalidate()
-        // A choice this host does not know, Simulator.app's CarPlay, is kept.
+        // CarPlay on a device without CarPlay is not applied, and stays saved.
         preferences.setExternalDisplayTag(2714, forDevice: "test-device")
         let carPlay = TestExternalScreen()
         let (third, _) = try makeExternalDisplayController(carPlay, preferences: preferences)
@@ -3797,7 +3801,9 @@ struct InputFocusTests {
         #expect(restored.isEmpty)
         // The menu shows no state for it, and the items stay available.
         #expect(controller.session.externalDisplayMode == nil)
-        #expect(externalDisplayItems(for: controller).allSatisfy { !$0.contains("✓") && !$0.hasSuffix("(disabled)") })
+        #expect(externalDisplayItems(for: controller).allSatisfy {
+            !$0.contains("✓") && ($0 == "CarPlay (disabled)") == $0.hasSuffix("(disabled)")
+        })
         let lookups = display.externalScreenConnections
         controller.session.chooseExternalDisplay(.size1024x768) { chosen.append($0.localizedDescription) }
         #expect(chosen.count == 2 && display.externalScreenConnections == lookups + 1)
@@ -4018,6 +4024,501 @@ struct InputFocusTests {
         #expect(window.firstResponder === display.inputView)
         #expect(display.input.modifiers.count == 2)
         #expect(display.input.modifiers.last?.modifierFlags == NSEvent.modifierFlags)
+    }
+
+    // MARK: CarPlay
+
+    private static let carPlayFeatures = externalDisplayFeatures.union([DeviceCapabilities.carPlay])
+
+    @Test func carPlayFollowsSimulatorAppsMenuItemAndFeature() throws {
+        _ = NSApplication.shared
+        let menus = MenuController(application: nil)
+        menus.install()
+        defer { NSApp.mainMenu = nil }
+        let io = try #require(NSApp.mainMenu?.items.first { $0.title == "I/O" }?.submenu)
+        let submenu = try #require(io.items.first { $0.title == "External Displays" }?.submenu)
+        // Like Simulator.app, CarPlay is the last item, after a separator.
+        let item = try #require(submenu.items.last)
+        #expect(item.title == "CarPlay" && item.keyEquivalent.isEmpty)
+        #expect(submenu.items.dropLast().last?.isSeparatorItem == true)
+        // It shows with the submenu and is enabled only for a device with
+        // CarPlay, which alone can show it checked.
+        for (features, enabled) in [(Self.carPlayFeatures, true), (Self.externalDisplayFeatures, false)] {
+            let screen = TestExternalScreen()
+            screen.current = ExternalScreenState(isPoweredOn: true, pixelSize: CGSize(width: 800, height: 480), scale: 2,
+                                                 isCarPlay: true)
+            let (controller, _) = try makeExternalDisplayController(screen, features: features)
+            defer { controller.invalidate() }
+            menus.updateVisibility(in: io, for: controller.session.capabilities)
+            #expect(!item.isHidden && submenu.items.allSatisfy { !$0.isHidden })
+            #expect(externalDisplayItems(for: controller).last == (enabled ? "CarPlay ✓" : "CarPlay (disabled)"))
+        }
+    }
+
+    @Test func choosingCarPlayConfiguresTheGuestAndOpensACarPlayWindow() throws {
+        _ = NSApplication.shared
+        let preferences = MemoryPreferences()
+        // A CarPlay window opens at Point Accurate whatever scale the device's
+        // last external display window closed at, at that window's center.
+        preferences.setWindowGeometry(center: NSPoint(x: 400, y: 300), scale: 0.5, forDevice: "test-device",
+                                      screens: NSScreen.screens.map(\.frame), kind: .externalDisplay)
+        let screen = TestExternalScreen()
+        let (controller, _) = try makeExternalDisplayController(screen, features: Self.carPlayFeatures,
+                                                                preferences: preferences)
+        defer { controller.invalidate() }
+        controller.perform(.externalDisplayCarPlay)
+        // Like Simulator.app: the configuration that the guest reads when the
+        // screen changes, the CarPlay screen, then the guest's CarPlay
+        // session and the HID service that takes the touches.
+        #expect(screen.requests == ["save carplay", "mode 800x480@2 carplay", "start carplay", "connect service"])
+        #expect(preferences.externalDisplayTag(forDevice: "test-device") == 2714)
+        #expect(controller.session.externalDisplayMode == .carPlay)
+        #expect(externalDisplayItems(for: controller).filter { $0.hasSuffix("✓") } == ["CarPlay ✓"])
+        let window = try #require(controller.externalDisplayWindow?.window)
+        #expect(window.title == "Test iPhone" && window.subtitle == "CarPlay")
+        #expect(window.collectionBehavior == [.fullScreenAuxiliary])
+        let display = try #require(screen.displays.last)
+        #expect(display.renderScale == 1 && display.supportsTouchPressure == [false])
+        let content = window.contentRect(forFrameRect: window.frame).size
+        #expect(abs(content.width - 400) <= 1 && abs(content.height - 240) <= 1)
+        #expect(abs(window.frame.midX - 400) <= 1 && abs(window.frame.midY - 300) <= 1)
+        // Closing the window chooses Disabled, which ends CarPlay once the
+        // display is off.
+        window.close()
+        #expect(Array(screen.requests.dropFirst(4)) == ["save off", "off", "remove service", "stop carplay"])
+        #expect(preferences.externalDisplayTag(forDevice: "test-device") == 2114)
+    }
+
+    @Test func aChangeEndsTheCarPlayThatThisHostStarted() throws {
+        _ = NSApplication.shared
+        let screen = TestExternalScreen()
+        let (controller, _) = try makeExternalDisplayController(
+            screen, features: Self.carPlayFeatures,
+            externalDisplayChanges: ExternalDisplayChanges(carPlayReconnectionDelay: .zero))
+        defer { controller.invalidate() }
+        func requests(_ perform: () -> Void) -> [String] {
+            let count = screen.requests.count
+            perform()
+            return Array(screen.requests.dropFirst(count))
+        }
+        // CarPlay chosen again ends the session it started and starts another.
+        #expect(requests { controller.perform(.externalDisplayCarPlay) }
+            == ["save carplay", "mode 800x480@2 carplay", "start carplay", "connect service"])
+        let window = try #require(controller.externalDisplayWindow?.window)
+        #expect(requests { controller.perform(.externalDisplayCarPlay) } == [
+            "save carplay", "remove service", "stop carplay", "mode 800x480@2 carplay", "start carplay", "connect service",
+        ])
+        // A size ends CarPlay first and turns the guest's configuration off;
+        // the window stays and names the external display again.
+        #expect(requests { controller.perform(.externalDisplay1920x1080) }
+            == ["save off", "remove service", "stop carplay", "mode 1920x1080@1"])
+        #expect(controller.externalDisplayWindow?.window === window)
+        #expect(window.subtitle == "External Display")
+        #expect(window.collectionBehavior == [.fullScreenPrimary, .fullScreenAllowsTiling])
+        // CarPlay from a size turns the display off first, so that the guest
+        // takes the CarPlay screen as a new display, and a new window opens.
+        #expect(requests { controller.perform(.externalDisplayCarPlay) }
+            == ["save carplay", "off", "mode 800x480@2 carplay", "start carplay", "connect service"])
+        #expect(controller.externalDisplayWindow?.window?.subtitle == "CarPlay")
+        #expect(controller.externalDisplayWindow?.window !== window)
+        // Disabled ends CarPlay once the display is off; a size afterwards
+        // has no CarPlay to end.
+        #expect(requests { controller.perform(.externalDisplayDisabled) }
+            == ["save off", "off", "remove service", "stop carplay"])
+        #expect(requests { controller.perform(.externalDisplay640x480) } == ["save off", "mode 640x480@1"])
+    }
+
+    @Test func carPlayWaitsUntilTheDisplayHasBeenOffForTheGuest() async throws {
+        let screen = TestExternalScreen()
+        let delay = Duration.milliseconds(200)
+        let (controller, _) = try makeExternalDisplayController(
+            screen, features: Self.carPlayFeatures, externalDisplayChanges: ExternalDisplayChanges(carPlayReconnectionDelay: delay))
+        defer { controller.invalidate() }
+        func waitForCarPlay() async throws {
+            for _ in 0..<200 where screen.requests.last != "connect service" { try await Task.sleep(for: .milliseconds(10)) }
+        }
+        // A display that showed a size turns off, and the CarPlay screen
+        // waits for the delay.
+        controller.perform(.externalDisplay720x480)
+        var start = ContinuousClock.now
+        controller.perform(.externalDisplayCarPlay)
+        #expect(screen.requests == ["save off", "mode 720x480@1", "save carplay", "off"])
+        try await waitForCarPlay()
+        #expect(ContinuousClock.now - start >= delay)
+        #expect(screen.requests.suffix(3) == ["mode 800x480@2 carplay", "start carplay", "connect service"])
+        // So does one that Disabled just turned off.
+        controller.perform(.externalDisplayDisabled)
+        start = ContinuousClock.now
+        controller.perform(.externalDisplayCarPlay)
+        #expect(screen.requests.last == "save carplay")
+        try await waitForCarPlay()
+        #expect(ContinuousClock.now - start >= delay * 0.9)
+        // A display that has been off for longer, and one that already is a
+        // CarPlay screen, change at once.
+        controller.perform(.externalDisplayDisabled)
+        try await Task.sleep(for: delay)
+        let count = screen.requests.count
+        controller.perform(.externalDisplayCarPlay)
+        #expect(Array(screen.requests.dropFirst(count)) == ["save carplay", "mode 800x480@2 carplay", "start carplay", "connect service"])
+        controller.perform(.externalDisplayCarPlay)
+        #expect(screen.requests.last == "connect service")
+    }
+
+    @Test func closingTheDeviceWindowEndsCarPlayAndKeepsItsConfiguration() throws {
+        let preferences = MemoryPreferences()
+        let screen = TestExternalScreen()
+        let (controller, _) = try makeExternalDisplayController(screen, features: Self.carPlayFeatures,
+                                                                preferences: preferences)
+        controller.perform(.externalDisplayCarPlay)
+        controller.invalidate()
+        // Like Simulator.app, the choice and the guest's configuration stay for
+        // the next connection; unlike Simulator.app, the CarPlay that this host
+        // started ends with the display.
+        #expect(Array(screen.requests.dropFirst(4)) == ["off", "remove service", "stop carplay"])
+        #expect(preferences.externalDisplayTag(forDevice: "test-device") == 2714)
+    }
+
+    @Test func connectingRestoresCarPlayAndANewBootHasNoSessionToEnd() throws {
+        let preferences = MemoryPreferences()
+        preferences.setExternalDisplayTag(ExternalDisplayMode.carPlay.rawValue, forDevice: "test-device")
+        let changes = ExternalDisplayChanges()
+        let screen = TestExternalScreen()
+        let restored = ["save carplay", "mode 800x480@2 carplay", "start carplay", "connect service"]
+        let (first, _) = try makeExternalDisplayController(screen, features: Self.carPlayFeatures,
+                                                           preferences: preferences, externalDisplayChanges: changes)
+        #expect(screen.requests == restored)
+        #expect(first.externalDisplayWindow?.window?.subtitle == "CarPlay")
+        // The device shuts down as its window closes, as a restart does, and
+        // the display does not turn off, so the session is not ended. The
+        // next boot starts without it: its connection ends nothing first.
+        screen.completionError = HostError.operation("Invalid argument")
+        first.invalidate()
+        #expect(Array(screen.requests.dropFirst(4)) == ["off"])
+        let rebooted = TestExternalScreen()
+        rebooted.deviceBootDate = Date(timeIntervalSinceReferenceDate: 1)
+        let (second, secondDisplay) = try makeExternalDisplayController(
+            rebooted, features: Self.carPlayFeatures, preferences: preferences, externalDisplayChanges: changes)
+        #expect(rebooted.requests == restored)
+        // Nor after a window that disconnects from a device that shut down.
+        secondDisplay.isBooted = false
+        second.invalidate()
+        #expect(rebooted.requests.count == 4)
+        let third = TestExternalScreen()
+        third.deviceBootDate = Date(timeIntervalSinceReferenceDate: 2)
+        let (last, _) = try makeExternalDisplayController(third, features: Self.carPlayFeatures,
+                                                          preferences: preferences, externalDisplayChanges: changes)
+        defer { last.invalidate() }
+        #expect(third.requests == restored)
+    }
+
+    @Test func aCarPlaySessionThatDidNotEndIsKeptInsteadOfAnother() throws {
+        let screen = TestExternalScreen()
+        let (controller, _) = try makeExternalDisplayController(screen, features: Self.carPlayFeatures)
+        defer { controller.invalidate() }
+        var failures: [String] = []
+        func requests(choosing mode: ExternalDisplayMode) -> [String] {
+            let count = screen.requests.count
+            controller.session.chooseExternalDisplay(mode) { failures.append($0.localizedDescription) }
+            return Array(screen.requests.dropFirst(count))
+        }
+        _ = requests(choosing: .carPlay)
+        #expect(screen.carPlaySessions == 1)
+        // CarPlay chosen again, whose session does not end: that session
+        // stays the device's CarPlay, and its HID service comes back.
+        screen.carPlayErrors = ["stop carplay": HostError.operation("busy")]
+        #expect(requests(choosing: .carPlay)
+            == ["save carplay", "remove service", "stop carplay", "mode 800x480@2 carplay", "connect service"])
+        #expect(failures == ["Could not stop CarPlay on Test iPhone: busy"])
+        #expect(screen.carPlaySessions == 1)
+        // Disabled then ends it, and none is left.
+        screen.carPlayErrors = [:]
+        #expect(requests(choosing: .disabled) == ["save off", "off", "remove service", "stop carplay"])
+        #expect(screen.carPlaySessions == 0 && failures.count == 1)
+    }
+
+    @Test func aCarPlayStartWithoutAnAnswerStopsSessionRequestsUntilTheDeviceRestarts() async throws {
+        let preferences = MemoryPreferences()
+        let changes = ExternalDisplayChanges(completionTimeout: .milliseconds(50), carPlayReconnectionDelay: .zero)
+        let screen = TestExternalScreen()
+        let (controller, _) = try makeExternalDisplayController(screen, features: Self.carPlayFeatures,
+                                                                preferences: preferences, externalDisplayChanges: changes)
+        var failures: [String] = []
+        func choose(_ mode: ExternalDisplayMode, on controller: DeviceWindowController,
+                    screen: TestExternalScreen) -> [String] {
+            let count = screen.requests.count
+            controller.session.chooseExternalDisplay(mode) { failures.append($0.localizedDescription) }
+            return Array(screen.requests.dropFirst(count))
+        }
+        // The guest does not answer the start before the change stops
+        // waiting, which leaves the session unknown and is reported once.
+        screen.defersCarPlaySessions = true
+        #expect(choose(.carPlay, on: controller, screen: screen)
+            == ["save carplay", "mode 800x480@2 carplay", "start carplay"])
+        for _ in 0..<100 where failures.isEmpty { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(failures == [
+            "Could not start CarPlay on Test iPhone: The device did not answer, so NeoSimulator leaves its CarPlay session as it is until the device restarts.",
+        ])
+        // Its late answer changes nothing.
+        screen.deliverCarPlaySessions()
+        screen.defersCarPlaySessions = false
+        // Until the device restarts, no session request is sent, while the
+        // screen and the HID service still follow the choices.
+        #expect(choose(.disabled, on: controller, screen: screen) == ["save off", "off"])
+        #expect(choose(.carPlay, on: controller, screen: screen)
+            == ["save carplay", "mode 800x480@2 carplay", "connect service"])
+        #expect(choose(.size1920x1080, on: controller, screen: screen)
+            == ["save off", "remove service", "mode 1920x1080@1"])
+        #expect(failures.count == 1)
+        controller.invalidate()
+        // The next boot, which restores the size, starts CarPlay again.
+        let rebooted = TestExternalScreen()
+        rebooted.deviceBootDate = Date(timeIntervalSinceReferenceDate: 1)
+        let (next, _) = try makeExternalDisplayController(rebooted, features: Self.carPlayFeatures,
+                                                          preferences: preferences, externalDisplayChanges: changes)
+        defer { next.invalidate() }
+        #expect(choose(.carPlay, on: next, screen: rebooted)
+            == ["save carplay", "off", "mode 800x480@2 carplay", "start carplay", "connect service"])
+        #expect(rebooted.carPlaySessions == 1 && failures.count == 1)
+    }
+
+    @Test func aCarPlayEndWithoutAnAnswerStopsSessionRequestsToo() async throws {
+        let screen = TestExternalScreen()
+        let (controller, _) = try makeExternalDisplayController(
+            screen, features: Self.carPlayFeatures,
+            externalDisplayChanges: ExternalDisplayChanges(completionTimeout: .milliseconds(50),
+                                                           carPlayReconnectionDelay: .zero))
+        defer { controller.invalidate() }
+        var failures: [String] = []
+        func choose(_ mode: ExternalDisplayMode) -> [String] {
+            let count = screen.requests.count
+            controller.session.chooseExternalDisplay(mode) { failures.append($0.localizedDescription) }
+            return Array(screen.requests.dropFirst(count))
+        }
+        _ = choose(.carPlay)
+        #expect(screen.carPlaySessions == 1)
+        screen.defersCarPlaySessions = true
+        #expect(choose(.disabled) == ["save off", "off", "remove service", "stop carplay"])
+        for _ in 0..<100 where failures.isEmpty { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(failures == [
+            "Could not stop CarPlay on Test iPhone: The device did not answer, so NeoSimulator leaves its CarPlay session as it is until the device restarts.",
+        ])
+        // The end succeeds late, which changes nothing: CarPlay chosen again
+        // starts no session beside one that may still run, and Disabled ends
+        // none that may have ended.
+        screen.deliverCarPlaySessions()
+        screen.defersCarPlaySessions = false
+        #expect(screen.carPlaySessions == 0)
+        #expect(choose(.carPlay) == ["save carplay", "mode 800x480@2 carplay", "connect service"])
+        #expect(choose(.disabled) == ["save off", "off", "remove service"])
+        #expect(screen.carPlaySessions == 0 && failures.count == 1)
+    }
+
+    @Test func aDeviceThatRestartsDuringACarPlayChangeGetsNoEndOfASessionItLost() throws {
+        let screen = TestExternalScreen()
+        let (controller, _) = try makeExternalDisplayController(
+            screen, features: Self.carPlayFeatures,
+            externalDisplayChanges: ExternalDisplayChanges(carPlayReconnectionDelay: .zero))
+        defer { controller.invalidate() }
+        func choose(_ mode: ExternalDisplayMode) -> [String] {
+            let count = screen.requests.count
+            controller.session.chooseExternalDisplay(mode) { Issue.record($0) }
+            return Array(screen.requests.dropFirst(count))
+        }
+        _ = choose(.carPlay)
+        #expect(screen.carPlaySessions == 1)
+        // The device restarts while Disabled waits for the HID service's
+        // removal, as a restart that follows a closed window can.
+        screen.defersCarPlayServices = true
+        #expect(choose(.disabled) == ["save off", "off", "remove service"])
+        screen.restart(boot: Date(timeIntervalSinceReferenceDate: 1))
+        let count = screen.requests.count
+        screen.deliverCarPlayServices()
+        screen.defersCarPlayServices = false
+        // The new boot gets no end of the session the restart took, and
+        // CarPlay starts there as usual.
+        #expect(screen.requests.count == count && screen.carPlaySessions == 0)
+        #expect(Array(choose(.carPlay).suffix(2)) == ["start carplay", "connect service"])
+        #expect(screen.carPlaySessions == 1)
+    }
+
+    @Test func aCarPlaySessionRequestThatRunsAfterARestartIsNotSent() throws {
+        let screen = TestExternalScreen()
+        let (controller, _) = try makeExternalDisplayController(
+            screen, features: Self.carPlayFeatures,
+            externalDisplayChanges: ExternalDisplayChanges(carPlayReconnectionDelay: .zero))
+        defer { controller.invalidate() }
+        func choose(_ mode: ExternalDisplayMode) -> [String] {
+            let count = screen.requests.count
+            controller.session.chooseExternalDisplay(mode) { Issue.record($0) }
+            return Array(screen.requests.dropFirst(count))
+        }
+        _ = choose(.carPlay)
+        // Disabled's end waits to run while the device restarts: it reaches
+        // no guest, which is no failure.
+        screen.defersCarPlaySessions = true
+        #expect(choose(.disabled) == ["save off", "off", "remove service", "stop carplay"])
+        screen.restart(boot: Date(timeIntervalSinceReferenceDate: 1))
+        screen.deliverCarPlaySessions()
+        screen.defersCarPlaySessions = false
+        #expect(screen.carPlaySessions == 0)
+        #expect(Array(choose(.carPlay).suffix(2)) == ["start carplay", "connect service"])
+        #expect(screen.carPlaySessions == 1)
+    }
+
+    @Test func aCarPlayHIDServiceWithoutAnAnswerIsRemovedByTheNextChange() async throws {
+        let screen = TestExternalScreen()
+        let (controller, _) = try makeExternalDisplayController(
+            screen, features: Self.carPlayFeatures,
+            externalDisplayChanges: ExternalDisplayChanges(completionTimeout: .milliseconds(50),
+                                                           carPlayReconnectionDelay: .zero))
+        defer { controller.invalidate() }
+        var failures: [String] = []
+        func choose(_ mode: ExternalDisplayMode) -> [String] {
+            let count = screen.requests.count
+            controller.session.chooseExternalDisplay(mode) { failures.append($0.localizedDescription) }
+            return Array(screen.requests.dropFirst(count))
+        }
+        func timeOut() async throws {
+            let count = failures.count
+            for _ in 0..<100 where failures.count == count { try await Task.sleep(for: .milliseconds(20)) }
+        }
+        // A start without an answer leaves the session unknown.
+        screen.defersCarPlaySessions = true
+        _ = choose(.carPlay)
+        try await timeOut()
+        // CarPlay chosen again creates the HID service, whose answer does not
+        // come either.
+        screen.defersCarPlayServices = true
+        #expect(choose(.carPlay) == ["save carplay", "mode 800x480@2 carplay", "connect service"])
+        try await timeOut()
+        #expect(failures.last
+            == "Could not connect the CarPlay touch screen of Test iPhone: CoreSimulator did not complete the change.")
+        // The service may exist, so Disabled removes it.
+        screen.defersCarPlayServices = false
+        #expect(choose(.disabled) == ["save off", "off", "remove service"])
+        #expect(failures.count == 2)
+    }
+
+    @Test func carPlaySessionStateMovesOnlyOnAnswersOfItsBoot() {
+        let first = Date(timeIntervalSinceReferenceDate: 0)
+        let second = Date(timeIntervalSinceReferenceDate: 1)
+        var state = CarPlaySessionState()
+        #expect(state.session(in: first) == .none && !state.hasService(in: first))
+        // A start that fails leaves none; one that succeeds starts it, with
+        // its HID service. An end that fails leaves it started.
+        state.willSend(in: first)
+        state.sessionAnswered(starting: true, succeeded: false, in: first)
+        #expect(state.session(in: first) == .none)
+        state.sessionAnswered(starting: true, succeeded: true, in: first)
+        state.serviceAnswered(created: true, succeeded: true, in: first)
+        state.sessionAnswered(starting: false, succeeded: false, in: first)
+        #expect(state.session(in: first) == .started && state.hasService(in: first))
+        // A new boot has no session or service, and answers from the earlier
+        // boot, for the session or the service, change nothing in it.
+        #expect(state.session(in: second) == .none && !state.hasService(in: second))
+        state.willSend(in: second)
+        state.sessionAnswered(starting: true, succeeded: true, in: second)
+        state.serviceAnswered(created: true, succeeded: true, in: second)
+        state.sessionAnswered(starting: false, succeeded: true, in: first)
+        state.serviceAnswered(created: false, succeeded: true, in: first)
+        state.timedOut(in: first)
+        #expect(state.session(in: second) == .started && state.hasService(in: second))
+        // An answer that did not come in time leaves the session unknown,
+        // which later answers do not change, until another boot.
+        state.timedOut(in: second)
+        state.sessionAnswered(starting: false, succeeded: true, in: second)
+        #expect(state.session(in: second) == .unknown && state.hasService(in: second))
+        state.serviceAnswered(created: false, succeeded: true, in: second)
+        #expect(!state.hasService(in: second))
+        let third = Date(timeIntervalSinceReferenceDate: 2)
+        #expect(state.session(in: third) == .none)
+    }
+
+    @Test func carPlayFailuresAreReportedTogether() throws {
+        _ = NSApplication.shared
+        let screen = TestExternalScreen()
+        let (controller, _) = try makeExternalDisplayController(
+            screen, features: Self.carPlayFeatures,
+            externalDisplayChanges: ExternalDisplayChanges(carPlayReconnectionDelay: .zero))
+        defer { controller.invalidate() }
+        var failures: [String] = []
+        func choose(_ mode: ExternalDisplayMode) {
+            controller.session.chooseExternalDisplay(mode) { failures.append($0.localizedDescription) }
+        }
+        // A configuration that is not saved is reported, and the change goes on.
+        screen.carPlayErrors = ["save carplay": HostError.operation("disk full")]
+        choose(.carPlay)
+        #expect(screen.requests == ["save carplay", "mode 800x480@2 carplay", "start carplay", "connect service"])
+        #expect(failures == ["Could not save the CarPlay configuration of Test iPhone: disk full"])
+        // Ending CarPlay fails in both steps, and the size is still set; the
+        // failures of one change come together.
+        screen.carPlayErrors = ["remove service": HostError.operation("no port"),
+                                "stop carplay": HostError.operation("no bridge")]
+        choose(.size1280x720)
+        #expect(screen.requests.suffix(4) == ["save off", "remove service", "stop carplay", "mode 1280x720@1"])
+        #expect(failures.last == """
+            Could not disconnect the CarPlay touch screen of Test iPhone: no port
+            Could not stop CarPlay on Test iPhone: no bridge
+            """)
+        // A session that did not end is ended by the next change.
+        screen.carPlayErrors = [:]
+        choose(.size640x480)
+        #expect(screen.requests.suffix(4) == ["save off", "remove service", "stop carplay", "mode 640x480@1"])
+        // A session that does not start gets no HID service, and leaves nothing
+        // to end.
+        screen.carPlayErrors = ["start carplay": HostError.operation("no CarPlay")]
+        var count = screen.requests.count
+        choose(.carPlay)
+        #expect(Array(screen.requests.dropFirst(count))
+            == ["save carplay", "off", "mode 800x480@2 carplay", "start carplay"])
+        #expect(failures.last == "Could not start CarPlay on Test iPhone: no CarPlay")
+        screen.carPlayErrors = ["connect service": HostError.operation("send failed")]
+        count = screen.requests.count
+        choose(.carPlay)
+        #expect(Array(screen.requests.dropFirst(count))
+            == ["save carplay", "mode 800x480@2 carplay", "start carplay", "connect service"])
+        #expect(failures.last == "Could not connect the CarPlay touch screen of Test iPhone: send failed")
+        // A CarPlay screen that is not set starts no CarPlay.
+        screen.carPlayErrors = [:]
+        screen.completionError = HostError.operation("mode failed")
+        count = screen.requests.count
+        choose(.carPlay)
+        #expect(Array(screen.requests.dropFirst(count)) == [
+            "save carplay", "remove service", "stop carplay", "mode 800x480@2 carplay",
+        ])
+        #expect(failures.last == "Could not set the external display of Test iPhone to CarPlay: mode failed")
+        // On the device window, the failures of a choice share one alert.
+        screen.completionError = nil
+        controller.showWindow(nil)
+        screen.carPlayErrors = ["save carplay": HostError.operation("disk full"),
+                                "start carplay": HostError.operation("no CarPlay")]
+        controller.perform(.externalDisplayCarPlay)
+        let sheet = try #require(controller.window?.attachedSheet)
+        #expect(texts(in: sheet.contentView).contains("""
+            Could not save the CarPlay configuration of Test iPhone: disk full
+            Could not start CarPlay on Test iPhone: no CarPlay
+            """))
+        controller.window?.endSheet(sheet)
+    }
+
+    @Test func carPlayConfigurationIsWrittenAsSimulatorAppWritesIt() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let file = folder.appendingPathComponent("Library/Application Support/Simulator/extended_display.plist")
+        func read() throws -> NSDictionary {
+            try #require(NSDictionary(contentsOf: file))
+        }
+        // The folder is created, and CarPlay writes Simulator.app's default
+        // configuration under its plain keys.
+        try CarPlayConfiguration.save(carPlay: true, to: file)
+        #expect(try read() == [
+            "stark": true, "width": 800, "height": 480, "scale": 2.0, "hasBackButton": false, "hasHomeButton": false,
+            "hasWheel": false, "hasWheelBump": false, "hasTouchScreen": true, "hasTouchScreenLofi": false,
+            "protocols": [String](),
+        ] as NSDictionary)
+        // Every other choice replaces it with stark off.
+        try CarPlayConfiguration.save(carPlay: false, to: file)
+        #expect(try read() == ["stark": 0] as NSDictionary)
     }
 
     @Test func customLocationAcceptsOnlyCoordinatesThatParse() throws {
@@ -5483,18 +5984,38 @@ private final class TestAudioRoutes: SimulatorAudioRoutes {
 }
 
 /// A device's external display that records the changes it is asked for, as
-/// "mode <width>x<height>@<scale>" or "off", and applies them as CoreSimulator
-/// does, reporting the change. The test reports other changes, such as
-/// `simctl` turning the display on.
+/// "mode <width>x<height>@<scale>", with " carplay" for a CarPlay screen, or
+/// "off", and applies them as CoreSimulator does, reporting the change. It
+/// also records the CarPlay requests that reach the guest, as "save carplay"
+/// or "save off" for the configuration file, "start carplay" or "stop
+/// carplay" for the session, and "connect service" or "remove service" for
+/// the HID service, completing them at once unless the session requests are
+/// held. The test reports other changes, such as `simctl` turning the display
+/// on.
 @MainActor
 private final class TestExternalScreen: SimulatorExternalScreen {
     let screenID: UInt32 = 2
+    /// The device's boot; a screen of another boot needs another date.
+    var deviceBootDate: Date? = Date(timeIntervalSinceReferenceDate: 0)
     var current = ExternalScreenState(isPoweredOn: false, pixelSize: CGSize(width: 720, height: 480), scale: 1)
     private(set) var requests: [String] = []
     /// Completes each change with this error, without applying it.
     var completionError: Error?
     /// Refuses each change with this error, as for a size that no mode takes.
     var refusal: Error?
+    /// Fails these CarPlay requests, by their names in `requests`: saving the
+    /// configuration throws, and the others complete with the error.
+    var carPlayErrors: [String: Error] = [:]
+    /// The guest's CarPlay sessions as its CoreSimulatorBridge counts them: a
+    /// start adds one and an end removes one, also below zero, which fails.
+    private(set) var carPlaySessions = 0
+    /// Holds the session requests until `deliverCarPlaySessions()`, as a
+    /// guest that answers after the change stopped waiting.
+    var defersCarPlaySessions = false
+    private var pendingSessions: [() -> Void] = []
+    /// Holds the HID service requests until `deliverCarPlayServices()`.
+    var defersCarPlayServices = false
+    private var pendingServices: [() -> Void] = []
     /// Holds each change's report and completion until `deliver()`, or
     /// `deliverReports()` and `deliverCompletions()` apart, as CoreSimulator
     /// reports and completes a change later, in either order.
@@ -5508,18 +6029,64 @@ private final class TestExternalScreen: SimulatorExternalScreen {
 
     func state() throws -> ExternalScreenState { current }
 
-    func setMode(pixelSize: CGSize, scale: CGFloat, carPlayProperties: NSDictionary?,
+    func setMode(pixelSize: CGSize, scale: CGFloat, carPlay: Bool,
                  completion: @escaping @MainActor (Error?) -> Void) throws {
         if let refusal { throw refusal }
-        #expect(carPlayProperties == nil)
-        requests.append("mode \(Int(pixelSize.width))x\(Int(pixelSize.height))@\(Int(scale))")
-        complete(completion) { $0 = ExternalScreenState(isPoweredOn: true, pixelSize: pixelSize, scale: scale) }
+        requests.append("mode \(Int(pixelSize.width))x\(Int(pixelSize.height))@\(Int(scale))\(carPlay ? " carplay" : "")")
+        complete(completion) {
+            $0 = ExternalScreenState(isPoweredOn: true, pixelSize: pixelSize, scale: scale, isCarPlay: carPlay)
+        }
     }
 
     func powerOff(completion: @escaping @MainActor (Error?) -> Void) throws {
         if let refusal { throw refusal }
         requests.append("off")
         complete(completion) { $0.isPoweredOn = false }
+    }
+
+    func saveCarPlayConfiguration(carPlay: Bool) throws {
+        let request = carPlay ? "save carplay" : "save off"
+        requests.append(request)
+        if let error = carPlayErrors[request] { throw error }
+    }
+
+    func setCarPlayEnabled(_ enabled: Bool, inBoot boot: Date?, completion: @escaping @MainActor (Error?) -> Void) {
+        let request = enabled ? "start carplay" : "stop carplay"
+        requests.append(request)
+        let answer = { [self] in
+            // Like the device, which checks its boot when the request runs.
+            guard deviceBootDate == boot else { return completion(CarPlayRequestMoot()) }
+            if let error = carPlayErrors[request] { return completion(error) }
+            carPlaySessions += enabled ? 1 : -1
+            completion(carPlaySessions < 0 ? HostError.operation("invalid session count") : nil)
+        }
+        if defersCarPlaySessions { pendingSessions.append(answer) } else { answer() }
+    }
+
+    /// Answers the held session requests in the order they came.
+    func deliverCarPlaySessions() {
+        let answers = pendingSessions
+        pendingSessions = []
+        for answer in answers { answer() }
+    }
+
+    func setCarPlayService(connected: Bool, completion: @escaping @MainActor (Error?) -> Void) throws {
+        let request = connected ? "connect service" : "remove service"
+        requests.append(request)
+        let answer = { [self] in completion(carPlayErrors[request]) }
+        if defersCarPlayServices { pendingServices.append(answer) } else { answer() }
+    }
+
+    func deliverCarPlayServices() {
+        let answers = pendingServices
+        pendingServices = []
+        for answer in answers { answer() }
+    }
+
+    /// The device restarts: a new boot, whose guest has no CarPlay session.
+    func restart(boot: Date) {
+        deviceBootDate = boot
+        carPlaySessions = 0
     }
 
     /// Applies and reports a change and completes it, at once or when it is delivered.
@@ -5851,9 +6418,11 @@ struct HostBehaviorTests {
     }
 
     @Test func externalDisplayModesUseSimulatorAppsTagsSizesAndModeChoice() {
-        #expect(ExternalDisplayMode.allCases.map(\.rawValue) == [2114, 2214, 2514, 2314, 2414, 2614, 2664])
+        #expect(ExternalDisplayMode.allCases.map(\.rawValue) == [2114, 2214, 2514, 2314, 2414, 2614, 2664, 2714])
         #expect(ExternalDisplayMode.allCases.compactMap(\.pixelSize).map { "\(Int($0.width))x\(Int($0.height))" }
-            == ["640x480", "720x480", "1024x768", "1280x720", "1920x1080", "3840x2160"])
+            == ["640x480", "720x480", "1024x768", "1280x720", "1920x1080", "3840x2160", "800x480"])
+        // Sizes at a point per pixel, and CarPlay at Simulator.app's CarPlay scale.
+        #expect(ExternalDisplayMode.allCases.dropFirst().map(\.scale) == [1, 1, 1, 1, 1, 1, 2])
         // Modes like those the TVOut screen of an iOS 26.5 iPhone advertised.
         let modes = [
             ExternalScreenMode(sizes: .exact(CGSize(width: 720, height: 480)), scale: 1),
@@ -5888,6 +6457,15 @@ struct HostBehaviorTests {
         #expect(mode(true, 720, 480) == .size720x480)
         #expect(mode(true, 1920, 1080, 2) == nil)
         #expect(mode(true, 1600, 900) == nil)
+        // A CarPlay screen is CarPlay whatever its size, and off is Disabled.
+        func carPlay(_ on: Bool, _ width: CGFloat, _ height: CGFloat, _ scale: CGFloat) -> ExternalDisplayMode? {
+            ExternalScreenState(isPoweredOn: on, pixelSize: CGSize(width: width, height: height), scale: scale,
+                                isCarPlay: true).mode
+        }
+        #expect(carPlay(true, 800, 480, 2) == .carPlay)
+        #expect(carPlay(true, 1920, 1080, 1) == .carPlay)
+        #expect(carPlay(false, 800, 480, 2) == .disabled)
+        #expect(mode(true, 800, 480, 2) == nil)
     }
 
     @Test func externalDisplayChoicesUseSimulatorAppsDevicePreference() {
