@@ -592,14 +592,16 @@ the first such window is centered on its screen with `center()`, and each takes
 `cascadeTopLeft(from:)` from the app-wide point the previous one returned. A
 new window then moves back inside the visible frame where it crosses an edge.
 
-Simulator.app turns the display to the device's orientation before it places
-a new window. NeoSimulator reads the orientation with `devicectl` after the
-window shows, so when that first reading arrives, a window that is still where
-it was placed takes the new shape and is placed again: centered at the saved
-center, or with `center()` for the first cascading window, then moved back
-inside the visible frame. A window moved or resized before the reading, and a
-window that cascades from another, keep their top-left corner, as after any
-rotation.
+Simulator.app turns the display to the device's orientation before it chooses
+a new window's scale and places it. NeoSimulator reads the orientation with
+`devicectl` after the window shows, so when that first reading arrives, a
+window that is still where it was placed and as large takes the scale it opens
+at in the new shape (the saved scale or Point Accurate, reduced to Fit
+Screen's) and is placed again: centered at the saved center, or with
+`center()` for the first cascading window, then moved back inside the visible
+frame. A window that cascades from another keeps its top-left corner. A window
+moved or resized before the reading keeps its scale and its top-left corner,
+as after any rotation.
 
 These differ from Simulator.app:
 
