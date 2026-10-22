@@ -538,11 +538,11 @@ window does:
   is on and the display is at least as wide as the toolbar needs, and the
   expanded style below that. The toolbar needs the width of each of its
   buttons in Simulator.app's toolbar nib plus 4 points (Home 31, Save Screen
-  32, and Rotate Right 25 points), the wider of the window's title in the
+  32, and Rotate 25 points), the wider of the window's title in the
   headline font and its subtitle in the subheadline font, and 130 points:
   317.3 points for the iPhone 17 Pro and 351.4 for the iPad mini (A17 Pro),
   and 29 points less outside the default device set, where the toolbar has
-  no Rotate Right. The title bar is 52 points high with the unified style, 76 with the
+  no Rotate button. The title bar is 52 points high with the unified style, 76 with the
   expanded one, and 40 with the compact one, and the window's height follows
   it. As in Simulator.app's toolbar nibs, the buttons sit between two
   flexible spaces, and the last one is hidden unless the style is expanded,
@@ -564,6 +564,32 @@ window does:
   so the threshold does not change. AppKit sizes the button to its image, as
   it does Simulator.app's, so the button is narrower while it shows
   `stop.circle`.
+- As in Simulator.app, the Save Screen and Rotate buttons show their Option
+  alternates while the pointer is over the toolbar and Option is down; Home
+  has none. Save Screen becomes Record Screen: it shows `record.circle`,
+  described Start Recording, with the tooltip Record Screen, and a click
+  starts a recording as File ▸ Record Screen does. Rotate turns the device
+  left instead: it shows `rotate.left` with the symbol's own description
+  (Rotate Left in English), while its tooltip stays Rotate. The items keep
+  their labels, Save Screen and Rotate, which are also their tooltips
+  otherwise. A recording's Stop Recording takes precedence: Save Screen
+  stays Stop Recording whatever Option does, and follows Option again as
+  soon as the recording stops, while Rotate follows Option throughout.
+- Like Simulator.app's `SimToolbar`, the toolbar tracks the pointer with an
+  `NSTrackingArea` on the toolbar's own view (`NSToolbar._toolbarView`,
+  below), with the same options: entered and exited, active in the active
+  app, in the visible rectangle. The area spans the title bar with the
+  unified styles and the row below the title with the expanded one, and
+  works in every window of the app while the app is active. When the pointer
+  enters, the buttons read the modifier keys held, and until it leaves, they
+  read them again at each modifier event the app dispatches, as
+  Simulator.app's `sendEvent:` reports Option for each one. AppKit makes no
+  change at activation itself: once the app has resigned active, the next
+  pointer movement over the window, or the pointer leaving it, reports the
+  pointer leaving the toolbar, and the buttons take their own faces; Option
+  changes made in another app do not reach this one. Once the app is active
+  again, the pointer entering reads the keys held. A window resigning key
+  changes nothing.
 - A resize the window does not make itself, such as a manual one, also gives
   the toolbar the style for the new width outside full screen and keeps the
   window's height below the title bar, as Simulator.app's
@@ -604,8 +630,8 @@ window does:
   `screenParametersChanged` does for every device window. No scale is
   reapplied.
 
-The title bar uses two private AppKit members, as Simulator.app does,
-because no public API gives the same result on macOS 26:
+The title bar and its toolbar use three private AppKit members, as
+Simulator.app does, because no public API gives the same result on macOS 26:
 
 - `NSToolbar.minimumInlineWindowTitleWidth`, which NeoSimulator sets to 0
   through key-value coding. With AppKit's default, a unified title bar
@@ -617,12 +643,18 @@ because no public API gives the same result on macOS 26:
   returns a `CGFloat`, each time it rounds the title bar's corners. No public
   API reports a window's corner radius before macOS 27's
   `NSView.cornerConfiguration`.
+- `NSToolbar._toolbarView`, which NeoSimulator reads through key-value
+  coding once, when the window takes the toolbar, for the view whose
+  tracking area shows the buttons' Option alternates. AppKit creates no
+  public view for an image item, and the toolbar's view is the region
+  Simulator.app tracks.
 
 NeoSimulator uses each only when the toolbar or the window responds to its
 selector. Without the first, the title bar keeps AppKit's minimum title
 width, so near the threshold buttons move into the overflow menu; without
-the second, the corners take the radius macOS 26 gives each toolbar style.
-Both were checked on macOS 26.6.2 (25G83) and appear in AppKit's class
+the second, the corners take the radius macOS 26 gives each toolbar style;
+without the third, the buttons never show their Option alternates. All
+three were checked on macOS 26.6.2 (25G83) and appear in AppKit's class
 dumps of macOS 26.2 through 26.6.2.
 
 Like Simulator.app's `DeviceWindow`, a window with a bezel resizes by
@@ -770,6 +802,22 @@ These differ from Simulator.app:
   Record Screen… asks where to save, and, when the recorder cannot start,
   until the error is dismissed. NeoSimulator's shows it only while a
   recording runs.
+- After a recording stops, after Record Screen… is cancelled, and after the
+  error of a recorder that cannot start is dismissed, Simulator.app's Save
+  Screen button follows Option wherever the pointer is, until the pointer
+  next leaves the toolbar, because those paths start the following without
+  checking the pointer. NeoSimulator's follows Option only while the pointer
+  is over the toolbar.
+- Simulator.app's buttons take Option from each modifier event.
+  NeoSimulator's read the keys held at each modifier event, so the modifier
+  release that a window sends its device through the app when it resigns key
+  (see [Modifier gestures](#modifier-gestures)) does not turn the alternates
+  off while Option is held, for example when an Option click on another
+  window's toolbar makes the key window resign. Simulator.app sends no such
+  event.
+- Simulator.app gives Save Screen's Option state the toggle button type,
+  which its click turns on before the recording starts. NeoSimulator's
+  toolbar items have no button type.
 - Simulator.app animates the window into and out of full screen itself.
   NeoSimulator uses AppKit's transition, so the window is resizable in full
   screen.
