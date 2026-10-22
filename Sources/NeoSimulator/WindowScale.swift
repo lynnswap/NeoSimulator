@@ -52,10 +52,11 @@ enum WindowScale {
     }
 
     /// The space Simulator.app keeps between a device window's header and its
-    /// display: 10 points less the top padding of the bezel's images,
-    /// `SimDeviceChrome.images.padding.height`, which `bezelPadding` gives,
-    /// or nil without a bezel. It does not change with the display's scale.
-    static func displayGap(bezelPadding: NSSize?) -> CGFloat { 10 - (bezelPadding?.height ?? 0) }
+    /// display: with a bezel, 10 points less the top padding of the bezel's
+    /// images, `SimDeviceChrome.images.padding.height`, which `bezelPadding`
+    /// gives; without one, where `bezelPadding` is nil, none. It does not
+    /// change with the display's scale.
+    static func displayGap(bezelPadding: NSSize?) -> CGFloat { bezelPadding.map { 10 - $0.height } ?? 0 }
 
     /// Whether the display is at `target`, as Simulator.app compares scales.
     static func matches(_ scale: CGFloat, _ target: CGFloat) -> Bool { abs(scale - target) < 0.001 }
@@ -160,6 +161,16 @@ extension PreferenceStore {
     var showsDeviceBezels: Bool {
         object(forKey: HostPreferences.showChrome) == nil || bool(forKey: HostPreferences.showChrome)
     }
+
+    /// `UseMonobar`, which lets a device window's toolbar take the unified
+    /// style. It is on unless it was turned off, as its registered default says.
+    var usesMonobar: Bool {
+        object(forKey: HostPreferences.useMonobar) == nil || bool(forKey: HostPreferences.useMonobar)
+    }
+
+    /// `UseCompactTitleBar`, which gives every device window's toolbar the
+    /// compact unified style. It is off unless it was turned on.
+    var usesCompactTitleBar: Bool { bool(forKey: HostPreferences.useCompactTitleBar) }
 
     /// Simulator.app's app-wide `AllowsMoveByDragOnWindowChrome`: whether a
     /// press on a device window's bezel outside its corners moves the window.

@@ -31,6 +31,11 @@ struct DeviceCommand {
     struct Toolbar {
         let label: String
         let symbol: String
+        /// The width of the command's button in Simulator.app's toolbar nib,
+        /// which its toolbar style threshold counts (see
+        /// `DeviceToolbar.buttonsWidth`), or nil for an item that Simulator.app's
+        /// toolbar does not have.
+        var buttonWidth: CGFloat?
     }
 
     let id: ID
@@ -80,7 +85,7 @@ struct DeviceCommand {
     static let catalog: [ID: DeviceCommand] = Dictionary(uniqueKeysWithValues: [
         // File
         DeviceCommand(id: .saveScreen, title: "Save Screen", key: "s",
-                      toolbar: Toolbar(label: "Save Screen", symbol: "camera.on.rectangle"),
+                      toolbar: Toolbar(label: "Save Screen", symbol: "camera.on.rectangle", buttonWidth: 32),
                       isEnabled: { $0.session.canPerformToolOperation }) { $0.saveScreen() },
         DeviceCommand(id: .saveScreenAs, title: "Save Screen…", key: "s", modifiers: [.command, .option],
                       isAlternate: true,
@@ -117,7 +122,7 @@ struct DeviceCommand {
                       isSupported: { $0.rotates },
                       isEnabled: { $0.session.canPerformToolOperation }) { $0.rotate(left: true) },
         DeviceCommand(id: .rotateRight, title: "Rotate Right", key: String(UnicodeScalar(NSRightArrowFunctionKey)!),
-                      toolbar: Toolbar(label: "Rotate Right", symbol: "rotate.right"),
+                      toolbar: Toolbar(label: "Rotate Right", symbol: "rotate.right", buttonWidth: 25),
                       isSupported: { $0.rotates },
                       isEnabled: { $0.session.canPerformToolOperation }) { $0.rotate(left: false) },
         orientation(.portrait, title: "Portrait"),
@@ -137,7 +142,7 @@ struct DeviceCommand {
             UserDefaults.standard.set(!UserDefaults.standard.bool(forKey: key), forKey: key)
         },
         DeviceCommand(id: .home, title: "Home", key: "h", modifiers: [.command, .shift],
-                      toolbar: Toolbar(label: "Home", symbol: "house")) { $0.send(.press(.button(.home))) },
+                      toolbar: Toolbar(label: "Home", symbol: "house", buttonWidth: 31)) { $0.send(.press(.button(.home))) },
         DeviceCommand(id: .lock, title: "Lock", key: "l") { $0.send(.press(.button(.lock))) },
         DeviceCommand(id: .sideButton, title: "Side Button", key: "b", modifiers: [.command, .shift],
                       isSupported: { $0.family == .watch }) { $0.send(.press(.button(.side))) },

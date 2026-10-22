@@ -37,7 +37,10 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     /// where Simulator.app's scale commands are unavailable and the bezel
     /// shows no resize cursors.
     private var isFullScreen = false {
-        didSet { showResizeCursors() }
+        didSet {
+            showResizeCursors()
+            updateHeaderShape()
+        }
     }
     /// The drag on a corner of the bezel in progress, and the largest scale it
     /// may give the display.
@@ -53,6 +56,9 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     /// Set while the window takes the size of a chosen display scale, which
     /// the resize must not change.
     private var isSizingWindow = false
+    /// The title bar's height for each toolbar style, as the window last laid
+    /// it out, and macOS 26's heights for the styles it has not taken yet.
+    private var titleBarHeights: [NSWindow.ToolbarStyle: CGFloat] = [.unified: 52, .expanded: 76, .unifiedCompact: 40]
     /// I/O ▸ Touch Pressure's app-wide settings, which every window shares.
     let touchPressure: TouchPressure
     private var touchPressureObserver: (any NSObjectProtocol)?
@@ -89,14 +95,16 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
             session.disconnect()
             throw HostError.unavailable("Simulator display has no usable size")
         }
-        let window = DeviceWindow(contentRect: NSRect(x: 0, y: 0, width: 360, height: 700),
+        // Like Simulator.app's window, it starts 500 points wide, which gives
+        // the toolbar its first style before the display takes its first scale.
+        let window = DeviceWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 700),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered, defer: false)
         super.init(window: window)
         (window.title, window.subtitle) = deviceWindowTitles(name: session.device.name, runtimeName: session.device.runtimeName)
         window.appearance = NSAppearance(named: .darkAqua)
-        window.toolbarStyle = .unified
-        window.titlebarAppearsTransparent = true
+        // As in Simulator.app's window, AppKit draws the title bar, which is
+        // not transparent: see `updateHeaderShape()`.
         window.titlebarSeparatorStyle = .none
         window.tabbingMode = .disallowed
         window.backgroundColor = .clear
@@ -114,6 +122,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         // Show Device Bezels preference says, before it takes its scale.
         session.display.setChromeVisible(preferences.showsDeviceBezels)
         bezelChanged()
+        updateToolbarStyle(forWidth: window.frame.width)
         // The smallest size a manual resize leaves the window at.
         window.contentMinSize = NSSize(width: 320, height: 300)
         // AppKit never dispatches key-ups while Command is held; forward them
@@ -151,12 +160,36 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
             let scope = (notification.userInfo?[AudioRouting.scopeKey] as? UInt64).flatMap(AudioScope.init(rawValue:))
             MainActor.assumeIsolated { if let scope { self?.audioRouteChosen(in: scope) } }
         }
-        showDisplay(at: initialScale)
+        showDisplay(fitting: { self.initialScale })
     }
 
     /// Like Simulator.app, a new window opens at the saved scale or Point
     /// Accurate, reduced to Fit Screen's.
     private var initialScale: CGFloat { min(scale(for: .fitScreen) ?? .infinity, savedScale ?? 1) }
+
+    /// Shows the display at the scale `scale` gives, and again at the smaller
+    /// one it gives when the first made the window narrow enough to take the
+    /// taller expanded title bar. Simulator.app measures Fit Screen with the
+    /// title bar the window has before the change, so such a window ends up
+    /// taller than the screen there.
+    private func showDisplay(fitting scale: () -> CGFloat?) {
+        guard let first = scale() else { return }
+        showDisplay(at: first)
+        if let second = scale(), second < first { showDisplay(at: second) }
+    }
+
+    /// Gives a new window its initial scale and places it with `place`, again
+    /// when that scale gave it the taller expanded title bar, as
+    /// `showDisplay(fitting:)` does.
+    private func placeAtInitialScale(_ place: ((NSWindow) -> Void)?) {
+        let scale = initialScale
+        session.display.setRenderScale(scale)
+        didRotate(placing: place)
+        let refit = initialScale
+        guard refit < scale else { return }
+        session.display.setRenderScale(refit)
+        didRotate(placing: place)
+    }
 
     /// The frames of the Mac's screens, whose arrangement keys the saved
     /// window geometry.
@@ -189,8 +222,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         window.makeKeyAndOrderFront(nil)
         // The window opened at the scale for the main screen; it takes the
         // scale for the screen it is placed on.
-        session.display.setRenderScale(initialScale)
-        didRotate(placing: place)
+        placeAtInitialScale(place)
         initialPlacement = (place, window.frame)
         readInitialOrientation()
     }
@@ -279,8 +311,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
             defer { self.initialPlacement = nil }
             try await self.session.readOrientation()
             if let placement = self.initialPlacement, self.window?.frame == placement.frame {
-                self.session.display.setRenderScale(self.initialScale)
-                self.didRotate(placing: placement.place)
+                self.placeAtInitialScale(placement.place)
             } else {
                 self.didRotate()
             }
@@ -365,15 +396,43 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     /// does: AppKit does not resize a window with a bezel, whose corners
     /// resize it instead, the bezel's top padding lets the window extend
     /// above the screen, and the gap above the display is 10 points less
-    /// that padding. In full screen the window stays resizable until it
+    /// that padding. The window is clear around a bezel, below a title bar
+    /// with rounded lower corners. Without a bezel, there is no gap, the title
+    /// bar is square, and the window is black, which shows wherever the
+    /// display leaves the window uncovered, such as at its rounded corners;
+    /// in full screen the window keeps its color and stays resizable until it
     /// leaves full screen.
     private func bezelChanged() {
         guard let window = window as? DeviceWindow else { return }
         let padding = session.display.chromePadding
         content.displayGap = WindowScale.displayGap(bezelPadding: padding)
         window.chromeTopPadding = padding?.height ?? 0
+        updateHeaderShape()
+        if padding != nil { window.backgroundColor = .clear } else if !isFullScreen { window.backgroundColor = .black }
         guard !isFullScreen else { return }
         if padding == nil { window.styleMask.insert(.resizable) } else { window.styleMask.remove(.resizable) }
+    }
+
+    /// Gives the toolbar the style that Simulator.app's geometry update gives
+    /// it for a display `width` points wide (see `DeviceToolbar.style`), and
+    /// lays the title bar out for that style, so that `content.headerHeight`
+    /// is its height. AppKit otherwise lays it out later, and an expanded
+    /// title bar would read 8 points taller than it becomes.
+    private func updateToolbarStyle(forWidth width: CGFloat) {
+        guard let window, let deviceToolbar else { return }
+        let titles = deviceWindowTitles(name: session.device.name, runtimeName: session.device.runtimeName)
+        deviceToolbar.apply(deviceToolbar.style(forWidth: width, title: titles.title, subtitle: titles.subtitle,
+                                                preferences: preferences), to: window)
+        window.layoutIfNeeded()
+        titleBarHeights[window.toolbarStyle] = content.headerHeight
+        updateHeaderShape()
+    }
+
+    /// Like Simulator.app, rounds the lower corners of the title bar with the
+    /// window's corner radius for its toolbar style while the bezel shows
+    /// outside full screen, and squares them otherwise.
+    private func updateHeaderShape() {
+        (window as? DeviceWindow)?.roundHeader(session.display.chromePadding != nil && !isFullScreen)
     }
 
     func toggleStayOnTop() {
@@ -796,7 +855,20 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         guard let scale = scale(for: mode), scale >= minimumScale else { return false }
         guard session.display.chromePadding == nil, let visible = window.screen?.visibleFrame else { return true }
         let size = session.display.size(for: scale)
-        return size.width <= visible.width && size.height <= visible.height - content.headerHeight
+        return size.width <= visible.width && size.height <= visible.height - titleBarHeight(forDisplayWidth: size.width)
+    }
+
+    /// The height of the title bar that a window around a display `width`
+    /// points wide takes, so that a scale is checked against the title bar it
+    /// would have. Simulator.app checks against the title bar the window has,
+    /// which a scale that changes the toolbar's style makes 24 points too
+    /// short or too tall.
+    private func titleBarHeight(forDisplayWidth width: CGFloat) -> CGFloat {
+        guard let deviceToolbar else { return content.headerHeight }
+        let titles = deviceWindowTitles(name: session.device.name, runtimeName: session.device.runtimeName)
+        let style = deviceToolbar.style(forWidth: width, title: titles.title, subtitle: titles.subtitle,
+                                        preferences: preferences)
+        return titleBarHeights[style] ?? content.headerHeight
     }
 
     /// The checkmark of a fixed scale: on while the display is at that scale,
@@ -815,7 +887,11 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     func setScale(_ mode: WindowScaleMode) {
         guard let window, let scale = scale(for: mode) else { return }
         let previous = window.frame
-        showDisplay(at: scale)
+        if mode == .fitScreen {
+            showDisplay(fitting: { self.scale(for: .fitScreen) })
+        } else {
+            showDisplay(at: scale)
+        }
         window.setFrameOrigin(NSPoint(x: previous.minX, y: previous.maxY - window.frame.height))
         guard mode == .fitScreen else {
             moveWindowOntoScreen()
@@ -845,8 +921,10 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// Sizes the window to the display at its scale, as Simulator.app's
-    /// geometry update does: the window is as wide as the display, also
-    /// below `contentMinSize`, keeps its bottom-left corner or moves it to
+    /// geometry update does: the toolbar takes the style for the display's
+    /// width, and the window is as wide as the display, also below
+    /// `contentMinSize`, and as tall as the display, the gap above it, and the
+    /// title bar of that style. It keeps its bottom-left corner or moves it to
     /// `origin`, takes the smallest integral frame around that
     /// (`NSIntegralRect`), and moves down when its top would be above the
     /// screen. In full screen and during a live resize, the display fits the
@@ -857,17 +935,26 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
             return
         }
         let size = session.display.size(for: session.display.renderScale)
+        updateToolbarStyle(forWidth: size.width)
         let sized = window.frameRect(forContentRect: NSRect(x: 0, y: 0,
             width: size.width, height: size.height + content.heightAboveDisplay))
-        var frame = NSIntegralRect(NSRect(origin: origin ?? window.frame.origin, size: sized.size))
+        content.isSizedToDisplay = true
+        setFrame(around: NSRect(origin: origin ?? window.frame.origin, size: sized.size))
+        layoutDisplay()
+    }
+
+    /// Gives the window the smallest integral frame around `frame`
+    /// (`NSIntegralRect`), moved down when its top would be above the screen,
+    /// as Simulator.app's geometry update does.
+    private func setFrame(around frame: NSRect) {
+        guard let window else { return }
+        var frame = NSIntegralRect(frame)
         if let visible = window.screen?.visibleFrame, visible.maxY < frame.maxY {
             frame.origin.y = visible.maxY - frame.height
         }
-        content.isSizedToDisplay = true
         isSizingWindow = true
         window.setFrame(frame, display: true)
         isSizingWindow = false
-        layoutDisplay()
     }
 
     // MARK: Bezel dragging
@@ -1019,7 +1106,22 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         session.display.setActive(false)
     }
     func windowWillStartLiveResize(_ notification: Notification) { if !closed { session.display.beginResize() } }
-    func windowDidResize(_ notification: Notification) { if !isSizingWindow { resizeDisplay() } }
+    /// Like Simulator.app's `windowDidResize:`, a resize that the window did
+    /// not make itself, such as a manual one, gives the toolbar the style for
+    /// the new width outside full screen and keeps the window's height below
+    /// the title bar. The display then fits the window.
+    func windowDidResize(_ notification: Notification) {
+        guard !isSizingWindow else { return }
+        if !closed, !isFullScreen, let window {
+            let below = window.frame.height - content.headerHeight
+            updateToolbarStyle(forWidth: window.frame.width)
+            let height = below + content.headerHeight
+            if height != window.frame.height {
+                setFrame(around: NSRect(origin: window.frame.origin, size: NSSize(width: window.frame.width, height: height)))
+            }
+        }
+        resizeDisplay()
+    }
     // Simulator.app animates a window with a bezel, which is not resizable,
     // into full screen and back itself. AppKit's transition fills the screen
     // only with a resizable window, so the window is resizable in full screen.
@@ -1157,6 +1259,49 @@ final class DeviceWindow: NSWindow {
         return WindowScale.frame(frameRect, constrainedBelow: target.visibleFrame,
                                  topInset: chromeTopPadding * displayScale())
     }
+
+    /// The window's corner radius, which Simulator.app reads from the private
+    /// `NSWindow._cornerRadius` for the lower corners of the title bar. Without
+    /// that method, the radius macOS 26 gives a titled window with its toolbar
+    /// style: 26 points unified, 20 compact, and 16 expanded.
+    private var cornerRadius: CGFloat {
+        let selector = NSSelectorFromString("_cornerRadius")
+        if responds(to: selector) {
+            typealias Getter = @convention(c) (NSWindow, Selector) -> CGFloat
+            return unsafe unsafeBitCast(method(for: selector), to: Getter.self)(self, selector)
+        }
+        switch toolbarStyle {
+        case .unified: return 26
+        case .unifiedCompact: return 20
+        default: return 16
+        }
+    }
+
+    /// The view that holds the title bar and the toolbar, Simulator.app's
+    /// `NSTitlebarContainerView`: the close button's ancestor among the
+    /// subviews of the window's frame view. Nil while the title bar is in
+    /// another window, as in full screen.
+    private var titlebarContainer: NSView? {
+        guard let frameView = contentView?.superview else { return nil }
+        var view: NSView? = standardWindowButton(.closeButton)
+        while let current = view, current.superview !== frameView { view = current.superview }
+        return view
+    }
+
+    /// Rounds the lower corners of the title bar with the window's corner
+    /// radius, so that the title bar's shape matches the window's top, or
+    /// squares them, as Simulator.app's `DeviceWindow` does with the layer of
+    /// its title bar container.
+    func roundHeader(_ rounded: Bool) {
+        guard let layer = titlebarContainer?.layer else { return }
+        guard rounded else {
+            layer.cornerRadius = 0
+            return
+        }
+        layer.cornerRadius = cornerRadius
+        layer.maskedCorners = [.layerMinXMinYCorner, .layerMaxXMinYCorner]
+        layer.masksToBounds = true
+    }
 }
 
 @MainActor
@@ -1177,6 +1322,8 @@ private final class DeviceContentView: NSView {
     var isSizedToDisplay = false {
         didSet { needsLayout = true }
     }
+    /// The title bar's height, which follows the toolbar's style: 52 points
+    /// unified, 76 expanded, and 40 compact on macOS 26.
     var headerHeight: CGFloat {
         guard let window else { return 52 }
         return max(0, bounds.height - window.contentLayoutRect.height)
@@ -1205,18 +1352,6 @@ private final class DeviceContentView: NSView {
         NSSize(width: max(1, bounds.width), height: max(1, bounds.height - heightAboveDisplay))
     }
 
-    override func draw(_ dirtyRect: NSRect) {
-        super.draw(dirtyRect)
-        let header = NSRect(x: 0, y: bounds.height - headerHeight, width: bounds.width, height: headerHeight)
-            .insetBy(dx: 0.5, dy: 0.5)
-        let path = NSBezierPath(roundedRect: header, xRadius: headerHeight / 2, yRadius: headerHeight / 2)
-        NSColor(calibratedWhite: 0.12, alpha: 1).setFill()
-        path.fill()
-        NSColor(calibratedWhite: 0.28, alpha: 1).setStroke()
-        path.lineWidth = 1
-        path.stroke()
-    }
-
     override func layout() {
         super.layout()
         let available = NSRect(origin: .zero, size: availableDisplaySize)
@@ -1228,7 +1363,6 @@ private final class DeviceContentView: NSView {
             display.frame = NSRect(x: available.midX - size.width / 2, y: available.midY - size.height / 2,
                                    width: size.width, height: size.height)
         }
-        needsDisplay = true
     }
 }
 
