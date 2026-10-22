@@ -117,6 +117,8 @@ Neo currently provides:
   Keyboard (Command-K), and Use the Same Keyboard Language as macOS; and I/O →
   Touch Pressure for devices with 3D Touch: Use Trackpad Force, Shallow Press
   (Shift-Command-1), and Deep Press (Shift-Command-2);
+- I/O → Audio Input and Audio Output, which choose the Mac audio devices that
+  simulators use;
 - Features menu controls: Touch ID and Face ID enrollment and matching or
   non-matching events, the in-call status bar, StandBy, preferred text size,
   Increase Contrast, Trigger iCloud Sync (Shift-Command-I), and Location;
@@ -228,6 +230,20 @@ on iOS 18. **Use Trackpad Force** (`UseTrackpadForce`) passes the pressure of a
 Force Touch trackpad's click to the device; it needs such a trackpad. Shallow
 Press and Deep Press choose the pressure of a click for a watch, which Neo does
 not host yet. The settings apply to every device window, as in Simulator.app.
+
+**I/O → Audio Input** and **I/O → Audio Output** choose the Mac audio device
+that simulators record from and play to. **System** follows the Mac's default
+device and shows its name; the other items list the Mac's devices, and the
+device's current choice is checked. As in Simulator.app, a choice applies to
+every device window and is remembered (`RecentAudioInputDeviceUIDs`,
+`RecentAudioOutputDeviceUIDs`). When a device connects, including after a
+restart, and whenever the Mac's devices change, Neo routes each device to the
+most recently chosen device that the Mac has, so a headset is used again when
+it is plugged back in. A device whose route another tool changes, such as
+`devicectl device settings audio`, is routed back. The menus are available for
+devices that support audio routing, including parallel testing devices.
+Unlike Simulator.app, which only logs it, Neo reports a choice that a device
+could not apply.
 
 **NeoSimulator → Settings…** (Command-,) shows the settings window that macOS
 builds from the app's `Settings.bundle`, as it does for Simulator.app. It lists

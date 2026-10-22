@@ -54,6 +54,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     private var touchPressureObserver: (any NSObjectProtocol)?
     private var touchIndicatorObserver: (any NSObjectProtocol)?
     private var keyboardSelectionObserver: (any NSObjectProtocol)?
+    private var audioRouteObserver: (any NSObjectProtocol)?
     /// Whether the window is key, which makes its device the one that
     /// Simulator.app's keyboard controller types into and that a change of
     /// the Mac's input source applies to.
@@ -136,6 +137,13 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         keyboardSelectionObserver = NotificationCenter.default.addObserver(
             forName: NSTextInputContext.keyboardSelectionDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.keyboardSelectionChanged() }
+        }
+        // Like Simulator.app, an audio route chosen in any window applies to
+        // every device window.
+        audioRouteObserver = NotificationCenter.default.addObserver(
+            forName: AudioRouting.didChangeNotification, object: preferences, queue: .main) { [weak self] notification in
+            let scope = (notification.userInfo?[AudioRouting.scopeKey] as? UInt64).flatMap(AudioScope.init(rawValue:))
+            MainActor.assumeIsolated { if let scope { self?.audioRouteChosen(in: scope) } }
         }
         showDisplay(at: initialScale)
     }
@@ -473,6 +481,20 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         let defaults = UserDefaults.standard
         customLocation.show(latitude: defaults.double(forKey: HostPreferences.locationLatitude),
                             longitude: defaults.double(forKey: HostPreferences.locationLongitude))
+    }
+
+    /// I/O ▸ Audio Input or Audio Output: saves `route` as the app's most
+    /// recent route for `scope`, which every device window then applies.
+    func selectAudioRoute(_ route: String, in scope: AudioScope) {
+        guard !closed else { return }
+        preferences.chooseAudioRoute(route, in: scope)
+        focusInput()
+    }
+
+    /// Routes the device to the app's new choice, presenting a failure on this window.
+    private func audioRouteChosen(in scope: AudioScope) {
+        guard !closed else { return }
+        session.synchronizeAudioRoute(in: scope) { [weak self] in self?.present($0) }
     }
 
     /// Starts a location change before returning, so that changes reach the
@@ -1048,13 +1070,14 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         if let commandKeyUpMonitor { NSEvent.removeMonitor(commandKeyUpMonitor) }
         commandKeyUpMonitor = nil
         for observer in [screenParametersObserver, touchPressureObserver, touchIndicatorObserver,
-                         keyboardSelectionObserver].compactMap(\.self) {
+                         keyboardSelectionObserver, audioRouteObserver].compactMap(\.self) {
             NotificationCenter.default.removeObserver(observer)
         }
         screenParametersObserver = nil
         touchPressureObserver = nil
         touchIndicatorObserver = nil
         keyboardSelectionObserver = nil
+        audioRouteObserver = nil
         if let window, let sheet = window.attachedSheet {
             window.endSheet(sheet, returnCode: .cancel)
         }

@@ -11,6 +11,8 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
     private let pasteboardSync: PasteboardSync?
     private let openSimulator: OpenSimulatorMenu
     private let locationMenu = LocationMenu()
+    private let audioMenus = [AudioRouteMenu(scope: .input), AudioRouteMenu(scope: .output)]
+    private var ioMenu: NSMenu?
     /// Items whose shortcut depends on the key device.
     private var keyedItems: [NSMenuItem] = []
     private var keyWindowObserver: (any NSObjectProtocol)?
@@ -109,11 +111,14 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
         commands([.triggerScreenshot], in: device)
 
         let io = menu("I/O", in: main)
+        ioMenu = io
         // Simulator.app's Input submenu, which captures the Mac's pointer and
         // keyboard, comes first; NeoSimulator does not capture them.
         commands([.syncKeyboardLanguage, .connectHardwareKeyboard, .toggleSoftwareKeyboard], in: menu("Keyboard", in: io))
         commands([.useTrackpadForce, .shallowPress, .deepPress], in: menu("Touch Pressure", in: io))
         io.addItem(.separator())
+        for audio in audioMenus { io.addItem(audio.item) }
+        updateAudioMenus(for: nil)
         commands([.increaseVolume, .decreaseVolume], in: io)
         io.addItem(.separator())
         commands([.openURL], in: io)
@@ -216,7 +221,14 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
     // Simulator.app hides commands the key device does not support. Without a
     // device window, commands stay visible and disabled.
     func menuNeedsUpdate(_ menu: NSMenu) {
+        if menu === ioMenu { updateAudioMenus(for: activeWindow) }
         updateVisibility(in: menu, for: activeWindow?.session.capabilities)
+    }
+
+    /// Attaches I/O ▸ Audio Input and Audio Output to `window`'s device, as
+    /// Simulator.app does when a device window becomes key.
+    func updateAudioMenus(for window: DeviceWindowController?) {
+        for audio in audioMenus { audio.attach(to: window) }
     }
 
     func updateVisibility(in menu: NSMenu, for capabilities: DeviceCapabilities?) {
@@ -404,6 +416,71 @@ final class LocationMenu: NSObject, NSMenuDelegate {
     @objc private func select(_ sender: NSMenuItem) {
         guard let selection = sender.representedObject as? LocationSelection else { return }
         (NSApp.keyWindow?.windowController as? DeviceWindowController)?.selectLocation(selection)
+    }
+}
+
+/// I/O ▸ Audio Input or Audio Output, rebuilt each time it opens from the key
+/// device's audio port: System, which follows the Mac's default device and
+/// names it, then the Mac's devices that have channels in that direction,
+/// in CoreSimulator's order and without a separator, as in Simulator.app.
+/// The guest's route is checked. A choice is saved as the app's most recent
+/// route and, as in Simulator.app, applies to every device window.
+@MainActor
+final class AudioRouteMenu: NSObject, NSMenuDelegate {
+    let scope: AudioScope
+    /// The I/O menu's item.
+    let item: NSMenuItem
+    private let menu: NSMenu
+
+    init(scope: AudioScope) {
+        self.scope = scope
+        let title = scope == .input ? "Audio Input" : "Audio Output"
+        item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        menu = NSMenu(title: title)
+        super.init()
+        menu.delegate = self
+    }
+
+    /// Like Simulator.app's `connectAudioSubmenus:`, the submenu is attached
+    /// and enabled for a device with `SimFeatureRoutableAudio`; otherwise the
+    /// item has no submenu and is disabled, but stays visible.
+    func attach(to window: DeviceWindowController?) {
+        let routes = window?.session.routesAudio == true
+        // AppKit leaves the enabling of an item with a submenu to the item.
+        item.isEnabled = routes
+        item.submenu = routes ? menu : nil
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        update(menu, for: NSApp.keyWindow?.windowController as? DeviceWindowController)
+    }
+
+    /// Lists `window`'s routes. Like Simulator.app, they are enabled with a
+    /// key device window, also while its device restarts: a choice is saved
+    /// and applies when the device connects. Until the device's audio port
+    /// reports, only System is listed, unchecked.
+    func update(_ menu: NSMenu, for window: DeviceWindowController?) {
+        let session = window?.session
+        let state = session?.audioRoutes
+        let usesSystemDefault = state?.usesSystemDefault(in: scope) == true
+        let selected = usesSystemDefault ? nil : state?.selectedDevice(in: scope)?.uid
+        let system = (state?.defaultDevice(in: scope)).map { "System (\($0.name))" } ?? "System"
+        let routes = [(system, AudioRouting.systemDefault, usesSystemDefault)]
+            + (state?.devices(in: scope) ?? []).map { ($0.name, $0.uid, $0.uid == selected) }
+        menu.autoenablesItems = false
+        menu.items = routes.map { title, route, isChecked in
+            let item = NSMenuItem(title: title, action: #selector(select(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = route
+            item.state = isChecked ? .on : .off
+            item.isEnabled = window != nil
+            return item
+        }
+    }
+
+    @objc private func select(_ sender: NSMenuItem) {
+        guard let route = sender.representedObject as? String else { return }
+        (NSApp.keyWindow?.windowController as? DeviceWindowController)?.selectAudioRoute(route, in: scope)
     }
 }
 

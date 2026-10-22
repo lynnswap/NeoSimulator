@@ -21,6 +21,7 @@ final class SimulatorRuntime {
     let display: SimulatorDisplayInterface
     let input: SimulatorInputInterface
     let pasteboard: SimulatorPasteboardInterface
+    let audio: SimulatorAudioInterface
 
     init(xcodeURL: URL) throws {
         self.xcodeURL = xcodeURL.resolvingSymlinksInPath()
@@ -32,6 +33,7 @@ final class SimulatorRuntime {
         display = try SimulatorDisplayInterface(runtime: runtime)
         input = try SimulatorInputInterface(runtime: runtime)
         pasteboard = try SimulatorPasteboardInterface(runtime: runtime)
+        audio = try SimulatorAudioInterface(runtime: runtime)
         try validateLoadedImages()
     }
 
@@ -523,6 +525,233 @@ final class SimulatorPasteboardDelegate: NSObject {
     }
 }
 
+/// CoreSimDeviceIO's audio route port: the descriptor of a device's I/O port
+/// that conforms to `SimAudioHostRoutable`. Simulator.app reaches it through
+/// SimulatorKit's `SimDeviceAudioClient`, which Xcode 27 removed, and
+/// `devicectl device settings audio` through CoreDevice's simulator plugin.
+/// Unlike `devicectl`, it reaches devices of any device set.
+@MainActor
+struct SimulatorAudioInterface {
+    /// `SimDevice.io`, the device's `SimDeviceIOClient`.
+    let deviceIO: NativeObjCMethod<AnyObject?>
+    /// `SimDeviceIOClient.ioPorts`, remote proxies of the device's I/O ports.
+    let ioPorts: NativeObjCMethod<[AnyObject]>
+    let routable: Protocol
+
+    typealias DevicesChanged = @convention(block) (NSArray?) -> Void
+    typealias RouteChanged = @convention(block) (UInt64, NSString?) -> Void
+    typealias RouteCompletion = @convention(block) (NSError?) -> Void
+
+    init(runtime: ABIRuntime) throws {
+        guard let device = NSClassFromString("SimDevice"), let client = NSClassFromString("SimDeviceIOClient") else {
+            throw HostError.unavailable("CoreSimulator's device I/O classes are unavailable")
+        }
+        deviceIO = try runtime.resolveObjCMethodAndWait(on: device, selector: "io", as: (() -> AnyObject?).self)
+        ioPorts = try runtime.resolveObjCMethodAndWait(on: client, selector: "ioPorts", as: (() -> [AnyObject]).self)
+        // The port and its Mac devices are remote proxies, so their messages
+        // are bound to each object when a device connects; their protocols
+        // must declare them.
+        let protocols = [("SimAudioHostRoutable", SimulatorAudioConnection.portSelectors),
+                         ("SimAudioHostDevice", HostAudioDeviceMembers.selectors)]
+        for (name, selectors) in protocols {
+            guard let declared = objc_getProtocol(name) else {
+                throw HostError.unavailable("Required private protocol \(name) is unavailable")
+            }
+            for selector in selectors
+            where unsafe protocol_getMethodDescription(declared, NSSelectorFromString(selector), true, true).name == nil {
+                throw HostError.unavailable("\(name) does not declare \(selector)")
+            }
+        }
+        guard let routable = objc_getProtocol("SimAudioHostRoutable") else {
+            throw HostError.unavailable("Required private protocol SimAudioHostRoutable is unavailable")
+        }
+        self.routable = routable
+        // Recent routes are saved with this value, so it must not change.
+        let symbol = try runtime.resolveAndWait(NativeDeclaration(
+            name: "SimAudioHostUseSystemDefaultDeviceUID", language: .c, kind: .data))
+        let systemDefault = unsafe symbol.withUnsafeAddress {
+            unsafe $0.load(as: Unmanaged<NSString>?.self)?.takeUnretainedValue() as String?
+        }
+        guard systemDefault == AudioRouting.systemDefault else {
+            throw HostError.unavailable("SimAudioHostUseSystemDefaultDeviceUID is \(systemDefault ?? "nil")")
+        }
+    }
+
+    /// Connects to the device's audio route port, which a booted device that
+    /// has `SimFeatureRoutableAudio` provides.
+    func connect(to device: SimulatorDevice,
+                 changed: @escaping @MainActor () -> Void) throws -> SimulatorAudioConnection {
+        guard let io = try unsafe deviceIO.unsafeInvoke(on: device.object) else {
+            throw HostError.unavailable("The device did not provide its I/O ports.")
+        }
+        var descriptor: NativeObjCMethod<AnyObject?>?
+        for port in try unsafe ioPorts.unsafeInvoke(on: io) {
+            // Every port is a proxy of one class.
+            let method = try descriptor ?? ABIRuntime.shared.object(port)
+                .resolveMethodAndWait(selector: "descriptor", as: (() -> AnyObject?).self).method
+            descriptor = method
+            if let object = try unsafe method.unsafeInvoke(on: port),
+               (object as? NSObjectProtocol)?.conforms(to: routable) == true {
+                return try SimulatorAudioConnection(port: object, changed: changed)
+            }
+        }
+        throw HostError.unavailable("The device has no audio route port.")
+    }
+}
+
+/// A device's audio routes: CoreSimDeviceIO's `SimAudioHostRoutable`.
+@MainActor
+protocol SimulatorAudioRoutes: AnyObject {
+    /// The Mac's audio devices and the guest's routes as the port reports them now.
+    func state() throws -> AudioRouteState
+    /// Routes the guest's `scope` to a Mac device's unique identifier or to
+    /// `AudioRouting.systemDefault`. `completion` receives CoreSimulator's
+    /// result on the main actor; a thrown error means nothing was sent.
+    ///
+    /// CoreSimulator does not fail a route to a device that the Mac lacks or
+    /// that has no channels in `scope`: it routes the guest to the Mac's
+    /// default device, by that device's identifier.
+    func route(_ scope: AudioScope, to route: String, completion: @escaping @MainActor (Error?) -> Void) throws
+    /// Stops the change reports.
+    func disconnect()
+}
+
+/// The audio route port of one device. It reports a change of the Mac's
+/// devices, including its default devices, and of the guest's routes, also
+/// those that another process makes.
+@MainActor
+final class SimulatorAudioConnection: SimulatorAudioRoutes {
+    static let portSelectors = [
+        "availableHostDevices", "guestInputHostDeviceUID", "guestOutputHostDeviceUID",
+        "effectiveDefaultInputDeviceUID", "effectiveDefaultOutputDeviceUID",
+        "routeGuestDeviceScope:toHostDeviceUID:completionQueue:completionHandler:",
+        "registerCallbackWithUUID:availableDevicesChangedCallback:",
+        "registerCallbackWithUUID:selectedDeviceUIDChangedCallback:", "unregisterCallbackWithUUID:",
+    ]
+
+    private let availableDevices: NativeBoundObjCMethod<[AnyObject]?>
+    private let inputRoute: NativeBoundObjCMethod<String?>
+    private let outputRoute: NativeBoundObjCMethod<String?>
+    private let defaultInput: NativeBoundObjCMethod<String?>
+    private let defaultOutput: NativeBoundObjCMethod<String?>
+    private let routeGuest: NativeBoundObjCMethod<Void, UInt64, String, DispatchQueue,
+                                                  SimulatorAudioInterface.RouteCompletion>
+    private let unregister: NativeBoundObjCMethod<Void, NSUUID>
+    /// Identifies this connection's change reports.
+    private let token = NSUUID()
+    private var members: HostAudioDeviceMembers?
+    private var isConnected = true
+
+    fileprivate init(port: AnyObject, changed: @escaping @MainActor () -> Void) throws {
+        let object = ABIRuntime.shared.object(port)
+        availableDevices = try object.resolveMethodAndWait(
+            selector: "availableHostDevices", as: (() -> [AnyObject]?).self)
+        inputRoute = try object.resolveMethodAndWait(selector: "guestInputHostDeviceUID", as: (() -> String?).self)
+        outputRoute = try object.resolveMethodAndWait(selector: "guestOutputHostDeviceUID", as: (() -> String?).self)
+        defaultInput = try object.resolveMethodAndWait(
+            selector: "effectiveDefaultInputDeviceUID", as: (() -> String?).self)
+        defaultOutput = try object.resolveMethodAndWait(
+            selector: "effectiveDefaultOutputDeviceUID", as: (() -> String?).self)
+        routeGuest = try object.resolveMethodAndWait(
+            selector: "routeGuestDeviceScope:toHostDeviceUID:completionQueue:completionHandler:",
+            as: ((UInt64, String, DispatchQueue, @escaping SimulatorAudioInterface.RouteCompletion) -> Void).self)
+        unregister = try object.resolveMethodAndWait(selector: "unregisterCallbackWithUUID:", as: ((NSUUID) -> Void).self)
+        let registerDevices = try object.resolveMethodAndWait(
+            selector: "registerCallbackWithUUID:availableDevicesChangedCallback:",
+            as: ((NSUUID, @escaping SimulatorAudioInterface.DevicesChanged) -> Void).self)
+        let registerRoutes = try object.resolveMethodAndWait(
+            selector: "registerCallbackWithUUID:selectedDeviceUIDChangedCallback:",
+            as: ((NSUUID, @escaping SimulatorAudioInterface.RouteChanged) -> Void).self)
+        try unsafe registerDevices.unsafeInvoke(token, Self.devicesChanged(changed))
+        do {
+            try unsafe registerRoutes.unsafeInvoke(token, Self.routeChanged(changed))
+        } catch {
+            disconnect()
+            throw error
+        }
+    }
+
+    isolated deinit { disconnect() }
+
+    // The port calls these blocks, and a route's completion despite its
+    // completion queue, on threads of its own, so they are built outside the
+    // main actor and pass the call on to the main queue.
+    private nonisolated static func devicesChanged(
+        _ changed: @escaping @MainActor () -> Void
+    ) -> SimulatorAudioInterface.DevicesChanged {
+        { _ in DispatchQueue.main.async { MainActor.assumeIsolated { changed() } } }
+    }
+
+    private nonisolated static func routeChanged(
+        _ changed: @escaping @MainActor () -> Void
+    ) -> SimulatorAudioInterface.RouteChanged {
+        { _, _ in DispatchQueue.main.async { MainActor.assumeIsolated { changed() } } }
+    }
+
+    private nonisolated static func routeCompleted(
+        _ completion: @escaping @MainActor (Error?) -> Void
+    ) -> SimulatorAudioInterface.RouteCompletion {
+        { error in DispatchQueue.main.async { MainActor.assumeIsolated { completion(error) } } }
+    }
+
+    func state() throws -> AudioRouteState {
+        var devices: [HostAudioDevice] = []
+        for object in try unsafe availableDevices.unsafeInvoke() ?? [] {
+            let members = try self.members ?? HostAudioDeviceMembers(object)
+            self.members = members
+            if let device = try members.device(object) { devices.append(device) }
+        }
+        return AudioRouteState(devices: devices,
+                               inputRoute: try unsafe inputRoute.unsafeInvoke(),
+                               outputRoute: try unsafe outputRoute.unsafeInvoke(),
+                               defaultInput: try unsafe defaultInput.unsafeInvoke(),
+                               defaultOutput: try unsafe defaultOutput.unsafeInvoke())
+    }
+
+    func route(_ scope: AudioScope, to route: String, completion: @escaping @MainActor (Error?) -> Void) throws {
+        try unsafe routeGuest.unsafeInvoke(scope.rawValue, route, .main, Self.routeCompleted(completion))
+    }
+
+    func disconnect() {
+        guard isConnected else { return }
+        isConnected = false
+        do { try unsafe unregister.unsafeInvoke(token) } catch {
+            hostLog("Could not stop the audio route reports: \(error.localizedDescription)")
+        }
+    }
+}
+
+/// `SimAudioHostDevice`'s members. The Mac's devices are proxies of one
+/// class, so the members are bound to the first and sent to each.
+@MainActor
+private struct HostAudioDeviceMembers {
+    static let selectors = ["uniqueIdentifier", "displayName", "inputChannels", "outputChannels", "isDefaultInScopes"]
+
+    let uniqueIdentifier: NativeObjCMethod<String?>
+    let displayName: NativeObjCMethod<String?>
+    let inputChannels: NativeObjCMethod<Int>
+    let outputChannels: NativeObjCMethod<Int>
+    let defaultScopes: NativeObjCMethod<UInt64>
+
+    init(_ device: AnyObject) throws {
+        let object = ABIRuntime.shared.object(device)
+        uniqueIdentifier = try object.resolveMethodAndWait(selector: "uniqueIdentifier", as: (() -> String?).self).method
+        displayName = try object.resolveMethodAndWait(selector: "displayName", as: (() -> String?).self).method
+        inputChannels = try object.resolveMethodAndWait(selector: "inputChannels", as: (() -> Int).self).method
+        outputChannels = try object.resolveMethodAndWait(selector: "outputChannels", as: (() -> Int).self).method
+        defaultScopes = try object.resolveMethodAndWait(selector: "isDefaultInScopes", as: (() -> UInt64).self).method
+    }
+
+    /// The device, or nil for one without an identifier, which no route can name.
+    func device(_ object: AnyObject) throws -> HostAudioDevice? {
+        guard let uid = try unsafe uniqueIdentifier.unsafeInvoke(on: object) else { return nil }
+        return HostAudioDevice(uid: uid, name: try unsafe displayName.unsafeInvoke(on: object) ?? uid,
+                               inputChannels: try unsafe inputChannels.unsafeInvoke(on: object),
+                               outputChannels: try unsafe outputChannels.unsafeInvoke(on: object),
+                               defaultScopes: try unsafe defaultScopes.unsafeInvoke(on: object))
+    }
+}
+
 /// An uninitialized instance for an Objective-C initializer, which consumes it.
 @MainActor
 private func allocate(_ type: AnyClass) -> AnyObject? {
@@ -713,6 +942,9 @@ protocol SimulatorDisplay: AnyObject {
     /// `events` receives the connection's callbacks.
     func connectPasteboard(_ pasteboard: NSPasteboard,
                            events: @escaping @MainActor (SimulatorPasteboardEvent) -> Void) throws -> any SimulatorPasteboard
+    /// Connects to the device's audio route port. `changed` runs on the main
+    /// actor after each change the port reports, until it disconnects.
+    func connectAudioRoutes(changed: @escaping @MainActor () -> Void) throws -> any SimulatorAudioRoutes
     func setChromeVisible(_ visible: Bool)
     func setActive(_ active: Bool)
     func setKeyboardEnabled(_ enabled: Bool)
@@ -881,6 +1113,9 @@ final class SimulatorConnection: SimulatorDisplay {
     func connectPasteboard(_ pasteboard: NSPasteboard,
                            events: @escaping @MainActor (SimulatorPasteboardEvent) -> Void) throws -> any SimulatorPasteboard {
         try runtime.pasteboard.connect(to: device, managing: pasteboard, events: events)
+    }
+    func connectAudioRoutes(changed: @escaping @MainActor () -> Void) throws -> any SimulatorAudioRoutes {
+        try runtime.audio.connect(to: device, changed: changed)
     }
     func setChromeVisible(_ visible: Bool) {
         perform("show device chrome") { try unsafe runtime.display.showChrome.unsafeInvoke(on: view, visible) }
