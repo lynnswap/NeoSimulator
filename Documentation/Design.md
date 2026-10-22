@@ -93,10 +93,10 @@ signal cannot land between a move and a separate bookkeeping update.
 | Validate Xcode 27+ and private components | `InstallationInspector` |
 | Serialize route and process transitions | `HostModeController` |
 | Observe and terminate exact app identities | `WorkspaceClient` |
-| Observe booted iOS simulator membership | `HostApplication` |
+| Observe booted simulator membership (iPhone, iPad, Apple TV, Apple Watch, Apple Vision) | `HostApplication` |
 | Load and validate the private runtime | `SimulatorRuntime` |
 | Own one device's display, HID client, tools, and operations | `DeviceSession` |
-| Present one device window | `DeviceWindowController` |
+| Present one device window, with its display's user-interface plugin toolbar | `DeviceWindowController` |
 | Define commands, their availability, and state | `DeviceCommand` |
 | Build and validate active-window menus | `MenuController` |
 | Run device tool subprocesses | `DeviceToolRunner` |
@@ -144,7 +144,14 @@ in non-UI `--validate-runtime` mode. `SimulatorRuntime` then performs the same
 framework loads, ABIBridge lookups of every private message and Swift member,
 and loaded-image checks used by the GUI process, without creating an
 application, CoreSimulator device set, or display session. This keeps the runtime contract in one owner while still
-rejecting a changed Xcode before preference mutation.
+rejecting a changed Xcode before preference mutation. Those lookups include
+`SimDisplayView._userInterfacePlugin`, the `overlayView` and `toolbar`
+messages of `SimDeviceUserInterfacePlugin`, and the `backlight` and `state`
+messages of `SimScreenProperties` and `SimScreenBacklight`. A device type's
+user-interface plugin, such as Apple Vision Pro's `XROS.simdeviceui`, is loaded
+only by SimulatorKit when it connects a display, so the gate does not load it;
+the loaded-image check then requires the plugin's bundle to come from the
+selected Xcode, like SimulatorKit itself.
 
 Wrappers and direct private tools are inspected but never executed by the gate.
 This prevents their mismatch path from implicitly running
@@ -280,8 +287,10 @@ host or falls back to it.
 ## Standalone display lifecycle
 
 The host connects to the selected Xcode's CoreSimulator service context and
-subscribes to the default device set. It creates sessions only for booted iOS
-devices.
+subscribes to the default device set. It creates sessions for the booted
+devices of the product families whose commands it defines: iPhone, iPad, Apple
+TV, Apple Watch, and Apple Vision (see
+[watchOS, tvOS, and visionOS](#watchos-tvos-and-visionos)).
 
 A session discovers the default integrated `SimDeviceScreen`; screen ID zero is
 not assumed. It creates a connected `SimDisplayView` and one
@@ -318,12 +327,12 @@ The first parity set contains only commands with an available, validated owner:
   Pasteboard;
 - Device: Restart, Erase All Content and Settings…, Shut Down, Rotate
   Left/Right, Orientation, Rotate Device Automatically, Home,
-  Lock, Side Button (watchOS devices only, so hidden until Neo hosts them),
+  Lock (iPhones, iPads, and watches), Side Button (watches),
   Action Button, Siri, Shake, App Switcher, Trigger Screenshot;
 - I/O: Keyboard (Use the Same Keyboard Language as macOS, Connect Hardware
   Keyboard, Toggle Software Keyboard), Touch Pressure (Use Trackpad Force, and
-  Shallow Press and Deep Press, which need a watch and so stay disabled until
-  Neo hosts one), Audio Input, Audio Output, Increase Volume, Decrease Volume,
+  Shallow Press and Deep Press, which only a watch enables), Audio Input,
+  Audio Output, Increase Volume, Decrease Volume,
   External Displays (Disabled and Simulator.app's six sizes);
 - Features: Touch ID and Face ID (Enrolled, Matching, Non-matching),
   Authorize Apple Pay, Toggle Appearance, Toggle In-call Status Bar,
@@ -333,19 +342,18 @@ The first parity set contains only commands with an available, validated owner:
 - Debug: Slow Animations, Graphics Quality Override, Color Blended Layers,
   Color Copied Images, Color Misaligned Images, Color Off-screen Rendered, Open
   System Log…, Simulate Memory Warning, Show Parallel Testing Devices;
-- Window: standard minimize/zoom/full screen, Show Device Bezels, Stay on Top,
-  Physical Size, Point Accurate, Pixel Accurate, Fit Screen, Simulators, Bring
-  All to Front.
+- Window: standard minimize/zoom/full screen, Show Device Bezels (not for
+  Apple Vision), Stay on Top, Physical Size, Point Accurate, Pixel Accurate,
+  Fit Screen, Simulators, Bring All to Front.
 
 File ▸ Open Simulator follows Simulator.app's menu delegate: CoreSimulator's
 available-device order, a submenu per runtime (none for a single runtime), the
 device name with its `descriptiveName` as the Option alternate, and markers on
-for booting or booted devices with a visible window and mixed without one. Neo
-lists iOS devices only, because it hosts no other platform yet. File ▸ New
+for booting or booted devices with a visible window and mixed without one. File ▸ New
 Simulator… rebuilds Simulator.app's creation form: every supported device type
 and available runtime in CoreSimulator's order, selection corrected to the first
 compatible choice, the device type's name as the default name, and `simctl
-create` without booting. Its Paired Apple Watch page waits for watchOS hosting.
+create` without booting. Its Paired Apple Watch page is not implemented yet.
 Window ▸ Simulators is NeoSimulator's own device list; Simulator.app has no such
 window.
 
@@ -875,8 +883,6 @@ The following are intentionally absent:
 - Services;
 - global keyboard, pointer, or game-controller capture;
 - Device Manager, CarPlay, and FaceTime menus;
-- platform-specific watchOS, tvOS, and visionOS commands, such as Debug ▸ Show
-  Gaze Target;
 - commands whose remaining private implementation silently discards failure.
 
 See [Simulator.app analysis](SimulatorAppAnalysis.md) for the complete menu
@@ -1440,6 +1446,80 @@ Neither app ends active touches before disconnecting, and NeoSimulator does
 not synthesize touches that Simulator.app does not send. The evidence is in the
 [Simulator.app analysis](SimulatorAppAnalysis.md#modifier-gestures).
 
+### watchOS, tvOS, and visionOS
+
+Neo hosts the booted devices of the product families whose commands it
+defines, by `SimDeviceType.productFamilyID`: iPhone (1), iPad (2), Apple TV
+(3), Apple Watch (4), and Apple Vision (7). Every family's display comes from
+the same IDEPlaygroundSimulator factory, which has no family filter, on the
+device's default screen, screen 1 on the watch, Apple TV, and Apple Vision Pro
+checked live. An Apple TV's screen is a TVOut screen (`displayClass` 1)
+without `SimFeatureInternalDisplay`, so Physical Size and External Displays do
+not apply to it, as in Simulator.app. CoreSimulator boots it powered on at the
+device type's main screen size. Simulator.app sets that size again whenever it
+connects an Apple TV (`configureExternalDisplayWithSize:scale:carPlayProperties:`);
+Neo leaves the screen as CoreSimulator has it.
+
+Commands follow Simulator.app's `deviceWindowBecameKey:` and validation: Lock
+is for iPhones, iPads, and watches; Side Button for watches; Shake, App
+Switcher, Trigger Screenshot, Toggle Appearance, the in-call status bar,
+preferred text size, and Increase Contrast for iPhones and iPads; and Window ▸
+Show Device Bezels is hidden for Apple Vision, whose display has no bezel. The
+other commands follow the device's features. Only a device that rotates reads
+its orientation when it connects, as Simulator.app turns only an iPhone's or
+iPad's display.
+
+The toolbars follow Simulator.app's nibs: Home and Save Screen for watches and
+Apple TV, and for a watch with `SimFeatureAlwaysOnDisplay`
+(`com.apple.display.aot`) also Always On, which presses Lock. Its state is the
+screen's backlight, `SimScreenProperties.backlight.state`, read when the
+display connects and when the screen's properties change: on at 0 (display
+off) or 1 (always-on display dimmed), off at 2 (display on), and unchanged at
+other values, such as the -101 of Apple TV and Apple Vision Pro. Simulator.app
+reads `SimDisplayView.backlightState` when the display connects and the
+changed properties' backlight afterwards; the view's value follows a change
+only after the change is reported, so Neo reads the properties both times.
+Simulator.app's button shows its own `watch.always.on` symbol and an
+alternate image while on; Neo's shows `applewatch.watchface` and stays pressed
+while on. A window's title drops a leading "Apple Watch ", as Simulator.app's
+does for any device name.
+
+Apple Vision Pro's device type names the user-interface profile
+`com.apple.CoreSimulator.SimDeviceUserInterface.XROS`. When it connects the
+display, SimulatorKit loads the selected Xcode's
+`Platforms/XROS.platform/Library/Developer/CoreSimulator/Profiles/UserInterface/XROS.simdeviceui`
+(principal class `PalomaSimSupport`), keeps it in
+`SimDisplayView._userInterfacePlugin`, and adds the plugin's overlay,
+`XROS.VirtualHMDInputView`, over the screen. Simulator.app learns of the
+plugin through the Swift-only `SimDisplayViewDelegate`, which the display
+factory leaves unset. Neo reads the field instead, which holds one retained
+object and has no getter, as it reads `_defaultKeyboardDelegate`, and sends the
+plugin `overlayView` and `toolbar`. The plugin was attached when the factory
+returned in every live check; a window still looks for it every 250 ms for 10
+seconds. Like Simulator.app, the window then shows the plugin's toolbar (Home,
+Save Screen, Capture Pointer, Capture Keyboard, and Simulated Scenes), and the
+overlay becomes the display's input view, which takes the window's focus and
+the Mac's modifiers. The toolbar's Home, Save Screen, and Option-Save Screen
+buttons send Simulator.app's `homeButtonPressed:`, `saveFramebufferImage:`, and
+`toggleVideoRecording:` up the responder chain to the device window, while
+Capture Pointer and Capture Keyboard reach the overlay's own actions. As
+Simulator.app does, the session posts `SimulatorVideoRecordingStartedNotification`
+and `SimulatorVideoRecordingStoppedNotification` with the `SimDevice` under
+their `…DeviceUserInfoKey`, which turns the plugin's Save Screen button into
+Stop Recording while a recording runs. When the window finds the plugin, the
+loaded-image check runs again. A plugin that does not load, or that cannot be
+used, is reported on the window, where Simulator.app only logs; the device
+then shows its screen without the plugin's controls. Simulator.app also makes
+the plugin its game-controller delegate, which belongs with game-controller
+capture, excluded above. The toolbar style threshold counts Neo's own Home
+and Save Screen for Apple Vision, where Simulator.app counts its iPhone nib's
+three buttons; the display is wide enough for the unified style either way.
+
+Watch gestures and Digital Crown scrolling, Simulate Fall, the Apple TV
+Remote, the visionOS camera, scene, immersion, Optic ID, and Show Gaze Target
+commands, and creating a paired Apple Watch build on this hosting and are not
+implemented yet.
+
 ## Failure semantics
 
 The executable follows BSD `sysexits` categories:
@@ -1497,8 +1577,10 @@ between commands, Automatically Sync Pasteboard between the Mac and two devices
 (on and off, across a CoreSimulatorBridge restart, a device restart, and a
 closed window), external displays at 1920×1080 and 640×480 with a guest app's
 external scene in their windows, Disabled, closing their windows, a restart,
-and restoring the saved choice on an iPhone and an iPad, Device Hub absence, and
-loaded-image provenance.
+and restoring the saved choice on an iPhone and an iPad, watchOS, tvOS, and
+visionOS windows with their toolbars, menus, titles, and Always On following
+the backlight, Apple Vision Pro's plugin overlay and toolbar, Device Hub
+absence, and loaded-image provenance.
 
 ## Non-goals
 

@@ -23,8 +23,10 @@ a SwiftUI device browser with these guarantees:
 - it exchanges the clipboard only as the user chooses: Edit ▸ Get Pasteboard
   and Send Pasteboard copy it once per command, and Edit ▸ Automatically Sync
   Pasteboard, off until the user turns it on, synchronizes it while it is on;
-- it displays each booted iOS simulator and forwards touch, accessibility, and
-  focused keyboard input;
+- it displays each booted iOS, watchOS, tvOS, and visionOS simulator and
+  forwards touch, accessibility, and focused keyboard input; an Apple Vision
+  Pro display also gets the selected Xcode's visionOS simulator plugin, as in
+  Simulator.app;
 - it provides Home, Save Screen, and Rotate Right controls in the header, plus
   validated Simulator-style menus including Software Keyboard;
 - its windows resize the hosted display without changing the simulated
@@ -50,7 +52,8 @@ xcode-simulator-host use neo
 
 NeoSimulator.app
   -> CoreSimulator SimServiceContext / default device set
-  -> observe booted iOS SimDevice instances
+  -> observe booted iPhone, iPad, Apple TV, Apple Watch, and Apple Vision
+     SimDevice instances
   -> IDEPlaygroundSimulator display factory
   -> SimulatorKit SimDisplayView in a resizable AppKit window
   -> SimDeviceLegacyHIDClient for Home, Lock, and Software Keyboard
@@ -210,7 +213,7 @@ browser's Copy Device Identifier action write only to the Mac's
   owners and atomically written the per-launch startup result.
 - The host stays alive without a booted device so it can display a simulator
   started by a later Xcode Run.
-- Device-set notifications add windows for newly booted iOS devices and remove
+- Device-set notifications add windows for newly booted devices and remove
   their sessions after shutdown.
 - Closing a device window shuts its simulator down through the direct `simctl`
   tool unless the close chose Keep Running or `DetachOnWindowClose` is on. A

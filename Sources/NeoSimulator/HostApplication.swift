@@ -156,8 +156,11 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         sessions[identifier]?.window?.isVisible == true
     }
 
+    /// The set's devices that Neo hosts: those of the product families whose
+    /// commands it defines, iPhone, iPad, Apple TV, Apple Watch, and Apple
+    /// Vision, as Simulator.app hosts them.
     private func readDevices(in set: SimulatorDeviceSet? = nil) throws -> [SimulatorDevice] {
-        try (set ?? deviceSet).readDevices().filter { $0.platformIdentifier == "com.apple.platform.iphonesimulator" }
+        try (set ?? deviceSet).readDevices().filter { DeviceCapabilities.Family(rawValue: $0.productFamily) != nil }
     }
 
     /// Window ▸ Show Device Bezels. Like Simulator.app, it changes the
@@ -277,7 +280,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                            controlsOrientation: device.deviceSetPath == nil,
                            hasFramebufferMask: device.hasFramebufferMask,
                            screenCornerRadius: device.screenCornerRadius,
-                           screenPointsPerInch: device.screenPointsPerInch)
+                           screenPointsPerInch: device.screenPointsPerInch,
+                           hasUserInterfacePlugin: device.hasUserInterfacePlugin)
     }
 
     func openSimulator(withIdentifier identifier: String) async throws {

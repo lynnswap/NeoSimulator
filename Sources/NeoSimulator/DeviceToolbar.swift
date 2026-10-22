@@ -120,12 +120,16 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
     }
 
     /// Gives `window` `style` and, as Simulator.app does on macOS 26, hides
-    /// the last flexible space unless the style is expanded, so that the
-    /// buttons follow the title in a unified title bar and are centered in the
-    /// row below it in an expanded one.
+    /// the last flexible space of the window's toolbar unless the style is
+    /// expanded, so that the buttons follow the title in a unified title bar
+    /// and are centered in the row below it in an expanded one. The window's
+    /// toolbar is this one, or the toolbar of a user-interface plugin, which
+    /// Simulator.app also styles so.
     func apply(_ style: NSWindow.ToolbarStyle, to window: NSWindow) {
         window.toolbarStyle = style
-        if let last = toolbar.items.last, last.itemIdentifier == .flexibleSpace { last.isHidden = style != .expanded }
+        if let last = window.toolbar?.items.last, last.itemIdentifier == .flexibleSpace {
+            last.isHidden = style != .expanded
+        }
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
@@ -138,6 +142,16 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
               let presentation = DeviceCommand.command(id).toolbar else { return nil }
         let item = NSToolbarItem(itemIdentifier: itemIdentifier)
         item.label = presentation.label
+        // Like Simulator.app's Always On, a command with a state is a button
+        // that stays on while the state is on. The item gives the button its
+        // target and action.
+        if DeviceCommand.command(id).state != nil {
+            let button = NSButton()
+            button.bezelStyle = .toolbar
+            button.setButtonType(.pushOnPushOff)
+            button.identifier = NSUserInterfaceItemIdentifier(id.rawValue)
+            item.view = button
+        }
         item.target = self
         item.action = #selector(activate(_:))
         item.autovalidates = false
@@ -163,9 +177,15 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
     /// it performs.
     private func configure(_ item: NSToolbarItem, _ id: DeviceCommand.ID) {
         guard let controller, let shown = shown(id, for: controller) else { return }
-        item.toolTip = shown.toolTip ?? item.label
+        let command = DeviceCommand.command(shown.id)
+        item.toolTip = shown.toolTip ?? command.toolbar?.toolTip ?? item.label
         item.image = NSImage(systemSymbolName: shown.symbol, accessibilityDescription: shown.imageDescription)
-        item.isEnabled = DeviceCommand.command(shown.id).isEnabled(controller)
+        item.isEnabled = command.isEnabled(controller)
+        guard let button = item.view as? NSButton else { return }
+        button.image = item.image
+        button.toolTip = item.toolTip
+        button.isEnabled = item.isEnabled
+        button.state = command.state?(controller) ?? .off
     }
 
     private func updateItems() {
@@ -175,6 +195,7 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
             _ = controller.session.isBusy
             _ = controller.session.isConnected
             _ = controller.session.recording?.isStopping
+            _ = controller.session.showsAlwaysOn
             configureItems()
         } onChange: { [weak self] in
             Task { @MainActor [weak self] in self?.updateItems() }
@@ -187,9 +208,13 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
         }
     }
 
-    @objc private func activate(_ sender: NSToolbarItem) {
-        guard let controller, let id = DeviceCommand.ID(rawValue: sender.itemIdentifier.rawValue),
+    /// Performs what the item's button shows. A button that shows a state
+    /// then shows the command's state again, which a click changed.
+    @objc private func activate(_ sender: Any) {
+        let identifier = (sender as? NSToolbarItem)?.itemIdentifier.rawValue ?? (sender as? NSButton)?.identifier?.rawValue
+        guard let controller, let id = identifier.flatMap(DeviceCommand.ID.init(rawValue:)),
               let shown = shown(id, for: controller) else { return }
         controller.perform(shown.id)
+        configureItems()
     }
 }
