@@ -113,11 +113,19 @@ enum HostPreferences {
     /// I/O ▸ Touch Pressure ▸ Use Trackpad Force, on unless turned off; it
     /// applies only with a Force Touch trackpad. See `TouchPressure`.
     static let useTrackpadForce = "UseTrackpadForce"
+    /// The touch indicators every device window draws: see `TouchIndicator`.
+    static let showSingleTouches = "ShowSingleTouches"
+    static let showPinches = "ShowPinches"
+    static let showPinchPivotPoint = "ShowPinchPivotPoint"
+    static let highlightEdgeGestures = "HighlightEdgeGestures"
     /// The arrangements of the Mac's screens that device windows were saved
     /// in, by UUID: see `PreferenceStore.screenConfiguration(for:)`.
     static let screenConfigurations = "ScreenConfigurations"
 
-    /// Registers Simulator.app's defaults for these preferences.
+    /// Registers Simulator.app's defaults for these preferences. Show Pinch
+    /// Gestures is on: Simulator.app registers it so, and its Settings.bundle's
+    /// `false` only applies to a key without a value, which a registered key
+    /// never is.
     static func registerDefaults() {
         UserDefaults.standard.register(defaults: [
             showTestingDevices: true, showChrome: true, detachOnWindowClose: false, detachOnAppQuit: false,
@@ -127,6 +135,7 @@ enum HostPreferences {
             gifMaxFramerate: 10, gifMaxFrameSize: 640, gifUseDither: true, gifDitherDepth: 4.0,
             locationMode: LocationSelection.customMode, locationLatitude: 37.785834, locationLongitude: -122.406417,
             enableKeyboardSync: true, connectHardwareKeyboard: true, useTrackpadForce: true,
+            showSingleTouches: false, showPinches: true, showPinchPivotPoint: false, highlightEdgeGestures: false,
         ])
     }
 

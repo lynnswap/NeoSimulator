@@ -139,6 +139,7 @@
             "NeoSimulatorHostTests/compile-sources",
           ],
         },
+        { "path": "Settings.bundle", "target-membership": [ "NeoSimulator/resources" ] },
       ],
     },
     { "kind": "folder", "path": "NeoSimulatorHostTests", "target-membership": [ "NeoSimulatorHostTests" ] },
@@ -168,6 +169,7 @@
       "build-phases": [
         "compile-sources",
         "frameworks",
+        "resources",
       ],
       "package-product-members": [
         {

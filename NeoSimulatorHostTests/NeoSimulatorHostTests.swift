@@ -2687,6 +2687,53 @@ struct InputFocusTests {
         #expect(display.usesTrackpadForce == [false, true, false])
     }
 
+    @Test func touchIndicatorsFollowTheirPreferencesInEveryOpenWindow() async throws {
+        let preferences = MemoryPreferences()
+        let first = TestDisplay(), second = TestDisplay(), elsewhere = TestDisplay()
+        let a = try makeController(first, device: "A", preferences: preferences)
+        let b = try makeController(second, device: "B", preferences: preferences)
+        // A window whose preferences are kept in another store.
+        let c = try makeController(elsewhere, device: "C")
+        defer { for controller in [a, b, c] { controller.invalidate() } }
+        // A new window draws pinches unless they were turned off, and nothing else.
+        #expect(first.touchIndicators == [.pinches] && elsewhere.touchIndicators == [.pinches])
+
+        preferences.set(true, forKey: HostPreferences.showSingleTouches)
+        preferences.set(false, forKey: HostPreferences.showPinches)
+        preferences.set(true, forKey: HostPreferences.highlightEdgeGestures)
+        NotificationCenter.default.post(name: TouchIndicator.didChangeNotification, object: preferences)
+        #expect(first.touchIndicators == [.singleTouches, .edgeGestures])
+        #expect(second.touchIndicators == [.singleTouches, .edgeGestures])
+        #expect(elsewhere.touchIndicators == [.pinches])
+
+        // A window draws them again on the display of its next connection.
+        await a.prepareForRestart()
+        let restarted = TestDisplay()
+        a.reconnect(try makeSession(restarted, device: "A", preferences: preferences))
+        #expect(restarted.touchIndicators == [.singleTouches, .edgeGestures])
+        // A closed window follows no more changes.
+        b.invalidate()
+        preferences.set(true, forKey: HostPreferences.showPinchPivotPoint)
+        NotificationCenter.default.post(name: TouchIndicator.didChangeNotification, object: preferences)
+        #expect(restarted.touchIndicators == [.singleTouches, .pinchPivotPoint, .edgeGestures])
+        #expect(second.touchIndicators == [.singleTouches, .edgeGestures])
+    }
+
+    @Test func settingsShowAppKitsPanelForTheAppsSettingsBundle() throws {
+        _ = NSApplication.shared
+        MenuController(application: nil).install()
+        defer { NSApp.mainMenu = nil }
+        let app = try #require(NSApp.mainMenu?.items.first?.submenu)
+        #expect(app.items.prefix(4).map { $0.isSeparatorItem ? "-" : $0.title } == ["About NeoSimulator", "-", "Settings…", "-"])
+        let settings = try #require(app.items.first { $0.title == "Settings…" })
+        #expect(settings.keyEquivalent == "," && settings.keyEquivalentModifierMask == .command)
+        // Like Simulator.app's, the item goes to the first responder, and
+        // AppKit's NSApplication answers it.
+        let action = try #require(settings.action)
+        #expect(settings.target == nil && action == Selector(("orderFrontPreferencesPanel:")))
+        #expect(NSApp.target(forAction: action, to: nil, from: settings) as AnyObject === NSApp)
+    }
+
     /// A controller whose session and touch pressure settings keep their
     /// preferences in `preferences`. Without `touchPressure`, the Mac has no
     /// Force Touch trackpad.
@@ -2800,6 +2847,12 @@ struct InputFocusTests {
             recordingProcess: recordingProcess, openLog: openLog, preferences: preferences,
             hostKeyboardLanguage: keyboardLanguage, pasteboard: pasteboard)
     }
+}
+
+/// Whether each change an observation reported arrived on the main thread.
+@MainActor
+private final class ChangeLog {
+    var onMainThread: [Bool] = []
 }
 
 /// Preferences kept in memory, so that tests leave the app's defaults alone.
@@ -3040,6 +3093,11 @@ private final class TestDisplay: SimulatorDisplay {
     func setSupportsTouchPressure(_ supports: Bool) { supportsTouchPressure.append(supports) }
     func setUsesTrackpadForce(_ uses: Bool) { usesTrackpadForce.append(uses) }
     func setSimulatedTouchMode(_ mode: SimulatedTouchMode) { touchModes.append(mode) }
+    /// The touch indicators the digitizer draws.
+    private(set) var touchIndicators: Set<TouchIndicator> = []
+    func setTouchIndicator(_ indicator: TouchIndicator, shown: Bool) {
+        if shown { touchIndicators.insert(indicator) } else { touchIndicators.remove(indicator) }
+    }
     var rotations: [Double] = []
     /// Called with each angle the display turns to, as SimulatorKit then
     /// gives the display its rotated size.
@@ -3144,6 +3202,43 @@ struct HostBehaviorTests {
         }
         // Without a value, as before the app registers its default, it is on.
         #expect(RegisteredDefaults().showsDeviceBezels)
+    }
+
+    @Test func touchIndicatorPreferencesUseSimulatorAppsKeysAndDefaults() {
+        #expect(TouchIndicator.allCases.map(\.preferenceKey)
+            == ["ShowSingleTouches", "ShowPinches", "ShowPinchPivotPoint", "HighlightEdgeGestures"])
+        // Simulator.app registers pinches on and the others off.
+        HostPreferences.registerDefaults()
+        let registered = UserDefaults.standard.volatileDomain(forName: UserDefaults.registrationDomain)
+        #expect(TouchIndicator.allCases.map { registered[$0.preferenceKey] as? Bool } == [false, true, false, false])
+        // Without values, as before the app registers its defaults, only pinches show.
+        #expect(TouchIndicator.allCases.filter(MemoryPreferences().showsTouchIndicator) == [.pinches])
+        // A value that `defaults write` saved as a string reads as `boolForKey:` reads it.
+        let defaults = RegisteredDefaults()
+        defaults.set("NO", forKey: HostPreferences.showPinches)
+        defaults.set("YES", forKey: HostPreferences.showSingleTouches)
+        #expect(TouchIndicator.allCases.filter(defaults.showsTouchIndicator) == [.singleTouches])
+    }
+
+    @Test func defaultsObservationReportsChangesOnTheMainThread() async throws {
+        // A key of the test's own, removed afterwards.
+        let key = "NeoSimulatorTests-\(UUID().uuidString)"
+        defer { UserDefaults.standard.removeObject(forKey: key) }
+        let changes = ChangeLog()
+        var observation: DefaultsObservation? = DefaultsObservation(.standard, keys: [key]) {
+            changes.onMainThread.append(Thread.isMainThread)
+        }
+        UserDefaults.standard.set(true, forKey: key)
+        #expect(changes.onMainThread == [true])
+        // A change on another thread is reported on the main thread.
+        await Task.detached { UserDefaults.standard.set(false, forKey: key) }.value
+        for _ in 0..<100 where changes.onMainThread.count < 2 { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(changes.onMainThread == [true, true])
+        withExtendedLifetime(observation) {}
+        // A released observation reports nothing.
+        observation = nil
+        UserDefaults.standard.set(true, forKey: key)
+        #expect(changes.onMainThread.count == 2)
     }
 
     @Test func keyboardAndTrackpadPreferencesUseSimulatorAppsKeys() {

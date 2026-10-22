@@ -137,6 +137,16 @@ struct SimulatorDisplayInterface {
     /// `SimDigitizerInputView.simulatedTouchMode`, a `TouchMode` passed as
     /// its raw value: see `SimulatedTouchMode`.
     let setSimulatedTouchMode: NativeSwiftMethod<(Int) -> Void>
+    /// `SimDigitizerInputView.drawOptions`, a `DrawOption` option set, which
+    /// is resilient and so passed indirectly.
+    let drawOptions: NativeSwiftMethod<() -> NativeSwiftValue>
+    let setDrawOptions: NativeSwiftMethod<(NativeSwiftValue) -> Void>
+    /// `DrawOption.rawValue` and `DrawOption(rawValue:)`.
+    let drawOptionRawValue: NativeSwiftMethod<() -> Int>
+    let makeDrawOption: NativeSwiftFunction<(Int) -> NativeSwiftValue>
+    /// The raw values of `DrawOption.normalTouch`, `.pinchTouches`,
+    /// `.pinchPivotPoint`, and `.edgeGestures`.
+    private let touchIndicatorOptions: (singleTouches: Int, pinches: Int, pinchPivotPoint: Int, edgeGestures: Int)
 
     init(runtime: ABIRuntime) throws {
         guard let screenClass = NSClassFromString("SimulatorKit.SimDeviceScreen"),
@@ -250,6 +260,35 @@ struct SimulatorDisplayInterface {
         setUsesTrackpadForce = try digitizer.resolveSetterAndWait(named: "useForceTrackpadForPressure", as: Bool.self)
         setSimulatedTouchMode = try digitizer.resolveSetterAndWait(
             named: "simulatedTouchMode.setter : SimulatorKit.SimDigitizerInputView.TouchMode", as: Int.self)
+        let drawOption = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimDigitizerInputView.DrawOption")
+        let drawOptionABIs: [NativeSwiftType: NativeType] = [drawOption: try .opaque(named: drawOption.name)]
+        drawOptions = try digitizer.resolveGetterAndWait(
+            named: "drawOptions.getter : SimulatorKit.SimDigitizerInputView.DrawOption",
+            as: (() -> NativeSwiftValue).self, valueABIs: drawOptionABIs)
+        setDrawOptions = try digitizer.resolveSetterAndWait(
+            named: "drawOptions.setter : SimulatorKit.SimDigitizerInputView.DrawOption",
+            as: NativeSwiftValue.self, valueABIs: drawOptionABIs)
+        let rawValue = try drawOption.resolveGetterAndWait(
+            named: "rawValue.getter : Swift.Int", as: (() -> Int).self, receiverABI: .opaque(named: drawOption.name))
+        drawOptionRawValue = rawValue
+        makeDrawOption = try drawOption.resolveInitializerAndWait(
+            named: "init(rawValue:)", as: ((Int) -> NativeSwiftValue).self, valueABIs: drawOptionABIs)
+        func option(_ name: String) throws -> Int {
+            try unsafe rawValue.unsafeInvoke(on: drawOption.resolveStaticGetterAndWait(
+                named: name, as: (() -> NativeSwiftValue).self, valueABIs: drawOptionABIs).unsafeInvoke())
+        }
+        touchIndicatorOptions = (try option("normalTouch"), try option("pinchTouches"), try option("pinchPivotPoint"),
+                                 try option("edgeGestures"))
+    }
+
+    /// The raw value of `indicator`'s `DrawOption`.
+    func drawOption(for indicator: TouchIndicator) -> Int {
+        switch indicator {
+        case .singleTouches: touchIndicatorOptions.singleTouches
+        case .pinches: touchIndicatorOptions.pinches
+        case .pinchPivotPoint: touchIndicatorOptions.pinchPivotPoint
+        case .edgeGestures: touchIndicatorOptions.edgeGestures
+        }
     }
 
     /// The device's default non-CarPlay screen, or nil while it is not ready.
@@ -660,6 +699,9 @@ protocol SimulatorDisplay: AnyObject {
     func setUsesTrackpadForce(_ uses: Bool)
     /// `SimDigitizerInputView.simulatedTouchMode`.
     func setSimulatedTouchMode(_ mode: SimulatedTouchMode)
+    /// Adds `indicator`'s `DrawOption` to `SimDigitizerInputView.drawOptions`
+    /// or removes it, keeping the other options.
+    func setTouchIndicator(_ indicator: TouchIndicator, shown: Bool)
     func setRotation(degrees: Double)
     func beginResize()
     func resize(to size: NSSize)
@@ -849,6 +891,16 @@ final class SimulatorConnection: SimulatorDisplay {
         guard !disconnected else { return }
         perform("set the touch pressure") {
             try unsafe runtime.display.setSimulatedTouchMode.unsafeInvoke(on: inputView, mode.rawValue)
+        }
+    }
+    func setTouchIndicator(_ indicator: TouchIndicator, shown: Bool) {
+        guard !disconnected else { return }
+        let display = runtime.display
+        perform("show touch indicators") {
+            let options = try unsafe display.drawOptionRawValue.unsafeInvoke(on: display.drawOptions.unsafeInvoke(on: inputView))
+            let option = display.drawOption(for: indicator)
+            try unsafe display.setDrawOptions.unsafeInvoke(
+                on: inputView, display.makeDrawOption.unsafeInvoke(shown ? options | option : options & ~option))
         }
     }
     func setRotation(degrees: Double) {

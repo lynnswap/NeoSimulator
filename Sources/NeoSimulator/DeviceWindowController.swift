@@ -52,6 +52,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     /// I/O ▸ Touch Pressure's app-wide settings, which every window shares.
     let touchPressure: TouchPressure
     private var touchPressureObserver: (any NSObjectProtocol)?
+    private var touchIndicatorObserver: (any NSObjectProtocol)?
     private var keyboardSelectionObserver: (any NSObjectProtocol)?
     /// Whether the window is key, which makes its device the one that
     /// Simulator.app's keyboard controller types into and that a change of
@@ -126,6 +127,12 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
             forName: TouchPressure.didChangeNotification, object: touchPressure, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.touchPressureChanged() }
         }
+        // Like Simulator.app, each open window follows the touch indicator
+        // preferences when they change.
+        touchIndicatorObserver = NotificationCenter.default.addObserver(
+            forName: TouchIndicator.didChangeNotification, object: preferences, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.showTouchIndicators() }
+        }
         keyboardSelectionObserver = NotificationCenter.default.addObserver(
             forName: NSTextInputContext.keyboardSelectionDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.keyboardSelectionChanged() }
@@ -190,6 +197,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         // A new display takes no keyboard input until the window gives it.
         hasKeyboardInput = false
         connectTouchPressure()
+        showTouchIndicators()
     }
 
     // MARK: Restart
@@ -435,6 +443,15 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     private func applyTouchPressure() {
         session.display.setUsesTrackpadForce(touchPressure.usesTrackpadForce)
         session.display.setSimulatedTouchMode(touchPressure.mode)
+    }
+
+    /// Draws the touch indicators that the preferences turn on, and no
+    /// others, when the display connects, as Simulator.app's window does,
+    /// and after a preference changes.
+    private func showTouchIndicators() {
+        for indicator in TouchIndicator.allCases {
+            session.display.setTouchIndicator(indicator, shown: preferences.showsTouchIndicator(indicator))
+        }
     }
 
     /// Features ▸ Location: Custom Location… asks for a coordinate first.
@@ -1030,11 +1047,13 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         closed = true
         if let commandKeyUpMonitor { NSEvent.removeMonitor(commandKeyUpMonitor) }
         commandKeyUpMonitor = nil
-        for observer in [screenParametersObserver, touchPressureObserver, keyboardSelectionObserver].compactMap(\.self) {
+        for observer in [screenParametersObserver, touchPressureObserver, touchIndicatorObserver,
+                         keyboardSelectionObserver].compactMap(\.self) {
             NotificationCenter.default.removeObserver(observer)
         }
         screenParametersObserver = nil
         touchPressureObserver = nil
+        touchIndicatorObserver = nil
         keyboardSelectionObserver = nil
         if let window, let sheet = window.attachedSheet {
             window.endSheet(sheet, returnCode: .cancel)

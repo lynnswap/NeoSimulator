@@ -1,0 +1,135 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>PreferenceSpecifiers</key>
+	<array>
+		<dict>
+			<key>Title</key>
+			<string>Simulator lifetime</string>
+			<key>Type</key>
+			<string>PSGroupSpecifier</string>
+		</dict>
+		<dict>
+			<key>DefaultValue</key>
+			<true/>
+			<key>Key</key>
+			<string>StartLastDeviceOnLaunch</string>
+			<key>Title</key>
+			<string>When NeoSimulator starts boot the most recently used simulator</string>
+			<key>Type</key>
+			<string>PSToggleSwitchSpecifier</string>
+		</dict>
+		<dict>
+			<key>DefaultValue</key>
+			<false/>
+			<key>Key</key>
+			<string>DetachOnWindowClose</string>
+			<key>Title</key>
+			<string>When closing a simulator's window leave it running</string>
+			<key>Type</key>
+			<string>PSToggleSwitchSpecifier</string>
+		</dict>
+		<dict>
+			<key>DefaultValue</key>
+			<false/>
+			<key>Key</key>
+			<string>DetachOnAppQuit</string>
+			<key>Title</key>
+			<string>When quitting leave simulators running</string>
+			<key>Type</key>
+			<string>PSToggleSwitchSpecifier</string>
+		</dict>
+		<dict>
+			<key>Title</key>
+			<string>Visual indicators</string>
+			<key>Type</key>
+			<string>PSGroupSpecifier</string>
+		</dict>
+		<dict>
+			<key>DefaultValue</key>
+			<false/>
+			<key>Key</key>
+			<string>ShowSingleTouches</string>
+			<key>Title</key>
+			<string>Show single touches</string>
+			<key>Type</key>
+			<string>PSToggleSwitchSpecifier</string>
+		</dict>
+		<dict>
+			<key>DefaultValue</key>
+			<true/>
+			<key>Key</key>
+			<string>ShowPinches</string>
+			<key>Title</key>
+			<string>Show pinch gestures</string>
+			<key>Type</key>
+			<string>PSToggleSwitchSpecifier</string>
+		</dict>
+		<dict>
+			<key>DefaultValue</key>
+			<false/>
+			<key>Key</key>
+			<string>ScreenShotUseMask</string>
+			<key>Title</key>
+			<string>Show device mask in screenshots and videos</string>
+			<key>Type</key>
+			<string>PSToggleSwitchSpecifier</string>
+		</dict>
+		<dict>
+			<key>Title</key>
+			<string></string>
+			<key>Type</key>
+			<string>PSGroupSpecifier</string>
+		</dict>
+		<dict>
+			<key>DefaultValue</key>
+			<integer>640</integer>
+			<key>Key</key>
+			<string>GifMaxFrameSize</string>
+			<key>Title</key>
+			<string>GIF Image Size</string>
+			<key>Titles</key>
+			<array>
+				<string>Small (320px)</string>
+				<string>Medium (640px)</string>
+				<string>Large (1280px)</string>
+			</array>
+			<key>Type</key>
+			<string>PSRadioGroupSpecifier</string>
+			<key>Values</key>
+			<array>
+				<integer>320</integer>
+				<integer>640</integer>
+				<integer>1280</integer>
+			</array>
+		</dict>
+		<dict>
+			<key>Title</key>
+			<string></string>
+			<key>Type</key>
+			<string>PSGroupSpecifier</string>
+		</dict>
+		<dict>
+			<key>DefaultValue</key>
+			<integer>10</integer>
+			<key>Key</key>
+			<string>GifMaxFramerate</string>
+			<key>Title</key>
+			<string>Optimize GIFs</string>
+			<key>Titles</key>
+			<array>
+				<string>For smaller file size</string>
+				<string>For smoother animation</string>
+			</array>
+			<key>Type</key>
+			<string>PSRadioGroupSpecifier</string>
+			<key>Values</key>
+			<array>
+				<integer>10</integer>
+				<integer>15</integer>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>

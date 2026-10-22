@@ -16,6 +16,10 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
         NSApp.keyWindow?.windowController as? DeviceWindowController
     }
 
+    /// `-[NSApplication(NSSimplePreferences) orderFrontPreferencesPanel:]`,
+    /// which AppKit implements without declaring it.
+    static let showSettings = Selector(("orderFrontPreferencesPanel:"))
+
     init(application: HostApplication?, gpuPolicy: GPUPolicy? = nil) {
         self.application = application
         self.gpuPolicy = gpuPolicy
@@ -30,6 +34,11 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
         let main = NSMenu()
         let app = menu("NeoSimulator", in: main)
         item("About NeoSimulator", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), in: app, target: NSApp)
+        app.addItem(.separator())
+        // Like Simulator.app's, the item goes to the first responder, and
+        // AppKit's NSApplication shows the settings that the app's
+        // Settings.bundle lists. Without that AppKit method, it is disabled.
+        item("Settings…", action: Self.showSettings, key: ",", in: app).target = nil
         app.addItem(.separator())
         item("Hide NeoSimulator", action: #selector(NSApplication.hide(_:)), key: "h", in: app, target: NSApp)
         item("Hide Others", action: #selector(NSApplication.hideOtherApplications(_:)), key: "h", modifiers: [.command, .option], in: app, target: NSApp)

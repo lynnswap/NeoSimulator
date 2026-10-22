@@ -164,6 +164,9 @@ printf '%s\n' \
   "libexec/$CLI_PRODUCT/$HOST_PRODUCT.app/Contents/Info.plist" \
   "libexec/$CLI_PRODUCT/$HOST_PRODUCT.app/Contents/MacOS/" \
   "libexec/$CLI_PRODUCT/$HOST_PRODUCT.app/Contents/MacOS/$HOST_PRODUCT" \
+  "libexec/$CLI_PRODUCT/$HOST_PRODUCT.app/Contents/Resources/" \
+  "libexec/$CLI_PRODUCT/$HOST_PRODUCT.app/Contents/Resources/Settings.bundle/" \
+  "libexec/$CLI_PRODUCT/$HOST_PRODUCT.app/Contents/Resources/Settings.bundle/Root.plist" \
   "libexec/$CLI_PRODUCT/$HOST_PRODUCT.app/Contents/_CodeSignature/" \
   "libexec/$CLI_PRODUCT/$HOST_PRODUCT.app/Contents/_CodeSignature/CodeResources" |
   LC_ALL=C sort > "$expected_entries"
@@ -183,6 +186,7 @@ printf '%s\n' \
   "bin/$CLI_PRODUCT" \
   "libexec/$CLI_PRODUCT/$HOST_PRODUCT.app/Contents/Info.plist" \
   "libexec/$CLI_PRODUCT/$HOST_PRODUCT.app/Contents/MacOS/$HOST_PRODUCT" \
+  "libexec/$CLI_PRODUCT/$HOST_PRODUCT.app/Contents/Resources/Settings.bundle/Root.plist" \
   "libexec/$CLI_PRODUCT/$HOST_PRODUCT.app/Contents/_CodeSignature/CodeResources" |
   LC_ALL=C sort > "$expected_files"
 (
@@ -235,6 +239,9 @@ cmp -s "$archive_bin" "$stage_bin"
 cmp -s "$archive_app/Contents/Info.plist" "$stage_app/Contents/Info.plist"
 cmp -s "$archive_host_bin" "$stage_app/Contents/MacOS/$HOST_PRODUCT"
 cmp -s \
+  "$archive_app/Contents/Resources/Settings.bundle/Root.plist" \
+  "$stage_app/Contents/Resources/Settings.bundle/Root.plist"
+cmp -s \
   "$archive_app/Contents/_CodeSignature/CodeResources" \
   "$stage_app/Contents/_CodeSignature/CodeResources"
 codesign --verify --deep --strict "$stage_app"
@@ -258,6 +265,9 @@ mv "$stage_bin" "$target_bin"
 cmp -s "$archive_bin" "$target_bin"
 cmp -s "$archive_app/Contents/Info.plist" "$target_app/Contents/Info.plist"
 cmp -s "$archive_host_bin" "$target_app/Contents/MacOS/$HOST_PRODUCT"
+cmp -s \
+  "$archive_app/Contents/Resources/Settings.bundle/Root.plist" \
+  "$target_app/Contents/Resources/Settings.bundle/Root.plist"
 cmp -s \
   "$archive_app/Contents/_CodeSignature/CodeResources" \
   "$target_app/Contents/_CodeSignature/CodeResources"

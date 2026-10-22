@@ -50,6 +50,9 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     private var nextWindowPosition = NSPoint.zero
     /// I/O ▸ Touch Pressure's settings, which every device window shares.
     private let touchPressure = TouchPressure()
+    /// Reports changes to the touch indicator preferences, from Settings or
+    /// `defaults write`, to the device windows.
+    private var touchIndicatorObservation: DefaultsObservation?
 
     init(runtime: SimulatorRuntime, conflicts: HostConflictMonitor) throws {
         try conflicts.check()
@@ -76,6 +79,10 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         menu = MenuController(application: self,
                               gpuPolicy: UserDefaults(suiteName: GPUPolicy.suiteName).map(GPUPolicy.init))
         menu?.install()
+        touchIndicatorObservation = DefaultsObservation(
+            .standard, keys: TouchIndicator.allCases.map(\.preferenceKey)) {
+            NotificationCenter.default.post(name: TouchIndicator.didChangeNotification, object: UserDefaults.standard)
+        }
         notificationToken = try deviceSet.observe { [weak self] in self?.rescan() }
         signal(SIGTERM, SIG_IGN)
         Self.handoverTarget = self
@@ -706,6 +713,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         guard !stopped else { return }
         stopped = true
         conflicts.onConflict = nil
+        touchIndicatorObservation = nil
         if let notificationToken {
             do { try deviceSet.stopObserving(notificationToken) }
             catch { hostLog("Could not unregister simulator notifications: \(error.localizedDescription)") }
