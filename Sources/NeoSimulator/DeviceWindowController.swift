@@ -157,12 +157,36 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
             let scope = (notification.userInfo?[AudioRouting.scopeKey] as? UInt64).flatMap(AudioScope.init(rawValue:))
             MainActor.assumeIsolated { if let scope { self?.audioRouteChosen(in: scope) } }
         }
-        showDisplay(at: initialScale)
+        showDisplay(fitting: { self.initialScale })
     }
 
     /// Like Simulator.app, a new window opens at the saved scale or Point
     /// Accurate, reduced to Fit Screen's.
     private var initialScale: CGFloat { min(scale(for: .fitScreen) ?? .infinity, savedScale ?? 1) }
+
+    /// Shows the display at the scale `scale` gives, and again at the smaller
+    /// one it gives when the first made the window narrow enough to take the
+    /// taller expanded title bar. Simulator.app measures Fit Screen with the
+    /// title bar the window has before the change, so such a window ends up
+    /// taller than the screen there.
+    private func showDisplay(fitting scale: () -> CGFloat?) {
+        guard let first = scale() else { return }
+        showDisplay(at: first)
+        if let second = scale(), second < first { showDisplay(at: second) }
+    }
+
+    /// Gives a new window its initial scale and places it with `place`, again
+    /// when that scale gave it the taller expanded title bar, as
+    /// `showDisplay(fitting:)` does.
+    private func placeAtInitialScale(_ place: ((NSWindow) -> Void)?) {
+        let scale = initialScale
+        session.display.setRenderScale(scale)
+        didRotate(placing: place)
+        let refit = initialScale
+        guard refit < scale else { return }
+        session.display.setRenderScale(refit)
+        didRotate(placing: place)
+    }
 
     /// The frames of the Mac's screens, whose arrangement keys the saved
     /// window geometry.
@@ -195,8 +219,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
         window.makeKeyAndOrderFront(nil)
         // The window opened at the scale for the main screen; it takes the
         // scale for the screen it is placed on.
-        session.display.setRenderScale(initialScale)
-        didRotate(placing: place)
+        placeAtInitialScale(place)
         initialPlacement = (place, window.frame)
         readInitialOrientation()
     }
@@ -285,8 +308,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
             defer { self.initialPlacement = nil }
             try await self.session.readOrientation()
             if let placement = self.initialPlacement, self.window?.frame == placement.frame {
-                self.session.display.setRenderScale(self.initialScale)
-                self.didRotate(placing: placement.place)
+                self.placeAtInitialScale(placement.place)
             } else {
                 self.didRotate()
             }
@@ -848,7 +870,11 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate {
     func setScale(_ mode: WindowScaleMode) {
         guard let window, let scale = scale(for: mode) else { return }
         let previous = window.frame
-        showDisplay(at: scale)
+        if mode == .fitScreen {
+            showDisplay(fitting: { self.scale(for: .fitScreen) })
+        } else {
+            showDisplay(at: scale)
+        }
         window.setFrameOrigin(NSPoint(x: previous.minX, y: previous.maxY - window.frame.height))
         guard mode == .fitScreen else {
             moveWindowOntoScreen()

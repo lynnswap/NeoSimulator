@@ -881,7 +881,8 @@ struct InputFocusTests {
 
     @Test func fitScreenFillsTheScreenAndCentersTheWindow() throws {
         let display = TestDisplay()
-        display.naturalSize = NSSize(width: 200, height: 400)
+        // Wide enough that the fitted window keeps the unified title bar.
+        display.naturalSize = NSSize(width: 400, height: 300)
         let controller = try makeController(display)
         defer { controller.invalidate() }
         controller.showWindow(nil)
@@ -892,11 +893,46 @@ struct InputFocusTests {
         let above = window.frame.height - window.contentLayoutRect.height
         controller.perform(.fitScreen)
         // Unlike NeoSimulator's earlier Fit Screen, the scale can exceed 1.
-        let expected = min((visible.width - 20) / 200, (visible.height - above - 20) / 400)
+        let expected = min((visible.width - 20) / 400, (visible.height - above - 20) / 300)
         #expect(abs(display.renderScale - expected) < 0.000_001)
         #expect(abs(window.frame.midX - visible.midX) < 1 && abs(window.frame.midY - visible.midY) < 1)
         #expect(visible.contains(window.frame))
         #expect(DeviceCommand.command(.fitScreen).state == nil)
+    }
+
+    @Test func fitScreenFitsAWindowThatTakesTheExpandedTitleBar() throws {
+        let display = TestDisplay()
+        // Wide, so the window starts with the unified title bar.
+        display.naturalSize = NSSize(width: 600, height: 300)
+        let controller = try makeController(display)
+        defer { controller.invalidate() }
+        controller.showWindow(nil)
+        let window = try #require(controller.window)
+        let visible = try #require((window.screen ?? NSScreen.main)?.visibleFrame)
+        #expect(window.toolbarStyle == .unified)
+        // Fitted to the screen, a tall and narrow display makes the window far
+        // narrower than the unified style allows, and the taller expanded
+        // title bar must still leave the window inside the screen.
+        let tall = NSSize(width: 60, height: visible.height * 2)
+        display.naturalSize = tall
+        controller.perform(.fitScreen)
+        #expect(window.toolbarStyle == .expanded)
+        // AppKit keeps a window without a bezel inside the screen, so the
+        // scale shows whether the display fits below the expanded title bar.
+        func fitted(_ window: NSWindow) -> CGFloat {
+            (visible.height - (window.frame.height - window.contentLayoutRect.height) - 20) / tall.height
+        }
+        #expect(abs(display.renderScale - fitted(window)) < 0.000_001)
+        #expect(window.frame.height <= visible.height)
+        // A new window of such a display opens fitted the same way.
+        let other = TestDisplay()
+        other.naturalSize = tall
+        let opened = try makeController(other)
+        defer { opened.invalidate() }
+        let openedWindow = try #require(opened.window)
+        #expect(openedWindow.toolbarStyle == .expanded)
+        #expect(abs(other.renderScale - fitted(openedWindow)) < 0.000_001)
+        #expect(openedWindow.frame.height <= visible.height)
     }
 
     @Test func scaleCommandsAreValidatedAsInSimulator() throws {

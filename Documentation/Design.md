@@ -740,6 +740,11 @@ These differ from Simulator.app:
   display, as in Simulator.app, also when that is narrower.
 - Simulator.app's minimum for a tvOS or visionOS display with a bezel, 240
   points over the screen's pixel height, is not reproduced.
+- Simulator.app measures Fit Screen, and a new window's scale, with the
+  title bar the window has before the scale is applied. When that scale makes
+  the window narrow enough to take the taller expanded title bar, the window
+  ends up taller than the screen there. NeoSimulator measures again with the
+  expanded title bar and takes the smaller scale, so the window fits.
 - The toolbar style's threshold counts the buttons NeoSimulator's toolbar
   has. Simulator.app's iPad toolbar also has Keyboard Capture and Pointer
   Capture, 27 points each, which NeoSimulator does not host, so an iPad's
