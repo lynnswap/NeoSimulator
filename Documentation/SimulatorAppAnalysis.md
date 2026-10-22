@@ -122,20 +122,24 @@ semantics:
 - Edit: Copy Screen, Automatically Sync Pasteboard (off by default), Get
   Pasteboard, Send Pasteboard;
 - Device: Rotate Left, Rotate Right, Orientation, Rotate Device Automatically,
-  Home, Lock, Side Button, Action Button,
-  Siri, Shake, App Switcher, Trigger Screenshot;
+  Home, Re-Center Open Apps, Lock, Side Button, Action Button,
+  Siri, Shake, App Switcher, Interaction, Look Around, Pan, Orbit, and Dolly
+  Mode, Reset Camera, Trigger Screenshot, Simulated Scenes;
 - I/O: Keyboard (Use the Same Keyboard Language as macOS, Connect Hardware
   Keyboard, Toggle Software Keyboard), Touch Pressure (Use Trackpad Force,
   Shallow Press, Deep Press), Audio Input, Audio Output, Increase Volume,
-  Decrease Volume, External Displays (Disabled and six sizes);
-- Features: Touch ID and Face ID (Enrolled, Matching, Non-matching),
+  Decrease Volume, External Displays (Disabled and six sizes), Set Immersion
+  To (50%, 75%, 100%);
+- Features: Touch ID, Face ID, and Optic ID (Enrolled, Matching,
+  Non-matching),
   Authorize Apple Pay, Toggle Appearance, Toggle In-call Status Bar,
   Show/Hide StandBy, Increase and Decrease Preferred Text Size, Toggle
   Increase Contrast, Trigger iCloud Sync, Location (None, Custom Location…,
   and the runtime's scenarios);
 - Debug: Slow Animations, Graphics Quality Override, Color Blended Layers,
   Color Copied Images, Color Misaligned Images, Color Off-screen Rendered, Open
-  System Log…, Simulate Memory Warning, Show Parallel Testing Devices;
+  System Log…, Simulate Memory Warning, Show Gaze Target, Show Parallel
+  Testing Devices;
 - Window: Minimize, Full Screen, Show Device Bezels, Stay on Top, Physical
   Size, Point Accurate, Pixel Accurate, Fit Screen, Bring All to Front.
   Simulator.app hides Zoom.
@@ -694,7 +698,7 @@ separate device set, through NeoSimulator's code.
 | Reference owner | Observed behavior | Neo |
 | --- | --- | --- |
 | `SimDevice(KeyboardSync)` `isIOS` (body `0x10003BABC`), `isWatch`, `isTV`, `isVision` (`0x10003BCCC`) | Families by `deviceType.productFamilyID`: iOS is 1 or 2, TV 3, watch 4, Vision 7. | `DeviceCapabilities.Family`; devices of other families are not hosted. |
-| `DC.deviceWindowBecameKey:` `0x100019B0C` | Hides Shake, App Switcher, Trigger Screenshot, Toggle Appearance, Toggle In-call Status Bar, the text sizes, and Toggle Increase Contrast unless iOS; Lock unless iOS or watch (`0x10001A038`…`0x10001A054`); Side Button unless watch; Show Device Bezels for Vision (`0x10001A9A0`); the viewport, Reset Camera, Simulated Scenes, Set Immersion To, and FaceTime items unless Vision; Increase and Decrease Immersion and 0% and 25% always. | The same rules through `DeviceCommand.isSupported` and `DeviceCapabilities.supportsDeviceBezels`; the Vision-only items are not implemented. |
+| `DC.deviceWindowBecameKey:` `0x100019B0C` | Hides Shake, App Switcher, Trigger Screenshot, Toggle Appearance, Toggle In-call Status Bar, the text sizes, and Toggle Increase Contrast unless iOS; Lock unless iOS or watch (`0x10001A038`…`0x10001A054`); Side Button unless watch; Show Device Bezels for Vision (`0x10001A9A0`); the viewport, Reset Camera, Simulated Scenes, Set Immersion To, and FaceTime items unless Vision (`0x10001A8A0`…`0x10001A9D8`); Increase and Decrease Immersion and 0% and 25% always (`0x10001A6A4`…`0x10001A728`); Optic ID without `SimFeatureOysterID` (`0x10001A134`…`0x10001A164`); Show Gaze Target without `SimFeatureHoverboard95880941` (`0x10001A620`…`0x10001A650`). Re-Center Open Apps is never hidden. | The same rules through `DeviceCommand.isSupported`, `PluginCommand.isShown`, and `DeviceCapabilities.supportsDeviceBezels`; the always hidden items are left out, and FaceTime is not implemented. |
 | `DWC.validateMenuItem:` `0x100051A40` | Lock (`lockButtonPressed:`) is enabled for iOS and otherwise for a watch. | Lock is shown only for them. |
 | Toolbar setup `0x100049D70` | A watch takes `IndigoWatchAODToolbar` with `SimFeatureAlwaysOnDisplay`, otherwise `IndigoWatchToolbar`; a TV `IndigoTVToolbar`; Vision the iPhone toolbar until its plugin's replaces it. The watch and TV nibs have Home and Save Screen; the always-on nib adds Always On: label "Always On", tooltip "Toggle Always On", a 25-point toggle `NSButton` (shows state by its contents) with the asset `ToolbarAlwaysOnSymbol` (`watch.always.on`) and an on image, to `lockButtonPressed:`. | `DeviceCommand.alwaysOn` on watches with `com.apple.display.aot`, an on/off toolbar button with `applewatch.watchface`. |
 | Always On update `0x100054128` | Only for family 4; backlight 0 or 1 sets the button on, 2 off, other values leave it, and an unchanged value is skipped. The chrome refresh (`0x10005B0B8`) passes `SimDisplayView.backlightState`; the `simDisplayView(_:screen:propertiesChanged:)` witness (`0x10005F7D8`) passes `properties.backlight.state`. | Reads `SimScreenProperties.backlight.state` both times. Live, at a property change the properties already had the new value while `backlightState` still had the old one, until the next main-queue turn. The Series 11 went 2 → 1 → 2 with Lock, the SE 2 → 0 → 2; Apple TV and Apple Vision Pro report -101. |
@@ -704,6 +708,11 @@ separate device set, through NeoSimulator's code.
 | `simDisplayView(_:changedUserInterfacePlugin:)` witness `0x10005F82C` → `0x10005F66C` | Stores `deviceUserInterfacePlugin`, sets the window's toolbar to the plugin's `toolbar` when it has one, and makes the plugin the app delegate's game-controller delegate when it conforms to `SimGameControllerDelegate`. | Sets the window's toolbar; no game-controller delegate. The plugin's `XROS.SimToolbar` had Home (`homeButtonPressed:`), Save Screen (`saveFramebufferImage:`, `toggleVideoRecording:` with Option), Capture Pointer, Capture Keyboard (both handled by the overlay), and Simulated Scenes. |
 | XROS `VirtualHMDInputView.toggleCapturingMouse:` and `mouseUp:` (Xcode 27.1 `0x2943C`…`0x29640`) | Capture Pointer starts choosing the gaze target; the click that ends it passes `toggleCapturingMouse:` to the next responder when the overlay's `client` is `.simulatorApp`, and otherwise starts `SimHIDCaptureManager` itself (`startCaptureSessionWithDevice:hidDeviceTypes:error:`, type 2). | Live, the overlay's `client` was `.simulatorApp`; Capture Keyboard left `_captureKeyboardEnabled` off, and a click after Capture Pointer ended the gaze choice without a capture, because no responder in Neo captures. |
 | DWC `homeButtonPressed:`, `saveFramebufferImage:`, `toggleVideoRecording:`; recording notifications `0x1000594B4` / `0x10005991C` | The plugin's toolbar actions reach the device window through the responder chain. Starting and stopping a recording posts `SimulatorVideoRecordingStartedNotification` / `…StoppedNotification` with the `SimDevice` under `…DeviceUserInfoKey`. | The device window implements the three actions; the session posts both notifications. Live, they turned the plugin's Save Screen button into Stop Recording (`toggleVideoRecording:`) and back. |
+| `MainMenu.nib` | Device ▸ Re-Center Open Apps (`recenterAllOpenApps:`) after Home; Interaction, Look Around, Pan, Orbit, and Dolly Mode (`viewportModeChangedToInteraction:` to `viewportModeChangedToDolly:`, Control-Command-1 to 5), Reset Camera (`resetViewportCamera:`, Control-Command-0), and Simulated Scenes (`selectSimulatedScene:`, no submenu), each group after a separator; I/O ▸ Increase Immersion, Decrease Immersion, and Set Immersion To ▸ 0%, 25%, 50%, 75%, 100% (`setImmersionTo0:` to `setImmersionTo100:`); Features ▸ Optic ID ▸ Enrolled, Matching Eye, Non-matching Eye (`toggleOysterIDEnrolled:`, `oysterIDMatching:`, `oysterIDNonMatching:`); Debug ▸ Show Gaze Target (`toggleShowGazeTarget:`). All go to the first responder. | `PluginCommand` items with the same actions and no target; Optic ID as `DeviceCommand`s. |
+| `DWC.validateMenuItem:` `0x100051B8C`…`0x100051BB8` and `0x100051CD4`…`0x100051D28`; `DWC.recenterAllOpenApps:` `0x100058630` | Re-Center Open Apps is enabled with `SimFeatureHoverboard95880941`, but the device window's action is empty, so only the overlay, which comes first in the responder chain, carries it out. The Optic ID items are enabled with `SimFeatureOysterID`. | Re-Center Open Apps reaches only the overlay; without it, the item is disabled. |
+| `deviceWindowBecameKey:` `0x10001A210`…`0x10001A264`, `updateKeyEquivalentForBiometricMenuItem:matching:enabled:` `0x10001AA6C` | Matching Eye and Non-matching Eye get Option-Command-M and N when the device supports `SimFeaturePearlID`, and no shortcut otherwise. | `DeviceCommand.hasKey`: none on Apple Vision Pro. |
+| `sendOysterIDWithEnrolled:` `0x10003C7E8`, `sendOysterIDWithMatched:` `0x10003CA2C` | Enrolled sets and posts `com.apple.BiometricKit.enrollmentChanged`, which Touch ID and Face ID share; Matching Eye and Non-matching Eye post `com.apple.BiometricKit_Sim.oyster.match` and `.nomatch`, all with `SimDevice postDarwinNotification:error:`. | The same notifications. Live, `notifyutil` in the guest read the state 0, 1, and 0 again and received both posts. |
+| XROS `VirtualHMDInputView.validateMenuItem:` (Xcode 27.1 `0x2ED38`, body `0x2E9BC`) | Checks Show Gaze Target while `PalomaSimController.cursorIsCurrentlyVisible`; enables the immersion actions only while `ImmersionController.immersionStyle` is 2 when the guest reports the style; for `selectSimulatedScene:` calls `fillSimulatedScenesSubmenu` (`0x2E028`), which needs a selected scene and builds or updates a submenu of the scenes (`selectSimulatedSceneWithSender:`, the scene identifier as represented object) with the selected one checked; enables the other actions without a checkmark. The camera-mode actions ignore their sender. | Validated by the overlay through AppKit. Live with Xcode 27.1: the camera modes moved the toolbar's segment to 0–4; a drag in Orbit Mode moved the camera and Reset Camera brought it back; Re-Center Open Apps moved the open Settings window; Show Gaze Target drew and removed the gaze target and its checkmark; the immersion items were disabled at style 1, and their actions changed the guest's level. With Xcode 27.0, 27.1, and 27.2, Simulated Scenes listed the six scenes of visionOS 26.5, checked the current one, and switched to the chosen one, and Show Gaze Target's checkmark followed the overlay. A device booted before its window connected reported no scene, which left Simulated Scenes disabled. |
 
 ## Input capture
 
@@ -768,9 +777,8 @@ contract before being user-visible:
 - status-bar overrides;
 - CarPlay, which configures the external display's TVOut screen with CarPlay
   properties (see [External displays](#external-displays));
-- watch gestures, Digital Crown scrolling, and Simulate Fall; the Apple TV
-  Remote; and the visionOS viewport, camera, scene, immersion, Optic ID, and
-  gaze commands, which build on [watchOS, tvOS, and visionOS](#watchos-tvos-and-visionos)
+- watch gestures, Digital Crown scrolling, and Simulate Fall, and the Apple
+  TV Remote, which build on [watchOS, tvOS, and visionOS](#watchos-tvos-and-visionos)
   hosting.
 
 ## Excluded features

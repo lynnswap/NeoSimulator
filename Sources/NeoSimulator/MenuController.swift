@@ -103,10 +103,17 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
         commands([.faceUp, .faceDown], in: orientation)
         commands([.rotateDeviceAutomatically], in: device)
         device.addItem(.separator())
-        commands([.home, .lock, .sideButton, .actionButtonSting, .actionButtonStaccato, .siri, .shake, .appSwitcher],
-                 in: device)
+        commands([.home], in: device)
+        pluginCommands([.recenterOpenApps], in: device)
+        commands([.lock, .sideButton, .actionButtonSting, .actionButtonStaccato, .siri, .shake, .appSwitcher], in: device)
+        device.addItem(.separator())
+        pluginCommands(PluginCommand.viewportModes, in: device)
+        device.addItem(.separator())
+        pluginCommands([.resetCamera], in: device)
         device.addItem(.separator())
         commands([.triggerScreenshot], in: device)
+        device.addItem(.separator())
+        pluginCommands([.simulatedScenes], in: device)
 
         let io = menu("I/O", in: main)
         ioMenu = io
@@ -127,11 +134,14 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
         commands(ExternalDisplayMode.allCases.dropFirst().map(\.commandID), in: externalDisplays)
         // Simulator.app's CarPlay item follows a separator here.
         io.addItem(.separator())
+        pluginCommands(PluginCommand.immersionLevels, in: menu("Set Immersion To", in: io))
+        io.addItem(.separator())
         commands([.openURL], in: io)
 
         let features = menu("Features", in: main)
         commands([.touchIDEnrolled, .touchIDMatching, .touchIDNonMatching], in: menu("Touch ID", in: features))
         commands([.faceIDEnrolled, .faceIDMatching, .faceIDNonMatching], in: menu("Face ID", in: features))
+        commands([.opticIDEnrolled, .opticIDMatching, .opticIDNonMatching], in: menu("Optic ID", in: features))
         commands([.authorizeApplePay], in: features)
         features.addItem(.separator())
         commands([.toggleAppearance, .toggleInCallStatusBar, .toggleStandBy], in: features)
@@ -153,7 +163,8 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
         commands([.colorBlendedLayers, .colorCopiedImages, .colorMisalignedImages, .colorOffscreenRendered], in: debug)
         debug.addItem(.separator())
         commands([.openSystemLog, .simulateMemoryWarning], in: debug)
-        // Simulator.app's Show Gaze Target follows here for Apple Vision Pro.
+        debug.addItem(.separator())
+        pluginCommands([.showGazeTarget], in: debug)
         debug.addItem(.separator())
         item("Show Parallel Testing Devices", action: #selector(toggleShowTestingDevices(_:)), in: debug)
 
@@ -224,6 +235,15 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
         }
     }
 
+    /// Adds items that send their action to the first responder, where the
+    /// device's user-interface plugin validates and performs them.
+    private func pluginCommands(_ commands: [PluginCommand], in menu: NSMenu) {
+        for command in commands {
+            item(command.title, action: command.action, key: command.key, modifiers: command.modifiers,
+                 in: menu).target = nil
+        }
+    }
+
     // Simulator.app hides commands the key device does not support. Without a
     // device window, commands stay visible and disabled.
     func menuNeedsUpdate(_ menu: NSMenu) {
@@ -242,6 +262,8 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
         for item in menu.items {
             if let raw = item.representedObject as? String, let id = DeviceCommand.ID(rawValue: raw) {
                 item.isHidden = capabilities.map { !DeviceCommand.command(id).isSupported($0) } ?? false
+            } else if let action = item.action, let command = PluginCommand.command(for: action) {
+                item.isHidden = capabilities.map { !command.isShown($0) } ?? false
             } else if item.action == #selector(toggleShowDeviceBezels(_:)) {
                 item.isHidden = capabilities.map { !$0.supportsDeviceBezels } ?? false
             } else if let submenu = item.submenu, submenu.delegate === self {
