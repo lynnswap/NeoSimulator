@@ -850,6 +850,47 @@ struct InputFocusTests {
         #expect(display.buttons == [.home])
     }
 
+    @Test func visionOSMenuCommandsGoToThePluginsOverlay() throws {
+        _ = NSApplication.shared
+        MenuController(application: nil).install()
+        defer { NSApp.mainMenu = nil }
+        let items = NSApp.mainMenu?.items.compactMap(\.submenu).flatMap { menu in
+            menu.items + menu.items.compactMap(\.submenu).flatMap(\.items)
+        } ?? []
+        let commands = try ["Re-Center Open Apps", "Orbit Mode", "75%", "Show Gaze Target"].map { title in
+            try #require(items.first { $0.title == title })
+        }
+        let display = TestDisplay()
+        let overlay = PluginOverlay()
+        display.view.addSubview(overlay)
+        display.plugin = SimulatorUserInterfacePlugin(overlayView: overlay, toolbar: nil)
+        let controller = try makeController(display, family: .vision, features: [DeviceCapabilities.hoverboard],
+                                            userInterfacePlugin: true)
+        defer { controller.invalidate() }
+        let window = try #require(controller.window)
+        controller.focusInput()
+        // AppKit sends each item's action to the overlay, the first responder
+        // of the device's window, and has it validate the item: the overlay
+        // checks Show Gaze Target while it shows the gaze target.
+        for command in commands {
+            let action = try #require(command.action)
+            let target = try #require(responder(in: window, taking: action))
+            #expect(target === overlay, "\(command.title)")
+            #expect((target as? NSMenuItemValidation)?.validateMenuItem(command) == true)
+            #expect(NSApp.sendAction(action, to: target, from: command))
+        }
+        #expect(overlay.actions == ["recenterAllOpenApps:", "viewportModeChangedToOrbit:", "setImmersionTo75:",
+                                    "toggleShowGazeTarget:"])
+        #expect(overlay.validateMenuItem(commands[3]) && commands[3].state == .on)
+        // Without the plugin, no responder of the window takes them, so AppKit
+        // disables them.
+        let phone = try makeController(TestDisplay())
+        defer { phone.invalidate() }
+        phone.focusInput()
+        let phoneWindow = try #require(phone.window)
+        #expect(commands.allSatisfy { responder(in: phoneWindow, taking: $0.action!) == nil })
+    }
+
     @Test func aWindowWaitsForItsDisplaysUserInterfacePluginAndReportsOneThatDoesNotLoad() async throws {
         _ = NSApplication.shared
         let display = TestDisplay()
@@ -937,8 +978,8 @@ struct InputFocusTests {
         menus.updateVisibility(in: device, for: controller.session.capabilities)
         let visible = device.items.filter { !$0.isHidden }
         #expect(visible.map { $0.isSeparatorItem ? "-" : $0.title } ==
-            ["Restart", "Erase All Content and Settings…", "Shut Down", "-", "Home", "Lock", "Shake",
-             "App Switcher", "-", "Trigger Screenshot"])
+            ["Restart", "Erase All Content and Settings…", "Shut Down", "-", "Home", "Re-Center Open Apps", "Lock",
+             "Shake", "App Switcher", "-", "Trigger Screenshot"])
         controller.perform(.rotateRight)
         #expect(!controller.session.isBusy)
     }
@@ -1009,14 +1050,56 @@ struct InputFocusTests {
                                                                      supportsFeature: { _ in false }))
             return menu.items.filter { !$0.isHidden }.map { $0.isSeparatorItem ? "-" : $0.title }
         }
-        let commands = ["Restart", "Erase All Content and Settings…", "Shut Down", "-", "Home"]
+        // Re-Center Open Apps is shown for every device.
+        let commands = ["Restart", "Erase All Content and Settings…", "Shut Down", "-", "Home", "Re-Center Open Apps"]
         // Lock is for iPhones, iPads, and watches, and Side Button for watches.
         #expect(try visible("Device", .watch) == commands + ["Lock", "Side Button"])
         #expect(try visible("Device", .tv) == commands)
-        #expect(try visible("Device", .vision) == commands)
+        // The camera and scene commands are for Apple Vision.
+        #expect(try visible("Device", .vision) == commands + [
+            "-", "Interaction Mode", "Look Around Mode", "Pan Mode", "Orbit Mode", "Dolly Mode", "-", "Reset Camera", "-",
+            "Simulated Scenes",
+        ])
         // Apple Vision's display has no bezel to show.
         #expect(try !visible("Window", .vision).contains("Show Device Bezels"))
         #expect(try visible("Window", .watch).contains("Show Device Bezels"))
+    }
+
+    @Test func watchGesturesAndSimulateFallFollowSimulatorAppsMenus() throws {
+        _ = NSApplication.shared
+        let menus = MenuController(application: nil)
+        menus.install()
+        defer { NSApp.mainMenu = nil }
+        /// The items of the menu `title`, or of its `submenu`, shown for a watch.
+        func visible(_ title: String, submenu: String? = nil, runtime: UInt32 = 0x1B_00_00,
+                     _ features: Set<String>) throws -> [String] {
+            let menu = try #require(NSApp.mainMenu?.items.first { $0.title == title }?.submenu)
+            menus.updateVisibility(in: menu, for: DeviceCapabilities(family: .watch, runtimeVersion: runtime,
+                                                                     supportsFeature: { features.contains($0) }))
+            let shown = try submenu.map { name in try #require(menu.items.first { $0.title == name }?.submenu) } ?? menu
+            return shown.items.filter { !$0.isHidden }.map { $0.isSeparatorItem ? "-" : $0.title }
+        }
+        let gestures = DeviceCapabilities.watchGestures, fall = DeviceCapabilities.fallDetection
+        // Gestures follows the watch's buttons, before Siri, and Wrist Flick
+        // needs watchOS 12.
+        #expect(try visible("Device", [gestures, DeviceCapabilities.actionButtonSting, DeviceCapabilities.siri])
+            == ["Restart", "Erase All Content and Settings…", "Shut Down", "-", "Home", "Re-Center Open Apps", "Lock",
+                "Side Button", "Action Button", "Gestures", "Siri"])
+        #expect(try visible("Device", submenu: "Gestures", [gestures]) == ["Double Tap", "Wrist Flick"])
+        #expect(try visible("Device", submenu: "Gestures", runtime: 0x0B_06_00, [gestures]) == ["Double Tap"])
+        #expect(try visible("Device", submenu: "Gestures", runtime: 0x0C_00_00, [gestures])
+            == ["Double Tap", "Wrist Flick"])
+        #expect(try !visible("Device", [fall]).contains("Gestures"))
+        // Simulate Fall follows Face ID, before Authorize Apple Pay.
+        #expect(try visible("Features", [fall, DeviceCapabilities.faceID, DeviceCapabilities.applePayAuthorization])
+            .prefix(3) == ["Face ID", "Simulate Fall", "Authorize Apple Pay"])
+        #expect(try visible("Features", submenu: "Simulate Fall", [fall])
+            == ["Confirmed", "Dismissed", "Rejected", "Unresponsive"])
+        #expect(try !visible("Features", [gestures]).contains("Simulate Fall"))
+        // As in Simulator.app, none of them has a shortcut.
+        let items = NSApp.mainMenu?.items.compactMap(\.submenu).flatMap(\.items)
+            .filter { ["Gestures", "Simulate Fall"].contains($0.title) }.compactMap(\.submenu).flatMap(\.items)
+        #expect(items?.count == 6 && items?.allSatisfy(\.keyEquivalent.isEmpty) == true)
     }
 
     // MARK: Apple TV Remote
@@ -1281,6 +1364,69 @@ struct InputFocusTests {
             #expect(raw.loadUnaligned(fromByteOffset: 0x44, as: Double.self) == 0.75)
             #expect(fields(message, [0x6c]) == [0x16])
         }
+    }
+
+    @Test func visionOSCommandsFollowSimulatorAppsMainMenu() throws {
+        _ = NSApplication.shared
+        let menus = MenuController(application: nil)
+        menus.install()
+        defer { NSApp.mainMenu = nil }
+        func menu(_ title: String, in parent: NSMenu? = NSApp.mainMenu) throws -> NSMenu {
+            try #require(parent?.items.first { $0.title == title }?.submenu)
+        }
+        func visible(_ menu: NSMenu, _ capabilities: DeviceCapabilities) -> [String] {
+            menus.updateVisibility(in: menu, for: capabilities)
+            return menu.items.filter { !$0.isHidden }.map { $0.isSeparatorItem ? "-" : $0.title }
+        }
+        func device(_ family: DeviceCapabilities.Family, _ features: Set<String>) -> DeviceCapabilities {
+            DeviceCapabilities(family: family, runtimeVersion: 0x1A_05_00, supportsFeature: { features.contains($0) })
+        }
+        let vision = device(.vision, [DeviceCapabilities.opticID, DeviceCapabilities.hoverboard])
+        let phone = device(.iPhone, [])
+        // As in Simulator.app's MainMenu.nib, the items send the actions of
+        // the plugin's overlay to the first responder, the camera modes with
+        // Control-Command-1 to 5 and Reset Camera with Control-Command-0.
+        let deviceMenu = try menu("Device")
+        let deviceCommands = try ["Re-Center Open Apps", "Interaction Mode", "Look Around Mode", "Pan Mode", "Orbit Mode",
+                                  "Dolly Mode", "Reset Camera", "Simulated Scenes"].map { title in
+            try #require(deviceMenu.items.first { $0.title == title })
+        }
+        #expect(deviceCommands.map { $0.action.map(NSStringFromSelector) } == [
+            "recenterAllOpenApps:", "viewportModeChangedToInteraction:", "viewportModeChangedToLookAround:",
+            "viewportModeChangedToPan:", "viewportModeChangedToOrbit:", "viewportModeChangedToDolly:",
+            "resetViewportCamera:", "selectSimulatedScene:",
+        ])
+        #expect(deviceCommands.allSatisfy { $0.target == nil && $0.submenu == nil })
+        #expect(deviceCommands.map(\.keyEquivalent) == ["", "1", "2", "3", "4", "5", "0", ""])
+        #expect(deviceCommands.filter { !$0.keyEquivalent.isEmpty }.allSatisfy {
+            $0.keyEquivalentModifierMask == [.control, .command]
+        })
+        // Set Immersion To has 50%, 75%, and 100%; Simulator.app hides its
+        // Increase and Decrease Immersion, 0%, and 25% for every device.
+        let io = try menu("I/O")
+        #expect(visible(io, vision) == ["Audio Input", "Audio Output", "-", "Set Immersion To", "-", "Open URL…"])
+        #expect(!visible(io, phone).contains("Set Immersion To"))
+        let immersion = try menu("Set Immersion To", in: io)
+        #expect(immersion.items.map(\.title) == ["50%", "75%", "100%"])
+        #expect(immersion.items.map { $0.action.map(NSStringFromSelector) } ==
+            ["setImmersionTo50:", "setImmersionTo75:", "setImmersionTo100:"])
+        #expect(immersion.items.allSatisfy { $0.target == nil && $0.keyEquivalent.isEmpty })
+        // Optic ID follows the device's feature and, on Apple Vision Pro, has
+        // no shortcut.
+        let features = try menu("Features")
+        #expect(visible(features, vision) == ["Optic ID", "-", "Trigger iCloud Sync", "-", "Location"])
+        #expect(!visible(features, phone).contains("Optic ID"))
+        menus.updateKeyEquivalents(for: vision)
+        let opticID = try menu("Optic ID", in: features)
+        #expect(opticID.items.map(\.title) == ["Enrolled", "Matching Eye", "Non-matching Eye"])
+        #expect(opticID.items.map(\.keyEquivalent) == ["", "", ""])
+        // Show Gaze Target follows the device's gaze feature.
+        let debug = try menu("Debug")
+        #expect(visible(debug, vision).suffix(5) ==
+            ["Simulate Memory Warning", "-", "Show Gaze Target", "-", "Show Parallel Testing Devices"])
+        #expect(!visible(debug, device(.vision, [DeviceCapabilities.opticID])).contains("Show Gaze Target"))
+        let gaze = try #require(debug.items.first { $0.title == "Show Gaze Target" })
+        #expect(gaze.action == Selector(("toggleShowGazeTarget:")) && gaze.target == nil)
     }
 
     @Test func onlyADeviceThatRotatesReadsItsOrientation() async throws {
@@ -2925,8 +3071,8 @@ struct InputFocusTests {
         // File ▸ Open Simulator is built when it opens, so its empty submenu stays visible.
         #expect(try visibleTitles("File").prefix(3) == ["New Simulator…", "Open Simulator", "-"])
         #expect(try visibleTitles("Device") == ["Restart", "Erase All Content and Settings…", "Shut Down", "-",
-                                                 "Home", "Lock", "Action Button", "Siri", "Shake",
-                                                 "App Switcher", "-", "Trigger Screenshot"])
+                                                 "Home", "Re-Center Open Apps", "Lock", "Action Button", "Siri",
+                                                 "Shake", "App Switcher", "-", "Trigger Screenshot"])
         #expect(try visibleTitles("I/O") == ["Keyboard", "-", "Audio Input", "Audio Output", "Increase Volume",
                                               "Decrease Volume", "-", "Open URL…"])
         #expect(try visibleTitles("Features") == ["Authorize Apple Pay", "-", "Toggle Appearance",
@@ -2959,17 +3105,41 @@ struct InputFocusTests {
             DeviceCapabilities(family: .iPhone, runtimeVersion: 0x1B_00_00, supportsFeature: { $0 == feature })
         }
         #expect(try shortcuts("Touch ID") == ["", "m", "n"] && shortcuts("Face ID") == ["", "", ""])
+        #expect(try shortcuts("Optic ID") == ["", "", ""])
+        // Simulator.app also gives Optic ID the shortcuts with Face ID's
+        // support, where Face ID, which comes first, takes them.
         menus.updateKeyEquivalents(for: device(DeviceCapabilities.faceID))
         #expect(try shortcuts("Touch ID") == ["", "", ""] && shortcuts("Face ID") == ["", "m", "n"])
+        #expect(try shortcuts("Optic ID") == ["", "m", "n"])
         menus.updateVisibility(in: features, for: device(DeviceCapabilities.faceID))
         #expect(features.items.filter { !$0.isHidden }.prefix(2).map { $0.isSeparatorItem ? "-" : $0.title }
                 == ["Face ID", "-"])
         menus.updateKeyEquivalents(for: device(DeviceCapabilities.touchID))
         #expect(try shortcuts("Touch ID") == ["", "m", "n"] && shortcuts("Face ID") == ["", "", ""])
+        #expect(try shortcuts("Optic ID") == ["", "", ""])
         // Shift-Command-I belongs to Trigger iCloud Sync, as in Simulator.app.
         let items = NSApp.mainMenu?.items.compactMap(\.submenu).flatMap(\.items) ?? []
         #expect(items.filter { $0.keyEquivalent == "i" && $0.keyEquivalentModifierMask == [.command, .shift] }
             .map(\.title) == ["Trigger iCloud Sync"])
+    }
+
+    @Test func opticIDPostsSimulatorAppsGuestNotifications() throws {
+        let display = TestDisplay()
+        let controller = try makeController(display, family: .vision, features: [DeviceCapabilities.opticID])
+        defer { controller.invalidate() }
+        let enrolled = NSMenuItem()
+        controller.perform(.opticIDEnrolled)
+        #expect(DeviceCommand.command(.opticIDEnrolled).validate(enrolled, for: controller) && enrolled.state == .on)
+        controller.perform(.opticIDMatching)
+        controller.perform(.opticIDNonMatching)
+        // A device without Face ID ignores its commands.
+        controller.perform(.faceIDMatching)
+        controller.perform(.opticIDEnrolled)
+        #expect(DeviceCommand.command(.opticIDEnrolled).validate(enrolled, for: controller) && enrolled.state == .off)
+        #expect(display.postedNotifications == [
+            "com.apple.BiometricKit.enrollmentChanged", "com.apple.BiometricKit_Sim.oyster.match",
+            "com.apple.BiometricKit_Sim.oyster.nomatch", "com.apple.BiometricKit.enrollmentChanged",
+        ])
     }
 
     @Test func featureCommandsChangeTheGuestState() throws {
@@ -3015,6 +3185,30 @@ struct InputFocusTests {
         display.contrastMode = 0
         #expect(throws: (any Error).self) { try session.toggleIncreaseContrast() }
         #expect(display.contrastMode == 0)
+    }
+
+    @Test func simulateFallSetsAndPostsTheGuestsFallState() throws {
+        let display = TestDisplay()
+        let controller = try makeController(display, family: .watch, features: [DeviceCapabilities.fallDetection])
+        defer { controller.invalidate() }
+        let name = "com.apple.sos.user-fell"
+        // Each item sets the state that numbers its resolution, then posts it.
+        for (command, state) in [(DeviceCommand.ID.fallUnresponsive, 3), (.fallRejected, 2), (.fallDismissed, 1),
+                                 (.fallConfirmed, 0)] as [(DeviceCommand.ID, UInt64)] {
+            controller.perform(command)
+            #expect(display.notificationStates[name] == state, "\(command)")
+        }
+        #expect(display.postedNotifications == Array(repeating: name, count: 4))
+        // A state the guest refuses is not posted.
+        display.notificationError = HostError.operation("refused")
+        #expect(throws: (any Error).self) { try controller.session.simulateFall(.dismissed) }
+        #expect(display.postedNotifications.count == 4)
+        // A device without the feature changes nothing.
+        let other = TestDisplay()
+        let otherController = try makeController(other, family: .watch, features: [], device: "other")
+        defer { otherController.invalidate() }
+        otherController.perform(.fallConfirmed)
+        #expect(other.notificationStates.isEmpty && other.postedNotifications.isEmpty)
     }
 
     @Test func debugMenuFollowsSimulatorAppOrderAndShortcuts() throws {
@@ -3599,7 +3793,8 @@ struct InputFocusTests {
             menu.items.filter { !visibleOnly || !$0.isHidden }.map { $0.isSeparatorItem ? "-" : $0.title }
         }
         // Like Simulator.app, the submenu follows the volume commands and a separator.
-        #expect(titles(io).suffix(5) == ["Decrease Volume", "-", "External Displays", "-", "Open URL…"])
+        #expect(titles(io).suffix(7) == ["Decrease Volume", "-", "External Displays", "-", "Set Immersion To", "-",
+                                         "Open URL…"])
         let item = try #require(io.items.first { $0.title == "External Displays" })
         #expect(titles(try #require(item.submenu)) == [
             "Disabled", "-", "640×480", "720×480", "1024×768", "1280×720 (720p)", "1920×1080 (1080p)", "3840×2160 (4K)",
@@ -4940,13 +5135,14 @@ struct InputFocusTests {
                           .init(identifier: "c", name: "iPad C", productFamily: 2)],
             runtimes: [.init(identifier: "old", name: "iOS 26.0"), .init(identifier: "new", name: "iOS 27.0"),
                        .init(identifier: "empty", name: "iOS 28.0")],
-            supportedDeviceTypes: ["old": ["b"], "new": ["a", "c"]])
+            supportedDeviceTypes: ["old": ["b"], "new": ["a", "c"]], canPair: { _, _, _, _ in true })
         var created: [[String]] = []
         var failure: Error?
         let form = NewSimulatorWindowController(catalog: catalog, create: { name, deviceType, runtime in
             if let failure { throw failure }
             created.append([name, deviceType, runtime])
-        })
+            return "device"
+        }, pair: { _, _ in Issue.record("paired without a watch") })
         defer { form.close() }
         let window = try #require(form.window)
         form.showWindow(nil)
@@ -4977,13 +5173,13 @@ struct InputFocusTests {
         #expect(selection() == ["iPhone B", "iOS 26.0"])
 
         failure = HostError.operation("creation failed")
-        form.createButton.performClick(nil)
+        form.forwardButton.performClick(nil)
         for _ in 0..<100 where window.attachedSheet == nil { try await Task.sleep(for: .milliseconds(10)) }
         #expect(window.isVisible && created.isEmpty)
         window.endSheet(try #require(window.attachedSheet))
         failure = nil
         // An empty name uses the device type's name.
-        form.createButton.performClick(nil)
+        form.forwardButton.performClick(nil)
         for _ in 0..<100 where window.isVisible { try await Task.sleep(for: .milliseconds(10)) }
         #expect(created == [["iPhone B", "b", "old"]])
         #expect(!window.isVisible)
@@ -4992,10 +5188,152 @@ struct InputFocusTests {
     @Test func newSimulatorWithoutRuntimesCannotCreate() throws {
         let form = NewSimulatorWindowController(
             catalog: SimulatorCatalog(deviceTypes: [.init(identifier: "a", name: "iPhone A", productFamily: 1)],
-                                      runtimes: [], supportedDeviceTypes: [:]),
-            create: { _, _, _ in Issue.record("created without a runtime") })
+                                      runtimes: [], supportedDeviceTypes: [:], canPair: { _, _, _, _ in true }),
+            create: { _, _, _ in
+                Issue.record("created without a runtime")
+                return ""
+            }, pair: { _, _ in Issue.record("paired without a runtime") })
         #expect(form.runtimes.itemTitles == ["No Runtimes Available"])
-        #expect(!form.runtimes.isEnabled && !form.deviceTypes.isEnabled && !form.createButton.isEnabled)
+        #expect(!form.runtimes.isEnabled && !form.deviceTypes.isEnabled && !form.forwardButton.isEnabled)
+        #expect(!form.pairedWatchButton.isEnabled)
+    }
+
+    /// A catalog of one iPhone, one iPad, and three watches, where only the
+    /// first watch pairs; `pairings` records each pairing check.
+    private func pairingCatalog(_ pairings: PairingChecks? = nil) -> SimulatorCatalog {
+        SimulatorCatalog(
+            deviceTypes: [.init(identifier: "phone", name: "iPhone A", productFamily: 1),
+                          .init(identifier: "pad", name: "iPad A", productFamily: 2),
+                          .init(identifier: "w1", name: "Apple Watch One", productFamily: 4),
+                          .init(identifier: "w2", name: "Apple Watch Two", productFamily: 4),
+                          .init(identifier: "w3", name: "Apple Watch Old", productFamily: 4)],
+            runtimes: [.init(identifier: "ios", name: "iOS 27.0"), .init(identifier: "old", name: "watchOS 10.0"),
+                       .init(identifier: "new", name: "watchOS 27.0"), .init(identifier: "tv", name: "tvOS 27.0")],
+            supportedDeviceTypes: ["ios": ["phone", "pad"], "old": ["w3"], "new": ["w1", "w2"]],
+            canPair: { watchType, watchRuntime, phoneType, phoneRuntime in
+                pairings?.entries.append([watchType, watchRuntime, phoneType, phoneRuntime].joined(separator: " "))
+                return watchType == "w1"
+            })
+    }
+
+    @Test func newSimulatorOffersAPairedWatchOnlyForAnIPhone() throws {
+        _ = NSApplication.shared
+        let form = NewSimulatorWindowController(catalog: pairingCatalog(), create: { _, _, _ in "" }, pair: { _, _ in })
+        defer { form.close() }
+        form.showWindow(nil)
+        func choose(_ title: String, in popUp: NSPopUpButton) {
+            popUp.selectItem(withTitle: title)
+            popUp.sendAction(popUp.action, to: popUp.target)
+        }
+        #expect(form.deviceTypes.titleOfSelectedItem == "iPhone A")
+        #expect(form.pairedWatchButton.isEnabled && form.pairedWatchButton.state == .off)
+        #expect(form.forwardButton.title == "Create" && form.forwardButton.isEnabled && !form.previousButton.isEnabled)
+        form.pairedWatchButton.performClick(nil)
+        #expect(form.forwardButton.title == "Next")
+        // Another family turns the option off.
+        choose("iPad A", in: form.deviceTypes)
+        #expect(!form.pairedWatchButton.isEnabled && form.pairedWatchButton.state == .off)
+        #expect(form.forwardButton.title == "Create")
+        choose("iPhone A", in: form.deviceTypes)
+        #expect(form.pairedWatchButton.isEnabled && form.pairedWatchButton.state == .off)
+        form.pairedWatchButton.performClick(nil)
+        #expect(form.forwardButton.title == "Next")
+        form.pairedWatchButton.performClick(nil)
+        #expect(form.forwardButton.title == "Create")
+    }
+
+    @Test func newSimulatorWatchPageKeepsTheWatchCompatibleAndPairable() throws {
+        _ = NSApplication.shared
+        let pairings = PairingChecks()
+        let form = NewSimulatorWindowController(catalog: pairingCatalog(pairings), create: { _, _, _ in "" },
+                                                pair: { _, _ in })
+        defer { form.close() }
+        form.showWindow(nil)
+        func choose(_ title: String, in popUp: NSPopUpButton) {
+            popUp.selectItem(withTitle: title)
+            popUp.sendAction(popUp.action, to: popUp.target)
+        }
+        func selection() -> [String?] {
+            [form.watchDeviceTypes.titleOfSelectedItem, form.watchRuntimes.titleOfSelectedItem]
+        }
+        form.pairedWatchButton.performClick(nil)
+        form.forwardButton.performClick(nil)
+        #expect(form.showsWatchPage && form.previousButton.isEnabled && form.forwardButton.title == "Create")
+        // Only watches, without separators, and the runtimes that support any of them.
+        #expect(form.watchDeviceTypes.itemArray.map(\.title) == ["Apple Watch One", "Apple Watch Two", "Apple Watch Old"])
+        #expect(form.watchRuntimes.itemTitles == ["watchOS 10.0", "watchOS 27.0"])
+        // The first runtime stays, and the watch becomes the first it supports.
+        #expect(selection() == ["Apple Watch Old", "watchOS 10.0"])
+        #expect(form.watchNameField.placeholderString == "Apple Watch Old")
+        #expect(!form.forwardButton.isEnabled && pairings.entries.last == "w3 old phone ios")
+        choose("watchOS 27.0", in: form.watchRuntimes)
+        #expect(selection() == ["Apple Watch One", "watchOS 27.0"])
+        #expect(form.forwardButton.isEnabled && pairings.entries.last == "w1 new phone ios")
+        // A watch the runtime does not support lists only the runtimes that support it.
+        choose("Apple Watch Old", in: form.watchDeviceTypes)
+        #expect(form.watchRuntimes.itemTitles == ["watchOS 10.0"] && selection() == ["Apple Watch Old", "watchOS 10.0"])
+        #expect(form.watchNameField.placeholderString == "Apple Watch Old" && !form.forwardButton.isEnabled)
+        choose("Apple Watch Two", in: form.watchDeviceTypes)
+        #expect(form.watchRuntimes.itemTitles == ["watchOS 27.0"] && selection() == ["Apple Watch Two", "watchOS 27.0"])
+        #expect(!form.forwardButton.isEnabled && pairings.entries.last == "w2 new phone ios")
+        choose("Apple Watch One", in: form.watchDeviceTypes)
+        #expect(form.watchRuntimes.itemTitles == ["watchOS 27.0"] && form.forwardButton.isEnabled)
+        form.previousButton.performClick(nil)
+        #expect(!form.showsWatchPage && !form.previousButton.isEnabled)
+        #expect(form.forwardButton.title == "Next" && form.forwardButton.isEnabled)
+    }
+
+    @Test func newSimulatorCreatesAndPairsTheWatchAndKeepsTheDevicesOnFailure() async throws {
+        _ = NSApplication.shared
+        @MainActor final class Failures { var watch: Error?, pair: Error? }
+        let failures = Failures()
+        var operations: [String] = []
+        let form = NewSimulatorWindowController(catalog: pairingCatalog(), create: { name, deviceType, runtime in
+            if deviceType.hasPrefix("w"), let failure = failures.watch { throw failure }
+            operations.append("create \(name) \(deviceType) \(runtime)")
+            return deviceType == "phone" ? "phone-\(operations.count)" : "watch-\(operations.count)"
+        }, pair: { watch, phone in
+            if let failure = failures.pair { throw failure }
+            operations.append("pair \(watch) \(phone)")
+        })
+        defer { form.close() }
+        let window = try #require(form.window)
+        form.showWindow(nil)
+        form.pairedWatchButton.performClick(nil)
+        form.forwardButton.performClick(nil)
+        form.watchRuntimes.selectItem(withTitle: "watchOS 27.0")
+        form.watchRuntimes.sendAction(form.watchRuntimes.action, to: form.watchRuntimes.target)
+        #expect(form.forwardButton.isEnabled)
+
+        // A failed pairing keeps both devices and the window.
+        failures.pair = HostError.operation("pairing failed")
+        form.forwardButton.performClick(nil)
+        try await wait { window.attachedSheet != nil }
+        let pairingAlert = try #require(window.attachedSheet)
+        #expect(texts(in: pairingAlert.contentView).contains(
+            "Created “iPhone A” and “Apple Watch One”, but could not pair them: pairing failed"))
+        window.endSheet(pairingAlert)
+        #expect(window.isVisible && form.forwardButton.isEnabled)
+        #expect(operations == ["create iPhone A phone ios", "create Apple Watch One w1 new"])
+        // A watch that is not created is not paired.
+        operations.removeAll()
+        failures.watch = HostError.operation("watch failed")
+        form.forwardButton.performClick(nil)
+        try await wait { window.attachedSheet != nil }
+        let watchAlert = try #require(window.attachedSheet)
+        #expect(texts(in: watchAlert.contentView).contains(
+            "Created “iPhone A”, but could not create its paired Apple Watch: watch failed"))
+        window.endSheet(watchAlert)
+        #expect(operations == ["create iPhone A phone ios"])
+
+        operations.removeAll()
+        failures.watch = nil
+        failures.pair = nil
+        form.watchNameField.stringValue = "My Watch"
+        form.forwardButton.performClick(nil)
+        try await wait { !window.isVisible }
+        #expect(operations == ["create iPhone A phone ios", "create My Watch w1 new", "pair watch-2 phone-1"])
+        #expect(!window.isVisible)
     }
 
     @Test func hardwareCommandsSendSimulatorAppEvents() throws {
@@ -5012,6 +5350,28 @@ struct InputFocusTests {
             .volumeDown, .volumeDown, .button(.applePay), .button(.applePay),
         ])
         #expect(display.events.map(\.state) == Array(repeating: [HIDState.down, .up], count: 5).flatMap { $0 })
+    }
+
+    @Test func watchGesturesSendOneMessageEachAndReportItsFailure() throws {
+        let display = TestDisplay()
+        let controller = try makeController(display, family: .watch, features: [DeviceCapabilities.watchGestures])
+        defer { controller.invalidate() }
+        controller.perform(.doubleTap)
+        controller.perform(.wristFlick)
+        // Each gesture is one message, without down and up events.
+        #expect(display.gestures == [.doubleTap, .wristFlick])
+        #expect(display.events.isEmpty)
+        // SimulatorKit's delivery failure reaches the command.
+        display.deliveryError = HostError.operation("delivery failed")
+        var failures: [Error] = []
+        controller.session.send(.watchGesture(.doubleTap)) { failures.append($0) }
+        #expect(failures.count == 1)
+        // A watch without the feature sends nothing.
+        let other = TestDisplay()
+        let otherController = try makeController(other, family: .watch, features: [], device: "other")
+        defer { otherController.invalidate() }
+        otherController.perform(.doubleTap)
+        #expect(other.gestures.isEmpty)
     }
 
     @Test func timedInputsKeepSimulatorAppDelays() async throws {
@@ -5422,6 +5782,36 @@ struct InputFocusTests {
         #expect(display.usesTrackpadForce == [false, true, false])
     }
 
+    @Test func theDigitizerTakesScrollingForADigitalCrownOrDialAndWithoutABezel() async throws {
+        func makeDisplay() -> TestDisplay {
+            let display = TestDisplay()
+            display.bezelPadding = NSSize(width: 9, height: 0)
+            return display
+        }
+        let preferences = MemoryPreferences()
+        let watch = makeDisplay(), vision = makeDisplay(), phone = makeDisplay()
+        let crown: Set<String> = [DeviceCapabilities.digitalCrown]
+        let w = try makeController(watch, family: .watch, features: crown, device: "watch", preferences: preferences)
+        let v = try makeController(vision, family: .vision, features: [DeviceCapabilities.digitalDial], device: "vision",
+                                   preferences: preferences)
+        let p = try makeController(phone, device: "phone", preferences: preferences)
+        defer { for controller in [w, v, p] { controller.invalidate() } }
+        // As in Simulator.app, the pointer's scrolling turns a watch's
+        // Digital Crown and Apple Vision Pro's Digital Dial.
+        #expect(watch.supportsScrolling.last == true && vision.supportsScrolling.last == true)
+        // Another device's digitizer takes it only while no bezel shows.
+        #expect(phone.supportsScrolling.last == false)
+        p.setDeviceBezelVisible(false)
+        #expect(phone.supportsScrolling.last == true)
+        p.setDeviceBezelVisible(true)
+        #expect(phone.supportsScrolling.last == false)
+        // The display of the watch's next connection takes it too.
+        await w.prepareForRestart()
+        let restarted = makeDisplay()
+        w.reconnect(try makeSession(restarted, family: .watch, features: crown, device: "watch", preferences: preferences))
+        #expect(restarted.supportsScrolling.last == true)
+    }
+
     @Test func touchIndicatorsFollowTheirPreferencesInEveryOpenWindow() async throws {
         let preferences = MemoryPreferences()
         let first = TestDisplay(), second = TestDisplay(), elsewhere = TestDisplay()
@@ -5467,6 +5857,13 @@ struct InputFocusTests {
         let action = try #require(settings.action)
         #expect(settings.target == nil && action == Selector(("orderFrontPreferencesPanel:")))
         #expect(NSApp.target(forAction: action, to: nil, from: settings) as AnyObject === NSApp)
+    }
+
+    /// The responder that AppKit sends a menu item's `action` to when the item
+    /// has no target and `window` is key: the first one in the window's
+    /// responder chain that implements it. Tests do not make windows key.
+    private func responder(in window: NSWindow, taking action: Selector) -> NSResponder? {
+        window.firstResponder.flatMap { sequence(first: $0, next: \.nextResponder).first { $0.responds(to: action) } }
     }
 
     /// A controller whose session and touch pressure settings keep their
@@ -5665,6 +6062,12 @@ private final class ChangeLog {
     var onMainThread: [Bool] = []
 }
 
+/// The pairing checks a New Simulator form made, as "watch-type watch-runtime phone-type phone-runtime".
+@MainActor
+private final class PairingChecks {
+    var entries: [String] = []
+}
+
 /// What a device window's toolbar button shows: its image's symbol and
 /// description, its tooltip, and its item's label.
 private struct ButtonFace: Equatable {
@@ -5810,6 +6213,26 @@ private final class InputView: NSView {
         if passesOnPresses { super.mouseDown(with: event) }
     }
 }
+/// Apple Vision Pro's plugin overlay, `XROS.VirtualHMDInputView`, for some of
+/// the menu commands it takes. It records their actions and, like the
+/// overlay, checks Show Gaze Target while the gaze target shows.
+@MainActor
+private final class PluginOverlay: NSView, NSMenuItemValidation {
+    var actions: [String] = []
+    private var showsGazeTarget = false
+    override var acceptsFirstResponder: Bool { true }
+    @objc func recenterAllOpenApps(_ sender: Any?) { actions.append("recenterAllOpenApps:") }
+    @objc func viewportModeChangedToOrbit(_ sender: Any?) { actions.append("viewportModeChangedToOrbit:") }
+    @objc func setImmersionTo75(_ sender: Any?) { actions.append("setImmersionTo75:") }
+    @objc func toggleShowGazeTarget(_ sender: NSMenuItem) {
+        actions.append("toggleShowGazeTarget:")
+        showsGazeTarget.toggle()
+    }
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if item.action == #selector(toggleShowGazeTarget(_:)) { item.state = showsGazeTarget ? .on : .off }
+        return true
+    }
+}
 /// A hardware button on the bezel, which takes its presses as SimulatorKit's
 /// `SimChromeButton` does.
 @MainActor
@@ -5916,6 +6339,12 @@ private final class TestDisplay: SimulatorDisplay {
     func send(_ touch: TVRemoteTouch, completion: (@MainActor (Error?) -> Void)?) throws {
         remoteTouches.append(touch)
         completion?(deliveryError)
+    }
+    /// Each watch gesture sent, in order, which `deliveryError` also fails.
+    var gestures: [WatchGesture] = []
+    func send(_ gesture: WatchGesture, completion: @escaping @MainActor (Error?) -> Void) throws {
+        gestures.append(gesture)
+        completion(deliveryError)
     }
     func toggleAppearance() throws {}
     /// The guest's Darwin notification states, and the names posted in order.
@@ -6054,6 +6483,9 @@ private final class TestDisplay: SimulatorDisplay {
         externalScreen?.changed = changed
         return externalScreen
     }
+    /// Each value the digitizer's scrolling setting was given, in order.
+    var supportsScrolling: [Bool] = []
+    func setSupportsScrolling(_ supports: Bool) { supportsScrolling.append(supports) }
     /// Each value the digitizer's touch pressure settings were given, in order.
     var supportsTouchPressure: [Bool] = []
     var usesTrackpadForce: [Bool] = []
@@ -6780,12 +7212,21 @@ struct DeviceToolTests {
         try """
             #!/bin/sh
             printf '%s\\n' "$DEVELOPER_DIR" "$@" > "\(log.path)"
+            echo 0D6B2C3A-0000-4000-8000-000000000001
             """.write(to: simctl, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: simctl.path)
-        try await DeviceTools.createDevice(named: "My Phone", deviceType: "type", runtime: "runtime",
-                                           xcodeURL: URL(fileURLWithPath: "/Applications/Xcode.app"), simctl: simctl)
+        let xcode = URL(fileURLWithPath: "/Applications/Xcode.app")
+        let identifier = try await DeviceTools.createDevice(named: "My Phone", deviceType: "type", runtime: "runtime",
+                                                            xcodeURL: xcode, simctl: simctl)
+        #expect(identifier == "0D6B2C3A-0000-4000-8000-000000000001")
         #expect(try String(contentsOf: log, encoding: .utf8).split(separator: "\n") == [
             "/Applications/Xcode.app/Contents/Developer", "create", "My Phone", "type", "runtime",
+        ])
+        // The watch comes first, as `simctl pair` expects.
+        try await DeviceTools.pairDevices(watch: "watch", phone: "phone", xcodeURL: xcode,
+                                          deviceSetPath: "/tmp/Devices", simctl: simctl)
+        #expect(try String(contentsOf: log, encoding: .utf8).split(separator: "\n") == [
+            "/Applications/Xcode.app/Contents/Developer", "--set", "/tmp/Devices", "pair", "watch", "phone",
         ])
     }
 

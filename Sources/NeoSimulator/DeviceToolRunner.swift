@@ -117,11 +117,26 @@ final class DeviceTools {
         environment = ["DEVELOPER_DIR": developerDirectory]
     }
 
-    /// Creates a device in the default device set.
+    /// Creates a device in the default device set, or in the set at
+    /// `deviceSetPath`, and returns its identifier.
     static func createDevice(named name: String, deviceType: String, runtime: String, xcodeURL: URL,
-                             simctl: URL = DeviceTools.simctl) async throws {
-        _ = try await DeviceToolRunner().run(
-            simctl, arguments: ["create", name, deviceType, runtime],
+                             deviceSetPath: String? = nil, simctl: URL = DeviceTools.simctl) async throws -> String {
+        let output = try await run(simctl, ["create", name, deviceType, runtime], xcodeURL: xcodeURL,
+                                   deviceSetPath: deviceSetPath)
+        return String(decoding: output, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Pairs a watch with a phone, both in the default device set or in the
+    /// set at `deviceSetPath`.
+    static func pairDevices(watch: String, phone: String, xcodeURL: URL, deviceSetPath: String? = nil,
+                            simctl: URL = DeviceTools.simctl) async throws {
+        _ = try await run(simctl, ["pair", watch, phone], xcodeURL: xcodeURL, deviceSetPath: deviceSetPath)
+    }
+
+    private static func run(_ simctl: URL, _ arguments: [String], xcodeURL: URL,
+                            deviceSetPath: String?) async throws -> Data {
+        try await DeviceToolRunner().run(
+            simctl, arguments: (deviceSetPath.map { ["--set", $0] } ?? []) + arguments,
             environment: ["DEVELOPER_DIR": xcodeURL.appendingPathComponent("Contents/Developer").path],
             timeout: .seconds(300))
     }

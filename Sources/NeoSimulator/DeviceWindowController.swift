@@ -485,6 +485,12 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
     private func bezelChanged() {
         guard let window = window as? DeviceWindow else { return }
         let padding = session.display.chromePadding
+        // Like Simulator.app's `simDisplayView(_:changedChrome:)`, the
+        // digitizer passes the pointer's scrolling on for a device with a
+        // Digital Crown or Digital Dial, and for any device while no bezel
+        // shows; SimulatorKit's HID client drops it for a device without
+        // either.
+        session.display.setSupportsScrolling(padding == nil || session.capabilities.hasCrownOrDial)
         content.displayGap = WindowScale.displayGap(bezelPadding: padding)
         window.chromeTopPadding = padding?.height ?? 0
         updateHeaderShape()
