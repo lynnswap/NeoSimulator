@@ -100,7 +100,8 @@ Neo currently provides:
   Xcode's visionOS simulator plugin (`XROS.simdeviceui`), as in Simulator.app:
   the plugin's view over the screen takes the pointer and the keyboard, and
   its toolbar has Home, Save Screen, Capture Pointer, Capture Keyboard, and
-  Simulated Scenes;
+  Simulated Scenes. Capture Pointer and Capture Keyboard do not capture the
+  Mac's input, which Neo leaves out;
 - Simulator.app's Save Screen, Record Screen, and Copy Screen commands, with
   its file names, save folders, and device-mask option; recordings are
   finalized when a window closes or the app quits;

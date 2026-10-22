@@ -1549,8 +1549,11 @@ Save Screen, Capture Pointer, Capture Keyboard, and Simulated Scenes), and the
 overlay becomes the display's input view, which takes the window's focus and
 the Mac's modifiers. The toolbar's Home, Save Screen, and Option-Save Screen
 buttons send Simulator.app's `homeButtonPressed:`, `saveFramebufferImage:`, and
-`toggleVideoRecording:` up the responder chain to the device window, while
-Capture Pointer and Capture Keyboard reach the overlay's own actions. As
+`toggleVideoRecording:` up the responder chain to the device window.
+Capture Pointer and Capture Keyboard reach the overlay, which leaves capturing
+the Mac's pointer or keyboard to the device window, as it does for
+Simulator.app (its `client` is `.simulatorApp`); Neo leaves
+[input capture](#input-capture) out, so they capture nothing. As
 Simulator.app does, the session posts `SimulatorVideoRecordingStartedNotification`
 and `SimulatorVideoRecordingStoppedNotification` with the `SimDevice` under
 their `…DeviceUserInfoKey`, which turns the plugin's Save Screen button into
