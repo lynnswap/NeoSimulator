@@ -1152,13 +1152,10 @@ Neo reaches the screen as Simulator.app does:
   a time. A choice made while a change is in flight waits for it and replaces
   an earlier choice that waits, so the last choice wins. A window that
   disconnects during a change turns the display off after it.
-- CoreSimulator reports a change before or after completing it, and another
-  tool can change the display meanwhile. Disabled turns off a display that is
-  on as far as the session knows: as the last change leaves it until the
-  display reports a state newer than that change, and otherwise as the display
-  last reported. A report after the change completed is newer; one during the
-  change is newer only when it shows the change's result, since it can
-  predate the change.
+- Disabled, and closing the device window while the device is booted,
+  always send the power-off, after a change in flight. The session keeps no
+  record of whether the display is on, which reports and completions that
+  arrive in either order, and other tools' changes, could leave wrong.
 - `SimDeviceScreen.register(types:queue:handler:)` with `.properties` reports
   each change of the screen's `powerState`, `pixelSize`, and
   `currentMode.preferredUIScale`, also those another tool makes.
@@ -1198,7 +1195,7 @@ Like Simulator.app:
 - A choice is saved for the device first, as its tag in
   `DevicePreferences[UDID].SimulatorExternalDisplay`, which is Disabled while
   missing or not an integer. A size then sets the screen's mode at a scale of
-  1, which also turns it on; Disabled turns a display that is on off.
+  1, which also turns it on; Disabled turns it off.
 - Each connection, including after a restart, applies the saved choice: a
   size sets the mode. Simulator.app's Disabled powers off only a display whose
   window is connected, which a new connection does not have yet, so Disabled
@@ -1246,6 +1243,11 @@ These differ from Simulator.app:
   its window fails, the window opens again.
 - A window without a saved place cascades from its device window, where
   Simulator.app cascades from its app-wide cascade point.
+- Simulator.app sends `setPowerState:0` only while the display's window is
+  connected. Neo sends it for every Disabled and every close of a booted
+  device's window: in the iOS 26.5 simulator, turning off a display that is
+  already off completes without an error and leaves it off, so the power-off
+  needs no state to decide on.
 - For a device with CarPlay, Simulator.app's choice also writes
   `<dataPath>/Library/Application Support/Simulator/extended_display.plist`
   (`{stark: false}` for these items), its CarPlay boot configuration. Neo

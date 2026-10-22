@@ -1145,7 +1145,6 @@ final class DeviceSession {
             hostLog("Could not read the external display of \(device.name): \(error.localizedDescription)")
             state = nil
         }
-        externalDisplayChanges.reported(state)
         guard state != externalScreen else { return }
         externalScreen = state
         onExternalScreenChange?()
@@ -1153,8 +1152,9 @@ final class DeviceSession {
 
     /// Like Simulator.app, a disconnecting window turns off the external
     /// display of a device that stays booted, after a change in flight,
-    /// keeping the device's choice for its next connection. Simulator.app
-    /// only logs a failure.
+    /// keeping the device's choice for its next connection; unlike
+    /// Simulator.app, also a display that is off (see
+    /// `ExternalDisplayChanges`). Simulator.app only logs a failure.
     private func disconnectExternalScreen() {
         externalScreenLookUp?.cancel()
         externalScreenLookUp = nil

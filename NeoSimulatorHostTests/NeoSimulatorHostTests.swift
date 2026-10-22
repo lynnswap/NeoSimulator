@@ -3077,14 +3077,15 @@ struct InputFocusTests {
         let screen = TestExternalScreen()
         let (controller, _) = try makeExternalDisplayController(screen, preferences: preferences)
         defer { controller.invalidate() }
-        // A display that is already off is left alone.
+        // Unlike Simulator.app, which turns off only a display whose window is
+        // open, Disabled turns off also a display that is off.
         preferences.setExternalDisplayTag(ExternalDisplayMode.size720x480.rawValue, forDevice: "test-device")
         controller.perform(.externalDisplayDisabled)
-        #expect(screen.requests.isEmpty)
+        #expect(screen.requests == ["off"])
         #expect(preferences.externalDisplayTag(forDevice: "test-device") == 2114)
         controller.perform(.externalDisplay720x480)
         controller.perform(.externalDisplayDisabled)
-        #expect(screen.requests == ["mode 720x480@1", "off"])
+        #expect(screen.requests == ["off", "mode 720x480@1", "off"])
         #expect(controller.session.externalDisplayMode == .disabled)
         #expect(preferences.externalDisplayTag(forDevice: "test-device") == 2114)
     }
@@ -3386,34 +3387,22 @@ struct InputFocusTests {
         #expect(controller.session.externalDisplayMode == .size3840x2160)
     }
 
-    @Test func disabledFollowsTheNewerOfTheDisplaysReportsAndItsLastChange() throws {
+    @Test func aDeviceWindowThatClosesAfterAFailedChangeTurnsTheDisplayOff() throws {
         let screen = TestExternalScreen()
-        let (controller, _) = try makeExternalDisplayController(screen)
-        defer { controller.invalidate() }
-        controller.perform(.externalDisplay1920x1080)
-        // Turning the display off is reported before it completes, and another
-        // tool turns the display on in between: Disabled turns it off again.
         screen.defersChanges = true
-        controller.perform(.externalDisplayDisabled)
-        screen.deliverReports()
-        screen.report { $0.isPoweredOn = true }
-        screen.deliverCompletions()
-        #expect(controller.session.externalDisplayMode == .size1920x1080)
-        controller.perform(.externalDisplayDisabled)
-        screen.deliver()
-        #expect(screen.requests == ["mode 1920x1080@1", "off", "off"])
-        #expect(!screen.current.isPoweredOn && controller.session.externalDisplayMode == .disabled)
-        // A size completes before it is reported, after another tool's report
-        // from before it: Disabled, waiting for the size, turns the display off.
-        controller.perform(.externalDisplay640x480)
-        screen.deliver()
+        let (controller, _) = try makeExternalDisplayController(screen)
+        // A size completes before the display reports it; the next size fails
+        // later. Closing the device window still turns the display off.
         controller.perform(.externalDisplay1920x1080)
-        screen.report { $0.isPoweredOn = false }
-        controller.perform(.externalDisplayDisabled)
         screen.deliverCompletions()
+        screen.completionError = HostError.operation("mode failed")
+        controller.perform(.externalDisplay1280x720)
+        screen.deliverCompletions()
+        screen.completionError = nil
+        controller.invalidate()
+        #expect(screen.requests == ["mode 1920x1080@1", "mode 1280x720@1", "off"])
         screen.deliver()
-        #expect(Array(screen.requests.dropFirst(3)) == ["mode 640x480@1", "mode 1920x1080@1", "off"])
-        #expect(!screen.current.isPoweredOn && controller.session.externalDisplayMode == .disabled)
+        #expect(!screen.current.isPoweredOn)
     }
 
     @Test func aDeviceWindowThatClosesDuringAChangeTurnsTheDisplayOffAfterIt() throws {

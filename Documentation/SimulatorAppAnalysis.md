@@ -658,9 +658,12 @@ The live check on the separate device set showed:
   2, and on the iPhone 60 Hz ranges from 320×200 to 3840×2160 at scales 1, 2,
   and 3. The order of `supportedScreenModes` differed between reads.
 - `setCurrentMode:…` turned the screen on at the size and completed within
-  50 ms; `setPowerState:0` turned it off; each change reported a properties
-  event. SimulatorKit's display of the screen has no bezel, a `displayClass`
-  of 1, and takes a new size one or two main-queue turns after the event.
+  50 ms; `setPowerState:0` turned it off, and on a screen that was already
+  off completed without an error and left it off; each change reported a
+  properties event, which reached the main queue just before the completion.
+  SimulatorKit's display of the screen has no bezel, a `displayClass` of 1,
+  and takes a new size one or two main-queue turns after the event by setting
+  its view's frame to that size at its scale.
 - The guest left the screen black until an app presented an external display
   scene, and its `UIScreen` took the size only for a 60 Hz mode.
 
