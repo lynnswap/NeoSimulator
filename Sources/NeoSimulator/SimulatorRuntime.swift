@@ -1380,6 +1380,14 @@ protocol SimulatorDisplay: AnyObject {
     /// the pointer's scrolling to the device, which turns its Digital Crown
     /// or Digital Dial.
     func setSupportsScrolling(_ supports: Bool)
+    /// Tells the guest's UIKit whether edge swipes start on the bezel, as
+    /// Simulator.app's `SimDevice wantsEdgeSwipes:` does: sets the guest's
+    /// `com.apple.UIKit.SimulatorWantsEdgeSwipes` state to 1 or 0 and posts it.
+    /// While it is 1, UIKit's `_UIScreenEdgePanRecognizer` takes only the
+    /// touches that the digitizer marks as starting at an edge, which a drag
+    /// from the bezel into the screen makes, and otherwise any touch that
+    /// starts near an edge.
+    func setWantsEdgeSwipes(_ wants: Bool)
     /// `SimDigitizerInputView.supportTouchPressure`: whether clicks press
     /// the screen with a pressure.
     func setSupportsTouchPressure(_ supports: Bool)
@@ -1624,6 +1632,14 @@ final class SimulatorConnection: SimulatorDisplay {
         guard !disconnected else { return }
         perform("enable scrolling") {
             try unsafe runtime.display.setSupportsScrolling.unsafeInvoke(on: digitizerView, supports)
+        }
+    }
+    func setWantsEdgeSwipes(_ wants: Bool) {
+        guard !disconnected else { return }
+        perform("tell the device whether edge swipes start on the bezel") {
+            let name = "com.apple.UIKit.SimulatorWantsEdgeSwipes"
+            try device.setNotificationState(name, to: wants ? 1 : 0)
+            try device.postNotification(name)
         }
     }
     func setSupportsTouchPressure(_ supports: Bool) {

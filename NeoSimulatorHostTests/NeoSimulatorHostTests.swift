@@ -5548,6 +5548,31 @@ struct InputFocusTests {
         #expect(restarted.supportsScrolling.last == true)
     }
 
+    @Test func theGuestLearnsWhetherEdgeSwipesStartOnTheBezel() async throws {
+        func makeDisplay() -> TestDisplay {
+            let display = TestDisplay()
+            display.bezelPadding = NSSize(width: 9, height: 0)
+            return display
+        }
+        let preferences = MemoryPreferences()
+        let phone = makeDisplay(), vision = TestDisplay()
+        let p = try makeController(phone, device: "phone", preferences: preferences)
+        let v = try makeController(vision, family: .vision, features: [], device: "vision", preferences: preferences)
+        defer { for controller in [p, v] { controller.invalidate() } }
+        // As in Simulator.app, the guest wants edge swipes while the bezel
+        // shows, from the window's first bezel on, and not without one.
+        #expect(phone.wantsEdgeSwipes == [true] && vision.wantsEdgeSwipes == [false])
+        p.setDeviceBezelVisible(false)
+        #expect(phone.wantsEdgeSwipes.last == false)
+        p.setDeviceBezelVisible(true)
+        #expect(phone.wantsEdgeSwipes.last == true)
+        // The display of the next connection is told too.
+        await p.prepareForRestart()
+        let restarted = makeDisplay()
+        p.reconnect(try makeSession(restarted, device: "phone", preferences: preferences))
+        #expect(restarted.wantsEdgeSwipes == [true])
+    }
+
     @Test func touchIndicatorsFollowTheirPreferencesInEveryOpenWindow() async throws {
         let preferences = MemoryPreferences()
         let first = TestDisplay(), second = TestDisplay(), elsewhere = TestDisplay()
@@ -6214,6 +6239,9 @@ private final class TestDisplay: SimulatorDisplay {
     /// Each value the digitizer's scrolling setting was given, in order.
     var supportsScrolling: [Bool] = []
     func setSupportsScrolling(_ supports: Bool) { supportsScrolling.append(supports) }
+    /// Each value the guest's edge swipe state was given, in order.
+    var wantsEdgeSwipes: [Bool] = []
+    func setWantsEdgeSwipes(_ wants: Bool) { wantsEdgeSwipes.append(wants) }
     /// Each value the digitizer's touch pressure settings were given, in order.
     var supportsTouchPressure: [Bool] = []
     var usesTrackpadForce: [Bool] = []

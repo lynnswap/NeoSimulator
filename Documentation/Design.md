@@ -553,6 +553,22 @@ shows the bezel as the preference says when it opens, before it takes its
 first scale, and when it reconnects after a restart. The menu's checkmark
 shows the preference, also without a device window.
 
+Each time the bezel changes, including when the display connects and after a
+restart, the window also tells the guest whether edge swipes start on the
+bezel, as Simulator.app's `simDisplayView(_:changedChrome:)` does with its
+`SimDevice wantsEdgeSwipes:` (`0x10003C20C`). It sets the guest's
+`com.apple.UIKit.SimulatorWantsEdgeSwipes` state to 1 while a bezel shows and
+to 0 without one, and posts it. While the state is 1, UIKit's
+`_UIScreenEdgePanRecognizer` takes only the touches that SimulatorKit's
+digitizer marks as starting at an edge, which a drag from the bezel into the
+screen makes; at 0 it takes any touch that starts within 13 points of a side
+or 11 points of the bottom. In iOS 26.5 only the iPad software keyboard uses
+that recognizer, for swipes from the bottom edge over the keyboard. The Home,
+Control Center, and Notification Center swipes and
+`UIScreenEdgePanGestureRecognizer` do not read the state. Simulator.app sets it
+asynchronously and discards a failure; Neo logs a failure. Without this, the
+state stays as the last host left it, 0 after a boot.
+
 The device window is a `DeviceWindow`, which follows its bezel as Simulator.app's
 window does:
 
