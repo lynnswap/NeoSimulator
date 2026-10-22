@@ -19,7 +19,7 @@ struct DeviceCommand {
         case useTrackpadForce, shallowPress, deepPress
         case increaseVolume, decreaseVolume, openURL
         case externalDisplayDisabled, externalDisplay640x480, externalDisplay720x480, externalDisplay1024x768
-        case externalDisplay1280x720, externalDisplay1920x1080, externalDisplay3840x2160
+        case externalDisplay1280x720, externalDisplay1920x1080, externalDisplay3840x2160, externalDisplayCarPlay
         case touchIDEnrolled, touchIDMatching, touchIDNonMatching
         case faceIDEnrolled, faceIDMatching, faceIDNonMatching
         case authorizeApplePay, toggleAppearance, toggleInCallStatusBar, toggleStandBy
@@ -331,13 +331,18 @@ struct DeviceCommand {
     /// An I/O ▸ External Displays item, shown, as in Simulator.app, for a
     /// device that supports external displays and has its own screen. Like
     /// Simulator.app, the items stay enabled while the device restarts, and a
-    /// choice then applies when it connects. The checkmark is the external
-    /// display's actual state, where Simulator.app checks the saved choice.
+    /// choice then applies when it connects; CarPlay is enabled only for a
+    /// device that also supports CarPlay, and unchecked otherwise. The
+    /// checkmark is the external display's actual state, where Simulator.app
+    /// checks the saved choice.
     private static func externalDisplay(_ mode: ExternalDisplayMode) -> DeviceCommand {
-        DeviceCommand(id: mode.commandID, title: mode.title,
-                      isSupported: { $0.supportsExternalDisplays },
-                      isEnabled: { _ in true },
-                      state: { $0.session.externalDisplayMode == mode ? .on : .off }) { $0.chooseExternalDisplay(mode) }
+        let isEnabled: (DeviceWindowController) -> Bool = { mode != .carPlay || $0.session.capabilities.supportsCarPlay }
+        return DeviceCommand(id: mode.commandID, title: mode.title,
+                             isSupported: { $0.supportsExternalDisplays },
+                             isEnabled: isEnabled,
+                             state: { isEnabled($0) && $0.session.externalDisplayMode == mode ? .on : .off }) {
+            $0.chooseExternalDisplay(mode)
+        }
     }
 
     /// Shallow Press or Deep Press, checked when it is the app's touch mode.
@@ -454,6 +459,7 @@ extension ExternalDisplayMode {
         case .size1280x720: .externalDisplay1280x720
         case .size1920x1080: .externalDisplay1920x1080
         case .size3840x2160: .externalDisplay3840x2160
+        case .carPlay: .externalDisplayCarPlay
         }
     }
 }

@@ -32,6 +32,9 @@ struct DeviceCapabilities {
     /// Whether I/O ▸ External Displays applies: like Simulator.app, the device
     /// supports external displays and has its own screen.
     var supportsExternalDisplays: Bool { supportsFeature(Self.externalDisplay) && supportsFeature(Self.integratedDisplay) }
+    /// Whether I/O ▸ External Displays ▸ CarPlay applies: like Simulator.app,
+    /// the device also supports CarPlay.
+    var supportsCarPlay: Bool { supportsExternalDisplays && supportsFeature(Self.carPlay) }
 
     static let displayRotation = "com.apple.CoreSimulator.display.rotation"
     static let actionButtonSting = "com.apple.hid.sting"
@@ -61,6 +64,8 @@ struct DeviceCapabilities {
     static let externalDisplay = "com.apple.display.supports-external"
     /// `SimFeatureInternalDisplay`: the device has its own screen.
     static let integratedDisplay = "com.apple.display.integrated"
+    /// `SimFeatureCarPlay`: the guest runs CarPlay on its external display.
+    static let carPlay = "com.apple.carplay"
     /// `SimFeatureAlwaysOnDisplay`: the watch dims its display instead of
     /// turning it off, which Simulator.app's Always On button shows.
     static let alwaysOnDisplay = "com.apple.display.aot"
@@ -1114,19 +1119,20 @@ final class DeviceSession {
             choiceDuringLookUp = nil
             applyExternalDisplay(choice.mode, failure: choice.failure)
         } else if let mode = ExternalDisplayMode(rawValue: preferences.externalDisplayTag(forDevice: device.id)),
-                  mode != .disabled {
+                  mode != .disabled, mode != .carPlay || capabilities.supportsCarPlay {
             applyExternalDisplay(mode, failure: failure)
         }
     }
 
     /// I/O ▸ External Displays: saves the choice for the device, as
     /// Simulator.app does, then sets the external display's mode, which also
-    /// turns it on, or turns it off for Disabled. Because the choice is saved
-    /// first, a device that is restarting applies it when it connects, and
-    /// choosing again retries a failure. Failures, also those CoreSimulator
-    /// reports later, go to `failure`.
+    /// turns it on, or turns it off for Disabled; CarPlay also starts the
+    /// guest's CarPlay (see `ExternalDisplayChanges`). Because the choice is
+    /// saved first, a device that is restarting applies it when it connects,
+    /// and choosing again retries a failure. Failures, also those CoreSimulator
+    /// reports later, go to `failure`, those of one choice together.
     func chooseExternalDisplay(_ mode: ExternalDisplayMode, failure: @escaping @MainActor (Error) -> Void) {
-        guard capabilities.supportsExternalDisplays else { return }
+        guard capabilities.supportsExternalDisplays, mode != .carPlay || capabilities.supportsCarPlay else { return }
         preferences.setExternalDisplayTag(mode.rawValue, forDevice: device.id)
         guard canPerformCommands else { return }
         guard !isLookingUpExternalScreen else {
@@ -1144,19 +1150,37 @@ final class DeviceSession {
 
     private func applyExternalDisplay(_ mode: ExternalDisplayMode, failure: @escaping @MainActor (Error) -> Void) {
         let name = device.name
-        let report: @MainActor (Error) -> Void = { reason in
-            failure(HostError.operation(mode == .disabled
-                ? "Could not turn off the external display of \(name): \(reason.localizedDescription)"
-                : "Could not set the external display of \(name) to \(mode.title): \(reason.localizedDescription)"))
+        let report: @MainActor ([ExternalDisplayFailure]) -> Void = { failures in
+            failure(Self.describe(failures, of: mode, deviceName: name))
         }
         do {
             // A device whose external display was not listed is asked again.
             if externalScreenConnection == nil { _ = try attachExternalScreen() }
             guard let externalScreenConnection else { throw HostError.unavailable("The device has no external display port.") }
-            externalDisplayChanges.apply(mode, through: externalScreenConnection, report: report)
+            // Like Simulator.app, a choice on a device with CarPlay writes its
+            // CarPlay configuration.
+            externalDisplayChanges.apply(mode, through: externalScreenConnection,
+                                         savesCarPlayConfiguration: capabilities.supportsCarPlay, report: report)
         } catch {
-            report(error)
+            report([ExternalDisplayFailure(step: .screen, error: error)])
         }
+    }
+
+    /// One error for the failures of a change to `mode`, a line for each.
+    private static func describe(_ failures: [ExternalDisplayFailure], of mode: ExternalDisplayMode,
+                                 deviceName name: String) -> HostError {
+        HostError.operation(failures.map { failure in
+            let reason = failure.error.localizedDescription
+            return switch failure.step {
+            case .carPlayConfiguration: "Could not save the CarPlay configuration of \(name): \(reason)"
+            case .screen where mode == .disabled: "Could not turn off the external display of \(name): \(reason)"
+            case .screen: "Could not set the external display of \(name) to \(mode.title): \(reason)"
+            case .carPlaySession(starting: true): "Could not start CarPlay on \(name): \(reason)"
+            case .carPlaySession(starting: false): "Could not stop CarPlay on \(name): \(reason)"
+            case .carPlayService(creating: true): "Could not connect the CarPlay touch screen of \(name): \(reason)"
+            case .carPlayService(creating: false): "Could not disconnect the CarPlay touch screen of \(name): \(reason)"
+            }
+        }.joined(separator: "\n"))
     }
 
     /// Connects to the external display when SimulatorKit lists it, and
@@ -1187,9 +1211,11 @@ final class DeviceSession {
 
     /// Like Simulator.app, a disconnecting window turns off the external
     /// display of a device that stays booted, after a change in flight,
-    /// keeping the device's choice for its next connection; unlike
-    /// Simulator.app, also a display that is off (see
-    /// `ExternalDisplayChanges`). Simulator.app only logs a failure.
+    /// keeping the device's choice and CarPlay configuration for its next
+    /// connection; unlike Simulator.app, also a display that is off (see
+    /// `ExternalDisplayChanges`), and ending the CarPlay that this host
+    /// started, which Simulator.app's disconnection leaves to the guest.
+    /// Simulator.app only logs a failure.
     private func disconnectExternalScreen() {
         externalScreenLookUp?.cancel()
         externalScreenLookUp = nil
@@ -1199,8 +1225,9 @@ final class DeviceSession {
         if let externalScreenConnection {
             externalScreenConnection.disconnect()
             if display.isBooted {
-                externalDisplayChanges.apply(.disabled, through: externalScreenConnection) { error in
-                    hostLog("Could not turn off the external display of \(name): \(error.localizedDescription)")
+                externalDisplayChanges.apply(.disabled, through: externalScreenConnection,
+                                             savesCarPlayConfiguration: false) { failures in
+                    hostLog(Self.describe(failures, of: .disabled, deviceName: name).localizedDescription)
                 }
             } else {
                 // The device shut down, so the changes sent through this
