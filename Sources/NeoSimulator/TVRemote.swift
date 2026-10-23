@@ -18,11 +18,9 @@ final class TVRemoteController: NSWindowController, NSWindowDelegate {
     private let target: @MainActor () -> DeviceWindowController?
     private let buttons: [TVRemoteButtonView]
     private let surface: TVRemoteTouchSurface
-    /// The device window that each button last went to, which receives its
-    /// release, and the one that the surface's touch last went to, which
-    /// receives its end. Closing the panel sends them again, in case they were
-    /// not delivered.
-    private var pressTargets: [TVRemoteButton: WeakDeviceWindow] = [:]
+    /// The device window that the surface's touch goes to, which its moves
+    /// and end follow. What each device still holds is its session's to
+    /// release.
     private weak var touchTarget: DeviceWindowController?
     /// Watches the modifier keys for the touch surface while the panel shows.
     private var optionMonitor: Any?
@@ -121,15 +119,22 @@ final class TVRemoteController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    /// A closing panel releases what it holds down, and sends again the
-    /// releases that were not delivered.
+    /// A closing panel lets go of its controls, and every device releases
+    /// the remote's buttons and touch that it may still hold, also those
+    /// whose release was not delivered.
     func windowWillClose(_ notification: Notification) {
         if let optionMonitor { NSEvent.removeMonitor(optionMonitor) }
         optionMonitor = nil
-        for button in buttons { button.release() }
-        surface.end()
-        for (button, target) in pressTargets { target.controller?.session.releaseRemoteButton(button) }
-        pressTargets.removeAll()
+        buttons.forEach { $0.reset() }
+        surface.reset()
+        touchTarget = nil
+        Self.deviceSessions.forEach { $0.releaseRemoteInputs() }
+    }
+
+    /// The sessions of the device windows, which may hold the remote's
+    /// buttons or touch.
+    private static var deviceSessions: [DeviceSession] {
+        NSApp.windows.compactMap { ($0.windowController as? DeviceWindowController)?.session }
     }
 
     /// Like Simulator.app's `deviceWindowBecameKey:`, a shown panel comes to
@@ -158,13 +163,14 @@ final class TVRemoteController: NSWindowController, NSWindowDelegate {
 
     // MARK: Input
 
+    /// A press goes to the device the remote controls; its release goes to
+    /// every device, of which those that hold the button release it.
     private func setButton(_ button: TVRemoteButton, down: Bool) {
         if down {
             guard let controller = target() else { return }
-            pressTargets[button] = WeakDeviceWindow(controller: controller)
             controller.session.pressRemoteButton(button) { [weak controller] in controller?.present($0) }
         } else {
-            pressTargets[button]?.controller?.session.releaseRemoteButton(button)
+            Self.deviceSessions.forEach { $0.releaseRemoteButton(button) }
         }
     }
 
@@ -209,10 +215,6 @@ final class TVRemoteController: NSWindowController, NSWindowDelegate {
         }
         panel.setFrameAutosaveName(Self.frameAutosaveName)
     }
-}
-
-private struct WeakDeviceWindow {
-    weak var controller: DeviceWindowController?
 }
 
 /// Simulator.app's `AppleRemotePanel`: a borderless panel that never becomes key.
@@ -323,6 +325,12 @@ private final class TVRemoteButtonView: NSView {
 
     func press() { setPressed(true) }
     func release() { setPressed(false) }
+
+    /// Shows the button up without releasing it, as the panel closes.
+    func reset() {
+        isPressed = false
+        needsDisplay = true
+    }
 
     private func setPressed(_ pressed: Bool) {
         guard pressed != isPressed else { return }
@@ -448,11 +456,11 @@ final class TVRemoteTouchSurface: NSView {
         if isDown { onTouch(point) } else { onLift(point) }
     }
 
-    /// Releases Select and ends the touch, as the panel closes.
-    func end() {
-        setSelect(false)
+    /// Forgets Select and the pointer without releasing or lifting, as the
+    /// panel closes.
+    func reset() {
+        isSelectDown = false
         isPointerInside = false
-        onLift(point)
     }
 
     private func follow(_ event: NSEvent) {

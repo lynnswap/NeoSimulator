@@ -1400,6 +1400,62 @@ struct InputFocusTests {
         #expect(display.events.count == 5)
     }
 
+    @Test func closingTheRemoteSendsAgainWhatAnotherAppleTVStillHolds() throws {
+        _ = NSApplication.shared
+        let first = TestDisplay(), second = TestDisplay()
+        var target: DeviceWindowController?
+        let remote = TVRemoteController(target: { target })
+        let a = try makeController(first, family: .tv, features: [DeviceCapabilities.tvRemote], device: "a", tvRemote: remote)
+        let b = try makeController(second, family: .tv, features: [DeviceCapabilities.tvRemote], device: "b", tvRemote: remote)
+        defer {
+            a.invalidate()
+            b.invalidate()
+            remote.close()
+        }
+        remote.showWindow(nil)
+        let window = try #require(remote.window)
+        let content = try #require(window.contentView)
+        let surface = try #require(content.subviews.compactMap { $0 as? TVRemoteTouchSurface }.first)
+        let menu = try #require(content.subviews.first { $0.accessibilityLabel() == "Menu" })
+        func event(_ type: NSEvent.EventType, _ x: CGFloat, _ y: CGFloat) throws -> NSEvent {
+            let location = surface.convert(NSPoint(x: x * surface.bounds.width, y: (1 - y) * surface.bounds.height), to: nil)
+            if type == .mouseEntered {
+                return try #require(NSEvent.enterExitEvent(
+                    with: type, location: location, modifierFlags: .option, timestamp: 0,
+                    windowNumber: window.windowNumber, context: nil, eventNumber: 0, trackingNumber: 0, userData: nil))
+            }
+            return try #require(NSEvent.mouseEvent(
+                with: type, location: location, modifierFlags: .option, timestamp: 0, windowNumber: window.windowNumber,
+                context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+        }
+        func touch(_ phase: TVRemoteTouch.Phase, _ x: CGFloat, _ y: CGFloat) -> TVRemoteTouch {
+            TVRemoteTouch(phase: phase, point: CGPoint(x: x, y: y))
+        }
+        // The touch moves from A to B when B's window becomes key, and A's
+        // end is not delivered; closing the remote ends both.
+        target = a
+        surface.mouseEntered(with: try event(.mouseEntered, 0.5, 0.5))
+        first.undeliveredTouches = 1
+        target = b
+        surface.mouseMoved(with: try event(.mouseMoved, 0.5, 0.75))
+        remote.close()
+        #expect(first.remoteTouches == [touch(.began, 0.5, 0.5), touch(.ended, 0.5, 0.75), touch(.ended, 0.5, 0.75)])
+        #expect(second.remoteTouches == [touch(.began, 0.5, 0.75), touch(.ended, 0.5, 0.75)])
+        // A's release of Menu is not delivered, and B then holds Menu;
+        // closing the remote releases both.
+        remote.showWindow(nil)
+        target = a
+        first.undeliveredEvents = [1]
+        menu.mouseDown(with: try event(.leftMouseDown, 0, 0))
+        menu.mouseUp(with: try event(.leftMouseUp, 0, 0))
+        target = b
+        menu.mouseDown(with: try event(.leftMouseDown, 0, 0))
+        remote.close()
+        #expect(first.events.map(\.state) == [.down, .up, .up])
+        #expect(second.events.map(\.state) == [.down, .up])
+        #expect((first.events + second.events).allSatisfy { $0.input == .tvRemote(.menu) })
+    }
+
     @Test func aRemoteButtonOrTouchReportsOneErrorEach() throws {
         let display = TestDisplay()
         display.deliveryError = HostError.operation("delivery failed")

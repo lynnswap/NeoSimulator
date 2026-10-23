@@ -605,8 +605,9 @@ final class DeviceSession {
 
     // MARK: Apple TV Remote
 
-    /// The first failure of the events of each remote input the device may
-    /// still hold, a button or the touch, which its release reports too.
+    /// The first failure of the events of each remote input the device has
+    /// sent down, a button or the touch, which its release reports too. An
+    /// input stays held, in `downInputs`, until its release is delivered.
     @ObservationIgnored private var remoteReports: [HIDInput: FirstFailure] = [:]
     /// Whether the remote is touching its surface, and the touch's last
     /// point, which its end repeats.
@@ -633,7 +634,8 @@ final class DeviceSession {
     /// Releases a remote button that `pressRemoteButton(_:failure:)` pressed.
     /// As for every held input, the device holds the button until SimulatorKit
     /// delivers the release: a release that was not delivered is sent again
-    /// by the next call, and disconnecting sends it too.
+    /// by the next call or `releaseRemoteInputs()`, and disconnecting sends
+    /// it too.
     func releaseRemoteButton(_ button: TVRemoteButton) {
         let event = HIDInput.tvRemote(button)
         guard let report = remoteReports[event] else { return }
@@ -661,10 +663,18 @@ final class DeviceSession {
         remoteTouchPoint = point
     }
 
+    /// Releases the remote's buttons, and ends its touch, that the device may
+    /// still hold: those never released, and those whose release was not
+    /// delivered, as closing the remote does. Disconnecting releases them too.
+    func releaseRemoteInputs() {
+        isTouchingRemote = false
+        for (event, report) in remoteReports { releaseHeldInput(event, report: report) }
+    }
+
     /// Ends the remote's touch at `point`. Like a button's release, the device
     /// holds the touch until SimulatorKit delivers the end: an end that was
-    /// not delivered is sent again by the next call, and disconnecting sends
-    /// it too.
+    /// not delivered is sent again by the next call or `releaseRemoteInputs()`,
+    /// and disconnecting sends it too.
     func liftRemoteTouch(at point: CGPoint) {
         guard let report = remoteReports[.tvRemoteTouch] else { return }
         if isTouchingRemote {
