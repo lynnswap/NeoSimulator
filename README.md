@@ -109,6 +109,10 @@ Neo currently provides:
   and Simulated Scenes; I/O → Set Immersion To; Features → FaceTime, which
   starts a simulated FaceTime call with one to four spatial participants; and
   Debug → Show Gaze Target;
+- Window → Show Apple TV Remote (Shift-Command-R) for Apple TV: Simulator.app's
+  onscreen remote, whose Menu, TV, Siri, Play/Pause, and Volume Up and Down
+  buttons stay pressed while you hold them, and whose touch surface is Select
+  when you click it and a touch while you hold Option with the pointer over it;
 - Simulator.app's Save Screen, Record Screen, and Copy Screen commands, with
   its file names, save folders, and device-mask option; recordings are
   finalized when a window closes or the app quits;
@@ -169,8 +173,7 @@ Simulator.app, Re-Center Open Apps is shown for every device but works only on
 Apple Vision Pro, Set Immersion To is available only while the guest lets the
 immersion change, and Simulated Scenes lists the scenes once the device
 reports its current scene; a device that was already booted when its window
-opened may not report it, which leaves Simulated Scenes disabled. The Apple TV
-Remote window is not available yet.
+opened may not report it, which leaves Simulated Scenes disabled.
 
 Neo also shows the devices Xcode boots for parallel testing, from
 `~/Library/Developer/XCTestDevices` (or the `TestingDeviceSetPath` default).

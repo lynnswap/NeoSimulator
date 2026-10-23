@@ -54,6 +54,8 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
     private var titleBarHeights: [NSWindow.ToolbarStyle: CGFloat] = [.unified: 52, .expanded: 76, .unifiedCompact: 40]
     /// I/O ▸ Touch Pressure's app-wide settings, which every window shares.
     let touchPressure: TouchPressure
+    /// Window ▸ Show Apple TV Remote's panel, which every window shares.
+    let tvRemote: TVRemoteController
     private var touchPressureObserver: (any NSObjectProtocol)?
     private var touchIndicatorObserver: (any NSObjectProtocol)?
     private var keyboardSelectionObserver: (any NSObjectProtocol)?
@@ -69,11 +71,15 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
     private let userInterfacePluginLookUp: (attempts: Int, interval: Duration)
     var staysOnTop: Bool { window?.level == .floating }
 
-    /// The device window of the key window: the key device window, or the
-    /// device window of the key external display window, whose device the
-    /// menus act on, as Simulator.app's device coordinator handles both.
-    static var keyDeviceWindow: DeviceWindowController? {
-        switch NSApp.keyWindow?.windowController {
+    /// The device window of the key window, whose device the menus act on:
+    /// see `deviceWindow(for:)`.
+    static var keyDeviceWindow: DeviceWindowController? { deviceWindow(for: NSApp.keyWindow) }
+
+    /// The device window that `window` stands for: a device window itself, or
+    /// the device window of an external display's window, as Simulator.app's
+    /// device coordinator handles both.
+    static func deviceWindow(for window: NSWindow?) -> DeviceWindowController? {
+        switch window?.windowController {
         case let controller as DeviceWindowController: controller
         case let controller as ExternalDisplayWindowController: controller.deviceWindow
         default: nil
@@ -81,7 +87,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
     }
 
     init(session: DeviceSession, preferences: any PreferenceStore = UserDefaults.standard,
-         touchPressure: TouchPressure,
+         touchPressure: TouchPressure, tvRemote: TVRemoteController,
          performWindowDrag: @escaping (NSWindow, NSEvent) -> Void = { $0.performDrag(with: $1) },
          userInterfacePluginLookUp: (attempts: Int, interval: Duration) = (40, .milliseconds(250)),
          onClose: @escaping (DeviceWindowController, DeviceLifetimeChoice?) -> Void,
@@ -90,6 +96,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
         self.userInterfacePluginLookUp = userInterfacePluginLookUp
         self.preferences = preferences
         self.touchPressure = touchPressure
+        self.tvRemote = tvRemote
         self.performWindowDrag = performWindowDrag
         // Like Simulator.app, the window's geometry is read once, when it
         // connects, for the current arrangement of screens.
