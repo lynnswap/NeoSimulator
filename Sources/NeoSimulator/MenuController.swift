@@ -150,6 +150,8 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
         features.addItem(.separator())
         commands([.toggleAppearance, .toggleInCallStatusBar, .toggleStandBy], in: features)
         features.addItem(.separator())
+        pluginCommands(PluginCommand.faceTimeSessions, in: menu("FaceTime", in: features))
+        features.addItem(.separator())
         commands([.increaseTextSize, .decreaseTextSize, .toggleIncreaseContrast], in: features)
         features.addItem(.separator())
         commands([.triggerCloudSync], in: features)

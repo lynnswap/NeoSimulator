@@ -491,6 +491,10 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
         // shows; SimulatorKit's HID client drops it for a device without
         // either.
         session.display.setSupportsScrolling(padding == nil || session.capabilities.hasCrownOrDial)
+        // The same witness then tells the guest whether edge swipes start on
+        // the bezel, for the device's own screen while its digitizer takes
+        // touches, which every display of a device window does.
+        session.display.setWantsEdgeSwipes(padding != nil)
         content.displayGap = WindowScale.displayGap(bezelPadding: padding)
         window.chromeTopPadding = padding?.height ?? 0
         updateHeaderShape()

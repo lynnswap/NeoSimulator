@@ -857,7 +857,8 @@ struct InputFocusTests {
         let items = NSApp.mainMenu?.items.compactMap(\.submenu).flatMap { menu in
             menu.items + menu.items.compactMap(\.submenu).flatMap(\.items)
         } ?? []
-        let commands = try ["Re-Center Open Apps", "Orbit Mode", "75%", "Show Gaze Target"].map { title in
+        let commands = try ["Re-Center Open Apps", "Orbit Mode", "75%", "Show Gaze Target",
+                            "User and 2 Spatial Participants"].map { title in
             try #require(items.first { $0.title == title })
         }
         let display = TestDisplay()
@@ -880,7 +881,7 @@ struct InputFocusTests {
             #expect(NSApp.sendAction(action, to: target, from: command))
         }
         #expect(overlay.actions == ["recenterAllOpenApps:", "viewportModeChangedToOrbit:", "setImmersionTo75:",
-                                    "toggleShowGazeTarget:"])
+                                    "toggleShowGazeTarget:", "configureSimulatedFaceTimeSession1x2:"])
         #expect(overlay.validateMenuItem(commands[3]) && commands[3].state == .on)
         // Without the plugin, no responder of the window takes them, so AppKit
         // disables them.
@@ -1412,10 +1413,24 @@ struct InputFocusTests {
             ["setImmersionTo50:", "setImmersionTo75:", "setImmersionTo100:"])
         #expect(immersion.items.allSatisfy { $0.target == nil && $0.keyEquivalent.isEmpty })
         // Optic ID follows the device's feature and, on Apple Vision Pro, has
-        // no shortcut.
+        // no shortcut. FaceTime is for Apple Vision, and its items send the
+        // overlay's actions without shortcuts.
         let features = try menu("Features")
-        #expect(visible(features, vision) == ["Optic ID", "-", "Trigger iCloud Sync", "-", "Location"])
+        #expect(visible(features, vision) == ["Optic ID", "-", "FaceTime", "-", "Trigger iCloud Sync", "-", "Location"])
         #expect(!visible(features, phone).contains("Optic ID"))
+        #expect(!visible(features, phone).contains("FaceTime"))
+        let faceTime = try menu("FaceTime", in: features)
+        #expect(faceTime.items.map(\.title) == [
+            "User and 1 Spatial Participant", "User and 2 Spatial Participants", "User and 3 Spatial Participants",
+            "User and 4 Spatial Participants", "User, 1 Participant and 4 Spatial Participants",
+            "User, 8 Participants and 4 Spatial Participants",
+        ])
+        #expect(faceTime.items.map { $0.action.map(NSStringFromSelector) } == [
+            "configureSimulatedFaceTimeSession1x1:", "configureSimulatedFaceTimeSession1x2:",
+            "configureSimulatedFaceTimeSession1x3:", "configureSimulatedFaceTimeSession1x4:",
+            "configureSimulatedFaceTimeSession1x4x1:", "configureSimulatedFaceTimeSession1x4x8:",
+        ])
+        #expect(faceTime.items.allSatisfy { $0.target == nil && $0.keyEquivalent.isEmpty })
         menus.updateKeyEquivalents(for: vision)
         let opticID = try menu("Optic ID", in: features)
         #expect(opticID.items.map(\.title) == ["Enrolled", "Matching Eye", "Non-matching Eye"])
@@ -3758,19 +3773,26 @@ struct InputFocusTests {
     private static let externalDisplayFeatures = defaultFeatures.union(
         [DeviceCapabilities.externalDisplay, DeviceCapabilities.integratedDisplay])
 
-    /// A controller whose device has `screen` as its external display, connected as a new connection connects it.
+    /// A controller whose device has `screen` as its external display,
+    /// connected as a new connection connects it, after the screen adapter's
+    /// report of a screen it has.
     private func makeExternalDisplayController(_ screen: TestExternalScreen? = TestExternalScreen(),
+                                               family: DeviceCapabilities.Family = .iPhone,
                                                features: Set<String> = Self.externalDisplayFeatures,
                                                device: String = "test-device",
                                                preferences: MemoryPreferences = MemoryPreferences(),
                                                externalDisplayChanges: ExternalDisplayChanges = ExternalDisplayChanges(),
+                                               runtimeVersion: UInt32 = 0x1B_00_00,
+                                               enhancedMultitasking: Bool = false,
                                                failure: @escaping @MainActor (Error) -> Void = { Issue.record($0) })
         throws -> (DeviceWindowController, TestDisplay) {
         let display = TestDisplay()
-        display.externalScreen = screen
-        let controller = try makeController(display, features: features, device: device,
-                                            preferences: preferences, externalDisplayChanges: externalDisplayChanges)
+        if let screen { display.connectExternalScreen(screen) }
+        let controller = try makeController(display, family: family, features: features, device: device,
+                                            preferences: preferences, externalDisplayChanges: externalDisplayChanges,
+                                            runtimeVersion: runtimeVersion, enhancedMultitasking: enhancedMultitasking)
         controller.session.connectExternalDisplay(failure: failure)
+        display.deliverScreenReports()
         return (controller, display)
     }
 
@@ -3846,6 +3868,104 @@ struct InputFocusTests {
         ])
         // Without a device window, the items are disabled and unchecked.
         #expect(externalDisplayItems(for: nil).allSatisfy { $0.hasSuffix("(disabled)") && !$0.contains("✓") })
+    }
+
+    /// The External Displays items with a subtitle for `controller`, with
+    /// their enabling.
+    private func externalDisplaySubtitles(for controller: DeviceWindowController) -> [String] {
+        ExternalDisplayMode.allCases.compactMap { mode in
+            let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+            let enabled = DeviceCommand.command(mode.commandID).validate(item, for: controller)
+            return item.subtitle.map { "\(item.title)\(enabled ? "" : " (disabled)"): \($0)" }
+        }
+    }
+
+    @Test func externalDisplayItemsSayWhichSizesTheDeviceCannotShow() throws {
+        _ = NSApplication.shared
+        // Like an iPad's screen: an exact 720×480 mode at 60 Hz and the
+        // menu's sizes at 120 Hz.
+        let screen = TestExternalScreen()
+        screen.modes = [.exact720x480, .allowedAt120Hertz(scale: 2), .allowedAt120Hertz(scale: 1)]
+        let (controller, display) = try makeExternalDisplayController(screen, features: Self.externalDisplayFeatures
+            .union([DeviceCapabilities.carPlay]))
+        defer { controller.invalidate() }
+        // The guest would show 720×480 rather than 640×480, and CarPlay's
+        // 800×480 at a scale of 2 has no mode.
+        #expect(externalDisplaySubtitles(for: controller) == [
+            "640×480 (disabled): This device shows 720×480", "CarPlay (disabled): Not available on this device",
+        ])
+        // Before the session reads the modes, as while the device restarts,
+        // nothing is known to be unavailable.
+        display.isBooted = false
+        controller.session.disconnect()
+        #expect(externalDisplaySubtitles(for: controller).isEmpty)
+
+        // iPadOS before 27 cannot leave a 4K display on an iPad with Stage Manager.
+        func iPad(runtime: UInt32, enhancedMultitasking: Bool) throws -> [String] {
+            let screen = TestExternalScreen()
+            let (controller, _) = try makeExternalDisplayController(
+                screen, family: .iPad, runtimeVersion: runtime, enhancedMultitasking: enhancedMultitasking)
+            defer { controller.invalidate() }
+            return externalDisplaySubtitles(for: controller)
+        }
+        #expect(try iPad(runtime: 0x1A_05_00, enhancedMultitasking: true)
+            == ["3840×2160 (4K) (disabled): Not available on this device"])
+        #expect(try iPad(runtime: 0x12_06_00, enhancedMultitasking: true)
+            == ["3840×2160 (4K) (disabled): Not available on this device"])
+        #expect(try iPad(runtime: 0x1B_00_00, enhancedMultitasking: true).isEmpty)
+        #expect(try iPad(runtime: 0x1A_05_00, enhancedMultitasking: false).isEmpty)
+    }
+
+    @Test func aSizeTheDeviceCannotShowChangesNothingAndSaysWhy() async throws {
+        _ = NSApplication.shared
+        let preferences = MemoryPreferences()
+        // A choice that Simulator.app saved is restored when the device connects.
+        preferences.setExternalDisplayTag(ExternalDisplayMode.size640x480.rawValue, forDevice: "test-device")
+        let screen = TestExternalScreen()
+        screen.modes = [.exact720x480, .allowedAt120Hertz(scale: 1)]
+        var failures: [String] = []
+        let (controller, _) = try makeExternalDisplayController(screen, preferences: preferences) {
+            failures.append($0.localizedDescription)
+        }
+        defer { controller.invalidate() }
+        try await wait { !failures.isEmpty }
+        let reason = """
+            Could not set the external display of Test iPhone to 640×480: The device would show its own 720×480 \
+            mode instead, which has more pixels at up to 60 Hz.
+            """
+        #expect(failures == [reason])
+        #expect(screen.requests.isEmpty && controller.session.externalDisplayMode == .disabled)
+        // A size the device shows still applies, and a choice that reaches
+        // the session anyway is presented on the device window.
+        controller.showWindow(nil)
+        controller.perform(.externalDisplay1920x1080)
+        controller.perform(.externalDisplay640x480)
+        #expect(controller.window?.attachedSheet == nil)
+        controller.chooseExternalDisplay(.size640x480)
+        #expect(screen.requests == ["mode 1920x1080@1"])
+        #expect(controller.session.externalDisplayMode == .size1920x1080)
+        let sheet = try #require(controller.window?.attachedSheet)
+        #expect(texts(in: sheet.contentView).contains(reason))
+        controller.window?.endSheet(sheet)
+    }
+
+    @Test func theExternalDisplaysWindowSaysWhenTheGuestDoesNotShowItsSize() throws {
+        _ = NSApplication.shared
+        let screen = TestExternalScreen()
+        screen.modes = [.exact720x480, .allowedAt120Hertz(scale: 1)]
+        let (controller, _) = try makeExternalDisplayController(screen)
+        defer { controller.invalidate() }
+        // Another tool sets 1920×1080 at 120 Hz, which the guest does not show.
+        screen.report {
+            $0 = ExternalScreenState(isPoweredOn: true, pixelSize: CGSize(width: 1920, height: 1080), scale: 1,
+                                     refreshRate: 120)
+        }
+        let window = try #require(controller.externalDisplayWindow?.window)
+        #expect(window.subtitle == "External Display – Size Not Shown by Device")
+        screen.report { $0.refreshRate = 60 }
+        #expect(window.subtitle == "External Display")
+        screen.report { $0.pixelSize = CGSize(width: 640, height: 480) }
+        #expect(window.subtitle == "External Display – Size Not Shown by Device")
     }
 
     @Test func choosingASizeSavesItForTheDeviceAndSetsTheDisplaysMode() throws {
@@ -4046,11 +4166,11 @@ struct InputFocusTests {
         #expect(preferences.externalDisplayTag(forDevice: "test-device") == 2714)
         // A device without the features does not connect.
         let display = TestDisplay()
-        display.externalScreen = TestExternalScreen()
+        display.connectExternalScreen(TestExternalScreen())
         let plain = try makeController(display)
         defer { plain.invalidate() }
         plain.session.connectExternalDisplay { Issue.record($0) }
-        #expect(display.externalScreenConnections == 0)
+        #expect(display.externalScreenRegistrations == 0)
     }
 
     @Test func aRestartClosesTheExternalDisplayAndItsReconnectionRestoresIt() async throws {
@@ -4070,10 +4190,11 @@ struct InputFocusTests {
         #expect(screen.requests.count == 2)
         let display = TestDisplay()
         let rebooted = TestExternalScreen()
-        display.externalScreen = rebooted
+        display.connectExternalScreen(rebooted)
         let session = try makeSession(display, features: Self.externalDisplayFeatures, preferences: preferences)
         controller.reconnect(session)
         session.connectExternalDisplay { Issue.record($0) }
+        display.deliverScreenReports()
         #expect(rebooted.requests == ["mode 1920x1080@1"])
         let second = try #require(controller.externalDisplayWindow)
         #expect(second !== first && rebooted.displays.count == 1)
@@ -4086,12 +4207,12 @@ struct InputFocusTests {
             controller.session.chooseExternalDisplay(mode) { failures.append($0.localizedDescription) }
         }
         // A device without an external display port: the choice is saved, and
-        // its failure is reported once the look-up for the display ends.
-        let (portless, display) = try makeExternalDisplayController(nil, preferences: preferences)
+        // its failure is reported once the wait for the display ends.
+        let (portless, _) = try makeExternalDisplayController(nil, preferences: preferences)
         defer { portless.invalidate() }
         choose(.size1920x1080, on: portless)
-        for _ in 0..<100 where failures.isEmpty { try await Task.sleep(for: .milliseconds(20)) }
-        #expect(display.externalScreenConnections > 1)
+        #expect(failures.isEmpty)
+        try await wait { !failures.isEmpty }
         #expect(preferences.externalDisplayTag(forDevice: "test-device") == 2614)
         #expect(failures == [
             "Could not set the external display of Test iPhone to 1920×1080 (1080p): The device has no external display port.",
@@ -4128,6 +4249,38 @@ struct InputFocusTests {
         #expect(restored == ["Could not set the external display of Test iPhone to 640×480: restore failed"])
     }
 
+    @Test func aChoiceAfterAFailedConnectionToTheExternalDisplayConnectsAgain() throws {
+        var failures: [String] = []
+        let (controller, display) = try makeExternalDisplayController(nil) { failures.append($0.localizedDescription) }
+        defer { controller.invalidate() }
+        func choose(_ mode: ExternalDisplayMode) {
+            controller.session.chooseExternalDisplay(mode) { failures.append($0.localizedDescription) }
+        }
+        // The session cannot connect to the reported display, which fails the
+        // choice made meanwhile and ends the wait.
+        choose(.size1024x768)
+        display.externalScreenError = HostError.operation("no proxy")
+        let screen = TestExternalScreen()
+        display.connectExternalScreen(screen)
+        display.deliverScreenReports()
+        let reason = "Could not connect to the external display of Test iPhone: no proxy"
+        #expect(failures == [reason] && !display.isRegisteredForExternalScreen)
+        // A later choice registers again and waits for the display; the
+        // error recurs and is reported again.
+        choose(.size1024x768)
+        #expect(failures.count == 1)
+        display.deliverScreenReports()
+        #expect(failures == [reason, reason])
+        // Once the error is gone, the next choice connects and applies.
+        display.externalScreenError = nil
+        choose(.size1280x720)
+        #expect(screen.requests.isEmpty)
+        display.deliverScreenReports()
+        #expect(screen.requests == ["mode 1280x720@1"] && controller.externalDisplayWindow != nil)
+        #expect(failures.count == 2 && display.externalScreenRegistrations == 3)
+        #expect(!display.isRegisteredForExternalScreen)
+    }
+
     @Test func aChosenExternalDisplaysFailureIsPresentedOnItsDeviceWindow() throws {
         _ = NSApplication.shared
         let screen = TestExternalScreen()
@@ -4141,29 +4294,32 @@ struct InputFocusTests {
         controller.window?.endSheet(sheet)
     }
 
-    @Test func anExternalDisplayThatAppearsAfterTheDeviceConnectsIsRestoredAndFollowed() async throws {
+    @Test func anExternalDisplayReportedAfterTheDeviceConnectsIsRestoredAndFollowed() throws {
         let preferences = MemoryPreferences()
         preferences.setExternalDisplayTag(ExternalDisplayMode.size1280x720.rawValue, forDevice: "test-device")
         var failures: [String] = []
-        // SimulatorKit's screen adapter has not listed the TVOut screen yet.
+        // SimulatorKit's screen adapter has not reported the TVOut screen yet.
         let (controller, display) = try makeExternalDisplayController(nil, preferences: preferences) {
             failures.append($0.localizedDescription)
         }
         defer { controller.invalidate() }
         #expect(controller.session.externalDisplayMode == nil)
         let screen = TestExternalScreen()
-        display.externalScreen = screen
-        for _ in 0..<100 where screen.requests.isEmpty { try await Task.sleep(for: .milliseconds(20)) }
-        // The saved choice is applied once the screen appears, and the
-        // display's changes are followed from then on.
+        display.connectExternalScreen(screen)
+        #expect(screen.requests.isEmpty)
+        display.deliverScreenReports()
+        // The saved choice is applied once the adapter reports the screen,
+        // and the display's changes are followed from then on. Like
+        // Simulator.app, the session then releases its registration.
         #expect(screen.requests == ["mode 1280x720@1"])
         #expect(controller.externalDisplayWindow != nil)
+        #expect(!display.isRegisteredForExternalScreen)
         #expect(failures.isEmpty)
         screen.report { $0.isPoweredOn = false }
         #expect(controller.session.externalDisplayMode == .disabled && controller.externalDisplayWindow == nil)
     }
 
-    @Test func aChoiceWhileTheExternalDisplayIsLookedUpWaitsForIt() async throws {
+    @Test func aChoiceBeforeTheExternalDisplayIsReportedWaitsForIt() throws {
         let preferences = MemoryPreferences()
         var failures: [String] = []
         let (controller, display) = try makeExternalDisplayController(nil, preferences: preferences) {
@@ -4171,18 +4327,43 @@ struct InputFocusTests {
         }
         defer { controller.invalidate() }
         controller.session.chooseExternalDisplay(.size640x480) { failures.append($0.localizedDescription) }
-        #expect(failures.isEmpty)
         let screen = TestExternalScreen()
         screen.current.isPoweredOn = true
-        display.externalScreen = screen
+        display.connectExternalScreen(screen)
         controller.session.chooseExternalDisplay(.disabled) { failures.append($0.localizedDescription) }
-        for _ in 0..<100 where screen.requests.isEmpty { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(screen.requests.isEmpty)
+        display.deliverScreenReports()
         // The last choice, Disabled, turns off a display that is on.
         #expect(screen.requests == ["off"])
         #expect(failures.isEmpty)
     }
 
-    @Test func aDeviceWhoseExternalDisplayNeverAppearsReportsTheChoice() async throws {
+    @Test func onlyTheAdaptersFirstReportOfTheExternalDisplayCounts() throws {
+        let preferences = MemoryPreferences()
+        for device in ["test-device", "B"] {
+            preferences.setExternalDisplayTag(ExternalDisplayMode.size1280x720.rawValue, forDevice: device)
+        }
+        // Like SimulatorKit's, reports queued before the session releases its
+        // registration still arrive: a second TVOut screen changes nothing.
+        let (controller, display) = try makeExternalDisplayController(nil, preferences: preferences)
+        defer { controller.invalidate() }
+        let first = TestExternalScreen()
+        let second = TestExternalScreen()
+        display.connectExternalScreen(first)
+        display.connectExternalScreen(second)
+        display.deliverScreenReports()
+        #expect(first.requests == ["mode 1280x720@1"] && second.requests.isEmpty)
+        // Nor does a report that arrives after the session disconnected.
+        let (closed, other) = try makeExternalDisplayController(nil, device: "B", preferences: preferences)
+        let late = TestExternalScreen()
+        other.connectExternalScreen(late)
+        closed.invalidate()
+        other.deliverScreenReports()
+        #expect(late.requests.isEmpty && !closed.session.hasExternalDisplay)
+        #expect(!other.isRegisteredForExternalScreen)
+    }
+
+    @Test func aDeviceWhoseExternalDisplayIsNeverReportedReportsTheChoice() async throws {
         let preferences = MemoryPreferences()
         preferences.setExternalDisplayTag(ExternalDisplayMode.size1920x1080.rawValue, forDevice: "test-device")
         var restored: [String] = []
@@ -4192,7 +4373,8 @@ struct InputFocusTests {
         defer { controller.invalidate() }
         var chosen: [String] = []
         controller.session.chooseExternalDisplay(.size1024x768) { chosen.append($0.localizedDescription) }
-        for _ in 0..<1000 where chosen.isEmpty { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(chosen.isEmpty)
+        try await wait { !chosen.isEmpty }
         #expect(chosen == [
             "Could not set the external display of Test iPhone to 1024×768: The device has no external display port.",
         ])
@@ -4202,9 +4384,29 @@ struct InputFocusTests {
         #expect(externalDisplayItems(for: controller).allSatisfy {
             !$0.contains("✓") && ($0 == "CarPlay (disabled)") == $0.hasSuffix("(disabled)")
         })
-        let lookups = display.externalScreenConnections
-        controller.session.chooseExternalDisplay(.size1024x768) { chosen.append($0.localizedDescription) }
-        #expect(chosen.count == 2 && display.externalScreenConnections == lookups + 1)
+        // A later choice is reported at once.
+        controller.session.chooseExternalDisplay(.size1280x720) { chosen.append($0.localizedDescription) }
+        #expect(chosen.count == 2)
+        // The registration stays, so a display reported later still connects
+        // and gets the saved choice.
+        let screen = TestExternalScreen()
+        display.connectExternalScreen(screen)
+        display.deliverScreenReports()
+        #expect(screen.requests == ["mode 1280x720@1"] && controller.externalDisplayWindow != nil)
+        #expect(restored.isEmpty && chosen.count == 2 && display.externalScreenRegistrations == 1)
+
+        // A device without a screen adapter reports the saved choice and
+        // later ones at once.
+        let adapterless = TestDisplay()
+        adapterless.hasScreenAdapter = false
+        let other = try makeController(adapterless, features: Self.externalDisplayFeatures, preferences: preferences)
+        defer { other.invalidate() }
+        other.session.connectExternalDisplay { restored.append($0.localizedDescription) }
+        other.session.chooseExternalDisplay(.size1024x768) { chosen.append($0.localizedDescription) }
+        #expect(restored == [
+            "Could not set the external display of Test iPhone to 1280×720 (720p): The device has no external display port.",
+        ])
+        #expect(chosen.last == "Could not set the external display of Test iPhone to 1024×768: The device has no external display port.")
     }
 
     @Test func theLastExternalDisplayChoiceWinsOverChangesInFlight() throws {
@@ -5812,6 +6014,31 @@ struct InputFocusTests {
         #expect(restarted.supportsScrolling.last == true)
     }
 
+    @Test func theGuestLearnsWhetherEdgeSwipesStartOnTheBezel() async throws {
+        func makeDisplay() -> TestDisplay {
+            let display = TestDisplay()
+            display.bezelPadding = NSSize(width: 9, height: 0)
+            return display
+        }
+        let preferences = MemoryPreferences()
+        let phone = makeDisplay(), vision = TestDisplay()
+        let p = try makeController(phone, device: "phone", preferences: preferences)
+        let v = try makeController(vision, family: .vision, features: [], device: "vision", preferences: preferences)
+        defer { for controller in [p, v] { controller.invalidate() } }
+        // As in Simulator.app, the guest wants edge swipes while the bezel
+        // shows, from the window's first bezel on, and not without one.
+        #expect(phone.wantsEdgeSwipes == [true] && vision.wantsEdgeSwipes == [false])
+        p.setDeviceBezelVisible(false)
+        #expect(phone.wantsEdgeSwipes.last == false)
+        p.setDeviceBezelVisible(true)
+        #expect(phone.wantsEdgeSwipes.last == true)
+        // The display of the next connection is told too.
+        await p.prepareForRestart()
+        let restarted = makeDisplay()
+        p.reconnect(try makeSession(restarted, device: "phone", preferences: preferences))
+        #expect(restarted.wantsEdgeSwipes == [true])
+    }
+
     @Test func touchIndicatorsFollowTheirPreferencesInEveryOpenWindow() async throws {
         let preferences = MemoryPreferences()
         let first = TestDisplay(), second = TestDisplay(), elsewhere = TestDisplay()
@@ -5903,6 +6130,8 @@ struct InputFocusTests {
                                 pasteboardSync: PasteboardSync? = nil,
                                 externalDisplayChanges: ExternalDisplayChanges = ExternalDisplayChanges(),
                                 userInterfacePlugin: Bool = false,
+                                runtimeVersion: UInt32 = 0x1B_00_00,
+                                enhancedMultitasking: Bool = false,
                                 userInterfacePluginLookUp: (attempts: Int, interval: Duration) = (5, .milliseconds(20)),
                                 performWindowDrag: @escaping (NSWindow, NSEvent) -> Void = { _, _ in },
                                 onClose: @escaping (DeviceWindowController, DeviceLifetimeChoice?) -> Void = { _, _ in },
@@ -5914,7 +6143,8 @@ struct InputFocusTests {
                                       preferences: preferences, keyboardLanguage: keyboardLanguage,
                                       pasteboard: pasteboard, pasteboardSync: pasteboardSync,
                                       externalDisplayChanges: externalDisplayChanges,
-                                      userInterfacePlugin: userInterfacePlugin)
+                                      userInterfacePlugin: userInterfacePlugin, runtimeVersion: runtimeVersion,
+                                      enhancedMultitasking: enhancedMultitasking)
         return try DeviceWindowController(
             session: session, preferences: preferences,
             touchPressure: touchPressure ?? TouchPressure(preferences: preferences, forceTouchTrackpad: { false }),
@@ -6037,22 +6267,24 @@ struct InputFocusTests {
                              pasteboard: NSPasteboard? = nil,
                              pasteboardSync: PasteboardSync? = nil,
                              externalDisplayChanges: ExternalDisplayChanges = ExternalDisplayChanges(),
-                             userInterfacePlugin: Bool = false) throws -> DeviceSession {
-        // Five looks for an external display, 20 ms apart, so that a test
-        // sees the look-up end.
+                             userInterfacePlugin: Bool = false,
+                             runtimeVersion: UInt32 = 0x1B_00_00,
+                             enhancedMultitasking: Bool = false) throws -> DeviceSession {
+        // A short wait for the external display, so that a test sees it end.
         DeviceSession(
             device: availableDevice(identifier, "Test iPhone", runtime: "iOS", state: 3),
-            capabilities: DeviceCapabilities(family: family, runtimeVersion: 0x1B_00_00,
+            capabilities: DeviceCapabilities(family: family, runtimeVersion: runtimeVersion,
                                              supportsFeature: { features.contains($0) },
                                              hasFramebufferMask: framebufferMask,
                                              screenPointsPerInch: screenPointsPerInch,
-                                             hasUserInterfacePlugin: userInterfacePlugin),
+                                             hasUserInterfacePlugin: userInterfacePlugin,
+                                             supportsEnhancedMultitasking: enhancedMultitasking),
             display: display,
             tools: try DeviceTools(identifier: "test-device", xcodeURL: URL(fileURLWithPath: "/Applications/Xcode.app"),
                                    simctl: simctl, devicectl: devicectl),
             recordingProcess: recordingProcess, openLog: openLog, preferences: preferences,
             hostKeyboardLanguage: keyboardLanguage, pasteboard: pasteboard, pasteboardSync: pasteboardSync,
-            externalDisplayChanges: externalDisplayChanges, externalScreenLookUp: (5, .milliseconds(20)))
+            externalDisplayChanges: externalDisplayChanges, externalScreenTimeout: .milliseconds(100))
     }
 }
 
@@ -6224,6 +6456,9 @@ private final class PluginOverlay: NSView, NSMenuItemValidation {
     @objc func recenterAllOpenApps(_ sender: Any?) { actions.append("recenterAllOpenApps:") }
     @objc func viewportModeChangedToOrbit(_ sender: Any?) { actions.append("viewportModeChangedToOrbit:") }
     @objc func setImmersionTo75(_ sender: Any?) { actions.append("setImmersionTo75:") }
+    @objc func configureSimulatedFaceTimeSession1x2(_ sender: Any?) {
+        actions.append("configureSimulatedFaceTimeSession1x2:")
+    }
     @objc func toggleShowGazeTarget(_ sender: NSMenuItem) {
         actions.append("toggleShowGazeTarget:")
         showsGazeTarget.toggle()
@@ -6475,17 +6710,64 @@ private final class TestDisplay: SimulatorDisplay {
         audioPort.changed = changed
         return audioPort
     }
-    /// The device's external display, or nil for a device without one.
-    var externalScreen: TestExternalScreen?
-    var externalScreenConnections = 0
-    func connectExternalScreen(changed: @escaping @MainActor () -> Void) throws -> (any SimulatorExternalScreen)? {
-        externalScreenConnections += 1
-        externalScreen?.changed = changed
-        return externalScreen
+    /// Whether the device has a screen adapter.
+    var hasScreenAdapter = true
+    /// The device's external display, which the screen adapter reports, or
+    /// nil while it has not connected and for a device without one.
+    private(set) var externalScreen: TestExternalScreen?
+    /// Fails the adapter's reports with this error, as when the session
+    /// cannot connect to the screen.
+    var externalScreenError: Error?
+    /// How many registrations with the screen adapter were made.
+    private(set) var externalScreenRegistrations = 0
+    /// The registrations, which the adapter holds weakly as SimulatorKit's does.
+    private var adapterRegistrations: [WeakAdapterRegistration] = []
+    /// The adapter's reports on their way through the main queue. Like
+    /// SimulatorKit's, each holds its registration, so it still arrives after
+    /// the registration is released.
+    private var queuedScreenReports: [() -> Void] = []
+    func registerForExternalScreen(
+        changed: @escaping @MainActor () -> Void,
+        found: @escaping @MainActor (Result<any SimulatorExternalScreen, any Error>) -> Void
+    ) throws -> AnyObject? {
+        externalScreenRegistrations += 1
+        guard hasScreenAdapter else { return nil }
+        let registration = TestAdapterRegistration(changed: changed, found: found)
+        adapterRegistrations.append(WeakAdapterRegistration(registration))
+        // Like SimulatorKit, the adapter reports a screen that is already connected.
+        if externalScreen != nil { queueScreenReport(to: registration) }
+        return registration
+    }
+    /// The external display connects, or is connected before the session
+    /// registers: the adapter reports it to each registration still held.
+    func connectExternalScreen(_ screen: TestExternalScreen) {
+        externalScreen = screen
+        for registration in adapterRegistrations.compactMap(\.registration) { queueScreenReport(to: registration) }
+    }
+    /// Whether a registration with the screen adapter is still held, by the
+    /// session or by a queued report.
+    var isRegisteredForExternalScreen: Bool { adapterRegistrations.contains { $0.registration != nil } }
+    /// Runs the adapter's queued reports, as a turn of the main queue does.
+    func deliverScreenReports() {
+        let reports = queuedScreenReports
+        queuedScreenReports = []
+        for report in reports { report() }
+    }
+    private func queueScreenReport(to registration: TestAdapterRegistration) {
+        guard let screen = externalScreen else { return }
+        let error = externalScreenError
+        queuedScreenReports.append {
+            if let error { return registration.found(.failure(error)) }
+            screen.changed = registration.changed
+            registration.found(.success(screen))
+        }
     }
     /// Each value the digitizer's scrolling setting was given, in order.
     var supportsScrolling: [Bool] = []
     func setSupportsScrolling(_ supports: Bool) { supportsScrolling.append(supports) }
+    /// Each value the guest's edge swipe state was given, in order.
+    var wantsEdgeSwipes: [Bool] = []
+    func setWantsEdgeSwipes(_ wants: Bool) { wantsEdgeSwipes.append(wants) }
     /// Each value the digitizer's touch pressure settings were given, in order.
     var supportsTouchPressure: [Bool] = []
     var usesTrackpadForce: [Bool] = []
@@ -6565,6 +6847,42 @@ private final class TestAudioRoutes: SimulatorAudioRoutes {
     }
 }
 
+/// A registration with a device's screen adapter, which ends when it is released.
+@MainActor
+private final class TestAdapterRegistration {
+    let changed: @MainActor () -> Void
+    let found: @MainActor (Result<any SimulatorExternalScreen, any Error>) -> Void
+    init(changed: @escaping @MainActor () -> Void,
+         found: @escaping @MainActor (Result<any SimulatorExternalScreen, any Error>) -> Void) {
+        self.changed = changed
+        self.found = found
+    }
+}
+
+@MainActor
+private struct WeakAdapterRegistration {
+    weak var registration: TestAdapterRegistration?
+    init(_ registration: TestAdapterRegistration) { self.registration = registration }
+}
+
+/// Modes like those of the TVOut screens of iOS 26.5 devices: an exact
+/// 720×480 mode at 60 Hz, the menu's sizes at 120 Hz, and, on an iPhone,
+/// ranges at 60 Hz.
+private extension ExternalScreenMode {
+    static let exact720x480 = ExternalScreenMode(sizes: .exact(CGSize(width: 720, height: 480)), scale: 1,
+                                                 refreshRate: 60)
+
+    static func allowedAt120Hertz(scale: CGFloat) -> ExternalScreenMode {
+        ExternalScreenMode(sizes: .allowed(ExternalDisplayMode.sizes.compactMap(\.pixelSize)), scale: scale,
+                           refreshRate: 120)
+    }
+
+    static func rangeAt60Hertz(scale: CGFloat) -> ExternalScreenMode {
+        ExternalScreenMode(sizes: .range(minimum: CGSize(width: 320, height: 200), maximum: CGSize(width: 3840, height: 2160)),
+                           scale: scale, refreshRate: 60)
+    }
+}
+
 /// A device's external display that records the changes it is asked for, as
 /// "mode <width>x<height>@<scale>", with " carplay" for a CarPlay screen, or
 /// "off", and applies them as CoreSimulator does, reporting the change. It
@@ -6580,6 +6898,12 @@ private final class TestExternalScreen: SimulatorExternalScreen {
     /// The device's boot; a screen of another boot needs another date.
     var deviceBootDate: Date? = Date(timeIntervalSinceReferenceDate: 0)
     var current = ExternalScreenState(isPoweredOn: false, pixelSize: CGSize(width: 720, height: 480), scale: 1)
+    /// The modes the display advertises, which a session reads when it
+    /// connects; by default 60 Hz modes that take every size at scales 1 and 2.
+    var modes = [1, 2].map {
+        ExternalScreenMode(sizes: .range(minimum: CGSize(width: 1, height: 1), maximum: CGSize(width: 8192, height: 8192)),
+                           scale: $0, refreshRate: 60)
+    }
     private(set) var requests: [String] = []
     /// Completes each change with this error, without applying it.
     var completionError: Error?
@@ -6610,6 +6934,8 @@ private final class TestExternalScreen: SimulatorExternalScreen {
     private(set) var isDisconnected = false
 
     func state() throws -> ExternalScreenState { current }
+
+    func supportedModes() throws -> [ExternalScreenMode] { modes }
 
     func setMode(pixelSize: CGSize, scale: CGFloat, carPlay: Bool,
                  completion: @escaping @MainActor (Error?) -> Void) throws {
@@ -6999,35 +7325,87 @@ struct HostBehaviorTests {
         #expect(deviceWindowTitles(name: "Apple Watch", runtimeName: "watchOS 27.0") == ("Apple Watch", "watchOS 27.0"))
     }
 
-    @Test func externalDisplayModesUseSimulatorAppsTagsSizesAndModeChoice() {
+    @Test func externalDisplayModesUseSimulatorAppsTagsAndSizes() {
         #expect(ExternalDisplayMode.allCases.map(\.rawValue) == [2114, 2214, 2514, 2314, 2414, 2614, 2664, 2714])
         #expect(ExternalDisplayMode.allCases.compactMap(\.pixelSize).map { "\(Int($0.width))x\(Int($0.height))" }
             == ["640x480", "720x480", "1024x768", "1280x720", "1920x1080", "3840x2160", "800x480"])
         // Sizes at a point per pixel, and CarPlay at Simulator.app's CarPlay scale.
         #expect(ExternalDisplayMode.allCases.dropFirst().map(\.scale) == [1, 1, 1, 1, 1, 1, 2])
-        // Modes like those the TVOut screen of an iOS 26.5 iPhone advertised.
-        let modes = [
-            ExternalScreenMode(sizes: .exact(CGSize(width: 720, height: 480)), scale: 1),
-            ExternalScreenMode(sizes: .allowed([CGSize(width: 640, height: 480), CGSize(width: 1920, height: 1080)]), scale: 2),
-            ExternalScreenMode(sizes: .allowed([CGSize(width: 640, height: 480), CGSize(width: 1920, height: 1080)]), scale: 1),
-            ExternalScreenMode(sizes: .range(minimum: CGSize(width: 320, height: 200), maximum: CGSize(width: 3840, height: 2160)),
-                               scale: 1),
-            ExternalScreenMode(sizes: nil, scale: 1),
-        ]
-        func choice(_ width: CGFloat, _ height: CGFloat, scale: CGFloat = 1,
-                    current: CGSize = CGSize(width: 720, height: 480)) -> ExternalScreenMode.Choice? {
-            ExternalScreenMode.choice(for: CGSize(width: width, height: height), scale: scale, currentSize: current,
-                                      currentScale: 1, among: modes)
+    }
+
+    @Test func externalDisplayModeChoiceTakesARateTheGuestKeepsWhateverTheOrder() throws {
+        func choice(_ width: CGFloat, _ height: CGFloat, scale: CGFloat = 1, current: ExternalScreenState? = nil,
+                    _ modes: [ExternalScreenMode]) throws(ExternalDisplayLimit) -> ExternalScreenMode? {
+            switch try ExternalScreenMode.choice(for: CGSize(width: width, height: height), scale: scale,
+                                                 current: current, among: modes) {
+            case .current: nil
+            case .advertised(let index): modes[index]
+            }
         }
-        // The first advertised mode that takes the size at the scale.
-        #expect(choice(1920, 1080) == .advertised(2))
-        #expect(choice(1920, 1080, scale: 2) == .advertised(1))
-        #expect(choice(1024, 768) == .advertised(3))
-        #expect(choice(720, 480, current: .zero) == .advertised(0))
-        #expect(choice(3840, 2161) == nil)
-        #expect(choice(1024, 768, scale: 3) == nil)
-        // A screen that already has the size at the scale keeps its mode.
-        #expect(choice(720, 480) == .current)
+        // An iPhone's screen lists its modes in another order at each read;
+        // a size takes the 60 Hz range of its scale in every order, also where
+        // the 120 Hz mode that takes it comes first.
+        let iPhone: [ExternalScreenMode] = [.exact720x480, .allowedAt120Hertz(scale: 1), .allowedAt120Hertz(scale: 2),
+                                            .rangeAt60Hertz(scale: 3), .rangeAt60Hertz(scale: 1), .rangeAt60Hertz(scale: 2)]
+        for modes in [iPhone, Array(iPhone.reversed()), [iPhone[1], iPhone[4], iPhone[0], iPhone[2], iPhone[5], iPhone[3]]] {
+            for size in [(1024, 768), (1280, 720), (1920, 1080), (3840, 2160)] as [(CGFloat, CGFloat)] {
+                #expect(try choice(size.0, size.1, modes) == .rangeAt60Hertz(scale: 1))
+            }
+            #expect(try choice(720, 480, modes)?.refreshRate == 60)
+            // CarPlay's 800×480 at a scale of 2.
+            #expect(try choice(800, 480, scale: 2, modes) == .rangeAt60Hertz(scale: 2))
+        }
+        // An iPad's screen, and an iPhone's with iOS 27.0, takes the menu's sizes
+        // only at 120 Hz; the exact 60 Hz mode of the scale sets them at 60 Hz.
+        let iPad: [ExternalScreenMode] = [.exact720x480, .allowedAt120Hertz(scale: 2), .allowedAt120Hertz(scale: 1)]
+        for modes in [iPad, Array(iPad.reversed())] {
+            for size in [(720, 480), (1024, 768), (1920, 1080), (3840, 2160)] as [(CGFloat, CGFloat)] {
+                #expect(try choice(size.0, size.1, modes) == .exact720x480)
+            }
+            // Without a 60 Hz mode of the scale, the guest would show its 720×480.
+            #expect(throws: ExternalDisplayLimit.showsInstead(CGSize(width: 720, height: 480))) {
+                try choice(1920, 1080, scale: 2, modes)
+            }
+            #expect(throws: ExternalDisplayLimit.noMode) { try choice(1000, 700, modes) }
+        }
+        // The guest shows its 720×480 mode rather than 640×480, at any rate.
+        for modes in [iPhone, iPad] {
+            #expect(throws: ExternalDisplayLimit.showsInstead(CGSize(width: 720, height: 480))) {
+                try choice(640, 480, modes)
+            }
+        }
+        #expect(throws: ExternalDisplayLimit.noMode) { try choice(3840, 2161, iPhone) }
+        #expect(throws: ExternalDisplayLimit.noMode) { try choice(1024, 768, scale: 3, iPad) }
+        // A screen that already has the size at the scale keeps its mode,
+        // unless the guest drops its rate, as when another tool set 120 Hz.
+        func state(_ width: CGFloat, _ height: CGFloat, _ rate: Double) -> ExternalScreenState {
+            ExternalScreenState(isPoweredOn: true, pixelSize: CGSize(width: width, height: height), scale: 1,
+                                refreshRate: rate)
+        }
+        #expect(try choice(1920, 1080, current: state(1920, 1080, 60), iPad) == nil)
+        #expect(try choice(1920, 1080, current: state(1920, 1080, 120), iPad) == .exact720x480)
+        #expect(try choice(1280, 720, current: state(1920, 1080, 60), iPhone) == .rangeAt60Hertz(scale: 1))
+    }
+
+    @Test func theGuestShowsItsLargestModeAtUpTo60Hertz() {
+        let modes: [ExternalScreenMode] = [.exact720x480, .allowedAt120Hertz(scale: 1)]
+        func shown(_ width: CGFloat, _ height: CGFloat, _ rate: Double, _ modes: [ExternalScreenMode] = modes) -> String {
+            let size = ExternalScreenMode.guestSize(for: CGSize(width: width, height: height), refreshRate: rate,
+                                                    among: modes)
+            return "\(Int(size.width))x\(Int(size.height))"
+        }
+        #expect(shown(1920, 1080, 120) == "720x480")
+        #expect(shown(3840, 2160, 120) == "720x480")
+        #expect(shown(1920, 1080, 60) == "1920x1080")
+        #expect(shown(1024, 768, 60) == "1024x768")
+        #expect(shown(720, 480, 120) == "720x480")
+        #expect(shown(640, 480, 60) == "720x480")
+        // Below 49 Hz is dropped too.
+        #expect(shown(1920, 1080, 30) == "720x480")
+        // Without an exact mode, nor one at a rate the guest keeps, the
+        // display keeps its size.
+        #expect(shown(640, 480, 60, [.rangeAt60Hertz(scale: 1)]) == "640x480")
+        #expect(shown(1920, 1080, 120, [.allowedAt120Hertz(scale: 1)]) == "1920x1080")
     }
 
     @Test func externalDisplayStateNamesTheItemItShows() {

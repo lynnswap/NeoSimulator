@@ -135,9 +135,9 @@ semantics:
 - Features: Touch ID, Face ID, and Optic ID (Enrolled, Matching,
   Non-matching), Simulate Fall (Confirmed, Dismissed, Rejected, Unresponsive),
   Authorize Apple Pay, Toggle Appearance, Toggle In-call Status Bar, Show/Hide
-  StandBy, Increase and Decrease Preferred Text Size, Toggle Increase Contrast,
-  Trigger iCloud Sync, Location (None, Custom Location…, and the runtime's
-  scenarios);
+  StandBy, FaceTime (six simulated sessions), Increase and Decrease Preferred
+  Text Size, Toggle Increase Contrast, Trigger iCloud Sync, Location (None,
+  Custom Location…, and the runtime's scenarios);
 - Debug: Slow Animations, Graphics Quality Override, Color Blended Layers,
   Color Copied Images, Color Misaligned Images, Color Off-screen Rendered, Open
   System Log…, Simulate Memory Warning, Show Gaze Target, Show Parallel
@@ -295,6 +295,8 @@ SimulatorKit (Xcode 27.1):
 | `EventHandlingView` event methods, such as `mouseDown:` `0x2CA1C`, → `0x2C7C4` | Call `handleEvent(_:)` (vtable offset `0x70`; the digitizer's is `0x1E510`). An event it returns goes to `super`'s method for the event's type through `objc_msgSendSuper2` (`0x2C4AC`), so `NSView` passes it up the responder chain. |
 | `SimChromeButton.mouseDown:` `0x31328` | Tracks the press itself in a `nextEventMatchingMask:` loop for mouse up, drag, and periodic events (`0x31178`). |
 | `SimDigitizerInputView.ignoreInsetDragAwayFromFramebuffer`, `ignoreInsetDragMinimumDistance` | Neither Simulator.app nor NeoSimulator sets them. Xcode 26.6's SimulatorKit has the same members. |
+| `SimDisplayView.init(frame:)` `0x65F0C` (through `0x6CF78`); `updateConstraints` `0x675F0` → `0x66DC0` | `edgeSwipeInsets` starts at 24 points and `minimumEdgeSwipeInsets` at 5 on each side. With a chrome, `updateConstraints` makes the digitizer the screen plus, on each side, the larger of `edgeSwipeInsets × renderScale` and `minimumEdgeSwipeInsets` (`0x674A0`…`0x6751C`), and sets the digitizer's `screenInset` to those insets (`0x675B8`). Without one (`chromeView.chrome` nil, `0x66ED4`), it makes the digitizer fill the display view and sets `screenInset` to zero (`0x66FD8`…`0x66FE4`). Nothing else reads the two insets. Xcode 26.6's SimulatorKit does the same in `updateConstraints` (body `0x38A50`: chrome check `0x38B68`, zero inset `0x38C78`, insets `0x39150`…`0x391B4`). |
+| `SimDigitizerInputView` event handler `0x1E510`, `screenRect` getter `0x1B838`, touch start `0x1FDF4` (second touch `0x2039C`), nearest edge `0x1F52C` | `screenRect` is the bounds inset by `screenInset`. A press counts as on the screen when `screenRect` contains it (`CGRectContainsPoint`, `0x1E7BC`) and `hitMask` is nil or lets it through (`0x1ECE4`); no SimulatorKit code sets `hitMask` outside the initializers and teardown. A touch that starts off the screen is given the side of the digitizer nearest to its start point, after the point is turned with the device (`0x1F740`…`0x1F7A0`); one that starts on the screen has no edge (`0x1FEBC`). Xcode 26.6's SimulatorKit does the same (touch start `0x655D8` and `0x65B70`, nearest edge `0x64D4C`). |
 
 A live check through NeoSimulator's own code (an iOS 26.5 iPhone 17 Pro at
 Point Accurate, SimulatorKit from Xcode 27.1) showed which presses SimulatorKit
@@ -315,6 +317,24 @@ a key window:
 
 On each button, `hitTest:` returns `SimChromeButton` on the part outside the
 bezel's image and the digitizer on the part over it.
+
+The digitizer's 24-point margin around the screen in that check is
+`edgeSwipeInsets` at scale 1, and only a touch that starts in that margin
+carries an edge. A window without a bezel has no margin. With the bezel
+hidden, the same iPhone's digitizer was the display view's 402 by 874 points
+with `screenInset` zero, and drags that started 1 and 4 points above the
+bottom edge reached the guest as ordinary touches and did not go home (see
+[watchOS, tvOS, and visionOS](#watchos-tvos-and-visionos)). Simulator.app 16.0
+lays out a window without a bezel the same way, with the display view at its
+`intrinsicContentSize` and no gap (see [Window layout](#window-layout)), and
+sets none of `edgeSwipeInsets`, `minimumEdgeSwipeInsets`, or `screenInset`;
+it imports none of their accessors. In Simulator.app too, a swipe from the
+edge of such a window therefore starts on the screen and reaches the guest as
+an ordinary touch, so the swipe up from the bottom edge does not go home there
+either; Home stays available in the Device menu and the toolbar. UIKit's edge
+region for state 0 of `SimulatorWantsEdgeSwipes`, which needs no edge from
+the digitizer, serves only the iPad software keyboard. NeoSimulator keeps this
+layout.
 
 The window server chooses the window before AppKit's hit test.
 `NSWindow.windowNumber(at:belowWindowWithWindowNumber:)` names the window
@@ -637,7 +657,7 @@ Decrease Volume and is followed by a separator. `DC` is `DeviceCoordinator`,
 | `DC.configureExternalDisplay:` `0x100020C00` | Maps the tag to a pixel size at scale 1; CarPlay takes the Stark configuration's size, scale, and `carPlayPropertiesDictionary`, and becomes 2114 without `SimFeatureCarPlay`; another tag is 2114. Calls `starkConfigWriteToDisk:` (`0x100021628`), which for a device with `SimFeatureCarPlay` writes `<dataPath>/Library/Application Support/Simulator/extended_display.plist`, `{stark: false}` for every item but CarPlay. A device without both display features gets 2114. It then saves the tag with `setExternalDisplayMode:forDevice:` (`0x100020F2C`), so a choice is saved before it is applied, saves the external window's geometry when it has a connected screen (`0x100020FBC`), and runs the session block on the coordinator's session queue. |
 | Session block `0x100021090` | With the display features: 2114 with a connected external window powers its screen off (`setPowerState:0 completionQueue:completionHandler:`, `0x100021184`; the completion `0x100021470` only logs), and without one takes no action. Another tag with a connected window removes a CarPlay HID service and calls `enableCarPlay:NO` when that screen is CarPlay (`0x100021268`–`0x100021280`), then calls `reconfigureScreen:toSize:scale:carPlayProperties:completionQueue:completion:` (`0x100021440`), whose completion (`0x1000214E0`) logs and, for CarPlay, enables CarPlay and its HID service. Without a connected window it calls `configureExternalDisplayWithSize:scale:carPlayProperties:` (`0x10002136C`). |
 | `SDS.configureExternalDisplay(withSize:scale:carPlayProperties:)`, Objective-C entry `0x100030F20`, handler `0x100030BF4` | Needs `SimFeatureCarPlay` with CarPlay properties, otherwise `SimFeatureExternalDisplay`. Registers `SimDevice.screenAdapter`'s `register(screenID: nil, …)` and, on the first `.connected` screen whose properties' `screenType` is **1** (`0x100030D04`–`0x100030D08`; TVOut, also for CarPlay), registers that screen's lifecycle events (`0x10002EF2C`) and releases the adapter registration. On the screen's `.connected` event (`0x10002F0B4`) it calls `0x10002F3DC` on its queue. Without an adapter it logs "Failed to get screen adapter for device". |
-| Mode choice `0x10002F688`, setter `0x10002F3DC` | The current mode when `pixelSize` equals the size and `currentMode.preferredUIScale` the scale; otherwise the first `supportedScreenModes` entry with that `preferredUIScale` whose `sizeRule` takes the size: 0 `exactSize`, 1 `minSize` ≤ size ≤ `maxSize`, 2 one of `allowedSizes` (`NSEqualSizes`); another rule traps. Then `setCurrentMode:pixelSize:carPlayProperties:completionQueue:completionHandler:` (`0x10002F540`); without a mode it logs "unable to find target mode matching size". The completion (`0x10002FA78`) only logs. No power call follows: setting the mode turns the screen on. |
+| Mode choice `0x10002F688`, setter `0x10002F3DC` | The current mode when `pixelSize` equals the size and `currentMode.preferredUIScale` the scale; otherwise the first `supportedScreenModes` entry with that `preferredUIScale` whose `sizeRule` takes the size: 0 `exactSize`, 1 `minSize` ≤ size ≤ `maxSize`, 2 one of `allowedSizes` (`NSEqualSizes`); another rule traps. It reads no `refreshRate`; no code in the app sends it. Then `setCurrentMode:pixelSize:carPlayProperties:completionQueue:completionHandler:` (`0x10002F540`) with that mode and the size; without a mode it logs "unable to find target mode matching size". The completion (`0x10002FA78`) only logs. No power call follows: setting the mode turns the screen on. |
 | `SDS.reconfigureScreen` `0x10002FCE4`, `0x100030218` | The same mode choice and setter "without power cycling" (`0x10002FF7C`, `0x1000303DC`); without a mode the completion receives "No matching mode found". |
 | `SimDeviceScreenMonitor` `startMonitoring` `0x100032A20`, property handler `0x100032DB4` | Started by `DC._onSessionQueue_connect` (`0x10001B684`–`0x10001B708`). Registers `register(screenID: nil, …)` on the adapter; on `.connected` records power, size, scale, and CarPlay properties, registers `.properties` events, and calls `screenConnected:`. A properties event compares `powerState` (1 is on) and calls `screenPoweredOn:` or `screenPoweredOff:`, then `geometryChangedForScreen:dimensions:scale:` and `carPlayPropertiesChangedForScreen:carPlayProperties:` on changes. |
 | `DC.screenConnected:` `0x10001BAF0`, `screenPoweredOn:` `0x10001BDAC` | A screen that connects powered on is handled as powered on. Powering on creates `DWC` `initWithCoordinator:` for the screen ID, kept in `windowControllers`, and calls `connectTo:starkConfig:completionQueue:completion:` (the Stark configuration only for CarPlay); the completion logs and, for CarPlay, enables CarPlay and its HID service. The device's own screen and an external screen use the same path. |
@@ -665,8 +685,27 @@ and `creatableScreenProperties`. `SimScreen` declares
 and `setPowerState:completionQueue:completionHandler:`, each completing with an
 `NSError`. Neither Simulator.app nor SimulatorKit calls the creation method.
 
+SimulatorKit 27.1's `SimDeviceScreenAdapter.register(screenID:queue:handler:)`
+(`0x3F83C` → `0x3F8A0`) adds a `Registration` holding the queue and the
+handler to the adapter, then reports each screen in `screens` as connected
+for a nil screen ID, or only that screen for an ID. Each report is a block
+dispatched asynchronously to the queue (`0x3F418`) that retains the
+registration. `ScreenEvent` has the cases `connected(SimDeviceScreen)` and
+`disconnected(SimDeviceScreen)` and exports its case symbols, as a resilient
+enum does; Simulator.app's handler copies it through its value witnesses,
+compares its tag with `.connected`, and projects the screen
+(`0x100030C78`–`0x100030CF4`).
+
 The live check on the separate device set showed:
 
+- `register(screenID: nil, …)` on the main queue, with SimulatorKit 27.0,
+  27.1, and 27.2, reported `.connected` for each of the adapter's screens
+  within 10 ms, in an order that varied between runs, also to a registration
+  released right after it was made. The properties' `screenID` gave the IDs
+  that `simctl io enumerate` lists. A registration held across `simctl
+  shutdown` and `boot` received `.disconnected` for each screen and, after
+  the boot, `.connected` for each again; the released one received nothing
+  more.
 - `simctl io <UDID> enumerate`, also on a shut-down device, lists the
   iPhone's screens 1 LCD (Integrated), 2 TVOut, and 3 Wireless (CarPlay), and
   the iPad's 1 LCD and 2 TVOut. `SimScreenProperties.screenType` is 0, 1, and
@@ -674,9 +713,13 @@ The live check on the separate device set showed:
   refused `createScreenWithProperties:…` with each existing screen's
   properties and current mode (`Swift.String` error, code 1).
 - The TVOut screen starts off at 720×480 with a scale of 1. It advertises an
-  exact 720×480 mode, 120 Hz modes allowing the six menu sizes at scales 1 and
-  2, and on the iPhone 60 Hz ranges from 320×200 to 3840×2160 at scales 1, 2,
-  and 3. The order of `supportedScreenModes` differed between reads.
+  exact 720×480 mode at 60 Hz, the TVOut entry of the device type's
+  `capabilities.plist`; 120 Hz modes allowing the six menu sizes at scales 1
+  and 2; and on the iPhone 60 Hz ranges from 320×200 to 3840×2160 at scales 1,
+  2, and 3. The order of `supportedScreenModes` differed between reads.
+  `refreshRate` is in hundredths of a hertz (6000, 12000). On iOS 27.0 the
+  iPhone 17 Pro's TVOut screen had no ranges, only the exact mode and the
+  120 Hz modes, as the iPad's.
 - `setCurrentMode:…` turned the screen on at the size and completed within
   50 ms; `setPowerState:0` turned it off, and on a screen that was already
   off completed without an error and left it off; each change reported a
@@ -689,7 +732,38 @@ The live check on the separate device set showed:
   and takes a new size one or two main-queue turns after the event by setting
   its view's frame to that size at its scale.
 - The guest left the screen black until an app presented an external display
-  scene, and its `UIScreen` took the size only for a 60 Hz mode.
+  scene, and its `UIScreen` took the size only for a 60 Hz mode. With a
+  120 Hz mode the guest's SpringBoard switched the display to 720×480 at
+  60 Hz itself: its log shows the display connecting at "1920x1080 120Hz"
+  with the other mode "720x480 60Hz", then "preferred_mode_with_criteria: …
+  target rate (0) … target high refresh rate (0) … --> 720x480@60" and a
+  display change to 720×480. In the iOS 26.5 runtime's QuartzCore,
+  `ModeSet::preferred_mode_with_criteria_internal` skips modes below 49 Hz
+  (without a target rate) or above 60.5 Hz, and `Display::Mode::operator<`
+  orders modes by width × height × whole hertz; the QuartzCore of the iOS
+  18.5 and 26.0 runtimes has the same bounds. The guest's QuartzCore imports
+  no `SFBDisplaySetCurrentMode`, so the screen keeps the mode that was set.
+  At 60 Hz, 640×480 also ended at 720×480 on both devices, and on iOS 18.6
+  and 27.0; 1024×768 through 3840×2160 kept their size. A change from
+  1280×720 at 60 Hz to 1920×1080 at 120 Hz while the display was on showed
+  1920×1080 in no try: the scene went to 720×480, stayed at 1280×720, or,
+  5 seconds after the previous change, was torn down ("told display did
+  disconnect") with no new pick, leaving the display black.
+- CoreSimulator's SimRenderServer builds the TVOut screen's size
+  specification with refresh rates 30, 60, 75, and 120 Hz
+  (`0x100027240`–`0x1000272C0`) and lists it at 120 Hz. Passing the iPad's
+  exact 720×480 mode with 1920×1080 set the screen to 1920×1080 at 60 Hz
+  (`currentMode` an exact 1920×1080 mode at 6000), which the guest's scene
+  took; 1000×700 with either mode failed with "Unsupported Mode: { 1000.0x700.0@…hz 1X … }".
+- On the iPad Pro 11-inch (M5) with iOS 26.5, and the iPad Pro 11-inch (M4)
+  with iOS 26.0 and 18.6, 3840×2160 at 60 Hz made the display an extended
+  display (`SBSystemShellExtendedDisplayControllerPolicy`, wanting a pointer),
+  which SpringBoard re-evaluated about nine times a second; turning the
+  display off, or changing it to 1920×1080, then aborted SpringBoard on an
+  assertion (`SBSystemShellExtendedDisplayControllerPolicy.m:199`), which
+  launchd restarted. The iPad with iOS 27.0 kept SpringBoard. These iPads'
+  device types have `DeviceSupportsEnhancedMultitasking`; the iPhone 17 Pro's
+  does not.
 
 For CarPlay, CoreSimulator's `SimDevice environment` gives the guest the
 file's path as `SIMULATOR_EXTENDED_DISPLAY_PROPERTIES` (and
@@ -738,7 +812,7 @@ separate device set, through NeoSimulator's code.
 | Reference owner | Observed behavior | Neo |
 | --- | --- | --- |
 | `SimDevice(KeyboardSync)` `isIOS` (body `0x10003BABC`), `isWatch`, `isTV`, `isVision` (`0x10003BCCC`) | Families by `deviceType.productFamilyID`: iOS is 1 or 2, TV 3, watch 4, Vision 7. | `DeviceCapabilities.Family`; devices of other families are not hosted. |
-| `DC.deviceWindowBecameKey:` `0x100019B0C` | Hides Shake, App Switcher, Trigger Screenshot, Toggle Appearance, Toggle In-call Status Bar, the text sizes, and Toggle Increase Contrast unless iOS; Lock unless iOS or watch (`0x10001A038`…`0x10001A054`); Side Button unless watch; Show Device Bezels for Vision (`0x10001A9A0`); the viewport, Reset Camera, Simulated Scenes, Set Immersion To, and FaceTime items unless Vision (`0x10001A8A0`…`0x10001A9D8`); Increase and Decrease Immersion and 0% and 25% always (`0x10001A6A4`…`0x10001A728`); Optic ID without `SimFeatureOysterID` (`0x10001A134`…`0x10001A164`); Show Gaze Target without `SimFeatureHoverboard95880941` (`0x10001A620`…`0x10001A650`). Re-Center Open Apps is never hidden. | The same rules through `DeviceCommand.isSupported`, `PluginCommand.isShown`, and `DeviceCapabilities.supportsDeviceBezels`; the always hidden items are left out, and FaceTime is not implemented. |
+| `DC.deviceWindowBecameKey:` `0x100019B0C` | Hides Shake, App Switcher, Trigger Screenshot, Toggle Appearance, Toggle In-call Status Bar, the text sizes, and Toggle Increase Contrast unless iOS; Lock unless iOS or watch (`0x10001A038`…`0x10001A054`); Side Button unless watch; Show Device Bezels for Vision (`0x10001A9A0`); the viewport, Reset Camera, Simulated Scenes, Set Immersion To, and FaceTime items unless Vision (`0x10001A8A0`…`0x10001A9D8`); Increase and Decrease Immersion and 0% and 25% always (`0x10001A6A4`…`0x10001A728`); Optic ID without `SimFeatureOysterID` (`0x10001A134`…`0x10001A164`); Show Gaze Target without `SimFeatureHoverboard95880941` (`0x10001A620`…`0x10001A650`). Re-Center Open Apps is never hidden. | The same rules through `DeviceCommand.isSupported`, `PluginCommand.isShown`, and `DeviceCapabilities.supportsDeviceBezels`; the always hidden items are left out. |
 | `DWC.validateMenuItem:` `0x100051A40` | Lock (`lockButtonPressed:`) is enabled for iOS and otherwise for a watch. | Lock is shown only for them. |
 | Toolbar setup `0x100049D70` | A watch takes `IndigoWatchAODToolbar` with `SimFeatureAlwaysOnDisplay`, otherwise `IndigoWatchToolbar`; a TV `IndigoTVToolbar`; Vision the iPhone toolbar until its plugin's replaces it. The watch and TV nibs have Home and Save Screen; the always-on nib adds Always On: label "Always On", tooltip "Toggle Always On", a 25-point toggle `NSButton` (shows state by its contents) with the asset `ToolbarAlwaysOnSymbol` (`watch.always.on`) and an on image, to `lockButtonPressed:`. | `DeviceCommand.alwaysOn` on watches with `com.apple.display.aot`, an on/off toolbar button with `applewatch.watchface`. |
 | Always On update `0x100054128` | Only for family 4; backlight 0 or 1 sets the button on, 2 off, other values leave it, and an unchanged value is skipped. The chrome refresh (`0x10005B0B8`) passes `SimDisplayView.backlightState`; the `simDisplayView(_:screen:propertiesChanged:)` witness (`0x10005F7D8`) passes `properties.backlight.state`. | Reads `SimScreenProperties.backlight.state` both times. Live, at a property change the properties already had the new value while `backlightState` still had the old one, until the next main-queue turn. The Series 11 went 2 → 1 → 2 with Lock, the SE 2 → 0 → 2; Apple TV and Apple Vision Pro report -101. |
@@ -748,11 +822,12 @@ separate device set, through NeoSimulator's code.
 | `simDisplayView(_:changedUserInterfacePlugin:)` witness `0x10005F82C` → `0x10005F66C` | Stores `deviceUserInterfacePlugin`, sets the window's toolbar to the plugin's `toolbar` when it has one, and makes the plugin the app delegate's game-controller delegate when it conforms to `SimGameControllerDelegate`. | Sets the window's toolbar; no game-controller delegate. The plugin's `XROS.SimToolbar` had Home (`homeButtonPressed:`), Save Screen (`saveFramebufferImage:`, `toggleVideoRecording:` with Option), Capture Pointer, Capture Keyboard (both handled by the overlay), and Simulated Scenes. |
 | XROS `VirtualHMDInputView.toggleCapturingMouse:` and `mouseUp:` (Xcode 27.1 `0x2943C`…`0x29640`) | Capture Pointer starts choosing the gaze target; the click that ends it passes `toggleCapturingMouse:` to the next responder when the overlay's `client` is `.simulatorApp`, and otherwise starts `SimHIDCaptureManager` itself (`startCaptureSessionWithDevice:hidDeviceTypes:error:`, type 2). | Live, the overlay's `client` was `.simulatorApp`; Capture Keyboard left `_captureKeyboardEnabled` off, and a click after Capture Pointer ended the gaze choice without a capture, because no responder in Neo captures. |
 | DWC `homeButtonPressed:`, `saveFramebufferImage:`, `toggleVideoRecording:`; recording notifications `0x1000594B4` / `0x10005991C` | The plugin's toolbar actions reach the device window through the responder chain. Starting and stopping a recording posts `SimulatorVideoRecordingStartedNotification` / `…StoppedNotification` with the `SimDevice` under `…DeviceUserInfoKey`. | The device window implements the three actions; the session posts both notifications. Live, they turned the plugin's Save Screen button into Stop Recording (`toggleVideoRecording:`) and back. |
-| `MainMenu.nib` | Device ▸ Re-Center Open Apps (`recenterAllOpenApps:`) after Home; Interaction, Look Around, Pan, Orbit, and Dolly Mode (`viewportModeChangedToInteraction:` to `viewportModeChangedToDolly:`, Control-Command-1 to 5), Reset Camera (`resetViewportCamera:`, Control-Command-0), and Simulated Scenes (`selectSimulatedScene:`, no submenu), each group after a separator; I/O ▸ Increase Immersion, Decrease Immersion, and Set Immersion To ▸ 0%, 25%, 50%, 75%, 100% (`setImmersionTo0:` to `setImmersionTo100:`); Features ▸ Optic ID ▸ Enrolled, Matching Eye, Non-matching Eye (`toggleOysterIDEnrolled:`, `oysterIDMatching:`, `oysterIDNonMatching:`); Debug ▸ Show Gaze Target (`toggleShowGazeTarget:`). All go to the first responder. | `PluginCommand` items with the same actions and no target; Optic ID as `DeviceCommand`s. |
+| `MainMenu.nib` | Device ▸ Re-Center Open Apps (`recenterAllOpenApps:`) after Home; Interaction, Look Around, Pan, Orbit, and Dolly Mode (`viewportModeChangedToInteraction:` to `viewportModeChangedToDolly:`, Control-Command-1 to 5), Reset Camera (`resetViewportCamera:`, Control-Command-0), and Simulated Scenes (`selectSimulatedScene:`, no submenu), each group after a separator; I/O ▸ Increase Immersion, Decrease Immersion, and Set Immersion To ▸ 0%, 25%, 50%, 75%, 100% (`setImmersionTo0:` to `setImmersionTo100:`); Features ▸ Optic ID ▸ Enrolled, Matching Eye, Non-matching Eye (`toggleOysterIDEnrolled:`, `oysterIDMatching:`, `oysterIDNonMatching:`); Features ▸ FaceTime, after Show StandBy and a separator, ▸ User and 1, 2, 3, and 4 Spatial Participants, User, 1 Participant and 4 Spatial Participants, and User, 8 Participants and 4 Spatial Participants (`configureSimulatedFaceTimeSession1x1:` to `configureSimulatedFaceTimeSession1x4:`, `configureSimulatedFaceTimeSession1x4x1:`, `configureSimulatedFaceTimeSession1x4x8:`, no shortcuts); Debug ▸ Show Gaze Target (`toggleShowGazeTarget:`). All go to the first responder. | `PluginCommand` items with the same actions and no target; Optic ID as `DeviceCommand`s. |
 | `DWC.validateMenuItem:` `0x100051B8C`…`0x100051BB8` and `0x100051CD4`…`0x100051D28`; `DWC.recenterAllOpenApps:` `0x100058630` | Re-Center Open Apps is enabled with `SimFeatureHoverboard95880941`, but the device window's action is empty, so only the overlay, which comes first in the responder chain, carries it out. The Optic ID items are enabled with `SimFeatureOysterID`. | Re-Center Open Apps reaches only the overlay; without it, the item is disabled. |
 | `deviceWindowBecameKey:` `0x10001A210`…`0x10001A264`, `updateKeyEquivalentForBiometricMenuItem:matching:enabled:` `0x10001AA6C` | Matching Eye and Non-matching Eye get Option-Command-M and N when the device supports `SimFeaturePearlID`, and no shortcut otherwise. | `DeviceCommand.hasKey`: none on Apple Vision Pro. |
 | `sendOysterIDWithEnrolled:` `0x10003C7E8`, `sendOysterIDWithMatched:` `0x10003CA2C` | Enrolled sets and posts `com.apple.BiometricKit.enrollmentChanged`, which Touch ID and Face ID share; Matching Eye and Non-matching Eye post `com.apple.BiometricKit_Sim.oyster.match` and `.nomatch`, all with `SimDevice postDarwinNotification:error:`. | The same notifications. Live, `notifyutil` in the guest read the state 0, 1, and 0 again and received both posts. |
-| XROS `VirtualHMDInputView.validateMenuItem:` (Xcode 27.1 `0x2ED38`, body `0x2E9BC`) | Checks Show Gaze Target while `PalomaSimController.cursorIsCurrentlyVisible`; enables the immersion actions only while `ImmersionController.immersionStyle` is 2 when the guest reports the style; for `selectSimulatedScene:` calls `fillSimulatedScenesSubmenu` (`0x2E028`), which needs a selected scene and builds or updates a submenu of the scenes (`selectSimulatedSceneWithSender:`, the scene identifier as represented object) with the selected one checked; enables the other actions without a checkmark. The camera-mode actions ignore their sender. | Validated by the overlay through AppKit. Live with Xcode 27.1: the camera modes moved the toolbar's segment to 0–4; a drag in Orbit Mode moved the camera and Reset Camera brought it back; Re-Center Open Apps moved the open Settings window; Show Gaze Target drew and removed the gaze target and its checkmark; the immersion items were disabled at style 1, and their actions changed the guest's level. With Xcode 27.0, 27.1, and 27.2, Simulated Scenes listed the six scenes of visionOS 26.5, checked the current one, and switched to the chosen one, and Show Gaze Target's checkmark followed the overlay. A device booted before its window connected reported no scene, which left Simulated Scenes disabled. |
+| XROS `VirtualHMDInputView.validateMenuItem:` (Xcode 27.1 `0x2ED38`, body `0x2E9BC`) | Checks Show Gaze Target while `PalomaSimController.cursorIsCurrentlyVisible`; enables the immersion actions only while `ImmersionController.immersionStyle` is 2 when the guest reports the style; for `selectSimulatedScene:` calls `fillSimulatedScenesSubmenu` (`0x2E028`), which needs a selected scene and builds or updates a submenu of the scenes (`selectSimulatedSceneWithSender:`, the scene identifier as represented object) with the selected one checked; enables the other actions, the six FaceTime actions among them (`0x2ECB0`…`0x2ED24`), without a checkmark. The camera-mode actions ignore their sender. | Validated by the overlay through AppKit. Live with Xcode 27.1: the camera modes moved the toolbar's segment to 0–4; a drag in Orbit Mode moved the camera and Reset Camera brought it back; Re-Center Open Apps moved the open Settings window; Show Gaze Target drew and removed the gaze target and its checkmark; the immersion items were disabled at style 1, and their actions changed the guest's level. With Xcode 27.0, 27.1, and 27.2, Simulated Scenes listed the six scenes of visionOS 26.5, checked the current one, and switched to the chosen one, and Show Gaze Target's checkmark followed the overlay. A device booted before its window connected reported no scene, which left Simulated Scenes disabled. |
+| XROS `VirtualHMDInputView.configureSimulatedFaceTimeSession1x1:` … `1x4x8:` (Xcode 27.0, 27.1, and 27.2 `0x2D92C`…`0x2DDDC`; Xcode 26.6 `0x25F20`…`0x26344`), `SimVirtualHeadsetRemoteService configureSimulatedFaceTimeSession:spatialParticipantCount:` (`0x3968`) | Each action logs "Configuring simulated FaceTime session - …" and calls the plugin service with the counts of other and spatial participants: 0 and 1, 0 and 2, 0 and 3, 0 and 4, 1 and 4, 8 and 4. The service sends the guest an XPC message with `cmd` `simulate_facetime_session`, `standard_participant_count`, and `spatial_participant_count`, without a reply. In visionOS 26.5, `/usr/libexec/vhmdd`'s `FaceTimeSessionController` joins a conversation with that many of its test members through `TUCallCenter` (`TUJoinConversationRequest`). Simulator.app implements none of the actions; the overlay does, so the items work only while it is in the key window's responder chain. | `PluginCommand.faceTimeSessions`. Live with Xcode 27.0, 27.1, and 27.2 on an Apple Vision Pro on visionOS 26.5, the overlay enabled all six items. Each action reached `vhmdd`, which logged "Creating simulated FaceTime session with 0 standard participant(s) and 1 spatial participant(s)" and the other items' counts (1x1, 1x2, and 1x3 with Xcode 27.1, 1x4x8 with 27.0, 1x4 and 1x4x1 with 27.2), and FaceTime showed the call with its spatial test participants, such as Test Robot, and tiles for the others. |
 
 The watch controls below were checked live with Xcode 27.0, 27.1, and 27.2 on
 an Apple Watch Series 11 (46mm) on watchOS 27.0 and an Apple Watch Series 9
@@ -767,7 +842,9 @@ support `SimFeatureWatchGestures` (`com.apple.hid.watch.gestures`), all three
 | `DC.deviceWindowBecameKey:` `0x10001A3B4`…`0x10001A44C`, `0x10001A7AC` | Hides Gestures (`watchGestureMenuMenuItem`) without `SimFeatureWatchGestures`, Wrist Flick (`watchGestureWristFlickMenuItem`) when `device.runtime.version` is below `0xC0000` (watchOS 12), whatever the feature, and Simulate Fall without `SimFeatureFallDetection`. | The same rules through `DeviceCommand.isSupported`; a submenu whose items are all hidden is hidden. |
 | `DWC.validateMenuItem:` `0x100051B6C`, `0x10005273C` | Enables `watchGestureTriggered:` with `SimFeatureWatchGestures` and `sendFallResolutionStatus:` with `SimFeatureFallDetection`. No checkmarks. | Shown only with the feature, enabled while the device is connected and booted. |
 | `DWC.watchGestureTriggered:` `0x100054358`, body `0x1000542C0`; `DC sendIndigoHIDData:freeWhenDone:` `0x10001ABB4` | Passes the sender's tag (Double Tap 0, Wrist Flick 1) to `IndigoHIDMessageForWatchGesture`, which allocates one message with event subtype `0x46` (SimulatorKit 27.1 `0xBDC0`), and sends it through the coordinator's `legacyHIDClient` with `sendWithMessage:freeWhenDone:NO completionQueue:nil completion:nil`, so the message is never freed and its delivery is ignored. | Sends the same message through the display's `SimDeviceLegacyHIDClient` with `freeWhenDone:` YES and a completion that reports a failure. Live, Wrist Flick went from the app grid to the watch face and from the Smart Stack back to the face, and Double Tap on the face opened the Smart Stack. |
-| `simDisplayView(_:changedChrome:)` witness `0x10005F828` → `0x10005F4C0` | Sets `digitizerView.supportScrolling` when the chrome is nil or the device supports `SimFeatureDigitalCrown` or `SimFeatureDigitalDial`. | The same rule each time the window shows or hides the bezel, also when the display connects and after a restart. |
+| `simDisplayView(_:changedChrome:)` witness `0x10005F828` → `0x10005F4C0` | Sets `digitizerView.supportScrolling` when the chrome is nil or the device supports `SimFeatureDigitalCrown` or `SimFeatureDigitalDial`. Then, when the display's screen `isDefault` and its `enabledInputs` contain `SimDeviceDisplayInputType` 0, which SimulatorKit adds while `digitizerView.isEnabled` (27.1 getter `0x64C58`), calls `SimDevice wantsEdgeSwipes:` with whether the chrome is non-nil (`0x10005F5AC`…`0x10005F620`). Simulator.app connects every display with the digitizer. | The same rule each time the window shows or hides the bezel, also when the display connects and after a restart: `setSupportsScrolling`, then `setWantsEdgeSwipes(padding != nil)`. A device window always shows the default screen, and IDEPlaygroundSimulator's factory connects every input, so its digitizer is enabled (live, `isEnabled` was true). |
+| `SimDevice(KeyboardSync) wantsEdgeSwipes:` `0x10003C20C` → `0x10003D008`, body `0x10003C1AC`, helper `0x10003BF00` | On a global queue, sets the guest's `com.apple.UIKit.SimulatorWantsEdgeSwipes` state to the flag with `darwinNotificationSetState:name:error:` and posts it with `postDarwinNotification:error:`; a failure is released without a report. | `SimulatorConnection.setWantsEdgeSwipes` makes the same two calls on the main actor and logs a failure. |
+| iOS 26.5 UIKitCore `-[_UIScreenEdgePanRecognizer initWithType:settings:]` `0xCB9694` and its notification block `0xCB97E8`, `useGrapeFlags` `0xCB9974`, `_incorporateInitialTouchAtLocation:…` `0xCB9C78`; `-[UIKeyboardLayout reloadKeyboardGestureRecognition]` `0xFF5860`, `-[UIKeyboardLayoutStar targetEdgesForScreenGestureRecognition]` `0xEDB908` | Each recognizer reads the state when it is created and when it is posted, and logs "Notification: Simulator edge swipe gestures are enabled" or "disabled". While it is 1, the recognizer treats the whole screen as the edge region but fails any touch whose edge modifier is not 1–4; at 0 it takes touches that start within the edge region, 13 points (11 at the bottom). The only creator is `UIKeyboardLayout`, for the edges of `targetEdgesForScreenGestureRecognition`, which `UIKeyboardLayoutStar` makes the bottom edge on an iPad and no edge elsewhere; a recognized swipe drops the keyboard's deferred touch, and a failed one plays it. `UIScreenEdgePanGestureRecognizer` uses its own gesture features (`_UISE…GestureFeature`, also in iOS 18.0, 18.6, and 26.0) and does not read the state. | Live, an iPad Air 11-inch (M3) on iOS 26.5 read 1 after its window connected with the bezel and then 0, 1, 0, 1 as Show Device Bezels changed; with the software keyboard up in Spotlight, Spotlight logged "disabled" and "enabled" at each change. On an iPhone 17 Pro on iOS 26.5, a drag from the bezel into the screen reached the guest as an edge touch (`swipe-locked`) and went home with the state at 0 and at 1; drags that started 1 and 4 points above the bottom edge went home with neither state, with or without the bezel, because only a touch that starts off the screen gets an edge (see [Bezel resizing and moving](#bezel-resizing-and-moving)). |
 | SimulatorKit `SimDeviceLegacyHIDClient.simDigitizerInputView(_:scrollEvent:)` (27.1 `0x18BF8`) | Sends `IndigoHIDMessageForDigitalCrownEvent` with the negated vertical delta for a device with a crown, `IndigoHIDMessageForDigitalDialEvent` for one with a dial, and nothing otherwise. | Live, the factory's display had this client as the digitizer's delegate; scrolling with a mouse wheel (line deltas) and a trackpad (pixel deltas with phases) over the screen zoomed the app grid and opened the Smart Stack from the watch face, and with `supportScrolling` off it changed nothing. |
 | `DWC.sendFallResolutionStatus:` `0x10005485C`, body `0x1000547F0`, dispatch `0x10003CB80`, helper `0x10003BF00` | Maps the sender's tag (Confirmed 0, Dismissed 1, Rejected 2, Unresponsive 3) to the state of `com.apple.sos.user-fell`, sets it with `SimDevice darwinNotificationSetState:name:error:`, posts it with `postDarwinNotification:error:`, and discards both errors. | The same calls; a failure is reported. Live, `notifyutil -1` and `-g` spawned in the device received each post and read states 0 to 3, the Mac's own state stayed 0, and the guest's Carousel (`com.apple.NanoPhone`, `sos_newton`) logged "simulating fall event with resolution: 0" to 3. |
 
@@ -904,7 +981,6 @@ contract before being user-visible:
   private HID event-filter/event-monitor and TCC entitlements that the companion
   does not have; for the keyboard and pointer, see
   [Input capture](#input-capture).
-- FaceTime menus.
 - Device Manager or any Device Hub URL handoff.
 
 These exclusions are part of the Neo-mode safety boundary, not missing

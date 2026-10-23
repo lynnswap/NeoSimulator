@@ -99,6 +99,9 @@ struct DeviceCommand {
     var keepsStateWithoutWindow = false
     /// The title for the current state, when it changes with the state.
     var stateTitle: ((DeviceWindowController) -> String)?
+    /// The subtitle for the current state, or nil for none, when the item
+    /// has one.
+    var stateSubtitle: ((DeviceWindowController) -> String?)?
     let perform: (DeviceWindowController) -> Void
 
     static func command(_ id: ID) -> DeviceCommand { catalog[id]! }
@@ -110,6 +113,7 @@ struct DeviceCommand {
         guard let controller else {
             if !keepsStateWithoutWindow { item.state = .off }
             item.title = title
+            if stateSubtitle != nil { item.subtitle = nil }
             return false
         }
         if let state {
@@ -118,6 +122,7 @@ struct DeviceCommand {
             item.state = .off
         }
         item.title = stateTitle?(controller) ?? title
+        if let stateSubtitle { item.subtitle = stateSubtitle(controller) }
         return isEnabled(controller)
     }
 
@@ -353,13 +358,20 @@ struct DeviceCommand {
     /// choice then applies when it connects; CarPlay is enabled only for a
     /// device that also supports CarPlay, and unchecked otherwise. The
     /// checkmark is the external display's actual state, where Simulator.app
-    /// checks the saved choice.
+    /// checks the saved choice. Unlike Simulator.app, an item the device
+    /// cannot show is disabled, and its subtitle says why; CarPlay on a device
+    /// without CarPlay stays as Simulator.app shows it.
     private static func externalDisplay(_ mode: ExternalDisplayMode) -> DeviceCommand {
-        let isEnabled: (DeviceWindowController) -> Bool = { mode != .carPlay || $0.session.capabilities.supportsCarPlay }
+        let hasFeature: (DeviceWindowController) -> Bool = {
+            mode != .carPlay || $0.session.capabilities.supportsCarPlay
+        }
         return DeviceCommand(id: mode.commandID, title: mode.title,
                              isSupported: { $0.supportsExternalDisplays },
-                             isEnabled: isEnabled,
-                             state: { isEnabled($0) && $0.session.externalDisplayMode == mode ? .on : .off }) {
+                             isEnabled: { hasFeature($0) && $0.session.externalDisplayLimit(for: mode) == nil },
+                             state: { hasFeature($0) && $0.session.externalDisplayMode == mode ? .on : .off },
+                             stateSubtitle: {
+                                 hasFeature($0) ? $0.session.externalDisplayLimit(for: mode)?.menuSubtitle : nil
+                             }) {
             $0.chooseExternalDisplay(mode)
         }
     }
@@ -467,7 +479,7 @@ struct DeviceCommand {
 }
 
 /// A menu command that the device's user-interface plugin performs: Apple
-/// Vision Pro's camera, scene, immersion, and gaze commands, which
+/// Vision Pro's camera, scene, immersion, gaze, and FaceTime commands, which
 /// `XROS.VirtualHMDInputView`, the overlay of the selected Xcode's
 /// `XROS.simdeviceui`, implements. As in Simulator.app's MainMenu.nib, the
 /// item sends its action to the first responder, which is the overlay while it
@@ -516,12 +528,30 @@ struct PluginCommand {
         PluginCommand(title: "75%", action: Selector(("setImmersionTo75:"))),
         PluginCommand(title: "100%", action: Selector(("setImmersionTo100:"))),
     ]
+    // Features ▸ FaceTime. Each item has the overlay start a simulated
+    // FaceTime call in the guest with the local user and that many spatial
+    // and other participants.
+    static let faceTimeSessions = [
+        PluginCommand(title: "User and 1 Spatial Participant",
+                      action: Selector(("configureSimulatedFaceTimeSession1x1:"))),
+        PluginCommand(title: "User and 2 Spatial Participants",
+                      action: Selector(("configureSimulatedFaceTimeSession1x2:"))),
+        PluginCommand(title: "User and 3 Spatial Participants",
+                      action: Selector(("configureSimulatedFaceTimeSession1x3:"))),
+        PluginCommand(title: "User and 4 Spatial Participants",
+                      action: Selector(("configureSimulatedFaceTimeSession1x4:"))),
+        PluginCommand(title: "User, 1 Participant and 4 Spatial Participants",
+                      action: Selector(("configureSimulatedFaceTimeSession1x4x1:"))),
+        PluginCommand(title: "User, 8 Participants and 4 Spatial Participants",
+                      action: Selector(("configureSimulatedFaceTimeSession1x4x8:"))),
+    ]
     // Debug
     static let showGazeTarget = PluginCommand(title: "Show Gaze Target", action: Selector(("toggleShowGazeTarget:")),
                                               isShown: { $0.supportsFeature(DeviceCapabilities.hoverboard) })
 
     private static let byAction = Dictionary(uniqueKeysWithValues: (
         [recenterOpenApps, resetCamera, simulatedScenes, showGazeTarget] + viewportModes + immersionLevels
+            + faceTimeSessions
     ).map { ($0.action, $0) })
 }
 

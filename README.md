@@ -102,11 +102,13 @@ Neo currently provides:
   its toolbar has Home, Save Screen, Capture Pointer, Capture Keyboard, and
   Simulated Scenes. Capture Pointer and Capture Keyboard do not capture the
   Mac's input, which Neo leaves out;
-- Apple Vision Pro's camera, scene, immersion, and gaze commands, which the
-  plugin performs, enables, and checks as in Simulator.app: Device →
+- Apple Vision Pro's camera, scene, immersion, gaze, and FaceTime commands,
+  which the plugin performs, enables, and checks as in Simulator.app: Device →
   Interaction, Look Around, Pan, Orbit, and Dolly Mode (Control-Command-1 to
   Control-Command-5), Reset Camera (Control-Command-0), Re-Center Open Apps,
-  and Simulated Scenes; I/O → Set Immersion To; and Debug → Show Gaze Target;
+  and Simulated Scenes; I/O → Set Immersion To; Features → FaceTime, which
+  starts a simulated FaceTime call with one to four spatial participants; and
+  Debug → Show Gaze Target;
 - Window → Show Apple TV Remote (Shift-Command-R) for Apple TV: Simulator.app's
   onscreen remote, whose Menu, TV, Siri, Play/Pause, and Volume Up and Down
   buttons stay pressed while you hold them, and whose touch surface is Select
@@ -301,11 +303,22 @@ app presents a scene for an external display; iOS does not mirror the device's
 screen to it. A device that has no external display port cannot get one:
 CoreSimulator offers no screen that a client can add.
 
+iOS keeps an external display's mode only at up to 60 Hz and otherwise switches
+it to its own 720×480 mode, while the window keeps the chosen size. Neo
+therefore sets each size at 60 Hz, also where CoreSimulator lists it only at
+120 Hz, as on iPad and on iPhone with iOS 27.0, where Simulator.app leaves the
+device at 720×480. A size the device cannot show is disabled, and its subtitle
+says why: 640×480, for which iOS shows its larger 720×480 mode, and 3840×2160
+on an iPad with Stage Manager before iPadOS 27, whose SpringBoard quits when
+such a display later changes or turns off. When another tool sets a size the
+device does not show, the window's subtitle says so.
+
 **I/O → External Displays → CarPlay** makes that display a car's CarPlay
 display, as Simulator.app does with its default configuration: an 800×480
 touch screen at a scale of 2. The guest's CarPlay dashboard appears in a
 window with the subtitle "CarPlay", and clicks in it are CarPlay's touches.
-The item is enabled for devices that support CarPlay, such as iPhone. The
+The item is enabled for devices that support CarPlay, such as iPhone, whose
+external display has a mode for it; an iPhone with iOS 27.0 has none. The
 choice is saved and restored like the sizes, and, as Simulator.app does, Neo
 writes the device's CarPlay configuration to
 `<device data>/Library/Application Support/Simulator/extended_display.plist`,
