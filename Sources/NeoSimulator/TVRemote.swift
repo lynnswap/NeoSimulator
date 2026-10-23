@@ -1,42 +1,25 @@
 import AppKit
 
-/// Window ▸ Show Apple TV Remote's panel: Simulator.app's onscreen Apple TV
-/// Remote, `AppleRemoteWindowController` and its nib, rebuilt with AppKit.
-/// The app has one remote. It controls the device of the key device window,
-/// or else of the frontmost one, as Simulator.app's `keyDeviceCoordinator`
-/// chooses; only an Apple TV takes its input.
-///
-/// Like Simulator.app's `AppleRemotePanel`, the panel never becomes key, so
-/// the device window keeps the keyboard, and it moves by its background and
-/// hides while the app is inactive. Every window that becomes key or closes
-/// is checked against Simulator.app's rules, which bring the panel to the
-/// front or close it: see `deviceWindowBecameKey(_:)` and
-/// `deviceWindowWillClose(_:)`.
+/// One app-wide, non-key Apple TV Remote panel. Targets the key or frontmost device window;
+/// only Apple TV accepts its input. It hides while inactive and follows device-window changes.
 @MainActor
 final class TVRemoteController: NSWindowController, NSWindowDelegate {
     /// The device window whose device the remote controls now.
     private let target: @MainActor () -> DeviceWindowController?
     private let buttons: [TVRemoteButtonView]
     private let surface: TVRemoteTouchSurface
-    /// The device window that the surface's touch goes to, which its moves
-    /// and end follow. What each device still holds is its session's to
-    /// release.
+    /// Keeps a touch on its original target; the device session owns held-input cleanup.
     private weak var touchTarget: DeviceWindowController?
     /// Watches the modifier keys for the touch surface while the panel shows.
     private var optionMonitor: Any?
     /// Watch the app's windows becoming key and closing.
     private var windowObservers: [any NSObjectProtocol] = []
 
-    /// Where AppKit saves the panel's frame, Simulator.app's name.
+    /// Simulator-compatible frame autosave key.
     static let frameAutosaveName = "Apple TV Remote Window"
 
-    /// Builds the remote with the layout of Simulator.app's nib, 155 by 515
-    /// points: the touch surface at the top, then Menu and TV, Siri and
-    /// Volume Up, and Play/Pause and Volume Down. AppKit drawing and SF
-    /// Symbols stand in for Simulator.app's artwork.
-    ///
-    /// - Parameter target: The device window whose device the remote
-    ///   controls, by default `keyOrFrontmostDeviceWindow()`.
+    /// Builds the 155×515-point remote layout with AppKit and SF Symbols.
+    /// `target` selects the device window controlled by the remote.
     init(target: @escaping @MainActor () -> DeviceWindowController? = TVRemoteController.keyOrFrontmostDeviceWindow) {
         self.target = target
         let panel = TVRemotePanel(contentRect: NSRect(origin: .zero, size: TVRemoteLayout.size),
@@ -60,9 +43,7 @@ final class TVRemoteController: NSWindowController, NSWindowDelegate {
         super.init(window: panel)
         shouldCascadeWindows = false
         configure(panel)
-        // In Simulator.app, an external display's window is a device window
-        // too, so the window of any device, or of its external display,
-        // decides when it becomes key.
+        // External-display windows also determine the active remote target.
         windowObservers = [
             NotificationCenter.default.addObserver(
                 forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main) { [weak self] notification in
@@ -92,8 +73,7 @@ final class TVRemoteController: NSWindowController, NSWindowDelegate {
         windowObservers.forEach(NotificationCenter.default.removeObserver)
     }
 
-    /// Simulator.app's `keyDeviceCoordinator`: the key device window, or
-    /// else the frontmost device window.
+    /// Finds the key device window, falling back to the frontmost.
     static func keyOrFrontmostDeviceWindow() -> DeviceWindowController? {
         DeviceWindowController.keyDeviceWindow
             ?? NSApp.orderedWindows.lazy.compactMap { $0.windowController as? DeviceWindowController }.first
@@ -109,8 +89,7 @@ final class TVRemoteController: NSWindowController, NSWindowDelegate {
 
     override func showWindow(_ sender: Any?) {
         super.showWindow(sender)
-        // Like Simulator.app's `SimulatorApp`, which tells the surface about
-        // each modifier change the app receives.
+        // Forward app-wide modifier changes to the touch surface.
         if optionMonitor == nil {
             optionMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
                 self?.surface.optionChanged(isDown: event.modifierFlags.contains(.option))
@@ -119,9 +98,7 @@ final class TVRemoteController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    /// A closing panel lets go of its controls, and every device releases
-    /// the remote's buttons and touch that it may still hold, also those
-    /// whose release was not delivered.
+    /// Releases every device's remote inputs, including previously failed releases.
     func windowWillClose(_ notification: Notification) {
         if let optionMonitor { NSEvent.removeMonitor(optionMonitor) }
         optionMonitor = nil
@@ -137,9 +114,7 @@ final class TVRemoteController: NSWindowController, NSWindowDelegate {
         NSApp.windows.compactMap { ($0.windowController as? DeviceWindowController)?.session }
     }
 
-    /// Like Simulator.app's `deviceWindowBecameKey:`, a shown panel comes to
-    /// the front of the window of a device that takes the remote, and closes
-    /// for another device.
+    /// Brings the panel forward for Apple TV and closes it for other devices.
     private func deviceWindowBecameKey(_ controller: DeviceWindowController) {
         guard isVisible else { return }
         if controller.session.capabilities.supportsFeature(DeviceCapabilities.tvRemote) {
@@ -149,9 +124,7 @@ final class TVRemoteController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    /// Like Simulator.app, closing the last device window, of a device that
-    /// takes the remote, closes the panel; with other device windows open,
-    /// the next key one decides.
+    /// Closing the last Apple TV window closes the panel; otherwise the next key window decides.
     private func deviceWindowWillClose(_ controller: DeviceWindowController) {
         guard isVisible, controller.session.capabilities.supportsFeature(DeviceCapabilities.tvRemote) else { return }
         let othersRemain = NSApp.windows.contains { window in
@@ -189,8 +162,7 @@ final class TVRemoteController: NSWindowController, NSWindowDelegate {
 
     // MARK: Panel
 
-    /// Gives the panel the properties of Simulator.app's, connects its
-    /// controls, and restores its frame.
+    /// Configures the panel, connects its controls, and restores geometry.
     private func configure(_ panel: NSPanel) {
         panel.title = "Apple TV Remote"
         panel.isOpaque = false
@@ -207,9 +179,7 @@ final class TVRemoteController: NSWindowController, NSWindowDelegate {
             let button = view.button
             view.onChange = { [weak self] in self?.setButton(button, down: $0) }
         }
-        // A remote without a saved frame opens at the top of the screen, 386
-        // points left of its right edge, where Simulator.app's nib places it
-        // on a 2560-point-wide screen.
+        // Default placement matches Simulator.app's nib on a 2560-point-wide screen.
         if !panel.setFrameUsingName(Self.frameAutosaveName), let screen = NSScreen.main?.visibleFrame {
             panel.setFrameTopLeftPoint(NSPoint(x: screen.maxX - 386 - TVRemoteLayout.size.width, y: screen.maxY))
         }
@@ -217,13 +187,12 @@ final class TVRemoteController: NSWindowController, NSWindowDelegate {
     }
 }
 
-/// Simulator.app's `AppleRemotePanel`: a borderless panel that never becomes key.
+/// A borderless panel that never takes keyboard focus.
 private final class TVRemotePanel: NSPanel {
     override var canBecomeKey: Bool { false }
 }
 
-/// Where Simulator.app's nib places the remote's views, from the panel's
-/// bottom-left corner.
+/// Remote layout in panel coordinates, from the bottom-left corner.
 private enum TVRemoteLayout {
     static let size = NSSize(width: 155, height: 515)
     static let surface = NSRect(x: 0, y: 354, width: 155, height: 161)
@@ -238,16 +207,14 @@ private enum TVRemoteLayout {
         (.volumeUp, NSRect(x: 85, y: 227, width: 55, height: 58), .upperHalf),
         (.volumeDown, NSRect(x: 85, y: 165, width: 55, height: 58), .lowerHalf),
     ]
-    /// The outline of the buttons, 2 points in Simulator.app's 64-point images.
+    /// Scales the original two-point outline from 64-point artwork.
     static let lineWidth: CGFloat = 2 * 55 / 64
     static let outline = NSColor(white: 0.27, alpha: 0.9)
     static let pressed = NSColor(white: 1, alpha: 0.19)
     static let glyph = NSColor(white: 0.6, alpha: 1)
 }
 
-/// The remote's body: Simulator.app's `Remote Chrome`, a rounded black
-/// panel whose upper part, around the touch surface, is dark gray, and the
-/// volume buttons' capsule.
+/// Draws the remote body and volume-button capsule.
 private final class TVRemoteBodyView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         let body = NSBezierPath(roundedRect: bounds, xRadius: 30, yRadius: 30)
@@ -267,9 +234,7 @@ private final class TVRemoteBodyView: NSView {
     }
 }
 
-/// A button of the remote, Simulator.app's `AppleRemoteMouseDownTrackingControl`:
-/// pressing it presses the remote's button, and releasing the mouse releases
-/// it, wherever the pointer then is.
+/// Sends press on mouse-down and release on mouse-up, even outside the button.
 private final class TVRemoteButtonView: NSView {
     enum Shape { case circle, upperHalf, lowerHalf }
 
@@ -383,20 +348,15 @@ private final class TVRemoteButtonView: NSView {
     }
 }
 
-/// The remote's touch surface, Simulator.app's `AppleRemoteControlSurface`.
-/// A click presses Select. While Option is held with the pointer over it,
-/// the pointer touches the surface: the touch starts when the pointer enters
-/// or Option goes down, moves with the pointer, and ends when the pointer
-/// leaves, also by a drag, or Option goes up. Its points stay within the
-/// surface.
+/// Click presses Select; Option turns pointer motion into a touch.
+/// Touches begin on entry/Option-down and end on exit/Option-up, with normalized coordinates.
 final class TVRemoteTouchSurface: NSView {
     var onSelect: (Bool) -> Void = { _ in }
     var onTouch: (CGPoint) -> Void = { _ in }
     var onLift: (CGPoint) -> Void = { _ in }
     private var isPointerInside = false
     private var isSelectDown = false
-    /// Where the pointer last was, from 0 to 1 from the top-left corner,
-    /// Simulator.app's `lastValidTrackpadPoint`.
+    /// Last normalized point measured from the top-left corner.
     private(set) var point = CGPoint.zero
 
     override init(frame: NSRect) {
@@ -429,11 +389,7 @@ final class TVRemoteTouchSurface: NSView {
 
     override func mouseMoved(with event: NSEvent) { follow(event) }
 
-    /// The tracking area reports no exit or entry while the mouse is down, so
-    /// a drag that leaves the surface, onto a button or off the panel, ends
-    /// the touch at the edge it crosses, and one that comes back touches
-    /// again. Simulator.app's surface keeps following such a drag, past its
-    /// edges.
+    /// Tracking areas omit entry/exit during a drag, so handle boundary crossings explicitly.
     override func mouseDragged(with event: NSEvent) {
         if bounds.contains(convert(event.locationInWindow, from: nil)) {
             isPointerInside = true
@@ -449,8 +405,7 @@ final class TVRemoteTouchSurface: NSView {
         onLift(point)
     }
 
-    /// Like Simulator.app's `optionButtonDidChangeState:`, Option starts or
-    /// ends the touch while the pointer is over the surface.
+    /// Option starts or ends a touch while the pointer is over the surface.
     func optionChanged(isDown: Bool) {
         guard isPointerInside else { return }
         if isDown { onTouch(point) } else { onLift(point) }

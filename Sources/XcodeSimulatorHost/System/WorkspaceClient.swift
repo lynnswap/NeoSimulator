@@ -22,8 +22,7 @@ private struct ManagedApplicationIdentity {
     let bundleIdentifier: String
     let expectedURLs: [URL]
     let errorIdentifier: String
-    /// NeoSimulator takes SIGTERM as a handover to another simulator host and
-    /// leaves its devices running; a normal quit can shut them down.
+    /// SIGTERM hands off NeoSimulator's devices; normal quit can shut them down.
     var terminatesWithSignal = false
 }
 
@@ -62,8 +61,7 @@ private final class ApplicationTerminationWaiter {
                     return
                 }
 
-                // terminate() only confirms request delivery; isTerminated is the
-                // documented terminal state and remains valid for normal GUI exits.
+                // terminate() confirms the request; isTerminated confirms the exit.
                 observation = application.observe(
                     \.isTerminated,
                     options: [.new]

@@ -7,9 +7,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
     /// device boots again, keeping this window.
     private(set) var session: DeviceSession
     private var closed = false
-    /// Set from a restart's start until the device's next connection, like
-    /// Simulator.app's `isRebooting`. Closing the window meanwhile saves no
-    /// geometry.
+    /// Suppresses geometry saving from restart until the next device connection.
     private var isRestarting = false
     private var didReadOrientation = false
     private let onClose: (DeviceWindowController, DeviceLifetimeChoice?) -> Void
@@ -30,20 +28,14 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
     /// The display scale the device's window last closed at in the current
     /// arrangement of screens.
     private let savedScale: CGFloat?
-    /// How a new window is placed until the first orientation reading, and
-    /// the frame it has while only that placement and the guest's rotations
-    /// have changed it.
+    /// Initial placement and the frame it produced, until the first orientation reading.
     private var initialPlacement: (place: ((NSWindow) -> Void)?, frame: NSRect)?
-    /// Whether the window is in full screen or moving into or out of it,
-    /// where Simulator.app's scale commands are unavailable and the bezel
-    /// shows no resize cursors.
+    /// Includes full-screen transitions, when scaling and bezel resizing are unavailable.
     private var isFullScreen: Bool { fitting.isFullScreen }
     /// The drag on a corner of the bezel in progress, and the largest scale it
     /// may give the display.
     private var bezelResize: (drag: BezelResize, maximumScale: CGFloat)?
-    /// Moves the window with the drag that a press on the bezel begins: by
-    /// default AppKit's `performDrag(with:)`, which hands the drag to the
-    /// window server.
+    /// Injectable window-server drag operation.
     private let performWindowDrag: (NSWindow, NSEvent) -> Void
     private var screenParametersObserver: (any NSObjectProtocol)?
     /// Set while the window takes the size of a chosen display scale, which
@@ -60,9 +52,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
     private var touchIndicatorObserver: (any NSObjectProtocol)?
     private var keyboardSelectionObserver: (any NSObjectProtocol)?
     private var audioRouteObserver: (any NSObjectProtocol)?
-    /// Whether the window is key, which makes its device the one that
-    /// Simulator.app's keyboard controller types into and that a change of
-    /// the Mac's input source applies to.
+    /// Only the key window receives host keyboard input and input-source changes.
     private var isKey = false
     /// The window of the device's external display while the display is on.
     private(set) var externalDisplayWindow: ExternalDisplayWindowController?
@@ -75,9 +65,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
     /// see `deviceWindow(for:)`.
     static var keyDeviceWindow: DeviceWindowController? { deviceWindow(for: NSApp.keyWindow) }
 
-    /// The device window that `window` stands for: a device window itself, or
-    /// the device window of an external display's window, as Simulator.app's
-    /// device coordinator handles both.
+    /// Finds the owning device window, including for an external display window.
     static func deviceWindow(for window: NSWindow?) -> DeviceWindowController? {
         switch window?.windowController {
         case let controller as DeviceWindowController: controller
@@ -98,8 +86,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
         self.touchPressure = touchPressure
         self.tvRemote = tvRemote
         self.performWindowDrag = performWindowDrag
-        // Like Simulator.app, the window's geometry is read once, when it
-        // connects, for the current arrangement of screens.
+        // Read geometry once per connection for the current screen arrangement.
         let saved = preferences.windowGeometry(forDevice: session.device.id, screens: Self.screenFrames)
         savedCenter = saved.center
         savedScale = saved.scale
@@ -111,8 +98,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
             session.disconnect()
             throw HostError.unavailable("Simulator display has no usable size")
         }
-        // Like Simulator.app's window, it starts 500 points wide, which gives
-        // the toolbar its first style before the display takes its first scale.
+        // Initial width determines toolbar style before display scaling.
         let window = DeviceWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 700),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered, defer: false)
@@ -121,30 +107,26 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
         super.init(window: window)
         (window.title, window.subtitle) = deviceWindowTitles(name: session.device.name, runtimeName: session.device.runtimeName)
         window.appearance = NSAppearance(named: .darkAqua)
-        // As in Simulator.app's window, AppKit draws the title bar, which is
-        // not transparent: see `updateHeaderShape()`.
+        // AppKit draws the opaque title bar; see `updateHeaderShape()`.
         window.titlebarSeparatorStyle = .none
         window.tabbingMode = .disallowed
         window.backgroundColor = .clear
         window.isOpaque = false
         window.hasShadow = true
         window.isReleasedWhenClosed = false
-        // Like Simulator.app, full screen stays available while a bezel makes
-        // the window not resizable.
+        // Full screen remains available even when the bezel disables resizing.
         window.collectionBehavior = [.fullScreenPrimary, .fullScreenAllowsTiling]
         window.delegate = self
         window.displayScale = { [weak self] in self?.session.display.renderScale ?? 1 }
         window.handleMouseEvent = { [weak self] in self?.handleBezelDrag($0) ?? false }
         attachSession()
-        // Like Simulator.app, each window shows the bezel as the app-wide
-        // Show Device Bezels preference says, before it takes its scale.
+        // Apply the bezel before computing display scale.
         session.display.setChromeVisible(preferences.showsDeviceBezels)
         bezelChanged()
         updateToolbarStyle(forWidth: window.frame.width)
         // The smallest size a manual resize leaves the window at.
         window.contentMinSize = NSSize(width: 320, height: 300)
-        // Like Simulator.app, a change to the screens, such as a display
-        // removed or the Dock resized, moves the window back inside its screen.
+        // Keep the window on screen after display or Dock geometry changes.
         screenParametersObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.moveWindowOntoScreen() }
@@ -153,8 +135,6 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
             forName: TouchPressure.didChangeNotification, object: touchPressure, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.touchPressureChanged() }
         }
-        // Like Simulator.app, each open window follows the touch indicator
-        // preferences when they change.
         touchIndicatorObserver = NotificationCenter.default.addObserver(
             forName: TouchIndicator.didChangeNotification, object: preferences, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.showTouchIndicators() }
@@ -163,8 +143,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
             forName: NSTextInputContext.keyboardSelectionDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.keyboardSelectionChanged() }
         }
-        // Like Simulator.app, an audio route chosen in any window applies to
-        // every device window.
+        // Audio-route preferences apply across windows.
         audioRouteObserver = NotificationCenter.default.addObserver(
             forName: AudioRouting.didChangeNotification, object: preferences, queue: .main) { [weak self] notification in
             let scope = (notification.userInfo?[AudioRouting.scopeKey] as? UInt64).flatMap(AudioScope.init(rawValue:))
@@ -173,24 +152,17 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
         showDisplay(fitting: { self.initialScale })
     }
 
-    /// Like Simulator.app, a new window opens at the saved scale or Point
-    /// Accurate, reduced to Fit Screen's.
+    /// Fits the saved scale, or Point Accurate when unsaved, to the screen.
     private var initialScale: CGFloat { min(scale(for: .fitScreen) ?? .infinity, savedScale ?? 1) }
 
-    /// Shows the display at the scale `scale` gives, and again at the smaller
-    /// one it gives when the first made the window narrow enough to take the
-    /// taller expanded title bar. Simulator.app measures Fit Screen with the
-    /// title bar the window has before the change, so such a window ends up
-    /// taller than the screen there.
+    /// Recomputes fit if a narrower window switches to the taller expanded title bar.
     private func showDisplay(fitting scale: () -> CGFloat?) {
         guard let first = scale() else { return }
         showDisplay(at: first)
         if let second = scale(), second < first { showDisplay(at: second) }
     }
 
-    /// Gives a new window its initial scale and places it with `place`, again
-    /// when that scale gave it the taller expanded title bar, as
-    /// `showDisplay(fitting:)` does.
+    /// Recomputes initial placement if scaling changes the title-bar height.
     private func placeAtInitialScale(_ place: ((NSWindow) -> Void)?) {
         let scale = initialScale
         session.display.setRenderScale(scale)
@@ -205,18 +177,9 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
     /// window geometry.
     private static var screenFrames: [NSRect] { NSScreen.screens.map(\.frame) }
 
-    /// Shows a new window where Simulator.app places it: centered where the
-    /// device's window last closed in the current arrangement of screens, or
-    /// else cascading from `cascadePoint`, which the first window takes from
-    /// the center of the screen. The window then moves back inside the
-    /// screen where it crosses an edge.
-    ///
-    /// Simulator.app turns the display to the device's orientation before
-    /// choosing the window's scale and placing it. NeoSimulator reads the
-    /// orientation afterwards, so that reading gives the window the scale it
-    /// opens at in its new shape and places a centered window again, unless
-    /// the window has moved or changed size in the meantime. A window that
-    /// cascades from another keeps its top-left corner, as there.
+    /// Restores the saved center or cascades a new window, keeping it on screen.
+    /// The first orientation reading may resize and recenter it unless the user has moved or resized it.
+    /// Cascaded windows retain their top-left corner.
     func showNewWindow(cascadingFrom cascadePoint: inout NSPoint) {
         guard let window else { return }
         let place: ((NSWindow) -> Void)?
@@ -261,12 +224,8 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
 
     private var pluginLookUp: Task<Void, Never>?
 
-    /// Shows the toolbar of the display's user-interface plugin, as
-    /// Simulator.app does when SimulatorKit reports the plugin, once the
-    /// display has loaded it. SimulatorKit places the plugin's overlay over
-    /// the screen itself; the overlay then takes the window's focus. A plugin
-    /// that does not load, or that cannot be used, is reported: the device
-    /// then shows its screen without the plugin's controls.
+    /// Attaches the loaded plugin's toolbar. SimulatorKit owns its overlay and input focus.
+    /// A failed plugin leaves the screen usable without its controls and reports the error.
     private func attachUserInterfacePlugin() {
         pluginLookUp?.cancel()
         pluginLookUp = nil
@@ -305,17 +264,13 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
         if window.isKeyWindow { focusInput() }
     }
 
-    /// Home on a user-interface plugin's toolbar, Simulator.app's
-    /// `homeButtonPressed:`.
+    /// Plugin-toolbar Home action.
     @objc func homeButtonPressed(_ sender: Any?) { perform(.home) }
 
-    /// Save Screen on a user-interface plugin's toolbar, Simulator.app's
-    /// `saveFramebufferImage:`.
+    /// Plugin-toolbar Save Screen action.
     @objc func saveFramebufferImage(_ sender: Any?) { perform(.saveScreen) }
 
-    /// Save Screen on a user-interface plugin's toolbar with Option, or
-    /// while recording, Simulator.app's `toggleVideoRecording:`: starts or
-    /// stops recording the screen.
+    /// Plugin-toolbar recording action, including Option-click on Save Screen.
     @objc func toggleVideoRecording(_ sender: Any?) {
         perform(session.recording == nil ? .recordScreen : .stopRecording)
     }
@@ -342,10 +297,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
             session.disconnect()
             return
         }
-        // The device's next connection shows a new display at the window's
-        // scale. Like Simulator.app, which turns its display upright after a
-        // restart, the window takes the display's shape as after a rotation:
-        // below its top edge, then moved back inside the screen.
+        // Preserve scale across reconnection, then fit the new display shape below the window's top edge.
         let scale = WindowScale.usable(self.session.display.renderScale) ?? 1
         isRestarting = false
         self.session = session
@@ -373,11 +325,8 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
         readInitialOrientation()
     }
 
-    /// Reads the orientation once for each connection and turns the window
-    /// to it. A new window that still has its `initialPlacement` frame then
-    /// takes the scale it opens at in that shape and is placed again. Like
-    /// Simulator.app, which turns only an iPhone's or iPad's display, a
-    /// device that does not rotate keeps its upright display.
+    /// Reads orientation once per connection and updates untouched initial placement.
+    /// Devices without rotation keep their upright display.
     private func readInitialOrientation() {
         guard session.capabilities.rotates else {
             initialPlacement = nil
@@ -467,37 +416,21 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
         }
     }
 
-    /// Shows or hides the device's bezel for Window ▸ Show Device Bezels, as
-    /// Simulator.app's `setShowChrome:` does: the display keeps its scale and
-    /// the window takes the display's new size.
+    /// Changes the bezel while preserving display scale.
     func setDeviceBezelVisible(_ visible: Bool) {
         session.display.setChromeVisible(visible)
         bezelChanged()
         updateWindowSize()
     }
 
-    /// Follows the bezel the display shows, as Simulator.app's chrome refresh
-    /// does: AppKit does not resize a window with a bezel, whose corners
-    /// resize it instead, the bezel's top padding lets the window extend
-    /// above the screen, and the gap above the display is 10 points less
-    /// that padding. The window is clear around a bezel, below a title bar
-    /// with rounded lower corners. Without a bezel, there is no gap, the title
-    /// bar is square, and the window is black, which shows wherever the
-    /// display leaves the window uncovered, such as at its rounded corners;
-    /// in full screen the window keeps its color and stays resizable until it
-    /// leaves full screen.
+    /// Applies bezel padding, background, header shape, and resize behavior.
+    /// Full-screen windows stay resizable until they leave full screen.
     private func bezelChanged() {
         guard let window = window as? DeviceWindow else { return }
         let padding = session.display.chromePadding
-        // Like Simulator.app's `simDisplayView(_:changedChrome:)`, the
-        // digitizer passes the pointer's scrolling on for a device with a
-        // Digital Crown or Digital Dial, and for any device while no bezel
-        // shows; SimulatorKit's HID client drops it for a device without
-        // either.
+        // Scrolling controls a crown or dial; without a bezel, SimulatorKit filters unsupported devices.
         session.display.setSupportsScrolling(padding == nil || session.capabilities.hasCrownOrDial)
-        // The same witness then tells the guest whether edge swipes start on
-        // the bezel, for the device's own screen while its digitizer takes
-        // touches, which every display of a device window does.
+        // With a bezel, guest edge gestures must start on it.
         session.display.setWantsEdgeSwipes(padding != nil)
         content.displayGap = WindowScale.displayGap(bezelPadding: padding)
         window.chromeTopPadding = padding?.height ?? 0
@@ -507,11 +440,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
         if padding == nil { window.styleMask.insert(.resizable) } else { window.styleMask.remove(.resizable) }
     }
 
-    /// Gives the toolbar the style that Simulator.app's geometry update gives
-    /// it for a display `width` points wide (see `DeviceToolbar.style`), and
-    /// lays the title bar out for that style, so that `content.headerHeight`
-    /// is its height. AppKit otherwise lays it out later, and an expanded
-    /// title bar would read 8 points taller than it becomes.
+    /// Lays out the toolbar immediately so size calculations use its final header height.
     private func updateToolbarStyle(forWidth width: CGFloat) {
         guard let window, let deviceToolbar else { return }
         let titles = deviceWindowTitles(name: session.device.name, runtimeName: session.device.runtimeName)
@@ -522,9 +451,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
         updateHeaderShape()
     }
 
-    /// Like Simulator.app, rounds the lower corners of the title bar with the
-    /// window's corner radius for its toolbar style while the bezel shows
-    /// outside full screen, and squares them otherwise.
+    /// Rounds the header below a visible bezel outside full screen.
     private func updateHeaderShape() {
         (window as? DeviceWindow)?.roundHeader(session.display.chromePadding != nil && !isFullScreen)
     }
@@ -536,9 +463,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
 
     // MARK: Keyboard and touch pressure
 
-    /// I/O ▸ Keyboard ▸ Connect Hardware Keyboard. As in Simulator.app, the
-    /// device's choice is saved and the Mac's keyboard follows it at once;
-    /// the guest's keyboard changes later. A failure is presented.
+    /// Updates host keyboard input immediately; applies the saved choice to the guest asynchronously.
     func toggleHardwareKeyboard() {
         Task.immediate { [weak self, session] in
             do { try await session.toggleHardwareKeyboard() } catch { self?.present(error) }
@@ -547,17 +472,12 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
         externalDisplayWindow?.updateKeyboardInput()
     }
 
-    /// Gives the display the Mac's keyboard while the window is key and its
-    /// device's hardware keyboard is connected, as Simulator.app's keyboard
-    /// controller does.
+    /// The key window receives keyboard input only when the device's hardware keyboard is connected.
     private func updateKeyboardInput() {
         keyboard.setEnabled(isKey && session.connectsHardwareKeyboard)
     }
 
-    /// Like Simulator.app, a change of the Mac's input source gives the key
-    /// device's keyboard its language. Simulator.app ignores a failure; it is
-    /// logged. The change starts before this returns, so that changes reach
-    /// the device in order.
+    /// Starts changes before returning to preserve input-source order. Failures are logged.
     private func keyboardSelectionChanged() {
         guard !closed, isKey || externalDisplayWindow?.isKey == true else { return }
         Task.immediate { [session] in
@@ -567,11 +487,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
         }
     }
 
-    /// Gives a newly connected display I/O ▸ Touch Pressure's settings. Like
-    /// Simulator.app, the display takes touch pressure on the device's own
-    /// screen when the device does, and the trackpad's force as Use Trackpad
-    /// Force says. Simulator.app leaves a new display at Shallow Press,
-    /// whatever the menu's checkmark shows; here it takes the app's mode.
+    /// Applies the app's current touch mode and trackpad-force setting on each connection.
     private func connectTouchPressure() {
         let display = session.display
         display.setSupportsTouchPressure(
@@ -579,8 +495,6 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
         applyTouchPressure()
     }
 
-    /// Like Simulator.app, a change reaches the window of each device that
-    /// takes touch pressure.
     private func touchPressureChanged() {
         guard !closed, session.capabilities.supportsFeature(DeviceCapabilities.touchPressure) else { return }
         applyTouchPressure()
@@ -591,9 +505,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
         session.display.setSimulatedTouchMode(touchPressure.mode)
     }
 
-    /// Draws the touch indicators that the preferences turn on, and no
-    /// others, when the display connects, as Simulator.app's window does,
-    /// and after a preference changes.
+    /// Applies indicator preferences on connection and whenever they change.
     private func showTouchIndicators() {
         for indicator in TouchIndicator.allCases {
             session.display.setTouchIndicator(indicator, shown: preferences.showsTouchIndicator(indicator))
@@ -677,9 +589,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
         // The thumbnail shrinks from the device screen, without the bezel.
         let source = window.convertToScreen(screen.convert(screen.bounds, to: nil))
         let displayFrame = window.convertToScreen(display.convert(display.bounds, to: nil))
-        // Simulator.app spaces a screenshot's thumbnail by the window's scale,
-        // twice as far for a landscape display, a TV, or a watch; in full
-        // screen, from the display's right edge.
+        // Thumbnail spacing follows scale, doubling for landscape, TV, and watch displays.
         let scale = session.display.renderScale
         let landscape = abs(session.displayAngle.truncatingRemainder(dividingBy: 180)) == 90
         let family = session.capabilities.family
@@ -737,9 +647,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
         session.transferPasteboard(transfer) { [weak self] in self?.present($0) }
     }
 
-    /// File ▸ Record Screen: starts recording without asking. Stopping shows
-    /// the movie's thumbnail, which saves it to the Desktop when dismissed;
-    /// the movie is named when the recording stops.
+    /// Records immediately; stopping creates a thumbnail that saves on dismissal.
     func recordScreen() {
         guard let desktop = CaptureFile.desktop else {
             present(HostError.operation("Could not find the Desktop folder to save the recording in."))
@@ -764,7 +672,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
         panel.allowedContentTypes = [.quickTimeMovie]
         panel.canCreateDirectories = true
         panel.nameFieldStringValue = CaptureFile.recordingName(device: session.device.name, date: Date())
-        // Simulator.app starts this option on and does not remember it.
+        // This option defaults on and is not persisted.
         let applyMask = NSButton(checkboxWithTitle: "Apply device mask to recording", target: nil, action: nil)
         applyMask.state = .on
         panel.accessoryView = Self.accessory(applyMask)
@@ -848,9 +756,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
         return externalDisplayWindow
     }
 
-    /// Like Simulator.app's screen monitor, opens the external display's
-    /// window while the display is on, whoever turned it on, sizes it to the
-    /// display's new size, and closes it once the display is off.
+    /// Follows actual external-display power and size, including changes from other tools.
     private func syncExternalDisplayWindow() {
         guard !closed else { return }
         guard let state = session.externalScreen, state.isPoweredOn else { return closeExternalDisplayWindow() }
@@ -872,8 +778,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
         externalDisplayWindow = nil
     }
 
-    /// Like Simulator.app, closing the external display's window chooses
-    /// Disabled. When turning the display off fails, its window opens again.
+    /// Closing selects Disabled. A failed power-off reopens the window.
     private func externalDisplayWindowClosed() {
         externalDisplayWindow = nil
         session.chooseExternalDisplay(.disabled) { [weak self] error in
@@ -884,9 +789,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
 
     // MARK: Presentation
 
-    // With Rotate Device Automatically on, the display follows the guest's
-    // interface orientation and the window follows the display. Other
-    // property changes, such as the backlight, keep the window size.
+    // Only orientation changes resize the window; other properties preserve its frame.
     private func displayPropertiesChanged() {
         guard !closed else { return }
         session.followBacklight()
@@ -899,10 +802,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
         if untouched, let frame = window?.frame { initialPlacement?.frame = frame }
     }
 
-    /// Like Simulator.app, the rotated display keeps its scale, and the
-    /// window takes its new shape below its top edge, moving down when that
-    /// edge would be above the screen, or is placed by `place`. The window
-    /// then moves back inside the screen where it crosses an edge.
+    /// Preserves display scale and the window's top edge during rotation, then keeps it on screen.
     private func didRotate(placing place: ((NSWindow) -> Void)? = nil) {
         guard !closed, let window, !fitting.fitsWindow else {
             resizeDisplay()
@@ -923,8 +823,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
 
     // MARK: Window scale
 
-    /// The scale `mode` shows the display at in this window, as Simulator.app
-    /// computes it, or nil for Fit Screen without a screen.
+    /// Returns nil for Fit Screen when no host screen is available.
     func scale(for mode: WindowScaleMode) -> CGFloat? {
         let screen = window?.screen
         switch mode {
@@ -943,35 +842,24 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
         }
     }
 
-    /// The largest display that fits `screen` in this window: the visible
-    /// frame below the window's header and the gap above the display, which
-    /// is the window's frame less the display's in Simulator.app.
+    /// Available display space below the header and display gap.
     private func displaySpace(on screen: NSScreen?) -> NSSize? {
         guard let visible = screen?.visibleFrame else { return nil }
         return NSSize(width: visible.width, height: visible.height - content.heightAboveDisplay)
     }
 
-    /// The smallest scale that Simulator.app lets a fixed scale or a drag on
-    /// the bezel give the display.
+    /// Minimum scale for fixed scaling and bezel resizing.
     private var minimumScale: CGFloat {
         WindowScale.minimum(family: session.capabilities.family, displayClass: session.display.displayClass,
                             fitting240: session.display.scale(for: NSSize(width: 240, height: 240)))
     }
 
-    /// Whether Simulator.app's validation of a scale command gets past its
-    /// first checks: a connected display outside full screen, and for
-    /// Physical Size, the device's own screen. Otherwise the command is
-    /// unavailable and its checkmark stays as it is.
+    /// Checks prerequisites without changing unavailable commands' checkmarks.
     private func validatesScale(_ mode: WindowScaleMode) -> Bool {
         session.canPerformCommands && !isFullScreen && (mode != .physicalSize || session.display.displayClass == 0)
     }
 
-    /// Whether a scale command can run, as Simulator.app validates it: on a
-    /// connected display outside full screen, Physical Size only on the
-    /// device's own screen, and a fixed scale only from the device's minimum.
-    /// A display without a bezel must also fit its screen's visible frame
-    /// below the window's header, where Simulator.app leaves out the gap
-    /// above the display; a window with a bezel may extend past the screen.
+    /// Checks minimum scale and screen fit; a window with a bezel may extend beyond the screen.
     func canSetScale(_ mode: WindowScaleMode) -> Bool {
         guard validatesScale(mode), let window else { return false }
         guard mode != .fitScreen else { return true }
@@ -981,11 +869,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
         return size.width <= visible.width && size.height <= visible.height - titleBarHeight(forDisplayWidth: size.width)
     }
 
-    /// The height of the title bar that a window around a display `width`
-    /// points wide takes, so that a scale is checked against the title bar it
-    /// would have. Simulator.app checks against the title bar the window has,
-    /// which a scale that changes the toolbar's style makes 24 points too
-    /// short or too tall.
+    /// Measures the title bar at the requested width, since scaling may change toolbar style.
     private func titleBarHeight(forDisplayWidth width: CGFloat) -> CGFloat {
         guard let deviceToolbar else { return content.headerHeight }
         let titles = deviceWindowTitles(name: session.device.name, runtimeName: session.device.runtimeName)
@@ -994,19 +878,14 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
         return titleBarHeights[style] ?? content.headerHeight
     }
 
-    /// The checkmark of a fixed scale: on while the display is at that scale,
-    /// also below the device's minimum or past the screen. It follows the
-    /// window's screen, so moving the window to a screen with another
-    /// resolution or size can clear it. Nil, which leaves the checkmark as it
-    /// is, where Simulator.app's validation returns before setting it.
+    /// Checks actual scale even when the command is unavailable.
+    /// Returns nil when prerequisite validation requires preserving the previous checkmark.
     func scaleState(_ mode: WindowScaleMode) -> NSControl.StateValue? {
         guard validatesScale(mode), let scale = scale(for: mode) else { return nil }
         return WindowScale.matches(session.display.renderScale, scale) ? .on : .off
     }
 
-    /// Shows the display at `mode`'s scale and sizes the window to it below
-    /// its top edge. Fit Screen then centers the window on its screen; the
-    /// fixed scales move it back inside its screen.
+    /// Resizes below the top edge. Fit Screen centers; fixed scales keep the window on screen.
     func setScale(_ mode: WindowScaleMode) {
         guard let window, let scale = scale(for: mode) else { return }
         let previous = window.frame
@@ -1025,10 +904,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
         window.setFrameOrigin(NSPoint(x: visible.midX - frame.width / 2, y: visible.midY - frame.height / 2))
     }
 
-    /// Moves the window inside its screen's visible frame along each axis
-    /// where it crosses an edge, as Simulator.app does after a fixed scale, a
-    /// rotation, or a change to the screens, and for a new window; not in
-    /// full screen.
+    /// Moves overflowing window edges inside the visible screen outside full screen.
     private func moveWindowOntoScreen() {
         guard let window, !window.styleMask.contains(.fullScreen),
               let visible = (window.screen ?? NSScreen.main)?.visibleFrame else { return }
@@ -1043,15 +919,9 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
         updateWindowSize()
     }
 
-    /// Sizes the window to the display at its scale, as Simulator.app's
-    /// geometry update does: the toolbar takes the style for the display's
-    /// width, and the window is as wide as the display, also below
-    /// `contentMinSize`, and as tall as the display, the gap above it, and the
-    /// title bar of that style. It keeps its bottom-left corner or moves it to
-    /// `origin`, takes the smallest integral frame around that
-    /// (`NSIntegralRect`), and moves down when its top would be above the
-    /// screen. In full screen and during a live resize, the display fits the
-    /// window instead.
+    /// Sizes the window to the scaled display, gap, and final toolbar height.
+    /// Keeps its bottom-left origin unless supplied and rounds outward to an integral frame.
+    /// Full screen and live resize fit the display into the window instead.
     private func updateWindowSize(origin: NSPoint? = nil) {
         guard !closed, let window, !fitting.fitsWindow else {
             resizeDisplay()
@@ -1066,9 +936,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
         fitting.layout()
     }
 
-    /// Gives the window the smallest integral frame around `frame`
-    /// (`NSIntegralRect`), moved down when its top would be above the screen,
-    /// as Simulator.app's geometry update does.
+    /// Rounds the frame outward and constrains its top edge.
     private func setFrame(around frame: NSRect) {
         guard let window else { return }
         var frame = NSIntegralRect(frame)
@@ -1082,10 +950,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
 
     // MARK: Bezel dragging
 
-    /// Handles the presses that no view in the window takes, as
-    /// Simulator.app's `DeviceWindow` does: a drag on a corner of the bezel,
-    /// in `SimDisplayView.typedResizeRects`, resizes the window, and any
-    /// other press moves it. Returns whether `event` belongs to such a drag.
+    /// Routes unhandled presses to bezel resizing or window dragging.
     private func handleBezelDrag(_ event: NSEvent) -> Bool {
         switch event.type {
         case .leftMouseDown: return beginBezelResize(with: event) || moveWindow(with: event)
@@ -1096,25 +961,15 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
         return true
     }
 
-    /// Moves the window with a press that reaches it outside the bezel's
-    /// corners while `AllowsMoveByDragOnWindowChrome` is on, outside full
-    /// screen. On the display, SimulatorKit passes the window only presses on
-    /// the bezel: its digitizer, which also covers the bezel around the
-    /// screen, passes on a press there once the pointer moves away from the
-    /// screen, and keeps the presses on the screen, as the bezel's buttons
-    /// keep theirs. Like Simulator.app, a press that AppKit gives the window
-    /// outside the display, such as in the gap below the header, moves it
-    /// too; the window server gives a press on the gap's transparent pixels
-    /// to the window behind.
+    /// Drags outside the bezel corners when enabled. SimulatorKit forwards bezel presses
+    /// while retaining screen input; AppKit may also forward presses outside the display.
     private func moveWindow(with event: NSEvent) -> Bool {
         guard !closed, !isFullScreen, preferences.movesWindowByDraggingBezel, let window else { return false }
         performWindowDrag(window, event)
         return true
     }
 
-    /// Starts a drag when `event` presses a corner of the bezel, outside full
-    /// screen. The display may grow until the dragged corner reaches the
-    /// edges of the screen's visible frame.
+    /// Begins a corner drag outside full screen, bounded by the visible screen.
     private func beginBezelResize(with event: NSEvent) -> Bool {
         guard !closed, !isFullScreen, let window else { return false }
         let display = session.display
@@ -1132,9 +987,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
         return true
     }
 
-    /// Gives the display the largest scale at which it fits the size the drag
-    /// asks for, from the device's minimum to the drag's maximum, and moves
-    /// the window so that the display's opposite corner stays where it was.
+    /// Scales between the device minimum and drag maximum, keeping the opposite corner fixed.
     private func continueBezelResize(with event: NSEvent) {
         guard let resize = bezelResize, let window else { return }
         let display = session.display
@@ -1143,8 +996,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
         updateWindowSize(origin: resize.drag.origin(for: display.size(for: display.renderScale)))
     }
 
-    /// Ends the drag. Like Simulator.app, a window that the drag left
-    /// mostly off its screen then moves back within reach.
+    /// After the drag, keep the window within reach of the screen.
     private func endBezelResize() {
         bezelResize = nil
         session.display.endResize()
@@ -1154,14 +1006,11 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
         if origin != window.frame.origin { window.setFrameOrigin(origin) }
     }
 
-    /// Where `event` happened on the screen. A window server event keeps
-    /// where the pointer was then, unlike its location in the window, which
-    /// a move of the window during the drag can leave behind.
+    /// Uses the event's screen coordinates; window-local coordinates can become stale during dragging.
     private static func screenLocation(of event: NSEvent, in window: NSWindow) -> NSPoint {
         event.cgEvent?.unflippedLocation ?? window.convertPoint(toScreen: event.locationInWindow)
     }
 
-    /// Shows the bezel's resize cursors outside full screen, as Simulator.app does.
     private func showResizeCursors() {
         session.display.setShowsResizeCursors(!isFullScreen)
         window?.invalidateCursorRects(for: session.display.view)
@@ -1199,10 +1048,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
         session.display.setActive(false)
     }
     func windowWillStartLiveResize(_ notification: Notification) { if !closed { fitting.willStartLiveResize() } }
-    /// Like Simulator.app's `windowDidResize:`, a resize that the window did
-    /// not make itself, such as a manual one, gives the toolbar the style for
-    /// the new width outside full screen and keeps the window's height below
-    /// the title bar. The display then fits the window.
+    /// A manual resize updates toolbar style while preserving content height, then fits the display.
     func windowDidResize(_ notification: Notification) {
         guard !isSizingWindow else { return }
         if !closed, !isFullScreen, let window {
@@ -1215,9 +1061,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
         }
         resizeDisplay()
     }
-    // Simulator.app animates a window with a bezel, which is not resizable,
-    // into full screen and back itself. AppKit's transition fills the screen
-    // only with a resizable window, so the window is resizable in full screen.
+    // AppKit requires resizability to fill the screen during its full-screen transition.
     func windowWillEnterFullScreen(_ notification: Notification) {
         fitting.willEnterFullScreen()
         showResizeCursors()
@@ -1230,9 +1074,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
         updateHeaderShape()
         bezelChanged()
     }
-    /// Like Simulator.app, the window returns to the display's scale and the
-    /// window's origin from before full screen, which AppKit's own return does
-    /// not keep for a window taller than the screen.
+    /// Restores scale and origin explicitly; AppKit loses the origin of windows taller than the screen.
     func windowDidExitFullScreen(_ notification: Notification) {
         let geometry = fitting.didExitFullScreen()
         showResizeCursors()
@@ -1262,7 +1104,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
         }
     }
 
-    // Like Simulator.app, closing with Control held asks first.
+    // Control-close asks which device lifetime to use.
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         guard NSEvent.modifierFlags.contains(.control) else { return true }
         closeAsking()
@@ -1281,9 +1123,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
         window?.delegate = nil
         window?.close()
     }
-    /// Like Simulator.app, the device's next window in the same arrangement of
-    /// screens opens at this center and scale. A window that closes during a
-    /// restart saves nothing.
+    /// Saves center and scale per screen arrangement, except during restart.
     private func saveWindowGeometry() {
         guard !closed, !isRestarting, let window else { return }
         preferences.setWindowGeometry(center: NSPoint(x: window.frame.midX, y: window.frame.midY),
@@ -1313,15 +1153,11 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
         closeExternalDisplayWindow()
         session.disconnect()
     }
-    /// A controller released without closing its window, which
-    /// `HostApplication` discards when another host appears before the window
-    /// shows, disconnects without saving the window's geometry.
+    /// An unshown controller discarded during a host conflict disconnects without saving geometry.
     isolated deinit { disconnect() }
 }
 
-/// Simulator.app's `DeviceWindow`, which lets a window whose bezel has top
-/// padding extend past the screen and receives the presses on the bezel
-/// that resize or move the window.
+/// Allows bezel padding beyond the screen and handles unconsumed bezel drags.
 @MainActor
 final class DeviceWindow: NSWindow {
     /// The top padding of the display's bezel at scale 1,
@@ -1329,9 +1165,7 @@ final class DeviceWindow: NSWindow {
     var chromeTopPadding: CGFloat = 0
     /// The display's scale, which the padding scales with.
     var displayScale: () -> CGFloat = { 1 }
-    /// Receives each mouse down, drag, and up that no view in the window
-    /// handles, such as a press on the bezel, and returns whether it handled
-    /// the event.
+    /// Handles mouse events left unconsumed by the window's views.
     var handleMouseEvent: (NSEvent) -> Bool = { _ in false }
 
     override func mouseDown(with event: NSEvent) {
@@ -1346,10 +1180,7 @@ final class DeviceWindow: NSWindow {
         if !handleMouseEvent(event) { super.mouseUp(with: event) }
     }
 
-    /// Like Simulator.app, while the bezel has top padding, the frame keeps
-    /// its size and moves down only as far as the top of the bezel, below the
-    /// padding, needs to stay below the top of the screen's visible frame.
-    /// Otherwise AppKit constrains the frame.
+    /// Allows top bezel padding beyond the screen; otherwise uses AppKit's frame constraint.
     override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
         guard let target = screen ?? self.screen, chromeTopPadding > 0 else {
             return super.constrainFrameRect(frameRect, to: screen)
@@ -1358,10 +1189,7 @@ final class DeviceWindow: NSWindow {
                                  topInset: chromeTopPadding * displayScale())
     }
 
-    /// The window's corner radius, which Simulator.app reads from the private
-    /// `NSWindow._cornerRadius` for the lower corners of the title bar. Without
-    /// that method, the radius macOS 26 gives a titled window with its toolbar
-    /// style: 26 points unified, 20 compact, and 16 expanded.
+    /// Uses private `NSWindow._cornerRadius`, falling back to macOS 26 style radii.
     private var cornerRadius: CGFloat {
         let selector = NSSelectorFromString("_cornerRadius")
         if responds(to: selector) {
@@ -1375,10 +1203,7 @@ final class DeviceWindow: NSWindow {
         }
     }
 
-    /// The view that holds the title bar and the toolbar, Simulator.app's
-    /// `NSTitlebarContainerView`: the close button's ancestor among the
-    /// subviews of the window's frame view. Nil while the title bar is in
-    /// another window, as in full screen.
+    /// Finds the close button's title-bar ancestor; nil when full screen moves it to another window.
     private var titlebarContainer: NSView? {
         guard let frameView = contentView?.superview else { return nil }
         var view: NSView? = standardWindowButton(.closeButton)
@@ -1386,10 +1211,7 @@ final class DeviceWindow: NSWindow {
         return view
     }
 
-    /// Rounds the lower corners of the title bar with the window's corner
-    /// radius, so that the title bar's shape matches the window's top, or
-    /// squares them, as Simulator.app's `DeviceWindow` does with the layer of
-    /// its title bar container.
+    /// Matches the header's lower corners to the window or makes them square.
     func roundHeader(_ rounded: Bool) {
         guard let layer = titlebarContainer?.layer else { return }
         guard rounded else {
@@ -1411,12 +1233,8 @@ private final class DeviceContentView: NSView, DisplayContentView {
     var displayGap = WindowScale.displayGap(bezelPadding: nil) {
         didSet { needsLayout = true }
     }
-    /// Whether the window has the display's size, as Simulator.app's
-    /// geometry update gives it. The display then fills the window below the
-    /// gap, as Simulator.app's constraints pin its display view, also where
-    /// the integral frame leaves a fraction of a point. In full screen and
-    /// after a manual resize, the display keeps its own size, centered below
-    /// the gap.
+    /// Fills integral-frame rounding gaps when sized to the display.
+    /// Otherwise centers the display at its own size, including after manual resizing.
     var isSizedToDisplay = false {
         didSet { needsLayout = true }
     }
@@ -1465,12 +1283,12 @@ private final class DeviceContentView: NSView, DisplayContentView {
 }
 
 enum CaptureFile {
-    /// Simulator.app's screenshot name, dated in the local time zone.
+    /// Screenshot filename in local time.
     static func screenshotName(device: String, date: Date) -> String {
         name("Simulator Screenshot", device: device, date: date, extension: "png")
     }
 
-    /// Simulator.app's screen recording name, dated in the local time zone.
+    /// Recording filename in local time.
     static func recordingName(device: String, date: Date) -> String {
         name("Simulator Screen Recording", device: device, date: date, extension: "mov")
     }
@@ -1487,9 +1305,7 @@ enum CaptureFile {
 
     static var desktop: URL? { FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first }
 
-    /// The folder Save Screen saves into, as Simulator.app chooses it:
-    /// `ScreenShotSaveLocation` when it is an existing folder, else the
-    /// Desktop, else `/private/tmp`.
+    /// Uses an existing ScreenShotSaveLocation, then Desktop, then /private/tmp.
     static func screenshotFolder() -> URL {
         if let location = UserDefaults.standard.string(forKey: HostPreferences.screenShotSaveLocation) {
             let path = NSString(string: location).expandingTildeInPath
@@ -1513,9 +1329,8 @@ enum CaptureFile {
         throw HostError.operation("Could not save \(name): \(folder.path) already has files of that name through #99.")
     }
 
-    /// Moves a capture into `folder` under `name`, adding " #2" through
-    /// " #99" before the extension when the name is taken or `isReserved`.
-    /// A failure leaves the capture where it is and names that location.
+    /// Moves the capture without overwriting, trying suffixes #2 through #99.
+    /// A failure preserves the original file and reports its location.
     static func move(_ capture: URL, into folder: URL, named name: String,
                      isReserved: (URL) -> Bool = { _ in false }) throws -> URL {
         let base = (name as NSString).deletingPathExtension, suffix = (name as NSString).pathExtension
@@ -1560,12 +1375,11 @@ enum CaptureFile {
     }
 }
 
-/// Simulator.app's choice between shutting devices down and leaving them
-/// running, which File ▸ Close Window… and Quit NeoSimulator… ask for.
+/// Device lifetime selected when closing a window or quitting.
 enum DeviceLifetimeChoice: Equatable {
     case shutDown, keepRunning
 
-    /// The alert with Simulator.app's text. Return chooses the default action.
+    /// Return chooses the default action.
     static func alert(quitting: Bool, keepsRunningByDefault: Bool) -> NSAlert {
         let alert = NSAlert()
         if quitting {

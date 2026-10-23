@@ -1,10 +1,6 @@
 import AppKit
 
-/// A command that acts on the active device window.
-///
-/// Each command is defined once here: menus, the window toolbar, and their
-/// validation are built from the catalog. Titles, shortcuts, and positions
-/// follow Simulator.app's MainMenu.nib where Simulator.app has the command.
+/// Catalog shared by device menus, toolbars, and validation.
 @MainActor
 struct DeviceCommand {
     enum ID: String, CaseIterable {
@@ -33,36 +29,27 @@ struct DeviceCommand {
     }
 
     struct Toolbar {
-        /// What a button shows and the command it performs.
+        /// A toolbar button's appearance and action.
         struct Face {
             let id: ID
             let symbol: String
-            /// The description of the button's image, which accessibility
-            /// reads, or nil for the symbol's own.
+            /// Accessibility image description; nil uses the symbol's own description.
             let imageDescription: String?
-            /// The button's tooltip, or nil for the item's label.
+            /// Tooltip override; nil uses the label.
             var toolTip: String?
         }
 
-        /// The item's label, which is also the button's tooltip while it
-        /// performs the command, as in Simulator.app's toolbar nibs, unless
-        /// `toolTip` gives another.
+        /// Item label and default tooltip.
         let label: String
         let toolTip: String?
         let symbol: String
-        /// The description of the button's image while it performs the
-        /// command, by default the label.
+        /// Accessibility image description, defaulting to the label.
         let imageDescription: String
-        /// The width of the command's button in Simulator.app's toolbar nib,
-        /// which its toolbar style threshold counts (see
-        /// `DeviceToolbar.buttonsWidth`).
+        /// Simulator.app toolbar width, used by `DeviceToolbar.buttonsWidth`.
         let buttonWidth: CGFloat
-        /// What the button shows and performs while Option is down with the
-        /// pointer over the toolbar, as Simulator.app's `OptionSwitchingButton`
-        /// does.
+        /// Alternate shown while Option is held over the toolbar.
         let optionAlternate: Face?
-        /// What the button shows and performs while that command can run,
-        /// whether or not Option is down.
+        /// Alternate shown whenever its command can run, regardless of Option.
         let alternate: Face?
 
         init(label: String, toolTip: String? = nil, symbol: String, imageDescription: String? = nil,
@@ -81,34 +68,28 @@ struct DeviceCommand {
     let title: String
     var key = ""
     var modifiers: NSEvent.ModifierFlags = .command
-    /// Whether the menu shows the command in place of the one before it
-    /// while the extra modifier is held.
+    /// Replaces the preceding menu item while the extra modifier is held.
     var isAlternate = false
-    /// Whether the key device, or nil without one, gets the command's
-    /// shortcut, for commands that share a shortcut with another.
+    /// Assigns shortcuts shared by commands according to the key device.
     var hasKey: ((DeviceCapabilities?) -> Bool)?
     var toolbar: Toolbar?
-    /// Whether the device supports the command. Unsupported commands are hidden.
+    /// Unsupported commands are hidden.
     var isSupported: (DeviceCapabilities) -> Bool = { _ in true }
-    /// Whether the command can run now. Defaults to a connected, booted device.
+    /// Defaults to a connected, booted device.
     var isEnabled: (DeviceWindowController) -> Bool = { $0.session.canPerformCommands }
-    /// The checkmark for the active window, or nil to leave it as it is.
+    /// Nil preserves the current checkmark.
     var state: ((DeviceWindowController) -> NSControl.StateValue?)?
-    /// Whether the checkmark stays as it is without an active device window,
-    /// instead of turning off.
+    /// Preserves the checkmark when no device window is active.
     var keepsStateWithoutWindow = false
-    /// The title for the current state, when it changes with the state.
+    /// Dynamic title.
     var stateTitle: ((DeviceWindowController) -> String)?
-    /// The subtitle for the current state, or nil for none, when the item
-    /// has one.
+    /// Dynamic subtitle; nil clears it.
     var stateSubtitle: ((DeviceWindowController) -> String?)?
     let perform: (DeviceWindowController) -> Void
 
     static func command(_ id: ID) -> DeviceCommand { catalog[id]! }
 
-    /// Sets the checkmark and title of the command's menu item for the
-    /// active device window, or for none, and returns whether the command can
-    /// run.
+    /// Updates menu state and returns availability for the active device window.
     func validate(_ item: NSMenuItem, for controller: DeviceWindowController?) -> Bool {
         guard let controller else {
             if !keepsStateWithoutWindow { item.state = .off }
@@ -127,10 +108,7 @@ struct DeviceCommand {
     }
 
     static let catalog: [ID: DeviceCommand] = Dictionary(uniqueKeysWithValues: ([
-        // File
-        // Like Simulator.app's, the Save Screen button records the screen with
-        // Option, and stops a recording while it runs, showing `stop.circle`,
-        // instead of the toolbar adding an item.
+        // File: Save Screen becomes Record Screen with Option, or Stop Recording while recording.
         DeviceCommand(id: .saveScreen, title: "Save Screen", key: "s",
                       toolbar: Toolbar(label: "Save Screen", symbol: "camera.on.rectangle", buttonWidth: 32,
                                        optionAlternate: .init(id: .recordScreen, symbol: "record.circle",
@@ -148,15 +126,13 @@ struct DeviceCommand {
                       isEnabled: { $0.session.canPerformToolOperation && $0.session.recording == nil }) { $0.chooseRecordingDestination() },
         DeviceCommand(id: .stopRecording, title: "Stop Recording",
                       isEnabled: { $0.session.recording.map { !$0.isStopping } ?? false }) { $0.session.stopRecording() },
-        // NeoSimulator's own command. Shift-Command-I is Trigger iCloud Sync in Simulator.app.
+        // NeoSimulator shortcut; Simulator.app assigns it to Trigger iCloud Sync.
         DeviceCommand(id: .importFiles, title: "Install App or Import Media…",
                       isEnabled: { $0.session.canPerformToolOperation }) { $0.chooseFilesToImport() },
         // Edit
         DeviceCommand(id: .copyScreen, title: "Copy Screen", key: "c", modifiers: [.command, .control],
                       isEnabled: { $0.session.canPerformToolOperation }) { $0.copyScreen() },
-        // Like Simulator.app, shown for every device and enabled only where
-        // the device can exchange its pasteboard, while pasteboards do not
-        // synchronize automatically.
+        // Manual pasteboard transfers are unavailable during automatic synchronization.
         DeviceCommand(id: .getPasteboard, title: "Get Pasteboard",
                       isEnabled: { $0.session.canTransferPasteboard }) { $0.transferPasteboard(.get) },
         DeviceCommand(id: .sendPasteboard, title: "Send Pasteboard",
@@ -171,9 +147,7 @@ struct DeviceCommand {
         DeviceCommand(id: .rotateLeft, title: "Rotate Left", key: String(UnicodeScalar(NSLeftArrowFunctionKey)!),
                       isSupported: { $0.rotates },
                       isEnabled: { $0.session.canPerformToolOperation }) { $0.rotate(left: true) },
-        // As in Simulator.app, the button is Rotate, which keeps its tooltip
-        // with Option and then shows `rotate.left` with the symbol's own
-        // description.
+        // Option changes rotation direction while preserving the Rotate tooltip.
         DeviceCommand(id: .rotateRight, title: "Rotate Right", key: String(UnicodeScalar(NSRightArrowFunctionKey)!),
                       toolbar: Toolbar(label: "Rotate", symbol: "rotate.right", imageDescription: "Rotate Right",
                                        buttonWidth: 25,
@@ -198,11 +172,9 @@ struct DeviceCommand {
         },
         DeviceCommand(id: .home, title: "Home", key: "h", modifiers: [.command, .shift],
                       toolbar: Toolbar(label: "Home", symbol: "house", buttonWidth: 31)) { $0.send(.press(.button(.home))) },
-        // Simulator.app shows Lock for iPhones, iPads, and watches.
         DeviceCommand(id: .lock, title: "Lock", key: "l",
                       isSupported: { $0.isPhoneOrPad || $0.family == .watch }) { $0.send(.press(.button(.lock))) },
-        // Only a toolbar button, of Simulator.app's IndigoWatchAODToolbar.nib:
-        // it presses Lock, and its state is the watch's backlight.
+        // Watch-only Lock button whose state follows the backlight.
         DeviceCommand(id: .alwaysOn, title: "Always On",
                       toolbar: Toolbar(label: "Always On", toolTip: "Toggle Always On", symbol: "applewatch.watchface",
                                        buttonWidth: 25),
@@ -219,7 +191,6 @@ struct DeviceCommand {
             $0.send(.hold(.button(.actionStaccato), for: .milliseconds(500)))
         },
         watchGesture(.doubleTap, title: "Double Tap", .doubleTap),
-        // Simulator.app hides Wrist Flick before watchOS 12.
         watchGesture(.wristFlick, title: "Wrist Flick", .wristFlick, minimumRuntime: 0x0C_00_00),
         DeviceCommand(id: .siri, title: "Siri", key: "h", modifiers: [.command, .option, .shift],
                       isSupported: { $0.supportsFeature(DeviceCapabilities.siri) }) { $0.send(.press(.button(.siri))) },
@@ -229,16 +200,13 @@ struct DeviceCommand {
                       isSupported: { $0.isPhoneOrPad }) {
             $0.send(.pressTwice(.button(.home), interval: .milliseconds(150)))
         },
-        // The guest's screenshot action, unlike Save Screen. It needs iOS 13.
+        // Guest screenshot action, requiring iOS 13.
         DeviceCommand(id: .triggerScreenshot, title: "Trigger Screenshot",
                       isSupported: { $0.isPhoneOrPad },
                       isEnabled: { $0.session.canPerformCommands && $0.session.capabilities.runtimeVersion >= 0x0D_00_00 }) {
             $0.send(.press(.screenshot))
         },
-        // I/O. Simulator.app shows Keyboard only for a device that takes a
-        // hardware keyboard, and Touch Pressure only for one that takes
-        // touch pressure. Use the Same Keyboard Language as macOS is an app
-        // preference, so it does not need a booted device.
+        // I/O: app preferences remain available without a booted device.
         DeviceCommand(id: .syncKeyboardLanguage, title: "Use the Same Keyboard Language as macOS",
                       isSupported: { $0.supportsFeature(DeviceCapabilities.keyboard) },
                       isEnabled: { _ in true },
@@ -247,14 +215,13 @@ struct DeviceCommand {
                       modifiers: [.command, .shift],
                       isSupported: { $0.supportsFeature(DeviceCapabilities.keyboard) },
                       state: { $0.session.connectsHardwareKeyboard ? .on : .off }) { $0.toggleHardwareKeyboard() },
-        // The software keyboard toggles only beside a hardware keyboard.
+        // Software keyboard toggling requires the hardware keyboard.
         DeviceCommand(id: .toggleSoftwareKeyboard, title: "Toggle Software Keyboard", key: "k",
                       isSupported: { $0.supportsFeature(DeviceCapabilities.keyboard) },
                       isEnabled: { $0.session.canPerformCommands && $0.session.connectsHardwareKeyboard }) {
             $0.send(.press(.button(.softwareKeyboard)))
         },
-        // App-wide settings, as Simulator.app keeps them, so they do not need
-        // a booted device. Use Trackpad Force needs a Force Touch trackpad.
+        // App preferences remain available without a booted device.
         DeviceCommand(id: .useTrackpadForce, title: "Use Trackpad Force",
                       isSupported: { $0.supportsFeature(DeviceCapabilities.touchPressure) },
                       isEnabled: { $0.touchPressure.hasForceTouchTrackpad },
@@ -308,7 +275,6 @@ struct DeviceCommand {
                                    failure: { [weak controller] in controller?.present($0) })
         },
         // Debug
-        // Simulator.app shows the setting only for a guest that keeps it.
         DeviceCommand(id: .toggleSlowAnimations, title: "Toggle Slow Animations in Frontmost App",
                       state: { $0.session.keepsSlowAnimations && $0.session.slowAnimations ? .on : .off },
                       stateTitle: { $0.session.keepsSlowAnimations ? "Slow Animations" : "Toggle Slow Animations in Frontmost App" }) { controller in
@@ -327,8 +293,6 @@ struct DeviceCommand {
             controller.run { try controller.session.simulateMemoryWarning() }
         },
         // Window
-        // Like Simulator.app, the item shows for every device, is enabled for
-        // an Apple TV, and says whether choosing it shows or hides the remote.
         DeviceCommand(id: .appleTVRemote, title: "Show Apple TV Remote", key: "r", modifiers: [.command, .shift],
                       isEnabled: { $0.session.capabilities.family == .tv },
                       stateTitle: { $0.tvRemote.isVisible ? "Hide Apple TV Remote" : "Show Apple TV Remote" }) {
@@ -342,9 +306,7 @@ struct DeviceCommand {
         scale(.fitScreen, title: "Fit Screen", key: "4"),
     ] + ExternalDisplayMode.allCases.map { externalDisplay($0) }).map { ($0.id, $0) })
 
-    /// A window scale command. Like Simulator.app, Fit Screen has no checkmark,
-    /// and the others keep theirs while they are unavailable, including
-    /// without a device window, where Simulator.app does not validate them.
+    /// Fit Screen has no checkmark; fixed-scale checkmarks persist while unavailable.
     private static func scale(_ mode: WindowScaleMode, title: String, key: String) -> DeviceCommand {
         DeviceCommand(id: ID(rawValue: mode.rawValue)!, title: title, key: key,
                       isEnabled: { $0.scaledWindow.canSetScale(mode) },
@@ -352,15 +314,8 @@ struct DeviceCommand {
                       keepsStateWithoutWindow: true) { $0.scaledWindow.setScale(mode) }
     }
 
-    /// An I/O ▸ External Displays item, shown, as in Simulator.app, for a
-    /// device that supports external displays and has its own screen. Like
-    /// Simulator.app, the items stay enabled while the device restarts, and a
-    /// choice then applies when it connects; CarPlay is enabled only for a
-    /// device that also supports CarPlay, and unchecked otherwise. The
-    /// checkmark is the external display's actual state, where Simulator.app
-    /// checks the saved choice. Unlike Simulator.app, an item the device
-    /// cannot show is disabled, and its subtitle says why; CarPlay on a device
-    /// without CarPlay stays as Simulator.app shows it.
+    /// External-display choices remain available during restart and apply on reconnection.
+    /// Checkmarks follow actual state; unsupported choices show a reason and are disabled.
     private static func externalDisplay(_ mode: ExternalDisplayMode) -> DeviceCommand {
         let hasFeature: (DeviceWindowController) -> Bool = {
             mode != .carPlay || $0.session.capabilities.supportsCarPlay
@@ -376,9 +331,7 @@ struct DeviceCommand {
         }
     }
 
-    /// Shallow Press or Deep Press, checked when it is the app's touch mode.
-    /// Like Simulator.app, they are available only for a watch, and
-    /// choosing one changes every window that takes touch pressure.
+    /// Watch-only menu choices update the app-wide touch-pressure mode.
     private static func touchMode(_ id: ID, title: String, key: String, _ mode: SimulatedTouchMode) -> DeviceCommand {
         DeviceCommand(id: id, title: title, key: key, modifiers: [.command, .shift],
                       isSupported: { $0.supportsFeature(DeviceCapabilities.touchPressure) },
@@ -415,11 +368,8 @@ struct DeviceCommand {
         }
     }
 
-    /// A matching or non-matching biometric event. Option-Command-M and N go
-    /// to Face ID on a device with Face ID, and otherwise to Touch ID, as
-    /// Simulator.app assigns them when a device window becomes key. Simulator.app
-    /// also gives them to Optic ID only on a device with Face ID, so Apple
-    /// Vision Pro's Optic ID has no shortcut.
+    /// Shared biometric shortcuts prefer Face ID, then Touch ID.
+    /// Optic ID has no shortcut on Vision Pro, matching Simulator.app.
     private static func biometric(_ id: ID, title: String, _ biometric: DeviceSession.Biometric,
                                   matching: Bool) -> DeviceCommand {
         DeviceCommand(id: id, title: title, key: matching ? "m" : "n", modifiers: [.command, .option],
@@ -443,10 +393,7 @@ struct DeviceCommand {
         }
     }
 
-    /// A Graphics Quality Override choice, checked when it is the app's setting.
-    /// Like Simulator.app, the change is immediate, except that an Apple TV
-    /// then restarts its system UI, a device-tool operation, so the choice
-    /// waits there for the running one.
+    /// Graphics quality applies immediately; Apple TV also queues a system-UI restart.
     private static func graphicsQuality(_ id: ID, title: String, _ quality: GraphicsQuality) -> DeviceCommand {
         DeviceCommand(id: id, title: title,
                       isSupported: { $0.supportsFeature(DeviceCapabilities.graphicsQualityOverride) },
@@ -471,22 +418,13 @@ struct DeviceCommand {
         }
     }
 
-    /// Toolbar items in the order of Simulator.app's toolbar nibs: Home, Save
-    /// Screen, then Rotate for iPhones and iPads or Always On for watches with
-    /// an always-on display. Unsupported items are omitted, so a watch
-    /// without one and an Apple TV show Home and Save Screen.
+    /// Simulator.app toolbar order; capability validation omits unsupported items.
     static let toolbarItems: [ID] = [.home, .saveScreen, .rotateRight, .alwaysOn]
 }
 
-/// A menu command that the device's user-interface plugin performs: Apple
-/// Vision Pro's camera, scene, immersion, gaze, and FaceTime commands, which
-/// `XROS.VirtualHMDInputView`, the overlay of the selected Xcode's
-/// `XROS.simdeviceui`, implements. As in Simulator.app's MainMenu.nib, the
-/// item sends its action to the first responder, which is the overlay while it
-/// is the display's input view. AppKit has the overlay validate the item, which
-/// enables it, sets its checkmark, and fills the Simulated Scenes submenu, and
-/// sends it the action. Without the overlay in the key window's responder
-/// chain, nothing takes the action, and AppKit disables the item.
+/// Plugin commands use the first-responder chain for validation and execution.
+/// The XROS overlay supplies checkmarks, scene submenus, and actions;
+/// without it in the key window, AppKit disables these commands.
 @MainActor
 struct PluginCommand {
     let title: String
@@ -528,9 +466,7 @@ struct PluginCommand {
         PluginCommand(title: "75%", action: Selector(("setImmersionTo75:"))),
         PluginCommand(title: "100%", action: Selector(("setImmersionTo100:"))),
     ]
-    // Features ▸ FaceTime. Each item has the overlay start a simulated
-    // FaceTime call in the guest with the local user and that many spatial
-    // and other participants.
+    // Starts a guest FaceTime call with the local user and these simulated participant counts.
     static let faceTimeSessions = [
         PluginCommand(title: "User and 1 Spatial Participant",
                       action: Selector(("configureSimulatedFaceTimeSession1x1:"))),
@@ -555,10 +491,7 @@ struct PluginCommand {
     ).map { ($0.action, $0) })
 }
 
-/// Splits a device name the way Simulator.app titles its windows: the name up
-/// to the first closing parenthesis stays in the title, and later parenthesized
-/// groups join the runtime name in the subtitle. A title that starts with
-/// "Apple Watch " loses that prefix, as a watch's does in Simulator.app.
+/// Splits parenthesized device details into the subtitle and removes the Apple Watch title prefix.
 func deviceWindowTitles(name: String, runtimeName: String) -> (title: String, subtitle: String) {
     let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
     func shown(_ title: Substring) -> String {

@@ -126,9 +126,7 @@ final class RecordingStore {
     enum Destination {
         /// A file chosen in a save panel, replaced when the recording finishes.
         case file(URL)
-        /// A temporary movie, handed over once it is finalized, like
-        /// Simulator.app's quick recording, which is named only when it stops.
-        /// A failure to take it over is reported like a failure to save.
+        /// Hands off a finalized temporary movie; handoff failures are reported as save failures.
         case capture(@MainActor (URL) throws -> Void)
     }
 

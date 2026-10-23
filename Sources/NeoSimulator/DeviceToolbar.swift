@@ -25,9 +25,7 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
         toolbar.delegate = self
         toolbar.displayMode = .iconOnly
         toolbar.allowsUserCustomization = false
-        // Like Simulator.app, a unified title bar truncates the title before
-        // it moves buttons into the overflow menu. The property is private
-        // AppKit API; without it, AppKit keeps its own minimum.
+        // Private AppKit API lets the title truncate before buttons overflow.
         if toolbar.responds(to: NSSelectorFromString("setMinimumInlineWindowTitleWidth:")) {
             toolbar.setValue(0.0, forKey: "minimumInlineWindowTitleWidth")
         }
@@ -39,12 +37,8 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
         if let pointerTracking { pointerTracking.view.removeTrackingArea(pointerTracking.area) }
     }
 
-    /// Gives `window` the toolbar and, like Simulator.app's `SimToolbar`,
-    /// tracks the pointer over the toolbar's view while the app is active, in
-    /// any of its windows, so that the buttons follow Option there. The view
-    /// is private AppKit API, as in Simulator.app: it spans the title bar with
-    /// the unified styles and the row below the title with the expanded one.
-    /// Without it, the buttons keep their faces.
+    /// Tracks Option while the pointer is over the toolbar, including inactive windows.
+    /// The toolbar view is private AppKit API; without it, buttons keep their default faces.
     func attach(to window: NSWindow) {
         window.toolbar = toolbar
         guard toolbar.responds(to: NSSelectorFromString("_toolbarView")),
@@ -55,12 +49,8 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
         pointerTracking = (view, area)
     }
 
-    /// The pointer entered the toolbar: until it leaves, the buttons show
-    /// their Option alternates while Option is down. Like Simulator.app's,
-    /// they read the keys when the pointer enters and at each modifier change
-    /// that reaches the app. They read the keys held rather than the event's,
-    /// so that the modifier release a window sends its device when it resigns
-    /// key does not turn the alternates off while Option is held.
+    /// Read physical modifier state so synthetic releases sent to devices do not
+    /// clear an Option alternate while the user still holds Option.
     @objc(mouseEntered:) func mouseEntered(with event: NSEvent) {
         if modifierMonitor == nil {
             modifierMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
@@ -91,16 +81,12 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
         [.flexibleSpace] + commands.map { NSToolbarItem.Identifier($0.rawValue) } + [.flexibleSpace]
     }
 
-    /// What Simulator.app's toolbar style threshold counts for the toolbar's
-    /// buttons (`_toolbarItemWidth`): the width of each button in its toolbar
-    /// nib plus 4 points, for the commands this toolbar has.
+    /// Simulator.app toolbar threshold: each present button's nib width plus four points.
     private var buttonsWidth: CGFloat {
         commands.compactMap { DeviceCommand.command($0).toolbar?.buttonWidth }.reduce(0) { $0 + $1 + 4 }
     }
 
-    /// The narrowest display with which Simulator.app keeps the unified style
-    /// (`_minWidth`): the buttons, the wider of `title` in the headline font
-    /// and `subtitle` in the subheadline font, and 130 points.
+    /// Unified width includes buttons, the wider title/subtitle, and 130 points of spacing.
     private func unifiedWidth(title: String, subtitle: String) -> CGFloat {
         func width(_ text: String, _ style: NSFont.TextStyle) -> CGFloat {
             let font = NSFont.preferredFont(forTextStyle: style, options: [:])
@@ -109,22 +95,15 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
         return buttonsWidth + max(width(title, .headline), width(subtitle, .subheadline)) + 130
     }
 
-    /// The style Simulator.app's geometry update gives the toolbar of a window
-    /// whose display is `width` points wide: compact with `UseCompactTitleBar`,
-    /// otherwise unified while `UseMonobar` is on and the display is at least
-    /// `unifiedWidth(title:subtitle:)` wide, and expanded below that.
+    /// Chooses compact, unified, or expanded style from preferences and available width.
     func style(forWidth width: CGFloat, title: String, subtitle: String,
                preferences: any PreferenceStore) -> NSWindow.ToolbarStyle {
         if preferences.usesCompactTitleBar { return .unifiedCompact }
         return preferences.usesMonobar && unifiedWidth(title: title, subtitle: subtitle) <= width ? .unified : .expanded
     }
 
-    /// Gives `window` `style` and, as Simulator.app does on macOS 26, hides
-    /// the last flexible space of the window's toolbar unless the style is
-    /// expanded, so that the buttons follow the title in a unified title bar
-    /// and are centered in the row below it in an expanded one. The window's
-    /// toolbar is this one, or the toolbar of a user-interface plugin, which
-    /// Simulator.app also styles so.
+    /// Hides the trailing flexible space in unified styles so buttons follow the title.
+    /// Applies equally to built-in and plugin toolbars.
     func apply(_ style: NSWindow.ToolbarStyle, to window: NSWindow) {
         window.toolbarStyle = style
         if let last = window.toolbar?.items.last, last.itemIdentifier == .flexibleSpace {
@@ -142,9 +121,7 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
               let presentation = DeviceCommand.command(id).toolbar else { return nil }
         let item = NSToolbarItem(itemIdentifier: itemIdentifier)
         item.label = presentation.label
-        // Like Simulator.app's Always On, a command with a state is a button
-        // that stays on while the state is on. The item gives the button its
-        // target and action.
+        // Stateful commands use toggle buttons.
         if DeviceCommand.command(id).state != nil {
             let button = NSButton()
             button.bezelStyle = .toolbar
@@ -159,10 +136,7 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
         return item
     }
 
-    /// What `id`'s button shows and performs now: its alternate while that
-    /// can run, as Save Screen stops a recording whether or not Option is
-    /// down; otherwise its Option alternate while the buttons show those; and
-    /// otherwise its own command.
+    /// Prefers an enabled alternate, then the Option alternate, then the base command.
     private func shown(_ id: DeviceCommand.ID, for controller: DeviceWindowController) -> DeviceCommand.Toolbar.Face? {
         guard let presentation = DeviceCommand.command(id).toolbar else { return nil }
         if let alternate = presentation.alternate, DeviceCommand.command(alternate.id).isEnabled(controller) {
@@ -172,9 +146,7 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
         return .init(id: id, symbol: presentation.symbol, imageDescription: presentation.imageDescription)
     }
 
-    /// Like Simulator.app's buttons, a button keeps its item's label while
-    /// its tooltip and image, and the image's description, follow the command
-    /// it performs.
+    /// Keeps the item label stable while updating the button's action, tooltip, and image.
     private func configure(_ item: NSToolbarItem, _ id: DeviceCommand.ID) {
         guard let controller, let shown = shown(id, for: controller) else { return }
         let command = DeviceCommand.command(shown.id)

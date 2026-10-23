@@ -56,8 +56,7 @@ struct InputFocusTests {
     }
 
     @Test func theSaveScreenButtonStopsARecordingAsInSimulatorApp() async throws {
-        // The first recording runs until it is stopped and then takes half a
-        // second to finish; the second fails.
+        // The first recorder delays finalization after SIGINT; the second fails.
         var recordings = 0
         let controller = try makeController(TestDisplay()) { _, _ in
             recordings += 1
@@ -80,9 +79,6 @@ struct InputFocusTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         try controller.session.startRecording(to: .file(directory.appendingPathComponent("Recording.mov")), mask: .ignored)
         let recording = try #require(controller.session.recording)
-        // Like Simulator.app's, the Save Screen button shows `stop.circle`,
-        // untinted, and stops the recording; the toolbar adds no item, and the
-        // item keeps its label.
         try await wait { shows("stop.circle", "Stop Recording") }
         #expect(shows("stop.circle", "Stop Recording"))
         #expect(item.label == "Save Screen")
@@ -90,8 +86,7 @@ struct InputFocusTests {
         #expect(toolbar.items.map(\.itemIdentifier.rawValue) == items)
         #expect(NSApp.sendAction(try #require(item.action), to: item.target, from: item))
         try #require(recording.isStopping)
-        // It is Save Screen again as soon as the recording stops, while the
-        // movie is still being finished.
+        // Restore the button before movie finalization completes.
         try await wait { shows("camera.on.rectangle", "Save Screen") }
         #expect(shows("camera.on.rectangle", "Save Screen"))
         #expect(controller.session.recording === recording)
@@ -101,7 +96,6 @@ struct InputFocusTests {
         #expect(shows("camera.on.rectangle", "Save Screen"))
         #expect(toolbar.items.map(\.itemIdentifier.rawValue) == items)
 
-        // A recording that fails also gives the button back.
         try controller.session.startRecording(to: .file(directory.appendingPathComponent("Failed.mov")), mask: .ignored)
         try await wait { shows("stop.circle", "Stop Recording") }
         #expect(shows("stop.circle", "Stop Recording"))
@@ -115,7 +109,6 @@ struct InputFocusTests {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        // A devicectl stand-in that logs its arguments and reports portrait.
         let log = directory.appendingPathComponent("arguments"), devicectl = directory.appendingPathComponent("devicectl")
         try """
             #!/bin/sh
@@ -126,19 +119,14 @@ struct InputFocusTests {
         let controller = try makeController(TestDisplay(), devicectl: devicectl)
         defer { controller.invalidate() }
         let pointer = try ToolbarPointer(controller)
-        /// The way the last rotation turned the device.
         func rotation() async throws -> String? {
             for _ in 0..<300 where controller.session.isBusy { try await Task.sleep(for: .milliseconds(10)) }
             let rotate = try String(contentsOf: log, encoding: .utf8).split(separator: "\n").last { $0.contains(" rotate ") }
             return rotate?.split(separator: " ").dropLast().last.map(String.init)
         }
-        // The faces of Simulator.app's toolbar nib.
         #expect(pointer.faces == ButtonFace.normal)
-        // Away from the toolbar, Option changes nothing.
         pointer.hold(.option)
         #expect(pointer.faces == ButtonFace.normal)
-        // Over the toolbar, Save Screen and Rotate show their alternates while
-        // Option is down, also with another modifier. Home has none.
         pointer.hold([])
         pointer.enter()
         #expect(pointer.faces == ButtonFace.normal)
@@ -148,12 +136,9 @@ struct InputFocusTests {
         #expect(pointer.faces == ButtonFace.optionAlternates)
         pointer.hold(.shift)
         #expect(pointer.faces == ButtonFace.normal)
-        // A click performs the alternate: Rotate turns the device left.
         pointer.hold(.option)
         #expect(try pointer.click(.rotateRight))
         #expect(try await rotation() == "left")
-        // Leaving the toolbar gives the buttons their own faces back, and
-        // Option no longer switches them.
         pointer.exit()
         #expect(pointer.faces == ButtonFace.normal)
         pointer.hold([])
@@ -161,7 +146,6 @@ struct InputFocusTests {
         #expect(pointer.faces == ButtonFace.normal)
         #expect(try pointer.click(.rotateRight))
         #expect(try await rotation() == "right")
-        // Entering with Option already down shows the alternates at once.
         pointer.enter()
         #expect(pointer.faces == ButtonFace.optionAlternates)
         pointer.hold([])
@@ -174,15 +158,11 @@ struct InputFocusTests {
         }
         defer { controller.invalidate() }
         let pointer = try ToolbarPointer(controller)
-        // With Option down over the toolbar, Save Screen records the screen as
-        // File ▸ Record Screen does.
         pointer.enter()
         pointer.hold(.option)
         #expect(pointer.faces == ButtonFace.optionAlternates)
         #expect(try pointer.click(.saveScreen))
         let recording = try #require(controller.session.recording)
-        // While the recording runs, Save Screen is Stop Recording whatever
-        // Option and the pointer do, and Rotate still follows Option.
         try await wait { pointer.faces[1] == .stopRecording }
         #expect(pointer.faces == [.home, .stopRecording, .rotateLeft])
         pointer.hold([])
@@ -191,11 +171,8 @@ struct InputFocusTests {
         pointer.hold(.option)
         pointer.enter()
         #expect(pointer.faces == [.home, .stopRecording, .rotateLeft])
-        // A click with Option stops the recording.
         #expect(try pointer.click(.saveScreen))
         #expect(recording.isStopping)
-        // As soon as the recording stops, Save Screen follows Option again,
-        // and Record Screen is available once the movie is finished.
         try await wait { pointer.faces[1] == .recordScreen }
         #expect(pointer.faces == ButtonFace.optionAlternates)
         pointer.hold([])
@@ -213,14 +190,10 @@ struct InputFocusTests {
         defer { controller.invalidate() }
         let window = try #require(controller.window)
         let pointer = try ToolbarPointer(controller)
-        // Like Simulator.app's `SimToolbar`, the toolbar's view tracks the
-        // pointer while the app is active, in any of its windows: AppKit
-        // reports the pointer leaving when the app resigns active and entering
-        // when the app becomes active with the pointer over the toolbar.
+        // SimToolbar tracks all active-app windows, not just the key window.
+        // AppKit sends exit/enter events when the app deactivates/reactivates.
         #expect(pointer.area.options == [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect])
-        // A window that resigns key keeps the alternates while Option is
-        // down, although it sends its device a modifier release through the
-        // app.
+        // Resigning key releases device modifiers without clearing toolbar alternates.
         controller.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification, object: window))
         var releases = 0
         let monitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { event in
@@ -234,16 +207,12 @@ struct InputFocusTests {
         controller.windowDidResignKey(Notification(name: NSWindow.didResignKeyNotification, object: window))
         #expect(releases == 1)
         #expect(pointer.faces == ButtonFace.optionAlternates)
-        // When the app resigns active, the buttons take their own faces as the
-        // pointer leaves. Option changes made in another app do not reach this
-        // one.
+        // Modifier changes in another app do not reach this toolbar.
         pointer.exit()
         #expect(pointer.faces == ButtonFace.normal)
         pointer.holdInAnotherApp([])
         pointer.holdInAnotherApp(.option)
         #expect(pointer.faces == ButtonFace.normal)
-        // When the app becomes active again with the pointer over the toolbar,
-        // the buttons read Option as they enter.
         pointer.enter()
         #expect(pointer.faces == ButtonFace.optionAlternates)
     }
@@ -252,7 +221,6 @@ struct InputFocusTests {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        // A simctl stand-in that logs its arguments and writes a PNG signature to the last one.
         let log = directory.appendingPathComponent("arguments"), simctl = directory.appendingPathComponent("simctl")
         try """
             #!/bin/sh
@@ -277,9 +245,7 @@ struct InputFocusTests {
             defer { controller.invalidate() }
             controller.perform(.saveScreen)
             for _ in 0..<200 where controller.session.isBusy { try await Task.sleep(for: .milliseconds(10)) }
-            // A device without a mask has nothing to apply.
             #expect(try lastScreenshot()?.contains("--mask=\(framebufferMask ? "alpha" : "ignored")") == true)
-            // Copy Screen never applies the mask.
             _ = try await controller.session.screenPNG()
             #expect(try lastScreenshot()?.contains("--mask=ignored") == true)
         }
@@ -302,8 +268,6 @@ struct InputFocusTests {
             #expect(frame.minY >= 0)
             #expect(frame.maxX <= content.bounds.maxX)
             #expect(frame.maxY <= window.contentLayoutRect.maxY)
-            // The display keeps its own size, centered across the window,
-            // instead of filling it as when the window has the display's size.
             #expect(frame.size == display.size(for: display.renderScale))
             #expect(abs(frame.midX - content.bounds.midX) < 0.001)
             #expect(try #require(window.standardWindowButton(.closeButton)).isHidden == false)
@@ -454,8 +418,6 @@ struct InputFocusTests {
         let edit = try #require(NSApp.mainMenu?.items.first { $0.title == "Edit" }?.submenu)
         let item = try #require(edit.items.first { $0.title == "Automatically Sync Pasteboard" })
         let action = try #require(item.action)
-        // Like Simulator.app's, the item is enabled without a device window
-        // and checked while synchronization is on, which it saves.
         #expect(menu.validateMenuItem(item))
         #expect(item.state == .off)
         #expect(NSApp.sendAction(action, to: item.target, from: item))
@@ -482,7 +444,6 @@ struct InputFocusTests {
             change(controller, display)
             return [get, send].flatMap { [$0.isSupported(controller.session.capabilities), $0.isEnabled(controller)] }
         }
-        // Like Simulator.app, other devices show the commands disabled.
         for family in [DeviceCapabilities.Family.iPhone, .iPad, .vision] {
             #expect(try availability(family) == [true, true, true, true])
         }
@@ -500,8 +461,6 @@ struct InputFocusTests {
         let display = TestDisplay()
         let controller = try makeController(display, features: [DeviceCapabilities.pasteboard], pasteboard: pasteboard)
         defer { controller.invalidate() }
-        // Nothing crosses without a command, so the device's pasteboard
-        // service is not even connected until one is chosen.
         #expect(display.pasteboards.isEmpty)
         controller.perform(.getPasteboard)
         controller.perform(.sendPasteboard)
@@ -510,10 +469,8 @@ struct InputFocusTests {
         #expect(display.pasteboards.count == 1)
         #expect(connection.pasteboard === pasteboard)
         #expect(connection.transfers == [.get, .send, .get])
-        // Like Simulator.app, the connection is told not to synchronize.
         #expect(connection.automaticSync == [false])
-        // The connection stays until the window disconnects, so that the Mac
-        // pasteboard can read the device's data when an app pastes it.
+        // Keep the connection alive for lazy reads from the Mac pasteboard.
         #expect(!connection.isDisconnected)
         controller.invalidate()
         #expect(connection.isDisconnected)
@@ -538,8 +495,7 @@ struct InputFocusTests {
         #expect(failures == [get + "Unable to lookup in current state: Shutdown"])
         #expect(display.pasteboards.isEmpty)
 
-        // The next transfer connects. The connection's first activation is
-        // its own; each later one completes a push.
+        // The first activation belongs to the connection; later activations complete pushes.
         transfer(.send)
         let first = try #require(display.pasteboards.first)
         first.send(.activated)
@@ -549,12 +505,10 @@ struct InputFocusTests {
         #expect(failures.last == get + "pasteboard communication failure")
         transfer(.get)
         first.send(.applied(generation: 1))
-        // With nothing pending, the device closing the connection is no failure.
         first.send(.lostConnection)
         #expect(failures.count == 2)
         #expect(first.isDisconnected)
 
-        // Transfers still pending fail, and the next transfer connects again.
         transfer(.send)
         let second = try #require(display.pasteboards.last)
         #expect(display.pasteboards.count == 2)
@@ -569,8 +523,7 @@ struct InputFocusTests {
     @Test func pasteboardDelegateAnswersSimPasteboardPlus() throws {
         let runtime = try makeRuntime()
         #expect(runtime.pasteboard.serviceName == "com.apple.CoreSimulator.SimPasteboardInterface")
-        // The connection calls the protocol's optional methods by selector, so
-        // each must match the protocol's declaration exactly.
+        // Optional protocol callbacks must match the private Objective-C declarations.
         let delegateProtocol = try #require(objc_getProtocol("_TtP17SimPasteboardPlus21SimPasteboardDelegate_"))
         var events: [String] = []
         let delegate = SimulatorPasteboardDelegate { events.append("\($0)") }
@@ -622,23 +575,18 @@ struct InputFocusTests {
         }
         defer { sessions.forEach { $0.disconnect() } }
 
-        // Off, a device that connects is not even connected to.
         #expect(try start().1.pasteboards.isEmpty)
 
         sync.toggle()
-        // On, like Simulator.app when a device connects: its connection
-        // synchronizes and is sent the Mac pasteboard.
         let (session, display) = try start()
         let connection = try #require(display.pasteboards.first)
         #expect(display.pasteboards.count == 1)
         #expect(connection.pasteboard === pasteboard)
         #expect(connection.automaticSync == [true])
         #expect(connection.transfers == [.send])
-        // Get Pasteboard and Send Pasteboard are unavailable meanwhile.
         #expect(!session.canTransferPasteboard)
         session.transferPasteboard(.get) { _ in Issue.record("no transfer") }
         #expect(connection.transfers == [.send])
-        // Devices that do not exchange pasteboards are left alone.
         #expect(try start(.tv).1.pasteboards.isEmpty)
         #expect(try start(features: []).1.pasteboards.isEmpty)
         #expect(try start { $0.isBooted = false }.1.pasteboards.isEmpty)
@@ -663,8 +611,6 @@ struct InputFocusTests {
         phone.transferPasteboard(.get) { _ in }
         let phoneConnection = try #require(phoneDisplay.pasteboards.first)
 
-        // Turning it on tells every device's connection and connects the
-        // devices not yet connected, without transferring anything.
         sync.toggle()
         #expect(phoneConnection.automaticSync == [false, true])
         let padConnection = try #require(padDisplay.pasteboards.first)
@@ -673,8 +619,6 @@ struct InputFocusTests {
         #expect(tvDisplay.pasteboards.isEmpty)
         #expect(!phone.canTransferPasteboard && !pad.canTransferPasteboard)
 
-        // Turning it off stops every connection's synchronization and keeps
-        // the connections for Get and Send Pasteboard.
         sync.toggle()
         #expect(phoneConnection.automaticSync == [false, true, false])
         #expect(padConnection.automaticSync == [true, false])
@@ -704,7 +648,6 @@ struct InputFocusTests {
         defer { sessions.forEach { $0.disconnect() } }
         let (first, second, third) = (connections[0], connections[1], connections[2])
         func pushes() -> [Int] { connections.map { $0.transfers.count - 1 } }
-        /// The device's copy replaces the Mac pasteboard, as SimPasteboardPlus applies it.
         func copy(on connection: TestPasteboard, _ text: String) {
             pasteboard.clearContents()
             pasteboard.setString(text, forType: .string)
@@ -739,7 +682,6 @@ struct InputFocusTests {
         try await settle()
         #expect(pushes() == [1, 2, 4])
 
-        // Off, a device's copy reaches no other device.
         sync.toggle()
         copy(on: third, "third")
         try await settle()
@@ -761,8 +703,7 @@ struct InputFocusTests {
         session.startPasteboardSync()
         let first = try #require(display.pasteboards.first)
 
-        // Like Simulator.app, for example after CoreSimulatorBridge restarts:
-        // the new connection synchronizes without being sent the Mac pasteboard.
+        // Reconnection resumes synchronization without replacing the guest's pasteboard.
         first.send(.lostConnection)
         #expect(first.isDisconnected)
         #expect(display.pasteboards.count == 2)
@@ -770,11 +711,9 @@ struct InputFocusTests {
         #expect(second.automaticSync == [true])
         #expect(second.transfers.isEmpty)
 
-        // A device that is shutting down is not connected again.
         display.isBooted = false
         second.send(.lostConnection)
         #expect(display.pasteboards.count == 2)
-        // Off, the next transfer connects instead.
         display.isBooted = true
         sync.toggle()
         session.transferPasteboard(.get) { _ in }
@@ -832,20 +771,15 @@ struct InputFocusTests {
         let overlay = InputView()
         display.view.addSubview(overlay)
         let toolbar = NSToolbar(identifier: "PluginToolbar")
-        // Like SimulatorKit for Apple Vision Pro, the display has loaded the
-        // plugin by the time the window opens.
+        // SimulatorKit loads the Apple Vision Pro plugin before opening its window.
         display.plugin = SimulatorUserInterfacePlugin(overlayView: overlay, toolbar: toolbar)
         let controller = try makeController(display, family: .vision, features: [], userInterfacePlugin: true)
         defer { controller.invalidate() }
         let window = try #require(controller.window)
-        // Like Simulator.app, the window shows the plugin's toolbar.
         #expect(window.toolbar === toolbar)
-        // The overlay takes the window's focus and the Mac's modifiers.
         controller.focusInput()
         #expect(window.firstResponder === overlay)
         #expect(!overlay.modifiers.isEmpty && display.input.modifiers.isEmpty)
-        // The plugin's buttons send Simulator.app's actions, which reach the
-        // window from the overlay.
         #expect(overlay.tryToPerform(Selector(("homeButtonPressed:")), with: nil))
         #expect(display.buttons == [.home])
     }
@@ -870,9 +804,7 @@ struct InputFocusTests {
         defer { controller.invalidate() }
         let window = try #require(controller.window)
         controller.focusInput()
-        // AppKit sends each item's action to the overlay, the first responder
-        // of the device's window, and has it validate the item: the overlay
-        // checks Show Gaze Target while it shows the gaze target.
+        // The plugin overlay handles and validates these responder-chain actions.
         for command in commands {
             let action = try #require(command.action)
             let target = try #require(responder(in: window, taking: action))
@@ -883,8 +815,6 @@ struct InputFocusTests {
         #expect(overlay.actions == ["recenterAllOpenApps:", "viewportModeChangedToOrbit:", "setImmersionTo75:",
                                     "toggleShowGazeTarget:", "configureSimulatedFaceTimeSession1x2:"])
         #expect(overlay.validateMenuItem(commands[3]) && commands[3].state == .on)
-        // Without the plugin, no responder of the window takes them, so AppKit
-        // disables them.
         let phone = try makeController(TestDisplay())
         defer { phone.invalidate() }
         phone.focusInput()
@@ -901,14 +831,12 @@ struct InputFocusTests {
         controller.showWindow(nil)
         let window = try #require(controller.window)
         let deviceToolbar = window.toolbar
-        // A plugin that loads later replaces the window's toolbar then.
         let toolbar = NSToolbar(identifier: "LatePluginToolbar")
         display.plugin = SimulatorUserInterfacePlugin(overlayView: nil, toolbar: toolbar)
         try await wait { window.toolbar === toolbar }
         #expect(window.toolbar === toolbar && toolbar !== deviceToolbar)
         #expect(window.attachedSheet == nil)
 
-        // A plugin that never loads, or that cannot be used, is reported.
         for error in [nil, HostError.unavailable("plugin from another Xcode")] as [Error?] {
             let missing = TestDisplay()
             missing.pluginError = error
@@ -925,7 +853,6 @@ struct InputFocusTests {
             })
             unloadedWindow.endSheet(sheet)
         }
-        // A device type without a plugin is not looked up.
         let phone = TestDisplay()
         phone.pluginError = HostError.unavailable("looked up")
         let phoneController = try makeController(phone)
@@ -940,7 +867,6 @@ struct InputFocusTests {
         let overlay = InputView()
         display.view.addSubview(overlay)
         display.plugin = SimulatorUserInterfacePlugin(overlayView: overlay, toolbar: nil)
-        // A recording runs until it is stopped, and another fails at once.
         var recordings = 0
         let controller = try makeController(display, family: .vision, features: [], recordingProcess: { _, _ in
             recordings += 1
@@ -953,8 +879,7 @@ struct InputFocusTests {
         try controller.session.startRecording(to: .file(directory.appendingPathComponent("Recording.mov")), mask: .ignored)
         let recording = try #require(controller.session.recording)
         #expect(display.announcedRecordings == [true])
-        // Save Screen on the plugin's toolbar stops it with Simulator.app's
-        // `toggleVideoRecording:`, and its end is announced.
+        // Simulator.app's plugin uses toggleVideoRecording: to stop recording.
         #expect(overlay.tryToPerform(Selector(("toggleVideoRecording:")), with: nil))
         #expect(recording.isStopping)
         try await recording.waitUntilFinished()
@@ -993,12 +918,10 @@ struct InputFocusTests {
                 DeviceCommand.ID(rawValue: $0.itemIdentifier.rawValue)
             }
         }
-        // IndigoWatchToolbar.nib and IndigoTVToolbar.nib, and
-        // IndigoWatchAODToolbar.nib for a watch with an always-on display.
+        // Matches IndigoWatchToolbar, IndigoTVToolbar, and IndigoWatchAODToolbar.
         #expect(try items(.watch, [DeviceCapabilities.keyboard]) == [.home, .saveScreen])
         #expect(try items(.tv, [DeviceCapabilities.keyboard]) == [.home, .saveScreen])
         #expect(try items(.watch, [DeviceCapabilities.alwaysOnDisplay]) == [.home, .saveScreen, .alwaysOn])
-        // An iPhone with an always-on display gets the iPhone toolbar.
         #expect(try items(.iPhone, [DeviceCapabilities.alwaysOnDisplay, DeviceCapabilities.displayRotation])
             == [.home, .saveScreen, .rotateRight])
     }
@@ -1013,8 +936,7 @@ struct InputFocusTests {
         #expect(item.label == "Always On")
         #expect(button.toolTip == "Toggle Always On")
         #expect(button.state == .off)
-        // Like Simulator.app's, the button is on while the backlight is 0 or
-        // 1 and off at 2, and other values leave it as it is.
+        // Simulator.app treats backlight states 0/1 as on, 2 as off, and ignores unknown values.
         for (backlight, on) in [(1, true), (-101, true), (2, false), (-101, false), (0, true)] as [(Int32, Bool)] {
             display.backlightState = backlight
             display.onPropertiesChange?()
@@ -1022,8 +944,7 @@ struct InputFocusTests {
             try await wait { button.state == (on ? .on : .off) }
             #expect(button.state == (on ? .on : .off), "backlight \(backlight)")
         }
-        // A click presses Lock, and the button keeps the backlight's state
-        // until the backlight changes.
+        // Lock leaves the indicator unchanged until the backlight reports a new state.
         button.performClick(nil)
         #expect(display.buttons == [.lock])
         #expect(button.state == .on)
@@ -1031,7 +952,6 @@ struct InputFocusTests {
         display.onPropertiesChange?()
         try await wait { button.state == .off }
         #expect(button.state == .off)
-        // Another family's backlight changes nothing.
         let tv = TestDisplay()
         tv.backlightState = 1
         let tvController = try makeController(tv, family: .tv, features: [DeviceCapabilities.alwaysOnDisplay])
@@ -1051,17 +971,13 @@ struct InputFocusTests {
                                                                      supportsFeature: { _ in false }))
             return menu.items.filter { !$0.isHidden }.map { $0.isSeparatorItem ? "-" : $0.title }
         }
-        // Re-Center Open Apps is shown for every device.
         let commands = ["Restart", "Erase All Content and Settings…", "Shut Down", "-", "Home", "Re-Center Open Apps"]
-        // Lock is for iPhones, iPads, and watches, and Side Button for watches.
         #expect(try visible("Device", .watch) == commands + ["Lock", "Side Button"])
         #expect(try visible("Device", .tv) == commands)
-        // The camera and scene commands are for Apple Vision.
         #expect(try visible("Device", .vision) == commands + [
             "-", "Interaction Mode", "Look Around Mode", "Pan Mode", "Orbit Mode", "Dolly Mode", "-", "Reset Camera", "-",
             "Simulated Scenes",
         ])
-        // Apple Vision's display has no bezel to show.
         #expect(try !visible("Window", .vision).contains("Show Device Bezels"))
         #expect(try visible("Window", .watch).contains("Show Device Bezels"))
     }
@@ -1071,7 +987,6 @@ struct InputFocusTests {
         let menus = MenuController(application: nil)
         menus.install()
         defer { NSApp.mainMenu = nil }
-        /// The items of the menu `title`, or of its `submenu`, shown for a watch.
         func visible(_ title: String, submenu: String? = nil, runtime: UInt32 = 0x1B_00_00,
                      _ features: Set<String>) throws -> [String] {
             let menu = try #require(NSApp.mainMenu?.items.first { $0.title == title }?.submenu)
@@ -1081,8 +996,7 @@ struct InputFocusTests {
             return shown.items.filter { !$0.isHidden }.map { $0.isSeparatorItem ? "-" : $0.title }
         }
         let gestures = DeviceCapabilities.watchGestures, fall = DeviceCapabilities.fallDetection
-        // Gestures follows the watch's buttons, before Siri, and Wrist Flick
-        // needs watchOS 12.
+        // Wrist Flick requires watchOS 12.
         #expect(try visible("Device", [gestures, DeviceCapabilities.actionButtonSting, DeviceCapabilities.siri])
             == ["Restart", "Erase All Content and Settings…", "Shut Down", "-", "Home", "Re-Center Open Apps", "Lock",
                 "Side Button", "Action Button", "Gestures", "Siri"])
@@ -1091,13 +1005,11 @@ struct InputFocusTests {
         #expect(try visible("Device", submenu: "Gestures", runtime: 0x0C_00_00, [gestures])
             == ["Double Tap", "Wrist Flick"])
         #expect(try !visible("Device", [fall]).contains("Gestures"))
-        // Simulate Fall follows Face ID, before Authorize Apple Pay.
         #expect(try visible("Features", [fall, DeviceCapabilities.faceID, DeviceCapabilities.applePayAuthorization])
             .prefix(3) == ["Face ID", "Simulate Fall", "Authorize Apple Pay"])
         #expect(try visible("Features", submenu: "Simulate Fall", [fall])
             == ["Confirmed", "Dismissed", "Rejected", "Unresponsive"])
         #expect(try !visible("Features", [gestures]).contains("Simulate Fall"))
-        // As in Simulator.app, none of them has a shortcut.
         let items = NSApp.mainMenu?.items.compactMap(\.submenu).flatMap(\.items)
             .filter { ["Gestures", "Simulate Fall"].contains($0.title) }.compactMap(\.submenu).flatMap(\.items)
         #expect(items?.count == 6 && items?.allSatisfy(\.keyEquivalent.isEmpty) == true)
@@ -1112,12 +1024,11 @@ struct InputFocusTests {
         defer { NSApp.mainMenu = nil }
         let windowMenu = try #require(NSApp.mainMenu?.items.first { $0.title == "Window" }?.submenu)
         let item = try #require(windowMenu.items.first { $0.title == "Show Apple TV Remote" })
-        // Simulator.app's MainMenu.nib places it after Show Device Bezels, with Shift-Command-R.
+        // Matches Simulator.app's MainMenu.nib placement and shortcut.
         let index = windowMenu.index(of: item)
         #expect(windowMenu.items[index - 1].title == "Show Device Bezels")
         #expect(windowMenu.items[index + 1].title == "Stay On Top")
         #expect(item.keyEquivalent == "r" && item.keyEquivalentModifierMask == [.command, .shift])
-        // It shows for every device and is enabled for an Apple TV.
         for family in [DeviceCapabilities.Family.iPhone, .iPad, .tv, .watch, .vision] {
             menus.updateVisibility(in: windowMenu, for: DeviceCapabilities(family: family, runtimeVersion: 0x1B_00_00,
                                                                            supportsFeature: { _ in false }))
@@ -1135,7 +1046,6 @@ struct InputFocusTests {
         #expect(!command.validate(item, for: phone))
         #expect(command.validate(item, for: tv))
         #expect(item.title == "Show Apple TV Remote")
-        // Choosing it shows the remote, and its title then hides it.
         tv.perform(.appleTVRemote)
         #expect(remote.isVisible)
         #expect(command.validate(item, for: tv))
@@ -1144,8 +1054,7 @@ struct InputFocusTests {
         #expect(!remote.isVisible)
         #expect(command.validate(item, for: tv))
         #expect(item.title == "Show Apple TV Remote")
-        // Like Simulator.app's AppleRemotePanel, the remote never takes the
-        // keyboard from the device window.
+        // AppleRemotePanel leaves keyboard focus in the device window.
         #expect(remote.window?.canBecomeKey == false)
     }
 
@@ -1171,8 +1080,6 @@ struct InputFocusTests {
         let click = try #require(NSEvent.mouseEvent(
             with: .leftMouseDown, location: .zero, modifierFlags: [], timestamp: 0,
             windowNumber: remote.window?.windowNumber ?? 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
-        // Each button is down while the mouse holds it; a click on the touch
-        // surface is Select.
         let buttons: [(String, TVRemoteButton)] = [
             ("Select", .select), ("Menu", .menu), ("TV", .tv), ("Siri", .siri), ("Play/Pause", .playPause),
             ("Volume Up", .volumeUp), ("Volume Down", .volumeDown),
@@ -1185,13 +1092,10 @@ struct InputFocusTests {
             #expect(display.events.last?.input == .tvRemote(button) && display.events.last?.state == .up, "\(label)")
         }
         #expect(display.events.count == 14)
-        // Like Simulator.app's actions, only an Apple TV takes them.
         target = phone
         try view("Menu").mouseDown(with: click)
         try view("Menu").mouseUp(with: click)
         #expect(phoneDisplay.events.isEmpty)
-        // Closing the remote releases a button it holds, and so does the
-        // device's disconnection.
         target = tv
         try view("Siri").mouseDown(with: click)
         remote.close()
@@ -1222,7 +1126,7 @@ struct InputFocusTests {
         remote.showWindow(nil)
         let window = try #require(remote.window)
         let surface = try #require(window.contentView?.subviews.compactMap { $0 as? TVRemoteTouchSurface }.first)
-        // A point from 0 to 1 from the surface's top-left corner.
+        // Coordinates are normalized from the touch surface's top-left corner.
         func event(_ type: NSEvent.EventType, _ x: CGFloat, _ y: CGFloat, option: Bool) throws -> NSEvent {
             let location = surface.convert(NSPoint(x: x * surface.bounds.width, y: (1 - y) * surface.bounds.height), to: nil)
             let flags: NSEvent.ModifierFlags = option ? .option : []
@@ -1241,8 +1145,6 @@ struct InputFocusTests {
         surface.mouseEntered(with: try event(.mouseEntered, 0.5, 0.25, option: false))
         surface.mouseMoved(with: try event(.mouseMoved, 0.5, 0.5, option: false))
         #expect(display.remoteTouches.isEmpty)
-        // With Option, moving the pointer touches; Option's release, or a
-        // move without it, ends the touch.
         surface.mouseMoved(with: try event(.mouseMoved, 0.5, 0.25, option: true))
         surface.mouseMoved(with: try event(.mouseMoved, 0.75, 0.5, option: true))
         surface.optionChanged(isDown: true)
@@ -1252,19 +1154,16 @@ struct InputFocusTests {
         surface.mouseMoved(with: try event(.mouseMoved, 0.25, 0.5, option: false))
         #expect(display.remoteTouches == [touch(.began, 0.5, 0.25), touch(.moved, 0.75, 0.5), touch(.ended, 0.75, 0.5),
                                           touch(.began, 0.75, 0.5), touch(.moved, 0.25, 0.75), touch(.ended, 0.25, 0.5)])
-        // The pointer leaving ends the touch, and Option outside the surface touches nothing.
         surface.optionChanged(isDown: true)
         surface.mouseExited(with: try event(.mouseExited, 1, 0.5, option: true))
         surface.optionChanged(isDown: false)
         surface.optionChanged(isDown: true)
         #expect(display.remoteTouches.suffix(2) == [touch(.began, 0.25, 0.5), touch(.ended, 1, 0.5)])
-        // A touch that another Apple TV's window becoming key takes leaves the first one.
         surface.mouseEntered(with: try event(.mouseEntered, 0.5, 0.5, option: true))
         target = otherTV
         surface.mouseMoved(with: try event(.mouseMoved, 0.5, 0.75, option: true))
         #expect(display.remoteTouches.suffix(2) == [touch(.began, 0.5, 0.5), touch(.ended, 0.5, 0.75)])
         #expect(other.remoteTouches == [touch(.began, 0.5, 0.75)])
-        // Closing the remote ends its touch, and so does the device's disconnection.
         remote.close()
         #expect(other.remoteTouches.last == touch(.ended, 0.5, 0.75))
         remote.showWindow(nil)
@@ -1305,8 +1204,7 @@ struct InputFocusTests {
         func onSurface(_ x: CGFloat, _ y: CGFloat) -> NSPoint {
             surface.convert(NSPoint(x: x * surface.bounds.width, y: (1 - y) * surface.bounds.height), to: nil)
         }
-        // With Option held, a click on the surface drags the touch down onto
-        // Menu, below the surface, and the mouse comes up there.
+        // Drag beyond the touch surface onto Menu before releasing.
         let onMenu = menu.convert(NSPoint(x: menu.bounds.midX, y: menu.bounds.midY), to: nil)
         surface.mouseEntered(with: try event(.mouseEntered, at: onSurface(0.3, 0.5)))
         surface.mouseDown(with: try event(.leftMouseDown, at: onSurface(0.3, 0.5)))
@@ -1314,15 +1212,12 @@ struct InputFocusTests {
         surface.mouseDragged(with: try event(.leftMouseDragged, at: onMenu))
         surface.mouseDragged(with: try event(.leftMouseDragged, at: NSPoint(x: onMenu.x, y: onMenu.y - 20)))
         surface.mouseUp(with: try event(.leftMouseUp, at: onMenu))
-        // The touch ended at the surface's bottom edge, with no point outside it.
         let x = onMenu.x / surface.bounds.width
         #expect(display.remoteTouches == [TVRemoteTouch(phase: .began, point: CGPoint(x: 0.3, y: 0.5)),
                                           TVRemoteTouch(phase: .moved, point: CGPoint(x: 0.3, y: 0.75)),
                                           TVRemoteTouch(phase: .ended, point: CGPoint(x: x, y: 1))])
-        // Only Select was pressed and released; Menu stays up.
         #expect(display.events.map(\.input) == [.tvRemote(.select), .tvRemote(.select)])
         #expect(display.events.map(\.state) == [.down, .up])
-        // A drag that comes back onto the surface touches again.
         surface.mouseDown(with: try event(.leftMouseDown, at: onSurface(0.5, 0.5)))
         surface.mouseDragged(with: try event(.leftMouseDragged, at: onMenu))
         surface.mouseDragged(with: try event(.leftMouseDragged, at: onSurface(0.5, 0.25)))
@@ -1361,15 +1256,14 @@ struct InputFocusTests {
         func touch(_ phase: TVRemoteTouch.Phase, _ x: CGFloat, _ y: CGFloat) -> TVRemoteTouch {
             TVRemoteTouch(phase: phase, point: CGPoint(x: x, y: y))
         }
-        // Menu's release is not delivered, so the device may still hold the
-        // button; closing the remote sends the release again.
+        // Failed delivery leaves Menu potentially held; closing must retry its release.
         display.undeliveredEvents = [1]
         menu.mouseDown(with: try event(.leftMouseDown, 0, 0))
         menu.mouseUp(with: try event(.leftMouseUp, 0, 0))
         remote.close()
         #expect(display.events.map(\.input) == [.tvRemote(.menu), .tvRemote(.menu), .tvRemote(.menu)])
         #expect(display.events.map(\.state) == [.down, .up, .up])
-        // A release that SimulatorKit has not reported on yet is not sent twice.
+        // Pending delivery must not trigger a duplicate release.
         remote.showWindow(nil)
         display.deferCompletions = true
         menu.mouseDown(with: try event(.leftMouseDown, 0, 0))
@@ -1379,8 +1273,6 @@ struct InputFocusTests {
         display.pendingCompletions.forEach { $0() }
         display.pendingCompletions.removeAll()
         display.deferCompletions = false
-        // The same holds for the touch's end: closing the remote sends it
-        // again, and once delivered, nothing sends it a third time.
         remote.showWindow(nil)
         display.undeliveredTouches = 1
         surface.mouseEntered(with: try event(.mouseEntered, 0.5, 0.5))
@@ -1389,7 +1281,6 @@ struct InputFocusTests {
         remote.showWindow(nil)
         remote.close()
         #expect(display.remoteTouches == [touch(.began, 0.5, 0.5), touch(.ended, 1, 0.5), touch(.ended, 1, 0.5)])
-        // Disconnecting sends an end that was not delivered again too.
         remote.showWindow(nil)
         display.undeliveredTouches = 1
         surface.mouseEntered(with: try event(.mouseEntered, 0.25, 0.25))
@@ -1431,8 +1322,7 @@ struct InputFocusTests {
         func touch(_ phase: TVRemoteTouch.Phase, _ x: CGFloat, _ y: CGFloat) -> TVRemoteTouch {
             TVRemoteTouch(phase: phase, point: CGPoint(x: x, y: y))
         }
-        // The touch moves from A to B when B's window becomes key, and A's
-        // end is not delivered; closing the remote ends both.
+        // Switching targets leaves A's failed touch-end pending while B receives input.
         target = a
         surface.mouseEntered(with: try event(.mouseEntered, 0.5, 0.5))
         first.undeliveredTouches = 1
@@ -1441,8 +1331,7 @@ struct InputFocusTests {
         remote.close()
         #expect(first.remoteTouches == [touch(.began, 0.5, 0.5), touch(.ended, 0.5, 0.75), touch(.ended, 0.5, 0.75)])
         #expect(second.remoteTouches == [touch(.began, 0.5, 0.75), touch(.ended, 0.5, 0.75)])
-        // A's release of Menu is not delivered, and B then holds Menu;
-        // closing the remote releases both.
+        // Both devices may hold Menu when A's release fails before switching to B.
         remote.showWindow(nil)
         target = a
         first.undeliveredEvents = [1]
@@ -1490,18 +1379,14 @@ struct InputFocusTests {
             phone.invalidate()
             remote.close()
         }
-        // Another Apple TV's window keeps the remote; any other device's closes it.
         remote.showWindow(nil)
         becomeKey(tv)
         #expect(remote.isVisible)
         becomeKey(phone)
         #expect(!remote.isVisible)
-        // Closing an Apple TV's window keeps the remote while another device
-        // window is open; the next key window decides.
         remote.showWindow(nil)
         tv.window?.close()
         #expect(remote.isVisible)
-        // Closing the last device window, an Apple TV's, closes it.
         let lastTV = try make(.tv, [DeviceCapabilities.tvRemote])
         defer { lastTV.invalidate() }
         phone.window?.close()
@@ -1509,7 +1394,6 @@ struct InputFocusTests {
         try #require(!NSApp.windows.contains { $0 !== lastTV.window && $0.isVisible && $0.windowController is DeviceWindowController })
         lastTV.window?.close()
         #expect(!remote.isVisible)
-        // So does a window that goes away with its device.
         let shutDown = try make(.tv, [DeviceCapabilities.tvRemote])
         remote.showWindow(nil)
         shutDown.invalidate()
@@ -1532,8 +1416,7 @@ struct InputFocusTests {
         let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
         remote.showWindow(nil)
         #expect(DeviceCommand.command(.appleTVRemote).validate(item, for: tv) && item.title == "Hide Apple TV Remote")
-        // In Simulator.app the external display's window is the iPhone's
-        // device window too, so its becoming key closes the remote.
+        // Simulator.app treats an external display window as its iPhone's window.
         NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: external)
         #expect(!remote.isVisible)
         _ = DeviceCommand.command(.appleTVRemote).validate(item, for: tv)
@@ -1545,8 +1428,7 @@ struct InputFocusTests {
         func fields(_ message: OpaquePointer, _ offsets: [Int]) -> [UInt32] {
             offsets.map { UnsafeRawPointer(message).load(fromByteOffset: $0, as: UInt32.self) }
         }
-        // A remote button takes 1 when pressed and 0 when released, at the
-        // remote's target; the device's buttons keep 1 and 2 at the screen's.
+        // Remote buttons use values 1/0 at the remote target; device buttons use 1/2 at the screen.
         for (state, value) in [(HIDState.down, UInt32(1)), (.up, 0)] {
             let message = try input.message(.tvRemote(.siri), state, target: 7).take()
             defer { free(UnsafeMutableRawPointer(message)) }
@@ -1555,8 +1437,7 @@ struct InputFocusTests {
         let home = try input.message(.button(.home), .up, target: 7).take()
         defer { free(UnsafeMutableRawPointer(home)) }
         #expect(fields(home, [0x30, 0x34, 0x38]) == [0, 2, 7])
-        // A touch's start and end change the event masks and touch flags of
-        // both events as Simulator.app's touchStarted and touchEnded do.
+        // Match Simulator.app's touchStarted/touchEnded masks and flags.
         let expected: [(TVRemoteTouch.Phase, [UInt32])] = [
             (.began, [0x23, 1, 1, 3, 1, 1]), (.moved, [4, 1, 1, 4, 1, 1]), (.ended, [0x21, 0, 0, 1, 0, 0]),
         ]
@@ -1588,9 +1469,7 @@ struct InputFocusTests {
         }
         let vision = device(.vision, [DeviceCapabilities.opticID, DeviceCapabilities.hoverboard])
         let phone = device(.iPhone, [])
-        // As in Simulator.app's MainMenu.nib, the items send the actions of
-        // the plugin's overlay to the first responder, the camera modes with
-        // Control-Command-1 to 5 and Reset Camera with Control-Command-0.
+        // Match Simulator.app's responder actions and Control-Command camera shortcuts.
         let deviceMenu = try menu("Device")
         let deviceCommands = try ["Re-Center Open Apps", "Interaction Mode", "Look Around Mode", "Pan Mode", "Orbit Mode",
                                   "Dolly Mode", "Reset Camera", "Simulated Scenes"].map { title in
@@ -1606,8 +1485,7 @@ struct InputFocusTests {
         #expect(deviceCommands.filter { !$0.keyEquivalent.isEmpty }.allSatisfy {
             $0.keyEquivalentModifierMask == [.control, .command]
         })
-        // Set Immersion To has 50%, 75%, and 100%; Simulator.app hides its
-        // Increase and Decrease Immersion, 0%, and 25% for every device.
+        // Simulator.app hides Increase/Decrease Immersion, 0%, and 25%.
         let io = try menu("I/O")
         #expect(visible(io, vision) == ["Audio Input", "Audio Output", "-", "Set Immersion To", "-", "Open URL…"])
         #expect(!visible(io, phone).contains("Set Immersion To"))
@@ -1616,9 +1494,7 @@ struct InputFocusTests {
         #expect(immersion.items.map { $0.action.map(NSStringFromSelector) } ==
             ["setImmersionTo50:", "setImmersionTo75:", "setImmersionTo100:"])
         #expect(immersion.items.allSatisfy { $0.target == nil && $0.keyEquivalent.isEmpty })
-        // Optic ID follows the device's feature and, on Apple Vision Pro, has
-        // no shortcut. FaceTime is for Apple Vision, and its items send the
-        // overlay's actions without shortcuts.
+        // Optic ID and FaceTime commands have no shortcuts on Apple Vision Pro.
         let features = try menu("Features")
         #expect(visible(features, vision) == ["Optic ID", "-", "FaceTime", "-", "Trigger iCloud Sync", "-", "Location"])
         #expect(!visible(features, phone).contains("Optic ID"))
@@ -1639,7 +1515,6 @@ struct InputFocusTests {
         let opticID = try menu("Optic ID", in: features)
         #expect(opticID.items.map(\.title) == ["Enrolled", "Matching Eye", "Non-matching Eye"])
         #expect(opticID.items.map(\.keyEquivalent) == ["", "", ""])
-        // Show Gaze Target follows the device's gaze feature.
         let debug = try menu("Debug")
         #expect(visible(debug, vision).suffix(5) ==
             ["Simulate Memory Warning", "-", "Show Gaze Target", "-", "Show Parallel Testing Devices"])
@@ -1659,8 +1534,7 @@ struct InputFocusTests {
             printf '{"result":{"deviceOrientation":"portrait","deviceOrientationNonFlat":"portrait"}}'
             """.write(to: devicectl, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: devicectl.path)
-        // Like Simulator.app, which turns only an iPhone's or iPad's display,
-        // a watch's window does not ask for the orientation.
+        // Simulator.app queries orientation only for iPhone and iPad displays.
         let watch = try makeController(TestDisplay(), family: .watch, features: [DeviceCapabilities.keyboard],
                                        devicectl: devicectl)
         defer { watch.invalidate() }
@@ -1668,7 +1542,6 @@ struct InputFocusTests {
         watch.showNewWindow(cascadingFrom: &position)
         #expect(!watch.session.isBusy)
         #expect(!FileManager.default.fileExists(atPath: log.path))
-        // An iPhone's does.
         let phone = try makeController(TestDisplay(), devicectl: devicectl, device: "phone")
         defer { phone.invalidate() }
         phone.showNewWindow(cascadingFrom: &position)
@@ -1687,7 +1560,6 @@ struct InputFocusTests {
             return (reading.physical, reading.displayAngle)
         }
         #expect(try reading("unknown", "portrait") == (.portrait, 0))
-        // A device turned counterclockwise is shown turned counterclockwise.
         #expect(try reading("landscapeLeft", "landscapeLeft") == (.landscapeLeft, 90))
         #expect(try reading("landscapeRight", "landscapeRight") == (.landscapeRight, -90))
         #expect(try reading("faceUp", "landscapeLeft") == (.faceUp, 90))
@@ -1730,7 +1602,6 @@ struct InputFocusTests {
         display.onPropertiesChange?()
         #expect(isLandscape())
         #expect(display.rotations == [90])
-        // Other property changes, after a resize or a bezel change, keep the window size.
         window.setContentSize(NSSize(width: 600, height: 400))
         controller.setDeviceBezelVisible(false)
         let chosen = window.frame.size
@@ -1741,7 +1612,7 @@ struct InputFocusTests {
 
     @Test func resumingGuestFollowAppliesTheNextGuestRotation() throws {
         let display = TestDisplay()
-        // Small enough to fit the screen at Point Accurate in either orientation.
+        // Keep Point Accurate small enough for the test display in either orientation.
         display.naturalSize = NSSize(width: 200, height: 400)
         let controller = try makeController(display)
         defer { controller.invalidate() }
@@ -1756,14 +1627,12 @@ struct InputFocusTests {
         display.guestInterfaceAngle = 0
         display.onPropertiesChange?()
         #expect(display.rotations == [0])
-        // With following off, the guest and the window turn to landscape.
         controller.perform(.rotateDeviceAutomatically)
         display.guestInterfaceAngle = 90
         display.naturalSize = landscape
         display.onPropertiesChange?()
         controller.setScale(.pointAccurate)
         #expect(isLandscape())
-        // After following resumes, the guest's return to portrait is applied.
         controller.perform(.rotateDeviceAutomatically)
         display.guestInterfaceAngle = 0
         display.naturalSize = portrait
@@ -1801,9 +1670,7 @@ struct InputFocusTests {
                 DeviceCommand.command($0).state?(controller) == .on
             }
         }
-        // The window takes the display's size at the scale, right below its
-        // header without a bezel, also when the display is narrower than a
-        // manual resize can make the window.
+        // A bezel-free display sits directly below the header, even below the manual minimum width.
         func fitsDisplay() -> Bool {
             display.view.frame.size == display.size(for: display.renderScale)
                 && window.contentLayoutRect.size == display.view.frame.size
@@ -1816,12 +1683,10 @@ struct InputFocusTests {
         #expect(display.renderScale == 1.5)
         #expect(checked() == [.pixelAccurate])
         #expect(fitsDisplay())
-        // A manual size checks a fixed scale only when it matches.
         window.setContentSize(NSSize(width: 360, height: 500))
         controller.windowDidResize(Notification(name: NSWindow.didResizeNotification, object: window))
         #expect(display.renderScale != 1 && display.renderScale != 1.5)
         #expect(checked().isEmpty)
-        // A screen with another resolution changes the checkmark, not the scale.
         controller.perform(.pixelAccurate)
         display.screenScale = 1.25 * backing
         #expect(display.renderScale == 1.5)
@@ -1831,7 +1696,6 @@ struct InputFocusTests {
     @Test func unavailableScaleCommandsKeepTheirCheckmarks() throws {
         let display = TestDisplay()
         display.naturalSize = NSSize(width: 160, height: 320)
-        // Physical Size is 0.5: the device is twice as dense as the screen.
         let screen = try #require(NSScreen.screens.first)
         let density = WindowScale.usable(WindowScale.density(of: screen)) ?? WindowScale.defaultHostDensity
         let controller = try makeController(display, screenPointsPerInch: Double(density * 2))
@@ -1847,9 +1711,7 @@ struct InputFocusTests {
         }
         controller.perform(.pixelAccurate)
         #expect(checked(for: controller) == [.pixelAccurate])
-        // Like Simulator.app, the commands keep their checkmarks while they
-        // are unavailable: in full screen, where the display fills the screen
-        // at another scale,
+        // Simulator.app preserves checkmarks when scale commands are unavailable in full screen,
         controller.windowWillEnterFullScreen(Notification(name: NSWindow.willEnterFullScreenNotification, object: window))
         window.setContentSize(NSSize(width: 500, height: 900))
         controller.windowDidResize(Notification(name: NSWindow.didResizeNotification, object: window))
@@ -1857,32 +1719,29 @@ struct InputFocusTests {
         #expect(checked(for: controller) == [.pixelAccurate])
         controller.windowDidExitFullScreen(Notification(name: NSWindow.didExitFullScreenNotification, object: window))
         #expect(display.renderScale == 1.5)
-        // for Physical Size on another screen than the device's own,
+        // on another screen for Physical Size,
         controller.perform(.physicalSize)
         #expect(display.renderScale == 0.5)
         #expect(checked(for: controller) == [.physicalSize])
         display.displayClass = 1
         controller.perform(.pointAccurate)
         #expect(checked(for: controller) == [.physicalSize, .pointAccurate])
-        // and without a device window, where Simulator.app does not validate them.
+        // or without a device window.
         display.displayClass = 0
         #expect(checked(for: nil) == [.physicalSize, .pointAccurate])
     }
 
     @Test func fitScreenFillsTheScreenAndCentersTheWindow() throws {
         let display = TestDisplay()
-        // Wide enough that the fitted window keeps the unified title bar.
         display.naturalSize = NSSize(width: 400, height: 300)
         let controller = try makeController(display)
         defer { controller.invalidate() }
         controller.showWindow(nil)
         let window = try #require(controller.window)
         let visible = try #require((window.screen ?? NSScreen.main)?.visibleFrame)
-        // Like Simulator.app, the space is the visible frame less the window's
-        // header, which a display without a bezel sits right below.
+        // Fit below the window header, matching Simulator.app.
         let above = window.frame.height - window.contentLayoutRect.height
         controller.perform(.fitScreen)
-        // Unlike NeoSimulator's earlier Fit Screen, the scale can exceed 1.
         let expected = min((visible.width - 20) / 400, (visible.height - above - 20) / 300)
         #expect(abs(display.renderScale - expected) < 0.000_001)
         #expect(abs(window.frame.midX - visible.midX) < 1 && abs(window.frame.midY - visible.midY) < 1)
@@ -1892,7 +1751,6 @@ struct InputFocusTests {
 
     @Test func fitScreenFitsAWindowThatTakesTheExpandedTitleBar() throws {
         let display = TestDisplay()
-        // Wide, so the window starts with the unified title bar.
         display.naturalSize = NSSize(width: 600, height: 300)
         let controller = try makeController(display)
         defer { controller.invalidate() }
@@ -1900,21 +1758,17 @@ struct InputFocusTests {
         let window = try #require(controller.window)
         let visible = try #require((window.screen ?? NSScreen.main)?.visibleFrame)
         #expect(window.toolbarStyle == .unified)
-        // Fitted to the screen, a tall and narrow display makes the window far
-        // narrower than the unified style allows, and the taller expanded
-        // title bar must still leave the window inside the screen.
+        // A narrow display switches to the taller expanded title bar during fitting.
         let tall = NSSize(width: 60, height: visible.height * 2)
         display.naturalSize = tall
         controller.perform(.fitScreen)
         #expect(window.toolbarStyle == .expanded)
-        // AppKit keeps a window without a bezel inside the screen, so the
-        // scale shows whether the display fits below the expanded title bar.
+        // AppKit constrains bezel-free windows; the scale reveals whether the display fits.
         func fitted(_ window: NSWindow) -> CGFloat {
             (visible.height - (window.frame.height - window.contentLayoutRect.height) - 20) / tall.height
         }
         #expect(abs(display.renderScale - fitted(window)) < 0.000_001)
         #expect(window.frame.height <= visible.height)
-        // A new window of such a display opens fitted the same way.
         let other = TestDisplay()
         other.naturalSize = tall
         let opened = try makeController(other)
@@ -1927,7 +1781,6 @@ struct InputFocusTests {
 
     @Test func fixedScalesAreCheckedAgainstTheTitleBarTheyWouldGiveTheWindow() throws {
         let display = TestDisplay()
-        // Wide, so the window starts with the unified title bar.
         display.naturalSize = NSSize(width: 600, height: 300)
         let controller = try makeController(display)
         defer { controller.invalidate() }
@@ -1936,12 +1789,10 @@ struct InputFocusTests {
         let visible = try #require(window.screen?.visibleFrame)
         let pointAccurate = DeviceCommand.command(.pointAccurate)
         #expect(window.toolbarStyle == .unified)
-        // At Point Accurate a narrow display would take the expanded title
-        // bar, under which this height no longer fits without a bezel.
+        // The expanded title bar makes this height too tall.
         display.naturalSize = NSSize(width: 60, height: visible.height - 60)
         #expect(!pointAccurate.isEnabled(controller))
-        // From an expanded window, a wide display would take the unified title
-        // bar, under which the same height fits.
+        // The unified title bar leaves enough space for the same height.
         controller.perform(.fitScreen)
         #expect(window.toolbarStyle == .expanded)
         display.naturalSize = NSSize(width: 600, height: visible.height - 60)
@@ -1951,8 +1802,7 @@ struct InputFocusTests {
     @Test func scaleCommandsAreValidatedAsInSimulator() throws {
         let display = TestDisplay()
         display.naturalSize = NSSize(width: 200, height: 400)
-        // Every fixed scale is 1, which fits a small screen at any resolution:
-        // the device is as dense as the screen the window opens on.
+        // Equal densities keep every fixed scale at 1, even on small screens.
         let screen = try #require(NSScreen.screens.first)
         let density = WindowScale.usable(WindowScale.density(of: screen)) ?? WindowScale.defaultHostDensity
         let controller = try makeController(display, screenPointsPerInch: Double(density))
@@ -1969,22 +1819,18 @@ struct InputFocusTests {
             }
         }
         #expect(enabled() == [.physicalSize, .pointAccurate, .pixelAccurate, .fitScreen])
-        // Not in full screen, nor while entering or leaving it.
         controller.windowWillEnterFullScreen(Notification(name: NSWindow.willEnterFullScreenNotification))
         #expect(enabled().isEmpty)
         controller.windowDidExitFullScreen(Notification(name: NSWindow.didExitFullScreenNotification))
         #expect(enabled().count == 4)
-        // Physical Size is only for the device's own screen.
         display.displayClass = 1
         #expect(enabled() == [.pointAccurate, .pixelAccurate, .fitScreen])
         display.displayClass = 0
-        // A fixed scale below an iPhone's minimum of 0.4 is unavailable.
         display.screenScale = 0.39 * backing
         #expect(!enabled().contains(.pixelAccurate))
         display.screenScale = 0.41 * backing
         #expect(enabled().contains(.pixelAccurate))
-        // A fixed scale must fit the screen below the window's header, which
-        // a display without a bezel sits right below.
+        // Fixed scales must fit below the header.
         let visible = try #require(window.screen?.visibleFrame)
         let above = window.frame.height - window.contentLayoutRect.height
         display.naturalSize = NSSize(width: 200, height: visible.height - above)
@@ -2001,29 +1847,23 @@ struct InputFocusTests {
     @Test func closingSavesTheScaleForTheDevicesNextWindow() throws {
         let preferences = MemoryPreferences()
         let screens = NSScreen.screens.map(\.frame)
-        // What the device's window saved in another arrangement of screens.
         let elsewhere = "0D7A6E4C-5F4B-4D0E-9C61-2B8C9D0A1E2F"
         preferences.values[HostPreferences.devicePreferences] = ["test-device": [
             "ChromeTint": "#FFFFFF", "SimulatorWindowGeometry": [elsewhere: ["WindowCenter": "{10, 20}"]],
         ]]
         func open() throws -> (DeviceWindowController, TestDisplay) {
             let display = TestDisplay()
-            // Wide enough that a window fitted to any screen keeps the unified
-            // title bar that Fit Screen measured; a narrower one would take
-            // the taller expanded style after the scale is chosen.
+            // Keep the unified title bar after fitting so its measured height remains valid.
             display.naturalSize = NSSize(width: 320, height: 160)
             return (try makeController(display, preferences: preferences), display)
         }
         let (first, display) = try open()
-        // Without a saved scale, a window opens at Point Accurate when that fits.
         #expect(display.renderScale == 1)
         display.screenScale = 1.5 * (first.window?.screen?.backingScaleFactor ?? 1)
         first.perform(.pixelAccurate)
         first.showWindow(nil)
         let frame = try #require(first.window?.frame)
-        // Closed as the user closes it, through the window's delegate, the
-        // window saves its center and scale for the current arrangement of
-        // screens, beside what was saved for another one.
+        // Closing through the delegate saves geometry for this screen arrangement.
         first.window?.close()
         let device = (preferences.values[HostPreferences.devicePreferences] as? [String: Any])?["test-device"]
             as? [String: Any]
@@ -2036,7 +1876,6 @@ struct InputFocusTests {
         let (second, reopened) = try open()
         #expect(reopened.renderScale == 1.5)
         second.invalidate()
-        // A saved scale that does not fit the screen is reduced to fit it.
         preferences.setWindowGeometry(center: NSPoint(x: frame.midX, y: frame.midY), scale: 100,
                                       forDevice: "test-device", screens: screens)
         let (third, reduced) = try open()
@@ -2053,8 +1892,6 @@ struct InputFocusTests {
             display.bezelPadding = topPadding.map { NSSize(width: 10, height: $0) }
             return try makeController(display, device: device, preferences: preferences)
         }
-        // Without a saved center, the first window takes the center of the
-        // screen, and the next cascades from it.
         var cascade = NSPoint.zero
         let first = try open("A")
         first.showNewWindow(cascadingFrom: &cascade)
@@ -2069,8 +1906,6 @@ struct InputFocusTests {
         let secondWindow = try #require(second.window)
         #expect(NSPoint(x: secondWindow.frame.minX, y: secondWindow.frame.maxY) == start)
         #expect(cascade != start)
-        // A device's next window opens centered where its last one closed,
-        // without moving the cascade.
         firstWindow.setFrameOrigin(NSPoint(x: visible.minX + 30, y: visible.minY + 40))
         let closed = firstWindow.frame
         first.invalidate()
@@ -2081,9 +1916,7 @@ struct InputFocusTests {
         let reopenedWindow = try #require(reopened.window)
         #expect(reopenedWindow.frame == closed)
         #expect(cascade == afterSecond)
-        // A window whose saved center leaves it across the edge of the screen
-        // moves back inside the screen, also with an iPad's bezel, whose top
-        // padding keeps AppKit from moving the window.
+        // iPad top padding bypasses AppKit's constraint, so the host must restore the window onscreen.
         preferences.setWindowGeometry(center: NSPoint(x: visible.maxX - 10, y: visible.midY), scale: nil,
                                       forDevice: "C", screens: NSScreen.screens.map(\.frame))
         let moved = try open("C", topPadding: 9)
@@ -2096,9 +1929,7 @@ struct InputFocusTests {
     }
 
     @Test func aWindowSavedInAnotherArrangementOfScreensOpensAsANewOne() throws {
-        // Like Simulator.app, a device's window opens where it closed and at
-        // the scale it closed only in the arrangement of screens it closed in,
-        // here one with a screen that no Mac has.
+        // Saved geometry applies only to the matching screen arrangement.
         let elsewhere = "0D7A6E4C-5F4B-4D0E-9C61-2B8C9D0A1E2F"
         let preferences = MemoryPreferences()
         preferences.values[HostPreferences.screenConfigurations] = [elsewhere: ["{{-9000, 9000}, {640, 480}}"]]
@@ -2109,8 +1940,6 @@ struct InputFocusTests {
         display.naturalSize = NSSize(width: 160, height: 320)
         let controller = try makeController(display, device: "A", preferences: preferences)
         defer { controller.invalidate() }
-        // The window opens at Point Accurate, which fits the screen, and as
-        // the first window that cascades, centered with center().
         #expect(display.renderScale == 1)
         var cascade = NSPoint.zero
         controller.showNewWindow(cascadingFrom: &cascade)
@@ -2119,7 +1948,6 @@ struct InputFocusTests {
         let placed = window.frame
         window.center()
         #expect(window.frame == placed)
-        // The current arrangement is saved beside the other.
         let configurations = preferences.values[HostPreferences.screenConfigurations] as? [String: [String]]
         #expect(configurations?.count == 2)
         #expect(configurations?[elsewhere] == ["{{-9000, 9000}, {640, 480}}"])
@@ -2162,9 +1990,7 @@ struct InputFocusTests {
         window.setFrameOrigin(NSPoint(x: visible.minX + 20, y: visible.minY + 400 - window.frame.height))
         let top = window.frame.maxY
         await controller.prepareForRestart()
-        // The device's next connection shows the display upright. Like
-        // Simulator.app, the window takes that shape below its top edge, as
-        // after a rotation, instead of growing above it.
+        // On reconnect, Simulator.app preserves the top edge while restoring the upright shape.
         let second = TestDisplay()
         second.naturalSize = NSSize(width: 120, height: 240)
         controller.reconnect(try makeSession(second))
@@ -2177,15 +2003,13 @@ struct InputFocusTests {
         let preferences = MemoryPreferences()
         let screens = NSScreen.screens.map(\.frame)
         preferences.setWindowGeometry(center: NSPoint(x: 100, y: 200), scale: 2, forDevice: "A", screens: screens)
-        // Like Simulator.app, a window that closes while its device restarts
-        // keeps the geometry its device's window saved last.
+        // Closing during restart must preserve the last connected geometry.
         let restarting = try makeController(TestDisplay(), device: "A", preferences: preferences)
         restarting.showWindow(nil)
         await restarting.prepareForRestart()
         restarting.window?.close()
         let kept = preferences.windowGeometry(forDevice: "A", screens: screens)
         #expect(kept.center == NSPoint(x: 100, y: 200) && kept.scale == 2)
-        // Once the device reconnects, closing saves again.
         let reconnected = try makeController(TestDisplay(), device: "B", preferences: preferences)
         await reconnected.prepareForRestart()
         reconnected.reconnect(try makeSession(TestDisplay(), device: "B"))
@@ -2199,9 +2023,7 @@ struct InputFocusTests {
         preferences.setWindowGeometry(center: NSPoint(x: 100, y: 200), scale: 2, forDevice: "test-device",
                                       screens: screens)
         let display = TestDisplay()
-        // HostApplication releases a new controller when another host appears
-        // before its window shows. That disconnects the display and keeps the
-        // geometry the device's window saved last.
+        // A host conflict before showing the window must preserve the saved geometry.
         try autoreleasepool { _ = try makeController(display, preferences: preferences) }
         #expect(display.disconnectCount == 1)
         let kept = preferences.windowGeometry(forDevice: "test-device", screens: screens)
@@ -2222,8 +2044,7 @@ struct InputFocusTests {
         let visible = try #require(window.screen?.visibleFrame)
         controller.perform(.pointAccurate)
         let top = window.frame.maxY
-        // Turned to landscape, the display is wider than the screen; like
-        // Simulator.app, it keeps its scale below the window's top edge.
+        // Simulator.app preserves scale on rotation, even beyond the screen width.
         let landscape = NSSize(width: visible.width + 100, height: 200)
         first.guestInterfaceAngle = 90
         first.naturalSize = landscape
@@ -2231,12 +2052,10 @@ struct InputFocusTests {
         #expect(first.renderScale == 1)
         #expect(window.frame.width > visible.width)
         #expect(window.frame.maxY == top.rounded())
-        // Showing a bezel keeps it too.
         first.bezel = NSSize(width: 40, height: 40)
         controller.setDeviceBezelVisible(false)
         controller.setDeviceBezelVisible(true)
         #expect(first.renderScale == 1)
-        // So does a restart.
         await controller.prepareForRestart()
         let second = TestDisplay()
         second.naturalSize = landscape
@@ -2253,15 +2072,13 @@ struct InputFocusTests {
         let display = TestDisplay()
         let portrait = NSSize(width: 200, height: 300)
         display.naturalSize = portrait
-        // With a bezel the window is not resizable, and AppKit leaves it past the screen.
+        // AppKit does not constrain a nonresizable window with a bezel.
         display.bezelPadding = NSSize(width: 10, height: 0)
         let controller = try makeController(display)
         defer { controller.invalidate() }
         controller.showWindow(nil)
         let window = try #require(controller.window)
         let visible = try #require(window.screen?.visibleFrame)
-        // Turned to landscape near the right edge, the window grows past it,
-        // and like Simulator.app moves back inside the screen.
         window.setFrameOrigin(NSPoint(x: visible.maxX - window.frame.width - 10, y: visible.minY + 20))
         display.guestInterfaceAngle = 90
         display.naturalSize = NSSize(width: 500, height: 200)
@@ -2269,7 +2086,6 @@ struct InputFocusTests {
         #expect(display.rotations == [90])
         #expect(window.frame.width == 500)
         #expect(visible.contains(window.frame))
-        // Turned back to portrait near the bottom edge, it grows below it.
         window.setFrameOrigin(NSPoint(x: visible.minX + 10, y: visible.minY + 10))
         display.guestInterfaceAngle = 0
         display.naturalSize = portrait
@@ -2282,7 +2098,6 @@ struct InputFocusTests {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        // A devicectl stand-in for a device in landscape.
         let devicectl = directory.appendingPathComponent("devicectl")
         try """
             #!/bin/sh
@@ -2304,8 +2119,7 @@ struct InputFocusTests {
         let center = NSPoint(x: visible.midX, y: visible.midY)
         let screens = NSScreen.screens.map(\.frame)
         var cascade = NSPoint.zero
-        // Like Simulator.app, the window is centered where it closed in the
-        // shape of the device's orientation, which is read after it shows.
+        // Read orientation after showing, then restore the saved center in that shape.
         preferences.setWindowGeometry(center: center, scale: nil, forDevice: "A", screens: screens)
         let (reopened, display) = try open("A")
         defer { reopened.invalidate() }
@@ -2315,7 +2129,6 @@ struct InputFocusTests {
         let window = try #require(reopened.window)
         #expect(window.contentLayoutRect.width == landscape.width)
         #expect(abs(window.frame.midX - center.x) < 1 && abs(window.frame.midY - center.y) < 1)
-        // A window moved before the reading keeps its top-left corner instead.
         preferences.setWindowGeometry(center: center, scale: nil, forDevice: "B", screens: screens)
         let (moved, _) = try open("B")
         defer { moved.invalidate() }
@@ -2326,8 +2139,6 @@ struct InputFocusTests {
         try await readOrientation(moved)
         #expect(movedWindow.contentLayoutRect.width == landscape.width)
         #expect(abs(movedWindow.frame.minX - topLeft.x) < 1 && abs(movedWindow.frame.maxY - topLeft.y) < 1)
-        // Without a saved center, the first window that cascades is centered
-        // again with center() in the shape of the device's orientation.
         let (centered, _) = try open("C")
         defer { centered.invalidate() }
         var first = NSPoint.zero
@@ -2338,9 +2149,7 @@ struct InputFocusTests {
         let placed = centeredWindow.frame
         centeredWindow.center()
         #expect(centeredWindow.frame == placed)
-        // The saved scale is reduced to Fit Screen's in the shape of the
-        // device's orientation, where Simulator.app chooses it: a display too
-        // tall upright opens at the saved scale once it reads landscape.
+        // Evaluate the saved scale against the reported orientation, matching Simulator.app.
         let tall = NSSize(width: 100, height: visible.height * 4)
         preferences.setWindowGeometry(center: center, scale: 0.5, forDevice: "D", screens: screens)
         let tallDisplay = TestDisplay()
@@ -2355,8 +2164,6 @@ struct InputFocusTests {
         let rescaledWindow = try #require(rescaled.window)
         #expect(rescaledWindow.contentLayoutRect.width == landscape.width * 0.5)
         #expect(abs(rescaledWindow.frame.midX - center.x) < 1 && abs(rescaledWindow.frame.midY - center.y) < 1)
-        // A guest rotation before the reading, with Rotate Device
-        // Automatically on, is not a change to the window's placement.
         let key = HostPreferences.rotateWindowWhenSignaledByGuest
         let follows = UserDefaults.standard.object(forKey: key)
         defer { UserDefaults.standard.set(follows, forKey: key) }
@@ -2375,8 +2182,6 @@ struct InputFocusTests {
         #expect(guestDisplay.renderScale == 0.5)
         let guestWindow = try #require(guestRotated.window)
         #expect(abs(guestWindow.frame.midX - center.x) < 1 && abs(guestWindow.frame.midY - center.y) < 1)
-        // Showing the window again while the reading is pending, as Open
-        // Simulator or a Dock click does, keeps the placement for its result.
         preferences.setWindowGeometry(center: center, scale: 0.5, forDevice: "F", screens: screens)
         let reshownDisplay = TestDisplay()
         reshownDisplay.naturalSize = tall
@@ -2402,16 +2207,13 @@ struct InputFocusTests {
         let window = try #require(controller.window)
         controller.perform(.pointAccurate)
         let windowed = window.frame
-        // AppKit's full screen transition fills the screen only with a
-        // resizable window, so a window with a bezel becomes resizable, also
-        // when the bezel changes in full screen.
+        // AppKit requires a resizable window throughout the full-screen transition.
         controller.windowWillEnterFullScreen(Notification(name: NSWindow.willEnterFullScreenNotification, object: window))
         #expect(window.styleMask.contains(.resizable))
         controller.setDeviceBezelVisible(false)
         controller.setDeviceBezelVisible(true)
         #expect(window.styleMask.contains(.resizable))
-        // Like Simulator.app, leaving full screen restores the display's scale
-        // and the window's origin, wherever AppKit returns the window.
+        // Leaving full screen restores the saved scale and origin, regardless of AppKit's placement.
         window.setFrame(NSRect(x: windowed.minX + 30, y: windowed.minY + 30,
                                width: windowed.width / 2, height: windowed.height / 2), display: true)
         #expect(display.renderScale < 1)
@@ -2419,7 +2221,6 @@ struct InputFocusTests {
         #expect(!window.styleMask.contains(.resizable))
         #expect(display.renderScale == 1)
         #expect(window.frame == windowed)
-        // A window that does not enter full screen keeps its bezel's rule.
         controller.windowWillEnterFullScreen(Notification(name: NSWindow.willEnterFullScreenNotification, object: window))
         controller.windowDidFailToEnterFullScreen(window)
         #expect(!window.styleMask.contains(.resizable))
@@ -2428,14 +2229,13 @@ struct InputFocusTests {
     @Test func leavingFullScreenMovesTheWindowBackInsideItsScreen() throws {
         let display = TestDisplay()
         display.naturalSize = NSSize(width: 200, height: 300)
-        // An iPad's bezel, whose top padding keeps AppKit from moving the window.
+        // iPad bezel padding bypasses AppKit's window constraint.
         display.bezelPadding = NSSize(width: 10, height: 9)
         let controller = try makeController(display)
         defer { controller.invalidate() }
         controller.showWindow(nil)
         let window = try #require(controller.window)
         let visible = try #require(window.screen?.visibleFrame)
-        // The window entered full screen from a screen that is gone when it leaves.
         window.setFrameOrigin(NSPoint(x: visible.maxX + 100, y: visible.minY + 10))
         controller.windowWillEnterFullScreen(Notification(name: NSWindow.willEnterFullScreenNotification, object: window))
         controller.windowDidExitFullScreen(Notification(name: NSWindow.didExitFullScreenNotification, object: window))
@@ -2445,7 +2245,6 @@ struct InputFocusTests {
     @Test func aScreenChangeMovesTheWindowBackInsideItsScreen() throws {
         let display = TestDisplay()
         display.naturalSize = NSSize(width: 200, height: 300)
-        // An iPad's bezel, whose top padding keeps AppKit from moving the window.
         display.bezelPadding = NSSize(width: 10, height: 9)
         let controller = try makeController(display)
         defer { controller.invalidate() }
@@ -2463,27 +2262,22 @@ struct InputFocusTests {
         let display = TestDisplay()
         display.naturalSize = NSSize(width: 200, height: 300)
         display.bezel = NSSize(width: 20, height: 20)
-        // An iPhone 17 Pro's bezel has no top padding.
         display.bezelPadding = NSSize(width: 9, height: 0)
         let controller = try makeController(display)
         defer { controller.invalidate() }
         controller.showWindow(nil)
         let window = try #require(controller.window)
         let visible = try #require(window.screen?.visibleFrame)
-        // Like Simulator.app, a window with a bezel is not resizable, and
-        // full screen stays available.
+        // Simulator.app permits full screen for nonresizable bezel windows.
         #expect(!window.styleMask.contains(.resizable))
         #expect(window.collectionBehavior.contains(.fullScreenPrimary))
-        // A fixed scale may make the window taller than the screen.
         display.naturalSize = NSSize(width: 200, height: visible.height)
         #expect(controller.canSetScale(.pointAccurate))
         controller.perform(.pointAccurate)
         #expect(display.renderScale == 1)
         #expect(display.view.frame.height == visible.height + 20)
         #expect(window.frame.height > visible.height)
-        // Without top padding, AppKit keeps the top of the window on the screen.
         #expect(window.frame.maxY <= visible.maxY + 1)
-        // Without the bezel, the window is resizable and the scale must fit.
         controller.setDeviceBezelVisible(false)
         #expect(window.styleMask.contains(.resizable))
         #expect(!controller.canSetScale(.pointAccurate))
@@ -2492,9 +2286,6 @@ struct InputFocusTests {
 
     @Test func showDeviceBezelsIsAnAppWidePreference() throws {
         _ = NSApplication.shared
-        // Bezels hidden from another window: like Simulator.app, a new window
-        // opens without its bezel, so it is resizable and takes the display's
-        // size without the bezel.
         let preferences = MemoryPreferences()
         preferences.set(false, forKey: HostPreferences.showChrome)
         let display = TestDisplay()
@@ -2506,7 +2297,6 @@ struct InputFocusTests {
         #expect(display.chromePadding == nil)
         #expect(controller.window?.styleMask.contains(.resizable) == true)
         #expect(display.view.frame.size == NSSize(width: 200, height: 300))
-        // The menu's checkmark shows the preference, also without a device window.
         let menus = MenuController(application: nil)
         menus.install()
         defer { NSApp.mainMenu = nil }
@@ -2530,9 +2320,7 @@ struct InputFocusTests {
         defer { controller.invalidate() }
         controller.showWindow(nil)
         let window = try #require(controller.window)
-        // The window takes the display's size, 1 point below its header with
-        // the bezel, whose images have 9 points of top padding, and right
-        // below it without.
+        // iPad artwork has 9 points of top padding and a 1-point header gap.
         func showsDisplay(_ size: NSSize, below gap: CGFloat) -> Bool {
             display.view.frame.size == size
                 && window.contentLayoutRect.size == NSSize(width: size.width, height: size.height + gap)
@@ -2540,23 +2328,19 @@ struct InputFocusTests {
         controller.perform(.pointAccurate)
         #expect(showsDisplay(NSSize(width: 400, height: 460), below: 1))
         let origin = window.frame.origin
-        // Hiding the bezel keeps the scale and the window's bottom-left
-        // corner, as Simulator.app does, and shrinks the window.
+        // Simulator.app preserves scale and the bottom-left corner when hiding the bezel.
         controller.setDeviceBezelVisible(false)
         #expect(display.renderScale == 1)
         #expect(DeviceCommand.command(.pointAccurate).state?(controller) == .on)
         #expect(showsDisplay(NSSize(width: 360, height: 400), below: 0))
         #expect(window.frame.origin == origin)
         #expect(window.styleMask.contains(.resizable))
-        // Showing it keeps a scale chosen without the bezel and grows the window.
         controller.perform(.pointAccurate)
         controller.setDeviceBezelVisible(true)
         #expect(display.renderScale == 1)
         #expect(showsDisplay(NSSize(width: 400, height: 460), below: 1))
         #expect(window.frame.origin == origin)
         #expect(!window.styleMask.contains(.resizable))
-        // The window may rise above the screen by the bezel's top padding at
-        // the display's scale, and no further once the bezel is hidden.
         let visible = try #require(window.screen?.visibleFrame)
         display.screenScale = 2 * (window.screen?.backingScaleFactor ?? 1)
         controller.perform(.pixelAccurate)
@@ -2569,9 +2353,7 @@ struct InputFocusTests {
     }
 
     @Test func theGapAboveTheDisplayFollowsTheBezelsTopPadding() throws {
-        // With an iPhone 17 Pro's bezel, which has no top padding, with an
-        // iPad's, which has 9 points, and without a bezel, where Simulator.app's
-        // chrome refresh turns the gap off and the display meets the header.
+        // Cover zero-padding artwork, padded iPad artwork, and the bezel-free header gap.
         for (padding, gap) in [(NSSize(width: 9, height: 0), CGFloat(10)), (NSSize(width: 10, height: 9), 1), (nil, 0)] {
             let display = TestDisplay()
             display.naturalSize = NSSize(width: 200, height: 300)
@@ -2583,8 +2365,6 @@ struct InputFocusTests {
             controller.showWindow(nil)
             let window = try #require(controller.window)
             controller.perform(.pointAccurate)
-            // Like Simulator.app's constraints, the display fills the window
-            // below the gap.
             let size = display.size(for: 1)
             #expect(display.view.frame == NSRect(origin: .zero, size: size))
             #expect(window.contentLayoutRect.maxY - display.view.frame.maxY == gap)
@@ -2602,27 +2382,20 @@ struct InputFocusTests {
         let window = try #require(controller.window)
         let toolbar = try #require(window.toolbar)
         func header() -> CGFloat { window.frame.height - window.contentLayoutRect.height }
-        // Like Simulator.app's toolbar nibs, the buttons sit between two
-        // flexible spaces.
+        // Simulator.app's toolbar nibs enclose the buttons in flexible spaces.
         #expect(toolbar.items.first?.itemIdentifier == .flexibleSpace)
         #expect(toolbar.items.last?.itemIdentifier == .flexibleSpace)
-        // A display as wide as the buttons, the title, and 130 points keeps
-        // the unified style, which hides the last flexible space, so that the
-        // buttons follow the title.
+        // Unified style hides the trailing space and places the buttons after the title.
         controller.perform(.pointAccurate)
         #expect(window.toolbarStyle == .unified)
         #expect(toolbar.items.last?.isHidden == true)
-        // Like Simulator.app's, the title truncates so that every button stays
-        // in the title bar instead of the overflow menu.
+        // The title must truncate before buttons move to the overflow menu.
         window.layoutIfNeeded()
         #expect(toolbar.visibleItems?.compactMap { DeviceCommand.ID(rawValue: $0.itemIdentifier.rawValue) }
             == [.home, .saveScreen, .rotateRight])
         let unified = header()
         #expect(window.frame.height == 300 + unified)
         #expect((0..<1).contains(window.frame.width - threshold))
-        // A narrower display takes the expanded style, which centers the
-        // buttons in a row below the title. The window is as tall as the
-        // display and the taller title bar.
         display.naturalSize = NSSize(width: threshold - 0.01, height: 300)
         controller.perform(.pointAccurate)
         #expect(window.toolbarStyle == .expanded)
@@ -2631,8 +2404,6 @@ struct InputFocusTests {
         #expect(expanded > unified)
         #expect(window.frame.height == 300 + expanded)
         #expect(display.view.frame.size == NSSize(width: window.frame.width, height: 300))
-        // Every geometry update, such as Show Device Bezels', chooses the
-        // style again.
         display.naturalSize = NSSize(width: threshold + 1, height: 300)
         controller.setDeviceBezelVisible(false)
         #expect(window.toolbarStyle == .unified)
@@ -2667,9 +2438,7 @@ struct InputFocusTests {
         let saveScreen = try #require(toolbar.items.first { $0.itemIdentifier.rawValue == "saveScreen" })
         for _ in 0..<200 where saveScreen.toolTip != "Stop Recording" { try await Task.sleep(for: .milliseconds(10)) }
         #expect(saveScreen.toolTip == "Stop Recording")
-        // Simulator.app adds no item and does not measure its toolbar again,
-        // so a display at the threshold keeps the unified style through the
-        // next geometry update, with every button in the title bar.
+        // Simulator.app preserves the toolbar measurement while the recording button changes.
         controller.setDeviceBezelVisible(false)
         #expect(window.toolbarStyle == .unified)
         #expect(buttons() == [.home, .saveScreen, .rotateRight])
@@ -2678,16 +2447,14 @@ struct InputFocusTests {
     }
 
     @Test func titleBarPreferencesChooseTheCompactOrExpandedStyle() throws {
-        // Simulator.app registers UseMonobar on and UseCompactTitleBar off.
+        // Simulator.app defaults to UseMonobar on and UseCompactTitleBar off.
         HostPreferences.registerDefaults()
         let registered = UserDefaults.standard.volatileDomain(forName: UserDefaults.registrationDomain)
         #expect(registered["UseMonobar"] as? Bool == true)
         #expect(registered["UseCompactTitleBar"] as? Bool == false)
-        // Without values, as before the app registers them, the same.
         #expect(MemoryPreferences().usesMonobar)
         #expect(!MemoryPreferences().usesCompactTitleBar)
-        // A value that `defaults write` saved as a string reads as
-        // `boolForKey:` reads it.
+        // Match boolForKey: conversion of values written as strings.
         let defaults = RegisteredDefaults()
         defaults.set("NO", forKey: HostPreferences.useMonobar)
         defaults.set("YES", forKey: HostPreferences.useCompactTitleBar)
@@ -2701,7 +2468,6 @@ struct InputFocusTests {
         controller.showWindow(nil)
         let window = try #require(controller.window)
         let wide = (Self.unifiedWidth() + 50).rounded(), narrow = (Self.unifiedWidth() - 50).rounded()
-        // Each geometry update reads the preferences again.
         var headers: [NSWindow.ToolbarStyle: CGFloat] = [:]
         for (compact, monobar, wideStyle, narrowStyle) in [
             (false, true, NSWindow.ToolbarStyle.unified, NSWindow.ToolbarStyle.expanded),
@@ -2715,12 +2481,10 @@ struct InputFocusTests {
                 display.naturalSize = NSSize(width: width, height: 300)
                 controller.perform(.pointAccurate)
                 #expect(window.toolbarStyle == style, "compact \(compact) monobar \(monobar) width \(width)")
-                // The display fills the window below the title bar.
                 #expect(display.view.frame == NSRect(x: 0, y: 0, width: width, height: 300))
                 headers[style] = window.frame.height - 300
             }
         }
-        // The compact title bar is the lowest and the expanded one the tallest.
         let compact = try #require(headers[.unifiedCompact]), unified = try #require(headers[.unified])
         let expanded = try #require(headers[.expanded])
         #expect(compact < unified && unified < expanded)
@@ -2734,15 +2498,12 @@ struct InputFocusTests {
         controller.showWindow(nil)
         let window = try #require(controller.window)
         let visible = try #require(window.screen?.visibleFrame)
-        // A display narrower than the toolbar needs has the expanded title bar.
         controller.perform(.pointAccurate)
         #expect(window.toolbarStyle == .expanded)
         let header = window.frame.height - window.contentLayoutRect.height
         #expect(window.frame.height == 400 + header)
-        // Fit Screen leaves room for that title bar and 20 points.
         let fit = try #require(controller.scale(for: .fitScreen))
         #expect(abs(fit - min((visible.width - 20) / 200, (visible.height - header - 20) / 400)) < 0.000_001)
-        // A fixed scale must fit below it.
         display.naturalSize = NSSize(width: 200, height: visible.height - header)
         #expect(controller.canSetScale(.pointAccurate))
         display.naturalSize = NSSize(width: 200, height: visible.height - header + 1)
@@ -2764,16 +2525,13 @@ struct InputFocusTests {
         controller.windowDidResize(Notification(name: NSWindow.didResizeNotification, object: window))
         #expect(window.toolbarStyle == .unified)
         let below = window.frame.height - header()
-        // Like Simulator.app's windowDidResize:, the window grows by the
-        // taller title bar when it becomes too narrow for the unified style,
-        // and shrinks back.
+        // Simulator.app adjusts window height when resizing switches the title-bar style.
         resize(width: narrow)
         #expect(window.toolbarStyle == .expanded)
         #expect(window.frame.height - header() == below)
         resize(width: wide)
         #expect(window.toolbarStyle == .unified)
         #expect(window.frame.height - header() == below)
-        // In full screen, the style stays as it is.
         controller.windowWillEnterFullScreen(Notification(name: NSWindow.willEnterFullScreenNotification, object: window))
         resize(width: narrow)
         #expect(window.toolbarStyle == .unified)
@@ -2795,14 +2553,12 @@ struct InputFocusTests {
         #expect(window.backgroundColor == .black)
         controller.setDeviceBezelVisible(true)
         #expect(window.backgroundColor == .clear)
-        // Like Simulator.app, full screen keeps the window's color when the
-        // bezel is hidden, and leaving full screen turns it black.
+        // Full screen preserves the bezel color; leaving full screen restores black.
         controller.windowWillEnterFullScreen(Notification(name: NSWindow.willEnterFullScreenNotification, object: window))
         controller.setDeviceBezelVisible(false)
         #expect(window.backgroundColor == .clear)
         controller.windowDidExitFullScreen(Notification(name: NSWindow.didExitFullScreenNotification, object: window))
         #expect(window.backgroundColor == .black)
-        // A window that opens without its bezel is black.
         let preferences = MemoryPreferences()
         preferences.set(false, forKey: HostPreferences.showChrome)
         let other = TestDisplay()
@@ -2821,11 +2577,8 @@ struct InputFocusTests {
         defer { controller.invalidate() }
         controller.showWindow(nil)
         let window = try #require(controller.window)
-        // As in Simulator.app's window, AppKit draws the title bar.
         #expect(!window.titlebarAppearsTransparent)
-        // Like Simulator.app, the window rounds the layer of the
-        // NSTitlebarContainerView that holds the title bar with the radius it
-        // reads from the window's private `_cornerRadius`.
+        // Simulator.app rounds NSTitlebarContainerView using the window's private _cornerRadius.
         var view: NSView? = window.standardWindowButton(.closeButton)
         while let current = view, current.className != "NSTitlebarContainerView" { view = current.superview }
         let layer = try #require(view?.layer)
@@ -2843,18 +2596,14 @@ struct InputFocusTests {
             #expect(layer.maskedCorners == [.layerMinXMinYCorner, .layerMaxXMinYCorner])
             #expect(layer.masksToBounds)
         }
-        // Without the bezel, the title bar is square below.
         controller.setDeviceBezelVisible(false)
         #expect(layer.cornerRadius == 0)
         controller.setDeviceBezelVisible(true)
         #expect(layer.cornerRadius == (try windowRadius()))
-        // So it is in full screen.
         controller.windowWillEnterFullScreen(Notification(name: NSWindow.willEnterFullScreenNotification, object: window))
         #expect(layer.cornerRadius == 0)
         controller.windowDidExitFullScreen(Notification(name: NSWindow.didExitFullScreenNotification, object: window))
         #expect(layer.cornerRadius == (try windowRadius()))
-        // The radius is the window's own: a window that reports another one
-        // rounds the title bar with it.
         let selector = NSSelectorFromString("_cornerRadius")
         let original = try #require(class_getInstanceMethod(NSWindow.self, selector))
         let radius: @convention(block) (AnyObject) -> CGFloat = { _ in 7 }
@@ -2872,7 +2621,6 @@ struct InputFocusTests {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        // A devicectl stand-in that sets any orientation and reports landscape.
         let devicectl = directory.appendingPathComponent("devicectl")
         try """
             #!/bin/sh
@@ -2888,7 +2636,6 @@ struct InputFocusTests {
             display.onRotation = { [unowned display] in display.naturalSize = $0 == 0 ? portrait : landscape }
             return display
         }
-        // The device's window last closed at a fractional scale.
         let preferences = MemoryPreferences()
         preferences.setWindowGeometry(center: NSPoint(x: 300, y: 300), scale: 1.37, forDevice: "test-device",
                                       screens: NSScreen.screens.map(\.frame))
@@ -2896,9 +2643,7 @@ struct InputFocusTests {
         let controller = try makeController(display, devicectl: devicectl, preferences: preferences)
         defer { controller.invalidate() }
         let window = try #require(controller.window)
-        // Like Simulator.app's geometry update, the window takes the smallest
-        // integral frame around the display and the space above it, and the
-        // display fills the window below the gap.
+        // Simulator.app encloses the display and header gap in an integral frame.
         func isSizedToDisplay(gap: CGFloat = 1) -> Bool {
             let frame = window.frame, size = display.size(for: display.renderScale)
             let header = frame.height - window.contentLayoutRect.height
@@ -2942,7 +2687,6 @@ struct InputFocusTests {
         let window = try #require(controller.window)
         let visible = try #require(window.screen?.visibleFrame)
         #expect(!window.styleMask.contains(.resizable))
-        // A drag elsewhere on the display resizes nothing.
         controller.perform(.pointAccurate)
         let middle = window.convertPoint(toScreen: display.view.convert(
             NSPoint(x: display.view.bounds.midX, y: display.view.bounds.midY), to: nil))
@@ -2953,14 +2697,10 @@ struct InputFocusTests {
             window.setFrameOrigin(NSPoint(x: (visible.midX - window.frame.width / 2).rounded(),
                                           y: (visible.midY - window.frame.height / 2).rounded()))
             let start = window.frame
-            // Moving the corner outward by a quarter of the display's 120 by
-            // 220 points, a quarter larger, as Simulator.app's DeviceWindow does.
             let outward = NSSize(width: corner.isLeft ? -30 : 30, height: corner.isLower ? -55 : 55)
             try drag(window, from: try point(of: corner, in: display), by: outward) {
                 #expect(display.isResizing)
                 #expect(display.renderScale == 1.25)
-                // The window takes the display's size, 10 points below its
-                // header, and keeps the display's opposite corner.
                 #expect(window.contentLayoutRect.size
                     == NSSize(width: display.view.frame.width, height: display.view.frame.height + 10))
                 #expect(corner.isLeft ? window.frame.maxX == start.maxX : window.frame.minX == start.minX)
@@ -2979,11 +2719,9 @@ struct InputFocusTests {
         controller.perform(.pointAccurate)
         window.setFrameOrigin(NSPoint(x: visible.midX - window.frame.width / 2, y: visible.midY - window.frame.height / 2))
         try drag(window, from: try point(of: .lowerRight, in: display), by: NSSize(width: -1000, height: 1000)) {
-            // An iPhone's minimum, which the fixed scales also keep.
             #expect(display.renderScale == 0.4)
         }
         try drag(window, from: try point(of: .lowerRight, in: display), by: NSSize(width: 10_000, height: -10_000)) {
-            // The dragged corner stops at an edge of the screen's visible frame.
             let frame = window.frame
             #expect(frame.maxX <= visible.maxX + 0.001 && frame.minY >= visible.minY - 0.001)
             #expect(abs(frame.maxX - visible.maxX) < 0.001 || abs(frame.minY - visible.minY) < 0.001)
@@ -3002,8 +2740,7 @@ struct InputFocusTests {
         try drag(window, from: try point(of: .upperLeft, in: display), by: NSSize(width: -30, height: 55)) {
             #expect(!window.frame.intersects(reach))
         }
-        // Like Simulator.app, the window moves until it reaches 128 points
-        // into the screen's visible frame.
+        // Simulator.app keeps at least 128 points of the window within the visible screen.
         #expect(abs(window.frame.minX - reach.maxX) < 0.001 && abs(window.frame.maxY - reach.minY) < 0.001)
     }
 
@@ -3014,8 +2751,6 @@ struct InputFocusTests {
         #expect(display.showsResizeCursors)
         controller.windowWillEnterFullScreen(Notification(name: NSWindow.willEnterFullScreenNotification, object: window))
         #expect(!display.showsResizeCursors)
-        // In full screen, where the display fits the window, a drag on a
-        // corner of the bezel resizes nothing.
         try drag(window, from: try point(of: .lowerRight, in: display), by: NSSize(width: 30, height: -55)) {
             #expect(!display.isResizing)
         }
@@ -3029,15 +2764,12 @@ struct InputFocusTests {
         defer { controller.invalidate() }
         let window = try #require(controller.window)
         let view = display.view, scale = display.renderScale
-        // Like SimulatorKit's digitizer, the input view covers the device's
-        // screen, inside the 10-point bezel, and the bezel next to it. A
-        // button on the bezel takes its presses.
+        // The digitizer covers the screen and adjacent bezel; bezel buttons consume their own presses.
         display.input.frame = view.bounds.insetBy(dx: 3 * scale, dy: 3 * scale)
         let button = TestButton(frame: NSRect(x: view.bounds.maxX - 10 * scale, y: view.bounds.midY,
                                               width: 10 * scale, height: 30 * scale))
         view.addSubview(button)
-        // A press on the bezel outside the digitizer reaches the window, which
-        // moves with its drag, and so does a press that the digitizer passes on.
+        // Unhandled bezel presses reach the window's drag handling.
         let edge = view.convert(NSPoint(x: 1.5 * scale, y: view.bounds.midY), to: nil)
         #expect(try press(window, at: edge) === view)
         display.input.passesOnPresses = true
@@ -3046,17 +2778,14 @@ struct InputFocusTests {
         display.input.passesOnPresses = false
         #expect(drags.map(\.window) == [window, window])
         #expect(drags.map(\.event.locationInWindow) == [edge, nextToScreen])
-        // Presses that the digitizer and the button keep reach the device.
         let screen = try press(window, at: view.convert(NSPoint(x: view.bounds.midX, y: view.bounds.midY), to: nil))
         let pressedButton = try press(window, at: view.convert(NSPoint(x: button.frame.midX, y: button.frame.midY), to: nil))
         #expect(screen === display.input && display.input.presses.count == 2)
         #expect(pressedButton === button && button.presses.count == 1)
-        // A press on a corner resizes the window instead.
         try drag(window, from: try point(of: .lowerLeft, in: display), by: NSSize(width: -30, height: -55)) {
             #expect(display.isResizing)
         }
-        // Like Simulator.app, where no view takes a press outside the display,
-        // a press in the gap below the header that reaches the window moves it.
+        // No view consumes the header gap, so its presses reach window dragging.
         let content = try #require(window.contentView)
         let gap = content.convert(NSPoint(
             x: view.frame.midX, y: view.frame.maxY + WindowScale.displayGap(bezelPadding: display.chromePadding) / 2), to: nil)
@@ -3073,8 +2802,7 @@ struct InputFocusTests {
         let window = try #require(controller.window)
         _ = try press(window, at: try pointOnBezel(of: display))
         #expect(drags == 0)
-        // Like Simulator.app, which reads the preference at each press, the
-        // next press follows a change.
+        // Simulator.app reads this preference for each press.
         preferences.set(true, forKey: HostPreferences.allowsMoveByDragOnWindowChrome)
         _ = try press(window, at: try pointOnBezel(of: display))
         #expect(drags == 1)
@@ -3097,7 +2825,6 @@ struct InputFocusTests {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        // A devicectl stand-in that remembers the orientation it was set to.
         let state = directory.appendingPathComponent("orientation")
         try "portrait".write(to: state, atomically: true, encoding: .utf8)
         let devicectl = directory.appendingPathComponent("devicectl")
@@ -3121,7 +2848,7 @@ struct InputFocusTests {
         display.guestInterfaceAngle = 0
         try await session.readOrientation()
         #expect(session.orientation == .portrait)
-        // The guest stays in portrait, as a portrait-only app does.
+        // Simulate a portrait-only guest.
         controller.perform(.landscapeLeft)
         for _ in 0..<300 where session.isBusy { try await Task.sleep(for: .milliseconds(10)) }
         #expect(session.orientation == .landscapeLeft)
@@ -3134,7 +2861,6 @@ struct InputFocusTests {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        // A simctl stand-in that logs each subcommand and fails the one named in `fail`.
         let log = directory.appendingPathComponent("calls"), fail = directory.appendingPathComponent("fail")
         let simctl = directory.appendingPathComponent("simctl")
         try """
@@ -3159,7 +2885,6 @@ struct InputFocusTests {
         let shutdown = await run(erasing: true, failing: "shutdown")
         #expect(shutdown.calls == ["shutdown"])
         #expect(shutdown.error?.hasPrefix("Erase All Content and Settings failed while shutting down") == true)
-        // A failed erase still boots the device.
         let erase = await run(erasing: true, failing: "erase")
         #expect(erase.calls == ["shutdown", "erase", "boot"])
         #expect(erase.error?.contains("while erasing") == true)
@@ -3205,9 +2930,7 @@ struct InputFocusTests {
         defer { controller.invalidate() }
         controller.showWindow(nil)
         let window = try #require(controller.window)
-        // Like Simulator.app, the device's next display after a restart shows
-        // the bezel as Show Device Bezels says, whatever it shows when it is
-        // created, and the window follows it.
+        // A reconnected display must reapply the saved bezel preference.
         await controller.prepareForRestart()
         let hidden = display(showingBezel: true)
         controller.reconnect(try makeSession(hidden))
@@ -3243,7 +2966,7 @@ struct InputFocusTests {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         try controller.session.startRecording(to: .file(directory.appendingPathComponent("Recording.mov")), mask: .ignored)
-        // Wait for the first-frame acknowledgement, the safe point for SIGINT.
+        // SIGINT is safe only after the first-frame acknowledgement.
         try await Task.sleep(for: .milliseconds(300))
         var recordingAtDisconnect: Bool?
         display.onDisconnect = { recordingAtDisconnect = recorder?.isRunning }
@@ -3287,7 +3010,7 @@ struct InputFocusTests {
             menus.updateVisibility(in: menu, for: controller.session.capabilities)
             return menu.items.filter { !$0.isHidden }.map { $0.isSeparatorItem ? "-" : $0.title }
         }
-        // File ▸ Open Simulator is built when it opens, so its empty submenu stays visible.
+        // Open Simulator populates on opening, so its empty submenu must remain visible.
         #expect(try visibleTitles("File").prefix(3) == ["New Simulator…", "Open Simulator", "-"])
         #expect(try visibleTitles("Device") == ["Restart", "Erase All Content and Settings…", "Shut Down", "-",
                                                  "Home", "Re-Center Open Apps", "Lock", "Action Button", "Siri",
@@ -3298,13 +3021,11 @@ struct InputFocusTests {
                                                    "Toggle In-call Status Bar", "-", "Increase Preferred Text Size",
                                                    "Decrease Preferred Text Size", "Toggle Increase Contrast", "-",
                                                    "Trigger iCloud Sync", "-", "Location"])
-        // Graphics Quality Override needs its feature, and Slow Animations
-        // without its feature toggles the frontmost app.
+        // Slow Animations falls back to the frontmost app when the device lacks the feature.
         #expect(try visibleTitles("Debug") == ["Toggle Slow Animations in Frontmost App", "-", "Color Blended Layers",
                                                 "Color Copied Images", "Color Misaligned Images",
                                                 "Color Off-screen Rendered", "-", "Open System Log…",
                                                 "Simulate Memory Warning", "-", "Show Parallel Testing Devices"])
-        // Option and Control alternates ask before quitting, capturing, and closing.
         let alternates = NSApp.mainMenu?.items.compactMap(\.submenu).flatMap(\.items).filter(\.isAlternate)
         #expect(alternates?.map(\.title) == ["Quit NeoSimulator…", "Save Screen…", "Record Screen…", "Close Window…"])
         #expect(alternates?.map(\.keyEquivalentModifierMask) == [[.command, .option], [.command, .option],
@@ -3325,8 +3046,7 @@ struct InputFocusTests {
         }
         #expect(try shortcuts("Touch ID") == ["", "m", "n"] && shortcuts("Face ID") == ["", "", ""])
         #expect(try shortcuts("Optic ID") == ["", "", ""])
-        // Simulator.app also gives Optic ID the shortcuts with Face ID's
-        // support, where Face ID, which comes first, takes them.
+        // Face ID appears first and takes the shortcuts shared with Optic ID.
         menus.updateKeyEquivalents(for: device(DeviceCapabilities.faceID))
         #expect(try shortcuts("Touch ID") == ["", "", ""] && shortcuts("Face ID") == ["", "m", "n"])
         #expect(try shortcuts("Optic ID") == ["", "m", "n"])
@@ -3336,7 +3056,7 @@ struct InputFocusTests {
         menus.updateKeyEquivalents(for: device(DeviceCapabilities.touchID))
         #expect(try shortcuts("Touch ID") == ["", "m", "n"] && shortcuts("Face ID") == ["", "", ""])
         #expect(try shortcuts("Optic ID") == ["", "", ""])
-        // Shift-Command-I belongs to Trigger iCloud Sync, as in Simulator.app.
+        // Simulator.app assigns Shift-Command-I to Trigger iCloud Sync.
         let items = NSApp.mainMenu?.items.compactMap(\.submenu).flatMap(\.items) ?? []
         #expect(items.filter { $0.keyEquivalent == "i" && $0.keyEquivalentModifierMask == [.command, .shift] }
             .map(\.title) == ["Trigger iCloud Sync"])
@@ -3351,7 +3071,6 @@ struct InputFocusTests {
         #expect(DeviceCommand.command(.opticIDEnrolled).validate(enrolled, for: controller) && enrolled.state == .on)
         controller.perform(.opticIDMatching)
         controller.perform(.opticIDNonMatching)
-        // A device without Face ID ignores its commands.
         controller.perform(.faceIDMatching)
         controller.perform(.opticIDEnrolled)
         #expect(DeviceCommand.command(.opticIDEnrolled).validate(enrolled, for: controller) && enrolled.state == .off)
@@ -3370,7 +3089,6 @@ struct InputFocusTests {
         #expect(session.isBiometricEnrolled)
         controller.perform(.faceIDMatching)
         controller.perform(.faceIDNonMatching)
-        // A device without Touch ID ignores its commands.
         controller.perform(.touchIDMatching)
         controller.perform(.faceIDEnrolled)
         #expect(!session.isBiometricEnrolled)
@@ -3385,7 +3103,6 @@ struct InputFocusTests {
             "com.apple.UIKit.SimulatorShake",
         ])
 
-        // Text size stops at the largest size; an unknown size is an error.
         display.contentSize = 11
         try session.changeTextSize(by: 1)
         try session.changeTextSize(by: 1)
@@ -3400,7 +3117,6 @@ struct InputFocusTests {
         #expect(display.contrastMode == 2)
         try session.toggleIncreaseContrast()
         #expect(display.contrastMode == 1)
-        // Toggling from an unknown mode would guess; it reports the failure instead.
         display.contrastMode = 0
         #expect(throws: (any Error).self) { try session.toggleIncreaseContrast() }
         #expect(display.contrastMode == 0)
@@ -3411,18 +3127,15 @@ struct InputFocusTests {
         let controller = try makeController(display, family: .watch, features: [DeviceCapabilities.fallDetection])
         defer { controller.invalidate() }
         let name = "com.apple.sos.user-fell"
-        // Each item sets the state that numbers its resolution, then posts it.
         for (command, state) in [(DeviceCommand.ID.fallUnresponsive, 3), (.fallRejected, 2), (.fallDismissed, 1),
                                  (.fallConfirmed, 0)] as [(DeviceCommand.ID, UInt64)] {
             controller.perform(command)
             #expect(display.notificationStates[name] == state, "\(command)")
         }
         #expect(display.postedNotifications == Array(repeating: name, count: 4))
-        // A state the guest refuses is not posted.
         display.notificationError = HostError.operation("refused")
         #expect(throws: (any Error).self) { try controller.session.simulateFall(.dismissed) }
         #expect(display.postedNotifications.count == 4)
-        // A device without the feature changes nothing.
         let other = TestDisplay()
         let otherController = try makeController(other, family: .watch, features: [], device: "other")
         defer { otherController.invalidate() }
@@ -3473,12 +3186,10 @@ struct InputFocusTests {
         #expect(display.notificationStates == [slowMotion: 1, quality: 10])
         #expect(display.postedNotifications == [slowMotion, quality])
 
-        // A device that refuses the state keeps the app's setting unchanged.
         display.notificationError = HostError.operation("refused")
         #expect(throws: (any Error).self) { try controller.session.toggleSlowAnimations() }
         #expect(slow.state?(controller) == .on)
 
-        // Connecting applies the settings, but not the default quality.
         let connected = TestDisplay()
         try makeSession(connected, features: features).applyDebugSettings()
         #expect(connected.notificationStates == [slowMotion: 1, quality: 10])
@@ -3487,8 +3198,7 @@ struct InputFocusTests {
         try makeSession(older, features: [DeviceCapabilities.graphicsQualityOverride]).applyDebugSettings()
         #expect(older.postedNotifications.isEmpty)
 
-        // A guest that does not keep slow animations gets Simulator.app's
-        // toggle, which still alternates the state.
+        // Simulator.app toggles slow animation in the frontmost app when the guest lacks support.
         let other = try makeController(older, features: [])
         defer { other.invalidate() }
         #expect(slow.stateTitle?(other) == "Toggle Slow Animations in Frontmost App" && slow.state?(other) == .off)
@@ -3516,8 +3226,7 @@ struct InputFocusTests {
             let controller = try makeController(display, family: family,
                                                 features: [DeviceCapabilities.graphicsQualityOverride], simctl: simctl)
             defer { controller.invalidate() }
-            // While another device-tool operation runs, Simulator.app still
-            // applies the choice; only the Apple TV's restart has to wait.
+            // Device-tool work delays only the Apple TV restart, matching Simulator.app.
             #expect(controller.session.reserve())
             #expect(DeviceCommand.command(.graphicsQualityHigh).isEnabled(controller) == (family != .tv))
             controller.perform(.graphicsQualityHigh)
@@ -3539,10 +3248,10 @@ struct InputFocusTests {
         #expect(display.caDebugOptions.map(\.rawValue).sorted() == [2, 17])
         let blended = DeviceCommand.command(.colorBlendedLayers)
         #expect(blended.state?(controller) == .on && DeviceCommand.command(.colorCopiedImages).state?(controller) == .off)
-        // The checkmark is read from the device, which another host can change.
+        // Read the guest's state because another host may change it.
         display.caDebugOptions.remove(.colorBlendedLayers)
         #expect(blended.state?(controller) == .off)
-        // CoreSimulator does not report a dropped change; reading back does.
+        // CoreSimulator can silently drop writes; read back to detect that.
         display.droppedCADebugOptions = [.colorMisalignedImages]
         #expect(throws: (any Error).self) { try controller.session.toggle(.colorMisalignedImages) }
     }
@@ -3561,7 +3270,7 @@ struct InputFocusTests {
         controller.perform(.simulateMemoryWarning)
         let attributes = try FileManager.default.attributesOfItem(atPath: trigger.path)
         #expect(attributes[.size] as? Int == 0)
-        // Like CoreSimulator's write, the file is truncated rather than replaced.
+        // CoreSimulator truncates this file in place.
         #expect(attributes[.systemFileNumber] as? Int == file)
         display.memoryWarningURL = directory.appendingPathComponent("missing/memory_warning_simulation")
         #expect(throws: (any Error).self) { try controller.session.simulateMemoryWarning() }
@@ -3606,7 +3315,7 @@ struct InputFocusTests {
             #expect(NSApp.sendAction(try #require(item.action), to: item.target, from: item))
             return defaults.stringArray(forKey: GPUPolicy.key)
         }
-        // Unset, the policy is Simulator.app's default order, led by automatic.
+        // Simulator.app's default priority starts with automatic.
         #expect(checked() == ["Automatic"])
         #expect(try choose("Prefer Integrated GPU") == ["lowPower", "discrete", "external"])
         #expect(try choose("Use External GPU When Available") == ["external", "lowPower", "discrete"])
@@ -3615,12 +3324,10 @@ struct InputFocusTests {
         #expect(try choose("Automatic") == ["external", "automatic"])
         #expect(try choose("Use External GPU When Available") == ["automatic", "external"])
         #expect(checked() == ["Automatic"])
-        // An older single string is an order of one; kinds the menu does not
-        // offer are dropped.
+        // A legacy string is a one-item order; omit unsupported kinds.
         defaults.set("headless", forKey: GPUPolicy.key)
         #expect(checked().isEmpty)
         #expect(try choose("Prefer Discrete GPU") == ["discrete", "lowPower", "external"])
-        // Without a policy, the choices are unavailable.
         let unavailable = MenuController(application: nil)
         #expect(!items.contains { unavailable.validateMenuItem($0) })
     }
@@ -3630,7 +3337,6 @@ struct InputFocusTests {
         defer { restoreDefaults() }
         HostPreferences.registerDefaults()
         let defaults = UserDefaults.standard
-        // Without scenarios nothing is restored, applied, or saved.
         let bare = TestDisplay()
         let bareSession = try makeSession(bare)
         try await bareSession.restoreLocation()
@@ -3645,17 +3351,14 @@ struct InputFocusTests {
             #expect(session.locationScenarios == Self.scenarios)
             return (session.location, display.appliedLocations)
         }
-        // A fresh install applies the registered coordinate.
         #expect(try await restore() == (.custom, [.coordinate(37.785834, -122.406417)]))
         defaults.set(LocationSelection.scenarioMode, forKey: HostPreferences.locationMode)
         defaults.set("Freeway Drive", forKey: HostPreferences.locationScenario)
         #expect(try await restore() == (.scenario("Freeway Drive"), [.scenario("Freeway Drive")]))
-        // A scenario the runtime lacks falls back to None, keeping its name.
         defaults.set("Apple", forKey: HostPreferences.locationScenario)
         #expect(try await restore() == (LocationSelection.none, [.cleared]))
         #expect(defaults.integer(forKey: HostPreferences.locationMode) == LocationSelection.noneMode)
         #expect(defaults.string(forKey: HostPreferences.locationScenario) == "Apple")
-        // Modes up to Custom's other than None and Custom are None.
         defaults.set(5000, forKey: HostPreferences.locationMode)
         #expect(try await restore() == (LocationSelection.none, [.cleared]))
     }
@@ -3664,8 +3367,7 @@ struct InputFocusTests {
         let restoreDefaults = removeLocationPreferences()
         defer { restoreDefaults() }
         HostPreferences.registerDefaults()
-        // Right after a boot the device lists its scenarios late. A choice
-        // made meanwhile stays, and the scenarios are still listed.
+        // Scenario discovery can finish after a user changes the location.
         let display = TestDisplay()
         display.scenarios = Self.scenarios
         display.holdsScenarios = true
@@ -3678,7 +3380,6 @@ struct InputFocusTests {
         #expect(controller.session.location == LocationSelection.none && display.appliedLocations == [.cleared])
         #expect(controller.session.locationScenarios == Self.scenarios)
 
-        // A session that ends meanwhile gets no scenarios and no location.
         let ended = TestDisplay()
         ended.scenarios = Self.scenarios
         ended.holdsScenarios = true
@@ -3719,8 +3420,6 @@ struct InputFocusTests {
         #expect(UserDefaults.standard.string(forKey: HostPreferences.locationScenario) == "City Run")
         #expect(UserDefaults.standard.integer(forKey: HostPreferences.locationMode) > LocationSelection.customMode)
 
-        // Another device lists its own runtime's scenarios and keeps its own
-        // choice. Its connection restores the choice saved last.
         let other = TestDisplay()
         other.scenarios = [LocationScenario(name: "City Run", localizedName: "Course à pied")]
         let otherController = try makeController(other)
@@ -3751,7 +3450,7 @@ struct InputFocusTests {
         let window = try #require(controller.window)
         controller.selectLocation(.none)
         #expect(try #require(window.attachedSheet).isVisible)
-        // Like Simulator.app, the choice stays and is saved; choosing it again retries.
+        // Simulator.app saves the choice before applying it, so choosing it again retries.
         #expect(controller.session.location == LocationSelection.none)
         #expect(UserDefaults.standard.integer(forKey: HostPreferences.locationMode) == LocationSelection.noneMode)
         window.endSheet(try #require(window.attachedSheet))
@@ -3769,7 +3468,6 @@ struct InputFocusTests {
                                                  inputChannels: 1, outputChannels: 2, defaultScopes: 0)
     private static let routableFeatures = defaultFeatures.union([DeviceCapabilities.routableAudio])
 
-    /// A controller whose device routes audio through `port`.
     private func makeAudioController(_ port: TestAudioRoutes?, device: String = "test-device",
                                      features: Set<String> = routableFeatures,
                                      preferences: MemoryPreferences) throws -> (DeviceWindowController, TestDisplay) {
@@ -3778,7 +3476,6 @@ struct InputFocusTests {
         return (try makeController(display, features: features, device: device, preferences: preferences), display)
     }
 
-    /// The text of `view`'s labels, such as an alert's.
     private func texts(in view: NSView?) -> [String] {
         guard let view else { return [] }
         return ((view as? NSTextField).map { [$0.stringValue] } ?? []) + view.subviews.flatMap { texts(in: $0) }
@@ -3791,7 +3488,7 @@ struct InputFocusTests {
         defer { NSApp.mainMenu = nil }
         let io = try #require(NSApp.mainMenu?.items.first { $0.title == "I/O" }?.submenu)
         let items = try ["Audio Input", "Audio Output"].map { title in try #require(io.items.first { $0.title == title }) }
-        // Like Simulator.app, they follow Touch Pressure's separator and precede the volume commands.
+        // Matches Simulator.app's placement between Touch Pressure and volume commands.
         let titles = io.items.map { $0.isSeparatorItem ? "-" : $0.title }
         #expect(titles.prefix(7) == ["Keyboard", "Touch Pressure", "-", "Audio Input", "Audio Output",
                                      "Increase Volume", "Decrease Volume"])
@@ -3804,7 +3501,6 @@ struct InputFocusTests {
         let (routing, _) = try makeAudioController(TestAudioRoutes([Self.speakers]), preferences: preferences)
         defer { routing.invalidate() }
         #expect(attached(routing) == ["Audio Input", "Audio Output"])
-        // A device without SimFeatureRoutableAudio leaves them disabled but shown.
         let (silent, _) = try makeAudioController(nil, device: "B", features: Self.defaultFeatures, preferences: preferences)
         defer { silent.invalidate() }
         #expect(attached(silent) == ["none (disabled)", "none (disabled)"])
@@ -3826,30 +3522,23 @@ struct InputFocusTests {
             #expect(!menu.items.contains { $0.isSeparatorItem })
             return menu.items.map { "\($0.title)\($0.state == .on ? " ✓" : "")\($0.isEnabled ? "" : " (disabled)")" }
         }
-        // Until the port reports, only System is listed.
         #expect(items(output) == ["System"])
         controller.session.connectAudioRoutes { Issue.record($0) }
-        // System names the Mac's default device; each list has the devices
-        // with channels in its direction, in the port's order.
+        // System uses the Mac's default; device ordering comes from the port.
         #expect(items(input) == ["System (MacBook Pro Microphone) ✓", "MacBook Pro Microphone", "BlackHole 2ch", "USB Headset"])
         #expect(items(output) == ["System (MacBook Pro Speakers) ✓", "BlackHole 2ch", "MacBook Pro Speakers", "USB Headset"])
-        // The checkmark follows the guest's route, also one set elsewhere.
         preferences.set(["Headset"], forKey: HostPreferences.recentAudioOutputDeviceUIDs)
         port.report { $0.outputRoute = "Headset" }
         #expect(items(output) == ["System (MacBook Pro Speakers)", "BlackHole 2ch", "MacBook Pro Speakers", "USB Headset ✓"])
-        // Without a default device in the list, System has no name.
         port.report { $0.defaultOutput = "Elsewhere" }
         #expect(items(output).first == "System")
-        // A guest routed to a device the Mac lacks shows the Mac's default
-        // device, as SimulatorKit selects it.
+        // SimulatorKit substitutes the Mac's default when the guest's route is missing.
         #expect(port.current.outputRoute == "Headset")
         var state = port.current
         state.outputRoute = "Gone"
         #expect(state.selectedDevice(in: .output) == Self.speakers)
         #expect(state.selectedDevice(in: .input) == Self.microphone)
 
-        // Like Simulator.app, the routes are available with any key device
-        // window, and only then.
         (controller.session.display as? TestDisplay)?.isBooted = false
         #expect(!items(input).contains { $0.hasSuffix("(disabled)") })
         #expect(items(input, keyDevice: false) == ["System (disabled)"])
@@ -3865,7 +3554,6 @@ struct InputFocusTests {
                                                               features: Self.defaultFeatures, preferences: preferences)
         defer { [a, b, silent].forEach { $0.invalidate() } }
         for controller in [a, b, silent] { controller.session.connectAudioRoutes { Issue.record($0) } }
-        // Both devices already follow System, which nothing has replaced.
         #expect(preferences.recentAudioRoutes(in: .output) == [AudioRouting.systemDefault])
         #expect(ports.allSatisfy { $0.requests.isEmpty })
         #expect(silentDisplay.audioConnections == 0)
@@ -3877,16 +3565,14 @@ struct InputFocusTests {
         #expect(ports.allSatisfy { $0.current.outputRoute == "Loopback" && $0.current.inputRoute == AudioRouting.systemDefault })
         #expect(preferences.recentAudioRoutes(in: .input) == [AudioRouting.systemDefault])
 
-        // A device the Mac does not have is saved, and the guests keep their route.
         b.selectAudioRoute("Gone", in: .output)
         #expect(ports.map(\.requests) == [["output Loopback"], ["output Loopback"]])
         b.selectAudioRoute(AudioRouting.systemDefault, in: .output)
         #expect(ports.map(\.requests.last) == ["output \(AudioRouting.systemDefault)", "output \(AudioRouting.systemDefault)"])
-        // The recent routes keep each route once, most recent first, and five at most.
         for route in ["Loopback", "One", "Two", "Three", "Gone"] { a.selectAudioRoute(route, in: .input) }
         #expect(preferences.recentAudioRoutes(in: .input) == ["Gone", "Three", "Two", "One", "Loopback"])
         #expect(preferences.recentAudioRoutes(in: .output) == [AudioRouting.systemDefault, "Gone", "Loopback"])
-        // Like Simulator.app, an empty or foreign list is System alone.
+        // Simulator.app falls back to System for empty or foreign lists.
         for stored in [[] as [Any], [1, 2] as [Any], "Loopback" as Any] {
             preferences.set(stored, forKey: HostPreferences.recentAudioInputDeviceUIDs)
             #expect(preferences.recentAudioRoutes(in: .input) == [AudioRouting.systemDefault])
@@ -3896,35 +3582,27 @@ struct InputFocusTests {
     @Test func connectingAndPortChangesRouteToTheMostRecentRouteTheMacHas() throws {
         let preferences = MemoryPreferences()
         preferences.set(["Headset", "Loopback", AudioRouting.systemDefault], forKey: HostPreferences.recentAudioOutputDeviceUIDs)
-        // The Mac lacks the headset: connecting routes the output to the
-        // next recent route; the input stays at System.
         let port = TestAudioRoutes([Self.microphone, Self.loopback, Self.speakers])
         let (controller, _) = try makeAudioController(port, preferences: preferences)
         defer { controller.invalidate() }
         controller.session.connectAudioRoutes { Issue.record($0) }
         #expect(port.requests == ["output Loopback"])
-        // The headset appears, and the output follows it.
         port.report { $0.devices.append(Self.headset) }
         #expect(port.requests.last == "output Headset")
-        // It goes away: the next recent route that the Mac has.
         port.report { $0.devices.removeAll { $0 == Self.headset } }
         #expect(port.requests.last == "output Loopback")
-        // Another process routes the guest elsewhere, and it comes back.
         port.report { $0.outputRoute = "Speakers" }
         #expect(port.requests.last == "output Loopback" && port.requests.count == 4)
         #expect(port.current.outputRoute == "Loopback")
-        // A change that leaves the guest on its route asks for nothing.
         port.report { $0.defaultOutput = "Loopback" }
         #expect(port.requests.count == 4)
-        // System needs a default device in its direction; without one and
-        // without another recent route, the route stays.
+        // Without a usable recent route or system default, leave the guest's route unchanged.
         preferences.set([AudioRouting.systemDefault], forKey: HostPreferences.recentAudioOutputDeviceUIDs)
         port.report { $0.devices = [Self.microphone, Self.loopback] }
         #expect(port.requests.count == 4)
         port.report { $0.devices.append(Self.speakers) }
         #expect(port.requests.last == "output \(AudioRouting.systemDefault)")
 
-        // A closed window no longer follows its device.
         controller.invalidate()
         #expect(port.isDisconnected)
         let count = port.requests.count
@@ -3939,15 +3617,13 @@ struct InputFocusTests {
         defer { controller.invalidate() }
         controller.showWindow(nil)
         let window = try #require(controller.window)
-        // A failed route made on the device's own goes to the session's
-        // handler, not to the window.
+        // Unrequested device changes report errors through the session handler.
         preferences.set(["Loopback"], forKey: HostPreferences.recentAudioOutputDeviceUIDs)
         port.routeError = HostError.operation("port failed")
         var automatic: [String] = []
         controller.session.connectAudioRoutes { automatic.append($0.localizedDescription) }
         #expect(automatic == ["Could not route the audio output of Test iPhone to BlackHole 2ch: port failed"])
         #expect(window.attachedSheet == nil)
-        // A chosen route's failure is presented on the window.
         controller.selectAudioRoute("Speakers", in: .output)
         #expect(port.requests == ["output Loopback", "output Speakers"])
         let sheet = try #require(window.attachedSheet)
@@ -3957,7 +3633,6 @@ struct InputFocusTests {
         controller.selectAudioRoute("Loopback", in: .output)
         window.endSheet(try #require(window.attachedSheet))
 
-        // A device whose port does not connect reports why when a route is chosen.
         let (unconnected, display) = try makeAudioController(nil, device: "B", preferences: MemoryPreferences())
         defer { unconnected.invalidate() }
         unconnected.showWindow(nil)
@@ -3977,9 +3652,7 @@ struct InputFocusTests {
     private static let externalDisplayFeatures = defaultFeatures.union(
         [DeviceCapabilities.externalDisplay, DeviceCapabilities.integratedDisplay])
 
-    /// A controller whose device has `screen` as its external display,
-    /// connected as a new connection connects it, after the screen adapter's
-    /// report of a screen it has.
+    /// Connects the external display after the screen adapter reports it.
     private func makeExternalDisplayController(_ screen: TestExternalScreen? = TestExternalScreen(),
                                                family: DeviceCapabilities.Family = .iPhone,
                                                features: Set<String> = Self.externalDisplayFeatures,
@@ -4000,7 +3673,6 @@ struct InputFocusTests {
         return (controller, display)
     }
 
-    /// The External Displays items with their checkmarks and enabling for `controller`.
     private func externalDisplayItems(for controller: DeviceWindowController?) -> [String] {
         ExternalDisplayMode.allCases.map { mode in
             let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
@@ -4018,7 +3690,7 @@ struct InputFocusTests {
         func titles(_ menu: NSMenu, visibleOnly: Bool = false) -> [String] {
             menu.items.filter { !visibleOnly || !$0.isHidden }.map { $0.isSeparatorItem ? "-" : $0.title }
         }
-        // Like Simulator.app, the submenu follows the volume commands and a separator.
+        // Matches Simulator.app's placement after the volume commands.
         #expect(titles(io).suffix(7) == ["Decrease Volume", "-", "External Displays", "-", "Set Immersion To", "-",
                                          "Open URL…"])
         let item = try #require(io.items.first { $0.title == "External Displays" })
@@ -4027,7 +3699,6 @@ struct InputFocusTests {
             "-", "CarPlay",
         ])
         #expect(item.submenu?.items.allSatisfy { $0.keyEquivalent.isEmpty } == true)
-        // Shown for a device with an external display port and its own screen.
         for (features, shown) in [(Self.externalDisplayFeatures, true),
                                   (Self.defaultFeatures, false),
                                   (Self.defaultFeatures.union([DeviceCapabilities.externalDisplay]), false),
@@ -4048,34 +3719,27 @@ struct InputFocusTests {
         let screen = TestExternalScreen()
         let (controller, display) = try makeExternalDisplayController(screen, preferences: preferences)
         defer { controller.invalidate() }
-        // A saved choice that the display does not show is not checked.
         preferences.setExternalDisplayTag(ExternalDisplayMode.size1920x1080.rawValue, forDevice: "test-device")
         #expect(externalDisplayItems(for: controller) == [
             "Disabled ✓", "640×480", "720×480", "1024×768", "1280×720 (720p)", "1920×1080 (1080p)", "3840×2160 (4K)",
             "CarPlay (disabled)",
         ])
-        // Another tool turns the display on.
         screen.report { $0 = ExternalScreenState(isPoweredOn: true, pixelSize: CGSize(width: 1280, height: 720), scale: 1) }
         #expect(externalDisplayItems(for: controller).filter { $0.hasSuffix("✓") } == ["1280×720 (720p) ✓"])
-        // A size or scale that the menu does not offer checks nothing.
         screen.report { $0.pixelSize = CGSize(width: 1600, height: 900) }
         #expect(!externalDisplayItems(for: controller).contains { $0.hasSuffix("✓") })
         screen.report { $0 = ExternalScreenState(isPoweredOn: true, pixelSize: CGSize(width: 1280, height: 720), scale: 2) }
         #expect(!externalDisplayItems(for: controller).contains { $0.hasSuffix("✓") })
-        // Like Simulator.app, the items stay enabled while the device restarts,
-        // and its unknown display state checks nothing.
+        // Simulator.app leaves these items enabled during restart, with no state checked.
         display.isBooted = false
         controller.session.disconnect()
         #expect(externalDisplayItems(for: controller) == [
             "Disabled", "640×480", "720×480", "1024×768", "1280×720 (720p)", "1920×1080 (1080p)", "3840×2160 (4K)",
             "CarPlay (disabled)",
         ])
-        // Without a device window, the items are disabled and unchecked.
         #expect(externalDisplayItems(for: nil).allSatisfy { $0.hasSuffix("(disabled)") && !$0.contains("✓") })
     }
 
-    /// The External Displays items with a subtitle for `controller`, with
-    /// their enabling.
     private func externalDisplaySubtitles(for controller: DeviceWindowController) -> [String] {
         ExternalDisplayMode.allCases.compactMap { mode in
             let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
@@ -4086,25 +3750,22 @@ struct InputFocusTests {
 
     @Test func externalDisplayItemsSayWhichSizesTheDeviceCannotShow() throws {
         _ = NSApplication.shared
-        // Like an iPad's screen: an exact 720×480 mode at 60 Hz and the
-        // menu's sizes at 120 Hz.
+        // An iPad advertises 720×480 at 60 Hz and the menu's sizes at 120 Hz.
         let screen = TestExternalScreen()
         screen.modes = [.exact720x480, .allowedAt120Hertz(scale: 2), .allowedAt120Hertz(scale: 1)]
         let (controller, display) = try makeExternalDisplayController(screen, features: Self.externalDisplayFeatures
             .union([DeviceCapabilities.carPlay]))
         defer { controller.invalidate() }
-        // The guest would show 720×480 rather than 640×480, and CarPlay's
-        // 800×480 at a scale of 2 has no mode.
+        // This guest falls back to 720×480; no mode supports CarPlay's 800×480 at scale 2.
         #expect(externalDisplaySubtitles(for: controller) == [
             "640×480 (disabled): This device shows 720×480", "CarPlay (disabled): Not available on this device",
         ])
-        // Before the session reads the modes, as while the device restarts,
-        // nothing is known to be unavailable.
+        // Before modes arrive, availability is unknown.
         display.isBooted = false
         controller.session.disconnect()
         #expect(externalDisplaySubtitles(for: controller).isEmpty)
 
-        // iPadOS before 27 cannot leave a 4K display on an iPad with Stage Manager.
+        // Before iPadOS 27, Stage Manager cannot keep a 4K external display on.
         func iPad(runtime: UInt32, enhancedMultitasking: Bool) throws -> [String] {
             let screen = TestExternalScreen()
             let (controller, _) = try makeExternalDisplayController(
@@ -4123,7 +3784,6 @@ struct InputFocusTests {
     @Test func aSizeTheDeviceCannotShowChangesNothingAndSaysWhy() async throws {
         _ = NSApplication.shared
         let preferences = MemoryPreferences()
-        // A choice that Simulator.app saved is restored when the device connects.
         preferences.setExternalDisplayTag(ExternalDisplayMode.size640x480.rawValue, forDevice: "test-device")
         let screen = TestExternalScreen()
         screen.modes = [.exact720x480, .allowedAt120Hertz(scale: 1)]
@@ -4139,8 +3799,6 @@ struct InputFocusTests {
             """
         #expect(failures == [reason])
         #expect(screen.requests.isEmpty && controller.session.externalDisplayMode == .disabled)
-        // A size the device shows still applies, and a choice that reaches
-        // the session anyway is presented on the device window.
         controller.showWindow(nil)
         controller.perform(.externalDisplay1920x1080)
         controller.perform(.externalDisplay640x480)
@@ -4159,7 +3817,6 @@ struct InputFocusTests {
         screen.modes = [.exact720x480, .allowedAt120Hertz(scale: 1)]
         let (controller, _) = try makeExternalDisplayController(screen)
         defer { controller.invalidate() }
-        // Another tool sets 1920×1080 at 120 Hz, which the guest does not show.
         screen.report {
             $0 = ExternalScreenState(isPoweredOn: true, pixelSize: CGSize(width: 1920, height: 1080), scale: 1,
                                      refreshRate: 120)
@@ -4183,8 +3840,7 @@ struct InputFocusTests {
         controller.perform(.externalDisplay1920x1080)
         #expect(screen.requests == ["mode 1920x1080@1"])
         #expect(controller.session.externalDisplayMode == .size1920x1080)
-        // Simulator.app's key and tag, beside the device's other preferences
-        // and the other devices' choices.
+        // Use Simulator.app's key and tag without disturbing other device preferences.
         let devices = try #require(preferences.values[HostPreferences.devicePreferences] as? [String: Any])
         let saved = try #require(devices["test-device"] as? [String: Any])
         #expect(saved["SimulatorExternalDisplay"] as? Int == 2614)
@@ -4200,8 +3856,7 @@ struct InputFocusTests {
         let screen = TestExternalScreen()
         let (controller, _) = try makeExternalDisplayController(screen, preferences: preferences)
         defer { controller.invalidate() }
-        // Unlike Simulator.app, which turns off only a display whose window is
-        // open, Disabled turns off also a display that is off.
+        // Disabled also sends power-off to an already-off display; Simulator.app requires an open window.
         preferences.setExternalDisplayTag(ExternalDisplayMode.size720x480.rawValue, forDevice: "test-device")
         controller.perform(.externalDisplayDisabled)
         #expect(screen.requests == ["off"])
@@ -4220,8 +3875,7 @@ struct InputFocusTests {
         let (controller, _) = try makeExternalDisplayController(screen, preferences: preferences)
         defer { controller.invalidate() }
         #expect(controller.externalDisplayWindow == nil)
-        // Like Simulator.app's screen monitor, a display that another tool
-        // turns on gets its window too.
+        // Like Simulator.app's screen monitor, follow changes made by other tools.
         screen.report { $0 = ExternalScreenState(isPoweredOn: true, pixelSize: CGSize(width: 720, height: 480), scale: 1) }
         let external = try #require(controller.externalDisplayWindow)
         let window = try #require(external.window)
@@ -4229,30 +3883,24 @@ struct InputFocusTests {
         #expect(screen.displays.count == 1 && external.display === display)
         #expect(window.isVisible)
         #expect(window.title == "Test iPhone" && window.subtitle == "External Display")
-        // Without a toolbar or a bezel; resizable, below a title bar, black.
         #expect(window.toolbar == nil)
         #expect(window.styleMask == [.titled, .closable, .miniaturizable, .resizable])
         #expect(window.backgroundColor == .black)
         #expect(display.supportsTouchPressure == [false])
-        // Like Simulator.app's window without a bezel, the display fills the
-        // window below the title bar, with no gap, at its scale.
+        // Match Simulator.app's bezel-free window, with no gap below the title bar.
         func content() -> NSSize { window.contentRect(forFrameRect: window.frame).size }
         let scale = display.renderScale
         #expect(scale > 0 && scale <= 1)
         #expect(abs(content().width - 720 * scale) <= 1 && abs(content().height - 480 * scale) <= 1)
         #expect(window.contentAspectRatio == NSSize(width: 720, height: 480))
-        // A new size keeps the display's scale. The smaller size fits any
-        // screen that the first one fits at this scale.
         controller.perform(.externalDisplay640x480)
         #expect(controller.externalDisplayWindow === external && display.renderScale == scale)
         #expect(abs(content().width - 640 * scale) <= 1 && abs(content().height - 480 * scale) <= 1)
         #expect(window.contentAspectRatio == NSSize(width: 640, height: 480))
-        // The display turning off closes the window without saving Disabled.
         screen.report { $0.isPoweredOn = false }
         #expect(controller.externalDisplayWindow == nil && !window.isVisible)
         #expect(display.disconnectCount == 1)
         #expect(preferences.externalDisplayTag(forDevice: "test-device") == 2214)
-        // Turning it on again opens a new window with a new display.
         controller.perform(.externalDisplay720x480)
         #expect(controller.externalDisplayWindow != nil && screen.displays.count == 2)
     }
@@ -4270,12 +3918,10 @@ struct InputFocusTests {
         #expect(screen.requests == ["mode 1280x720@1", "off"])
         #expect(preferences.externalDisplayTag(forDevice: "test-device") == 2114)
         #expect(controller.externalDisplayWindow == nil)
-        // Where the window closed is saved apart from the device window's place.
         let saved = preferences.windowGeometry(forDevice: "test-device", screens: NSScreen.screens.map(\.frame),
                                                kind: .externalDisplay)
         #expect(saved.center != nil && saved.scale != nil)
         #expect(preferences.windowGeometry(forDevice: "test-device", screens: NSScreen.screens.map(\.frame)).center == nil)
-        // When turning the display off fails, its window opens again.
         controller.perform(.externalDisplay1280x720)
         screen.completionError = HostError.operation("power failed")
         try #require(controller.externalDisplayWindow?.window).close()
@@ -4289,14 +3935,11 @@ struct InputFocusTests {
         screen.defersChanges = true
         let (shutDown, display) = try makeExternalDisplayController(screen, preferences: preferences,
                                                                     externalDisplayChanges: changes)
-        // A size is in flight when the device shuts down, and its completion
-        // does not come.
+        // Shutdown abandons an in-flight mode change whose completion never arrives.
         shutDown.perform(.externalDisplay1920x1080)
         display.isBooted = false
         shutDown.invalidate()
         #expect(!changes.isBusy)
-        // The device's next session restores its choice at once, and the
-        // abandoned change's late completion changes nothing.
         preferences.setExternalDisplayTag(ExternalDisplayMode.size640x480.rawValue, forDevice: "test-device")
         let (booted, _) = try makeExternalDisplayController(screen, preferences: preferences,
                                                             externalDisplayChanges: changes)
@@ -4316,7 +3959,6 @@ struct InputFocusTests {
         controller.session.chooseExternalDisplay(.size1920x1080) { failures.append($0.localizedDescription) }
         controller.session.chooseExternalDisplay(.size640x480) { failures.append($0.localizedDescription) }
         #expect(screen.requests == ["mode 1920x1080@1"])
-        // Each change is abandoned once its timeout passes, and the next goes.
         for _ in 0..<100 where failures.count < 2 { try await Task.sleep(for: .milliseconds(20)) }
         #expect(screen.requests == ["mode 1920x1080@1", "mode 640x480@1"])
         #expect(failures == [
@@ -4336,7 +3978,6 @@ struct InputFocusTests {
         #expect(screen.isDisconnected)
         #expect(external.window?.isVisible == false)
         #expect(preferences.externalDisplayTag(forDevice: "test-device") == 2614)
-        // A device that is no longer booted is left alone.
         let other = TestExternalScreen()
         let (shutDown, display) = try makeExternalDisplayController(other, preferences: preferences)
         #expect(other.requests == ["mode 1920x1080@1"])
@@ -4353,22 +3994,19 @@ struct InputFocusTests {
         #expect(screen.requests == ["mode 1280x720@1"])
         #expect(controller.externalDisplayWindow != nil)
         controller.invalidate()
-        // Disabled, the default, leaves a display that is on with its window,
-        // as Simulator.app does.
+        // Simulator.app's default Disabled preference leaves an existing external display on.
         preferences.setExternalDisplayTag(ExternalDisplayMode.disabled.rawValue, forDevice: "test-device")
         let on = TestExternalScreen()
         on.current = ExternalScreenState(isPoweredOn: true, pixelSize: CGSize(width: 1920, height: 1080), scale: 1)
         let (second, _) = try makeExternalDisplayController(on, preferences: preferences)
         #expect(on.requests.isEmpty && second.externalDisplayWindow != nil)
         second.invalidate()
-        // CarPlay on a device without CarPlay is not applied, and stays saved.
         preferences.setExternalDisplayTag(2714, forDevice: "test-device")
         let carPlay = TestExternalScreen()
         let (third, _) = try makeExternalDisplayController(carPlay, preferences: preferences)
         defer { third.invalidate() }
         #expect(carPlay.requests.isEmpty)
         #expect(preferences.externalDisplayTag(forDevice: "test-device") == 2714)
-        // A device without the features does not connect.
         let display = TestDisplay()
         display.connectExternalScreen(TestExternalScreen())
         let plain = try makeController(display)
@@ -4385,11 +4023,9 @@ struct InputFocusTests {
         controller.perform(.externalDisplay1024x768)
         let first = try #require(controller.externalDisplayWindow)
         await controller.prepareForRestart()
-        // Like Simulator.app, the window disconnects while the device is still
-        // booted, which turns the display off.
+        // Simulator.app disconnects and powers off the display while the device is still booted.
         #expect(controller.externalDisplayWindow == nil && first.window?.isVisible == false)
         #expect(screen.requests == ["mode 1024x768@1", "off"])
-        // A choice made meanwhile is saved and applied by the reconnection.
         controller.perform(.externalDisplay1920x1080)
         #expect(screen.requests.count == 2)
         let display = TestDisplay()
@@ -4410,8 +4046,6 @@ struct InputFocusTests {
         func choose(_ mode: ExternalDisplayMode, on controller: DeviceWindowController) {
             controller.session.chooseExternalDisplay(mode) { failures.append($0.localizedDescription) }
         }
-        // A device without an external display port: the choice is saved, and
-        // its failure is reported once the wait for the display ends.
         let (portless, _) = try makeExternalDisplayController(nil, preferences: preferences)
         defer { portless.invalidate() }
         choose(.size1920x1080, on: portless)
@@ -4421,7 +4055,6 @@ struct InputFocusTests {
         #expect(failures == [
             "Could not set the external display of Test iPhone to 1920×1080 (1080p): The device has no external display port.",
         ])
-        // A size that no mode takes, and failures CoreSimulator reports later.
         let screen = TestExternalScreen()
         let (controller, _) = try makeExternalDisplayController(screen, device: "B", preferences: preferences)
         defer { controller.invalidate() }
@@ -4441,7 +4074,6 @@ struct InputFocusTests {
         choose(.disabled, on: controller)
         #expect(failures.last == "Could not turn off the external display of Test iPhone: power failed")
         #expect(controller.externalDisplayWindow != nil)
-        // Restoring the saved choice reports to its own handler.
         var restored: [String] = []
         let failing = TestExternalScreen()
         failing.completionError = HostError.operation("restore failed")
@@ -4460,8 +4092,6 @@ struct InputFocusTests {
         func choose(_ mode: ExternalDisplayMode) {
             controller.session.chooseExternalDisplay(mode) { failures.append($0.localizedDescription) }
         }
-        // The session cannot connect to the reported display, which fails the
-        // choice made meanwhile and ends the wait.
         choose(.size1024x768)
         display.externalScreenError = HostError.operation("no proxy")
         let screen = TestExternalScreen()
@@ -4469,13 +4099,10 @@ struct InputFocusTests {
         display.deliverScreenReports()
         let reason = "Could not connect to the external display of Test iPhone: no proxy"
         #expect(failures == [reason] && !display.isRegisteredForExternalScreen)
-        // A later choice registers again and waits for the display; the
-        // error recurs and is reported again.
         choose(.size1024x768)
         #expect(failures.count == 1)
         display.deliverScreenReports()
         #expect(failures == [reason, reason])
-        // Once the error is gone, the next choice connects and applies.
         display.externalScreenError = nil
         choose(.size1280x720)
         #expect(screen.requests.isEmpty)
@@ -4502,7 +4129,6 @@ struct InputFocusTests {
         let preferences = MemoryPreferences()
         preferences.setExternalDisplayTag(ExternalDisplayMode.size1280x720.rawValue, forDevice: "test-device")
         var failures: [String] = []
-        // SimulatorKit's screen adapter has not reported the TVOut screen yet.
         let (controller, display) = try makeExternalDisplayController(nil, preferences: preferences) {
             failures.append($0.localizedDescription)
         }
@@ -4512,9 +4138,7 @@ struct InputFocusTests {
         display.connectExternalScreen(screen)
         #expect(screen.requests.isEmpty)
         display.deliverScreenReports()
-        // The saved choice is applied once the adapter reports the screen,
-        // and the display's changes are followed from then on. Like
-        // Simulator.app, the session then releases its registration.
+        // Release the registration after connecting, matching Simulator.app.
         #expect(screen.requests == ["mode 1280x720@1"])
         #expect(controller.externalDisplayWindow != nil)
         #expect(!display.isRegisteredForExternalScreen)
@@ -4537,7 +4161,6 @@ struct InputFocusTests {
         controller.session.chooseExternalDisplay(.disabled) { failures.append($0.localizedDescription) }
         #expect(screen.requests.isEmpty)
         display.deliverScreenReports()
-        // The last choice, Disabled, turns off a display that is on.
         #expect(screen.requests == ["off"])
         #expect(failures.isEmpty)
     }
@@ -4547,8 +4170,7 @@ struct InputFocusTests {
         for device in ["test-device", "B"] {
             preferences.setExternalDisplayTag(ExternalDisplayMode.size1280x720.rawValue, forDevice: device)
         }
-        // Like SimulatorKit's, reports queued before the session releases its
-        // registration still arrive: a second TVOut screen changes nothing.
+        // Queued adapter reports retain their registration and arrive after it is released.
         let (controller, display) = try makeExternalDisplayController(nil, preferences: preferences)
         defer { controller.invalidate() }
         let first = TestExternalScreen()
@@ -4557,7 +4179,6 @@ struct InputFocusTests {
         display.connectExternalScreen(second)
         display.deliverScreenReports()
         #expect(first.requests == ["mode 1280x720@1"] && second.requests.isEmpty)
-        // Nor does a report that arrives after the session disconnected.
         let (closed, other) = try makeExternalDisplayController(nil, device: "B", preferences: preferences)
         let late = TestExternalScreen()
         other.connectExternalScreen(late)
@@ -4583,24 +4204,18 @@ struct InputFocusTests {
             "Could not set the external display of Test iPhone to 1024×768: The device has no external display port.",
         ])
         #expect(restored.isEmpty)
-        // The menu shows no state for it, and the items stay available.
         #expect(controller.session.externalDisplayMode == nil)
         #expect(externalDisplayItems(for: controller).allSatisfy {
             !$0.contains("✓") && ($0 == "CarPlay (disabled)") == $0.hasSuffix("(disabled)")
         })
-        // A later choice is reported at once.
         controller.session.chooseExternalDisplay(.size1280x720) { chosen.append($0.localizedDescription) }
         #expect(chosen.count == 2)
-        // The registration stays, so a display reported later still connects
-        // and gets the saved choice.
         let screen = TestExternalScreen()
         display.connectExternalScreen(screen)
         display.deliverScreenReports()
         #expect(screen.requests == ["mode 1280x720@1"] && controller.externalDisplayWindow != nil)
         #expect(restored.isEmpty && chosen.count == 2 && display.externalScreenRegistrations == 1)
 
-        // A device without a screen adapter reports the saved choice and
-        // later ones at once.
         let adapterless = TestDisplay()
         adapterless.hasScreenAdapter = false
         let other = try makeController(adapterless, features: Self.externalDisplayFeatures, preferences: preferences)
@@ -4619,8 +4234,6 @@ struct InputFocusTests {
         screen.defersChanges = true
         let (controller, _) = try makeExternalDisplayController(screen, preferences: preferences)
         defer { controller.invalidate() }
-        // Disabled right after a size, before CoreSimulator has turned the
-        // display on, turns it off once that change completes.
         controller.perform(.externalDisplay1920x1080)
         controller.perform(.externalDisplayDisabled)
         #expect(screen.requests == ["mode 1920x1080@1"])
@@ -4629,7 +4242,6 @@ struct InputFocusTests {
         screen.deliver()
         #expect(!screen.current.isPoweredOn && controller.session.externalDisplayMode == .disabled)
         #expect(preferences.externalDisplayTag(forDevice: "test-device") == 2114)
-        // Of the choices made while a change is in flight, only the last follows it.
         controller.perform(.externalDisplay640x480)
         controller.perform(.externalDisplay1024x768)
         controller.perform(.externalDisplay3840x2160)
@@ -4643,8 +4255,6 @@ struct InputFocusTests {
         let screen = TestExternalScreen()
         screen.defersChanges = true
         let (controller, _) = try makeExternalDisplayController(screen)
-        // A size completes before the display reports it; the next size fails
-        // later. Closing the device window still turns the display off.
         controller.perform(.externalDisplay1920x1080)
         screen.deliverCompletions()
         screen.completionError = HostError.operation("mode failed")
@@ -4664,9 +4274,7 @@ struct InputFocusTests {
         screen.defersChanges = true
         let (controller, _) = try makeExternalDisplayController(screen, externalDisplayChanges: changes)
         #expect(controller.session.hasExternalDisplay)
-        // The window closes, keeping the device running, while a size is in
-        // flight. The device's changes outlive the session, and their wait
-        // ends once the size and then the power-off have completed.
+        // Mode and power-off requests outlive the closing window's session.
         controller.perform(.externalDisplay1920x1080)
         controller.invalidate()
         #expect(changes.isBusy)
@@ -4681,7 +4289,6 @@ struct InputFocusTests {
         await wait.value
         #expect(result.idle == true && !changes.isBusy)
         #expect(!screen.current.isPoweredOn)
-        // A power-off that does not complete ends the wait at its deadline.
         let held = TestExternalScreen()
         held.defersChanges = true
         let heldChanges = ExternalDisplayChanges()
@@ -4697,9 +4304,7 @@ struct InputFocusTests {
         let screen = TestExternalScreen()
         screen.defersChanges = true
         let (closed, _) = try makeExternalDisplayController(screen, preferences: preferences, externalDisplayChanges: changes)
-        // The window closes, keeping the device running, while a size is in
-        // flight, so its power-off waits. The reopened device's session then
-        // restores the size, which follows that power-off.
+        // Reopening must restore the saved size after the previous session's pending power-off.
         closed.perform(.externalDisplay1920x1080)
         closed.invalidate()
         let (reopened, _) = try makeExternalDisplayController(screen, preferences: preferences,
@@ -4729,8 +4334,7 @@ struct InputFocusTests {
         _ = NSApplication.shared
         let preferences = MemoryPreferences()
         let screen = TestExternalScreen()
-        // Small enough for Point Accurate on any Mac screen, large enough for
-        // Pixel Accurate's half scale on a Retina one.
+        // Fit Point Accurate on any screen and Pixel Accurate's half scale on Retina.
         screen.current = ExternalScreenState(isPoweredOn: true, pixelSize: CGSize(width: 640, height: 480), scale: 1)
         let (controller, _) = try makeExternalDisplayController(screen, preferences: preferences)
         defer { controller.invalidate() }
@@ -4740,11 +4344,8 @@ struct InputFocusTests {
         #expect(controller.scaledWindow === controller)
         external.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification, object: window))
         #expect(controller.scaledWindow === external)
-        // The display takes the Mac's keyboard while its window is key.
         #expect(display.keyboard == [true])
         #expect(window.firstResponder === display.inputView)
-        // The scale commands scale the key external display's window; Physical
-        // Size is for a device's own screen.
         controller.perform(.pointAccurate)
         #expect(display.renderScale == 1)
         #expect(DeviceCommand.command(.pointAccurate).validate(NSMenuItem(), for: controller))
@@ -4755,7 +4356,6 @@ struct InputFocusTests {
         external.windowDidResignKey(Notification(name: NSWindow.didResignKeyNotification, object: window))
         #expect(display.keyboard == [true, false])
         #expect(controller.scaledWindow === controller)
-        // Its next window opens at the scale it closed at.
         window.close()
         controller.perform(.externalDisplay640x480)
         let reopened = try #require(screen.displays.last)
@@ -4780,8 +4380,7 @@ struct InputFocusTests {
                 && (abs(size.width - available.width) <= 0.5 || abs(size.height - available.height) <= 0.5)
         }
         #expect(fits())
-        // SimulatorKit's display takes the new resolution after CoreSimulator
-        // reports it; the display then fits the window again.
+        // SimulatorKit updates its display after CoreSimulator reports the resolution.
         controller.perform(.externalDisplay1920x1080)
         display.takeScreenSize(NSSize(width: 1920, height: 1080))
         #expect(fits())
@@ -4796,8 +4395,6 @@ struct InputFocusTests {
         let external = try #require(controller.externalDisplayWindow)
         let window = try #require(external.window)
         #expect(window.contentAspectRatio == NSSize(width: 640, height: 480))
-        // Another tool changes the resolution while the window's edge is
-        // dragged: the rest of the drag keeps the new aspect ratio and minimum.
         external.windowWillStartLiveResize(Notification(name: NSWindow.willStartLiveResizeNotification, object: window))
         screen.report { $0.pixelSize = CGSize(width: 1920, height: 1080) }
         #expect(window.contentAspectRatio == NSSize(width: 1920, height: 1080))
@@ -4818,9 +4415,7 @@ struct InputFocusTests {
         let external = try #require(controller.externalDisplayWindow)
         let window = try #require(external.window)
         let display = try #require(screen.displays.last)
-        // Without the Mac's keyboard, the digitizer still takes the modifiers
-        // the Mac holds whenever the window becomes key, which it missed while
-        // another window had the focus.
+        // A returning key window must receive modifiers missed while another window had focus.
         external.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification, object: window))
         external.windowDidResignKey(Notification(name: NSWindow.didResignKeyNotification, object: window))
         external.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification, object: window))
@@ -4841,12 +4436,10 @@ struct InputFocusTests {
         defer { NSApp.mainMenu = nil }
         let io = try #require(NSApp.mainMenu?.items.first { $0.title == "I/O" }?.submenu)
         let submenu = try #require(io.items.first { $0.title == "External Displays" }?.submenu)
-        // Like Simulator.app, CarPlay is the last item, after a separator.
+        // Simulator.app places CarPlay last, after a separator.
         let item = try #require(submenu.items.last)
         #expect(item.title == "CarPlay" && item.keyEquivalent.isEmpty)
         #expect(submenu.items.dropLast().last?.isSeparatorItem == true)
-        // It shows with the submenu and is enabled only for a device with
-        // CarPlay, which alone can show it checked.
         for (features, enabled) in [(Self.carPlayFeatures, true), (Self.externalDisplayFeatures, false)] {
             let screen = TestExternalScreen()
             screen.current = ExternalScreenState(isPoweredOn: true, pixelSize: CGSize(width: 800, height: 480), scale: 2,
@@ -4862,8 +4455,6 @@ struct InputFocusTests {
     @Test func choosingCarPlayConfiguresTheGuestAndOpensACarPlayWindow() throws {
         _ = NSApplication.shared
         let preferences = MemoryPreferences()
-        // A CarPlay window opens at Point Accurate whatever scale the device's
-        // last external display window closed at, at that window's center.
         preferences.setWindowGeometry(center: NSPoint(x: 400, y: 300), scale: 0.5, forDevice: "test-device",
                                       screens: NSScreen.screens.map(\.frame), kind: .externalDisplay)
         let screen = TestExternalScreen()
@@ -4871,9 +4462,7 @@ struct InputFocusTests {
                                                                 preferences: preferences)
         defer { controller.invalidate() }
         controller.perform(.externalDisplayCarPlay)
-        // Like Simulator.app: the configuration that the guest reads when the
-        // screen changes, the CarPlay screen, then the guest's CarPlay
-        // session and the HID service that takes the touches.
+        // Match Simulator.app's order: configuration, screen, guest session, then HID service.
         #expect(screen.requests == ["save carplay", "mode 800x480@2 carplay", "start carplay", "connect service"])
         #expect(preferences.externalDisplayTag(forDevice: "test-device") == 2714)
         #expect(controller.session.externalDisplayMode == .carPlay)
@@ -4886,8 +4475,6 @@ struct InputFocusTests {
         let content = window.contentRect(forFrameRect: window.frame).size
         #expect(abs(content.width - 400) <= 1 && abs(content.height - 240) <= 1)
         #expect(abs(window.frame.midX - 400) <= 1 && abs(window.frame.midY - 300) <= 1)
-        // Closing the window chooses Disabled, which ends CarPlay once the
-        // display is off.
         window.close()
         #expect(Array(screen.requests.dropFirst(4)) == ["save off", "off", "remove service", "stop carplay"])
         #expect(preferences.externalDisplayTag(forDevice: "test-device") == 2114)
@@ -4905,28 +4492,22 @@ struct InputFocusTests {
             perform()
             return Array(screen.requests.dropFirst(count))
         }
-        // CarPlay chosen again ends the session it started and starts another.
         #expect(requests { controller.perform(.externalDisplayCarPlay) }
             == ["save carplay", "mode 800x480@2 carplay", "start carplay", "connect service"])
         let window = try #require(controller.externalDisplayWindow?.window)
         #expect(requests { controller.perform(.externalDisplayCarPlay) } == [
             "save carplay", "remove service", "stop carplay", "mode 800x480@2 carplay", "start carplay", "connect service",
         ])
-        // A size ends CarPlay first and turns the guest's configuration off;
-        // the window stays and names the external display again.
         #expect(requests { controller.perform(.externalDisplay1920x1080) }
             == ["save off", "remove service", "stop carplay", "mode 1920x1080@1"])
         #expect(controller.externalDisplayWindow?.window === window)
         #expect(window.subtitle == "External Display")
         #expect(window.collectionBehavior == [.fullScreenPrimary, .fullScreenAllowsTiling])
-        // CarPlay from a size turns the display off first, so that the guest
-        // takes the CarPlay screen as a new display, and a new window opens.
+        // Power off first so the guest recognizes CarPlay as a new display.
         #expect(requests { controller.perform(.externalDisplayCarPlay) }
             == ["save carplay", "off", "mode 800x480@2 carplay", "start carplay", "connect service"])
         #expect(controller.externalDisplayWindow?.window?.subtitle == "CarPlay")
         #expect(controller.externalDisplayWindow?.window !== window)
-        // Disabled ends CarPlay once the display is off; a size afterwards
-        // has no CarPlay to end.
         #expect(requests { controller.perform(.externalDisplayDisabled) }
             == ["save off", "off", "remove service", "stop carplay"])
         #expect(requests { controller.perform(.externalDisplay640x480) } == ["save off", "mode 640x480@1"])
@@ -4941,8 +4522,6 @@ struct InputFocusTests {
         func waitForCarPlay() async throws {
             for _ in 0..<200 where screen.requests.last != "connect service" { try await Task.sleep(for: .milliseconds(10)) }
         }
-        // A display that showed a size turns off, and the CarPlay screen
-        // waits for the delay.
         controller.perform(.externalDisplay720x480)
         var start = ContinuousClock.now
         controller.perform(.externalDisplayCarPlay)
@@ -4950,15 +4529,12 @@ struct InputFocusTests {
         try await waitForCarPlay()
         #expect(ContinuousClock.now - start >= delay)
         #expect(screen.requests.suffix(3) == ["mode 800x480@2 carplay", "start carplay", "connect service"])
-        // So does one that Disabled just turned off.
         controller.perform(.externalDisplayDisabled)
         start = ContinuousClock.now
         controller.perform(.externalDisplayCarPlay)
         #expect(screen.requests.last == "save carplay")
         try await waitForCarPlay()
         #expect(ContinuousClock.now - start >= delay * 0.9)
-        // A display that has been off for longer, and one that already is a
-        // CarPlay screen, change at once.
         controller.perform(.externalDisplayDisabled)
         try await Task.sleep(for: delay)
         let count = screen.requests.count
@@ -4975,9 +4551,7 @@ struct InputFocusTests {
                                                                 preferences: preferences)
         controller.perform(.externalDisplayCarPlay)
         controller.invalidate()
-        // Like Simulator.app, the choice and the guest's configuration stay for
-        // the next connection; unlike Simulator.app, the CarPlay that this host
-        // started ends with the display.
+        // Preserve the choice and configuration for reconnect, but end this host's CarPlay session.
         #expect(Array(screen.requests.dropFirst(4)) == ["off", "remove service", "stop carplay"])
         #expect(preferences.externalDisplayTag(forDevice: "test-device") == 2714)
     }
@@ -4992,9 +4566,7 @@ struct InputFocusTests {
                                                            preferences: preferences, externalDisplayChanges: changes)
         #expect(screen.requests == restored)
         #expect(first.externalDisplayWindow?.window?.subtitle == "CarPlay")
-        // The device shuts down as its window closes, as a restart does, and
-        // the display does not turn off, so the session is not ended. The
-        // next boot starts without it: its connection ends nothing first.
+        // Shutdown ends the guest session; the next boot must not send another end request.
         screen.completionError = HostError.operation("Invalid argument")
         first.invalidate()
         #expect(Array(screen.requests.dropFirst(4)) == ["off"])
@@ -5003,7 +4575,6 @@ struct InputFocusTests {
         let (second, secondDisplay) = try makeExternalDisplayController(
             rebooted, features: Self.carPlayFeatures, preferences: preferences, externalDisplayChanges: changes)
         #expect(rebooted.requests == restored)
-        // Nor after a window that disconnects from a device that shut down.
         secondDisplay.isBooted = false
         second.invalidate()
         #expect(rebooted.requests.count == 4)
@@ -5027,14 +4598,12 @@ struct InputFocusTests {
         }
         _ = requests(choosing: .carPlay)
         #expect(screen.carPlaySessions == 1)
-        // CarPlay chosen again, whose session does not end: that session
-        // stays the device's CarPlay, and its HID service comes back.
+        // Failed termination preserves the session; restore its HID service.
         screen.carPlayErrors = ["stop carplay": HostError.operation("busy")]
         #expect(requests(choosing: .carPlay)
             == ["save carplay", "remove service", "stop carplay", "mode 800x480@2 carplay", "connect service"])
         #expect(failures == ["Could not stop CarPlay on Test iPhone: busy"])
         #expect(screen.carPlaySessions == 1)
-        // Disabled then ends it, and none is left.
         screen.carPlayErrors = [:]
         #expect(requests(choosing: .disabled) == ["save off", "off", "remove service", "stop carplay"])
         #expect(screen.carPlaySessions == 0 && failures.count == 1)
@@ -5053,8 +4622,7 @@ struct InputFocusTests {
             controller.session.chooseExternalDisplay(mode) { failures.append($0.localizedDescription) }
             return Array(screen.requests.dropFirst(count))
         }
-        // The guest does not answer the start before the change stops
-        // waiting, which leaves the session unknown and is reported once.
+        // Timeout leaves the guest session unknown.
         screen.defersCarPlaySessions = true
         #expect(choose(.carPlay, on: controller, screen: screen)
             == ["save carplay", "mode 800x480@2 carplay", "start carplay"])
@@ -5062,11 +4630,9 @@ struct InputFocusTests {
         #expect(failures == [
             "Could not start CarPlay on Test iPhone: The device did not answer, so NeoSimulator leaves its CarPlay session as it is until the device restarts.",
         ])
-        // Its late answer changes nothing.
         screen.deliverCarPlaySessions()
         screen.defersCarPlaySessions = false
-        // Until the device restarts, no session request is sent, while the
-        // screen and the HID service still follow the choices.
+        // While the session is unknown, change only the screen and HID service until the next boot.
         #expect(choose(.disabled, on: controller, screen: screen) == ["save off", "off"])
         #expect(choose(.carPlay, on: controller, screen: screen)
             == ["save carplay", "mode 800x480@2 carplay", "connect service"])
@@ -5074,7 +4640,6 @@ struct InputFocusTests {
             == ["save off", "remove service", "mode 1920x1080@1"])
         #expect(failures.count == 1)
         controller.invalidate()
-        // The next boot, which restores the size, starts CarPlay again.
         let rebooted = TestExternalScreen()
         rebooted.deviceBootDate = Date(timeIntervalSinceReferenceDate: 1)
         let (next, _) = try makeExternalDisplayController(rebooted, features: Self.carPlayFeatures,
@@ -5106,9 +4671,7 @@ struct InputFocusTests {
         #expect(failures == [
             "Could not stop CarPlay on Test iPhone: The device did not answer, so NeoSimulator leaves its CarPlay session as it is until the device restarts.",
         ])
-        // The end succeeds late, which changes nothing: CarPlay chosen again
-        // starts no session beside one that may still run, and Disabled ends
-        // none that may have ended.
+        // Ignore the late end response; the unknown session permits neither another start nor end.
         screen.deliverCarPlaySessions()
         screen.defersCarPlaySessions = false
         #expect(screen.carPlaySessions == 0)
@@ -5130,16 +4693,13 @@ struct InputFocusTests {
         }
         _ = choose(.carPlay)
         #expect(screen.carPlaySessions == 1)
-        // The device restarts while Disabled waits for the HID service's
-        // removal, as a restart that follows a closed window can.
+        // Restart while waiting for HID-service removal.
         screen.defersCarPlayServices = true
         #expect(choose(.disabled) == ["save off", "off", "remove service"])
         screen.restart(boot: Date(timeIntervalSinceReferenceDate: 1))
         let count = screen.requests.count
         screen.deliverCarPlayServices()
         screen.defersCarPlayServices = false
-        // The new boot gets no end of the session the restart took, and
-        // CarPlay starts there as usual.
         #expect(screen.requests.count == count && screen.carPlaySessions == 0)
         #expect(Array(choose(.carPlay).suffix(2)) == ["start carplay", "connect service"])
         #expect(screen.carPlaySessions == 1)
@@ -5157,8 +4717,7 @@ struct InputFocusTests {
             return Array(screen.requests.dropFirst(count))
         }
         _ = choose(.carPlay)
-        // Disabled's end waits to run while the device restarts: it reaches
-        // no guest, which is no failure.
+        // Restart makes the pending end request moot.
         screen.defersCarPlaySessions = true
         #expect(choose(.disabled) == ["save off", "off", "remove service", "stop carplay"])
         screen.restart(boot: Date(timeIntervalSinceReferenceDate: 1))
@@ -5186,18 +4745,14 @@ struct InputFocusTests {
             let count = failures.count
             for _ in 0..<100 where failures.count == count { try await Task.sleep(for: .milliseconds(20)) }
         }
-        // A start without an answer leaves the session unknown.
         screen.defersCarPlaySessions = true
         _ = choose(.carPlay)
         try await timeOut()
-        // CarPlay chosen again creates the HID service, whose answer does not
-        // come either.
         screen.defersCarPlayServices = true
         #expect(choose(.carPlay) == ["save carplay", "mode 800x480@2 carplay", "connect service"])
         try await timeOut()
         #expect(failures.last
             == "Could not connect the CarPlay touch screen of Test iPhone: CoreSimulator did not complete the change.")
-        // The service may exist, so Disabled removes it.
         screen.defersCarPlayServices = false
         #expect(choose(.disabled) == ["save off", "off", "remove service"])
         #expect(failures.count == 2)
@@ -5208,8 +4763,7 @@ struct InputFocusTests {
         let second = Date(timeIntervalSinceReferenceDate: 1)
         var state = CarPlaySessionState()
         #expect(state.session(in: first) == .none && !state.hasService(in: first))
-        // A start that fails leaves none; one that succeeds starts it, with
-        // its HID service. An end that fails leaves it started.
+        // Start failure leaves no session; end failure preserves it.
         state.willSend(in: first)
         state.sessionAnswered(starting: true, succeeded: false, in: first)
         #expect(state.session(in: first) == .none)
@@ -5217,8 +4771,7 @@ struct InputFocusTests {
         state.serviceAnswered(created: true, succeeded: true, in: first)
         state.sessionAnswered(starting: false, succeeded: false, in: first)
         #expect(state.session(in: first) == .started && state.hasService(in: first))
-        // A new boot has no session or service, and answers from the earlier
-        // boot, for the session or the service, change nothing in it.
+        // A new boot discards both the old session and its late responses.
         #expect(state.session(in: second) == .none && !state.hasService(in: second))
         state.willSend(in: second)
         state.sessionAnswered(starting: true, succeeded: true, in: second)
@@ -5227,8 +4780,7 @@ struct InputFocusTests {
         state.serviceAnswered(created: false, succeeded: true, in: first)
         state.timedOut(in: first)
         #expect(state.session(in: second) == .started && state.hasService(in: second))
-        // An answer that did not come in time leaves the session unknown,
-        // which later answers do not change, until another boot.
+        // Timeout keeps the session unknown until another boot.
         state.timedOut(in: second)
         state.sessionAnswered(starting: false, succeeded: true, in: second)
         #expect(state.session(in: second) == .unknown && state.hasService(in: second))
@@ -5249,13 +4801,10 @@ struct InputFocusTests {
         func choose(_ mode: ExternalDisplayMode) {
             controller.session.chooseExternalDisplay(mode) { failures.append($0.localizedDescription) }
         }
-        // A configuration that is not saved is reported, and the change goes on.
         screen.carPlayErrors = ["save carplay": HostError.operation("disk full")]
         choose(.carPlay)
         #expect(screen.requests == ["save carplay", "mode 800x480@2 carplay", "start carplay", "connect service"])
         #expect(failures == ["Could not save the CarPlay configuration of Test iPhone: disk full"])
-        // Ending CarPlay fails in both steps, and the size is still set; the
-        // failures of one change come together.
         screen.carPlayErrors = ["remove service": HostError.operation("no port"),
                                 "stop carplay": HostError.operation("no bridge")]
         choose(.size1280x720)
@@ -5264,12 +4813,9 @@ struct InputFocusTests {
             Could not disconnect the CarPlay touch screen of Test iPhone: no port
             Could not stop CarPlay on Test iPhone: no bridge
             """)
-        // A session that did not end is ended by the next change.
         screen.carPlayErrors = [:]
         choose(.size640x480)
         #expect(screen.requests.suffix(4) == ["save off", "remove service", "stop carplay", "mode 640x480@1"])
-        // A session that does not start gets no HID service, and leaves nothing
-        // to end.
         screen.carPlayErrors = ["start carplay": HostError.operation("no CarPlay")]
         var count = screen.requests.count
         choose(.carPlay)
@@ -5282,7 +4828,6 @@ struct InputFocusTests {
         #expect(Array(screen.requests.dropFirst(count))
             == ["save carplay", "mode 800x480@2 carplay", "start carplay", "connect service"])
         #expect(failures.last == "Could not connect the CarPlay touch screen of Test iPhone: send failed")
-        // A CarPlay screen that is not set starts no CarPlay.
         screen.carPlayErrors = [:]
         screen.completionError = HostError.operation("mode failed")
         count = screen.requests.count
@@ -5291,7 +4836,6 @@ struct InputFocusTests {
             "save carplay", "remove service", "stop carplay", "mode 800x480@2 carplay",
         ])
         #expect(failures.last == "Could not set the external display of Test iPhone to CarPlay: mode failed")
-        // On the device window, the failures of a choice share one alert.
         screen.completionError = nil
         controller.showWindow(nil)
         screen.carPlayErrors = ["save carplay": HostError.operation("disk full"),
@@ -5312,15 +4856,13 @@ struct InputFocusTests {
         func read() throws -> NSDictionary {
             try #require(NSDictionary(contentsOf: file))
         }
-        // The folder is created, and CarPlay writes Simulator.app's default
-        // configuration under its plain keys.
+        // Use Simulator.app's default CarPlay configuration and unprefixed keys.
         try CarPlayConfiguration.save(carPlay: true, to: file)
         #expect(try read() == [
             "stark": true, "width": 800, "height": 480, "scale": 2.0, "hasBackButton": false, "hasHomeButton": false,
             "hasWheel": false, "hasWheelBump": false, "hasTouchScreen": true, "hasTouchScreenLofi": false,
             "protocols": [String](),
         ] as NSDictionary)
-        // Every other choice replaces it with stark off.
         try CarPlayConfiguration.save(carPlay: false, to: file)
         #expect(try read() == ["stark": 0] as NSDictionary)
     }
@@ -5342,31 +4884,26 @@ struct InputFocusTests {
         dialog.show(latitude: 37.785834, longitude: -122.406417)
         #expect(window.isVisible && dialog.okButton.isEnabled)
         #expect(dialog.latitudeField.doubleValue == 37.785834 && dialog.longitudeField.doubleValue == -122.406417)
-        // Each change is checked as it is typed. Leaving a field that does
-        // not parse would show AppKit's formatter error, so each field ends valid.
+        // End each field with valid text to avoid AppKit's formatter error on focus change.
         func type(_ texts: [String], in field: NSTextField) throws -> [Bool] {
             #expect(window.makeFirstResponder(field))
             let editor = try #require(field.currentEditor() as? NSTextView)
             return texts.map { text in
                 editor.selectAll(nil)
                 editor.insertText(text, replacementRange: editor.selectedRange())
-                // Checking leaves the text as typed.
                 #expect(editor.string == text)
                 return dialog.okButton.isEnabled
             }
         }
         #expect(try type(["91", "x", "", "-90"], in: dialog.latitudeField) == [false, false, false, true])
         #expect(try type(["-181", "180", "-180"], in: dialog.longitudeField) == [false, true, true])
-        // OK reads the text still being edited.
         dialog.okButton.performClick(nil)
         #expect(accepted == [[-90, -180]] && !window.isVisible)
 
-        // Showing again starts from the given coordinate; Cancel changes nothing.
         dialog.show(latitude: 1, longitude: 2)
         #expect(dialog.latitudeField.doubleValue == 1 && dialog.okButton.isEnabled)
         cancel.performClick(nil)
         #expect(accepted.count == 1 && !window.isVisible)
-        // Showing also checks the coordinate it starts from.
         dialog.show(latitude: 100, longitude: 0)
         #expect(!dialog.okButton.isEnabled)
     }
@@ -5382,7 +4919,6 @@ struct InputFocusTests {
         let window = try #require(NSApp.windows.first { $0.title == "Custom Location" && $0.isVisible })
         let dialog = try #require(window.windowController as? CustomLocationWindowController)
         #expect(dialog.latitudeField.doubleValue == 37.785834 && dialog.longitudeField.doubleValue == -122.406417)
-        // Choosing Custom Location… only asks.
         #expect(controller.session.location == nil && display.appliedLocations.isEmpty)
         dialog.latitudeField.doubleValue = 10
         dialog.longitudeField.doubleValue = -20
@@ -5392,8 +4928,6 @@ struct InputFocusTests {
         #expect(UserDefaults.standard.double(forKey: HostPreferences.locationLatitude) == 10)
         #expect(UserDefaults.standard.double(forKey: HostPreferences.locationLongitude) == -20)
         #expect(UserDefaults.standard.integer(forKey: HostPreferences.locationMode) == LocationSelection.customMode)
-        // The window opens again with the saved coordinate, not with text
-        // typed before Cancel.
         controller.selectLocation(.custom)
         #expect(window.isVisible && window.makeFirstResponder(dialog.latitudeField))
         let editor = try #require(dialog.latitudeField.currentEditor() as? NSTextView)
@@ -5406,7 +4940,6 @@ struct InputFocusTests {
         controller.selectLocation(.custom)
         #expect(dialog.latitudeField.doubleValue == 10 && dialog.longitudeField.doubleValue == -20)
         #expect(dialog.okButton.isEnabled)
-        // It keeps its device window's level, and closes with its device window.
         controller.toggleStayOnTop()
         #expect(window.level == .floating)
         controller.toggleStayOnTop()
@@ -5418,8 +4951,7 @@ struct InputFocusTests {
     private static let scenarios = [LocationScenario(name: "City Run", localizedName: "City Run"),
                                     LocationScenario(name: "Freeway Drive", localizedName: "Freeway Drive")]
 
-    /// Removes the saved Location preferences and returns a closure that puts
-    /// back the ones that were saved.
+    /// Clears location preferences and returns their restoration closure.
     private func removeLocationPreferences() -> () -> Void {
         let keys = [HostPreferences.locationMode, HostPreferences.locationScenario,
                     HostPreferences.locationLatitude, HostPreferences.locationLongitude]
@@ -5443,8 +4975,7 @@ struct InputFocusTests {
         }
         let rotation = ["Rotate Left", "Rotate Right", "Orientation"]
         #expect(Set(rotation).isSubset(of: visibleTitles(controllingOrientation: true)))
-        // devicectl cannot reach a parallel testing device, but SimulatorKit
-        // still follows the guest's rotation.
+        // devicectl cannot reach parallel-test devices; SimulatorKit still reports their rotation.
         let testing = visibleTitles(controllingOrientation: false)
         #expect(Set(rotation).isDisjoint(with: testing) && testing.contains("Rotate Device Automatically"))
     }
@@ -5468,7 +4999,6 @@ struct InputFocusTests {
         #expect(first.map(\.keyEquivalentModifierMask) == [[], .option, [], .option])
         #expect(first.map(\.state) == [.on, .on, .mixed, .mixed])
         #expect(first.map { $0.representedObject as? String } == ["a", "a", "b", "b"])
-        // A single runtime lists its devices directly.
         #expect(items(Array(devices.prefix(2))).map(\.title) == first.map(\.title))
     }
 
@@ -5484,7 +5014,6 @@ struct InputFocusTests {
         #expect(quit.messageText == "Do you want to shut down the simulated devices?")
         #expect(quit.buttons.map(\.title) == ["Shut Down", "Keep Running", "Cancel"])
         #expect(quit.suppressionButton?.title == "Remember as the default quit action.")
-        // Return chooses the remembered action.
         #expect(quit.buttons.map(\.keyEquivalent) == ["", "\r", "\u{1b}"])
 
         let key = "NeoSimulatorTestDetach-\(UUID().uuidString)"
@@ -5526,7 +5055,6 @@ struct InputFocusTests {
         let current = AvailableDevice(identifier: identifier, name: "Mine", descriptiveName: "Mine", runtimeIdentifier: "",
                                       runtimeName: "", productFamily: 2, deviceTypeName: "iPad", state: 1)
         #expect(HostApplication.initialDevice(in: devices + [current], current: identifier.lowercased())?.id == identifier)
-        // The last iPhone, matched by device type, or else the first device.
         #expect(HostApplication.initialDevice(in: devices, current: identifier)?.id == "D")
         #expect(HostApplication.initialDevice(in: [devices[0], devices[4]], current: nil)?.id == "A")
         #expect(HostApplication.initialDevice(in: [], current: nil) == nil)
@@ -5560,15 +5088,12 @@ struct InputFocusTests {
         #expect(form.deviceTypes.itemArray.map { $0.isSeparatorItem ? "-" : $0.title }
                 == ["iPhone A", "iPhone B", "iPhone X", "-", "iPad C"])
         #expect(form.runtimes.itemTitles == ["iOS 26.0", "iOS 27.0", "iOS 28.0"])
-        // The first runtime stays, and the device type becomes the first it supports.
         #expect(selection() == ["iPhone B", "iOS 26.0"])
         #expect(form.nameField.placeholderString == "iPhone B")
         choose("iPad C", in: form.deviceTypes)
         #expect(selection() == ["iPad C", "iOS 27.0"])
         choose("iOS 26.0", in: form.runtimes)
         #expect(selection() == ["iPhone B", "iOS 26.0"])
-        // Without a compatible choice the other selection empties, and the next
-        // compatible choice restores it.
         choose("iPhone X", in: form.deviceTypes)
         #expect(selection() == ["iPhone X", nil])
         choose("iPad C", in: form.deviceTypes)
@@ -5584,7 +5109,6 @@ struct InputFocusTests {
         #expect(window.isVisible && created.isEmpty)
         window.endSheet(try #require(window.attachedSheet))
         failure = nil
-        // An empty name uses the device type's name.
         form.forwardButton.performClick(nil)
         for _ in 0..<100 where window.isVisible { try await Task.sleep(for: .milliseconds(10)) }
         #expect(created == [["iPhone B", "b", "old"]])
@@ -5604,8 +5128,7 @@ struct InputFocusTests {
         #expect(!form.pairedWatchButton.isEnabled)
     }
 
-    /// A catalog of one iPhone, one iPad, and three watches, where only the
-    /// first watch pairs; `pairings` records each pairing check.
+    /// Only the first watch is pairable; pairing checks are recorded in pairings.
     private func pairingCatalog(_ pairings: PairingChecks? = nil) -> SimulatorCatalog {
         SimulatorCatalog(
             deviceTypes: [.init(identifier: "phone", name: "iPhone A", productFamily: 1),
@@ -5636,7 +5159,6 @@ struct InputFocusTests {
         #expect(form.forwardButton.title == "Create" && form.forwardButton.isEnabled && !form.previousButton.isEnabled)
         form.pairedWatchButton.performClick(nil)
         #expect(form.forwardButton.title == "Next")
-        // Another family turns the option off.
         choose("iPad A", in: form.deviceTypes)
         #expect(!form.pairedWatchButton.isEnabled && form.pairedWatchButton.state == .off)
         #expect(form.forwardButton.title == "Create")
@@ -5665,17 +5187,14 @@ struct InputFocusTests {
         form.pairedWatchButton.performClick(nil)
         form.forwardButton.performClick(nil)
         #expect(form.showsWatchPage && form.previousButton.isEnabled && form.forwardButton.title == "Create")
-        // Only watches, without separators, and the runtimes that support any of them.
         #expect(form.watchDeviceTypes.itemArray.map(\.title) == ["Apple Watch One", "Apple Watch Two", "Apple Watch Old"])
         #expect(form.watchRuntimes.itemTitles == ["watchOS 10.0", "watchOS 27.0"])
-        // The first runtime stays, and the watch becomes the first it supports.
         #expect(selection() == ["Apple Watch Old", "watchOS 10.0"])
         #expect(form.watchNameField.placeholderString == "Apple Watch Old")
         #expect(!form.forwardButton.isEnabled && pairings.entries.last == "w3 old phone ios")
         choose("watchOS 27.0", in: form.watchRuntimes)
         #expect(selection() == ["Apple Watch One", "watchOS 27.0"])
         #expect(form.forwardButton.isEnabled && pairings.entries.last == "w1 new phone ios")
-        // A watch the runtime does not support lists only the runtimes that support it.
         choose("Apple Watch Old", in: form.watchDeviceTypes)
         #expect(form.watchRuntimes.itemTitles == ["watchOS 10.0"] && selection() == ["Apple Watch Old", "watchOS 10.0"])
         #expect(form.watchNameField.placeholderString == "Apple Watch Old" && !form.forwardButton.isEnabled)
@@ -5711,7 +5230,6 @@ struct InputFocusTests {
         form.watchRuntimes.sendAction(form.watchRuntimes.action, to: form.watchRuntimes.target)
         #expect(form.forwardButton.isEnabled)
 
-        // A failed pairing keeps both devices and the window.
         failures.pair = HostError.operation("pairing failed")
         form.forwardButton.performClick(nil)
         try await wait { window.attachedSheet != nil }
@@ -5721,7 +5239,6 @@ struct InputFocusTests {
         window.endSheet(pairingAlert)
         #expect(window.isVisible && form.forwardButton.isEnabled)
         #expect(operations == ["create iPhone A phone ios", "create Apple Watch One w1 new"])
-        // A watch that is not created is not paired.
         operations.removeAll()
         failures.watch = HostError.operation("watch failed")
         form.forwardButton.performClick(nil)
@@ -5764,15 +5281,13 @@ struct InputFocusTests {
         defer { controller.invalidate() }
         controller.perform(.doubleTap)
         controller.perform(.wristFlick)
-        // Each gesture is one message, without down and up events.
+        // Watch gestures are single messages, without down/up events.
         #expect(display.gestures == [.doubleTap, .wristFlick])
         #expect(display.events.isEmpty)
-        // SimulatorKit's delivery failure reaches the command.
         display.deliveryError = HostError.operation("delivery failed")
         var failures: [Error] = []
         controller.session.send(.watchGesture(.doubleTap)) { failures.append($0) }
         #expect(failures.count == 1)
-        // A watch without the feature sends nothing.
         let other = TestDisplay()
         let otherController = try makeController(other, family: .watch, features: [], device: "other")
         defer { otherController.invalidate() }
@@ -5818,7 +5333,7 @@ struct InputFocusTests {
         defer { controller.invalidate() }
         let clock = ContinuousClock()
         let start = clock.now
-        // The second hold starts well before the first ends, even on a busy runner.
+        // Overlap the holds even on a slow runner.
         controller.send(.hold(.button(.actionStaccato), for: .milliseconds(1000)))
         try await Task.sleep(for: .milliseconds(50))
         controller.send(.hold(.button(.actionStaccato), for: .milliseconds(1000)))
@@ -5834,7 +5349,7 @@ struct InputFocusTests {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        // A simctl stand-in whose shutdown outlasts the hold, then fails.
+        // Keep shutdown pending past the hold before failing.
         let simctl = directory.appendingPathComponent("simctl")
         try "#!/bin/sh\nsleep 1\nexit 1\n".write(to: simctl, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: simctl.path)
@@ -5889,7 +5404,6 @@ struct InputFocusTests {
         controller.session.send(.hold(.button(.actionStaccato), for: .milliseconds(10))) { _ in }
         for _ in 0..<300 where display.events.count < 4 { try await Task.sleep(for: .milliseconds(10)) }
         #expect(display.events.map(\.state) == [.down, .up, .down, .up])
-        // Nothing is left to release when the window closes.
         controller.invalidate()
         #expect(display.events.count == 4)
     }
@@ -5917,7 +5431,6 @@ struct InputFocusTests {
     @Test func anEarlierDeliveryKeepsALaterPressTracked() async throws {
         let display = TestDisplay()
         display.deferCompletions = true
-        // The second Home release is not delivered.
         display.undeliveredEvents = [3]
         let controller = try makeController(display)
         controller.session.send(.pressTwice(.button(.home), interval: .milliseconds(10))) { _ in }
@@ -5951,10 +5464,8 @@ struct InputFocusTests {
                                                                    supportsFeature: { features.contains($0) }))
             return io.items.filter { !$0.isHidden }.map { $0.isSeparatorItem ? "-" : $0.title }
         }
-        // Audio Input and Audio Output stay shown, as in Simulator.app.
         #expect(visible([DeviceCapabilities.keyboard, DeviceCapabilities.touchPressure])
             == ["Keyboard", "Touch Pressure", "-", "Audio Input", "Audio Output", "-", "Open URL…"])
-        // Each submenu needs its feature.
         #expect(visible([DeviceCapabilities.touchPressure])
             == ["Touch Pressure", "-", "Audio Input", "Audio Output", "-", "Open URL…"])
         #expect(visible([]) == ["Audio Input", "Audio Output", "-", "Open URL…"])
@@ -5987,13 +5498,10 @@ struct InputFocusTests {
         a.perform(.connectHardwareKeyboard)
         for _ in 0..<100 where first.hardwareKeyboard.isEmpty { await Task.yield() }
         #expect(first.hardwareKeyboard == [false])
-        // Simulator.app's key: DevicePreferences[UDID].ConnectHardwareKeyboard.
+        // Simulator.app stores this at DevicePreferences[UDID].ConnectHardwareKeyboard.
         let devices = preferences.values[HostPreferences.devicePreferences] as? [String: [String: Any]]
         #expect(devices?["A"]?[HostPreferences.connectHardwareKeyboard] as? Bool == false)
         #expect(connect.state?(a) == .off && connect.state?(b) == .on)
-        // Without a hardware keyboard, the Mac's keyboard does not type into
-        // the device, also when its window becomes key again, and the
-        // software keyboard cannot be toggled.
         #expect(first.keyboard == [true, false])
         a.windowDidResignKey(Notification(name: NSWindow.didResignKeyNotification, object: a.window))
         a.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification, object: a.window))
@@ -6020,8 +5528,7 @@ struct InputFocusTests {
         controller.perform(.connectHardwareKeyboard)
         for _ in 0..<100 where window.attachedSheet == nil { await Task.yield() }
         #expect(try #require(window.attachedSheet).isVisible)
-        // Like Simulator.app, the choice is saved before it is applied, so it
-        // stays; choosing again retries.
+        // Simulator.app saves before applying; a failed choice remains available for retry.
         #expect(!preferences.connectsHardwareKeyboard(forDevice: "test-device"))
         window.endSheet(try #require(window.attachedSheet))
     }
@@ -6035,10 +5542,8 @@ struct InputFocusTests {
             await session.applyKeyboardSettings { failures.append($0.localizedDescription) }
             return (display, failures)
         }
-        // Without choices, the device gets a hardware keyboard and the Mac's language.
         var (display, failures) = try await apply(MemoryPreferences())
         #expect(display.hardwareKeyboard == [true] && display.keyboardLanguages == ["ja"] && failures.isEmpty)
-        // The device's own choice comes first, then the app-wide value.
         let preferences = MemoryPreferences()
         preferences.setConnectsHardwareKeyboard(false, forDevice: "A")
         preferences.set(true, forKey: HostPreferences.connectHardwareKeyboard)
@@ -6051,13 +5556,10 @@ struct InputFocusTests {
         (display, _) = try await apply(preferences, device: "B")
         #expect(display.hardwareKeyboard == [true])
 
-        // Use the Same Keyboard Language as macOS off leaves the language alone.
         preferences.set(false, forKey: HostPreferences.enableKeyboardSync)
         (display, failures) = try await apply(preferences)
         #expect(display.keyboardLanguages.isEmpty && failures.isEmpty)
 
-        // A language that cannot be determined, and each failed change, are
-        // reported without stopping the other change.
         (display, failures) = try await apply(MemoryPreferences(), language: nil)
         #expect(display.hardwareKeyboard == [true] && display.keyboardLanguages.isEmpty && failures.count == 1)
         let failing = TestDisplay()
@@ -6090,7 +5592,7 @@ struct InputFocusTests {
         await changeInputSource(to: "de")
         #expect(first.keyboardLanguages == ["ja"] && second.keyboardLanguages == ["de"])
 
-        // Like Simulator.app, the command changes only the app-wide preference.
+        // Simulator.app changes only the app-wide preference.
         let sync = DeviceCommand.command(.syncKeyboardLanguage)
         #expect(sync.state?(a) == .on)
         b.perform(.syncKeyboardLanguage)
@@ -6122,8 +5624,7 @@ struct InputFocusTests {
         let o = try controller(other, family: .iPhone, features: [])
         let e = try controller(external, family: .iPhone, features: pressure)
         defer { for c in [w, p, o, e] { c.invalidate() } }
-        // Like Simulator.app, a display takes pressure on the own screen of a
-        // device that takes it, and the trackpad's force with a Force Touch trackpad.
+        // Simulator.app uses the device screen's pressure support and the Mac trackpad's Force Touch support.
         #expect([watch, phone, other, external].map(\.supportsTouchPressure) == [[true], [true], [false], [false]])
         #expect(watch.usesTrackpadForce == [true] && watch.touchModes == [.shallow])
 
@@ -6134,14 +5635,11 @@ struct InputFocusTests {
         #expect(force.state?(w) == .off)
         #expect(watch.usesTrackpadForce == [true, false] && phone.usesTrackpadForce == [true, false])
         #expect(other.usesTrackpadForce == [true])
-        // Without a Force Touch trackpad, the option is off and unavailable.
         p.perform(.useTrackpadForce)
         #expect(force.state?(p) == .on)
         trackpad = false
         #expect(!force.isEnabled(p) && force.state?(p) == .off)
 
-        // Shallow and Deep Press need a watch, and change every window that
-        // takes touch pressure.
         let shallow = DeviceCommand.command(.shallowPress), deep = DeviceCommand.command(.deepPress)
         #expect(shallow.isEnabled(w) && deep.isEnabled(w) && !deep.isEnabled(p))
         #expect(shallow.state?(w) == .on && deep.state?(w) == .off && shallow.state?(p) == .off)
@@ -6150,8 +5648,6 @@ struct InputFocusTests {
         w.perform(.deepPress)
         #expect(watch.touchModes.last == .deep && phone.touchModes.last == .deep && other.touchModes == [.shallow])
         #expect(shallow.state?(w) == .off && deep.state?(w) == .on && deep.state?(p) == .off)
-        // A window that opens later, or reconnects after a restart, takes the
-        // app's settings.
         let later = TestDisplay()
         let l = try controller(later, family: .watch, features: pressure)
         defer { l.invalidate() }
@@ -6175,12 +5671,10 @@ struct InputFocusTests {
                                             preferences: preferences, touchPressure: touchPressure)
         defer { controller.invalidate() }
         #expect(display.usesTrackpadForce == [false])
-        // The window uses a trackpad connected after it opened, as the menu then shows.
         trackpad = true
         trackpadsChanged?()
         #expect(display.usesTrackpadForce == [false, true])
         #expect(DeviceCommand.command(.useTrackpadForce).state?(controller) == .on)
-        // A change that leaves the Force Touch trackpads as they were applies nothing.
         trackpadsChanged?()
         #expect(display.usesTrackpadForce == [false, true])
         trackpad = false
@@ -6202,16 +5696,13 @@ struct InputFocusTests {
                                    preferences: preferences)
         let p = try makeController(phone, device: "phone", preferences: preferences)
         defer { for controller in [w, v, p] { controller.invalidate() } }
-        // As in Simulator.app, the pointer's scrolling turns a watch's
-        // Digital Crown and Apple Vision Pro's Digital Dial.
+        // Scrolling controls a watch's Digital Crown and Apple Vision Pro's Digital Dial.
         #expect(watch.supportsScrolling.last == true && vision.supportsScrolling.last == true)
-        // Another device's digitizer takes it only while no bezel shows.
         #expect(phone.supportsScrolling.last == false)
         p.setDeviceBezelVisible(false)
         #expect(phone.supportsScrolling.last == true)
         p.setDeviceBezelVisible(true)
         #expect(phone.supportsScrolling.last == false)
-        // The display of the watch's next connection takes it too.
         await w.prepareForRestart()
         let restarted = makeDisplay()
         w.reconnect(try makeSession(restarted, family: .watch, features: crown, device: "watch", preferences: preferences))
@@ -6229,14 +5720,12 @@ struct InputFocusTests {
         let p = try makeController(phone, device: "phone", preferences: preferences)
         let v = try makeController(vision, family: .vision, features: [], device: "vision", preferences: preferences)
         defer { for controller in [p, v] { controller.invalidate() } }
-        // As in Simulator.app, the guest wants edge swipes while the bezel
-        // shows, from the window's first bezel on, and not without one.
+        // Simulator.app enables guest edge swipes whenever the bezel is visible.
         #expect(phone.wantsEdgeSwipes == [true] && vision.wantsEdgeSwipes == [false])
         p.setDeviceBezelVisible(false)
         #expect(phone.wantsEdgeSwipes.last == false)
         p.setDeviceBezelVisible(true)
         #expect(phone.wantsEdgeSwipes.last == true)
-        // The display of the next connection is told too.
         await p.prepareForRestart()
         let restarted = makeDisplay()
         p.reconnect(try makeSession(restarted, device: "phone", preferences: preferences))
@@ -6248,10 +5737,8 @@ struct InputFocusTests {
         let first = TestDisplay(), second = TestDisplay(), elsewhere = TestDisplay()
         let a = try makeController(first, device: "A", preferences: preferences)
         let b = try makeController(second, device: "B", preferences: preferences)
-        // A window whose preferences are kept in another store.
         let c = try makeController(elsewhere, device: "C")
         defer { for controller in [a, b, c] { controller.invalidate() } }
-        // A new window draws pinches unless they were turned off, and nothing else.
         #expect(first.touchIndicators == [.pinches] && elsewhere.touchIndicators == [.pinches])
 
         preferences.set(true, forKey: HostPreferences.showSingleTouches)
@@ -6262,12 +5749,10 @@ struct InputFocusTests {
         #expect(second.touchIndicators == [.singleTouches, .edgeGestures])
         #expect(elsewhere.touchIndicators == [.pinches])
 
-        // A window draws them again on the display of its next connection.
         await a.prepareForRestart()
         let restarted = TestDisplay()
         a.reconnect(try makeSession(restarted, device: "A", preferences: preferences))
         #expect(restarted.touchIndicators == [.singleTouches, .edgeGestures])
-        // A closed window follows no more changes.
         b.invalidate()
         preferences.set(true, forKey: HostPreferences.showPinchPivotPoint)
         NotificationCenter.default.post(name: TouchIndicator.didChangeNotification, object: preferences)
@@ -6283,24 +5768,17 @@ struct InputFocusTests {
         #expect(app.items.prefix(4).map { $0.isSeparatorItem ? "-" : $0.title } == ["About NeoSimulator", "-", "Settings…", "-"])
         let settings = try #require(app.items.first { $0.title == "Settings…" })
         #expect(settings.keyEquivalent == "," && settings.keyEquivalentModifierMask == .command)
-        // Like Simulator.app's, the item goes to the first responder, and
-        // AppKit's NSApplication answers it.
         let action = try #require(settings.action)
         #expect(settings.target == nil && action == Selector(("orderFrontPreferencesPanel:")))
         #expect(NSApp.target(forAction: action, to: nil, from: settings) as AnyObject === NSApp)
     }
 
-    /// The responder that AppKit sends a menu item's `action` to when the item
-    /// has no target and `window` is key: the first one in the window's
-    /// responder chain that implements it. Tests do not make windows key.
+    /// Follows the key-window responder chain without making a test window key.
     private func responder(in window: NSWindow, taking action: Selector) -> NSResponder? {
         window.firstResponder.flatMap { sequence(first: $0, next: \.nextResponder).first { $0.responds(to: action) } }
     }
 
-    /// A controller whose session and touch pressure settings keep their
-    /// preferences in `preferences`. Without `touchPressure`, the Mac has no
-    /// Force Touch trackpad.
-    /// The private runtime of the selected Xcode, as the host loads it.
+    /// Loads the selected Xcode's private runtime.
     private func makeRuntime() throws -> SimulatorRuntime {
         let selection = Process()
         let output = Pipe()
@@ -6357,11 +5835,7 @@ struct InputFocusTests {
             onClose: onClose, onRestart: onRestart)
     }
 
-    /// Waits up to two seconds for `condition`, checking it every 10 ms. It
-    /// stops checking once the condition holds: a `for … where` loop would
-    /// check it on every remaining pass without suspending, and a check that
-    /// renders images then holds up the main actor that tests running
-    /// alongside share.
+    /// Yields between checks so image rendering cannot starve other main-actor tests.
     private func wait(until condition: () -> Bool) async throws {
         for _ in 0..<200 {
             if condition() { return }
@@ -6369,11 +5843,9 @@ struct InputFocusTests {
         }
     }
 
-    /// The features of an iPhone that the tests need unless they choose others.
     private static let defaultFeatures: Set<String> = [DeviceCapabilities.displayRotation, DeviceCapabilities.keyboard]
 
-    /// A `simctl io recordVideo` stand-in that acknowledges the first frame,
-    /// then runs `script`, and that a stop ends normally.
+    /// Acknowledges the first frame and exits normally on SIGINT.
     private static func recorder(then script: String) -> Process {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
@@ -6381,10 +5853,7 @@ struct InputFocusTests {
         return process
     }
 
-    /// Simulator.app's toolbar style threshold for the test device's window:
-    /// the buttons of its iPhone toolbar nib (Home 31, Save Screen 32, and
-    /// Rotate 25 points) with 4 points each, the wider of the title in the
-    /// headline font and the subtitle in the subheadline font, and 130 points.
+    /// Simulator.app's threshold: nib button widths plus padding, title width, and 130 points.
     private static func unifiedWidth(title: String = "Test iPhone", subtitle: String = "iOS") -> CGFloat {
         func width(_ text: String, _ style: NSFont.TextStyle) -> CGFloat {
             let font = NSFont.preferredFont(forTextStyle: style, options: [:])
@@ -6393,8 +5862,7 @@ struct InputFocusTests {
         return (31 + 4) + (32 + 4) + (25 + 4) + max(width(title, .headline), width(subtitle, .subheadline)) + 130
     }
 
-    /// A shown window whose display, 100 by 200 points at scale 1, has a
-    /// 10-point bezel without top padding, like an iPhone's.
+    /// Uses an iPhone-style bezel with no top padding.
     private func makeBezelController(preferences: MemoryPreferences = MemoryPreferences(),
                                      performWindowDrag: @escaping (NSWindow, NSEvent) -> Void = { _, _ in })
         throws -> (DeviceWindowController, TestDisplay) {
@@ -6407,27 +5875,21 @@ struct InputFocusTests {
         return (controller, display)
     }
 
-    /// The middle of a resize corner of `display`'s bezel, on the screen.
+    /// Returns the resize corner's center in screen coordinates.
     private func point(of corner: DisplayResizeRect.Corner, in display: TestDisplay) throws -> NSPoint {
         let rect = try #require(display.resizeRects.first { $0.corner == corner }).rect
         let window = try #require(display.view.window)
         return window.convertPoint(toScreen: display.view.convert(NSPoint(x: rect.midX, y: rect.midY), to: nil))
     }
 
-    /// The middle of the left edge of the 10-point bezel of a display from
-    /// `makeBezelController()`, away from its corners, in the window.
+    /// Returns the left bezel's midpoint in window coordinates, away from resize corners.
     private func pointOnBezel(of display: TestDisplay) throws -> NSPoint {
         let view = display.view
         try #require(view.window != nil)
         return view.convert(NSPoint(x: 5 * display.renderScale, y: view.bounds.midY), to: nil)
     }
 
-    /// Presses the mouse at `location` in `window` as AppKit's dispatch does
-    /// in a key window, and returns the view that the press hits. That view
-    /// receives the press, and its responder chain passes on a press it does
-    /// not handle: SimulatorKit's bezel passes its presses on to the window,
-    /// its buttons keep theirs, and its digitizer keeps those it does not
-    /// pass on.
+    /// Hit-tests and dispatches through the responder chain as AppKit does.
     private func press(_ window: NSWindow, at location: NSPoint) throws -> NSView {
         let hit = try #require(window.contentView?.superview?.hitTest(location))
         hit.mouseDown(with: try #require(NSEvent.mouseEvent(
@@ -6437,10 +5899,7 @@ struct InputFocusTests {
         return hit
     }
 
-    /// Presses the mouse at `start` on the screen, drags it by `offset`, runs
-    /// `during`, and releases it. `window` receives the events as AppKit
-    /// passes it the events that no view handles, such as a press on a corner
-    /// of the bezel.
+    /// Sends unhandled drag events directly to the window, as a bezel-corner drag does.
     private func drag(_ window: NSWindow, from start: NSPoint, by offset: NSSize,
                       during: () throws -> Void = {}) throws {
         func event(_ type: NSEvent.EventType, at location: NSPoint) throws -> NSEvent {
@@ -6474,7 +5933,7 @@ struct InputFocusTests {
                              userInterfacePlugin: Bool = false,
                              runtimeVersion: UInt32 = 0x1B_00_00,
                              enhancedMultitasking: Bool = false) throws -> DeviceSession {
-        // A short wait for the external display, so that a test sees it end.
+        // Keep the external-display timeout short enough to exercise expiry.
         DeviceSession(
             device: availableDevice(identifier, "Test iPhone", runtime: "iOS", state: 3),
             capabilities: DeviceCapabilities(family: family, runtimeVersion: runtimeVersion,
@@ -6492,20 +5951,17 @@ struct InputFocusTests {
     }
 }
 
-/// Whether each change an observation reported arrived on the main thread.
 @MainActor
 private final class ChangeLog {
     var onMainThread: [Bool] = []
 }
 
-/// The pairing checks a New Simulator form made, as "watch-type watch-runtime phone-type phone-runtime".
+/// Entries use "watch-type watch-runtime phone-type phone-runtime".
 @MainActor
 private final class PairingChecks {
     var entries: [String] = []
 }
 
-/// What a device window's toolbar button shows: its image's symbol and
-/// description, its tooltip, and its item's label.
 private struct ButtonFace: Equatable {
     var symbol: String?
     var imageDescription: String?
@@ -6525,9 +5981,7 @@ private struct ButtonFace: Equatable {
                                        imageDescription: NSImage(systemSymbolName: "rotate.left", accessibilityDescription: nil)?
                                            .accessibilityDescription,
                                        toolTip: "Rotate", label: "Rotate")
-    /// Home, Save Screen, and Rotate, as Simulator.app's iPhone toolbar shows them.
     static let normal = [home, saveScreen, rotate]
-    /// The same buttons while Option is down with the pointer over the toolbar.
     static let optionAlternates = [home, recordScreen, rotateLeft]
 
     @MainActor
@@ -6546,10 +6000,7 @@ private struct ButtonFace: Equatable {
     }
 }
 
-/// Moves the pointer onto and off a device window's toolbar as AppKit reports
-/// it, through the tracking area of the toolbar's view, and holds modifier
-/// keys as the keyboard does: the toolbar reads the keys held, and hears of
-/// each change through a modifier event that the app sends.
+/// Sends AppKit tracking and modifier events while exposing the held keys.
 @MainActor
 private final class ToolbarPointer {
     let area: NSTrackingArea
@@ -6569,7 +6020,6 @@ private final class ToolbarPointer {
     func enter() { report(.mouseEntered, "mouseEntered:") }
     func exit() { report(.mouseExited, "mouseExited:") }
 
-    /// Sends the area's owner the event AppKit sends it.
     private func report(_ type: NSEvent.EventType, _ selector: String) {
         let event = NSEvent.enterExitEvent(with: type, location: .zero, modifierFlags: keys, timestamp: 0,
                                            windowNumber: window.windowNumber, context: nil, eventNumber: 0,
@@ -6577,7 +6027,6 @@ private final class ToolbarPointer {
         _ = (area.owner as AnyObject).perform(NSSelectorFromString(selector), with: event)
     }
 
-    /// Holds `keys`, which the app hears of through a modifier event.
     func hold(_ keys: NSEvent.ModifierFlags) {
         self.keys = keys
         if let event = NSEvent.keyEvent(with: .flagsChanged, location: .zero, modifierFlags: keys,
@@ -6587,27 +6036,23 @@ private final class ToolbarPointer {
         }
     }
 
-    /// Holds `keys` while another app is active, so that no modifier event
-    /// reaches this one.
+    /// Changes held keys without sending this app a modifier event.
     func holdInAnotherApp(_ keys: NSEvent.ModifierFlags) { self.keys = keys }
 
     func item(_ id: DeviceCommand.ID) throws -> NSToolbarItem {
         try #require(toolbar.items.first { $0.itemIdentifier.rawValue == id.rawValue })
     }
 
-    /// The faces of the toolbar's buttons, in toolbar order.
     var faces: [ButtonFace] {
         toolbar.items.filter { DeviceCommand.ID(rawValue: $0.itemIdentifier.rawValue) != nil }.map(ButtonFace.init)
     }
 
-    /// Clicks `id`'s button, as AppKit sends its action.
     func click(_ id: DeviceCommand.ID) throws -> Bool {
         let item = try item(id)
         return NSApp.sendAction(try #require(item.action), to: item.target, from: item)
     }
 }
 
-/// Preferences kept in memory, so that tests leave the app's defaults alone.
 private final class MemoryPreferences: PreferenceStore {
     var values: [String: Any] = [:]
     func object(forKey defaultName: String) -> Any? { values[defaultName] }
@@ -6615,15 +6060,12 @@ private final class MemoryPreferences: PreferenceStore {
     func set(_ value: Any?, forKey defaultName: String) { values[defaultName] = value }
 }
 
-/// The app's user defaults under keys of one store, which keeps its values in
-/// the registration domain, so that they are read as `UserDefaults` reads
-/// them but never saved.
+/// Isolates keys in the registration domain, preserving UserDefaults conversions without disk writes.
 private final class RegisteredDefaults: PreferenceStore {
     private let prefix = "NeoSimulatorTests.\(UUID().uuidString)."
     func object(forKey defaultName: String) -> Any? { UserDefaults.standard.object(forKey: prefix + defaultName) }
     func bool(forKey defaultName: String) -> Bool { UserDefaults.standard.bool(forKey: prefix + defaultName) }
-    /// Registers `value`; nil, which the registration domain cannot remove,
-    /// leaves the key as it is.
+    /// Registration cannot remove a value, so nil leaves the existing key unchanged.
     func set(_ value: Any?, forKey defaultName: String) {
         if let value { UserDefaults.standard.register(defaults: [prefix + defaultName: value]) }
     }
@@ -6634,11 +6076,8 @@ private final class InputView: NSView {
     var keyDowns: [NSEvent] = []
     var keyUps: [NSEvent] = []
     var modifiers: [NSEvent] = []
-    /// The presses the digitizer received.
     var presses: [NSEvent] = []
-    /// Whether the digitizer passes its presses on, as SimulatorKit's does
-    /// with a press on the bezel next to the screen once the pointer moves
-    /// away from the screen.
+    /// SimulatorKit passes bezel presses up the responder chain after they leave the screen.
     var passesOnPresses = false
     override var acceptsFirstResponder: Bool { true }
     override func keyDown(with event: NSEvent) { keyDowns.append(event) }
@@ -6649,9 +6088,7 @@ private final class InputView: NSView {
         if passesOnPresses { super.mouseDown(with: event) }
     }
 }
-/// Apple Vision Pro's plugin overlay, `XROS.VirtualHMDInputView`, for some of
-/// the menu commands it takes. It records their actions and, like the
-/// overlay, checks Show Gaze Target while the gaze target shows.
+/// Models menu handling by Apple Vision Pro's XROS.VirtualHMDInputView overlay.
 @MainActor
 private final class PluginOverlay: NSView, NSMenuItemValidation {
     var actions: [String] = []
@@ -6672,8 +6109,7 @@ private final class PluginOverlay: NSView, NSMenuItemValidation {
         return true
     }
 }
-/// A hardware button on the bezel, which takes its presses as SimulatorKit's
-/// `SimChromeButton` does.
+/// Consumes bezel presses like SimulatorKit's SimChromeButton.
 @MainActor
 private final class TestButton: NSView {
     var presses: [NSEvent] = []
@@ -6683,8 +6119,7 @@ private final class TestButton: NSView {
 private final class RefusingResponder: NSResponder {
     override func resignFirstResponder() -> Bool { false }
 }
-/// Defaults kept in memory, so that tests never write CoreSimulator's domain.
-/// A scratch suite would leave its property list behind.
+/// Avoids writing CoreSimulator defaults; even a scratch suite leaves a plist behind.
 private final class MemoryDefaults: UserDefaults {
     private var values: [String: Any] = [:]
     override func object(forKey defaultName: String) -> Any? { values[defaultName] }
@@ -6695,7 +6130,7 @@ private enum AppliedLocation: Equatable {
     case cleared, coordinate(Double, Double), scenario(String)
 }
 
-/// A display view whose intrinsic size follows its display, as `SimDisplayView`'s does.
+/// Mirrors SimDisplayView's intrinsic sizing.
 @MainActor
 private final class TestDisplayView: NSView {
     var displaySize: () -> NSSize = { .zero }
@@ -6707,11 +6142,8 @@ private final class TestDisplay: SimulatorDisplay {
     let view: NSView = TestDisplayView(frame: NSRect(x: 0, y: 0, width: 390, height: 844))
     let input = InputView()
     var inputView: NSView { foundPlugin?.overlayView ?? input }
-    /// The user-interface plugin the display has loaded, and the error that
-    /// finding it throws.
     var plugin: SimulatorUserInterfacePlugin?
     var pluginError: Error?
-    /// The plugin once `userInterfacePlugin()` found it.
     private var foundPlugin: SimulatorUserInterfacePlugin?
     func userInterfacePlugin() throws -> SimulatorUserInterfacePlugin? {
         if let pluginError { throw pluginError }
@@ -6719,10 +6151,9 @@ private final class TestDisplay: SimulatorDisplay {
         return plugin
     }
     var backlightState: Int32?
-    /// Each recording start (true) and end (false) announced, in order.
     var announcedRecordings: [Bool] = []
     func announceRecording(started: Bool) { announcedRecordings.append(started) }
-    /// The display's size at scale 1, without the bezel.
+    /// Size at scale 1, excluding the bezel.
     var naturalSize = NSSize(width: 390, height: 844)
     private(set) var renderScale: CGFloat = 1
     var screenScale: CGFloat? = 3
@@ -6731,17 +6162,13 @@ private final class TestDisplay: SimulatorDisplay {
     var guestInterfaceAngle: Double?
     var isBooted = true
     var events: [(input: HIDInput, state: HIDState)] = []
-    /// Called for each sent event, before it is recorded.
+    /// Runs before the event is recorded.
     var onSend: () -> Void = {}
-    /// Completes each sent event with this error.
     var deliveryError: Error?
-    /// Completes sent events of these states with an error.
     var undeliveredStates: Set<HIDState> = []
-    /// Completes the sent events at these positions with an error.
+    /// Zero-based indices into the recorded events.
     var undeliveredEvents: Set<Int> = []
-    /// Fails to create messages for events of these states.
     var unavailableStates: Set<HIDState> = []
-    /// Holds completions until the test runs them, as SimulatorKit delivers later.
     var deferCompletions = false
     var pendingCompletions: [() -> Void] = []
     var created: [(state: HIDState, at: ContinuousClock.Instant)] = []
@@ -6781,12 +6208,9 @@ private final class TestDisplay: SimulatorDisplay {
             completion?(error)
         }
     }
-    /// Each touch of the Apple TV Remote's touch surface sent, in order, which
-    /// `events` leaves out.
+    /// Remote touches are recorded separately from events.
     var remoteTouches: [TVRemoteTouch] = []
-    /// How many of the next touch ends complete with an error.
     var undeliveredTouches = 0
-    /// The touches of the messages created and not yet sent.
     private var touchMessages: [ObjectIdentifier: TVRemoteTouch] = [:]
     func message(for touch: TVRemoteTouch) throws -> HIDMessage {
         let message = HIDMessage(input: .tvRemoteTouch, state: touch.phase == .ended ? .up : .down,
@@ -6794,21 +6218,18 @@ private final class TestDisplay: SimulatorDisplay {
         touchMessages[ObjectIdentifier(message)] = touch
         return message
     }
-    /// Each watch gesture sent, in order, which `deliveryError` also fails.
     var gestures: [WatchGesture] = []
     func send(_ gesture: WatchGesture, completion: @escaping @MainActor (Error?) -> Void) throws {
         gestures.append(gesture)
         completion(deliveryError)
     }
     func toggleAppearance() throws {}
-    /// The guest's Darwin notification states, and the names posted in order.
     var notificationStates: [String: UInt64] = [:]
     var postedNotifications: [String] = []
     var contentSize = 4
     var contrastMode = 1
     func postNotification(_ name: String) throws { postedNotifications.append(name) }
     func notificationState(_ name: String) throws -> UInt64 { notificationStates[name] ?? 0 }
-    /// Thrown when a notification state is set.
     var notificationError: Error?
     func setNotificationState(_ name: String, to state: UInt64) throws {
         if let notificationError { throw notificationError }
@@ -6822,7 +6243,7 @@ private final class TestDisplay: SimulatorDisplay {
     var logFolder = URL(fileURLWithPath: "/nonexistent")
     var memoryWarningURL = URL(fileURLWithPath: "/nonexistent/memory_warning_simulation")
     var caDebugOptions: Set<CADebugOption> = []
-    /// Options whose changes the device drops, as CoreSimulator can without an error.
+    /// CoreSimulator can silently drop these changes.
     var droppedCADebugOptions: Set<CADebugOption> = []
     func logDirectory() throws -> URL { logFolder }
     func memoryWarningFile() throws -> URL { memoryWarningURL }
@@ -6831,13 +6252,10 @@ private final class TestDisplay: SimulatorDisplay {
         guard !droppedCADebugOptions.contains(option) else { return }
         if enabled { caDebugOptions.insert(option) } else { caDebugOptions.remove(option) }
     }
-    /// The runtime's location routes, and each location change requested in order.
     var scenarios: [LocationScenario] = []
     var appliedLocations: [AppliedLocation] = []
-    /// Fails location changes with this error after recording them.
     var locationError: Error?
-    /// Holds the scenario listing until `releaseScenarios()`, as a device
-    /// that has just booted lists them late.
+    /// Simulates a newly booted device that lists scenarios late.
     var holdsScenarios = false
     private var heldListing: CheckedContinuation<Void, Never>?
     func locationScenarios() async throws -> [LocationScenario] {
@@ -6857,20 +6275,18 @@ private final class TestDisplay: SimulatorDisplay {
         appliedLocations.append(location)
         if let locationError { throw locationError }
     }
-    /// What the bezel adds to the display's size at scale 1 while it shows.
+    /// Added size at scale 1 while the bezel is visible.
     var bezel = NSSize.zero
-    /// The padding of the bezel's images, or nil for a device type without a bezel.
+    /// Nil means the device type has no bezel.
     var bezelPadding: NSSize?
     var chromePadding: NSSize? { showsBezel ? bezelPadding : nil }
-    /// Whether the display shows its bezel, as SimDisplayView's
-    /// showDeviceChrome says; a new display shows it.
+    /// SimDisplayView starts with showDeviceChrome enabled.
     var showsBezel = true
     private var outerSize: NSSize {
         showsBezel ? NSSize(width: naturalSize.width + bezel.width, height: naturalSize.height + bezel.height) : naturalSize
     }
     func setChromeVisible(_ visible: Bool) { showsBezel = visible }
-    /// A 20-point square at each corner of the bezel, as SimulatorKit places
-    /// resize corners in the display's coordinates.
+    /// SimulatorKit uses 20-point corner squares in display coordinates.
     var resizeRects: [DisplayResizeRect] {
         guard chromePadding != nil else { return [] }
         let size = size(for: renderScale)
@@ -6881,7 +6297,6 @@ private final class TestDisplay: SimulatorDisplay {
     }
     private(set) var showsResizeCursors = false
     func setShowsResizeCursors(_ shows: Bool) { showsResizeCursors = shows }
-    /// Whether the display is between SimDisplayView's beginResize() and endResize().
     private(set) var isResizing = false
     func setRenderScale(_ scale: CGFloat) {
         renderScale = scale
@@ -6891,11 +6306,8 @@ private final class TestDisplay: SimulatorDisplay {
     func scale(for size: NSSize) -> CGFloat { min(size.width / outerSize.width, size.height / outerSize.height) }
     func setActive(_ active: Bool) { activations.append(active) }
     func setKeyboardEnabled(_ enabled: Bool) { keyboard.append(enabled) }
-    /// Each hardware keyboard connection and keyboard language the device
-    /// was given, in order.
     var hardwareKeyboard: [Bool] = []
     var keyboardLanguages: [String] = []
-    /// Fail these keyboard changes after recording them.
     var hardwareKeyboardError: Error?
     var keyboardLanguageError: Error?
     func setHardwareKeyboardConnected(_ connected: Bool) async throws {
@@ -6906,9 +6318,8 @@ private final class TestDisplay: SimulatorDisplay {
         keyboardLanguages.append(language)
         if let keyboardLanguageError { throw keyboardLanguageError }
     }
-    /// Each pasteboard connection, with the pasteboard it manages, in order.
     var pasteboards: [TestPasteboard] = []
-    /// Fails the next pasteboard connection with this error.
+    /// Fails once, then clears itself.
     var pasteboardError: Error?
     func connectPasteboard(_ pasteboard: NSPasteboard,
                            events: @escaping @MainActor (SimulatorPasteboardEvent) -> Void) throws -> any SimulatorPasteboard {
@@ -6920,7 +6331,7 @@ private final class TestDisplay: SimulatorDisplay {
         pasteboards.append(connection)
         return connection
     }
-    /// The device's audio route port, or nil for a device whose port does not connect.
+    /// Nil simulates a failed port connection.
     var audioPort: TestAudioRoutes?
     var audioConnections = 0
     func connectAudioRoutes(changed: @escaping @MainActor () -> Void) throws -> any SimulatorAudioRoutes {
@@ -6929,21 +6340,13 @@ private final class TestDisplay: SimulatorDisplay {
         audioPort.changed = changed
         return audioPort
     }
-    /// Whether the device has a screen adapter.
     var hasScreenAdapter = true
-    /// The device's external display, which the screen adapter reports, or
-    /// nil while it has not connected and for a device without one.
     private(set) var externalScreen: TestExternalScreen?
-    /// Fails the adapter's reports with this error, as when the session
-    /// cannot connect to the screen.
     var externalScreenError: Error?
-    /// How many registrations with the screen adapter were made.
     private(set) var externalScreenRegistrations = 0
-    /// The registrations, which the adapter holds weakly as SimulatorKit's does.
+    /// SimulatorKit holds adapter registrations weakly.
     private var adapterRegistrations: [WeakAdapterRegistration] = []
-    /// The adapter's reports on their way through the main queue. Like
-    /// SimulatorKit's, each holds its registration, so it still arrives after
-    /// the registration is released.
+    /// Queued reports retain their registration and can outlive the session's reference.
     private var queuedScreenReports: [() -> Void] = []
     func registerForExternalScreen(
         changed: @escaping @MainActor () -> Void,
@@ -6953,20 +6356,14 @@ private final class TestDisplay: SimulatorDisplay {
         guard hasScreenAdapter else { return nil }
         let registration = TestAdapterRegistration(changed: changed, found: found)
         adapterRegistrations.append(WeakAdapterRegistration(registration))
-        // Like SimulatorKit, the adapter reports a screen that is already connected.
         if externalScreen != nil { queueScreenReport(to: registration) }
         return registration
     }
-    /// The external display connects, or is connected before the session
-    /// registers: the adapter reports it to each registration still held.
     func connectExternalScreen(_ screen: TestExternalScreen) {
         externalScreen = screen
         for registration in adapterRegistrations.compactMap(\.registration) { queueScreenReport(to: registration) }
     }
-    /// Whether a registration with the screen adapter is still held, by the
-    /// session or by a queued report.
     var isRegisteredForExternalScreen: Bool { adapterRegistrations.contains { $0.registration != nil } }
-    /// Runs the adapter's queued reports, as a turn of the main queue does.
     func deliverScreenReports() {
         let reports = queuedScreenReports
         queuedScreenReports = []
@@ -6981,35 +6378,28 @@ private final class TestDisplay: SimulatorDisplay {
             registration.found(.success(screen))
         }
     }
-    /// Each value the digitizer's scrolling setting was given, in order.
     var supportsScrolling: [Bool] = []
     func setSupportsScrolling(_ supports: Bool) { supportsScrolling.append(supports) }
-    /// Each value the guest's edge swipe state was given, in order.
     var wantsEdgeSwipes: [Bool] = []
     func setWantsEdgeSwipes(_ wants: Bool) { wantsEdgeSwipes.append(wants) }
-    /// Each value the digitizer's touch pressure settings were given, in order.
     var supportsTouchPressure: [Bool] = []
     var usesTrackpadForce: [Bool] = []
     var touchModes: [SimulatedTouchMode] = []
     func setSupportsTouchPressure(_ supports: Bool) { supportsTouchPressure.append(supports) }
     func setUsesTrackpadForce(_ uses: Bool) { usesTrackpadForce.append(uses) }
     func setSimulatedTouchMode(_ mode: SimulatedTouchMode) { touchModes.append(mode) }
-    /// The touch indicators the digitizer draws.
     private(set) var touchIndicators: Set<TouchIndicator> = []
     func setTouchIndicator(_ indicator: TouchIndicator, shown: Bool) {
         if shown { touchIndicators.insert(indicator) } else { touchIndicators.remove(indicator) }
     }
     var rotations: [Double] = []
-    /// Called with each angle the display turns to, as SimulatorKit then
-    /// gives the display its rotated size.
+    /// Simulates SimulatorKit resizing the display after rotation.
     var onRotation: (Double) -> Void = { _ in }
     func setRotation(degrees: Double) {
         rotations.append(degrees)
         onRotation(degrees)
     }
-    /// Takes a new size of its screen as SimulatorKit's display does, a
-    /// moment after CoreSimulator reports it: its view takes that size at
-    /// the display's scale.
+    /// Updates the view after CoreSimulator reports a new screen size.
     func takeScreenSize(_ size: NSSize) {
         naturalSize = size
         view.setFrameSize(self.size(for: renderScale))
@@ -7020,17 +6410,14 @@ private final class TestDisplay: SimulatorDisplay {
     func disconnect() { disconnectCount += 1; onDisconnect() }
 }
 
-/// A device's audio route port that records the routes it is asked for, as
-/// "input <route>" or "output <route>", and applies them as CoreSimulator does,
-/// reporting the change. The test reports other changes, such as a Mac device
-/// appearing or another process routing the device.
+/// Records "input <route>" and "output <route>" requests; tests report external changes.
 @MainActor
 private final class TestAudioRoutes: SimulatorAudioRoutes {
     var current: AudioRouteState
     private(set) var requests: [String] = []
-    /// Completes each route with this error, without applying it.
+    /// Fails completion without changing the route.
     var routeError: Error?
-    /// Refuses each route with this error.
+    /// Throws before recording the request.
     var refusal: Error?
     var changed: (() -> Void)?
     private(set) var isDisconnected = false
@@ -7059,14 +6446,13 @@ private final class TestAudioRoutes: SimulatorAudioRoutes {
         changed = nil
     }
 
-    /// A change that the port reports.
     func report(_ change: (inout AudioRouteState) -> Void) {
         change(&current)
         changed?()
     }
 }
 
-/// A registration with a device's screen adapter, which ends when it is released.
+/// Its lifetime controls the screen-adapter registration.
 @MainActor
 private final class TestAdapterRegistration {
     let changed: @MainActor () -> Void
@@ -7084,9 +6470,7 @@ private struct WeakAdapterRegistration {
     init(_ registration: TestAdapterRegistration) { self.registration = registration }
 }
 
-/// Modes like those of the TVOut screens of iOS 26.5 devices: an exact
-/// 720×480 mode at 60 Hz, the menu's sizes at 120 Hz, and, on an iPhone,
-/// ranges at 60 Hz.
+/// iOS 26.5 TVOut modes: 720×480 at 60 Hz, menu sizes at 120 Hz, and iPhone ranges at 60 Hz.
 private extension ExternalScreenMode {
     static let exact720x480 = ExternalScreenMode(sizes: .exact(CGSize(width: 720, height: 480)), scale: 1,
                                                  refreshRate: 60)
@@ -7102,53 +6486,35 @@ private extension ExternalScreenMode {
     }
 }
 
-/// A device's external display that records the changes it is asked for, as
-/// "mode <width>x<height>@<scale>", with " carplay" for a CarPlay screen, or
-/// "off", and applies them as CoreSimulator does, reporting the change. It
-/// also records the CarPlay requests that reach the guest, as "save carplay"
-/// or "save off" for the configuration file, "start carplay" or "stop
-/// carplay" for the session, and "connect service" or "remove service" for
-/// the HID service, completing them at once unless the session requests are
-/// held. The test reports other changes, such as `simctl` turning the display
-/// on.
+/// Records display and CarPlay requests, with independently deferred reports and completions.
 @MainActor
 private final class TestExternalScreen: SimulatorExternalScreen {
     let screenID: UInt32 = 2
-    /// The device's boot; a screen of another boot needs another date.
+    /// Identifies the boot that owns this screen.
     var deviceBootDate: Date? = Date(timeIntervalSinceReferenceDate: 0)
     var current = ExternalScreenState(isPoweredOn: false, pixelSize: CGSize(width: 720, height: 480), scale: 1)
-    /// The modes the display advertises, which a session reads when it
-    /// connects; by default 60 Hz modes that take every size at scales 1 and 2.
     var modes = [1, 2].map {
         ExternalScreenMode(sizes: .range(minimum: CGSize(width: 1, height: 1), maximum: CGSize(width: 8192, height: 8192)),
                            scale: $0, refreshRate: 60)
     }
     private(set) var requests: [String] = []
-    /// Completes each change with this error, without applying it.
+    /// Fails completion without applying the change.
     var completionError: Error?
-    /// Refuses each change with this error, as for a size that no mode takes.
+    /// Throws before recording the request.
     var refusal: Error?
-    /// Fails these CarPlay requests, by their names in `requests`: saving the
-    /// configuration throws, and the others complete with the error.
+    /// Errors keyed by request name; saving throws and other requests fail completion.
     var carPlayErrors: [String: Error] = [:]
-    /// The guest's CarPlay sessions as its CoreSimulatorBridge counts them: a
-    /// start adds one and an end removes one, also below zero, which fails.
+    /// Mirrors CoreSimulatorBridge's session count, including invalid negative counts.
     private(set) var carPlaySessions = 0
-    /// Holds the session requests until `deliverCarPlaySessions()`, as a
-    /// guest that answers after the change stopped waiting.
     var defersCarPlaySessions = false
     private var pendingSessions: [() -> Void] = []
-    /// Holds the HID service requests until `deliverCarPlayServices()`.
     var defersCarPlayServices = false
     private var pendingServices: [() -> Void] = []
-    /// Holds each change's report and completion until `deliver()`, or
-    /// `deliverReports()` and `deliverCompletions()` apart, as CoreSimulator
-    /// reports and completes a change later, in either order.
+    /// Reports and completions can arrive independently, in either order.
     var defersChanges = false
     private var pendingReports: [() -> Void] = []
     private var pendingCompletions: [() -> Void] = []
     var changed: (() -> Void)?
-    /// The displays made for the display's windows, in order.
     private(set) var displays: [TestDisplay] = []
     private(set) var isDisconnected = false
 
@@ -7181,7 +6547,7 @@ private final class TestExternalScreen: SimulatorExternalScreen {
         let request = enabled ? "start carplay" : "stop carplay"
         requests.append(request)
         let answer = { [self] in
-            // Like the device, which checks its boot when the request runs.
+            // The device checks its boot when the request executes.
             guard deviceBootDate == boot else { return completion(CarPlayRequestMoot()) }
             if let error = carPlayErrors[request] { return completion(error) }
             carPlaySessions += enabled ? 1 : -1
@@ -7190,7 +6556,6 @@ private final class TestExternalScreen: SimulatorExternalScreen {
         if defersCarPlaySessions { pendingSessions.append(answer) } else { answer() }
     }
 
-    /// Answers the held session requests in the order they came.
     func deliverCarPlaySessions() {
         let answers = pendingSessions
         pendingSessions = []
@@ -7210,13 +6575,11 @@ private final class TestExternalScreen: SimulatorExternalScreen {
         for answer in answers { answer() }
     }
 
-    /// The device restarts: a new boot, whose guest has no CarPlay session.
     func restart(boot: Date) {
         deviceBootDate = boot
         carPlaySessions = 0
     }
 
-    /// Applies and reports a change and completes it, at once or when it is delivered.
     private func complete(_ completion: @escaping @MainActor (Error?) -> Void,
                           _ change: @escaping (inout ExternalScreenState) -> Void) {
         let error = completionError
@@ -7229,20 +6592,17 @@ private final class TestExternalScreen: SimulatorExternalScreen {
         pendingCompletions.append { completion(error) }
     }
 
-    /// Delivers the held reports, then the held completions.
     func deliver() {
         deliverReports()
         deliverCompletions()
     }
 
-    /// Applies and reports the held changes in the order they were asked for.
     func deliverReports() {
         let reports = pendingReports
         pendingReports = []
         for report in reports { report() }
     }
 
-    /// Completes the held changes in the order they were asked for.
     func deliverCompletions() {
         let completions = pendingCompletions
         pendingCompletions = []
@@ -7264,21 +6624,18 @@ private final class TestExternalScreen: SimulatorExternalScreen {
         changed = nil
     }
 
-    /// A change that the display reports.
     func report(_ change: (inout ExternalScreenState) -> Void) {
         change(&current)
         changed?()
     }
 }
 
-/// A device's pasteboard connection that records its pushes and pulls; the
-/// test sends the device's events.
+/// Records transfers while tests supply device events.
 @MainActor
 private final class TestPasteboard: SimulatorPasteboard {
     let pasteboard: NSPasteboard
     private let events: (SimulatorPasteboardEvent) -> Void
     private(set) var transfers: [PasteboardTransfer] = []
-    /// Each value automatic synchronization was set to, in order.
     private(set) var automaticSync: [Bool] = []
     private(set) var isDisconnected = false
 
@@ -7298,8 +6655,7 @@ private final class TestPasteboard: SimulatorPasteboard {
 struct HostBehaviorTests {
     @Test func physicalSizeComparesScreenDensities() {
         #expect(WindowScale.physicalSize(hostDensity: 220, deviceDensity: 440) == 0.5)
-        // Simulator.app's densities stand in for missing values; NeoSimulator
-        // also uses them where Simulator.app would divide by zero.
+        // Use Simulator.app's density defaults for missing or invalid values.
         let defaults = WindowScale.defaultHostDensity / WindowScale.defaultDeviceDensity
         #expect(defaults == CGFloat(110) / 163)
         #expect(WindowScale.physicalSize(hostDensity: nil, deviceDensity: nil) == defaults)
@@ -7317,7 +6673,6 @@ struct HostBehaviorTests {
         #expect(WindowScale.minimum(family: .iPhone, displayClass: 0, fitting240: 0.2) == 0.4)
         #expect(WindowScale.minimum(family: .iPad, displayClass: 0, fitting240: 0.2) == 0.25)
         #expect(WindowScale.minimum(family: .watch, displayClass: 0, fitting240: 0.2) == 0.6)
-        // Elsewhere the display must stay at least 240 points across.
         #expect(WindowScale.minimum(family: .iPhone, displayClass: 1, fitting240: 0.2) == 0.2)
         #expect(WindowScale.minimum(family: .iPhone, displayClass: nil, fitting240: 0.2) == 0.2)
         #expect(WindowScale.minimum(family: .tv, displayClass: 0, fitting240: 0.2) == 0.2)
@@ -7332,7 +6687,6 @@ struct HostBehaviorTests {
         #expect(origin(10, 20, 300, 400) == NSPoint(x: 10, y: 20))
         #expect(origin(900, -100, 200, 300) == NSPoint(x: 800, y: 0))
         #expect(origin(-50, 600, 200, 300) == NSPoint(x: 0, y: 500))
-        // A window larger than the screen lines up with the edge opposite the one it crossed.
         #expect(origin(-50, -100, 1200, 1000) == NSPoint(x: -200, y: -200))
         #expect(origin(100, 100, 1200, 1000) == NSPoint(x: 0, y: 0))
     }
@@ -7342,10 +6696,8 @@ struct HostBehaviorTests {
         func origin(_ x: CGFloat, _ y: CGFloat) -> NSPoint {
             WindowScale.origin(of: NSRect(x: x, y: y, width: 300, height: 400), reaching: visible)
         }
-        // A window that reaches 128 points into the visible frame stays,
-        // also mostly past its edges.
+        // Simulator.app keeps 128 points within reach, even if most of the window is offscreen.
         #expect(origin(-150, 600) == NSPoint(x: -150, y: 600))
-        // Otherwise it moves along each axis until it reaches that far.
         #expect(origin(900, 300) == NSPoint(x: 872, y: 300))
         #expect(origin(-250, 300) == NSPoint(x: -172, y: 300))
         #expect(origin(300, 700) == NSPoint(x: 300, y: 672))
@@ -7353,12 +6705,11 @@ struct HostBehaviorTests {
     }
 
     @Test func movingByTheBezelReadsAllowsMoveByDragOnWindowChromeAsSimulatorDoes() {
-        // Simulator.app registers it on and reads it with boolForKey:.
+        // Simulator.app registers true and reads with boolForKey:.
         HostPreferences.registerDefaults()
         let registered = UserDefaults.standard.volatileDomain(forName: UserDefaults.registrationDomain)
         #expect(registered["AllowsMoveByDragOnWindowChrome"] as? Bool == true)
         let defaults = RegisteredDefaults()
-        // Without a value, as before the app registers its default, it is on.
         #expect(defaults.movesWindowByDraggingBezel)
         let values: [(Any, Bool)] = [("NO", false), ("YES", true), (false, false), (true, true)]
         for (value, moves) in values {
@@ -7368,8 +6719,7 @@ struct HostBehaviorTests {
     }
 
     @Test func showDeviceBezelsReadsShowChromeAsSimulatorDoes() {
-        // Simulator.app reads ShowChrome with boolForKey:, which reads a
-        // value that `defaults write` saved as a string by its text.
+        // Match boolForKey: conversion of ShowChrome values written as strings.
         let defaults = RegisteredDefaults()
         let values: [(Any, Bool)] = [("NO", false), ("0", false), ("false", false), ("YES", true), ("1", true),
                                      (false, false), (true, true)]
@@ -7377,20 +6727,17 @@ struct HostBehaviorTests {
             defaults.set(value, forKey: HostPreferences.showChrome)
             #expect(defaults.showsDeviceBezels == shows)
         }
-        // Without a value, as before the app registers its default, it is on.
         #expect(RegisteredDefaults().showsDeviceBezels)
     }
 
     @Test func touchIndicatorPreferencesUseSimulatorAppsKeysAndDefaults() {
         #expect(TouchIndicator.allCases.map(\.preferenceKey)
             == ["ShowSingleTouches", "ShowPinches", "ShowPinchPivotPoint", "HighlightEdgeGestures"])
-        // Simulator.app registers pinches on and the others off.
+        // Simulator.app defaults to pinch indicators only.
         HostPreferences.registerDefaults()
         let registered = UserDefaults.standard.volatileDomain(forName: UserDefaults.registrationDomain)
         #expect(TouchIndicator.allCases.map { registered[$0.preferenceKey] as? Bool } == [false, true, false, false])
-        // Without values, as before the app registers its defaults, only pinches show.
         #expect(TouchIndicator.allCases.filter(MemoryPreferences().showsTouchIndicator) == [.pinches])
-        // A value that `defaults write` saved as a string reads as `boolForKey:` reads it.
         let defaults = RegisteredDefaults()
         defaults.set("NO", forKey: HostPreferences.showPinches)
         defaults.set("YES", forKey: HostPreferences.showSingleTouches)
@@ -7398,7 +6745,6 @@ struct HostBehaviorTests {
     }
 
     @Test func defaultsObservationReportsChangesOnTheMainThread() async throws {
-        // A key of the test's own, removed afterwards.
         let key = "NeoSimulatorTests-\(UUID().uuidString)"
         defer { UserDefaults.standard.removeObject(forKey: key) }
         let changes = ChangeLog()
@@ -7407,36 +6753,29 @@ struct HostBehaviorTests {
         }
         UserDefaults.standard.set(true, forKey: key)
         #expect(changes.onMainThread == [true])
-        // A change on another thread is reported on the main thread.
         await Task.detached { UserDefaults.standard.set(false, forKey: key) }.value
         for _ in 0..<100 where changes.onMainThread.count < 2 { try await Task.sleep(for: .milliseconds(10)) }
         #expect(changes.onMainThread == [true, true])
         withExtendedLifetime(observation) {}
-        // A released observation reports nothing.
         observation = nil
         UserDefaults.standard.set(true, forKey: key)
         #expect(changes.onMainThread.count == 2)
     }
 
     @Test func keyboardAndTrackpadPreferencesUseSimulatorAppsKeys() {
-        // Each is on unless it was turned off.
         let preferences = MemoryPreferences()
         #expect(preferences.syncsKeyboardLanguage && preferences.prefersTrackpadForce)
         #expect(preferences.connectsHardwareKeyboard(forDevice: "A"))
-        // A device's choice keeps its other preferences and the other devices'.
         preferences.setWindowGeometry(center: NSPoint(x: 1, y: 2), scale: 1, forDevice: "A", screens: [.zero])
         preferences.setConnectsHardwareKeyboard(false, forDevice: "A")
         #expect(!preferences.connectsHardwareKeyboard(forDevice: "A"))
         #expect(preferences.connectsHardwareKeyboard(forDevice: "B"))
         #expect(preferences.windowGeometry(forDevice: "A", screens: [.zero]).center == NSPoint(x: 1, y: 2))
-        // A device without a choice, or with one that is not a Boolean,
-        // follows the app-wide value.
         preferences.set(false, forKey: HostPreferences.connectHardwareKeyboard)
         #expect(!preferences.connectsHardwareKeyboard(forDevice: "B"))
         preferences.values[HostPreferences.devicePreferences] = ["B": [HostPreferences.connectHardwareKeyboard: "YES"]]
         #expect(!preferences.connectsHardwareKeyboard(forDevice: "B"))
-        // A value that `defaults write` saved as a string reads as
-        // `boolForKey:` reads it.
+        // Match boolForKey: conversion of values written as strings.
         let defaults = RegisteredDefaults()
         defaults.set("NO", forKey: HostPreferences.enableKeyboardSync)
         defaults.set("0", forKey: HostPreferences.useTrackpadForce)
@@ -7452,9 +6791,7 @@ struct HostBehaviorTests {
         preferences.setWindowGeometry(center: NSPoint(x: 10.5, y: -20), scale: 1.5, forDevice: "A", screens: two)
         preferences.setWindowGeometry(center: NSPoint(x: 300, y: 400), scale: 0.5, forDevice: "B", screens: two)
         preferences.setWindowGeometry(center: NSPoint(x: 1, y: 2), scale: nil, forDevice: "B", screens: two)
-        // Simulator.app's keys: the arrangement of screens is a UUID in
-        // ScreenConfigurations, which names the window's center and scale in
-        // DevicePreferences[UDID].SimulatorWindowGeometry.
+        // Simulator.app maps ScreenConfigurations UUIDs to DevicePreferences[UDID].SimulatorWindowGeometry.
         let configurations = preferences.values["ScreenConfigurations"] as? [String: [String]]
         let (name, frames) = try #require(configurations?.first)
         #expect(configurations?.count == 1 && UUID(uuidString: name)?.uuidString == name)
@@ -7462,14 +6799,10 @@ struct HostBehaviorTests {
         let devices = preferences.values["DevicePreferences"] as? [String: [String: [String: [String: Any]]]]
         #expect(devices?["A"]?["SimulatorWindowGeometry"]?[name]?["WindowScale"] as? Double == 1.5)
         #expect(devices?["A"]?["SimulatorWindowGeometry"]?[name]?["WindowCenter"] as? String == "{10.5, -20}")
-        // A later save replaces what was saved in the arrangement.
         #expect(devices?["B"]?["SimulatorWindowGeometry"]?[name]?["WindowScale"] == nil)
         #expect(devices?["B"]?["SimulatorWindowGeometry"]?[name]?["WindowCenter"] as? String == "{1, 2}")
-        // The same screens in another order are the same arrangement.
         let saved = preferences.windowGeometry(forDevice: "A", screens: two.reversed())
         #expect(saved.center == NSPoint(x: 10.5, y: -20) && saved.scale == 1.5)
-        // Fewer screens, or a screen moved, are other arrangements, which
-        // have no geometry until a window closes there and are saved too.
         let alone = [laptop], moved = [laptop, NSRect(x: 1512, y: 0, width: 2560, height: 1440)]
         for screens in [alone, moved] {
             let other = preferences.windowGeometry(forDevice: "A", screens: screens)
@@ -7484,15 +6817,12 @@ struct HostBehaviorTests {
             preferences.values["DevicePreferences"] = ["A": ["SimulatorWindowGeometry": [current: ["WindowScale": invalid]]]]
             #expect(preferences.windowGeometry(forDevice: "A", screens: alone).scale == nil)
         }
-        // Like Simulator.app, the zero point, which an unreadable string also
-        // gives, is no center.
+        // Simulator.app treats a zero or unreadable center as absent.
         for invalid: Any in ["{0, 0}", "center", 12] {
             preferences.values["DevicePreferences"] = ["A": ["SimulatorWindowGeometry": [current: ["WindowCenter": invalid]]]]
             #expect(preferences.windowGeometry(forDevice: "A", screens: alone).center == nil)
         }
-        // An entry that is not a UUID names no arrangement. Like
-        // Simulator.app, entries that are not all lists of strings are
-        // replaced by the new arrangement.
+        // Simulator.app replaces malformed arrangements; valid keys must be UUIDs.
         preferences.values["ScreenConfigurations"] = ["laptop": ["{{0, 0}, {1512, 982}}"]]
         let named = preferences.screenConfiguration(for: alone)
         #expect(named != "laptop" && UUID(uuidString: named) != nil)
@@ -7504,18 +6834,14 @@ struct HostBehaviorTests {
 
     @Test func aBezelWithTopPaddingMayReachAboveTheScreen() throws {
         let visible = NSRect(x: 0, y: 74, width: 2560, height: 1336)
-        // The frame keeps its size; only the bezel, below its padding, stays below the top.
         let tall = NSRect(x: -40, y: -300, width: 900, height: 2000)
         #expect(WindowScale.frame(tall, constrainedBelow: visible, topInset: 18)
             == NSRect(x: -40, y: visible.maxY + 18 - 2000, width: 900, height: 2000))
-        // A frame whose bezel is below the top keeps its place, past every other edge.
         let low = NSRect(x: 2500, y: -500, width: 900, height: 1000)
         #expect(WindowScale.frame(low, constrainedBelow: visible, topInset: 18) == low)
         let reaching = NSRect(x: 0, y: visible.maxY + 18 - 1000, width: 900, height: 1000)
         #expect(WindowScale.frame(reaching, constrainedBelow: visible, topInset: 18) == reaching)
-        // A device window applies it while its bezel has top padding, and
-        // otherwise leaves the frame to AppKit, which shrinks a resizable
-        // window taller than the screen.
+        // Bezel top padding bypasses AppKit's constraint, which can shrink a resizable window.
         let screen = try #require(NSScreen.screens.first)
         let mask: NSWindow.StyleMask = [.titled, .closable, .miniaturizable, .resizable]
         let window = DeviceWindow(contentRect: NSRect(x: 0, y: 0, width: 100, height: 100), styleMask: mask,
@@ -7536,7 +6862,6 @@ struct HostBehaviorTests {
             == ("iPad Pro 11-inch (M5)", "16GB – iOS 27.0"))
         #expect(deviceWindowTitles(name: "iPhone 17", runtimeName: "iOS 26.5") == ("iPhone 17", "iOS 26.5"))
         #expect(deviceWindowTitles(name: "My iPad (16GB)", runtimeName: "iOS 27.0") == ("My iPad (16GB)", "iOS 27.0"))
-        // A watch's title drops "Apple Watch ", after the split.
         #expect(deviceWindowTitles(name: "Apple Watch Series 11 (46mm)", runtimeName: "watchOS 27.0")
             == ("Series 11 (46mm)", "watchOS 27.0"))
         #expect(deviceWindowTitles(name: "Apple Watch SE (44mm) (2nd generation)", runtimeName: "watchOS 26.5")
@@ -7548,7 +6873,6 @@ struct HostBehaviorTests {
         #expect(ExternalDisplayMode.allCases.map(\.rawValue) == [2114, 2214, 2514, 2314, 2414, 2614, 2664, 2714])
         #expect(ExternalDisplayMode.allCases.compactMap(\.pixelSize).map { "\(Int($0.width))x\(Int($0.height))" }
             == ["640x480", "720x480", "1024x768", "1280x720", "1920x1080", "3840x2160", "800x480"])
-        // Sizes at a point per pixel, and CarPlay at Simulator.app's CarPlay scale.
         #expect(ExternalDisplayMode.allCases.dropFirst().map(\.scale) == [1, 1, 1, 1, 1, 1, 2])
     }
 
@@ -7561,9 +6885,7 @@ struct HostBehaviorTests {
             case .advertised(let index): modes[index]
             }
         }
-        // An iPhone's screen lists its modes in another order at each read;
-        // a size takes the 60 Hz range of its scale in every order, also where
-        // the 120 Hz mode that takes it comes first.
+        // iPhone mode ordering changes between reads; always select the supported 60 Hz range.
         let iPhone: [ExternalScreenMode] = [.exact720x480, .allowedAt120Hertz(scale: 1), .allowedAt120Hertz(scale: 2),
                                             .rangeAt60Hertz(scale: 3), .rangeAt60Hertz(scale: 1), .rangeAt60Hertz(scale: 2)]
         for modes in [iPhone, Array(iPhone.reversed()), [iPhone[1], iPhone[4], iPhone[0], iPhone[2], iPhone[5], iPhone[3]]] {
@@ -7571,23 +6893,19 @@ struct HostBehaviorTests {
                 #expect(try choice(size.0, size.1, modes) == .rangeAt60Hertz(scale: 1))
             }
             #expect(try choice(720, 480, modes)?.refreshRate == 60)
-            // CarPlay's 800×480 at a scale of 2.
             #expect(try choice(800, 480, scale: 2, modes) == .rangeAt60Hertz(scale: 2))
         }
-        // An iPad's screen, and an iPhone's with iOS 27.0, takes the menu's sizes
-        // only at 120 Hz; the exact 60 Hz mode of the scale sets them at 60 Hz.
+        // iPad and iOS 27 iPhone modes need an exact 60 Hz mode to avoid the guest's 720×480 fallback.
         let iPad: [ExternalScreenMode] = [.exact720x480, .allowedAt120Hertz(scale: 2), .allowedAt120Hertz(scale: 1)]
         for modes in [iPad, Array(iPad.reversed())] {
             for size in [(720, 480), (1024, 768), (1920, 1080), (3840, 2160)] as [(CGFloat, CGFloat)] {
                 #expect(try choice(size.0, size.1, modes) == .exact720x480)
             }
-            // Without a 60 Hz mode of the scale, the guest would show its 720×480.
             #expect(throws: ExternalDisplayLimit.showsInstead(CGSize(width: 720, height: 480))) {
                 try choice(1920, 1080, scale: 2, modes)
             }
             #expect(throws: ExternalDisplayLimit.noMode) { try choice(1000, 700, modes) }
         }
-        // The guest shows its 720×480 mode rather than 640×480, at any rate.
         for modes in [iPhone, iPad] {
             #expect(throws: ExternalDisplayLimit.showsInstead(CGSize(width: 720, height: 480))) {
                 try choice(640, 480, modes)
@@ -7595,8 +6913,7 @@ struct HostBehaviorTests {
         }
         #expect(throws: ExternalDisplayLimit.noMode) { try choice(3840, 2161, iPhone) }
         #expect(throws: ExternalDisplayLimit.noMode) { try choice(1024, 768, scale: 3, iPad) }
-        // A screen that already has the size at the scale keeps its mode,
-        // unless the guest drops its rate, as when another tool set 120 Hz.
+        // Preserve the current mode only if the guest supports its rate.
         func state(_ width: CGFloat, _ height: CGFloat, _ rate: Double) -> ExternalScreenState {
             ExternalScreenState(isPoweredOn: true, pixelSize: CGSize(width: width, height: height), scale: 1,
                                 refreshRate: rate)
@@ -7619,10 +6936,7 @@ struct HostBehaviorTests {
         #expect(shown(1024, 768, 60) == "1024x768")
         #expect(shown(720, 480, 120) == "720x480")
         #expect(shown(640, 480, 60) == "720x480")
-        // Below 49 Hz is dropped too.
         #expect(shown(1920, 1080, 30) == "720x480")
-        // Without an exact mode, nor one at a rate the guest keeps, the
-        // display keeps its size.
         #expect(shown(640, 480, 60, [.rangeAt60Hertz(scale: 1)]) == "640x480")
         #expect(shown(1920, 1080, 120, [.allowedAt120Hertz(scale: 1)]) == "1920x1080")
     }
@@ -7636,7 +6950,6 @@ struct HostBehaviorTests {
         #expect(mode(true, 720, 480) == .size720x480)
         #expect(mode(true, 1920, 1080, 2) == nil)
         #expect(mode(true, 1600, 900) == nil)
-        // A CarPlay screen is CarPlay whatever its size, and off is Disabled.
         func carPlay(_ on: Bool, _ width: CGFloat, _ height: CGFloat, _ scale: CGFloat) -> ExternalDisplayMode? {
             ExternalScreenState(isPoweredOn: on, pixelSize: CGSize(width: width, height: height), scale: scale,
                                 isCarPlay: true).mode
@@ -7677,8 +6990,7 @@ struct HostBehaviorTests {
         let monitor = HostConflictMonitor(notificationCenter: center)
         let application = FixtureRunningApplication()
         let posted = DispatchSemaphore(value: 0)
-        // Keep the posting thread independent of shared dispatch workers while
-        // the main actor is deliberately unavailable, as during startup.
+        // Avoid shared dispatch workers while deliberately blocking the main actor during startup.
         Thread.detachNewThread {
             center.post(name: NSWorkspace.didLaunchApplicationNotification, object: nil,
                 userInfo: [NSWorkspace.applicationUserInfoKey: application])
@@ -7819,7 +7131,6 @@ struct DeviceToolTests {
         #expect(try String(contentsOf: log, encoding: .utf8).split(separator: "\n") == [
             "/Applications/Xcode.app/Contents/Developer", "create", "My Phone", "type", "runtime",
         ])
-        // The watch comes first, as `simctl pair` expects.
         try await DeviceTools.pairDevices(watch: "watch", phone: "phone", xcodeURL: xcode,
                                           deviceSetPath: "/tmp/Devices", simctl: simctl)
         #expect(try String(contentsOf: log, encoding: .utf8).split(separator: "\n") == [

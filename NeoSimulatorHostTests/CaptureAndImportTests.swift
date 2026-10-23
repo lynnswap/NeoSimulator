@@ -157,7 +157,6 @@ struct CaptureAndImportTests {
         let store = RecordingStore()
         var errors: [Error] = []
         store.onError = { errors.append($0) }
-        // A recording to a chosen file reserves that name until it finishes.
         _ = try store.start(to: .file(directory.appendingPathComponent("Recording #2.mov")), process: { _ in
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/bin/sh")
@@ -167,7 +166,7 @@ struct CaptureAndImportTests {
         var handedOver: [(url: URL, afterStop: Bool)] = []
         var stopped = false, finished = false
         let recording = try store.start(to: .capture { handedOver.append(($0, stopped)) }, process: { url in
-            // Writes the movie when stopped, as simctl finalizes it on SIGINT.
+            // simctl finalizes the movie on SIGINT.
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/bin/sh")
             process.arguments = ["-c", """
@@ -211,7 +210,6 @@ struct CaptureAndImportTests {
             let delays = (0..<count).compactMap {
                 gifProperties(CGImageSourceCopyPropertiesAtIndex(source, $0, nil))?[kCGImagePropertyGIFUnclampedDelayTime] as? Double
             }
-            // The brightest color channel of the first frame, which is black.
             let image = try #require(CGImageSourceCreateImageAtIndex(source, 0, nil))
             let rgba = NSBitmapImageRep(cgImage: image)
             var brightest: UInt8 = 0
@@ -224,12 +222,10 @@ struct CaptureAndImportTests {
             return (count, delays, gifProperties(CGImageSourceCopyProperties(source, nil))?[kCGImagePropertyGIFLoopCount] as? Int,
                     brightest)
         }
-        // The fixture's frames are 0.1 seconds apart, which floating-point
-        // differences of their times must not stretch to 0.11.
+        // Floating-point subtraction must not stretch 0.1-second frames to 0.11.
         let every = try await export(frameRate: 10)
         #expect(every.count == 12 && every.loop == 0)
-        // Dithered in the movie's color space, black stays nearly black; a
-        // linear working space lifts it to about 48.
+        // Linear-space dithering would lift black to about 48.
         #expect(every.brightest <= 12)
         #expect(Array(every.delays.dropLast()) == Array(repeating: 0.1, count: 11))
         let thinned = try await export(frameRate: 5)
@@ -237,8 +233,7 @@ struct CaptureAndImportTests {
         #expect(thinned.delays.first == 0.2)
     }
 
-    /// Writes a short H.264 QuickTime movie.
-    /// Writes a short H.264 QuickTime movie of black frames tagged BT.709.
+    /// Writes black BT.709 frames to an H.264 QuickTime movie.
     private func writeMovie(to url: URL, frames: Int = 3) async throws {
         let writer = try AVAssetWriter(outputURL: url, fileType: .mov)
         let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
@@ -297,7 +292,7 @@ struct CaptureAndImportTests {
     }
 }
 
-/// Thumbnails share one app-wide list, so their tests run one at a time.
+/// The active-thumbnail list is shared by all windows.
 @Suite(.serialized) @MainActor
 struct CaptureThumbnailTests {
     @Test func thumbnailsArePlacedLikeSimulatorApp() {
@@ -310,14 +305,11 @@ struct CaptureThumbnailTests {
                                                        screen: screen, visible: visible, spacing: spacing)
             return (placement.frame, placement.position)
         }
-        // A quarter of the screen plus 10 points, beside the window's bottom.
         #expect(place(NSRect(x: 80, y: 100, width: 440, height: 980)) == (NSRect(x: 530, y: 120, width: 110, height: 210), .right))
         #expect(place(NSRect(x: 1400, y: 100, width: 190, height: 980)) == (NSRect(x: 1280, y: 120, width: 110, height: 210), .left))
         #expect(place(NSRect(x: 20, y: 100, width: 1560, height: 980)) == (NSRect(x: 1470, y: 100, width: 110, height: 210), .over))
-        // Kept above the Dock by the horizontal spacing.
         #expect(place(NSRect(x: 80, y: 40, width: 440, height: 980)).0.minY == 90)
-        // Full screen: right of the device screen, else the lower right corner
-        // of that screen, which can be below the main screen.
+        // A secondary screen may be below the main screen.
         #expect(place(screen, fullScreen: true) == (NSRect(x: 510, y: 200, width: 110, height: 210), .over))
         let lower = CaptureThumbnail.placement(source: NSRect(x: 1200, y: -1000, width: 400, height: 800),
                                                window: NSRect(x: 0, y: -1200, width: 1600, height: 1200), fullScreen: true,
@@ -326,7 +318,6 @@ struct CaptureThumbnailTests {
         #expect(lower.frame.origin == NSPoint(x: 1486, y: -1196))
     }
 
-    /// A temporary capture file and a folder to save it in.
     private func capture(_ kind: CapturedContent.Kind = .screenshot, named name: String = "Shot.png",
                          in directory: URL) throws -> CapturedContent {
         let file = directory.appendingPathComponent(UUID().uuidString)
@@ -336,8 +327,7 @@ struct CaptureThumbnailTests {
         return CapturedContent(kind, file: file, name: name, defaultFolder: folder)
     }
 
-    /// A visible window that fits the screen, as the test machine's screen
-    /// can be small, and a device screen inside it.
+    /// Fits within the test machine's screen, which may be small.
     private func deviceWindow(offset: CGFloat = 0) -> (window: NSWindow, screen: NSRect) {
         _ = NSApplication.shared
         let visible = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1024, height: 768)
@@ -363,7 +353,6 @@ struct CaptureThumbnailTests {
                                      source: source, spacing: .zero) { _ in }
         first.show()
         #expect(CaptureThumbnail.active.map(ObjectIdentifier.init) == [ObjectIdentifier(first)])
-        // Another window's capture also ends it, as Simulator.app keeps one app-wide list.
         let (other, _) = deviceWindow(offset: 300)
         defer { other.close() }
         let second = CaptureThumbnail(try capture(named: "Second.png", in: directory), image: nil, parent: other,
@@ -371,7 +360,6 @@ struct CaptureThumbnailTests {
         second.show()
         #expect(try savedNames(in: directory) == ["First.png"])
         #expect(CaptureThumbnail.active.map(ObjectIdentifier.init) == [ObjectIdentifier(second)])
-        // Resizing the device window ends its thumbnail.
         other.setFrame(other.frame.insetBy(dx: -20, dy: -20), display: false)
         #expect(try savedNames(in: directory) == ["First.png", "Second.png"])
         #expect(CaptureThumbnail.active.isEmpty)
@@ -413,7 +401,6 @@ struct CaptureThumbnailTests {
             "Save Copy as Animated GIF", "-", "Show in Finder", "Delete", "-", "Close",
         ])
         #expect(movie.items.filter(\.isAlternate).map(\.keyEquivalentModifierMask) == [.option])
-        // The Desktop has its own item, so a Desktop screenshot folder adds none.
         UserDefaults.standard.set(CaptureFile.desktop?.path, forKey: key)
         #expect(Array(titles(screenshot.menu()).prefix(3)) == ["Save to Desktop", "Save to Documents", "Copy to Clipboard"])
         UserDefaults.standard.set(shots.path, forKey: key)
@@ -439,13 +426,11 @@ struct CaptureThumbnailTests {
         let window = NSWindow(contentRect: NSRect(x: 200, y: 200, width: 300, height: 600), styleMask: .titled,
                               backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        // The destination may fulfil the promise after the drag ends, even
-        // after the capture was saved.
+        // File promises may be fulfilled after the drag ends or the capture is saved.
         let delivered = try capture(named: "Dragged.png", in: directory)
         CaptureThumbnail(delivered, image: nil, parent: window, source: .zero, spacing: .zero) { _ in }.dragEnded(.copy)
         #expect(try savedNames(in: directory).isEmpty)
-        // Quitting saves captures whose promises are still unfulfilled, but
-        // not one a drop moved away through its file URL.
+        // Quit saves unfulfilled promises; moved files already belong to the drop target.
         let unclaimed = try capture(named: "Unclaimed.png", in: directory)
         CaptureThumbnail(unclaimed, image: nil, parent: window, source: .zero, spacing: .zero) { _ in }.dragEnded(.copy)
         let taken = try capture(named: "Taken.png", in: directory)
@@ -456,17 +441,14 @@ struct CaptureThumbnailTests {
         let destination = directory.appendingPathComponent("Dragged.png")
         try delivered.deliver(to: destination)
         #expect(FileManager.default.fileExists(atPath: destination.path))
-        // A delivery after the capture was saved copies the saved file.
         let late = try capture(named: "Late.png", in: directory)
         try late.saveToDefaultLocation()
         try late.deliver(to: directory.appendingPathComponent("Late.png"))
         #expect(FileManager.default.fileExists(atPath: directory.appendingPathComponent("Late.png").path))
         #expect(try savedNames(in: directory) == ["Dragged.png", "Late.png", "Unclaimed.png"])
-        // An animated GIF takes the next free name.
         try Data().write(to: directory.appendingPathComponent("Saved/Movie.gif"))
         #expect(try CaptureFile.unusedFile(in: directory.appendingPathComponent("Saved"), named: "Movie.gif").lastPathComponent
                 == "Movie #2.gif")
-        // A name another export is writing is taken too.
         #expect(try CaptureFile.unusedFile(in: directory.appendingPathComponent("Saved"), named: "Movie.gif",
                                            isReserved: { $0.lastPathComponent == "Movie #2.gif" }).lastPathComponent == "Movie #3.gif")
         let cancelled = try capture(named: "Cancelled.png", in: directory)
@@ -474,7 +456,7 @@ struct CaptureThumbnailTests {
         #expect(try savedNames(in: directory) == ["Cancelled.png", "Dragged.png", "Late.png", "Movie.gif", "Unclaimed.png"])
     }
 
-    /// A shown thumbnail beside a visible window, once its appearance ended.
+    /// Waits for the thumbnail's appearance animation to finish.
     private func shownThumbnail(named name: String, in directory: URL) async throws -> (CaptureThumbnail, NSWindow, NSWindow) {
         let (window, source) = deviceWindow()
         let thumbnail = CaptureThumbnail(try capture(named: name, in: directory), image: nil, parent: window,
@@ -495,7 +477,6 @@ struct CaptureThumbnailTests {
         window.setFrameOrigin(NSPoint(x: window.frame.minX + 100, y: window.frame.minY + 50))
         let expected = NSRect(x: window.frame.maxX + 10, y: window.frame.minY + 10, width: 50, height: 80)
         #expect(shown.frame == expected)
-        // A hover during the hide brings it back beside the moved window.
         thumbnail.hide(animated: true)
         try await Task.sleep(for: .milliseconds(100))
         thumbnail.pause()
@@ -576,7 +557,6 @@ struct CaptureThumbnailTests {
                                          source: source, spacing: NSSize(width: 10, height: 10)) { _ in }
         thumbnail.show()
         let shown = try #require(window.childWindows?.last)
-        // It starts over the device screen and shrinks beside the window.
         #expect(shown.frame == source.insetBy(dx: -5, dy: -5))
         for _ in 0..<100 where !thumbnail.shown { try await Task.sleep(for: .milliseconds(20)) }
         #expect(shown.frame == NSRect(x: window.frame.maxX + 10, y: window.frame.minY + 10, width: 50, height: 80))

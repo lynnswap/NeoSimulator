@@ -1,13 +1,8 @@
 import AppKit
 
-/// The Mac's keyboard for the simulator display of a device window or of an
-/// external display's window, which both windows share. As Simulator.app's
-/// keyboard controller gives it, the display takes the keyboard while its
-/// window is key and the device's hardware keyboard is connected. The guest's
-/// modifier keys follow the Mac's when the display gains the keyboard or the
-/// focus, and are released before it loses the keyboard. AppKit never
-/// dispatches key-ups while Command is held, so the window's are forwarded to
-/// the display.
+/// Shares host keyboard routing between primary and external display windows.
+/// Only a key window with a connected hardware keyboard receives keys.
+/// Modifier state is synchronized on focus changes; Command key-ups require explicit forwarding.
 @MainActor
 final class DisplayKeyboardInput {
     private weak var window: NSWindow?
@@ -47,10 +42,8 @@ final class DisplayKeyboardInput {
         }
     }
 
-    /// Makes the display's input the window's first responder and gives it
-    /// the modifiers the Mac holds now, whose changes it missed while another
-    /// window had the focus; the digitizer also uses them, with or without
-    /// the keyboard. Returns false when the window keeps another responder.
+    /// Focuses the display and synchronizes held modifiers, including for digitizer gestures.
+    /// Returns false if another responder retains focus.
     @discardableResult
     func focus() -> Bool {
         guard let window else { return false }
@@ -72,14 +65,9 @@ final class DisplayKeyboardInput {
         commandKeyUpMonitor = nil
     }
 
-    /// Releases the guest's modifier keys before the display stops taking the
-    /// Mac's keyboard, as Simulator.app's `clearModifiers()` does when its
-    /// window resigns key. SimulatorKit takes the release from the event the
-    /// app sends, which AppKit passes to the app's key window; while the app
-    /// deactivates, that is still this window. Like Simulator.app's, the
-    /// digitizer does not see the release, which would stop a gesture in
-    /// progress from following the pointer and keep its touches down after
-    /// the button comes up.
+    /// Releases modifiers before keyboard ownership is lost.
+    /// Do not send this release through the digitizer: it would interrupt an active gesture
+    /// and could leave touches held after mouse-up.
     private func releaseModifiers() {
         let input = display.inputView
         let movesFocus = window?.firstResponder === input && window?.makeFirstResponder(nil) == true
@@ -87,9 +75,7 @@ final class DisplayKeyboardInput {
         if movesFocus { window?.makeFirstResponder(input) }
     }
 
-    /// SimulatorKit applies modifier changes to every display with keyboard
-    /// input and releases them only on displays that keep it. They are synced
-    /// when a display gains keyboard input and released before it loses it.
+    /// Synchronizes modifiers only for displays receiving keyboard input.
     static func sendModifiers(_ flags: NSEvent.ModifierFlags) {
         guard let event = NSEvent.keyEvent(with: .flagsChanged, location: .zero, modifierFlags: flags,
             timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: 0, context: nil,
@@ -102,22 +88,14 @@ final class DisplayKeyboardInput {
 /// has the display's size, or the display fits the content.
 @MainActor
 protocol DisplayContentView: NSView {
-    /// Whether the window has the display's size. Otherwise, as in full
-    /// screen, during a live resize, and after a manual resize, the display
-    /// keeps its own size, centered.
+    /// Fills a display-sized window; otherwise centers the display at its own size.
     var isSizedToDisplay: Bool { get set }
     /// The space the content leaves for the display.
     var availableDisplaySize: NSSize { get }
 }
 
-/// The simulator display of a device window or of an external display's
-/// window fitting the window's content, which both windows share. The
-/// display fits the content in full screen and during a live resize, where
-/// the window does not take the display's size, and after a manual resize.
-/// SimulatorKit's display takes a new size of its screen, such as an external
-/// display's new resolution, a moment after CoreSimulator reports it, by
-/// setting its view to that size at its scale; in full screen and during a
-/// live resize, the display then fits the content again.
+/// Fits a shared simulator display during full screen or manual resizing.
+/// SimulatorKit applies new screen dimensions asynchronously, requiring another fit afterward.
 @MainActor
 final class DisplayFitting {
     private(set) var display: any SimulatorDisplay

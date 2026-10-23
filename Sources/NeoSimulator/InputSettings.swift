@@ -3,18 +3,12 @@ import Carbon
 import IOKit
 import IOKit.hidsystem
 
-/// I/O ▸ Keyboard's and I/O ▸ Touch Pressure's preferences, under
-/// Simulator.app's keys. Like `showsDeviceBezels`, each is on unless it was
-/// turned off, as its registered default says.
+/// Simulator-compatible keyboard and touch-pressure preferences; defaults are on.
 extension PreferenceStore {
     /// Use the Same Keyboard Language as macOS: the app-wide `EnableKeyboardSync`.
     var syncsKeyboardLanguage: Bool { isOn(HostPreferences.enableKeyboardSync) }
 
-    /// Connect Hardware Keyboard for a device: its own choice,
-    /// `DevicePreferences[UDID].ConnectHardwareKeyboard`, which Simulator.app's
-    /// command saves and its checkmark shows, or else the app-wide
-    /// `ConnectHardwareKeyboard`. A choice that is not a Boolean, which
-    /// Simulator.app also ignores, counts as none.
+    /// Per-device Boolean choice, falling back to the app-wide preference.
     func connectsHardwareKeyboard(forDevice identifier: String) -> Bool {
         preferences(forDevice: identifier)?[HostPreferences.connectHardwareKeyboard] as? Bool
             ?? isOn(HostPreferences.connectHardwareKeyboard)
@@ -46,9 +40,7 @@ enum HostKeyboard {
 
 /// The Mac's Force Touch trackpad, which Use Trackpad Force needs.
 enum ForceTouchTrackpad {
-    /// Whether the Mac has one, found as Simulator.app finds it: a HID
-    /// service of a multiple-point digitizer whose registry entry says
-    /// `ForceSupported`.
+    /// Finds a multi-point HID digitizer whose registry entry has ForceSupported.
     static func isAvailable() -> Bool {
         let client = IOHIDEventSystemClientCreateSimpleClient(kCFAllocatorDefault)
         let services = IOHIDEventSystemClientCopyServices(client) as? [IOHIDServiceClient] ?? []
@@ -75,9 +67,7 @@ extension ForceTouchTrackpad {
     }
 }
 
-/// Watches the I/O Registry for HID event services. The HID event system
-/// lists a new service shortly after the registry publishes it, so each
-/// change is reported again after a delay.
+/// Repeats notifications after a delay because the HID service list lags the I/O Registry.
 private final class HIDEventServiceObserver {
     private let port: IONotificationPortRef
     private var iterators: [io_iterator_t] = []
@@ -121,10 +111,7 @@ private final class HIDEventServiceObserver {
     }
 }
 
-/// I/O ▸ Touch Pressure's app-wide settings, which Simulator.app's app
-/// delegate keeps and applies to the window of every device that takes
-/// touch pressure. Each window applies them when its display connects and
-/// when `didChangeNotification` reports a change.
+/// App-wide touch-pressure settings, applied on connection and change notifications.
 @MainActor
 final class TouchPressure {
     /// Posted with the settings as its object after Use Trackpad Force or
@@ -140,16 +127,7 @@ final class TouchPressure {
     /// only while it runs, starting with Shallow Press.
     private(set) var mode = SimulatedTouchMode.shallow
 
-    /// - Parameters:
-    ///   - forceTouchTrackpad: Whether the Mac has a Force Touch trackpad.
-    ///     Like Simulator.app, it is asked each time, so a trackpad connected
-    ///     later counts.
-    ///   - observeTrackpads: Starts calling its argument when trackpads may
-    ///     have been connected or removed. Simulator.app applies Use Trackpad
-    ///     Force only when a window opens or the setting changes, so a window
-    ///     that opened before a Force Touch trackpad was connected keeps
-    ///     ignoring its force while the menu shows the setting on;
-    ///     NeoSimulator applies it again.
+    /// Rechecks trackpad availability and reapplies settings after hot-plug changes.
     init(preferences: any PreferenceStore = UserDefaults.standard,
          forceTouchTrackpad: @escaping () -> Bool = ForceTouchTrackpad.isAvailable,
          observeTrackpads: (@escaping @MainActor () -> Void) -> AnyObject? = ForceTouchTrackpad.observeChanges) {
@@ -186,15 +164,8 @@ final class TouchPressure {
     }
 }
 
-/// A touch indicator that SimulatorKit's digitizer draws over the device's
-/// screen, a `SimDigitizerInputView.DrawOption`, under Simulator.app's
-/// preference for it. Each device window draws the indicators whose
-/// preferences are on, when its display connects and after a preference
-/// changes.
-///
-/// Simulator.app's settings show single touches and pinch gestures. The
-/// other two are in its Internal menu, which only Apple's internal builds
-/// show; NeoSimulator follows their preferences, which `defaults write` sets.
+/// SimulatorKit touch-indicator options backed by Simulator.app preferences.
+/// Pinch pivot and edge indicators remain configurable through defaults write.
 enum TouchIndicator: CaseIterable {
     /// `.normalTouch`: where the pointer touches the screen.
     case singleTouches
@@ -220,21 +191,15 @@ enum TouchIndicator: CaseIterable {
 }
 
 extension PreferenceStore {
-    /// Whether device windows draw `indicator`. Like Simulator.app's
-    /// `boolForKey:`, a value that `defaults write` saves as a string reads by
-    /// its text. Show Pinch Gestures is on unless it was turned off, and the
-    /// others are off unless they were turned on, as their registered
-    /// defaults say.
+    /// Pinch indicators default on; others default off. Uses UserDefaults Boolean coercion.
     func showsTouchIndicator(_ indicator: TouchIndicator) -> Bool {
         let key = indicator.preferenceKey
         return indicator == .pinches ? isOn(key) : bool(forKey: key)
     }
 }
 
-/// Calls `changed` on the main actor after the value of one of `keys` in a
-/// `UserDefaults` changes, until it is released. Key-value observing also
-/// reports the changes that other processes make, such as `defaults write`,
-/// which `UserDefaults.didChangeNotification` leaves out.
+/// Observes keys on the main actor until released. KVO includes external defaults writes
+/// that UserDefaults.didChangeNotification omits.
 final class DefaultsObservation: NSObject {
     private let defaults: UserDefaults
     private let keys: [String]

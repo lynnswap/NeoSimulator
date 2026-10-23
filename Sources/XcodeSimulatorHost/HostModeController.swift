@@ -74,9 +74,7 @@ struct HostModeController {
                 .deviceHub
             }
 
-            // Process lifecycle changes are not part of the preference rollback.
-            // Resolve every process identity and reject an existing receipt conflict
-            // before closing a healthy host.
+            // Process termination cannot be rolled back; validate identities and receipts first.
             let runningLegacySimulatorURLs = try validatedRunningLegacySimulatorURLs()
             _ = try recoverManagedContext()
             let terminatedHosts = try await closeUIHosts(
@@ -186,8 +184,7 @@ struct HostModeController {
             }
 
             if force {
-                // Validate the live tri-state values before closing the host. A
-                // force restore may intentionally proceed through a receipt conflict.
+                // Force bypasses receipt conflicts, but live values must be valid before closing the host.
                 _ = try defaultsStore.readState()
             } else {
                 _ = try recoverManagedContext()

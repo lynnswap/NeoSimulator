@@ -1,17 +1,8 @@
 import AppKit
 
-/// Edit ▸ Automatically Sync Pasteboard: the app-wide choice, which
-/// Simulator.app's app delegate keeps, and the exchange between devices.
-///
-/// While it is on, each device's pasteboard connection synchronizes:
-/// SimPasteboardPlus sends each change of the Mac pasteboard to every device
-/// and applies each copy on a device to the Mac pasteboard. A device's copy
-/// does not reach the other devices that way, because SimPasteboardPlus
-/// ignores the changes it makes to the Mac pasteboard itself, so the Mac
-/// pasteboard is then sent to every other device, as Simulator.app's
-/// `SimDeviceChangedLocalPasteboard` observer does. Like Simulator.app,
-/// synchronization does not follow window focus: every connected device
-/// takes part.
+/// Coordinates app-wide pasteboard synchronization across all connected devices.
+/// SimPasteboardPlus ignores its own host writes, so a device-originated copy
+/// must be forwarded explicitly to the other devices.
 @MainActor
 final class PasteboardSync {
     private let preferences: any PreferenceStore
@@ -32,22 +23,15 @@ final class PasteboardSync {
         isOn = preferences.bool(forKey: HostPreferences.pasteboardAutomaticSync)
     }
 
-    /// Turns synchronization on or off, saves the choice, and tells every
-    /// device's connection, as Simulator.app's `togglePasteboardAutomaticSync:`
-    /// does. Turning it on transfers nothing until the Mac's or a device's
-    /// pasteboard changes; turning it off stops every exchange that the user
-    /// does not choose.
+    /// Saves the preference and updates all connections without an immediate transfer.
     func toggle() {
         isOn.toggle()
         preferences.set(isOn, forKey: HostPreferences.pasteboardAutomaticSync)
         for session in sessions() { session.updatePasteboardSync() }
     }
 
-    /// Reports that `session`'s device pasteboard replaced the Mac's. Like
-    /// Simulator.app's `SimDeviceChangedLocalPasteboard`, which it posts as
-    /// soon as possible and coalesces by name, the change goes to the other
-    /// devices when the current pass of the run loop ends, and of several
-    /// changes in one pass, only the last does.
+    /// Coalesces device-originated copies until the end of the run-loop pass.
+    /// Only the latest host pasteboard is forwarded to other devices.
     func devicePasteboardDidReplaceHost(_ session: DeviceSession) {
         let isScheduled = changedSession != nil
         changedSession = session

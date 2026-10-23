@@ -10,10 +10,7 @@ extension Measurement: @retroactive ABIBridgeSwiftValue where UnitType == UnitAn
     public static var swiftABIType: NativeType { try! .opaque(named: "Measurement") }
 }
 
-/// The private simulator interfaces of one Xcode.
-///
-/// Every interface the host uses is resolved during startup, so an
-/// incompatible Xcode fails before the host changes any state.
+/// Resolves the selected Xcode's private interfaces before the host changes device state.
 @MainActor
 final class SimulatorRuntime {
     let xcodeURL: URL
@@ -49,9 +46,7 @@ final class SimulatorRuntime {
         }
     }
 
-    /// Checks the images loaded so far, also those that SimulatorKit loads
-    /// when it connects a display, such as a device type's user-interface
-    /// plugin (`.simdeviceui`), which must come from the selected Xcode.
+    /// Checks loaded images, including late-loaded .simdeviceui plugins, against the selected Xcode.
     func validateLoadedImages() throws {
         let prefix = xcodeURL.path + "/"
         for index in 0..<_dyld_image_count() {
@@ -99,17 +94,12 @@ struct SimulatorDisplayInterface {
     /// `SimDevice.screenAdapter`, the device's `SimDeviceScreenAdapter`.
     let screenAdapter = ScreenAdapterGetter()
     typealias AdapterEventHandler = NativeSwiftClosure<(NativeSwiftValue) -> Void>
-    /// `SimDeviceScreenAdapter.register(screenID:queue:handler:)`, whose
-    /// handler receives a `SimDeviceScreenAdapter.ScreenEvent`. Releasing the
-    /// returned registration ends it.
+    /// Screen-adapter registration. Releasing the token ends callbacks except those already queued.
     let registerAdapterEvents: NativeSwiftMethod<(UInt32?, DispatchQueue, AdapterEventHandler) -> AnyObject>
     /// Messages to CoreSimDeviceIO's screen proxies: `SimScreenProperties`
     /// and `SimScreenMode`.
     let screenMessages = ProxyMessages()
-    /// The properties of Simulator.app's default CarPlay configuration, by
-    /// CoreSimDeviceIO's `SimCarPlayPropertyKeyStark` and
-    /// `SimCarPlayPropertyKeyHasTouchScreen`: a CarPlay screen with a touch
-    /// screen.
+    /// Default CarPlay properties: `SimCarPlayPropertyKeyStark` and `SimCarPlayPropertyKeyHasTouchScreen`.
     let carPlayProperties: NSDictionary
     let factoryClass: AnyClass
     let createDisplay: NativeObjCMethod<NSView?, AnyObject, UInt32>
@@ -150,10 +140,8 @@ struct SimulatorDisplayInterface {
     let chromeImagesPadding: NativeSwiftMethod<() -> CGSize>
     let setKeyboardEnabled: NativeSwiftMethod<(Bool) -> Void>
     let keyboardDelegate: Ivar
-    /// `SimDisplayView._userInterfacePlugin`: the `SimDeviceUserInterfacePlugin`
-    /// that the display loads, while it connects, for a device type with a
-    /// user-interface profile, such as Apple Vision Pro's `XROS.simdeviceui`.
-    /// SimulatorKit has no getter for it; the field holds one object.
+    /// `SimDisplayView._userInterfacePlugin` has no getter and stores one object.
+    /// SimulatorKit loads it while connecting a device with a user-interface profile.
     let userInterfacePlugin: Ivar
     /// Messages to a plugin, whose class its bundle provides only once loaded;
     /// `SimDeviceUserInterfacePlugin` must declare them.
@@ -224,9 +212,7 @@ struct SimulatorDisplayInterface {
         registerAdapterEvents = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimDeviceScreenAdapter")
             .resolveMethodAndWait(named: "register(screenID:queue:handler:)",
                                   as: ((UInt32?, DispatchQueue, AdapterEventHandler) -> AnyObject).self)
-        // The screens and their properties are proxies, so these messages are
-        // bound to each proxy class when a screen connects; their protocols
-        // must declare them.
+        // Screen proxies are bound on connection; their protocols must declare these messages.
         for (name, selectors) in SimulatorExternalScreenConnection.selectors + SimulatorConnection.backlightSelectors {
             guard let declared = objc_getProtocol(name) else {
                 throw HostError.unavailable("Required private protocol \(name) is unavailable")
@@ -389,14 +375,8 @@ struct SimulatorDisplayInterface {
     /// Displays configures. 0 is a device's own screen and 2 is CarPlay.
     static let externalScreenType: UInt64 = 1
 
-    /// Registers with the device's screen adapter for its TVOut screens, as
-    /// Simulator.app's `SDS.configureExternalDisplay(withSize:scale:carPlayProperties:)`
-    /// waits for one: with no screen ID, the adapter reports each of the
-    /// device's screens that is connected, and each that connects later, as a
-    /// `ScreenEvent` on the main queue. `found` receives each connected screen
-    /// of the TVOut type with its ID, or the error that kept an event from
-    /// being read. Releasing the returned registration ends the reports,
-    /// except those already queued. Nil for a device without an adapter.
+    /// Observes connected TVOut screens on the main queue, including future connections.
+    /// Releasing the token ends reports except those already queued; nil means no adapter.
     func registerForExternalScreens(
         of device: SimulatorDevice,
         found: @escaping @MainActor (Result<(identifier: UInt32, object: AnyObject), any Error>) -> Void
@@ -423,10 +403,8 @@ struct SimulatorDisplayInterface {
     }
 }
 
-/// `SimDevice.screenAdapter`, which SimulatorKit declares in an extension of
-/// the Objective-C class `SimDevice`. ABIBridge finds such a member only
-/// through an instance, so it is bound to the first device that asks for its
-/// adapter and reused for the others.
+/// ABIBridge must bind the SimDevice extension member through an instance.
+/// Reuse the first binding for subsequent devices.
 @MainActor
 final class ScreenAdapterGetter {
     private var getter: NativeSwiftMethod<() -> AnyObject?>?
@@ -442,10 +420,7 @@ final class ScreenAdapterGetter {
     }
 }
 
-/// Messages without arguments to objects whose classes exist only at run
-/// time, such as CoreSimDeviceIO's proxies of screen properties and modes,
-/// and a device type's user-interface plugin. A message is bound to the first
-/// object of a class that receives it and reused for the others.
+/// Caches no-argument Objective-C messages by proxy or plugin class.
 @MainActor
 final class ProxyMessages {
     private var methods: [String: Any] = [:]
@@ -459,13 +434,8 @@ final class ProxyMessages {
     }
 }
 
-/// The user-interface plugin that SimulatorKit attached to a display, a
-/// `SimDeviceUserInterfacePlugin` from the selected Xcode's profile of the
-/// device type, such as Apple Vision Pro's `XROS.simdeviceui`, whose
-/// principal class is `PalomaSimSupport`. The display adds the plugin's
-/// overlay over its screen; the overlay takes the device's input and handles
-/// the plugin's commands. Simulator.app shows the plugin's toolbar in the
-/// device's window.
+/// The selected Xcode's device-profile plugin. SimulatorKit owns its input overlay;
+/// the host installs its toolbar and forwards commands through the responder chain.
 struct SimulatorUserInterfacePlugin {
     /// The messages the host sends to a plugin.
     static let selectors = ["overlayView", "toolbar"]
@@ -474,12 +444,8 @@ struct SimulatorUserInterfacePlugin {
     let toolbar: NSToolbar?
 }
 
-/// A device's external display: CoreSimulator's TVOut screen, which a device
-/// that supports external displays has from its creation, turned off.
-/// CoreSimDeviceIO's screen adapter lists no screen that a client could
-/// create (`creatableScreenProperties` is empty), so a device without one
-/// cannot get one. Simulator.app also makes this screen the device's CarPlay
-/// display, so the connection also reaches the guest's CarPlay.
+/// Connection to the device's existing TVOut screen, also used for CarPlay.
+/// CoreSimulator exposes no creatable screen properties for devices without one.
 @MainActor
 protocol SimulatorExternalScreen: AnyObject {
     var screenID: UInt32 { get }
@@ -492,35 +458,20 @@ protocol SimulatorExternalScreen: AnyObject {
     /// The modes the screen advertises, `supportedScreenModes`, which stay the
     /// same while the device runs; only their order changes between reads.
     func supportedModes() throws -> [ExternalScreenMode]
-    /// `SimScreen setCurrentMode:pixelSize:carPlayProperties:…` with the mode
-    /// `ExternalScreenMode.choice(for:scale:current:among:)` chooses for
-    /// `pixelSize` at `scale`, which also turns the screen on. With `carPlay`,
-    /// the properties of Simulator.app's default CarPlay configuration
-    /// (`SimCarPlayPropertyKeyStark` and `SimCarPlayPropertyKeyHasTouchScreen`)
-    /// make it a CarPlay screen; without, it has none. `completion` receives
-    /// CoreSimulator's result on the main actor; a thrown error, such as an
-    /// `ExternalDisplayLimit` for a size the device cannot show, means nothing
-    /// was sent.
+    /// Sets a supported screen mode and powers it on, optionally with CarPlay properties.
+    /// A throw means nothing was sent; completion reports the result on the main actor.
     func setMode(pixelSize: CGSize, scale: CGFloat, carPlay: Bool,
                  completion: @escaping @MainActor (Error?) -> Void) throws
     /// `SimScreen setPowerState:0 …`. `completion` receives CoreSimulator's
     /// result on the main actor; a thrown error means nothing was sent.
     func powerOff(completion: @escaping @MainActor (Error?) -> Void) throws
-    /// Writes the device's `extended_display.plist`, which the guest reads
-    /// each time the screen's modes change: Simulator.app's default CarPlay
-    /// configuration with `carPlay`, which makes the guest take the screen as
-    /// a car's display, and `{stark: 0}` otherwise.
+    /// Writes the guest configuration read on mode changes: default CarPlay values or `{stark: 0}`.
     func saveCarPlayConfiguration(carPlay: Bool) throws
-    /// `SimDevice enableCarPlay:error:`, which starts or ends a CarPlay
-    /// session in the guest. The guest counts them, so each start needs one
-    /// end. The request is decided for the device's `boot`; a device that has
-    /// restarted since gets nothing, and `completion` receives
-    /// `CarPlayRequestMoot`. Otherwise it receives the result, on the main
-    /// actor.
+    /// Sends a counted CarPlay start/end for `boot`. Completion runs on the main actor.
+    /// If the device restarted, no request is sent and completion receives `CarPlayRequestMoot`.
     func setCarPlayEnabled(_ enabled: Bool, inBoot boot: Date?, completion: @escaping @MainActor (Error?) -> Void)
-    /// Creates the guest's CarPlay HID service, which takes the touches of
-    /// the screen's display, or removes it. `completion` receives the send's
-    /// result on the main actor; a thrown error means nothing was sent.
+    /// Creates or removes the guest's CarPlay HID service.
+    /// A throw means nothing was sent; completion reports send status on the main actor.
     func setCarPlayService(connected: Bool, completion: @escaping @MainActor (Error?) -> Void) throws
     /// A display of the screen from the display factory, for its own window.
     func makeDisplay() throws -> any SimulatorDisplay
@@ -689,9 +640,7 @@ final class SimulatorExternalScreenConnection: SimulatorExternalScreen {
         try runtime.display.screenMessages.send("supportedScreenModes", to: try properties(), as: [AnyObject]?.self) ?? []
     }
 
-    // CoreSimDeviceIO can complete on a thread of its own despite the
-    // completion queue, so the block is built outside the main actor and
-    // passes the result on to the main queue.
+    // CoreSimDeviceIO may ignore the completion queue. Bridge back to the main actor explicitly.
     private nonisolated static func completed(_ completion: @escaping @MainActor (Error?) -> Void) -> Completion {
         { error in DispatchQueue.main.async { MainActor.assumeIsolated { completion(error) } } }
     }
@@ -713,15 +662,10 @@ struct SimulatorInputInterface {
     let messageForWatchGesture: NativeFunction<OpaquePointer?, UInt32>
     /// `IndigoHIDGetKeyboardType()`, the type of the Mac's keyboard.
     let keyboardType: NativeFunction<UInt32>
-    /// `IndigoHIDMessageToCreateCarPlayService(hasDigitizer)` and
-    /// `IndigoHIDMessageToRemoveCarPlayService()`: the guest's HID service for
-    /// CarPlay, at the target that SimulatorKit's display of an external
-    /// display sends its touches to.
+    /// CarPlay HID service messages target the external display's touch destination.
     let createCarPlayService: NativeFunction<OpaquePointer?, Bool>
     let removeCarPlayService: NativeFunction<OpaquePointer?>
-    /// `IndigoHIDMessageForTrackpadMoveEvent(point, target)`: a trackpad
-    /// touch at a point from 0 to 1, which the Apple TV Remote's touch
-    /// surface sends.
+    /// `IndigoHIDMessageForTrackpadMoveEvent`: normalized Apple TV Remote touch coordinates.
     let messageForTrackpadMove: NativeFunction<OpaquePointer?, CGPoint, UInt32>
 
     /// The targets that Simulator.app's Apple TV Remote sends its buttons and
@@ -756,11 +700,8 @@ struct SimulatorInputInterface {
         try checkTrackpadMessage()
     }
 
-    /// Checks that the builder's message has the fields that `message(for:)`
-    /// changes for a touch, as Simulator.app's remote changes them in the
-    /// message of the SimulatorKit it was built with. The SimulatorKit of
-    /// Xcode 26.6 and those of Xcode 27.0 through 27.2 build the same message;
-    /// another layout fails here, before a touch writes into the wrong fields.
+    /// Validates fields patched for remote touch start/end before writing into the message.
+    /// The layout matches Xcode 26.6 and 27.0–27.2; other layouts fail at runtime startup.
     private func checkTrackpadMessage() throws {
         guard let message = try unsafe messageForTrackpadMove.unsafeInvoke(CGPoint(x: 0.5, y: 0.5),
                                                                           Self.tvRemoteTouchTarget)
@@ -779,9 +720,7 @@ struct SimulatorInputInterface {
         }
     }
 
-    /// The Mac keyboard's type, which `SimDevice` takes as a byte when it
-    /// connects the guest's hardware keyboard. Simulator.app traps on a type
-    /// that does not fit; this reports it.
+    /// Returns the host keyboard type as the byte required by SimDevice, throwing on overflow.
     func currentKeyboardType() throws -> UInt8 {
         let type = try unsafe keyboardType.unsafeInvoke()
         guard let byte = UInt8(exactly: type) else {
@@ -797,10 +736,7 @@ struct SimulatorInputInterface {
         return try unsafe makeClient.unsafeInvoke(on: allocated, device.object)
     }
 
-    /// Creates the message for one event of `input` sent to `target`, the
-    /// screen's button target. Like Simulator.app's remote, an Apple TV
-    /// Remote button goes to the remote's own target, with 1 for its press
-    /// and 0 for its release, where the device's buttons take 1 and 2.
+    /// Device buttons use states 1/2; Apple TV Remote buttons use their own target and states 1/0.
     func message(_ input: HIDInput, _ state: HIDState, target: UInt32) throws -> HIDMessage {
         let message = switch input {
         case .button(let button): try unsafe messageForButton.unsafeInvoke(button.rawValue, state.rawValue, target)
@@ -819,11 +755,8 @@ struct SimulatorInputInterface {
         try send(hidMessage.take(), client: client, completion: completion)
     }
 
-    /// Creates the message of a touch of the Apple TV Remote's touch surface
-    /// as Simulator.app's remote does: the trackpad message at the touch's
-    /// point, whose events it changes for a touch's start and end.
-    /// `checkTrackpadMessage()` verified those fields when the runtime
-    /// loaded. The caller sends or frees the message.
+    /// Builds and patches a remote touch message using the layout validated at startup.
+    /// The caller must send or free the message.
     func message(for touch: TVRemoteTouch) throws -> OpaquePointer {
         guard let message = try unsafe messageForTrackpadMove.unsafeInvoke(touch.point, Self.tvRemoteTouchTarget) else {
             throw HostError.operation("Could not allocate simulator input")
@@ -843,10 +776,8 @@ struct SimulatorInputInterface {
         try send(message, client: client, completion: completion)
     }
 
-    /// Sends the message that creates the guest's CarPlay HID service, with a
-    /// digitizer for a touch screen, or the one that removes it. SimulatorKit
-    /// reports the send's result, not the guest's, to `completion` on the
-    /// main queue. The guest creates the service only once.
+    /// Sends the CarPlay HID-service change; completion reports send status, not guest creation.
+    /// The guest creates the service only once.
     func sendCarPlayService(connected: Bool, hasTouchScreen: Bool, client: AnyObject,
                             completion: @escaping @MainActor (Error?) -> Void) throws {
         let message = try unsafe connected ? createCarPlayService.unsafeInvoke(hasTouchScreen)
@@ -858,10 +789,8 @@ struct SimulatorInputInterface {
     private func send(_ message: OpaquePointer, client: AnyObject, completion: (@MainActor (Error?) -> Void)?) throws {
         // The send transfers ownership of the message to SimulatorKit.
         if let completion {
-            // Build the block from a closure literal. Converting it inside
-            // `Optional.map` makes Swift 6.3 emit a reabstraction thunk under
-            // the block invoke function's mangled name, and the linker can pick
-            // that thunk as the invoke of every such block, which then crashes.
+            // Keep the block literal: Optional.map conversion triggers a Swift 6.3 linker
+            // reabstraction-thunk collision that can crash every block with this signature.
             let handler: Completion = { error in MainActor.assumeIsolated { completion(error) } }
             try unsafe send.unsafeInvoke(on: client, message, true, .main, handler)
         } else {
@@ -908,9 +837,7 @@ struct SimulatorPasteboardInterface {
             .unsafeInvoke(on: listenerClass as AnyObject)
     }
 
-    /// Connects to the device's pasteboard service, managing `pasteboard`.
-    /// Connecting transfers nothing, and the connection synchronizes only
-    /// after `enableRemoteAutosync`.
+    /// Connects without transferring. Synchronization requires `enableRemoteAutosync`.
     func connect(to device: SimulatorDevice, managing pasteboard: NSPasteboard,
                  events: @escaping @MainActor (SimulatorPasteboardEvent) -> Void) throws -> SimulatorPasteboardConnection {
         let port = try device.lookUp(serviceName)
@@ -929,9 +856,7 @@ enum SimulatorPasteboardEvent {
     /// The connection became active: once after connecting, and again each
     /// time the device has taken a push, which `simctl pbsync` waits for.
     case activated
-    /// The device's pasteboard replaced the managed pasteboard, after a pull
-    /// or, while synchronizing, a copy on the device. `generation` is the
-    /// managed pasteboard's change count after the change.
+    /// The managed pasteboard was replaced; `generation` is its resulting change count.
     case applied(generation: Int)
     /// Writing the device's pasteboard to the managed pasteboard failed.
     case failedToApply(Error)
@@ -948,10 +873,7 @@ protocol SimulatorPasteboard: AnyObject {
     func pull() throws
     /// SimPasteboardPlus `push`: Edit ▸ Send Pasteboard.
     func push() throws
-    /// SimPasteboardPlus `enableRemoteAutosync` or `disableRemoteAutosync`.
-    /// While enabled, a change of the managed pasteboard reaches the device,
-    /// and a copy on the device replaces the managed pasteboard. Enabling
-    /// transfers nothing by itself.
+    /// Enables bidirectional automatic synchronization without an immediate transfer.
     func setAutomaticSync(_ enabled: Bool) throws
     /// Stops the connection's events.
     func disconnect()
@@ -977,9 +899,8 @@ final class SimulatorPasteboardConnection: SimulatorPasteboard {
     func disconnect() { delegate.events = nil }
 }
 
-/// Forwards the `SimPasteboardDelegate` callbacks that the host needs, which
-/// the connection makes on the main queue. Every method of that protocol is
-/// optional, and the connection does not check conformance.
+/// Optional SimPasteboardDelegate callbacks arrive on the main queue.
+/// The connection does not require declared protocol conformance.
 @MainActor
 final class SimulatorPasteboardDelegate: NSObject {
     var events: ((SimulatorPasteboardEvent) -> Void)?
@@ -1006,11 +927,8 @@ final class SimulatorPasteboardDelegate: NSObject {
     }
 }
 
-/// CoreSimDeviceIO's audio route port: the descriptor of a device's I/O port
-/// that conforms to `SimAudioHostRoutable`. Simulator.app reaches it through
-/// SimulatorKit's `SimDeviceAudioClient`, which Xcode 27 removed, and
-/// `devicectl device settings audio` through CoreDevice's simulator plugin.
-/// Unlike `devicectl`, it reaches devices of any device set.
+/// Binds CoreSimDeviceIO's SimAudioHostRoutable port directly.
+/// Xcode 27 removed SimulatorKit's SimDeviceAudioClient; this also supports custom device sets.
 @MainActor
 struct SimulatorAudioInterface {
     /// `SimDevice.io`, the device's `SimDeviceIOClient`.
@@ -1029,9 +947,7 @@ struct SimulatorAudioInterface {
         }
         deviceIO = try runtime.resolveObjCMethodAndWait(on: device, selector: "io", as: (() -> AnyObject?).self)
         ioPorts = try runtime.resolveObjCMethodAndWait(on: client, selector: "ioPorts", as: (() -> [AnyObject]).self)
-        // The port and its Mac devices are remote proxies, so their messages
-        // are bound to each object when a device connects; their protocols
-        // must declare them.
+        // Port and device objects are remote proxies, bound on connection through their protocols.
         let protocols = [("SimAudioHostRoutable", SimulatorAudioConnection.portSelectors),
                          ("SimAudioHostDevice", HostAudioDeviceMembers.selectors)]
         for (name, selectors) in protocols {
@@ -1085,21 +1001,15 @@ struct SimulatorAudioInterface {
 protocol SimulatorAudioRoutes: AnyObject {
     /// The Mac's audio devices and the guest's routes as the port reports them now.
     func state() throws -> AudioRouteState
-    /// Routes the guest's `scope` to a Mac device's unique identifier or to
-    /// `AudioRouting.systemDefault`. `completion` receives CoreSimulator's
-    /// result on the main actor; a thrown error means nothing was sent.
-    ///
-    /// CoreSimulator does not fail a route to a device that the Mac lacks or
-    /// that has no channels in `scope`: it routes the guest to the Mac's
-    /// default device, by that device's identifier.
+    /// Routes to a device UID or system default. A throw means nothing was sent;
+    /// completion reports on the main actor. CoreSimulator silently uses the default
+    /// if the requested device is absent or lacks channels in this scope.
     func route(_ scope: AudioScope, to route: String, completion: @escaping @MainActor (Error?) -> Void) throws
     /// Stops the change reports.
     func disconnect()
 }
 
-/// The audio route port of one device. It reports a change of the Mac's
-/// devices, including its default devices, and of the guest's routes, also
-/// those that another process makes.
+/// Observes host-device and guest-route changes, including those made by other processes.
 @MainActor
 final class SimulatorAudioConnection: SimulatorAudioRoutes {
     static let portSelectors = [
@@ -1154,9 +1064,7 @@ final class SimulatorAudioConnection: SimulatorAudioRoutes {
 
     isolated deinit { disconnect() }
 
-    // The port calls these blocks, and a route's completion despite its
-    // completion queue, on threads of its own, so they are built outside the
-    // main actor and pass the call on to the main queue.
+    // Audio-port callbacks may ignore the completion queue. Bridge to the main actor explicitly.
     private nonisolated static func devicesChanged(
         _ changed: @escaping @MainActor () -> Void
     ) -> SimulatorAudioInterface.DevicesChanged {
@@ -1266,11 +1174,9 @@ struct TVRemoteTouch: Equatable {
     var point: CGPoint
 }
 
-/// The message `IndigoHIDMessageForTrackpadMoveEvent` builds: two digitizer
-/// events of 0xA0 bytes after a header, the second a copy of the first. For
-/// a touch it builds a move: each event's IOHID digitizer event mask is the
-/// position (4), and two flags of each event's touch are 1. Simulator.app's
-/// remote changes them for a touch's start and end.
+/// Trackpad-message layout: header followed by two 0xA0-byte digitizer events.
+/// The builder emits move events with position mask 4 and touch flags set;
+/// remote touch start/end patch these fields.
 private enum TrackpadMessage {
     /// The message's size, which its changes stay within.
     static let size = 0x160
@@ -1282,12 +1188,8 @@ private enum TrackpadMessage {
     /// The touch flags of the first and second event.
     static let touchFlags = [0x64, 0x68, 0x104, 0x108]
 
-    /// The fields Simulator.app's remote writes for `phase`
-    /// (`appleRemoteControlSurface:touchStarted:`, `touchMoved:`, and
-    /// `touchEnded:`): a start sets the masks to the range, the touch, and,
-    /// on the first event, the identity (0x23 and 3); an end sets them to the
-    /// range and, on the first event, the identity (0x21 and 1), and clears
-    /// the touch flags. A move keeps the builder's fields.
+    /// Start uses masks 0x23/3; end uses 0x21/1 and clears touch flags.
+    /// Move preserves the builder's fields.
     static func changes(for phase: TVRemoteTouch.Phase) -> [(offset: Int, value: UInt32)] {
         switch phase {
         case .began: [(eventMasks[0], 0x23), (eventMasks[1], 3)]
@@ -1297,9 +1199,7 @@ private enum TrackpadMessage {
     }
 }
 
-/// A watch gesture of Device ▸ Gestures, by the value
-/// `IndigoHIDMessageForWatchGesture` takes, which is also Simulator.app's
-/// menu tag.
+/// Watch-gesture values accepted by IndigoHIDMessageForWatchGesture.
 enum WatchGesture: UInt32 {
     case doubleTap = 0, wristFlick = 1
 }
@@ -1311,9 +1211,7 @@ enum HIDInput: Hashable {
     case usage(page: UInt32, usage: UInt32)
     /// A button of the Apple TV Remote.
     case tvRemote(TVRemoteButton)
-    /// The touch on the Apple TV Remote's touch surface, down from its start
-    /// until its end. Its messages, which need the touch's point, come from
-    /// `SimulatorDisplay.message(for:)`.
+    /// Held remote touch, built by `SimulatorDisplay.message(for:)` with its coordinates.
     case tvRemoteTouch
 
     static let screenshot = HIDInput.usage(page: 0x0c, usage: 0x65)
@@ -1356,9 +1254,7 @@ enum SimScreenUIOrientation {
     }
 }
 
-/// `SimDigitizerInputView.TouchMode`, by its raw value: how hard a click
-/// presses while the trackpad's force does not decide, I/O ▸ Touch Pressure ▸
-/// Shallow Press or Deep Press.
+/// Raw SimDigitizerInputView.TouchMode values used when trackpad force is unavailable.
 enum SimulatedTouchMode: Int {
     case shallow = 0, deep = 1
 }
@@ -1405,23 +1301,15 @@ struct DisplayResizeRect {
 protocol SimulatorDisplay: AnyObject {
     var isBooted: Bool { get }
     var view: NSView { get }
-    /// The view that takes the device's input in the window: the screen's
-    /// digitizer, or the overlay of the display's user-interface plugin once
-    /// `userInterfacePlugin()` found it.
+    /// The input digitizer, or the loaded plugin's overlay.
     var inputView: NSView { get }
-    /// The user-interface plugin SimulatorKit attached to the display, or nil
-    /// for a device type without one and until the display loaded it. A
-    /// thrown error means that the plugin cannot be used, for example
-    /// because it loaded code from another Xcode.
+    /// Loaded device-profile plugin, or nil until available. Throws if unusable,
+    /// including a plugin from another Xcode installation.
     func userInterfacePlugin() throws -> SimulatorUserInterfacePlugin?
-    /// The state of the screen's backlight as CoreSimulator reports it now,
-    /// `SimScreenProperties.backlight.state`, or nil when it cannot be read.
-    /// A watch's is 2 while its display is on, 1 while an always-on display
-    /// is dimmed, and 0 while the display is off.
+    /// Current CoreSimulator backlight state: 2 on, 1 always-on dimmed, 0 off.
+    /// Nil when unavailable.
     var backlightState: Int32? { get }
-    /// Posts Simulator.app's `SimulatorVideoRecordingStartedNotification` or
-    /// `SimulatorVideoRecordingStoppedNotification` for the device, which a
-    /// user-interface plugin observes to show the recording on its toolbar.
+    /// Posts recording notifications consumed by the device plugin's toolbar.
     func announceRecording(started: Bool)
     /// `SimDisplayView.renderScale`: the display's size relative to the
     /// device's screen in points, which the screen's resolution does not change.
@@ -1435,14 +1323,10 @@ protocol SimulatorDisplay: AnyObject {
     var screenScale: CGFloat? { get }
     /// `SimDeviceScreen.displayClass`, or nil when unknown; 0 is a device's own screen.
     var displayClass: UInt16? { get }
-    /// The padding of the bezel the display shows, `SimDeviceChrome.images.padding`,
-    /// or nil when it shows none: `SimDisplayChromeView.chrome` is nil while the
-    /// bezel is hidden and for a device type without one.
+    /// `SimDeviceChrome.images.padding`, or nil when no bezel is visible.
     var chromePadding: NSSize? { get }
-    /// The areas at the bezel's corners whose drag resizes the window,
-    /// `SimDisplayView.typedResizeRects`, in `view`'s coordinates at the
-    /// display's scale; none without a bezel. SimulatorKit leaves clicks in
-    /// them to the window.
+    /// Scaled bezel-corner resize areas in view coordinates.
+    /// SimulatorKit leaves their clicks for the window to handle.
     var resizeRects: [DisplayResizeRect] { get }
     /// `SimDisplayView.showResizeCursors`: whether the view shows resize
     /// cursors over `resizeRects`.
@@ -1459,9 +1343,7 @@ protocol SimulatorDisplay: AnyObject {
     /// Sends a message. `completion`, when present, receives SimulatorKit's
     /// delivery result; a thrown error means the message was not sent.
     func send(_ message: HIDMessage, completion: (@MainActor (Error?) -> Void)?) throws
-    /// Creates the message of a touch of the Apple TV Remote's touch surface,
-    /// for `send(_:completion:)`: its input is `.tvRemoteTouch`, down until
-    /// the touch's end.
+    /// Builds a remote touch message held until its end phase, for `send(_:completion:)`.
     func message(for touch: TVRemoteTouch) throws -> HIDMessage
     /// Sends a watch gesture. `completion` receives SimulatorKit's delivery
     /// result; a thrown error means the gesture was not sent.
@@ -1488,18 +1370,13 @@ protocol SimulatorDisplay: AnyObject {
     func caDebugOption(_ option: CADebugOption) throws -> Bool
     /// CoreSimulator drops the error of this change.
     func setCADebugOption(_ option: CADebugOption, enabled: Bool) throws
-    // Location calls run off the main actor and reach the device in the
-    // order they are made.
-    /// The runtime's recorded location routes, in CoreSimulator's order.
+    // Returns recorded routes in CoreSimulator order. Location calls run serially off the main actor.
     func locationScenarios() async throws -> [LocationScenario]
     func clearSimulatedLocation() async throws
     func setLocation(latitude: Double, longitude: Double) async throws
     /// Runs the route a `LocationScenario.name` names.
     func setLocationScenario(_ name: String) async throws
-    // Keyboard calls run off the main actor and reach the device in the
-    // order they are made.
-    /// Connects or disconnects the guest's hardware keyboard, of the Mac
-    /// keyboard's type.
+    // Changes the guest keyboard serially off the main actor.
     func setHardwareKeyboardConnected(_ connected: Bool) async throws
     /// Sets the language of the guest's keyboard, such as `en` or `ja`.
     func setKeyboardLanguage(_ language: String) async throws
@@ -1510,15 +1387,9 @@ protocol SimulatorDisplay: AnyObject {
     /// Connects to the device's audio route port. `changed` runs on the main
     /// actor after each change the port reports, until it disconnects.
     func connectAudioRoutes(changed: @escaping @MainActor () -> Void) throws -> any SimulatorAudioRoutes
-    /// Registers with the device's screen adapter for its external display,
-    /// as Simulator.app waits for it: the adapter reports the device's TVOut
-    /// screen once it is connected, also when it already is, on a later turn
-    /// of the main queue. For each report, `found` runs on the main actor with
-    /// a connection to the screen, whose `changed` runs on the main actor after
-    /// each change of its properties, such as its power and size, until it
-    /// disconnects; or with the error that kept the session from connecting.
-    /// Releasing the returned registration ends the reports, except those
-    /// already queued. Returns nil for a device without a screen adapter.
+    /// Observes the existing or subsequently connected TVOut screen on the main actor.
+    /// Each connection reports property changes through `changed` until disconnected.
+    /// Releasing the token ends reports except queued callbacks; nil means no adapter.
     func registerForExternalScreen(
         changed: @escaping @MainActor () -> Void,
         found: @escaping @MainActor (Result<any SimulatorExternalScreen, any Error>) -> Void
@@ -1526,17 +1397,10 @@ protocol SimulatorDisplay: AnyObject {
     func setChromeVisible(_ visible: Bool)
     func setActive(_ active: Bool)
     func setKeyboardEnabled(_ enabled: Bool)
-    /// `SimDigitizerInputView.supportScrolling`: whether the digitizer passes
-    /// the pointer's scrolling to the device, which turns its Digital Crown
-    /// or Digital Dial.
+    /// Controls whether digitizer scrolling reaches the device's crown or dial.
     func setSupportsScrolling(_ supports: Bool)
-    /// Tells the guest's UIKit whether edge swipes start on the bezel, as
-    /// Simulator.app's `SimDevice wantsEdgeSwipes:` does: sets the guest's
-    /// `com.apple.UIKit.SimulatorWantsEdgeSwipes` state to 1 or 0 and posts it.
-    /// While it is 1, UIKit's `_UIScreenEdgePanRecognizer` takes only the
-    /// touches that the digitizer marks as starting at an edge, which a drag
-    /// from the bezel into the screen makes, and otherwise any touch that
-    /// starts near an edge.
+    /// Sets and posts `com.apple.UIKit.SimulatorWantsEdgeSwipes`.
+    /// When enabled, UIKit requires digitizer-marked edge starts; otherwise near-edge touches suffice.
     func setWantsEdgeSwipes(_ wants: Bool)
     /// `SimDigitizerInputView.supportTouchPressure`: whether clicks press
     /// the screen with a pressure.
@@ -1627,9 +1491,7 @@ final class SimulatorConnection: SimulatorDisplay {
     /// The messages that read the backlight, by protocol.
     static let backlightSelectors = [("SimScreenProperties", ["backlight"]), ("SimScreenBacklight", ["state"])]
 
-    // SimDisplayView's `backlightState` follows the screen's properties only
-    // after their change is reported, so the properties are read instead, as
-    // Simulator.app reads them when they change.
+    // Read properties directly: SimDisplayView.backlightState lags until its change callback.
     var backlightState: Int32? {
         guard !disconnected else { return nil }
         let display = runtime.display

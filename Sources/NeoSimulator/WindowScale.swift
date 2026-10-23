@@ -1,8 +1,6 @@
 import AppKit
 
-/// Window ▸ Physical Size, Point Accurate, Pixel Accurate, and Fit Screen.
-/// Each shows the display at a scale and sizes the window to it, without
-/// changing the device's screen.
+/// Window scaling modes; they resize the presentation without changing the guest screen.
 enum WindowScaleMode: String {
     case physicalSize, pointAccurate, pixelAccurate, fitScreen
 }
@@ -25,10 +23,8 @@ enum WindowScale {
     static let defaultHostDensity: CGFloat = 110
     static let defaultDeviceDensity: CGFloat = 163
 
-    /// Physical Size: the Mac screen's points per inch over the device's, so
-    /// that an inch of the device's screen covers an inch of the Mac's.
-    /// Simulator.app uses the defaults only for missing values and divides by
-    /// a zero size; NeoSimulator also uses them for a zero or invalid value.
+    /// Host points per inch divided by device points per inch.
+    /// Missing, zero, or invalid densities use defaults.
     static func physicalSize(hostDensity: CGFloat?, deviceDensity: CGFloat?) -> CGFloat {
         (usable(hostDensity) ?? defaultHostDensity) / (usable(deviceDensity) ?? defaultDeviceDensity)
     }
@@ -48,10 +44,8 @@ enum WindowScale {
         (screenScale ?? 1) / (backingScaleFactor ?? 1)
     }
 
-    /// The smallest scale Simulator.app lets Physical Size, Point Accurate,
-    /// and Pixel Accurate set: 0.4 for an iPhone and 0.25 for an iPad on its
-    /// own screen, 0.6 for a watch, and otherwise the scale that fits the
-    /// display in 240 by 240 points.
+    /// Simulator.app minimum scales: 0.4 iPhone, 0.25 iPad, 0.6 watch;
+    /// other displays must fit within 240×240 points at minimum.
     static func minimum(family: DeviceCapabilities.Family?, displayClass: UInt16?,
                         fitting240 fitting: @autoclosure () -> CGFloat) -> CGFloat {
         switch family {
@@ -62,11 +56,7 @@ enum WindowScale {
         }
     }
 
-    /// The space Simulator.app keeps between a device window's header and its
-    /// display: with a bezel, 10 points less the top padding of the bezel's
-    /// images, `SimDeviceChrome.images.padding.height`, which `bezelPadding`
-    /// gives; without one, where `bezelPadding` is nil, none. It does not
-    /// change with the display's scale.
+    /// Unscaled gap above the display: 10 points minus bezel top padding, or zero without a bezel.
     static func displayGap(bezelPadding: NSSize?) -> CGFloat { bezelPadding.map { 10 - $0.height } ?? 0 }
 
     /// Whether the display is at `target`, as Simulator.app compares scales.
@@ -78,9 +68,7 @@ enum WindowScale {
         return value
     }
 
-    /// Where Simulator.app moves a window after a fixed scale: inside
-    /// `visible` along each axis where the window crosses an edge. A window
-    /// longer than `visible` lines up with the opposite edge instead.
+    /// Moves overflowing axes into the visible frame; oversized windows align to the opposite edge.
     static func origin(of frame: NSRect, within visible: NSRect) -> NSPoint {
         func position(_ origin: CGFloat, _ length: CGFloat, _ lower: CGFloat, _ upper: CGFloat) -> CGFloat {
             if origin < lower { return min(upper - length, lower) }
@@ -91,9 +79,7 @@ enum WindowScale {
                        y: position(frame.minY, frame.height, visible.minY, visible.maxY))
     }
 
-    /// Where Simulator.app moves a window after a drag on a corner of its
-    /// bezel: a window that does not reach into `visible` inset by 128
-    /// points moves along each axis until it touches that inset frame.
+    /// Keeps part of a corner-resized window within the visible frame inset by 128 points.
     static func origin(of frame: NSRect, reaching visible: NSRect) -> NSPoint {
         let inset = visible.insetBy(dx: 128, dy: 128)
         guard !frame.intersects(inset) else { return frame.origin }
@@ -106,10 +92,7 @@ enum WindowScale {
                        y: position(frame.minY, frame.height, inset.minY, inset.maxY))
     }
 
-    /// Simulator.app's `DeviceWindow.constrainFrameRect(_:to:)` for a window
-    /// whose bezel has top padding: `frame` keeps its size and moves down only
-    /// when its top, less `inset`, is above `visible`. The window may extend
-    /// past every other edge of the screen.
+    /// Keeps the bezel below the screen's visible top while allowing its padding and other edges beyond it.
     static func frame(_ frame: NSRect, constrainedBelow visible: NSRect, topInset inset: CGFloat) -> NSRect {
         let height = frame.height - inset
         guard visible.maxY < frame.minY + height else { return frame }
@@ -119,9 +102,7 @@ enum WindowScale {
     }
 }
 
-/// A drag on a corner of the bezel, as Simulator.app's `DeviceWindow`
-/// tracks it: the dragged corner of the display follows the pointer, and the
-/// opposite corner stays where it was.
+/// Corner drag with the opposite display corner fixed.
 struct BezelResize {
     let corner: DisplayResizeRect.Corner
     /// The window's frame on the screen when the drag began, as tall as the
@@ -163,12 +144,7 @@ protocol PreferenceStore: AnyObject {
 extension UserDefaults: PreferenceStore {}
 
 extension PreferenceStore {
-    /// Window ▸ Show Device Bezels: Simulator.app's app-wide `ShowChrome`,
-    /// which each device window follows when it opens or reconnects and when
-    /// the command changes it. Like Simulator.app's `boolForKey:`, a value
-    /// that `defaults write` saves as a string, such as `NO`, reads as
-    /// `UserDefaults` reads it. It is on unless it was turned off, as its
-    /// registered default says.
+    /// ShowChrome defaults on and uses UserDefaults Boolean coercion.
     var showsDeviceBezels: Bool {
         object(forKey: HostPreferences.showChrome) == nil || bool(forKey: HostPreferences.showChrome)
     }
@@ -183,11 +159,7 @@ extension PreferenceStore {
     /// compact unified style. It is off unless it was turned on.
     var usesCompactTitleBar: Bool { bool(forKey: HostPreferences.useCompactTitleBar) }
 
-    /// Simulator.app's app-wide `AllowsMoveByDragOnWindowChrome`: whether a
-    /// press on a device window's bezel outside its corners moves the window.
-    /// Like Simulator.app, which reads it with `boolForKey:` at each press, a
-    /// change applies to the next press. It is on unless it was turned off, as
-    /// its registered default says.
+    /// AllowsMoveByDragOnWindowChrome defaults on and is read for each press.
     var movesWindowByDraggingBezel: Bool {
         object(forKey: HostPreferences.allowsMoveByDragOnWindowChrome) == nil
             || bool(forKey: HostPreferences.allowsMoveByDragOnWindowChrome)
@@ -197,31 +169,18 @@ extension PreferenceStore {
 private let windowScaleKey = "WindowScale"
 private let windowCenterKey = "WindowCenter"
 
-/// Which of a device's windows a saved geometry belongs to: the device window,
-/// under Simulator.app's `SimulatorWindowGeometry`, or the window of its
-/// external display, under `ExternalWindowGeometry`.
+/// Separate geometry storage for primary and external-display windows.
 enum WindowGeometryKind {
     case device, externalDisplay
 
     fileprivate var key: String { self == .device ? "SimulatorWindowGeometry" : "ExternalWindowGeometry" }
 }
 
-/// A device's window geometry under Simulator.app's keys, saved separately
-/// for each arrangement of the Mac's screens:
-/// `DevicePreferences[UDID].SimulatorWindowGeometry[configuration]`, or
-/// `ExternalWindowGeometry` for an external display's window, where
-/// `configuration` names the arrangement in `ScreenConfigurations`.
+/// Geometry is stored per device and host-screen arrangement using Simulator.app keys.
 extension PreferenceStore {
-    /// Where the device's window last closed while the Mac's screens had
-    /// `screens` as their frames, and the display's scale then.
-    ///
-    /// `center` is `WindowCenter` as `NSStringFromPoint` writes it. Like
-    /// Simulator.app, the zero point counts as none, which is also what
-    /// `NSPointFromString` reads from an unreadable string. `scale` is
-    /// `WindowScale`, nil when it is not a positive number. Both are nil when
-    /// the window has not closed in this arrangement of screens. Like
-    /// Simulator.app, reading saves a new arrangement, as
-    /// `screenConfiguration(for:)` does.
+    /// Reads the saved center and scale for this screen arrangement.
+    /// Zero/unreadable centers and nonpositive scales are absent.
+    /// Reading registers a new screen arrangement if needed.
     func windowGeometry(forDevice identifier: String, screens: [NSRect],
                         kind: WindowGeometryKind = .device) -> (center: NSPoint?, scale: CGFloat?) {
         let configuration = screenConfiguration(for: screens)
@@ -232,10 +191,7 @@ extension PreferenceStore {
         return (center == .zero ? nil : center, WindowScale.usable(scale))
     }
 
-    /// Saves where the device's window closed and, when given, its display
-    /// scale, for the arrangement of screens with `screens` as their frames.
-    /// Like Simulator.app, this replaces what was saved for the arrangement
-    /// and keeps what was saved for others and the device's other preferences.
+    /// Replaces geometry for this arrangement, preserving other arrangements and preferences.
     func setWindowGeometry(center: NSPoint, scale: CGFloat?, forDevice identifier: String, screens: [NSRect],
                            kind: WindowGeometryKind = .device) {
         let configuration = screenConfiguration(for: screens)
@@ -263,14 +219,8 @@ extension PreferenceStore {
         set(devices, forKey: HostPreferences.devicePreferences)
     }
 
-    /// The UUID string that names the arrangement of screens with `screens`
-    /// as their frames, as Simulator.app finds it in `ScreenConfigurations`:
-    /// an entry that lists as many frames, as `NSStringFromRect` strings,
-    /// with each of `screens` among them, in any order. Without one, a new
-    /// UUID is saved with the frames. Like Simulator.app, the entries are read
-    /// only when every one is a list of strings; otherwise the new UUID
-    /// replaces them. An entry whose name is not a UUID, where Simulator.app
-    /// stops, is skipped.
+    /// Finds the screen arrangement independent of order, or saves it under a new UUID.
+    /// Malformed frame lists reset the stored arrangements; invalid UUID keys are skipped.
     func screenConfiguration(for screens: [NSRect]) -> String {
         var configurations = object(forKey: HostPreferences.screenConfigurations) as? [String: [String]] ?? [:]
         for (name, frames) in configurations where frames.count == screens.count {

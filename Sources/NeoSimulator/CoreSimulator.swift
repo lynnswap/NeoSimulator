@@ -2,10 +2,8 @@ import ABIBridge
 import Foundation
 import ObjectiveC
 
-/// The CoreSimulator Objective-C messages the host sends, prepared once per process.
-///
-/// Methods that report failure through `NSError **` are prepared with `throws`
-/// signatures, and exceptions raised by CoreSimulator arrive as Swift errors.
+/// Prepared CoreSimulator messages. NSError-out failures and Objective-C exceptions
+/// are surfaced as Swift errors.
 @MainActor
 struct CoreSimulatorInterface {
     let serviceClass: AnyClass
@@ -23,7 +21,6 @@ struct CoreSimulatorInterface {
     let name: NativeObjCMethod<String?>
     let descriptiveName: NativeObjCMethod<String?>
     let identifier: NativeObjCMethod<NSUUID?>
-    /// `lastBootedAt`, when the device last booted.
     let lastBootedAt: NativeObjCMethod<NSDate?>
     let deviceRuntimeIdentifier: NativeObjCMethod<String?>
     let deviceRuntime: NativeObjCMethod<AnyObject?>
@@ -43,22 +40,18 @@ struct CoreSimulatorInterface {
     let memoryWarningFilePath: NativeObjCMethod<String?>
     let caDebugOption: NativeObjCMethod<Bool, UInt32>
     let setCADebugOption: NativeObjCMethod<Void, UInt32, Bool>
-    /// `dataPath`, the folder of the device's own files.
     let dataPath: NativeObjCMethod<String?>
-    /// `enableCarPlay:error:`, a request to the guest's CoreSimulatorBridge.
+    /// Requests the guest's counted CarPlay session through CoreSimulatorBridge.
     let enableCarPlay: NativeObjCMethod<Void, Bool>
-    /// An array of dictionaries with `name` and `localizedName` strings, or
-    /// nil when the device cannot list them.
+    /// Scenario dictionaries with name and localizedName, or nil if unavailable.
     let availableLocationScenarios: NativeObjCMethod<[NSDictionary]?>
     let clearSimulatedLocation: NativeObjCMethod<Void>
     let setLocation: NativeObjCMethod<Void, Double, Double>
     let setLocationScenario: NativeObjCMethod<Void, String>
-    /// `setHardwareKeyboardEnabled:keyboardType:error:`, whose type is a byte.
+    /// The private keyboardType parameter is one byte.
     let setHardwareKeyboard: NativeObjCMethod<Void, Bool, UInt8>
     let setKeyboardLanguage: NativeObjCMethod<Void, String>
-    /// `lookup:error:`, a send right to a Mach service of the guest. It
-    /// returns a port, which a `throws` signature cannot carry, so the error
-    /// slot is explicit.
+    /// The lookup:error: return is a Mach port, so its error slot must be passed explicitly.
     let lookup: NativeObjCMethod<UInt32, String, AutoreleasingUnsafeMutablePointer<NSError?>?>
     let runtimeName: NativeObjCMethod<String?>
     let runtimeIdentifier: NativeObjCMethod<String?>
@@ -74,8 +67,7 @@ struct CoreSimulatorInterface {
     let mainScreenScale: NativeObjCMethod<Float>
     let userInterfaceIdentifier: NativeObjCMethod<String?>
     let devicePairClass: AnyClass
-    /// `+[SimDevicePair testPossiblePairingWithDeviceTypeA:RuntimeA:DeviceTypeB:RuntimeB:error:]`,
-    /// whether a device of one type and runtime can pair with a device of another.
+    /// CoreSimulator pairing validation takes the watch type/runtime before the phone.
     let testPossiblePairing: NativeObjCMethod<Void, AnyObject, AnyObject, AnyObject, AnyObject>
 
     typealias NotificationHandler = @convention(block) (NSDictionary) -> Void
@@ -208,40 +200,32 @@ struct CoreSimulatorInterface {
     }
 }
 
-/// A CoreSimulator device with the properties read when its device set was scanned.
+/// A device with catalog properties captured when its set was scanned.
 @MainActor
 final class SimulatorDevice {
-    /// The `SimDevice` object.
+    /// The underlying SimDevice.
     let object: AnyObject
     let identifier: String
     let name: String
-    /// The runtime, its build, and the device type, such as
-    /// "iOS 27.0 (24A434) - iPhone 17 Pro". Simulator.app shows it in File ▸
-    /// Open Simulator while Option is held.
+    /// Runtime, build, and type description shown while Option is held.
     let descriptiveName: String
     let runtimeIdentifier: String
     let runtimeName: String
     /// `SimDeviceType.productFamilyID`: 1 iPhone, 2 iPad, 3 TV, 4 Watch, 7 Vision.
     let productFamily: Int
     let deviceTypeName: String
-    /// Whether the device type has a framebuffer mask, the screen's shape.
     let hasFramebufferMask: Bool
-    /// The screen's corner radius in points, from the device type's
-    /// `DeviceCornerRadius` capability; 0 for a square screen.
+    /// DeviceCornerRadius in points; zero for a square screen.
     let screenCornerRadius: Double
-    /// The device type's `DeviceSupportsEnhancedMultitasking` capability: the
-    /// guest runs Stage Manager, also on an external display.
+    /// DeviceSupportsEnhancedMultitasking capability (Stage Manager).
     let supportsEnhancedMultitasking: Bool
-    /// The screen's points per inch, `SimDeviceType.mainScreenDPI`'s width
-    /// over `mainScreenScale`, or nil without a device type.
+    /// mainScreenDPI.width / mainScreenScale, or nil without a device type.
     let screenPointsPerInch: Double?
     /// `SimRuntime.version`, packed as major << 16 | minor << 8 | patch.
     let runtimeVersion: UInt32
-    /// Whether the device type names a user-interface profile, such as
-    /// Apple Vision Pro's `com.apple.CoreSimulator.SimDeviceUserInterface.XROS`,
-    /// whose plugin SimulatorKit loads for the device's display.
+    /// Whether SimulatorKit should load the device type's user-interface profile.
     let hasUserInterfacePlugin: Bool
-    /// The path of the device's set, or nil for the default set.
+    /// Nil denotes the default device set.
     let deviceSetPath: String?
     private let interface: CoreSimulatorInterface
 
@@ -273,12 +257,10 @@ final class SimulatorDevice {
             try deviceType.flatMap { try unsafe interface.userInterfaceIdentifier.unsafeInvoke(on: $0) } != nil
     }
 
-    /// `SimDeviceState`; 3 is Booted. A device whose state cannot be read is
-    /// treated as shut down.
+    /// SimDeviceState; 3 means booted. Read failures are treated as shutdown.
     var state: UInt { (try? unsafe interface.state.unsafeInvoke(on: object)) ?? 0 }
 
-    /// When the device last booted, which tells its boots apart, or nil when
-    /// it cannot be read.
+    /// Identifies a boot; nil if unreadable.
     var lastBootDate: Date? { (try? unsafe interface.lastBootedAt.unsafeInvoke(on: object)).flatMap { $0 as Date? } }
 
     func supportsFeature(_ feature: String) -> Bool {
@@ -306,8 +288,7 @@ final class SimulatorDevice {
         try unsafe interface.setDarwinNotificationState.unsafeInvoke(on: object, state, name)
     }
 
-    /// `UIContentSizeCategory` as CoreSimulator numbers it: 1 through 12 from
-    /// Extra Small to Accessibility XXXL, other values when unknown or unsupported.
+    /// CoreSimulator content-size values: 1–12, from Extra Small to Accessibility XXXL.
     func contentSizeCategory() throws -> Int { try unsafe interface.contentSizeCategory.unsafeInvoke(on: object) }
 
     func setContentSizeCategory(_ category: Int) throws {
@@ -331,7 +312,6 @@ final class SimulatorDevice {
         }
     }
 
-    /// The folder of the device's logs.
     func logDirectory() throws -> URL {
         guard let path = try unsafe interface.logPath.unsafeInvoke(on: object) else {
             throw HostError.operation("The device did not report its log folder.")
@@ -339,8 +319,7 @@ final class SimulatorDevice {
         return URL(fileURLWithPath: path, isDirectory: true)
     }
 
-    /// The file that `SimDevice.simulateMemoryWarning` writes to make the
-    /// guest simulate a memory warning.
+    /// Guest file used by SimDevice.simulateMemoryWarning.
     func memoryWarningFile() throws -> URL {
         guard let path = try unsafe interface.memoryWarningFilePath.unsafeInvoke(on: object) else {
             throw HostError.operation("The device did not report where to signal a memory warning.")
@@ -348,10 +327,8 @@ final class SimulatorDevice {
         return URL(fileURLWithPath: path)
     }
 
-    /// `<dataPath>/Library/Application Support/Simulator/extended_display.plist`,
-    /// the device's external display configuration. CoreSimulator gives the
-    /// guest its path, and the guest reads it each time the TVOut screen's
-    /// modes change: with `stark` on, it takes that screen as a car's display.
+    /// The guest reads extended_display.plist whenever TVOut modes change.
+    /// Its stark flag marks the screen as a CarPlay display.
     func extendedDisplayFile() throws -> URL {
         guard let path = try unsafe interface.dataPath.unsafeInvoke(on: object) else {
             throw HostError.operation("The device did not report its data folder.")
@@ -360,17 +337,12 @@ final class SimulatorDevice {
             .appendingPathComponent("Library/Application Support/Simulator/extended_display.plist")
     }
 
-    /// Starts or ends a CarPlay session in the guest through its
-    /// CoreSimulatorBridge, which counts them: each start needs one end. The
-    /// request waits for the guest, so it runs off the main actor, and the
-    /// requests reach the guest in the order they are made. A device whose
-    /// last boot is no longer `boot` when the request runs gets nothing, and
-    /// the request throws `CarPlayRequestMoot`.
+    /// Sends a counted CarPlay request serially off the main actor; each start needs one end.
+    /// Throws CarPlayRequestMoot if the device is no longer in `boot` when the request runs.
     func setCarPlayEnabled(_ enabled: Bool, inBoot boot: Date?) async throws {
         nonisolated(unsafe) let lastBootedAt = interface.lastBootedAt
         try await call(interface.enableCarPlay, on: carPlayQueue) { method, device in
-            // A restart between this check and CoreSimulator's delivery of
-            // the request cannot be told apart from here.
+            // A restart between this check and guest delivery cannot be detected here.
             guard (try? unsafe lastBootedAt.unsafeInvoke(on: device)).flatMap({ $0 as Date? }) == boot else {
                 throw CarPlayRequestMoot()
             }
@@ -388,18 +360,13 @@ final class SimulatorDevice {
     func setCADebugOption(_ option: CADebugOption, enabled: Bool) throws {
         try unsafe interface.setCADebugOption.unsafeInvoke(on: object, option.rawValue, enabled)
     }
-    // Right after a boot, CoreSimulator takes up to a second to answer
-    // location calls, so they run on this queue, as Simulator.app runs them on
-    // a global queue. Being serial, it applies changes in the order they are made.
+    // Location calls can block after boot; serialize them off the main actor to preserve order.
     private lazy var locationQueue = DispatchQueue(label: "dev.lynnswap.NeoSimulator.location")
-    // Changing the keyboard's language takes CoreSimulator up to half a
-    // second, so keyboard changes run on this queue, as Simulator.app runs
-    // them on a global queue, also in the order they are made.
+    // Keyboard-language changes can block; serialize them off the main actor to preserve order.
     private lazy var keyboardQueue = DispatchQueue(label: "dev.lynnswap.NeoSimulator.keyboard")
     private lazy var carPlayQueue = DispatchQueue(label: "dev.lynnswap.NeoSimulator.carplay")
 
-    /// The runtime's recorded location routes in CoreSimulator's order, empty
-    /// when the device lists none.
+    /// Recorded routes in runtime order; empty if none are reported.
     func locationScenarios() async throws -> [LocationScenario] {
         try await call(interface.availableLocationScenarios, on: locationQueue) { method, device in
             try unsafe method.unsafeInvoke(on: device)?.compactMap { scenario in
@@ -421,8 +388,7 @@ final class SimulatorDevice {
         try await call(interface.setLocationScenario, on: locationQueue) { try unsafe $0.unsafeInvoke(on: $1, name) }
     }
 
-    /// Connects or disconnects the guest's hardware keyboard, of a type that
-    /// `IndigoHIDGetKeyboardType()` gives.
+    /// Uses the byte-sized keyboard type returned by IndigoHIDGetKeyboardType.
     func setHardwareKeyboardEnabled(_ enabled: Bool, keyboardType: UInt8) async throws {
         try await call(interface.setHardwareKeyboard, on: keyboardQueue) {
             try unsafe $0.unsafeInvoke(on: $1, enabled, keyboardType)
@@ -433,8 +399,7 @@ final class SimulatorDevice {
         try await call(interface.setKeyboardLanguage, on: keyboardQueue) { try unsafe $0.unsafeInvoke(on: $1, language) }
     }
 
-    /// A send right to the guest's Mach service `name`, which the caller then
-    /// owns. CoreSimulator fails while the device is not booted.
+    /// Returns a caller-owned send right. Fails unless the guest is booted.
     func lookUp(_ name: String) throws -> UInt32 {
         try autoreleasepool {
             // The method stores an autoreleased error, so the slot must not own it.
@@ -451,9 +416,8 @@ final class SimulatorDevice {
         }
     }
 
-    /// Sends `method` to the device on `queue`, queued before this suspends.
-    /// SimDevice takes these calls on any thread, as Simulator.app makes them,
-    /// and a prepared message can be sent from any thread.
+    /// Queues before suspending to preserve call order. Prepared messages and SimDevice
+    /// support calls from this queue.
     private func call<Method, Value: Sendable>(
         _ method: Method, on queue: DispatchQueue, _ call: @escaping @Sendable (Method, AnyObject) throws -> Value
     ) async throws -> Value {
@@ -464,21 +428,19 @@ final class SimulatorDevice {
     }
 }
 
-/// A recorded location route of a device's runtime, such as City Run.
+/// Recorded location route supplied by the runtime.
 struct LocationScenario: Equatable {
-    /// The name that identifies the scenario to CoreSimulator.
+    /// CoreSimulator identifier.
     let name: String
-    /// The title Features ▸ Location shows.
+    /// Display title.
     let localizedName: String
 }
 
-/// The device types and runtimes that File ▸ New Simulator… offers, in
-/// CoreSimulator's order.
+/// Creation catalog in CoreSimulator order.
 struct SimulatorCatalog {
     struct DeviceType: Equatable {
         let identifier: String
         let name: String
-        /// `productFamilyID`, as in `SimulatorDevice.productFamily`.
         let productFamily: Int
     }
 
@@ -488,14 +450,10 @@ struct SimulatorCatalog {
     }
 
     let deviceTypes: [DeviceType]
-    /// The available runtimes.
     let runtimes: [Runtime]
-    /// The device types each runtime supports, by identifier.
+    /// Supported device-type identifiers keyed by runtime.
     let supportedDeviceTypes: [String: Set<String>]
-    /// Whether CoreSimulator can pair a watch of `watchType` on `watchRuntime`
-    /// with a phone of `phoneType` on `phoneRuntime`, as
-    /// `SimDevicePair testPossiblePairingWithDeviceTypeA:RuntimeA:DeviceTypeB:RuntimeB:error:`
-    /// decides; Simulator.app passes the watch first.
+    /// Watch-first CoreSimulator pairing validation.
     let canPair: @MainActor (_ watchType: String, _ watchRuntime: String,
                              _ phoneType: String, _ phoneRuntime: String) -> Bool
 
@@ -506,13 +464,11 @@ struct SimulatorCatalog {
     func deviceType(_ identifier: String) -> DeviceType? { deviceTypes.first { $0.identifier == identifier } }
 }
 
-/// A CoreSimulator device set of one developer directory: the default set,
-/// or a set at another path such as Xcode's parallel testing devices.
+/// Device set owned by one developer directory.
 @MainActor
 final class SimulatorDeviceSet {
-    /// The set's directory.
     let path: String
-    /// The path tools need to address this set's devices, or nil for the default set.
+    /// Tool argument; nil for the default device set.
     let toolPath: String?
     private let context: AnyObject
     private let object: AnyObject
@@ -562,21 +518,19 @@ final class SimulatorDeviceSet {
                   let phoneType = typeObjects[phoneType], let phoneRuntime = runtimeObjects[phoneRuntime] else {
                 return false
             }
-            // Like Simulator.app, an error only means that the pairing is not possible.
+            // Pairing validation errors mean the pair is unavailable.
             return (try? unsafe interface.testPossiblePairing.unsafeInvoke(
                 on: interface.devicePairClass as AnyObject, watchType, watchRuntime, phoneType, phoneRuntime)) != nil
         }
     }
 
-    /// The set's available devices in CoreSimulator's order: by runtime, then
-    /// device type, then name.
+    /// Available devices ordered by runtime, type, and name.
     func readDevices() throws -> [SimulatorDevice] {
         try unsafe interface.availableDevices.unsafeInvoke(on: object).compactMap {
             try SimulatorDevice($0, deviceSetPath: toolPath, interface: interface)
         }
     }
 
-    /// Calls `handler` on the main queue after each device-set change.
     func observe(_ handler: @escaping @MainActor () -> Void) throws -> UInt64 {
         let block: CoreSimulatorInterface.NotificationHandler = { _ in
             MainActor.assumeIsolated { handler() }
@@ -589,12 +543,9 @@ final class SimulatorDeviceSet {
     }
 }
 
-/// CoreSimulator's GPU policy for rendering simulator displays: the
-/// `FramebufferServerGPUPolicy` array of GPU kinds in the `com.apple.CoreSimulator`
-/// defaults, in the order its render server tries them. File ▸ GPU Selection
-/// edits it as Simulator.app does.
+/// Render-server GPU preference order in com.apple.CoreSimulator defaults.
 struct GPUPolicy {
-    /// The kind of GPU the policy prefers, apart from an external one.
+    /// Preferred GPU kind after any leading external GPU.
     enum Preference: String {
         case automatic
         case integrated = "lowPower"
@@ -603,21 +554,18 @@ struct GPUPolicy {
 
     static let suiteName = "com.apple.CoreSimulator"
     static let key = "FramebufferServerGPUPolicy"
-    /// The policy while the key is unset, as Simulator.app reads it.
     static let defaultOrder = ["automatic", "external", "discrete", "lowPower", "headless"]
     private static let external = "external"
 
     let defaults: UserDefaults
 
-    /// The stored order. Like Simulator.app, a single string is an order of one.
+    /// A single string is accepted as a one-element order.
     var order: [String] {
         defaults.stringArray(forKey: Self.key) ?? defaults.string(forKey: Self.key).map { [$0] } ?? Self.defaultOrder
     }
 
-    /// Whether an external GPU comes first.
     var prefersExternal: Bool { order.first == Self.external }
 
-    /// The kind that comes first, after an external GPU.
     var preference: Preference? {
         let order = order
         return (prefersExternal ? order.dropFirst().first : order.first).flatMap(Preference.init(rawValue:))
@@ -627,9 +575,7 @@ struct GPUPolicy {
 
     func togglePrefersExternal() { store(preference, external: !prefersExternal) }
 
-    /// Simulator.app replaces the whole order: the preferred kinds, with the
-    /// external GPU first when it is preferred and last otherwise. Other kinds,
-    /// such as `headless`, are dropped.
+    /// Replaces the order with the chosen kinds and external GPU; drops others such as headless.
     private func store(_ preference: Preference?, external: Bool) {
         let kinds = switch preference {
         case .automatic: ["automatic"]

@@ -1,7 +1,7 @@
 import AppKit
 import Observation
 
-/// Device properties Simulator.app uses to show, hide, or enable commands.
+/// Capabilities used for command visibility and availability.
 struct DeviceCapabilities {
     /// `SimDeviceType.productFamilyID`.
     enum Family: Int { case iPhone = 1, iPad = 2, tv = 3, watch = 4, vision = 7 }
@@ -28,25 +28,17 @@ struct DeviceCapabilities {
     var supportsEnhancedMultitasking = false
 
     var isPhoneOrPad: Bool { family == .iPhone || family == .iPad }
-    /// Whether Window ▸ Show Device Bezels applies. Simulator.app hides it for
-    /// Apple Vision, whose display has no bezel.
+    /// Vision displays have no bezel.
     var supportsDeviceBezels: Bool { family != .vision }
     var rotates: Bool { controlsOrientation && supportsFeature(Self.displayRotation) }
-    /// Whether I/O ▸ External Displays applies: like Simulator.app, the device
-    /// supports external displays and has its own screen.
     var supportsExternalDisplays: Bool { supportsFeature(Self.externalDisplay) && supportsFeature(Self.integratedDisplay) }
-    /// Whether I/O ▸ External Displays ▸ CarPlay applies: like Simulator.app,
-    /// the device also supports CarPlay.
     var supportsCarPlay: Bool { supportsExternalDisplays && supportsFeature(Self.carPlay) }
     /// Whether the device has a Digital Crown or Digital Dial, which the
     /// pointer's scrolling turns.
     var hasCrownOrDial: Bool { supportsFeature(Self.digitalCrown) || supportsFeature(Self.digitalDial) }
 
-    /// Why the device cannot show an External Displays item whatever its
-    /// external display offers, or nil: iPadOS before 27 on an iPad with Stage
-    /// Manager cannot leave a 3840×2160 display at 60 Hz (see
-    /// `ExternalDisplayLimit.extendedDisplay`), and at 120 Hz it would show
-    /// 720×480.
+    /// Limits that apply regardless of the external screen's advertised modes.
+    /// See `ExternalDisplayLimit.extendedDisplay` for the pre-iPadOS 27 failure.
     func externalDisplayLimit(for mode: ExternalDisplayMode) -> ExternalDisplayLimit? {
         mode == .size3840x2160 && family == .iPad && supportsEnhancedMultitasking && runtimeVersion < 0x1B_00_00
             ? .extendedDisplay : nil
@@ -62,9 +54,7 @@ struct DeviceCapabilities {
     static let faceID = "com.apple.pearl-id"
     /// `SimFeatureOysterID`: Optic ID, Apple Vision Pro's.
     static let opticID = "com.apple.oyster-id"
-    /// `SimFeatureHoverboard95880941`, which only Apple Vision Pro's device
-    /// types declare. Simulator.app shows Debug ▸ Show Gaze Target only with
-    /// it.
+    /// Apple Vision Pro's `SimFeatureHoverboard95880941`, required by Show Gaze Target.
     static let hoverboard = "com.apple.hid.hoverboard.95880941"
     static let standBy = "com.apple.display.ambient-overlay"
     /// `SimFeatureUIKitSlowMotionStateful`: the guest keeps slow animations on
@@ -72,12 +62,9 @@ struct DeviceCapabilities {
     static let slowMotionStateful = "com.apple.UIKit.SimulatorSlowMotionStateful"
     /// `SimFeatureUIKitGraphicsQualityOverride`.
     static let graphicsQualityOverride = "com.apple.UIKit.SimulatorGraphicsQualityOverride"
-    /// `SimFeatureKeyboard`: the guest takes a hardware keyboard, and the
-    /// Mac's keyboard types into it. Simulator.app shows I/O ▸ Keyboard only
-    /// with it.
+    /// `SimFeatureKeyboard`, required for hardware keyboard input.
     static let keyboard = "com.apple.hid.keyboard"
-    /// `SimFeatureTouchPressure`: the guest takes the pressure of a touch,
-    /// such as 3D Touch. Simulator.app shows I/O ▸ Touch Pressure only with it.
+    /// SimFeatureTouchPressure, including 3D Touch.
     static let touchPressure = "com.apple.hid.touch-pressure"
     /// `SimFeaturePasteboard`: the guest runs the pasteboard service that Get
     /// and Send Pasteboard connect to. `simctl pbsync` requires it.
@@ -88,39 +75,29 @@ struct DeviceCapabilities {
     static let integratedDisplay = "com.apple.display.integrated"
     /// `SimFeatureCarPlay`: the guest runs CarPlay on its external display.
     static let carPlay = "com.apple.carplay"
-    /// `SimFeatureAlwaysOnDisplay`: the watch dims its display instead of
-    /// turning it off, which Simulator.app's Always On button shows.
+    /// SimFeatureAlwaysOnDisplay; the watch dims instead of turning off.
     static let alwaysOnDisplay = "com.apple.display.aot"
-    /// `SimFeatureTVRemote`: the device takes the Apple TV Remote, whose
-    /// panel Simulator.app keeps open only for such a device.
+    /// SimFeatureTVRemote.
     static let tvRemote = "com.apple.hid.tv-remote"
     /// `SimFeatureWatchGestures`: the watch takes Device ▸ Gestures.
     static let watchGestures = "com.apple.hid.watch.gestures"
-    /// `SimFeatureDigitalCrown`, which watches have, and
-    /// `SimFeatureDigitalDial`, which Apple Vision Pro has: the device takes
-    /// the pointer's scrolling as turns of the crown or dial.
+    /// Digital Crown or Digital Dial input consumes pointer scrolling.
     static let digitalCrown = "com.apple.hid.digital-crown"
     static let digitalDial = "com.apple.hid.digital-dial"
     /// `SimFeatureFallDetection`: the watch takes Features ▸ Simulate Fall.
     static let fallDetection = "com.apple.motion.fall-detection"
 }
 
-/// Preferences Simulator.app keeps in its standard user defaults.
+/// Simulator-compatible standard-defaults keys.
 enum HostPreferences {
-    /// Device ▸ Rotate Device Automatically. SimulatorKit reads this key from
-    /// the host's standard defaults and rotates the display when the guest
-    /// changes its interface orientation.
+    /// SimulatorKit reads this standard-defaults key to follow the guest's interface orientation.
     static let rotateWindowWhenSignaledByGuest = "RotateWindowWhenSignaledByGuest"
     /// Debug ▸ Show Parallel Testing Devices, on unless turned off.
     static let showTestingDevices = "ShowTestingDevices"
     /// Window ▸ Show Device Bezels, on unless turned off. It applies to every
     /// device window: see `PreferenceStore.showsDeviceBezels`.
     static let showChrome = "ShowChrome"
-    /// The style of each device window's title bar, which Simulator.app's
-    /// geometry update reads: with `UseCompactTitleBar`, off unless turned on,
-    /// the compact unified style; otherwise, with `UseMonobar`, on unless
-    /// turned off, the unified style while the window is wide enough for its
-    /// toolbar, and the expanded style below that. See `DeviceToolbar.style`.
+    /// Title-bar style preferences; see `DeviceToolbar.style`.
     static let useMonobar = "UseMonobar"
     static let useCompactTitleBar = "UseCompactTitleBar"
     /// Overrides the path of Xcode's parallel testing device set.
@@ -161,16 +138,12 @@ enum HostPreferences {
     /// The coordinate Custom Location… last set.
     static let locationLatitude = "LocationLatitude"
     static let locationLongitude = "LocationLongitude"
-    /// A dictionary of each device's own preferences, by UDID: see
-    /// `PreferenceStore.windowGeometry(forDevice:screens:)` and
-    /// `PreferenceStore.connectsHardwareKeyboard(forDevice:)`.
+    /// Per-device preferences keyed by UDID.
     static let devicePreferences = "DevicePreferences"
     /// I/O ▸ Keyboard ▸ Use the Same Keyboard Language as macOS, on unless
     /// turned off: see `PreferenceStore.syncsKeyboardLanguage`.
     static let enableKeyboardSync = "EnableKeyboardSync"
-    /// I/O ▸ Keyboard ▸ Connect Hardware Keyboard, on unless turned off. The
-    /// command saves each device's choice under this key in its
-    /// `DevicePreferences`; see `PreferenceStore.connectsHardwareKeyboard(forDevice:)`.
+    /// Per-device hardware keyboard preference, with an app-wide default.
     static let connectHardwareKeyboard = "ConnectHardwareKeyboard"
     /// I/O ▸ Touch Pressure ▸ Use Trackpad Force, on unless turned off; it
     /// applies only with a Force Touch trackpad. See `TouchPressure`.
@@ -189,16 +162,11 @@ enum HostPreferences {
     static let recentAudioOutputDeviceUIDs = "RecentAudioOutputDeviceUIDs"
     /// Edit ▸ Automatically Sync Pasteboard: see `PasteboardSync`.
     static let pasteboardAutomaticSync = "PasteboardAutomaticSync"
-    /// Whether a drag on a device window's bezel outside its corners moves
-    /// the window, on unless turned off: see
-    /// `PreferenceStore.movesWindowByDraggingBezel`.
+    /// Whether dragging the bezel moves the window; defaults to on.
     static let allowsMoveByDragOnWindowChrome = "AllowsMoveByDragOnWindowChrome"
 
-    /// Registers Simulator.app's defaults for these preferences. Show Pinch
-    /// Gestures is on: Simulator.app registers it so, and its Settings.bundle's
-    /// `false` only applies to a key without a value, which a registered key
-    /// never is. Automatically Sync Pasteboard is off, although Simulator.app
-    /// registers it on: NeoSimulator exchanges pasteboards only when chosen.
+    /// Registers shared defaults. Pasteboard synchronization is opt-in.
+    /// Show Pinch Gestures follows Simulator.app's registered default, not its Settings.bundle fallback.
     static func registerDefaults() {
         UserDefaults.standard.register(defaults: [
             showTestingDevices: true, showChrome: true, useMonobar: true, useCompactTitleBar: false,
@@ -214,8 +182,7 @@ enum HostPreferences {
         ])
     }
 
-    /// Like Simulator.app: the macOS screenshot location when it is an
-    /// existing folder, and otherwise the Desktop.
+    /// Uses an existing macOS screenshot folder, otherwise Desktop.
     private static func defaultScreenshotLocation() -> String {
         var isDirectory: ObjCBool = false
         if let location = CFPreferencesCopyAppValue("location" as CFString, "com.apple.screencapture" as CFString)
@@ -227,20 +194,17 @@ enum HostPreferences {
     }
 }
 
-/// A device's Features ▸ Location choice. Simulator.app keeps it per device
-/// and saves the last choice app-wide, as its menu tag in `LocationMode` and a
-/// scenario's name in `LocationScenario`.
+/// Per-device location selection, persisted as the last app-wide choice.
 enum LocationSelection: Equatable {
     case none, custom
     /// A runtime scenario, by its `LocationScenario.name`.
     case scenario(String)
 
     static let noneMode = 5101, customMode = 5102
-    /// Simulator.app saves a scenario's menu tag, which is above Custom's.
+    /// Scenario menu tag stored in Simulator.app preferences.
     static let scenarioMode = 5103
 
-    /// The saved choice for a device with `scenarios`. A saved scenario the
-    /// device does not have, and a mode Simulator.app does not use, are None.
+    /// Unknown modes or scenarios unavailable to this device restore as None.
     static func saved(among scenarios: [LocationScenario]) -> Self {
         let defaults = UserDefaults.standard
         let mode = defaults.integer(forKey: HostPreferences.locationMode)
@@ -250,8 +214,7 @@ enum LocationSelection: Equatable {
         return .scenario(name)
     }
 
-    /// Saves this choice for the next connection. Choosing None keeps the
-    /// saved scenario name, as in Simulator.app.
+    /// Persists for the next connection. None retains the previous scenario name.
     func save() {
         let defaults = UserDefaults.standard
         switch self {
@@ -268,9 +231,7 @@ enum LocationSelection: Equatable {
 enum DeviceOrientation: String, CaseIterable {
     case portrait, landscapeRight, portraitUpsideDown, landscapeLeft, faceUp, faceDown
 
-    /// The `SimDisplayView.deviceRotation` angle that shows this orientation
-    /// upright: a device turned counterclockwise (landscape left) is shown
-    /// turned 90° counterclockwise. A flat device keeps its last angle.
+    /// Display rotation for an upright view of this orientation. Flat orientations keep the previous angle.
     var displayAngle: Double? {
         switch self {
         case .portrait: 0
@@ -324,7 +285,7 @@ enum PasteboardTransfer {
     case send
 }
 
-/// How Simulator.app times the events of a hardware input.
+/// Hardware-input event timing.
 enum HardwareInput {
     /// Pressed and released at once.
     case press(HIDInput)
@@ -336,16 +297,13 @@ enum HardwareInput {
     case watchGesture(WatchGesture)
 }
 
-/// How a simulated fall ended, Features ▸ Simulate Fall, as the state of the
-/// guest's `com.apple.sos.user-fell` notification numbers it, which is also
-/// Simulator.app's menu tag.
+/// The guest's `com.apple.sos.user-fell` state and Simulator.app menu tags.
 enum FallResolution: UInt64 {
     case confirmed = 0, dismissed = 1, rejected = 2, unresponsive = 3
 }
 
-/// One connected simulator: its display and input, its device tools, and every
-/// operation that changes the device. Window controllers present a session and
-/// report its failures; they do not run device work themselves.
+/// Owns a connected device's display, input, tools, and device-changing operations.
+/// Window controllers present this state and report its failures.
 @MainActor @Observable
 final class DeviceSession {
     let device: AvailableDevice
@@ -369,9 +327,7 @@ final class DeviceSession {
     /// The device's pasteboard connection, from the first transfer, or while
     /// synchronizing, until the device closes it or the session disconnects.
     @ObservationIgnored private var pasteboardConnection: (any SimulatorPasteboard)?
-    /// The Mac pasteboard's change count when the device's pasteboard last
-    /// replaced it, Simulator.app's `lastSyncedPasteboardSnapshotLocalGeneration`,
-    /// or nil after a failed replacement.
+    /// Mac pasteboard generation last received from this device; nil after a failed replacement.
     @ObservationIgnored private var lastReceivedGeneration: Int?
     /// Whether the connection reported its first activation, after which each
     /// activation completes a push.
@@ -408,26 +364,11 @@ final class DeviceSession {
     @ObservationIgnored private var guestAngle: Double?
     /// The location routes the device's runtime listed when this session connected.
     private(set) var locationScenarios: [LocationScenario] = []
-    /// The Features ▸ Location choice for this device, which its checkmark
-    /// shows. CoreSimulator does not report the guest's location, so this is
-    /// what the host last applied.
+    /// Last location applied by the host; CoreSimulator does not report the guest's location.
     private(set) var location: LocationSelection?
 
-    /// - Parameters:
-    ///   - recordingProcess: Creates the recording process for a destination
-    ///     and mask. Defaults to the device's direct `simctl` recorder.
-    ///   - openLog: Opens the device's system log. Defaults to Console.
-    ///   - preferences: Where the keyboard preferences are kept.
-    ///   - hostKeyboardLanguage: Reads the Mac keyboard's language.
-    ///   - pasteboard: The Mac pasteboard that the device's pasteboard is
-    ///     exchanged with. Defaults to the general pasteboard, which the
-    ///     session uses only once a transfer or synchronization starts.
-    ///   - pasteboardSync: Edit ▸ Automatically Sync Pasteboard, which every
-    ///     device shares. Without it, the session never synchronizes.
-    ///   - externalScreenTimeout: How long the session waits, after the
-    ///     device connects, for its screen adapter to report the external
-    ///     display before it reports the choice to apply as failed. Defaults
-    ///     to the host's wait for the device's own screen.
+    /// The pasteboard is untouched until a transfer or synchronization starts.
+    /// `externalScreenTimeout` defaults to the host's wait for the primary screen.
     init(device: AvailableDevice, capabilities: DeviceCapabilities, display: any SimulatorDisplay,
          tools: DeviceTools, recordings: RecordingStore = RecordingStore(),
          recordingProcess: ((URL, DeviceTools.ScreenMask) -> Process)? = nil,
@@ -448,7 +389,6 @@ final class DeviceSession {
         hostPasteboard = pasteboard
         self.pasteboardSync = pasteboardSync
         self.recordings = recordings
-        // Simulator.app records Apple Vision Pro in HEVC and other devices in H.264.
         let codec: DeviceTools.VideoCodec = capabilities.family == .vision ? .hevc : .h264
         makeRecordingProcess = recordingProcess ?? { tools.recordingProcess(to: $0, mask: $1, codec: codec) }
         self.openLog = openLog
@@ -486,9 +426,7 @@ final class DeviceSession {
         }
     }
 
-    /// Presses and releases an input, and returns whether both events were sent.
-    /// Both messages are created first, so that a failure cannot leave the
-    /// input down.
+    /// Creates both events before sending either, so construction failure cannot leave the input down.
     @discardableResult
     private func press(_ event: HIDInput, _ report: FirstFailure) -> Bool {
         guard canPerformCommands, let down = message(event, .down, report),
@@ -496,10 +434,8 @@ final class DeviceSession {
         return sendRelease(up, generation: markDown(event), report)
     }
 
-    // A held input is released while the device is booted, even when a
-    // shutdown in progress makes other commands unavailable: the shutdown can
-    // fail and leave the device running. The release is created when the hold
-    // ends, so that its timestamp records the hold.
+    // Release remains available during shutdown because shutdown can fail.
+    // Construct the release at hold end so its timestamp includes the hold duration.
     private func release(_ event: HIDInput, _ report: FirstFailure) {
         guard let count = pendingHolds[event] else { return }
         guard count == 1 else {
@@ -521,9 +457,7 @@ final class DeviceSession {
         return lastDownGeneration
     }
 
-    /// Sends the release of the down event with `generation`. The input stays
-    /// down until SimulatorKit delivers that release, unless a later down event
-    /// or a pending hold keeps it down anyway.
+    /// The input remains down until delivery of this release, unless a newer press or hold keeps it down.
     @discardableResult
     private func sendRelease(_ up: HIDMessage, generation: Int, _ report: FirstFailure) -> Bool {
         let event = up.input
@@ -545,9 +479,7 @@ final class DeviceSession {
         }
     }
 
-    /// Sends the release of an input the device still holds: one whose
-    /// release was never sent, or was not delivered. A release that
-    /// SimulatorKit has not reported on yet is not sent twice.
+    /// Retries an undelivered release, but never duplicates one still awaiting delivery.
     private func releaseHeldInput(_ event: HIDInput, report: FirstFailure) {
         guard !isDisconnected, display.isBooted, let generation = downInputs[event],
               releasesInFlight[event] != generation else { return }
@@ -605,23 +537,17 @@ final class DeviceSession {
 
     // MARK: Apple TV Remote
 
-    /// The first failure of the events of each remote input the device has
-    /// sent down, a button or the touch, which its release reports too. An
-    /// input stays held, in `downInputs`, until its release is delivered.
+    /// First failure per held remote input; release delivery removes it from `downInputs`.
     @ObservationIgnored private var remoteReports: [HIDInput: FirstFailure] = [:]
     /// Whether the remote is touching its surface, and the touch's last
     /// point, which its end repeats.
     @ObservationIgnored private var isTouchingRemote = false
     @ObservationIgnored private var remoteTouchPoint = CGPoint.zero
 
-    /// Whether the device takes the Apple TV Remote's input: like
-    /// Simulator.app's `deviceSupportsAppleTVRemote`, which the remote's
-    /// actions check, an Apple TV.
+    /// Only Apple TV accepts remote input.
     private var takesTVRemote: Bool { capabilities.family == .tv }
 
-    /// Presses a button of the Apple TV Remote, which stays down until
-    /// `releaseRemoteButton(_:)`, as Simulator.app's remote sends a button's
-    /// press and its release as the pointer presses and releases it.
+    /// Holds a remote button until `releaseRemoteButton(_:)`.
     func pressRemoteButton(_ button: TVRemoteButton, failure: @escaping @MainActor (Error) -> Void) {
         guard canPerformCommands, takesTVRemote else { return }
         let report = FirstFailure(failure)
@@ -631,20 +557,14 @@ final class DeviceSession {
         remoteReports[event] = report
     }
 
-    /// Releases a remote button that `pressRemoteButton(_:failure:)` pressed.
-    /// As for every held input, the device holds the button until SimulatorKit
-    /// delivers the release: a release that was not delivered is sent again
-    /// by the next call or `releaseRemoteInputs()`, and disconnecting sends
-    /// it too.
+    /// Releases a remote button. An undelivered release is retried by the next release or disconnection.
     func releaseRemoteButton(_ button: TVRemoteButton) {
         let event = HIDInput.tvRemote(button)
         guard let report = remoteReports[event] else { return }
         releaseHeldInput(event, report: report)
     }
 
-    /// Touches the remote's touch surface at `point`, from 0 to 1 from its
-    /// top-left corner: starts a touch, or moves the one the remote has, as
-    /// Simulator.app's remote does while Option is held over the surface.
+    /// Starts or moves a remote touch, in normalized coordinates from the top-left corner.
     func touchRemote(at point: CGPoint, failure: @escaping @MainActor (Error) -> Void) {
         guard canPerformCommands, takesTVRemote, !isTouchingRemote || point != remoteTouchPoint else { return }
         let report = isTouchingRemote ? remoteReports[.tvRemoteTouch] ?? FirstFailure(failure) : FirstFailure(failure)
@@ -663,18 +583,13 @@ final class DeviceSession {
         remoteTouchPoint = point
     }
 
-    /// Releases the remote's buttons, and ends its touch, that the device may
-    /// still hold: those never released, and those whose release was not
-    /// delivered, as closing the remote does. Disconnecting releases them too.
+    /// Releases held remote inputs, including failed releases. Also called during disconnection.
     func releaseRemoteInputs() {
         isTouchingRemote = false
         for (event, report) in remoteReports { releaseHeldInput(event, report: report) }
     }
 
-    /// Ends the remote's touch at `point`. Like a button's release, the device
-    /// holds the touch until SimulatorKit delivers the end: an end that was
-    /// not delivered is sent again by the next call or `releaseRemoteInputs()`,
-    /// and disconnecting sends it too.
+    /// Ends the remote touch. An undelivered end is retried by the next release or disconnection.
     func liftRemoteTouch(at point: CGPoint) {
         guard let report = remoteReports[.tvRemoteTouch] else { return }
         if isTouchingRemote {
@@ -684,14 +599,10 @@ final class DeviceSession {
         releaseHeldInput(.tvRemoteTouch, report: report)
     }
 
-    /// The state of a watch's Always On button. Like Simulator.app's, it
-    /// follows the screen's backlight: on while the backlight is 0 or 1, off
-    /// at 2, and unchanged at other values; it starts off.
+    /// Watch backlight state: 0 or 1 means Always On is selected; 2 clears it. Other values preserve it.
     private(set) var showsAlwaysOn = false
 
-    /// Reads the backlight of a watch for its Always On button, as
-    /// Simulator.app does when the display connects and when the screen's
-    /// properties change.
+    /// Refreshes Always On when the display connects or its properties change.
     func followBacklight() {
         guard capabilities.family == .watch, !isDisconnected else { return }
         switch display.backlightState {
@@ -751,8 +662,7 @@ final class DeviceSession {
         try display.postNotification("com.apple.iphonesimulator.toggleincallstatusbar")
     }
 
-    /// Features ▸ Simulate Fall: tells the guest that its user fell and how
-    /// the fall ended, as Simulator.app does.
+    /// Reports a simulated fall and its resolution to the guest.
     func simulateFall(_ resolution: FallResolution) throws {
         guard canPerformCommands else { return }
         try send(resolution.rawValue, to: "com.apple.sos.user-fell")
@@ -780,8 +690,7 @@ final class DeviceSession {
         }
     }
 
-    /// Moves the preferred text size `delta` steps. Like Simulator.app, it
-    /// stops at the smallest and the largest accessibility size.
+    /// Changes text size, clamped to the supported accessibility range.
     func changeTextSize(by delta: Int) throws {
         guard canPerformCommands else { return }
         let sizes = 1...12
@@ -806,21 +715,14 @@ final class DeviceSession {
 
     // MARK: Keyboard
 
-    /// Whether the device takes a hardware keyboard, which Simulator.app's
-    /// I/O ▸ Keyboard needs.
     var supportsKeyboard: Bool { capabilities.supportsFeature(DeviceCapabilities.keyboard) }
 
-    /// Connect Hardware Keyboard's checkmark: the device's choice. Like
-    /// Simulator.app's keyboard controller, the Mac's keyboard types into the
-    /// device only while it is on, and Toggle Software Keyboard needs it.
+    /// The per-device keyboard preference controls both host typing and the guest keyboard.
     var connectsHardwareKeyboard: Bool {
         supportsKeyboard && preferences.connectsHardwareKeyboard(forDevice: device.id)
     }
 
-    /// Connect Hardware Keyboard: flips the device's choice and saves it, as
-    /// Simulator.app does, then connects or disconnects the guest's keyboard.
-    /// The choice is saved first, so it stays when applying fails, and
-    /// choosing again retries. Simulator.app only logs the failure.
+    /// Saves the choice before applying it, so a failed change remains selected and can be retried.
     func toggleHardwareKeyboard() async throws {
         guard canPerformCommands else { return }
         let connects = !preferences.connectsHardwareKeyboard(forDevice: device.id)
@@ -831,15 +733,12 @@ final class DeviceSession {
     /// Use the Same Keyboard Language as macOS, an app-wide preference.
     var syncsKeyboardLanguage: Bool { preferences.syncsKeyboardLanguage }
 
-    /// Like Simulator.app, changes only the preference. The guest takes the
-    /// Mac's language on its next connection or input-source change.
+    /// Updates only the preference; language applies at the next connection or input-source change.
     func toggleKeyboardLanguageSync() {
         preferences.set(!preferences.syncsKeyboardLanguage, forKey: HostPreferences.enableKeyboardSync)
     }
 
-    /// Gives the guest's keyboard the language of the Mac's while Use the
-    /// Same Keyboard Language as macOS is on, as Simulator.app does when the
-    /// device connects and when the Mac's input source changes.
+    /// Applies the Mac input-source language while keyboard-language synchronization is enabled.
     func syncKeyboardLanguage() async throws {
         guard canPerformCommands, preferences.syncsKeyboardLanguage else { return }
         guard let language = hostKeyboardLanguage() else {
@@ -848,16 +747,8 @@ final class DeviceSession {
         try await display.setKeyboardLanguage(language)
     }
 
-    /// Applies the keyboard settings to a device that was just connected, as
-    /// Simulator.app does on each connection: the hardware keyboard, then the
-    /// Mac's keyboard language. Each failure goes to `failure`, and one does
-    /// not stop the other.
-    ///
-    /// Simulator.app connects the hardware keyboard as the app-wide
-    /// `ConnectHardwareKeyboard` says, while its checkmark and keyboard input
-    /// follow the device's choice, so a device whose keyboard was disconnected
-    /// gets it back on its next connection. NeoSimulator applies the choice
-    /// the checkmark shows, which the app-wide value only stands in for.
+    /// Applies the per-device keyboard choice, then the Mac input-source language.
+    /// Each failure is reported independently; the app-wide choice is only a fallback.
     func applyKeyboardSettings(failure: (Error) -> Void) async {
         guard canPerformCommands else { return }
         do { try await display.setHardwareKeyboardConnected(preferences.connectsHardwareKeyboard(forDevice: device.id)) }
@@ -870,15 +761,13 @@ final class DeviceSession {
     private static let slowMotionAnimation = "com.apple.UIKit.SimulatorSlowMotionAnimationState"
     private static let forceGraphicsQuality = "com.apple.UIKit.ForceGraphicsQuality"
 
-    /// Whether Debug ▸ Slow Animations shows its state: the guest keeps slow
-    /// animations on. Otherwise Simulator.app offers a toggle for the frontmost app.
+    /// Stateful slow animations, as opposed to a frontmost-app toggle.
     var keepsSlowAnimations: Bool { capabilities.supportsFeature(DeviceCapabilities.slowMotionStateful) }
 
-    /// Like Simulator.app, the app's setting rather than the guest's state.
+    /// The app preference, independent of guest state.
     var slowAnimations: Bool { UserDefaults.standard.bool(forKey: HostPreferences.slowMotionAnimation) }
 
-    /// Flips `SlowMotionAnimation` and sends it to the guest, also when the
-    /// guest does not keep it, as Simulator.app does.
+    /// Toggles the preference and sends it to the guest.
     func toggleSlowAnimations() throws {
         guard canPerformCommands else { return }
         let enabled = !slowAnimations
@@ -899,13 +788,10 @@ final class DeviceSession {
         }
     }
 
-    /// Stops PineBoard, an Apple TV's system UI, which launchd restarts. After a
-    /// graphics-quality change, Simulator.app does this so that it takes effect.
+    /// Stops PineBoard so launchd restarts it with the new graphics quality.
     func restartSystemUI() async throws { try await tools.stopSystemUI() }
 
-    /// Applies the app's slow-animation and graphics-quality settings to a
-    /// device that was just connected, as Simulator.app does: slow animations
-    /// when the guest keeps them, and a quality other than the default.
+    /// Applies slow animations and non-default graphics quality when the device connects.
     func applyDebugSettings() throws {
         if keepsSlowAnimations { try send(slowAnimations ? 1 : 0, to: Self.slowMotionAnimation) }
         if capabilities.supportsFeature(DeviceCapabilities.graphicsQualityOverride),
@@ -939,7 +825,6 @@ final class DeviceSession {
         try await openLog(log)
     }
 
-    /// Opens a log in Console, as Simulator.app does.
     static func openInConsole(_ log: URL) async throws {
         guard let console = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Console") else {
             throw HostError.unavailable("Console is not installed.")
@@ -948,10 +833,8 @@ final class DeviceSession {
                                               configuration: NSWorkspace.OpenConfiguration())
     }
 
-    /// Debug ▸ Simulate Memory Warning: writes the empty trigger file that
-    /// `SimDevice.simulateMemoryWarning` writes, non-atomically like it, but
-    /// reports a failed write, which that method discards. A successful write
-    /// does not mean that an app handled the warning.
+    /// Writes the guest's memory-warning trigger file and reports write failures.
+    /// A successful write does not establish that an app handled the warning.
     func simulateMemoryWarning() throws {
         guard canPerformCommands else { return }
         try Data().write(to: display.memoryWarningFile())
@@ -959,9 +842,7 @@ final class DeviceSession {
 
     // MARK: Location
 
-    /// Restores the saved Location choice when the session connects, as
-    /// Simulator.app does when it lists the runtime's scenarios: a device that
-    /// lists none gets no choice and no location.
+    /// Restores the saved location after loading the runtime's scenarios. No scenarios means no selection.
     func restoreLocation() async throws {
         let scenarios = try await display.locationScenarios()
         // Right after a boot, listing takes up to a second. The session can
@@ -987,8 +868,7 @@ final class DeviceSession {
         try await use(.custom)
     }
 
-    // Like Simulator.app, the choice is kept and saved before it is applied,
-    // so it stays when applying fails, and choosing it again retries.
+    // Save before applying so failure preserves the choice for retry.
     private func use(_ selection: LocationSelection) async throws {
         location = selection
         selection.save()
@@ -1004,29 +884,21 @@ final class DeviceSession {
 
     // MARK: Pasteboard
 
-    /// Whether the device exchanges its pasteboard with the Mac: like
-    /// Simulator.app, a booted iPhone, iPad, or Apple Vision. Simulator.app
-    /// also needs the device's pasteboard connected; since NeoSimulator
-    /// connects only once a transfer or synchronization needs it, it needs
-    /// the device's pasteboard feature instead.
+    /// Requires a booted iPhone, iPad, or Vision device with the pasteboard feature.
+    /// The service connects lazily on the first transfer or synchronization.
     private var exchangesPasteboard: Bool {
         canPerformCommands && [.iPhone, .iPad, .vision].contains(capabilities.family)
             && capabilities.supportsFeature(DeviceCapabilities.pasteboard)
     }
 
-    /// Whether Edit ▸ Get Pasteboard and Send Pasteboard are available. Like
-    /// Simulator.app, they are not while pasteboards synchronize automatically.
+    /// Manual transfer is unavailable during automatic synchronization.
     var canTransferPasteboard: Bool { exchangesPasteboard && !synchronizesPasteboard }
 
     /// Whether Edit ▸ Automatically Sync Pasteboard is on for this session.
     var synchronizesPasteboard: Bool { pasteboardSync?.isOn == true }
 
-    /// Get Pasteboard or Send Pasteboard. Without automatic synchronization,
-    /// nothing crosses between the Mac and the device otherwise. The first
-    /// transfer connects to the device's pasteboard service. The connection
-    /// stays open for later transfers and for data that the Mac pasteboard
-    /// reads from the device only when an app pastes it. A failure, also one
-    /// the device reports later, goes to `failure`.
+    /// Transfers the pasteboard, connecting lazily and reporting immediate or later failures.
+    /// The connection stays open for subsequent transfers and lazy pasteboard data.
     func transferPasteboard(_ transfer: PasteboardTransfer, failure: @escaping @MainActor (Error) -> Void) {
         guard canTransferPasteboard else { return }
         let report = { (reason: Error) in
@@ -1049,9 +921,7 @@ final class DeviceSession {
         }
     }
 
-    /// Starts synchronizing a device that just connected, while Automatically
-    /// Sync Pasteboard is on: like Simulator.app when a device connects, it
-    /// connects to the device's pasteboard and sends the Mac's.
+    /// Starts synchronization on connection by sending the Mac pasteboard to the device.
     func startPasteboardSync() {
         guard synchronizesPasteboard, exchangesPasteboard, pasteboardConnection == nil else { return }
         do { try connectPasteboard().push() } catch {
@@ -1059,12 +929,8 @@ final class DeviceSession {
         }
     }
 
-    /// Tells the device's pasteboard connection whether to synchronize, as
-    /// Simulator.app's `updatePasteboardAutosyncStatus:` does after
-    /// Automatically Sync Pasteboard changes and when a connected device is
-    /// chosen again. Turning synchronization on connects a device that has no
-    /// connection yet, which transfers nothing; turning it off keeps the
-    /// connection for Get and Send Pasteboard.
+    /// Updates synchronization without transferring data. Enabling connects lazily;
+    /// disabling keeps the connection available for manual transfers.
     func updatePasteboardSync() {
         if let pasteboardConnection {
             setAutomaticSync(of: pasteboardConnection)
@@ -1075,10 +941,7 @@ final class DeviceSession {
         }
     }
 
-    /// Sends the Mac pasteboard after another device's pasteboard replaced
-    /// it, as Simulator.app's `sendPasteboard:` does for synchronization. A
-    /// Mac pasteboard that still holds what this device sent last is not sent
-    /// back to it.
+    /// Sends changes received from another device without echoing this device's last pasteboard back.
     func sendSynchronizedPasteboard() {
         guard let pasteboardConnection else { return }
         guard (hostPasteboard ?? .general).changeCount != lastReceivedGeneration else {
@@ -1096,7 +959,6 @@ final class DeviceSession {
         }
         pasteboardConnection = connection
         isPasteboardActive = false
-        // Like Simulator.app, each connection is told whether to synchronize.
         setAutomaticSync(of: connection)
         return connection
     }
@@ -1130,12 +992,10 @@ final class DeviceSession {
             hostLog("The pasteboard connection of \(device.name) closed")
             let error = HostError.operation("The simulator closed its pasteboard connection.")
             for report in pending { report(error) }
-            // Like Simulator.app, a synchronized device connects again at
-            // once, without sending the Mac's pasteboard. Otherwise the next
-            // transfer connects.
+            // Reconnect synchronization immediately; manual transfers reconnect on demand.
             updatePasteboardSync()
         case .synchronizationChanged(let enabled):
-            // Simulator.app asserts this; a late callback is only logged.
+            // A late callback can disagree with the current synchronization preference.
             if enabled != synchronizesPasteboard {
                 hostLog("The pasteboard synchronization of \(device.name) turned \(enabled ? "on" : "off") while Automatically Sync Pasteboard is \(synchronizesPasteboard ? "on" : "off")")
             }
@@ -1162,11 +1022,8 @@ final class DeviceSession {
     /// Why the device's audio port could not connect.
     @ObservationIgnored private var audioConnectionFailure: Error?
 
-    /// Connects to the device's audio port and routes the guest to the app's
-    /// recent routes, as Simulator.app does when a device connects. Each
-    /// change the port then reports, of the Mac's devices or of the guest's
-    /// routes, is shown and routed in the same way. The failures of these
-    /// routes go to `failure`.
+    /// Connects the audio port and applies recent routes initially and after port changes.
+    /// Routing failures go to `failure`.
     func connectAudioRoutes(failure: @escaping @MainActor (Error) -> Void) {
         guard routesAudio, audioConnection == nil, !isDisconnected else { return }
         do {
@@ -1179,8 +1036,7 @@ final class DeviceSession {
         audioRoutesChanged(failure: failure)
     }
 
-    /// Like the handler of Simulator.app's audio client: shows the port's
-    /// state, then synchronizes both directions with the recent routes.
+    /// Updates audio state and synchronizes both directions with recent routes.
     private func audioRoutesChanged(failure: @escaping @MainActor (Error) -> Void) {
         guard let audioConnection else { return }
         do {
@@ -1193,11 +1049,8 @@ final class DeviceSession {
         synchronizeAudioRoute(in: .output, failure: failure)
     }
 
-    /// Routes `scope` to the first of the app's recent routes that the guest
-    /// already uses or that the Mac has, as Simulator.app does for every
-    /// device after a choice. When none is available, the route stays, as
-    /// there. A device that routes audio but whose port did not connect
-    /// reports why.
+    /// Uses the first recent route already selected or available on the Mac.
+    /// Keeps the current route when none is available; reports a failed port connection.
     func synchronizeAudioRoute(in scope: AudioScope, failure: @escaping @MainActor (Error) -> Void) {
         guard routesAudio, !isDisconnected else { return }
         let name = device.name
@@ -1230,9 +1083,7 @@ final class DeviceSession {
 
     // MARK: External displays
 
-    /// The device's external display as CoreSimulator last reported it; nil
-    /// before it connects, after the session disconnects, and for a device
-    /// without one.
+    /// Last external screen state; nil while disconnected or unavailable.
     private(set) var externalScreen: ExternalScreenState?
     /// The session's connection to the device's external display.
     @ObservationIgnored private var externalScreenConnection: (any SimulatorExternalScreen)?
@@ -1242,10 +1093,7 @@ final class DeviceSession {
     /// The changes sent to the device's external display, which the device's
     /// sessions share.
     @ObservationIgnored private let externalDisplayChanges: ExternalDisplayChanges
-    /// The session's registration with the device's screen adapter, from
-    /// when the session connects, or a choice follows a failure to connect to
-    /// the external display, until the adapter reports the display or the
-    /// session disconnects.
+    /// Held until the adapter reports the external display or this session disconnects.
     @ObservationIgnored private var externalScreenRegistration: AnyObject?
     /// Ends the session's wait for the adapter's report after
     /// `externalScreenTimeout`; nil when the session does not wait.
@@ -1256,15 +1104,10 @@ final class DeviceSession {
     /// Runs on the main actor after `externalScreen` changes.
     @ObservationIgnored var onExternalScreenChange: (() -> Void)?
 
-    /// The External Displays item that the external display's actual state
-    /// checks, or nil when no item does. Simulator.app checks the device's
-    /// saved choice instead, which a failure or `simctl` leaves behind.
+    /// Menu selection derived from the actual display, which other tools may also change.
     var externalDisplayMode: ExternalDisplayMode? { externalScreen?.mode }
 
-    /// Why the device cannot show `mode`, which its item then says and a
-    /// choice of it reports, or nil when it can, or when the session has not
-    /// read the external display's modes yet and so cannot tell.
-    /// Simulator.app offers every item and sets the size anyway.
+    /// Why `mode` cannot be displayed; nil if supported or advertised modes are not yet known.
     func externalDisplayLimit(for mode: ExternalDisplayMode) -> ExternalDisplayLimit? {
         if let limit = capabilities.externalDisplayLimit(for: mode) { return limit }
         guard let size = mode.pixelSize, let modes = externalScreenModes else { return nil }
@@ -1276,46 +1119,25 @@ final class DeviceSession {
         }
     }
 
-    /// Whether the guest shows the external display in `state` at the
-    /// display's size, which it does not for a size that Neo would not set but
-    /// another tool can: at 640×480 it shows its larger 720×480 mode, and at a
-    /// rate it drops it shows 720×480 when the display turns on, and its
-    /// earlier size or nothing when the mode changes while the display is on
-    /// (see `ExternalScreenMode.guestSize(for:refreshRate:among:)`). True when
-    /// the session cannot tell, and for a CarPlay screen, which shows CarPlay.
+    /// Whether the guest renders at the screen's reported size. Unknown and CarPlay states pass.
+    /// See `ExternalScreenMode.guestSize(for:refreshRate:among:)` for guest mode substitution.
     func externalDisplayShowsItsSize(in state: ExternalScreenState) -> Bool {
         guard state.isPoweredOn, !state.isCarPlay, let modes = externalScreenModes else { return true }
         return ExternalScreenMode.guestSize(for: state.pixelSize, refreshRate: state.refreshRate, among: modes)
             == state.pixelSize
     }
 
-    /// Connects to the device's external display and applies the device's
-    /// saved choice, as Simulator.app does when a device connects: a size
-    /// sets the display's mode, which also turns it on. Disabled leaves the
-    /// display as it is, so a display that another tool turned on keeps its
-    /// window, as in Simulator.app. Failures go to `failure`.
-    ///
-    /// Like Simulator.app, the session learns of the display from
-    /// SimulatorKit's screen adapter, which reports it once it is connected,
-    /// also when it already is; the session then releases its registration.
-    /// The adapter fills its screens from an enumeration that ends
-    /// asynchronously, possibly after the device's own screen connects. A
-    /// device's screens exist from its creation, so the external display is in
-    /// that enumeration or the device has none. The session therefore waits
-    /// for the report as long as the host waits for the device's own screen,
-    /// holding the choices made meanwhile, and applies the last of them, or
-    /// the saved choice, when the display is reported or the wait ends. A
-    /// display reported later still connects and gets the saved choice.
+    /// Waits for the adapter's asynchronous enumeration, then applies the latest pending or saved choice.
+    /// A saved Disabled choice leaves an externally enabled display alone on connection.
+    /// Late reports still connect; failures go to `failure`.
     func connectExternalDisplay(failure: @escaping @MainActor (Error) -> Void) {
         guard capabilities.supportsExternalDisplays, !isDisconnected, externalScreenConnection == nil,
               externalScreenRegistration == nil else { return }
         waitForExternalScreen(failure: failure)
     }
 
-    /// Registers with the device's screen adapter and waits for its report of
-    /// the external display, applying the choice held meanwhile, or the saved
-    /// choice, once the display is reported or the wait ends. Failures go to
-    /// the held choice's handler, or else to `failure`.
+    /// Waits for the external screen or timeout, retaining only the latest choice.
+    /// Reports failure to that choice's handler, or to `failure` if no choice is pending.
     private func waitForExternalScreen(failure: @escaping @MainActor (Error) -> Void) {
         do {
             externalScreenRegistration = try display.registerForExternalScreen(
@@ -1337,9 +1159,7 @@ final class DeviceSession {
         }
     }
 
-    /// The adapter reported the external display, or a failure to connect
-    /// to it. Like Simulator.app, the session takes the first report and
-    /// releases its registration; reports already queued change nothing.
+    /// Consumes the first adapter report and releases the registration; ignores queued later reports.
     private func externalScreenReported(_ result: Result<any SimulatorExternalScreen, any Error>,
                                         failure: @escaping @MainActor (Error) -> Void) {
         guard externalScreenRegistration != nil else { return }
@@ -1377,15 +1197,8 @@ final class DeviceSession {
         }
     }
 
-    /// I/O ▸ External Displays: saves the choice for the device, as
-    /// Simulator.app does, then sets the external display's mode, which also
-    /// turns it on, or turns it off for Disabled; CarPlay also starts the
-    /// guest's CarPlay (see `ExternalDisplayChanges`). Because the choice is
-    /// saved first, a device that is restarting applies it when it connects,
-    /// and choosing again retries a failure, also a failure to connect to the
-    /// display: the session then registers again and waits for the display
-    /// with the choice. Failures, also those CoreSimulator reports later, go
-    /// to `failure`, those of one choice together.
+    /// Saves the choice before applying it, preserving it across restarts and failures.
+    /// Retries external-screen discovery when needed. Reports all failures for a choice together.
     func chooseExternalDisplay(_ mode: ExternalDisplayMode, failure: @escaping @MainActor (Error) -> Void) {
         guard capabilities.supportsExternalDisplays, mode != .carPlay || capabilities.supportsCarPlay else { return }
         preferences.setExternalDisplayTag(mode.rawValue, forDevice: device.id)
@@ -1414,10 +1227,7 @@ final class DeviceSession {
         }
         do {
             guard let externalScreenConnection else { throw HostError.unavailable("The device has no external display port.") }
-            // Unlike Simulator.app, a size the device cannot show changes nothing.
             if let limit = externalDisplayLimit(for: mode) { throw limit }
-            // Like Simulator.app, a choice on a device with CarPlay writes its
-            // CarPlay configuration.
             externalDisplayChanges.apply(mode, through: externalScreenConnection,
                                          savesCarPlayConfiguration: capabilities.supportsCarPlay, report: report)
         } catch {
@@ -1458,13 +1268,8 @@ final class DeviceSession {
     /// off, as quitting waits for.
     var hasExternalDisplay: Bool { externalScreenConnection != nil }
 
-    /// Like Simulator.app, a disconnecting window turns off the external
-    /// display of a device that stays booted, after a change in flight,
-    /// keeping the device's choice and CarPlay configuration for its next
-    /// connection; unlike Simulator.app, also a display that is off (see
-    /// `ExternalDisplayChanges`), and ending the CarPlay that this host
-    /// started, which Simulator.app's disconnection leaves to the guest.
-    /// Simulator.app only logs a failure.
+    /// Queues power-off and ends this host's CarPlay session before disconnecting.
+    /// Keeps the saved choice and CarPlay configuration for the next connection.
     private func disconnectExternalScreen() {
         // Releasing the registration ends the adapter's reports.
         externalScreenRegistration = nil
@@ -1527,9 +1332,7 @@ final class DeviceSession {
         }
     }
 
-    /// Reads the device orientation and shows the display at its angle. With
-    /// Rotate Device Automatically on, the display keeps following the guest's
-    /// interface orientation, which can differ from the physical one.
+    /// Reads physical orientation; automatic rotation subsequently follows guest interface orientation.
     func readOrientation() async throws {
         let reading = try await tools.orientation()
         try Task.checkCancellation()
@@ -1539,11 +1342,8 @@ final class DeviceSession {
         rotateDisplay(followsGuest ? guestAngle ?? reading.displayAngle : reading.displayAngle)
     }
 
-    /// Shows the display at the guest's interface orientation when that
-    /// changed, and returns whether it did. SimulatorKit also applies it with
-    /// Rotate Device Automatically on; applying it here keeps the order
-    /// deterministic. While following is off, the display can rotate without
-    /// the guest, so the next change after following resumes is applied.
+    /// Applies a changed guest interface orientation in a deterministic order.
+    /// Resuming automatic rotation reapplies it even after a manual display rotation.
     func followGuestInterfaceOrientation(enabled: Bool) -> Bool {
         guard enabled else {
             guestAngle = nil
@@ -1614,8 +1414,7 @@ final class DeviceSession {
     /// Whether a recording to a chosen file will replace `file` when it finishes.
     func isRecordingDestination(_ file: URL) -> Bool { recordings.isReserved(file) }
 
-    /// Starts recording the screen. Like Simulator.app, the session announces
-    /// the recording's start and end for the device's user-interface plugin.
+    /// Announces recording state changes to the device plugin.
     func startRecording(to destination: RecordingStore.Destination, mask: DeviceTools.ScreenMask) throws {
         guard canPerformCommands, recording == nil else { return }
         recording = try recordings.start(to: destination, process: { [makeRecordingProcess] in
