@@ -71,11 +71,15 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
     private let userInterfacePluginLookUp: (attempts: Int, interval: Duration)
     var staysOnTop: Bool { window?.level == .floating }
 
-    /// The device window of the key window: the key device window, or the
-    /// device window of the key external display window, whose device the
-    /// menus act on, as Simulator.app's device coordinator handles both.
-    static var keyDeviceWindow: DeviceWindowController? {
-        switch NSApp.keyWindow?.windowController {
+    /// The device window of the key window, whose device the menus act on:
+    /// see `deviceWindow(for:)`.
+    static var keyDeviceWindow: DeviceWindowController? { deviceWindow(for: NSApp.keyWindow) }
+
+    /// The device window that `window` stands for: a device window itself, or
+    /// the device window of an external display's window, as Simulator.app's
+    /// device coordinator handles both.
+    static func deviceWindow(for window: NSWindow?) -> DeviceWindowController? {
+        switch window?.windowController {
         case let controller as DeviceWindowController: controller
         case let controller as ExternalDisplayWindowController: controller.deviceWindow
         default: nil
@@ -1187,7 +1191,6 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
         session.display.setActive(true)
         updateKeyboardInput()
         focusInput()
-        tvRemote.deviceWindowBecameKey(self)
     }
     func windowDidResignKey(_ notification: Notification) {
         guard !closed else { return }
@@ -1269,13 +1272,11 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
     func windowWillClose(_ notification: Notification) {
         guard !closed else { return }
         saveWindowGeometry()
-        tvRemote.deviceWindowWillClose(self)
         disconnect()
         onClose(self, closeChoice)
     }
     func invalidate() {
         saveWindowGeometry()
-        if !closed { tvRemote.deviceWindowWillClose(self) }
         disconnect()
         window?.delegate = nil
         window?.close()

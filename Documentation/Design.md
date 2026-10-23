@@ -1968,7 +1968,10 @@ build the same message.
 A device window that becomes key brings a shown remote to the front for a
 device with `SimFeatureTVRemote` (`com.apple.hid.tv-remote`) and closes it for
 any other device, and closing the last device window, an Apple TV's, closes
-it, as in Simulator.app. Simulator.app also closes the remote when a device
+it, as in Simulator.app. In Simulator.app an external display's or CarPlay's
+window is a device window of the same device, so the remote observes every
+window that becomes key and applies the rule to the device window it stands
+for, as the menus resolve the key window. Simulator.app also closes the remote when a device
 without the feature connects; a connecting device's window becomes key in
 Neo, which closes it.
 

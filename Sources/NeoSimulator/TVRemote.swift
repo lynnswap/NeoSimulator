@@ -8,9 +8,10 @@ import AppKit
 ///
 /// Like Simulator.app's `AppleRemotePanel`, the panel never becomes key, so
 /// the device window keeps the keyboard, and it moves by its background and
-/// hides while the app is inactive. Device windows report when they become
-/// key and when they close, which brings the panel to the front or closes
-/// it: see `deviceWindowBecameKey(_:)` and `deviceWindowWillClose(_:)`.
+/// hides while the app is inactive. Every window that becomes key or closes
+/// is checked against Simulator.app's rules, which bring the panel to the
+/// front or close it: see `deviceWindowBecameKey(_:)` and
+/// `deviceWindowWillClose(_:)`.
 @MainActor
 final class TVRemoteController: NSWindowController, NSWindowDelegate {
     /// The device window whose device the remote controls now.
@@ -23,6 +24,8 @@ final class TVRemoteController: NSWindowController, NSWindowDelegate {
     private weak var touchTarget: DeviceWindowController?
     /// Watches the modifier keys for the touch surface while the panel shows.
     private var optionMonitor: Any?
+    /// Watch the app's windows becoming key and closing.
+    private var windowObservers: [any NSObjectProtocol] = []
 
     /// Where AppKit saves the panel's frame, Simulator.app's name.
     static let frameAutosaveName = "Apple TV Remote Window"
@@ -57,12 +60,36 @@ final class TVRemoteController: NSWindowController, NSWindowDelegate {
         super.init(window: panel)
         shouldCascadeWindows = false
         configure(panel)
+        // In Simulator.app, an external display's window is a device window
+        // too, so the window of any device, or of its external display,
+        // decides when it becomes key.
+        windowObservers = [
+            NotificationCenter.default.addObserver(
+                forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main) { [weak self] notification in
+                let window = notification.object as? NSWindow
+                MainActor.assumeIsolated {
+                    if let controller = DeviceWindowController.deviceWindow(for: window) {
+                        self?.deviceWindowBecameKey(controller)
+                    }
+                }
+            },
+            NotificationCenter.default.addObserver(
+                forName: NSWindow.willCloseNotification, object: nil, queue: .main) { [weak self] notification in
+                let window = notification.object as? NSWindow
+                MainActor.assumeIsolated {
+                    if let controller = window?.windowController as? DeviceWindowController {
+                        self?.deviceWindowWillClose(controller)
+                    }
+                }
+            },
+        ]
     }
 
     required init?(coder: NSCoder) { nil }
 
     isolated deinit {
         if let optionMonitor { NSEvent.removeMonitor(optionMonitor) }
+        windowObservers.forEach(NotificationCenter.default.removeObserver)
     }
 
     /// Simulator.app's `keyDeviceCoordinator`: the key device window, or
@@ -103,7 +130,7 @@ final class TVRemoteController: NSWindowController, NSWindowDelegate {
     /// Like Simulator.app's `deviceWindowBecameKey:`, a shown panel comes to
     /// the front of the window of a device that takes the remote, and closes
     /// for another device.
-    func deviceWindowBecameKey(_ controller: DeviceWindowController) {
+    private func deviceWindowBecameKey(_ controller: DeviceWindowController) {
         guard isVisible else { return }
         if controller.session.capabilities.supportsFeature(DeviceCapabilities.tvRemote) {
             window?.orderFront(nil)
@@ -115,7 +142,7 @@ final class TVRemoteController: NSWindowController, NSWindowDelegate {
     /// Like Simulator.app, closing the last device window, of a device that
     /// takes the remote, closes the panel; with other device windows open,
     /// the next key one decides.
-    func deviceWindowWillClose(_ controller: DeviceWindowController) {
+    private func deviceWindowWillClose(_ controller: DeviceWindowController) {
         guard isVisible, controller.session.capabilities.supportsFeature(DeviceCapabilities.tvRemote) else { return }
         let othersRemain = NSApp.windows.contains { window in
             window !== controller.window && (window.isVisible || window.isMiniaturized)

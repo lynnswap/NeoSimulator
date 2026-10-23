@@ -1356,7 +1356,7 @@ struct InputFocusTests {
             return controller
         }
         func becomeKey(_ controller: DeviceWindowController) {
-            controller.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification, object: controller.window))
+            NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: controller.window)
         }
         let tv = try make(.tv, [DeviceCapabilities.tvRemote])
         let phone = try make(.iPhone, [])
@@ -1389,6 +1389,30 @@ struct InputFocusTests {
         remote.showWindow(nil)
         shutDown.invalidate()
         #expect(!remote.isVisible)
+    }
+
+    @Test func anotherDevicesExternalDisplayWindowClosesTheRemoteAsItsDeviceWindowDoes() throws {
+        _ = NSApplication.shared
+        let remote = TVRemoteController(target: { nil })
+        let tv = try makeController(TestDisplay(), family: .tv, features: [DeviceCapabilities.tvRemote], tvRemote: remote)
+        let screen = TestExternalScreen()
+        let (phone, _) = try makeExternalDisplayController(screen)
+        defer {
+            tv.invalidate()
+            phone.invalidate()
+            remote.close()
+        }
+        screen.report { $0 = ExternalScreenState(isPoweredOn: true, pixelSize: CGSize(width: 1280, height: 720), scale: 1) }
+        let external = try #require(phone.externalDisplayWindow?.window)
+        let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        remote.showWindow(nil)
+        #expect(DeviceCommand.command(.appleTVRemote).validate(item, for: tv) && item.title == "Hide Apple TV Remote")
+        // In Simulator.app the external display's window is the iPhone's
+        // device window too, so its becoming key closes the remote.
+        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: external)
+        #expect(!remote.isVisible)
+        _ = DeviceCommand.command(.appleTVRemote).validate(item, for: tv)
+        #expect(item.title == "Show Apple TV Remote")
     }
 
     @Test func theRemotesMessagesAreSimulatorAppsForThisSimulatorKit() throws {
