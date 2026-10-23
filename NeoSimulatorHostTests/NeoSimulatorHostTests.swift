@@ -1331,6 +1331,75 @@ struct InputFocusTests {
                                                     TVRemoteTouch(phase: .began, point: CGPoint(x: 0.5, y: 0.25))])
     }
 
+    @Test func aRemoteReleaseThatIsNotDeliveredIsSentAgainAsAHeldInputsIs() throws {
+        _ = NSApplication.shared
+        let display = TestDisplay()
+        var target: DeviceWindowController?
+        let remote = TVRemoteController(target: { target })
+        let tv = try makeController(display, family: .tv, features: [DeviceCapabilities.tvRemote], tvRemote: remote)
+        defer {
+            tv.invalidate()
+            remote.close()
+        }
+        target = tv
+        remote.showWindow(nil)
+        let window = try #require(remote.window)
+        let content = try #require(window.contentView)
+        let surface = try #require(content.subviews.compactMap { $0 as? TVRemoteTouchSurface }.first)
+        let menu = try #require(content.subviews.first { $0.accessibilityLabel() == "Menu" })
+        func event(_ type: NSEvent.EventType, _ x: CGFloat, _ y: CGFloat) throws -> NSEvent {
+            let location = surface.convert(NSPoint(x: x * surface.bounds.width, y: (1 - y) * surface.bounds.height), to: nil)
+            if type == .mouseEntered || type == .mouseExited {
+                return try #require(NSEvent.enterExitEvent(
+                    with: type, location: location, modifierFlags: .option, timestamp: 0,
+                    windowNumber: window.windowNumber, context: nil, eventNumber: 0, trackingNumber: 0, userData: nil))
+            }
+            return try #require(NSEvent.mouseEvent(
+                with: type, location: location, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber,
+                context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+        }
+        func touch(_ phase: TVRemoteTouch.Phase, _ x: CGFloat, _ y: CGFloat) -> TVRemoteTouch {
+            TVRemoteTouch(phase: phase, point: CGPoint(x: x, y: y))
+        }
+        // Menu's release is not delivered, so the device may still hold the
+        // button; closing the remote sends the release again.
+        display.undeliveredEvents = [1]
+        menu.mouseDown(with: try event(.leftMouseDown, 0, 0))
+        menu.mouseUp(with: try event(.leftMouseUp, 0, 0))
+        remote.close()
+        #expect(display.events.map(\.input) == [.tvRemote(.menu), .tvRemote(.menu), .tvRemote(.menu)])
+        #expect(display.events.map(\.state) == [.down, .up, .up])
+        // A release that SimulatorKit has not reported on yet is not sent twice.
+        remote.showWindow(nil)
+        display.deferCompletions = true
+        menu.mouseDown(with: try event(.leftMouseDown, 0, 0))
+        menu.mouseUp(with: try event(.leftMouseUp, 0, 0))
+        remote.close()
+        #expect(display.events.map(\.state).suffix(2) == [.down, .up] && display.events.count == 5)
+        display.pendingCompletions.forEach { $0() }
+        display.pendingCompletions.removeAll()
+        display.deferCompletions = false
+        // The same holds for the touch's end: closing the remote sends it
+        // again, and once delivered, nothing sends it a third time.
+        remote.showWindow(nil)
+        display.undeliveredTouches = 1
+        surface.mouseEntered(with: try event(.mouseEntered, 0.5, 0.5))
+        surface.mouseExited(with: try event(.mouseExited, 1, 0.5))
+        remote.close()
+        remote.showWindow(nil)
+        remote.close()
+        #expect(display.remoteTouches == [touch(.began, 0.5, 0.5), touch(.ended, 1, 0.5), touch(.ended, 1, 0.5)])
+        // Disconnecting sends an end that was not delivered again too.
+        remote.showWindow(nil)
+        display.undeliveredTouches = 1
+        surface.mouseEntered(with: try event(.mouseEntered, 0.25, 0.25))
+        surface.mouseExited(with: try event(.mouseExited, 0, 0.25))
+        tv.session.disconnect()
+        #expect(display.remoteTouches.suffix(3) == [touch(.began, 0.25, 0.25), touch(.ended, 0, 0.25),
+                                                    touch(.ended, 0, 0.25)])
+        #expect(display.events.count == 5)
+    }
+
     @Test func aRemoteButtonOrTouchReportsOneErrorEach() throws {
         let display = TestDisplay()
         display.deliveryError = HostError.operation("delivery failed")
@@ -6638,9 +6707,17 @@ private final class TestDisplay: SimulatorDisplay {
     }
     func send(_ message: HIDMessage, completion: (@MainActor (Error?) -> Void)?) throws {
         onSend()
+        let touch = touchMessages.removeValue(forKey: ObjectIdentifier(message))
         free(UnsafeMutableRawPointer(message.take()))
-        events.append((message.input, message.state))
-        let undelivered = undeliveredStates.contains(message.state) || undeliveredEvents.contains(events.count - 1)
+        let undelivered: Bool
+        if let touch {
+            remoteTouches.append(touch)
+            undelivered = undeliveredTouches > 0 && touch.phase == .ended
+            if undelivered { undeliveredTouches -= 1 }
+        } else {
+            events.append((message.input, message.state))
+            undelivered = undeliveredStates.contains(message.state) || undeliveredEvents.contains(events.count - 1)
+        }
         let error = undelivered ? HostError.operation("Undelivered") : deliveryError
         if deferCompletions {
             pendingCompletions.append { completion?(error) }
@@ -6648,11 +6725,18 @@ private final class TestDisplay: SimulatorDisplay {
             completion?(error)
         }
     }
-    /// Each touch of the Apple TV Remote's touch surface sent, in order.
+    /// Each touch of the Apple TV Remote's touch surface sent, in order, which
+    /// `events` leaves out.
     var remoteTouches: [TVRemoteTouch] = []
-    func send(_ touch: TVRemoteTouch, completion: (@MainActor (Error?) -> Void)?) throws {
-        remoteTouches.append(touch)
-        completion?(deliveryError)
+    /// How many of the next touch ends complete with an error.
+    var undeliveredTouches = 0
+    /// The touches of the messages created and not yet sent.
+    private var touchMessages: [ObjectIdentifier: TVRemoteTouch] = [:]
+    func message(for touch: TVRemoteTouch) throws -> HIDMessage {
+        let message = HIDMessage(input: .tvRemoteTouch, state: touch.phase == .ended ? .up : .down,
+                                 pointer: OpaquePointer(malloc(1)!))
+        touchMessages[ObjectIdentifier(message)] = touch
+        return message
     }
     /// Each watch gesture sent, in order, which `deliveryError` also fails.
     var gestures: [WatchGesture] = []

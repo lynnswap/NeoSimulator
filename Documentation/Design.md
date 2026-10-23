@@ -1983,11 +1983,14 @@ Deliberate differences:
   not accessibility elements, and its images carry some wrong names.
 - The session reports the first failure of a button's press and release, and
   of a touch, on the device window. Simulator.app discards the results.
-- The session releases a held button and ends a touch when its device
-  disconnects, and closing the remote releases and ends them, as a closing
-  window releases held hardware buttons. A touch whose device stops being the
-  remote's target ends on that device before the next one starts; Simulator.app
-  sends the next move to the new device without a start.
+- The session keeps a remote button, and the touch, down, as it keeps every
+  held input, until SimulatorKit delivers its release or end. One that is not
+  delivered is sent again by the next release or lift, by closing the remote,
+  and by the device's disconnection, which releases whatever is still down; a
+  release still in flight is not sent twice. A touch whose device stops being
+  the remote's target ends on that device before the next one starts.
+  Simulator.app sends the next move to the new device without a start, and
+  keeps no record of what it sent down.
 - A drag that leaves the touch surface, onto a button or off the panel, ends
   the touch at the edge it crosses, and points stay from 0 to 1.
   Simulator.app's surface keeps following such a drag past its edges, outside

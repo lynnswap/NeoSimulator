@@ -18,8 +18,10 @@ final class TVRemoteController: NSWindowController, NSWindowDelegate {
     private let target: @MainActor () -> DeviceWindowController?
     private let buttons: [TVRemoteButtonView]
     private let surface: TVRemoteTouchSurface
-    /// The device window that each held button went to, which receives its
-    /// release, and the one that has the surface's touch.
+    /// The device window that each button last went to, which receives its
+    /// release, and the one that the surface's touch last went to, which
+    /// receives its end. Closing the panel sends them again, in case they were
+    /// not delivered.
     private var pressTargets: [TVRemoteButton: WeakDeviceWindow] = [:]
     private weak var touchTarget: DeviceWindowController?
     /// Watches the modifier keys for the touch surface while the panel shows.
@@ -119,12 +121,15 @@ final class TVRemoteController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    /// A closing panel releases what it holds down.
+    /// A closing panel releases what it holds down, and sends again the
+    /// releases that were not delivered.
     func windowWillClose(_ notification: Notification) {
         if let optionMonitor { NSEvent.removeMonitor(optionMonitor) }
         optionMonitor = nil
         for button in buttons { button.release() }
         surface.end()
+        for (button, target) in pressTargets { target.controller?.session.releaseRemoteButton(button) }
+        pressTargets.removeAll()
     }
 
     /// Like Simulator.app's `deviceWindowBecameKey:`, a shown panel comes to
@@ -158,8 +163,8 @@ final class TVRemoteController: NSWindowController, NSWindowDelegate {
             guard let controller = target() else { return }
             pressTargets[button] = WeakDeviceWindow(controller: controller)
             controller.session.pressRemoteButton(button) { [weak controller] in controller?.present($0) }
-        } else if let controller = pressTargets.removeValue(forKey: button)?.controller {
-            controller.session.releaseRemoteButton(button)
+        } else {
+            pressTargets[button]?.controller?.session.releaseRemoteButton(button)
         }
     }
 
@@ -174,7 +179,6 @@ final class TVRemoteController: NSWindowController, NSWindowDelegate {
 
     private func lift(at point: CGPoint) {
         touchTarget?.session.liftRemoteTouch(at: point)
-        touchTarget = nil
     }
 
     // MARK: Panel

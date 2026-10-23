@@ -389,6 +389,9 @@ final class DeviceSession {
     /// Inputs sent down whose release SimulatorKit has not yet delivered, with
     /// the generation of their latest down event. Closing the window releases them.
     @ObservationIgnored private var downInputs: [HIDInput: Int] = [:]
+    /// The generation of each input's release that SimulatorKit has not
+    /// reported on yet, which `releaseHeldInput(_:report:)` does not send again.
+    @ObservationIgnored private var releasesInFlight: [HIDInput: Int] = [:]
     @ObservationIgnored private var lastDownGeneration = 0
     @ObservationIgnored private var isDisconnected = false
     /// A tool operation or a modal step that leads to one is in progress.
@@ -524,8 +527,10 @@ final class DeviceSession {
     @discardableResult
     private func sendRelease(_ up: HIDMessage, generation: Int, _ report: FirstFailure) -> Bool {
         let event = up.input
+        releasesInFlight[event] = generation
         do {
             try display.send(up) { [weak self] error in
+                if let self, self.releasesInFlight[event] == generation { self.releasesInFlight[event] = nil }
                 if let error {
                     report(error)
                 } else if let self, self.downInputs[event] == generation, self.pendingHolds[event] == nil {
@@ -534,9 +539,31 @@ final class DeviceSession {
             }
             return true
         } catch {
+            if releasesInFlight[event] == generation { releasesInFlight[event] = nil }
             report(error)
             return false
         }
+    }
+
+    /// Sends the release of an input the device still holds: one whose
+    /// release was never sent, or was not delivered. A release that
+    /// SimulatorKit has not reported on yet is not sent twice.
+    private func releaseHeldInput(_ event: HIDInput, report: FirstFailure) {
+        guard !isDisconnected, display.isBooted, let generation = downInputs[event],
+              releasesInFlight[event] != generation else { return }
+        let up: HIDMessage
+        do { up = try releaseMessage(for: event) } catch {
+            report(error)
+            return
+        }
+        sendRelease(up, generation: generation, report)
+    }
+
+    /// The release of a held input: its up event, or for the remote's touch
+    /// the end at its last point.
+    private func releaseMessage(for event: HIDInput) throws -> HIDMessage {
+        guard event == .tvRemoteTouch else { return try display.message(for: event, .up) }
+        return try display.message(for: TVRemoteTouch(phase: .ended, point: remoteTouchPoint))
     }
 
     private func message(_ event: HIDInput, _ state: HIDState, _ report: FirstFailure) -> HIDMessage? {
@@ -578,12 +605,13 @@ final class DeviceSession {
 
     // MARK: Apple TV Remote
 
-    /// The remote buttons held down, with the first failure of their events,
-    /// which their release reports too.
-    @ObservationIgnored private var heldRemoteButtons: [TVRemoteButton: FirstFailure] = [:]
-    /// The touch on the remote's touch surface that the device has, at the
-    /// point it last moved to, and the first failure of its events.
-    @ObservationIgnored private var remoteTouch: (point: CGPoint, report: FirstFailure)?
+    /// The first failure of the events of each remote input the device may
+    /// still hold, a button or the touch, which its release reports too.
+    @ObservationIgnored private var remoteReports: [HIDInput: FirstFailure] = [:]
+    /// Whether the remote is touching its surface, and the touch's last
+    /// point, which its end repeats.
+    @ObservationIgnored private var isTouchingRemote = false
+    @ObservationIgnored private var remoteTouchPoint = CGPoint.zero
 
     /// Whether the device takes the Apple TV Remote's input: like
     /// Simulator.app's `deviceSupportsAppleTVRemote`, which the remote's
@@ -591,57 +619,59 @@ final class DeviceSession {
     private var takesTVRemote: Bool { capabilities.family == .tv }
 
     /// Presses a button of the Apple TV Remote, which stays down until
-    /// `releaseRemoteButton(_:failure:)`, as Simulator.app's remote sends a
-    /// button's press and its release as the pointer presses and releases
-    /// it. Disconnecting releases it too.
+    /// `releaseRemoteButton(_:)`, as Simulator.app's remote sends a button's
+    /// press and its release as the pointer presses and releases it.
     func pressRemoteButton(_ button: TVRemoteButton, failure: @escaping @MainActor (Error) -> Void) {
         guard canPerformCommands, takesTVRemote else { return }
         let report = FirstFailure(failure)
         let event = HIDInput.tvRemote(button)
         guard let down = message(event, .down, report), send(down, report) else { return }
         markDown(event)
-        heldRemoteButtons[button] = report
+        remoteReports[event] = report
     }
 
     /// Releases a remote button that `pressRemoteButton(_:failure:)` pressed.
-    /// Like a held input's, the release is sent while the device is booted.
+    /// As for every held input, the device holds the button until SimulatorKit
+    /// delivers the release: a release that was not delivered is sent again
+    /// by the next call, and disconnecting sends it too.
     func releaseRemoteButton(_ button: TVRemoteButton) {
-        guard let report = heldRemoteButtons.removeValue(forKey: button) else { return }
         let event = HIDInput.tvRemote(button)
-        guard !isDisconnected, display.isBooted, let generation = downInputs[event] else { return }
-        if let up = message(event, .up, report) { sendRelease(up, generation: generation, report) }
+        guard let report = remoteReports[event] else { return }
+        releaseHeldInput(event, report: report)
     }
 
     /// Touches the remote's touch surface at `point`, from 0 to 1 from its
-    /// top-left corner: starts a touch, or moves the one the device has, as
+    /// top-left corner: starts a touch, or moves the one the remote has, as
     /// Simulator.app's remote does while Option is held over the surface.
     func touchRemote(at point: CGPoint, failure: @escaping @MainActor (Error) -> Void) {
-        guard canPerformCommands, takesTVRemote, remoteTouch?.point != point else { return }
-        let report = remoteTouch?.report ?? FirstFailure(failure)
-        guard send(TVRemoteTouch(phase: remoteTouch == nil ? .began : .moved, point: point), report) else { return }
-        remoteTouch = (point, report)
-    }
-
-    /// Ends the device's touch of the remote's touch surface at `point`. Like
-    /// a held input's release, the end is sent while the device is booted.
-    func liftRemoteTouch(at point: CGPoint) {
-        guard let touch = remoteTouch else { return }
-        remoteTouch = nil
-        guard !isDisconnected, display.isBooted else { return }
-        send(TVRemoteTouch(phase: .ended, point: point), touch.report)
-    }
-
-    @discardableResult
-    private func send(_ touch: TVRemoteTouch, _ report: FirstFailure) -> Bool {
-        do {
-            try display.send(touch) { error in
-                if let error { report(error) }
-            }
-            return true
-        } catch {
+        guard canPerformCommands, takesTVRemote, !isTouchingRemote || point != remoteTouchPoint else { return }
+        let report = isTouchingRemote ? remoteReports[.tvRemoteTouch] ?? FirstFailure(failure) : FirstFailure(failure)
+        let touch = TVRemoteTouch(phase: isTouchingRemote ? .moved : .began, point: point)
+        let message: HIDMessage
+        do { message = try display.message(for: touch) } catch {
             report(error)
-            return false
+            return
         }
+        guard send(message, report) else { return }
+        if touch.phase == .began {
+            markDown(.tvRemoteTouch)
+            remoteReports[.tvRemoteTouch] = report
+            isTouchingRemote = true
+        }
+        remoteTouchPoint = point
+    }
+
+    /// Ends the remote's touch at `point`. Like a button's release, the device
+    /// holds the touch until SimulatorKit delivers the end: an end that was
+    /// not delivered is sent again by the next call, and disconnecting sends
+    /// it too.
+    func liftRemoteTouch(at point: CGPoint) {
+        guard let report = remoteReports[.tvRemoteTouch] else { return }
+        if isTouchingRemote {
+            isTouchingRemote = false
+            remoteTouchPoint = point
+        }
+        releaseHeldInput(.tvRemoteTouch, report: report)
     }
 
     /// The state of a watch's Always On button. Like Simulator.app's, it
@@ -1617,16 +1647,16 @@ final class DeviceSession {
 
     func disconnect() {
         guard !isDisconnected else { return }
-        // Release held inputs and end the remote's touch while the input
+        // Release held inputs, the remote's touch included, while the input
         // client can still send.
         for event in downInputs.keys {
-            if let up = try? display.message(for: event, .up) { try? display.send(up, completion: nil) }
+            if let up = try? releaseMessage(for: event) { try? display.send(up, completion: nil) }
         }
-        if let remoteTouch { try? display.send(TVRemoteTouch(phase: .ended, point: remoteTouch.point), completion: nil) }
         pendingHolds.removeAll()
         downInputs.removeAll()
-        heldRemoteButtons.removeAll()
-        remoteTouch = nil
+        releasesInFlight.removeAll()
+        remoteReports.removeAll()
+        isTouchingRemote = false
         inputSteps.values.forEach { $0.cancel() }
         inputSteps.removeAll()
         isDisconnected = true

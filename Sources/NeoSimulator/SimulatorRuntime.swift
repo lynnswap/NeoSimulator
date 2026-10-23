@@ -807,6 +807,7 @@ struct SimulatorInputInterface {
         case .usage(let page, let usage): try unsafe messageForUsage.unsafeInvoke(target, page, usage, state.rawValue)
         case .tvRemote(let button):
             try unsafe messageForButton.unsafeInvoke(button.rawValue, state == .down ? 1 : 0, Self.tvRemoteButtonTarget)
+        case .tvRemoteTouch: preconditionFailure("A touch's messages come from message(for:), which takes its point")
         }
         guard let message else { throw HostError.operation("Could not allocate simulator input") }
         return HIDMessage(input: input, state: state, pointer: message)
@@ -832,12 +833,6 @@ struct SimulatorInputInterface {
             raw.storeBytes(of: value, toByteOffset: offset, as: UInt32.self)
         }
         return message
-    }
-
-    /// Sends a touch of the Apple TV Remote's touch surface. SimulatorKit
-    /// reports delivery to `completion` on the main queue.
-    func send(_ touch: TVRemoteTouch, client: AnyObject, completion: (@MainActor (Error?) -> Void)?) throws {
-        try send(message(for: touch), client: client, completion: completion)
     }
 
     /// Sends a watch gesture, a single message without down and up events.
@@ -1316,6 +1311,10 @@ enum HIDInput: Hashable {
     case usage(page: UInt32, usage: UInt32)
     /// A button of the Apple TV Remote.
     case tvRemote(TVRemoteButton)
+    /// The touch on the Apple TV Remote's touch surface, down from its start
+    /// until its end. Its messages, which need the touch's point, come from
+    /// `SimulatorDisplay.message(for:)`.
+    case tvRemoteTouch
 
     static let screenshot = HIDInput.usage(page: 0x0c, usage: 0x65)
     static let volumeUp = HIDInput.usage(page: 0x0c, usage: 0xe9)
@@ -1460,9 +1459,10 @@ protocol SimulatorDisplay: AnyObject {
     /// Sends a message. `completion`, when present, receives SimulatorKit's
     /// delivery result; a thrown error means the message was not sent.
     func send(_ message: HIDMessage, completion: (@MainActor (Error?) -> Void)?) throws
-    /// Sends a touch of the Apple TV Remote's touch surface, as
-    /// `send(_:completion:)` sends a message.
-    func send(_ touch: TVRemoteTouch, completion: (@MainActor (Error?) -> Void)?) throws
+    /// Creates the message of a touch of the Apple TV Remote's touch surface,
+    /// for `send(_:completion:)`: its input is `.tvRemoteTouch`, down until
+    /// the touch's end.
+    func message(for touch: TVRemoteTouch) throws -> HIDMessage
     /// Sends a watch gesture. `completion` receives SimulatorKit's delivery
     /// result; a thrown error means the gesture was not sent.
     func send(_ gesture: WatchGesture, completion: @escaping @MainActor (Error?) -> Void) throws
@@ -1718,9 +1718,9 @@ final class SimulatorConnection: SimulatorDisplay {
         try runtime.input.send(message, client: hidClient, completion: completion)
     }
 
-    func send(_ touch: TVRemoteTouch, completion: (@MainActor (Error?) -> Void)?) throws {
-        guard let hidClient else { throw HostError.operation("Simulator input is disconnected") }
-        try runtime.input.send(touch, client: hidClient, completion: completion)
+    func message(for touch: TVRemoteTouch) throws -> HIDMessage {
+        HIDMessage(input: .tvRemoteTouch, state: touch.phase == .ended ? .up : .down,
+                   pointer: try runtime.input.message(for: touch))
     }
 
     func send(_ gesture: WatchGesture, completion: @escaping @MainActor (Error?) -> Void) throws {
