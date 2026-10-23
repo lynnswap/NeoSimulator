@@ -25,17 +25,13 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     private var suppressed: Set<String> = []
     /// Shutdowns of devices whose windows closed, which quitting waits for.
     private var closingShutdowns: [String: Task<Void, Never>] = [:]
-    /// The changes sent to each device's external display, which the
-    /// device's successive sessions share and quitting waits for, also those
-    /// of a session whose window closed.
+    /// Per-device queues outlive individual sessions; quitting waits for all of them.
     private var externalDisplayQueues: [String: (name: String, changes: ExternalDisplayChanges)] = [:]
     /// Whether another simulator host took over, which leaves devices running.
     private var yieldedToAnotherHost = false
     /// Quitting's device shutdowns, which another host appearing cancels.
     private var terminationShutdowns: [Task<String?, Never>] = []
-    /// SIGTERM is how `xcode-simulator-host` ends the host when it switches
-    /// simulator hosts, handing the devices over. It stays until the process
-    /// exits, so a handover also ends a quit that waits on an alert.
+    /// SIGTERM hands devices to another host and must interrupt a quit waiting on an alert.
     private var handoverSignal: DispatchSourceSignal?
     private static weak var handoverTarget: HostApplication?
     /// Whether the command-line tool asked for a handover; the host then
@@ -49,8 +45,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     private var newSimulator: NewSimulatorWindowController?
     private var menu: MenuController?
     private var stopped = false
-    /// Where the next device window without a saved center cascades from,
-    /// app-wide as Simulator.app keeps it; zero until a window cascades.
+    /// Shared cascade position; zero until the first window cascades.
     private var nextWindowPosition = NSPoint.zero
     /// I/O ▸ Touch Pressure's settings, which every device window shares.
     private let touchPressure = TouchPressure()
@@ -113,9 +108,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         handover.resume()
         handoverSignal = handover
         openTestingSet()
-        // Like Simulator.app, devices already booted get windows only with
-        // AttachBootedOnStart; those booted later always do. Booted testing
-        // devices follow only Show Parallel Testing Devices, as there.
+        // Existing booted devices require AttachBootedOnStart; later boots always attach.
+        // Testing devices follow Show Parallel Testing Devices independently.
         let defaults = UserDefaults.standard
         let attachesBooted = defaults.bool(forKey: HostPreferences.attachBootedOnStart)
         if !attachesBooted { suppressed.formUnion(try readDevices().filter { $0.state == 3 }.map(\.identifier)) }
@@ -139,9 +133,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         }
     }
 
-    /// The device launching starts: the last chosen one when it is available,
-    /// otherwise, like Simulator.app, the last iPhone in CoreSimulator's order
-    /// or the first device.
+    /// Prefers the saved device, then the last iPhone in catalog order, then the first device.
     static func initialDevice(in devices: [AvailableDevice], current: String?) -> AvailableDevice? {
         if let current = current.flatMap(UUID.init(uuidString:)),
            let device = devices.first(where: { UUID(uuidString: $0.identifier) == current }) {
@@ -158,16 +150,12 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         sessions[identifier]?.window?.isVisible == true
     }
 
-    /// The set's devices that Neo hosts: those of the product families whose
-    /// commands it defines, iPhone, iPad, Apple TV, Apple Watch, and Apple
-    /// Vision, as Simulator.app hosts them.
+    /// Reads supported product families from a device set.
     private func readDevices(in set: SimulatorDeviceSet? = nil) throws -> [SimulatorDevice] {
         try (set ?? deviceSet).readDevices().filter { DeviceCapabilities.Family(rawValue: $0.productFamily) != nil }
     }
 
-    /// Window ▸ Show Device Bezels. Like Simulator.app, it changes the
-    /// app-wide preference and every open device window, including one whose
-    /// device is restarting; windows that open later follow the preference.
+    /// Updates the preference and every open window, including restarting devices.
     func toggleShowDeviceBezels() {
         let shows = !UserDefaults.standard.showsDeviceBezels
         UserDefaults.standard.set(shows, forKey: HostPreferences.showChrome)
@@ -184,8 +172,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         let show = !showsTestingDevices
         UserDefaults.standard.set(show, forKey: HostPreferences.showTestingDevices)
         if show {
-            // Like Simulator.app, showing attaches every booted testing device,
-            // including those whose windows were closed.
+            // Reattach every booted testing device, including previously closed windows.
             if let testingSet, let devices = try? readDevices(in: testingSet) {
                 suppressed.subtract(devices.map(\.identifier))
             }
@@ -202,9 +189,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         rescan()
     }
 
-    /// Opens Xcode's parallel testing device set, as Simulator.app does: the
-    /// `TestingDeviceSetPath` default, or `~/Library/Developer/XCTestDevices`.
-    /// A missing set is not created; the host waits for Xcode to create it.
+    /// Opens TestingDeviceSetPath or ~/Library/Developer/XCTestDevices if it exists.
+    /// Waits for Xcode to create a missing set.
     private func openTestingSet() {
         guard !stopped, testingSet == nil else { return }
         let path = UserDefaults.standard.string(forKey: HostPreferences.testingDeviceSetPath)
@@ -301,8 +287,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         reportedFailures.remove(identifier)
         // Launching starts this device next time.
         UserDefaults.standard.set(identifier, forKey: HostPreferences.currentDeviceUDID)
-        // Like Simulator.app, a device that is already booting is attached
-        // once it boots instead of being booted again.
+        // Attach an already booting device when it finishes; avoid a second boot.
         if device.state != 2, device.state != 3, bootOperations[identifier] == nil {
             let tools = try DeviceTools(identifier: identifier, xcodeURL: runtime.xcodeURL)
             bootOperations[identifier] = tools
@@ -311,8 +296,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         }
         rescan()
         guard let controller = sessions[identifier] else { return }
-        // Like Simulator.app, choosing a connected device tells its
-        // pasteboard connection again whether to synchronize.
+        // Refresh synchronization when a connected device is selected again.
         controller.session.updatePasteboardSync()
         controller.showAndActivate()
     }
@@ -420,9 +404,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         }
     }
 
-    /// Applies the keyboard settings to a new connection, also after a
-    /// restart, without waiting for them. Simulator.app ignores their
-    /// failures; they are logged.
+    /// Applies keyboard settings asynchronously on each connection; logs failures.
     private func applyKeyboardSettings(of session: DeviceSession) {
         Task.immediate {
             await session.applyKeyboardSettings { error in
@@ -431,9 +413,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         }
     }
 
-    /// Applies the saved Features ▸ Location choice to a new connection, also
-    /// after a restart, without waiting for it. Like Simulator.app, which
-    /// ignores the result, a failure is not shown; it is logged.
+    /// Restores location asynchronously on each connection; logs failures.
     private func restoreLocation(of session: DeviceSession) {
         Task {
             do { try await session.restoreLocation() } catch {
@@ -442,9 +422,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         }
     }
 
-    /// Routes a new connection's audio to the app's recent routes, also
-    /// after a restart, and keeps following the device's audio port. Like
-    /// Simulator.app, which only logs them, these failures are logged.
+    /// Applies recent audio routes and observes the port; logs failures.
     private func connectAudioRoutes(of session: DeviceSession) {
         let name = session.device.name
         session.connectAudioRoutes { error in
@@ -460,18 +438,14 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         return changes
     }
 
-    /// Connects a new connection to its device's external display and
-    /// restores the device's External Displays choice, also after a restart.
-    /// Like Simulator.app, which only logs them, these failures are logged.
+    /// Connects the external display and restores its saved choice; logs failures.
     private func connectExternalDisplay(of session: DeviceSession) {
         session.connectExternalDisplay { error in hostLog(error.localizedDescription) }
     }
 
     // MARK: Closing and quitting
 
-    /// A user closed a device window. Like Simulator.app, the device shuts
-    /// down unless the close chose to keep it running or `DetachOnWindowClose`
-    /// is on, including a device Xcode booted.
+    /// Closes the device unless this close or DetachOnWindowClose requests keeping it booted.
     private func deviceWindowClosed(_ controller: DeviceWindowController, choice: DeviceLifetimeChoice?) {
         let identifier = controller.session.device.id
         sessions.removeValue(forKey: identifier)
@@ -525,9 +499,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         for shutdown in terminationShutdowns { shutdown.cancel() }
     }
 
-    /// Terminates from a run-loop callback rather than a main-queue block, and
-    /// after ending a modal alert: AppKit's termination loop inside either one
-    /// waits forever for the main-actor work that termination needs.
+    /// Terminate from a run-loop callback after dismissing modal alerts.
+    /// AppKit termination inside a main-queue block or modal loop deadlocks pending main-actor work.
     private static func requestTermination() {
         RunLoop.main.perform(inModes: [.common]) {
             if NSApp.modalWindow != nil {
@@ -543,9 +516,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         }
     }
 
-    /// Whether a device still needs shutting down. Like Simulator.app's close,
-    /// a device that is shut down or shutting down is left alone, for example
-    /// one a restart had shut down for erasing.
+    /// Whether shutdown is needed; stopped and already stopping devices need no action.
     private func isRunning(_ identifier: String, deviceSetPath: String?) -> Bool {
         guard let set = deviceSetPath == nil ? deviceSet : testingSet,
               let device = try? set.readDevices().first(where: { $0.identifier == identifier }) else { return false }
@@ -563,10 +534,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         NSApp.terminate(nil)
     }
 
-    /// Waits, within `TerminationTimeout`, for every device's external display
-    /// changes to complete, including the power-offs of the windows that
-    /// closed, as Simulator.app waits for its windows to disconnect, and
-    /// returns the displays that did not. Their power-off failures are logged.
+    /// Waits up to TerminationTimeout for every external-display queue, including closed windows.
+    /// Returns unfinished devices and logs power-off failures.
     private func finishExternalDisplayChanges() async -> [String] {
         let timeout = UserDefaults.standard.double(forKey: HostPreferences.terminationTimeout)
         let deadline = ContinuousClock.now + .seconds(timeout)
@@ -578,9 +547,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         return failures
     }
 
-    /// Shuts down the devices that have windows, as Simulator.app does when
-    /// quitting, and returns the failures. Each shutdown, and those of closed
-    /// windows, must finish within `TerminationTimeout`.
+    /// Shuts down windowed devices and waits for closed-window shutdowns within TerminationTimeout.
     private func shutDownForTermination(_ devices: [(identifier: String, deviceSetPath: String?)]) async -> [String] {
         // Ownership is checked when the shutdowns start, after any wait.
         guard !yieldedToAnotherHost else { return [] }
@@ -620,9 +587,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
 
     // MARK: Restart
 
-    /// Restarts a device in Simulator.app's order, keeping its window: the
-    /// window disconnects, the device shuts down, is erased when requested,
-    /// and boots, and the window reconnects.
+    /// Disconnects, shuts down, optionally erases, boots, and reconnects the existing window.
     private func restartDevice(_ controller: DeviceWindowController, erasing: Bool) {
         let identifier = controller.session.device.id
         guard !stopped, sessions[identifier] === controller, restarting[identifier] == nil,
@@ -657,8 +622,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         }
     }
 
-    /// File ▸ New Simulator…. Like Simulator.app, an open form is brought to
-    /// the front instead of opening another.
+    /// Brings the existing creation form forward or opens one.
     func showNewSimulator() {
         guard !stopped else { return }
         if newSimulator == nil {
@@ -717,10 +681,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         return true
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
-    /// Quitting finishes recordings, then, like Simulator.app, disconnects the
-    /// windows, waits for their external displays to turn off, and shuts down
-    /// the devices that have windows unless the quit chose to keep them running
-    /// or `DetachOnAppQuit` is on. Devices another host takes over keep running.
+    /// Finalizes recordings, disconnects windows, waits for external-display cleanup, then shuts down.
+    /// Explicit detach choices, DetachOnAppQuit, and handover preserve booted devices.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !isTerminating else { return .terminateLater }
         // Pending captures are saved now, and those that recordings finish

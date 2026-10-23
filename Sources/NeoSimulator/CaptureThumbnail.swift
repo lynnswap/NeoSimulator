@@ -5,8 +5,7 @@ import ImageIO
 import QuartzCore
 import UniformTypeIdentifiers
 
-/// A screenshot or quick recording kept in a temporary file until its
-/// thumbnail is dismissed or used, as in Simulator.app.
+/// Temporary screenshot or recording, owned until saved, deleted, or handed off.
 @MainActor
 final class CapturedContent {
     enum Kind { case screenshot, movie }
@@ -81,14 +80,11 @@ final class CapturedContent {
     }
 }
 
-/// The floating thumbnail Simulator.app shows beside a device window after a
-/// screenshot or a quick recording. Dismissing it, by its timer or by the
-/// device window resizing, entering or leaving full screen, or minimizing,
-/// saves the capture to its default location; its menu and dragging it out
-/// use the capture instead.
+/// Floating capture preview. Dismissal saves to the default folder;
+/// menu actions and dragging can consume the capture instead.
 @MainActor
 final class CaptureThumbnail: NSObject {
-    /// Simulator.app keeps one app-wide list; a new capture dismisses the others.
+    /// A new capture dismisses existing thumbnails.
     private(set) static var active: [CaptureThumbnail] = []
     /// Captures whose thumbnail has ended but that wait for an animated GIF
     /// or a drag's file promise; quitting saves those still unresolved.
@@ -127,15 +123,8 @@ final class CaptureThumbnail: NSObject {
     private var moveCount = 0
     private var moveWatch: Task<Void, Never>?
 
-    /// - Parameters:
-    ///   - source: The device screen in screen coordinates; the thumbnail
-    ///     shrinks from it to a quarter of its size plus 10 points.
-    ///   - rotation: The angle the device screen is shown at, which the
-    ///     screenshot, taken from the unrotated framebuffer, is turned by.
-    ///   - cornerRadius: The device screen's corner radius in points.
-    ///   - spacing: Its distance from the device window. Simulator.app uses
-    ///     (10, ceil(scale × 10 or 20)) for screenshots and none for movies.
-    ///   - report: Shows a failure to save or use the capture.
+    /// Animates from `source` in screen coordinates. `rotation` corrects the unrotated framebuffer.
+    /// `spacing` is the offset from the device window; `report` receives save/use failures.
     init(_ content: CapturedContent, image: NSImage?, parent: NSWindow, source: NSRect, rotation: Double = 0,
          cornerRadius: CGFloat = 0, spacing: NSSize, report: @escaping (Error) -> Void) {
         self.content = content
@@ -204,10 +193,8 @@ final class CaptureThumbnail: NSObject {
         return placement.frame
     }
 
-    /// The thumbnail's frame, a quarter of the device screen's size plus 10
-    /// points: right of the device window, else left of it, else over its
-    /// lower right corner, and in full screen right of the device screen or
-    /// in the lower right corner. It is kept above the Dock.
+    /// Places a quarter-size preview beside the window, falling back to its lower-right corner.
+    /// Full-screen placement uses the display bounds and stays above the Dock.
     static func placement(source: NSRect, window frame: NSRect, fullScreen: Bool, screen bounds: NSRect,
                           visible: NSRect, spacing: NSSize) -> (frame: NSRect, position: Position) {
         let size = NSSize(width: source.width * 0.25 + 10, height: source.height * 0.25 + 10)
@@ -340,9 +327,7 @@ final class CaptureThumbnail: NSObject {
         }
     }
 
-    /// Saves every pending capture, including recordings whose GIF is still
-    /// being written, before NeoSimulator quits, and returns the failures.
-    /// Simulator.app leaves them in the temporary folder.
+    /// Saves unresolved captures before quitting, including those awaiting GIF export.
     @discardableResult
     static func finishAll() -> [Error] {
         var failures = active.compactMap { $0.finish(reporting: false) }
@@ -375,8 +360,7 @@ final class CaptureThumbnail: NSObject {
         })
     }
 
-    /// Like Simulator.app, the timer waits until the window has stopped
-    /// moving for a second.
+    /// Waits for the window to stop moving for one second before dismissing.
     private func parentWillMove() {
         guard moveWatch == nil else { return }
         pause()
@@ -477,9 +461,8 @@ final class CaptureThumbnail: NSObject {
         return application
     }
 
-    /// Writes an animated GIF of the movie next to where the movie would be
-    /// saved. Keeping the movie saves it first; otherwise the temporary movie
-    /// is removed once the GIF is written, or saved when writing fails.
+    /// Exports beside the movie's save location. Deletes the temporary movie only after
+    /// successful export; a failed export saves it instead.
     private func saveAnimatedGIF(keepingMovie: Bool) throws {
         let content = content
         let movie: URL, gif: URL
@@ -519,8 +502,7 @@ final class CaptureThumbnail: NSObject {
 
     // MARK: Dragging
 
-    /// The pasteboard writer for dragging a capture out: a file promise,
-    /// with the file and a screenshot's PNG as Simulator.app also offers.
+    /// Offers a file promise, file URL, and screenshot PNG when dragging.
     static func dragProvider(for content: CapturedContent, report: @escaping (Error) -> Void) -> NSFilePromiseProvider {
         let type: UTType = content.kind == .screenshot ? .png : .quickTimeMovie
         let delivery = CaptureDelivery(content: content, report: report)
@@ -542,9 +524,8 @@ final class CaptureThumbnail: NSObject {
     func dragEnded(_ operation: NSDragOperation) {
         if !operation.isEmpty { dismissedExplicitly = true }
         if !operation.isEmpty, !content.isResolved {
-            // The destination fulfils the promise shortly. Simulator.app then
-            // deletes an unclaimed capture after five seconds; NeoSimulator
-            // saves it instead, and a later delivery copies the saved file.
+            // A late promise delivery may follow thumbnail dismissal, so preserve the capture
+            // and copy from its saved location if delivery arrives later.
             let content = content, report = report
             Self.pending.append(content)
             Task {
@@ -651,8 +632,7 @@ private final class CaptureThumbnailView: NSView, NSMenuDelegate, NSDraggingSour
         CATransaction.setDisableActions(true)
         contentLayer.frame = bounds.insetBy(dx: 5, dy: 5)
         let area = contentLayer.bounds
-        // A screenshot is the framebuffer as the device holds it upright; it
-        // is turned the way the display shows it, like Simulator.app.
+        // The framebuffer is upright; rotate screenshots to match the display.
         let quarterTurn = abs(rotation.truncatingRemainder(dividingBy: 180)) == 90
         mediaLayer.setAffineTransform(.identity)
         mediaLayer.bounds = quarterTurn && content.kind == .screenshot
@@ -812,9 +792,7 @@ private final class CaptureFilePromiseProvider: NSFilePromiseProvider {
     }
 }
 
-/// Simulator.app's animated GIF export: frames at most `maximumFrameRate`
-/// apart taken from the movie's own sample times, scaled down to
-/// `maximumFrameSize` pixels, dithered, and looped.
+/// Exports looping GIFs from movie sample times, with frame-rate and size limits and optional dithering.
 enum AnimatedGIF {
     struct Options {
         var maximumFrameRate: Double
@@ -856,13 +834,11 @@ enum AnimatedGIF {
         CGImageDestinationSetProperties(destination, [
             kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFLoopCount: 0],
         ] as CFDictionary)
-        // Like Simulator.app, frames are dithered in the movie's own color
-        // space; a linear working space would roughen dark areas.
+        // Dither in the source color space; linear working space roughens dark areas.
         var context: CIContext?
         let interval = 1 / options.maximumFrameRate
         var held: (image: CGImage, time: CMTime)?
-        // Delays are whole hundredths, rounded up as Simulator.app does; the
-        // tolerance keeps floating-point noise from adding a hundredth.
+        // GIF delays round up to hundredths. The tolerance suppresses floating-point noise.
         func add(_ image: CGImage, delay: Double) {
             CGImageDestinationAddImage(destination, image, [
                 kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFUnclampedDelayTime: (delay * 100 - 1e-6).rounded(.up) / 100],

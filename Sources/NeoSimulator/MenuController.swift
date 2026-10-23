@@ -1,7 +1,6 @@
 import AppKit
 
-/// Builds the main menu in Simulator.app's order and routes device commands to
-/// the key device window.
+/// Builds the main menu and routes device commands to the key window.
 @MainActor
 final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
     private weak var application: HostApplication?
@@ -38,9 +37,7 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
         let app = menu("NeoSimulator", in: main)
         item("About NeoSimulator", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), in: app, target: NSApp)
         app.addItem(.separator())
-        // Like Simulator.app's, the item goes to the first responder, and
-        // AppKit's NSApplication shows the settings that the app's
-        // Settings.bundle lists. Without that AppKit method, it is disabled.
+        // AppKit supplies this private Settings.bundle action through the responder chain.
         item("Settings…", action: Self.showSettings, key: ",", in: app).target = nil
         app.addItem(.separator())
         item("Hide NeoSimulator", action: #selector(NSApplication.hide(_:)), key: "h", in: app, target: NSApp)
@@ -119,10 +116,7 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
 
         let io = menu("I/O", in: main)
         ioMenu = io
-        // Simulator.app's Input submenu, which captures the Mac's pointer and
-        // keyboard, comes first. NeoSimulator does not capture them: the HID
-        // event filter the capture needs is refused to an app without an
-        // entitlement only Apple can sign (Design.md, Input capture).
+        // Input capture requires an Apple-only HID entitlement; keyboard settings do not.
         commands([.syncKeyboardLanguage, .connectHardwareKeyboard, .toggleSoftwareKeyboard], in: menu("Keyboard", in: io))
         commands([.useTrackpadForce, .shallowPress, .deepPress], in: menu("Touch Pressure", in: io))
         io.addItem(.separator())
@@ -182,7 +176,6 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
         window.addItem(.separator())
         commands([.physicalSize, .pointAccurate, .pixelAccurate, .fitScreen], in: window)
         window.addItem(.separator())
-        // NeoSimulator's own list of devices; Simulator.app has no such window.
         item("Simulators", action: #selector(showBrowser(_:)), in: window)
         item("Bring All to Front", action: #selector(NSApplication.arrangeInFront(_:)), in: window, target: NSApp)
 
@@ -199,9 +192,8 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
         }
     }
 
-    /// Gives shared shortcuts to the commands of the key device, as
-    /// Simulator.app does when a device window becomes key. A hidden menu item
-    /// still takes its shortcut, so the others lose theirs.
+    /// Assigns shared shortcuts to the key device. Hidden items must lose their shortcuts
+    /// because AppKit still matches them.
     func updateKeyEquivalents(for capabilities: DeviceCapabilities?) {
         for item in keyedItems {
             guard let raw = item.representedObject as? String, let id = DeviceCommand.ID(rawValue: raw) else { continue }
@@ -250,15 +242,13 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
         }
     }
 
-    // Simulator.app hides commands the key device does not support. Without a
-    // device window, commands stay visible and disabled.
+    // Without a device window, commands remain visible but disabled.
     func menuNeedsUpdate(_ menu: NSMenu) {
         if menu === ioMenu { updateAudioMenus(for: activeWindow) }
         updateVisibility(in: menu, for: activeWindow?.session.capabilities)
     }
 
-    /// Attaches I/O ▸ Audio Input and Audio Output to `window`'s device, as
-    /// Simulator.app does when a device window becomes key.
+    /// Attaches audio menus to the key device.
     func updateAudioMenus(for window: DeviceWindowController?) {
         for audio in audioMenus { audio.attach(to: window) }
     }
@@ -300,20 +290,16 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
             item.state = application?.showsTestingDevices == true ? .on : .off
             return application != nil
         }
-        // Like Simulator.app's app delegate, the checkmark shows the app-wide
-        // preference, also without a device window.
+        // App-wide checkmarks remain valid without a device window.
         if item.action == #selector(toggleShowDeviceBezels(_:)) {
             item.state = UserDefaults.standard.showsDeviceBezels ? .on : .off
             return application != nil
         }
-        // Like Simulator.app's app delegate, the checkmark shows the app-wide
-        // choice, which can change without a device window.
         if item.action == #selector(togglePasteboardSync(_:)) {
             item.state = pasteboardSync?.isOn == true ? .on : .off
             return pasteboardSync != nil
         }
-        // Like Simulator.app, the checkmarks follow the head of the policy
-        // after a leading external GPU.
+        // Skip a leading external GPU when determining the preferred GPU kind.
         if item.action == #selector(preferGPU(_:)) {
             item.state = gpuPolicy?.preference == item.representedObject as? GPUPolicy.Preference ? .on : .off
             return gpuPolicy != nil
@@ -377,9 +363,7 @@ final class OpenSimulatorMenu: NSObject, NSMenuDelegate {
         }
     }
 
-    /// Simulator.app's layout: a submenu per runtime, in the order runtimes
-    /// first appear, or the devices directly when they share one runtime.
-    /// Holding Option shows each device's descriptive name.
+    /// Groups by runtime in catalog order; Option shows descriptive device names.
     static func items(for devices: [AvailableDevice], hasWindow: (String) -> Bool,
                       action: Selector, target: AnyObject?) -> [NSMenuItem] {
         func deviceItems(_ device: AvailableDevice) -> [NSMenuItem] {
@@ -425,11 +409,7 @@ final class OpenSimulatorMenu: NSObject, NSMenuDelegate {
     }
 }
 
-/// Features ▸ Location, rebuilt each time it opens: None, Custom Location…, and
-/// the key device's scenarios in its runtime's order, without separators, as
-/// in Simulator.app. Simulator.app lists the scenarios of the device that
-/// connected last; NeoSimulator lists the key device's own, because another
-/// runtime's scenario names do not apply to it.
+/// Rebuilds locations from the key device's own runtime when opened.
 @MainActor
 final class LocationMenu: NSObject, NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
@@ -459,12 +439,8 @@ final class LocationMenu: NSObject, NSMenuDelegate {
     }
 }
 
-/// I/O ▸ Audio Input or Audio Output, rebuilt each time it opens from the key
-/// device's audio port: System, which follows the Mac's default device and
-/// names it, then the Mac's devices that have channels in that direction,
-/// in CoreSimulator's order and without a separator, as in Simulator.app.
-/// The guest's route is checked. A choice is saved as the app's most recent
-/// route and, as in Simulator.app, applies to every device window.
+/// Lists the key device's audio routes and the system default.
+/// Selections are saved app-wide and apply to every device window.
 @MainActor
 final class AudioRouteMenu: NSObject, NSMenuDelegate {
     let scope: AudioScope
@@ -481,9 +457,7 @@ final class AudioRouteMenu: NSObject, NSMenuDelegate {
         menu.delegate = self
     }
 
-    /// Like Simulator.app's `connectAudioSubmenus:`, the submenu is attached
-    /// and enabled for a device with `SimFeatureRoutableAudio`; otherwise the
-    /// item has no submenu and is disabled, but stays visible.
+    /// Attaches audio submenus only for devices with SimFeatureRoutableAudio.
     func attach(to window: DeviceWindowController?) {
         let routes = window?.session.routesAudio == true
         // AppKit leaves the enabling of an item with a submenu to the item.
@@ -495,10 +469,8 @@ final class AudioRouteMenu: NSObject, NSMenuDelegate {
         update(menu, for: DeviceWindowController.keyDeviceWindow)
     }
 
-    /// Lists `window`'s routes. Like Simulator.app, they are enabled with a
-    /// key device window, also while its device restarts: a choice is saved
-    /// and applies when the device connects. Until the device's audio port
-    /// reports, only System is listed, unchecked.
+    /// Keeps choices available during restart for application on reconnection.
+    /// Before the audio port reports, only an unchecked System item is shown.
     func update(_ menu: NSMenu, for window: DeviceWindowController?) {
         let session = window?.session
         let state = session?.audioRoutes

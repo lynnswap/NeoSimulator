@@ -1,29 +1,16 @@
 import AppKit
 
-/// The window of a device's external display while the display is on, as
-/// Simulator.app's device window shows a TVOut screen: titled with the device
-/// and "External Display", or "CarPlay" while the display is a CarPlay
-/// screen, without a toolbar or a bezel, the display directly below the title
-/// bar, black around the display where the window is larger, and opened where
-/// it last closed, under the device's `ExternalWindowGeometry`. While the
-/// window is key, the Window menu's scale commands scale it. Its display takes
-/// the pointer as touches, which a CarPlay screen's guest takes as CarPlay's,
-/// and, while the window is key and the device's hardware keyboard is
-/// connected, the Mac's keyboard.
-///
-/// Closing the window turns the external display off, as Disabled does.
+/// Presents a device's powered-on external screen without a bezel or toolbar.
+/// Shares keyboard and scaling behavior with device windows, and saves separate geometry.
+/// Closing the window powers off the external display.
 @MainActor
 final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegate, DisplayScaling {
-    /// The subtitle's label, which Simulator.app shows where a device window
-    /// shows the runtime. Unlike Simulator.app's, it also says when the guest
-    /// does not show the display's size, so that the display's picture, such
-    /// as 720×480 in its top-left corner, is not taken for that size's.
+    /// Distinguishes CarPlay and guest-size mismatches in the subtitle.
     static func subtitle(isCarPlay: Bool, showsSize: Bool = true) -> String {
         isCarPlay ? "CarPlay" : showsSize ? "External Display" : "External Display – Size Not Shown by Device"
     }
 
-    /// Like Simulator.app, a CarPlay window takes no full screen space of its
-    /// own and may accompany a window in full screen.
+    /// CarPlay accompanies another full-screen window instead of creating its own space.
     private static func collectionBehavior(isCarPlay: Bool) -> NSWindow.CollectionBehavior {
         isCarPlay ? [.fullScreenAuxiliary] : [.fullScreenPrimary, .fullScreenAllowsTiling]
     }
@@ -42,10 +29,7 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
     private var closed = false
     /// Set while the window takes the display's size, which the resize must not change.
     private var isSizingWindow = false
-    /// The screen's size in points. Without a bezel, the display's size at a
-    /// scale is this size times the scale. SimulatorKit's display takes a new
-    /// size of its screen a moment after CoreSimulator reports it, so the
-    /// window follows the reported size.
+    /// Uses reported screen dimensions because SimulatorKit updates its display view asynchronously.
     private var screenSize: NSSize
     /// Whether the display is a CarPlay screen, which the subtitle names.
     private var isCarPlay: Bool
@@ -78,8 +62,6 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
             display.disconnect()
             throw HostError.unavailable("The external display has no usable size")
         }
-        // Like Simulator.app's window for a display without a bezel: titled,
-        // with the content below the title bar, and resizable.
         let window = NSWindow(contentRect: NSRect(origin: .zero, size: screenSize),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable],
                               backing: .buffered, defer: false)
@@ -96,10 +78,9 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
         window.collectionBehavior = Self.collectionBehavior(isCarPlay: isCarPlay)
         window.delegate = self
         window.contentView = content
-        // Like Simulator.app, every window follows Show Device Bezels;
-        // SimulatorKit has no bezel for an external display.
+        // External screens have no bezel even when the shared preference is on.
         display.setChromeVisible(preferences.showsDeviceBezels)
-        // Simulator.app takes touch pressure only on a device's own screen.
+        // Touch pressure applies only to the device's own screen.
         display.setSupportsTouchPressure(false)
         showTouchIndicators()
         observers = [
@@ -117,17 +98,12 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
 
     required init?(coder: NSCoder) { nil }
 
-    /// Like Simulator.app, a new window opens at the saved scale or Point
-    /// Accurate, and a CarPlay screen's at Point Accurate, reduced to Fit
-    /// Screen's.
+    /// Fits the saved scale, or Point Accurate for a new or CarPlay window, to the screen.
     private var initialScale: CGFloat { min(scale(for: .fitScreen) ?? .infinity, isCarPlay ? 1 : savedScale ?? 1) }
 
     private static var screenFrames: [NSRect] { NSScreen.screens.map(\.frame) }
 
-    /// Shows the window centered where the device's external display window
-    /// last closed in the current arrangement of screens, or else cascading
-    /// from the device window, and makes it key, as Simulator.app does for a
-    /// window that connects. The window then moves back inside its screen.
+    /// Restores the saved center or cascades from the device window, then keeps it on screen.
     func showNewWindow(cascadingFrom deviceWindow: NSWindow?) {
         guard let window else { return }
         let place: (NSWindow) -> Void
@@ -142,18 +118,14 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
         place(window)
         showWindow(nil)
         window.makeKeyAndOrderFront(nil)
-        // The window opened at the scale for the main screen; as the device
-        // window does, it takes the scale for the screen it is placed on and
-        // is placed again at its new size.
+        // Recompute fit for the destination screen after placement.
         display.setRenderScale(initialScale)
         updateWindowSize()
         place(window)
         moveWindowOntoScreen()
     }
 
-    /// Closes the window without turning the external display off, as when
-    /// the display turns off or its device disconnects. The window's geometry
-    /// is saved for its next opening.
+    /// Closes and saves geometry without sending a power-off request.
     func invalidate() {
         guard !closed else { return }
         saveWindowGeometry()
@@ -164,8 +136,7 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
 
     // MARK: Window size
 
-    /// The scale `mode` shows the display at, as Simulator.app computes it,
-    /// or nil for Fit Screen without a screen.
+    /// Returns nil for Fit Screen when no host screen is available.
     func scale(for mode: WindowScaleMode) -> CGFloat? {
         let screen = window?.screen
         switch mode {
@@ -190,8 +161,7 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
         return window.frame.height - window.contentRect(forFrameRect: window.frame).height
     }
 
-    /// The smallest scale Simulator.app gives a display that is not a
-    /// device's own screen: the scale that fits it in 240 by 240 points.
+    /// Minimum scale fits the display in 240×240 points.
     private var minimumScale: CGFloat {
         WindowScale.minimum(family: session.capabilities.family, displayClass: display.displayClass,
                             fitting240: scale(fitting: NSSize(width: 240, height: 240)))
@@ -214,15 +184,12 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
         min(size.width / screenSize.width, size.height / screenSize.height)
     }
 
-    /// Like Simulator.app: a connected display outside full screen, and for
-    /// Physical Size, a device's own screen, which an external display is not.
+    /// External displays support scaling only when connected and outside full screen; no Physical Size.
     private func validatesScale(_ mode: WindowScaleMode) -> Bool {
         !closed && display.isBooted && !fitting.isFullScreen && (mode != .physicalSize || display.displayClass == 0)
     }
 
-    /// Whether a scale command can run, as Simulator.app validates it for a
-    /// display without a bezel: a fixed scale from the minimum, at which the
-    /// display fits its screen's visible frame below the title bar.
+    /// Checks minimum scale and fit below the title bar for a display without a bezel.
     func canSetScale(_ mode: WindowScaleMode) -> Bool {
         guard validatesScale(mode), let window else { return false }
         guard mode != .fitScreen else { return true }
@@ -237,9 +204,7 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
         return WindowScale.matches(display.renderScale, scale) ? .on : .off
     }
 
-    /// Shows the display at `mode`'s scale and sizes the window to it below
-    /// its top edge. Fit Screen then centers the window on its screen; the
-    /// fixed scales move it back inside its screen.
+    /// Resizes below the top edge, centering Fit Screen and keeping fixed scales on screen.
     func setScale(_ mode: WindowScaleMode) {
         guard let window, let scale = scale(for: mode) else { return }
         let previous = window.frame
@@ -257,15 +222,8 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
         updateWindowSize()
     }
 
-    /// Sizes the window to the display at its scale, as Simulator.app's
-    /// geometry update does for a display without a bezel: the content is the
-    /// display, the window keeps its bottom-left corner, takes
-    /// the smallest integral frame around that, and moves down when its top
-    /// would be above the screen. A drag on the window's edges keeps the
-    /// screen's aspect ratio and stops at the minimum scale, which follow a
-    /// new size of the screen outside full screen, also during the drag. In
-    /// full screen and during a live resize, the display fits the window
-    /// instead.
+    /// Sizes to the scaled display and constrains the top edge.
+    /// Manual resizing preserves aspect ratio and minimum scale; full screen and live resize fit the display.
     private func updateWindowSize() {
         guard !closed, let window else { return }
         if !fitting.isFullScreen {
@@ -286,9 +244,7 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
         fitting.layout()
     }
 
-    /// Like Simulator.app, the window takes the display's new size when the
-    /// screen's size changes, keeping the display's scale, and follows the
-    /// display becoming a CarPlay screen or another.
+    /// Updates screen size and CarPlay state while preserving display scale.
     func screenChanged(_ state: ExternalScreenState) {
         guard !closed else { return }
         let showsSize = session.externalDisplayShowsItsSize(in: state)
@@ -364,8 +320,7 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
 
     func windowDidFailToEnterFullScreen(_ window: NSWindow) { fitting.didFailToEnterFullScreen() }
 
-    /// Like Simulator.app, the window returns to the display's scale and the
-    /// window's origin from before full screen.
+    /// Restore the scale and origin from before full screen.
     func windowDidExitFullScreen(_ notification: Notification) {
         guard let geometry = fitting.didExitFullScreen() else { return }
         showDisplay(at: geometry.scale)
@@ -381,8 +336,7 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
         onClose()
     }
 
-    /// Like Simulator.app, the device's next external display window in the
-    /// same arrangement of screens opens at this center and scale.
+    /// Save center and scale for the current host-screen arrangement.
     private func saveWindowGeometry() {
         guard !closed, let window else { return }
         preferences.setWindowGeometry(center: NSPoint(x: window.frame.midX, y: window.frame.midY),
@@ -404,15 +358,11 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
     isolated deinit { disconnect() }
 }
 
-/// The external display's window content: the display, on the window's black
-/// background. Simulator.app's chrome refresh keeps no gap above a display
-/// without a bezel, so the display meets the title bar.
+/// External-screen content meets the title bar and uses the window's black background.
 @MainActor
 private final class ExternalDisplayContentView: NSView, DisplayContentView {
     let display: NSView
-    /// Whether the window has the display's size; the display then fills the
-    /// content. In full screen and after a manual resize, the display keeps
-    /// its own size, centered.
+    /// Fills display-sized content; otherwise centers the display at its own size.
     var isSizedToDisplay = false {
         didSet { needsLayout = true }
     }

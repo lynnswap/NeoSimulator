@@ -166,8 +166,7 @@ struct InstallationInspector {
                 "running Simulator did not resolve to its expected Xcode location"
             )
         }
-        // Termination does not load the parent Xcode. Reusing the launch gate
-        // would let unrelated parent resources block a host switch.
+        // Termination does not load Xcode, so its resources need no launch validation.
         _ = try validatedLegacySimulatorApplication(at: normalizedApplicationURL)
         return normalizedApplicationURL
     }

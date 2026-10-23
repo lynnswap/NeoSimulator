@@ -97,11 +97,8 @@ final class DeviceTools {
     private let devicectlURL: URL
     private let runner = DeviceToolRunner()
 
-    /// - Parameters:
-    ///   - deviceSetPath: The device's set when it is not the default set.
-    ///     `simctl` addresses the device in that set; `devicectl` cannot.
-    ///   - simctl: The `simctl` executable; tests substitute a stand-in.
-    ///   - devicectl: The `devicectl` executable; tests substitute a stand-in.
+    /// `deviceSetPath` selects a custom set for simctl; devicectl cannot address it.
+    /// Executable arguments allow test substitution.
     init(identifier: String, xcodeURL: URL, deviceSetPath: String? = nil, simctl: URL = DeviceTools.simctl,
          devicectl: URL = DeviceTools.devicectl) throws {
         let developerDirectory = xcodeURL.appendingPathComponent("Contents/Developer").path
@@ -170,9 +167,7 @@ final class DeviceTools {
             arguments: ["device", "orientation", "get", "--device", identifier, "--json-output", "-", "--quiet"],
             environment: environment))
     }
-    /// Shuts the device down, erases it when asked, and boots it. Like
-    /// Simulator.app, a failed shutdown stops the restart, and a failed
-    /// erase still boots the device.
+    /// Shutdown failure stops the restart; erase failure is reported but still allows boot.
     func restart(erasing: Bool) async throws {
         let operation = erasing ? "Erase All Content and Settings" : "Restart"
         func failure(_ stage: String, completed: [String], _ error: Error) -> HostError {

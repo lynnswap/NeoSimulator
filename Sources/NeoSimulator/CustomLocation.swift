@@ -1,8 +1,6 @@
 import AppKit
 
-/// Features ▸ Location ▸ Custom Location…: Simulator.app's window that asks
-/// for a coordinate, an ordinary window rather than a sheet. Each device window
-/// has its own. OK is enabled only while both fields parse.
+/// Per-device custom-coordinate window; OK requires both fields to parse.
 @MainActor
 final class CustomLocationWindowController: NSWindowController, NSTextFieldDelegate {
     let latitudeField = NSTextField()
@@ -29,9 +27,7 @@ final class CustomLocationWindowController: NSWindowController, NSTextFieldDeleg
 
     required init?(coder: NSCoder) { nil }
 
-    /// Simulator.app's coordinate format: decimal numbers in the current
-    /// locale, with up to six fraction digits, no grouping, and at most `limit`
-    /// in either direction.
+    /// Locale-aware decimal coordinates, six fraction digits, no grouping, bounded by `limit`.
     static func formatter(limit: Double) -> NumberFormatter {
         let formatter = NumberFormatter()
         formatter.numberStyle = .decimal
@@ -103,9 +99,7 @@ final class CustomLocationWindowController: NSWindowController, NSTextFieldDeleg
 
     private func updateOK() { okButton.isEnabled = coordinate != nil }
 
-    // Reads the text being typed from the field editor: while a field is
-    // edited, `stringValue` runs it through the formatter and erases text that
-    // does not parse. Simulator.app detaches the formatters to read it.
+    // Read the field editor directly: stringValue invokes the formatter and loses invalid edits.
     private var coordinate: (latitude: Double, longitude: Double)? {
         func value(_ field: NSTextField, _ formatter: NumberFormatter) -> Double? {
             formatter.number(from: field.currentEditor()?.string ?? field.stringValue)?.doubleValue

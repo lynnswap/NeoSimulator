@@ -222,21 +222,8 @@ final class DeviceBrowserWindowController: NSWindowController {
     }
 }
 
-/// File ▸ New Simulator…, Simulator.app's creation form.
-///
-/// The form offers every supported device type and available runtime. Choosing
-/// one keeps the other when they are compatible and otherwise selects the first
-/// compatible choice. An empty name creates the device with its device type's
-/// name, shown as the placeholder. Creating closes the window without booting
-/// the device.
-///
-/// Paired Apple Watch, enabled only for an iPhone, turns Create into Next,
-/// which shows the watch's page: its name, a watch device type, and a runtime
-/// that supports it, kept compatible the same way, except that choosing a
-/// device type the runtime does not support lists only the runtimes that do.
-/// There Create is enabled only while CoreSimulator can pair the two devices;
-/// it creates the iPhone, then the watch, and pairs them. Like Simulator.app,
-/// a failure keeps the devices already created; the alert names them.
+/// Creates devices from compatible type/runtime pairs, optionally pairing an iPhone and watch.
+/// Creation does not boot them. Partial failures retain created devices and name them in the alert.
 @MainActor
 final class NewSimulatorWindowController: NSWindowController, NSWindowDelegate {
     /// Creates a device and returns its identifier.
@@ -351,7 +338,6 @@ final class NewSimulatorWindowController: NSWindowController, NSWindowDelegate {
     private func fillMenus() {
         var family: Int?
         for type in catalog.deviceTypes {
-            // Simulator.app separates product families without headings.
             if let family, family != type.productFamily { deviceTypes.menu?.addItem(.separator()) }
             family = type.productFamily
             deviceTypes.menu?.addItem(item(type.name, representing: type.identifier))
@@ -367,7 +353,7 @@ final class NewSimulatorWindowController: NSWindowController, NSWindowDelegate {
         }
         deviceTypes.selectItem(at: 0)
         runtimes.selectItem(at: 0)
-        // Like Simulator.app, the initial runtime stays and the device type adapts.
+        // Keep the initial runtime and select a compatible device type.
         runtimeChanged(nil)
     }
 
@@ -375,7 +361,6 @@ final class NewSimulatorWindowController: NSWindowController, NSWindowDelegate {
     /// at first, the runtimes that support any of them.
     private func fillWatchMenus() {
         let watchTypes = catalog.deviceTypes.filter { $0.productFamily == DeviceCapabilities.Family.watch.rawValue }
-        // Without watch device types Simulator.app leaves both menus empty.
         guard !watchTypes.isEmpty else { return }
         for type in watchTypes { watchDeviceTypes.menu?.addItem(item(type.name, representing: type.identifier)) }
         let runtimes = catalog.runtimes.filter { runtime in
@@ -410,8 +395,7 @@ final class NewSimulatorWindowController: NSWindowController, NSWindowDelegate {
     private var watchType: String? { watchDeviceTypes.selectedItem?.representedObject as? String }
     private var watchRuntime: String? { watchRuntimes.selectedItem?.representedObject as? String }
 
-    // An empty selection counts as incompatible, as a nil selection does in
-    // Simulator.app, so choosing again restores a compatible one.
+    // An empty selection is incompatible so the next change restores a valid pair.
     @objc private func deviceTypeChanged(_ sender: Any?) {
         if let deviceType, runtime.map({ catalog.runtime($0, supports: deviceType) }) != true {
             select(in: runtimes) { catalog.runtime($0, supports: deviceType) }
@@ -426,8 +410,7 @@ final class NewSimulatorWindowController: NSWindowController, NSWindowDelegate {
         simulatorSelectionDidChange()
     }
 
-    /// Like Simulator.app, Paired Apple Watch is enabled only for an iPhone and
-    /// turns off for another device type; an empty selection leaves it as it is.
+    /// Pairing is available only for iPhone; an empty selection preserves the current state.
     private func simulatorSelectionDidChange() {
         nameField.placeholderString = deviceTypes.selectedItem?.title
         if let family = deviceType.flatMap(catalog.deviceType)?.productFamily {
@@ -437,8 +420,7 @@ final class NewSimulatorWindowController: NSWindowController, NSWindowDelegate {
         updateForwardButton()
     }
 
-    /// Like Simulator.app, a watch that the runtime does not support replaces
-    /// the runtime menu with the runtimes that support it.
+    /// Rebuilds the runtime list when the selected watch requires a different runtime.
     @objc private func watchDeviceTypeChanged(_ sender: Any?) {
         if let watchType, watchRuntime.map({ catalog.runtime($0, supports: watchType) }) != true {
             watchRuntimes.removeAllItems()
@@ -466,8 +448,6 @@ final class NewSimulatorWindowController: NSWindowController, NSWindowDelegate {
 
     @objc private func pairedWatchChanged(_ sender: Any?) { updateForwardButton() }
 
-    /// Whether Create also creates a watch, which Simulator.app decides from
-    /// the option being enabled and on.
     private var pairsWatch: Bool { pairedWatchButton.isEnabled && pairedWatchButton.state == .on }
 
     /// Whether the four choices make a pair that CoreSimulator can create.

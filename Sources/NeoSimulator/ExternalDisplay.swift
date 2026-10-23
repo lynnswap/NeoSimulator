@@ -1,9 +1,7 @@
 import AppKit
 
-/// I/O ▸ External Displays: the external display Simulator.app connects to a
-/// device, by the menu tag that Simulator.app also saves for the device. Each
-/// size is shown at a point per pixel; CarPlay makes the display a car's
-/// CarPlay display in Simulator.app's default CarPlay configuration.
+/// External display choices, using Simulator.app's persisted menu tags.
+/// Fixed sizes use one point per pixel; CarPlay uses `CarPlayConfiguration`.
 enum ExternalDisplayMode: Int, CaseIterable {
     case disabled = 2114
     case size640x480 = 2214
@@ -52,10 +50,7 @@ enum ExternalDisplayMode: Int, CaseIterable {
     var scale: CGFloat { self == .carPlay ? CarPlayConfiguration.scale : 1 }
 }
 
-/// Simulator.app's default CarPlay configuration (`StarkConfig`), which its
-/// CarPlay item uses unless `CarPlayExtraOptions` lets an options panel change
-/// it: an 800×480 screen at a scale of 2 with a touch screen, and no wheel,
-/// back, or home controls.
+/// Simulator.app's default `StarkConfig`: 800×480 at scale 2, touch enabled, no wheel/back/home controls.
 enum CarPlayConfiguration {
     static let pixelSize = CGSize(width: 800, height: 480)
     static let scale: CGFloat = 2
@@ -72,9 +67,7 @@ enum CarPlayConfiguration {
     /// What Simulator.app writes there for every other choice.
     static var disabledFile: [String: Any] { ["stark": 0] }
 
-    /// Writes `file` for CarPlay, or `disabledFile`, to a device's
-    /// `extended_display.plist` at `url`, creating its folder. Like
-    /// Simulator.app, the file is written in place.
+    /// Writes the configuration in place, creating its parent directory.
     static func save(carPlay: Bool, to url: URL) throws {
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try PropertyListSerialization.data(fromPropertyList: carPlay ? file : disabledFile, format: .xml, options: 0)
@@ -98,10 +91,7 @@ struct ExternalScreenState: Equatable {
     /// shows (see `ExternalScreenMode.guestSize(for:refreshRate:among:)`).
     var refreshRate: Double = 60
 
-    /// The External Displays item this state is: Disabled while the screen is
-    /// off, CarPlay while it is a CarPlay screen, otherwise the size it shows
-    /// at a point per pixel, or nil for a size or scale that the menu does not
-    /// offer, such as one that `simctl io screenConfig` set.
+    /// Derives the menu choice from actual screen state. Returns nil for unlisted sizes or scales.
     var mode: ExternalDisplayMode? {
         guard isPoweredOn else { return .disabled }
         guard !isCarPlay else { return .carPlay }
@@ -139,22 +129,13 @@ struct ExternalScreenMode: Equatable {
         }
     }
 
-    /// The refresh rates at which the guest keeps an external display's mode.
-    /// The guest's SpringBoard has CoreAnimation pick the display's mode
-    /// without a refresh rate of its own, and CoreAnimation then takes only
-    /// modes from 49 to 60.5 Hz (`ModeSet::preferred_mode_with_criteria_internal`
-    /// in the QuartzCore of the iOS 18.5, 26.0, and 26.5 runtimes).
+    /// Guest CoreAnimation accepts 49–60.5 Hz for SpringBoard's external display selection
+    /// (`ModeSet::preferred_mode_with_criteria_internal`, iOS 18.5, 26.0, and 26.5).
     static let guestRefreshRates: ClosedRange<Double> = 49...60.5
 
-    /// The size the guest shows on a display set to `size` at `refreshRate`
-    /// by a screen that advertises `modes`. The guest lists the display's
-    /// current mode and the screen's exact modes, which come from the device
-    /// type (720×480 at 60 Hz for a TVOut screen), and SpringBoard switches
-    /// the display to the one with the most pixels per second, width × height
-    /// × whole hertz (CoreAnimation's `Display::Mode::operator<`), at a rate
-    /// it keeps. So a 120 Hz mode ends at the exact 720×480 mode, as does any
-    /// smaller size, such as 640×480, while the screen and its window keep the
-    /// size that was set, with the guest's picture in its top-left corner.
+    /// Predicts SpringBoard's mode: the highest width × height × whole-hertz value at an accepted rate.
+    /// An unsupported rate or a size below the advertised 720×480 mode therefore yields 720×480,
+    /// even though the host window retains the requested size.
     static func guestSize(for size: CGSize, refreshRate: Double, among modes: [ExternalScreenMode]) -> CGSize {
         let exact = modes.compactMap { mode -> (size: CGSize, rate: Double)? in
             guard case .exact(let size) = mode.sizes else { return nil }
@@ -177,22 +158,10 @@ struct ExternalScreenMode: Equatable {
         case advertised(Int)
     }
 
-    /// Like Simulator.app, the screen's current mode when the screen already
-    /// has `size` at `scale`, otherwise the first advertised mode that takes
-    /// both, except that the mode must also have a refresh rate the guest
-    /// keeps, whatever the order of `modes`. When the only modes that take the
-    /// size are at rates the guest drops, such as the 120 Hz modes of
-    /// `allowedSizes` that are a TVOut screen's only modes on an iPad, or on an
-    /// iPhone with iOS 27.0, the first mode of that scale at a rate the guest
-    /// keeps is set with the size instead. CoreSimulator makes the screen's
-    /// mode from the size and that mode's scale, refresh rate, and format, and
-    /// takes it when the screen's size specification does: the TVOut screen's
-    /// takes 30, 60, 75, and 120 Hz but advertises only 120 Hz
-    /// (SimRenderServer 1174.9.2 `0x100027240`–`0x1000272C0`). Simulator.app
-    /// sets the 120 Hz mode, which the guest replaces with its 720×480 mode.
-    ///
-    /// Throws when no mode takes the size at the scale, or when the guest
-    /// would show another size (see `guestSize(for:refreshRate:among:)`).
+    /// Chooses a mode at the requested size and scale with a refresh rate the guest accepts.
+    /// TVOut may advertise only 120 Hz while accepting 60 Hz, so a compatible mode
+    /// can supply the rate and format for the requested size. Rejects unsupported sizes
+    /// and modes the guest would replace; see `guestSize(for:refreshRate:among:)`.
     static func choice(for size: CGSize, scale: CGFloat, current: ExternalScreenState?,
                        among modes: [ExternalScreenMode]) throws(ExternalDisplayLimit) -> Choice {
         let keeps = { (rate: Double) in guestRefreshRates.contains(rate) }
@@ -226,10 +195,8 @@ enum ExternalDisplayLimit: LocalizedError, Equatable {
     /// The guest shows its mode of this size instead (see
     /// `ExternalScreenMode.guestSize(for:refreshRate:among:)`).
     case showsInstead(CGSize)
-    /// iPadOS before 27 on an iPad with Stage Manager makes a 3840×2160
-    /// display at 60 Hz an extended display, and its SpringBoard then aborts
-    /// (`SBSystemShellExtendedDisplayControllerPolicy.m:199`) as soon as the
-    /// display changes or turns off. iOS 18.6, 26.0, and 26.5 did; 27.0 did not.
+    /// Pre-iPadOS 27 Stage Manager aborts when a 3840×2160 60 Hz display changes or turns off
+    /// (`SBSystemShellExtendedDisplayControllerPolicy.m:199`; observed on 18.6, 26.0, and 26.5).
     case extendedDisplay
 
     var errorDescription: String? {
@@ -256,10 +223,8 @@ enum ExternalDisplayLimit: LocalizedError, Equatable {
 private let externalDisplayKey = "SimulatorExternalDisplay"
 
 extension PreferenceStore {
-    /// The External Displays tag last chosen for the device, Simulator.app's
-    /// `DevicePreferences[UDID].SimulatorExternalDisplay`. Like Simulator.app,
-    /// a missing value or one that is not an integer is Disabled's. A tag
-    /// that this host does not know is returned as is.
+    /// Persisted SimulatorExternalDisplay tag; malformed or missing values mean Disabled.
+    /// Unknown integer tags are preserved.
     func externalDisplayTag(forDevice identifier: String) -> Int {
         preferences(forDevice: identifier)?[externalDisplayKey] as? Int ?? ExternalDisplayMode.disabled.rawValue
     }
@@ -271,9 +236,7 @@ extension PreferenceStore {
     }
 }
 
-/// A part of an external display change that can fail on its own. A size or
-/// Disabled sets the screen; CarPlay also writes the guest's configuration and
-/// starts its CarPlay session and HID service, which a later change ends.
+/// Independently failing steps of a display change, including CarPlay configuration and services.
 enum ExternalDisplayStep: Equatable {
     /// Writing the device's `extended_display.plist`.
     case carPlayConfiguration
@@ -291,40 +254,16 @@ struct ExternalDisplayFailure {
     let error: Error
 }
 
-/// The changes sent to one device's external display, which `HostApplication`
-/// keeps for the device across its sessions, so that a session's changes
-/// follow the power-off that the previous session's close sent. CoreSimulator
-/// completes each change later, so they are sent one at a time and the last
-/// choice wins: a change asked for while one is in flight waits for it and
-/// replaces an earlier change that waits. Each change goes through the screen
-/// connection of the session that asked for it.
+/// Serializes external-display changes across a device's sessions; the latest pending choice wins.
+/// Each change uses its originating session's screen connection. Power-off is idempotent
+/// and always sent, because property reports can lag completion.
 ///
-/// Disabled always sends the power-off. Simulator.app sends it only while the
-/// display's window is connected; CoreSimulator completes a power-off of a
-/// display that is already off without an error, so no record of the
-/// display's power, which reports and completions arriving in either order
-/// could leave wrong, decides it.
+/// CarPlay configuration is written before mode changes. HID service removal precedes
+/// session end; session start precedes HID service creation. Failures are collected,
+/// but failed screen changes stop the operation and failed starts skip service creation.
 ///
-/// CarPlay follows Simulator.app's steps: a choice writes the device's
-/// `extended_display.plist` first, CarPlay's configuration for CarPlay and
-/// `{stark: 0}` for every other item, since the guest reads it when the
-/// screen's modes change. A size or CarPlay then ends the guest's CarPlay
-/// session that this host started (see `CarPlaySessionState`), removing the
-/// HID service first, and Disabled ends it once the screen is off. Once the
-/// screen is a CarPlay screen, CarPlay starts a session, or keeps one that did
-/// not end, then creates the HID service that takes the display's touches.
-/// Each step's failure is reported and the change goes on, except that a
-/// screen that did not change ends it and a session that did not start leaves
-/// the HID service uncreated.
-///
-/// A change whose completion does not come must not stop the device's later
-/// sessions. CoreSimulator completed every change sent while its device shut
-/// down, after it shut down, and after it booted again, the last ones with an
-/// error and up to 4.5 seconds late. The queue still stops waiting for a
-/// change in flight when the session that sent it disconnects from a device
-/// that is no longer booted, and, as a last resort for a completion that
-/// never comes, after `completionTimeout`. It logs the change, and ignores its
-/// completion if one comes later.
+/// Disconnection from a stopped device or `completionTimeout` abandons stalled work.
+/// Late completions are ignored so later sessions can proceed.
 @MainActor
 final class ExternalDisplayChanges {
     private struct Change {
@@ -353,15 +292,10 @@ final class ExternalDisplayChanges {
         }
     }
 
-    /// How long a step may wait for its completion: more than twice the
-    /// longest completion seen, through a connection made before its device
-    /// restarted.
+    /// Bounds completion waits beyond observed delays of up to 4.5 seconds across restarts.
     static let defaultCompletionTimeout: Duration = .seconds(10)
-    /// How long the display stays off before it turns on as a CarPlay screen.
-    /// The iOS 26.5 guest takes a display that becomes a CarPlay screen in
-    /// place, or that turns on again before the guest has handled its
-    /// power-off, as a display it already showed, and CarPlay never draws on
-    /// it; 0.2 seconds off sufficed in every try.
+    /// Allows the guest to process power-off before CarPlay reconnects.
+    /// Without a delay, iOS 26.5 may retain the old display and never render CarPlay.
     static let defaultCarPlayReconnectionDelay: Duration = .seconds(1)
 
     private let completionTimeout: Duration
@@ -385,11 +319,8 @@ final class ExternalDisplayChanges {
     /// Whether a change is in flight or waiting.
     var isBusy: Bool { inFlight != nil || waiting != nil }
 
-    /// Sends `mode`'s change through `screen`, or makes it wait for the change
-    /// in flight. With `savesCarPlayConfiguration`, as for a choice on a device
-    /// with CarPlay, the change first writes the device's
-    /// `extended_display.plist`. `report` receives the change's failures, also
-    /// those CoreSimulator reports later, once the change ends.
+    /// Queues the latest choice and reports its collected failures after completion.
+    /// `savesCarPlayConfiguration` writes the guest configuration before changing its mode.
     func apply(_ mode: ExternalDisplayMode, through screen: any SimulatorExternalScreen,
                savesCarPlayConfiguration: Bool, report: @escaping @MainActor ([ExternalDisplayFailure]) -> Void) {
         let change = Change(mode: mode, screen: screen, savesCarPlayConfiguration: savesCarPlayConfiguration,
@@ -397,9 +328,7 @@ final class ExternalDisplayChanges {
         if inFlight != nil { waiting = change } else { send(change) }
     }
 
-    /// Stops waiting for the changes that `screen`'s session asked for, as
-    /// when the session disconnects from a device that is no longer booted:
-    /// the change that waits is dropped, and the one in flight abandoned.
+    /// Drops pending and abandons in-flight changes owned by this screen connection.
     func abandon(changesThrough screen: any SimulatorExternalScreen) {
         if waiting?.screen === screen { waiting = nil }
         if let inFlight, inFlight.change.screen === screen {
@@ -455,16 +384,9 @@ final class ExternalDisplayChanges {
         }
     }
 
-    /// Like Simulator.app before the display changes, ends the CarPlay that
-    /// this host started in the device's current boot: removes the HID
-    /// service, then ends the session. Their failures are reported, and the
-    /// change goes on; a session that does not end stays started for the
-    /// next change.
-    ///
-    /// Each request is decided for the boot read when the step begins, and is
-    /// not sent once the device has restarted since, as it can while a change
-    /// waits: the new boot starts without a session or a HID service of this
-    /// host.
+    /// Removes this host's HID service before ending its CarPlay session.
+    /// Failures are reported; a failed end preserves the session for the next choice.
+    /// Boot-scoped requests cannot end a session in a newly restarted guest.
     private func endCarPlay(in run: Run, then next: @escaping @MainActor () -> Void) {
         let screen = run.change.screen
         let boot = screen.deviceBootDate
@@ -479,13 +401,8 @@ final class ExternalDisplayChanges {
         }
     }
 
-    /// Like Simulator.app once the screen is a CarPlay screen, starts the
-    /// guest's CarPlay session, then creates the HID service that takes the
-    /// display's touches. Unlike Simulator.app, which creates the service
-    /// either way and starts a session each time, the service waits for a
-    /// session that started, a session that did not end stays the device's
-    /// CarPlay instead of another starting beside it, and a session whose
-    /// state is unknown gets no request.
+    /// Starts CarPlay before creating the HID service. Reuses an existing session
+    /// and sends no request when a previous timeout left its state unknown.
     private func startCarPlay(in run: Run, then next: @escaping @MainActor () -> Void) {
         let screen = run.change.screen
         let boot = screen.deviceBootDate
@@ -506,13 +423,8 @@ final class ExternalDisplayChanges {
         }
     }
 
-    /// Sends a start or an end of the guest's CarPlay session, decided for
-    /// `boot`, and notes its answer. The change waits for the answer, so no
-    /// other session request is ever sent while one has none; an answer that
-    /// does not come in time leaves the session unknown (see
-    /// `abandon(_:reason:reporting:)`). A device that has restarted since
-    /// `boot` gets nothing: the request is moot in a boot that starts without
-    /// a session, and an end there would count below zero.
+    /// Serializes boot-scoped session requests. A timeout leaves the session unknown
+    /// for that boot; a restart makes the pending request moot.
     private func sendCarPlaySession(starting: Bool, for boot: Date?, in run: Run,
                                     then next: @escaping @MainActor (Bool) -> Void) {
         let screen = run.change.screen
@@ -527,10 +439,8 @@ final class ExternalDisplayChanges {
         }
     }
 
-    /// Turns off a display that shows something other than CarPlay, so that
-    /// the guest takes it as a new display when it turns on as a CarPlay
-    /// screen (see `defaultCarPlayReconnectionDelay`). Simulator.app changes
-    /// the mode in place. A display that does not turn off ends the change.
+    /// Power-cycles an existing non-CarPlay display so the guest recognizes CarPlay.
+    /// A failed power-off stops the change.
     private func turnOffForCarPlay(in run: Run, then next: @escaping @MainActor () -> Void) {
         // A state that cannot be read leaves the display as it is.
         guard let state = try? run.change.screen.state(), state.isPoweredOn, !state.isCarPlay else { return next() }
@@ -553,10 +463,8 @@ final class ExternalDisplayChanges {
         }
     }
 
-    /// Sends one step through `operation`, which throws when it sends nothing
-    /// and otherwise calls its completion later, then calls `next` with
-    /// whether the step succeeded. A failure joins the change's. A step whose
-    /// completion does not come within `completionTimeout` abandons the change.
+    /// Runs a step, collects failure, and passes success to `next`.
+    /// A thrown error means nothing was sent; a missing completion abandons the change.
     private func perform(_ step: ExternalDisplayStep, in run: Run,
                          _ operation: (@escaping @MainActor (Error?) -> Void) throws -> Void,
                          then next: @escaping @MainActor (Bool) -> Void) {
@@ -634,17 +542,10 @@ final class ExternalDisplayChanges {
     }
 }
 
-/// The guest's CarPlay session that a host started in the device's current
-/// boot, and the HID service it created. The guest's CoreSimulatorBridge
-/// counts the sessions that hosts start; an end without a session counts below
-/// zero, which the bridge keeps, and refuses the next start, and a new boot
-/// starts the bridge again without any. The state therefore moves only on
-/// answers, and a host sends a start only with no session and an end only for
-/// a started one, one request at a time: it waits for each answer before it
-/// decides on the next. A request without an answer in time leaves the session
-/// unknown for the rest of the boot, and a host sends no more requests for it
-/// until the device restarts. Answers from another boot, and answers once the
-/// session is unknown, change nothing.
+/// Tracks only this host's CarPlay session and HID service for one guest boot.
+/// CoreSimulatorBridge counts starts and ends; an unmatched end prevents the next start.
+/// State advances only on replies. Timeout makes it unknown until restart, preventing
+/// further session requests. Replies from earlier boots or after timeout are ignored.
 struct CarPlaySessionState {
     enum Session: Equatable {
         case none, started
@@ -687,11 +588,8 @@ struct CarPlaySessionState {
         if boot == self.boot, succeeded { service = created }
     }
 
-    /// Notes a creation or a removal of the HID service without an answer,
-    /// which may have taken effect: the service counts as created, so that
-    /// the next change that ends CarPlay removes it. The guest's removal does
-    /// nothing without a service (`-[SimHIDVirtualServiceManager
-    /// removeCarplayServiceForTargetID:]` looks it up first).
+    /// Treats an unanswered HID change as potentially created so cleanup removes it.
+    /// The guest safely ignores removal when no service exists.
     mutating func serviceUnanswered(in boot: Date?) {
         if boot == self.boot { service = true }
     }
