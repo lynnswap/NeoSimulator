@@ -348,7 +348,8 @@ private final class TVRemoteButtonView: NSView {
 /// A click presses Select. While Option is held with the pointer over it,
 /// the pointer touches the surface: the touch starts when the pointer enters
 /// or Option goes down, moves with the pointer, and ends when the pointer
-/// leaves or Option goes up.
+/// leaves, also by a drag, or Option goes up. Its points stay within the
+/// surface.
 final class TVRemoteTouchSurface: NSView {
     var onSelect: (Bool) -> Void = { _ in }
     var onTouch: (CGPoint) -> Void = { _ in }
@@ -388,7 +389,20 @@ final class TVRemoteTouchSurface: NSView {
     }
 
     override func mouseMoved(with event: NSEvent) { follow(event) }
-    override func mouseDragged(with event: NSEvent) { follow(event) }
+
+    /// The tracking area reports no exit or entry while the mouse is down, so
+    /// a drag that leaves the surface, onto a button or off the panel, ends
+    /// the touch at the edge it crosses, and one that comes back touches
+    /// again. Simulator.app's surface keeps following such a drag, past its
+    /// edges.
+    override func mouseDragged(with event: NSEvent) {
+        if bounds.contains(convert(event.locationInWindow, from: nil)) {
+            isPointerInside = true
+            follow(event)
+        } else if isPointerInside {
+            mouseExited(with: event)
+        }
+    }
 
     override func mouseExited(with event: NSEvent) {
         isPointerInside = false
@@ -415,9 +429,12 @@ final class TVRemoteTouchSurface: NSView {
         if event.modifierFlags.contains(.option) { onTouch(point) } else { onLift(point) }
     }
 
+    /// Takes the event's point, at the nearest edge for an event outside
+    /// the surface, such as the exit of a fast move.
     private func move(to event: NSEvent) {
         let location = convert(event.locationInWindow, from: nil)
-        point = CGPoint(x: location.x / bounds.width, y: 1 - location.y / bounds.height)
+        func clamped(_ value: CGFloat) -> CGFloat { min(max(value, 0), 1) }
+        point = CGPoint(x: clamped(location.x / bounds.width), y: clamped(1 - location.y / bounds.height))
     }
 
     private func setSelect(_ down: Bool) {

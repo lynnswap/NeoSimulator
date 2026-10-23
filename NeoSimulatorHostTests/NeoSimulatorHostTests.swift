@@ -1276,6 +1276,61 @@ struct InputFocusTests {
         #expect(display.remoteTouches.count == 12)
     }
 
+    @Test func aDragOffTheRemotesTouchSurfaceEndsTheTouchAtItsEdge() throws {
+        _ = NSApplication.shared
+        let display = TestDisplay()
+        var target: DeviceWindowController?
+        let remote = TVRemoteController(target: { target })
+        let tv = try makeController(display, family: .tv, features: [DeviceCapabilities.tvRemote], tvRemote: remote)
+        defer {
+            tv.invalidate()
+            remote.close()
+        }
+        target = tv
+        remote.showWindow(nil)
+        let window = try #require(remote.window)
+        let content = try #require(window.contentView)
+        let surface = try #require(content.subviews.compactMap { $0 as? TVRemoteTouchSurface }.first)
+        let menu = try #require(content.subviews.first { $0.accessibilityLabel() == "Menu" })
+        func event(_ type: NSEvent.EventType, at location: NSPoint) throws -> NSEvent {
+            if type == .mouseEntered {
+                return try #require(NSEvent.enterExitEvent(
+                    with: type, location: location, modifierFlags: .option, timestamp: 0,
+                    windowNumber: window.windowNumber, context: nil, eventNumber: 0, trackingNumber: 0, userData: nil))
+            }
+            return try #require(NSEvent.mouseEvent(
+                with: type, location: location, modifierFlags: .option, timestamp: 0, windowNumber: window.windowNumber,
+                context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+        }
+        func onSurface(_ x: CGFloat, _ y: CGFloat) -> NSPoint {
+            surface.convert(NSPoint(x: x * surface.bounds.width, y: (1 - y) * surface.bounds.height), to: nil)
+        }
+        // With Option held, a click on the surface drags the touch down onto
+        // Menu, below the surface, and the mouse comes up there.
+        let onMenu = menu.convert(NSPoint(x: menu.bounds.midX, y: menu.bounds.midY), to: nil)
+        surface.mouseEntered(with: try event(.mouseEntered, at: onSurface(0.3, 0.5)))
+        surface.mouseDown(with: try event(.leftMouseDown, at: onSurface(0.3, 0.5)))
+        surface.mouseDragged(with: try event(.leftMouseDragged, at: onSurface(0.3, 0.75)))
+        surface.mouseDragged(with: try event(.leftMouseDragged, at: onMenu))
+        surface.mouseDragged(with: try event(.leftMouseDragged, at: NSPoint(x: onMenu.x, y: onMenu.y - 20)))
+        surface.mouseUp(with: try event(.leftMouseUp, at: onMenu))
+        // The touch ended at the surface's bottom edge, with no point outside it.
+        let x = onMenu.x / surface.bounds.width
+        #expect(display.remoteTouches == [TVRemoteTouch(phase: .began, point: CGPoint(x: 0.3, y: 0.5)),
+                                          TVRemoteTouch(phase: .moved, point: CGPoint(x: 0.3, y: 0.75)),
+                                          TVRemoteTouch(phase: .ended, point: CGPoint(x: x, y: 1))])
+        // Only Select was pressed and released; Menu stays up.
+        #expect(display.events.map(\.input) == [.tvRemote(.select), .tvRemote(.select)])
+        #expect(display.events.map(\.state) == [.down, .up])
+        // A drag that comes back onto the surface touches again.
+        surface.mouseDown(with: try event(.leftMouseDown, at: onSurface(0.5, 0.5)))
+        surface.mouseDragged(with: try event(.leftMouseDragged, at: onMenu))
+        surface.mouseDragged(with: try event(.leftMouseDragged, at: onSurface(0.5, 0.25)))
+        surface.mouseUp(with: try event(.leftMouseUp, at: onSurface(0.5, 0.25)))
+        #expect(display.remoteTouches.suffix(2) == [TVRemoteTouch(phase: .ended, point: CGPoint(x: x, y: 1)),
+                                                    TVRemoteTouch(phase: .began, point: CGPoint(x: 0.5, y: 0.25))])
+    }
+
     @Test func aRemoteButtonOrTouchReportsOneErrorEach() throws {
         let display = TestDisplay()
         display.deliveryError = HostError.operation("delivery failed")

@@ -1985,6 +1985,10 @@ Deliberate differences:
   window releases held hardware buttons. A touch whose device stops being the
   remote's target ends on that device before the next one starts; Simulator.app
   sends the next move to the new device without a start.
+- A drag that leaves the touch surface, onto a button or off the panel, ends
+  the touch at the edge it crosses, and points stay from 0 to 1.
+  Simulator.app's surface keeps following such a drag past its edges, outside
+  that range, and leaves the touch down when the mouse comes up there.
 - Simulator.app posts `AppleTVRemoteWindowDidShow` and
   `AppleTVRemoteWindowWillClose` for its Touch Bar's remote button; Neo has no
   Touch Bar items.
