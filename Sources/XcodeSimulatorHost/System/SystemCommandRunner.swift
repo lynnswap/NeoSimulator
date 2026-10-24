@@ -1,6 +1,6 @@
 import Foundation
 
-struct CommandOutput: Equatable {
+struct CommandOutput: Equatable, Sendable {
     let terminationStatus: Int32
     let stdout: Data
     let stderr: Data
