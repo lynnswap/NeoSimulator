@@ -831,6 +831,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         addItem("Close Window", action: #selector(NSWindow.performClose(_:)), key: "w", to: file).target = nil
         file.addItem(.separator())
         addItem("Save Screenshot…", action: #selector(RemoteDeviceWindowController.saveRemoteScreenshot(_:)), key: "s", to: file).target = nil
+        addItem("Discard Screenshot…", action: #selector(RemoteDeviceWindowController.discardRemoteScreenshot(_:)), to: file).target = nil
         addItem("Record Screen", action: #selector(RemoteDeviceWindowController.recordScreen(_:)), key: "r", to: file).target = nil
         let recordTo = addItem("Record Screen…", action: #selector(RemoteDeviceWindowController.recordScreenTo(_:)), key: "r", to: file)
         recordTo.target = nil
@@ -3430,6 +3431,7 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
     private var stoppingTask: Task<Void, any Error>?
     private var inputTask: Task<Void, Never>?
     private var captureTask: Task<Void, any Error>?
+    private var completedScreenshot: CGImage?
     private var capturePanel: NSSavePanel?
     private var recordingTask: Task<Void, any Error>?
     private var recordingTaskIdentifier: UUID?
@@ -3443,16 +3445,20 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
     private var inventoryAvailable = true
     private var issue: String?
     private var toolbarItems: [String: NSToolbarItem] = [:]
-    private let presentRecordingSavePanel: @MainActor (NSSavePanel, NSWindow) async -> NSApplication.ModalResponse
-    private let presentRecordingAlert: @MainActor (NSAlert, NSWindow) async -> NSApplication.ModalResponse
+    private let writeImage: @MainActor (CGImage, URL) async throws -> Void
+    private let presentSavePanel: @MainActor (NSSavePanel, NSWindow) async -> NSApplication.ModalResponse
+    private let presentAlert: @MainActor (NSAlert, NSWindow) async -> NSApplication.ModalResponse
 
     init(device: CoreDeviceDevice, session: RemoteDeviceScreenSession? = nil,
-         presentRecordingSavePanel: @escaping @MainActor (NSSavePanel, NSWindow) async -> NSApplication.ModalResponse = { panel, window in
+         writeImage: @escaping @MainActor (CGImage, URL) async throws -> Void = { image, destination in
+             try await RemoteDeviceWindowController.writeScreenshot(image, to: destination)
+         },
+         presentSavePanel: @escaping @MainActor (NSSavePanel, NSWindow) async -> NSApplication.ModalResponse = { panel, window in
              await withCheckedContinuation { continuation in
                  panel.beginSheetModal(for: window) { continuation.resume(returning: $0) }
              }
          },
-         presentRecordingAlert: @escaping @MainActor (NSAlert, NSWindow) async -> NSApplication.ModalResponse = { alert, window in
+         presentAlert: @escaping @MainActor (NSAlert, NSWindow) async -> NSApplication.ModalResponse = { alert, window in
              await withCheckedContinuation { continuation in
                  alert.beginSheetModal(for: window) { continuation.resume(returning: $0) }
              }
@@ -3460,8 +3466,9 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
         self.device = device
         let session = session ?? RemoteDeviceScreenSession(device: device)
         self.session = session
-        self.presentRecordingSavePanel = presentRecordingSavePanel
-        self.presentRecordingAlert = presentRecordingAlert
+        self.writeImage = writeImage
+        self.presentSavePanel = presentSavePanel
+        self.presentAlert = presentAlert
         inputView = RemoteDeviceInputView(session: session)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 460, height: 780),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
@@ -3562,9 +3569,8 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
         for name in ["home", "lock", "volumeDown", "volumeUp"] {
             toolbarItems[name]?.isEnabled = connected && session.inputCapabilities.contains(.button)
         }
-        toolbarItems["capture"]?.isEnabled = connected && inventoryAvailable && session.canCaptureScreenshot
-            && captureTask == nil && capturePanel == nil
-        toolbarItems["capture"]?.toolTip = session.canCaptureScreenshot ? "Save Screenshot…"
+        toolbarItems["capture"]?.isEnabled = canSaveScreenshot
+        toolbarItems["capture"]?.toolTip = completedScreenshot != nil || session.canCaptureScreenshot ? "Save Screenshot…"
             : "Screenshot capture is not available for this display yet."
         let recordingLabel: String
         let recordingSymbol: String
@@ -3597,6 +3603,7 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
         else if recordingTask != nil { statusLabel.stringValue = "Saving recording…" }
         else if let issue { statusLabel.stringValue = issue }
         else if session.hasUnfinishedRecording { statusLabel.stringValue = "Recording" }
+        else if completedScreenshot != nil { statusLabel.stringValue = "Screenshot ready to save." }
         else if session.completedRecording != nil { statusLabel.stringValue = "Recording ready to save." }
         else if let error = session.lastError { statusLabel.stringValue = error.localizedDescription }
         else if !inventoryAvailable { statusLabel.stringValue = "The device is unavailable." }
@@ -3640,20 +3647,19 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
         let task = Task { [self] in
             await inputTask?.value
             try await session.releaseInputs()
-            var failure: (any Error)?
             do { try await acceptedCapture?.value }
-            catch { failure = error }
-            do {
-                try await acceptedRecording?.value
-                try await finishRecordingBeforeDisconnect()
-            } catch is CancellationError { throw CancellationError() }
+            catch is CancellationError {}
             catch {
-                if let failure { throw RemoteDeviceWindowError.cleanup([failure.localizedDescription, error.localizedDescription]) }
-                throw error
+                guard completedScreenshot != nil else { throw error }
+                // A failed write keeps its pixels; resolve them before disconnecting below.
             }
+            try await finishScreenshotBeforeDisconnect()
+            try await acceptedRecording?.value
+            try await finishRecordingBeforeDisconnect()
+            var failure: (any Error)?
             do { try await session.stop() }
             catch {
-                failure = failure.map { RemoteDeviceWindowError.cleanup([$0.localizedDescription, error.localizedDescription]) } ?? error
+                failure = error
             }
             await connectionTask?.value
             if let failure { throw failure }
@@ -3781,7 +3787,9 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         switch menuItem.action {
         case #selector(saveRemoteScreenshot(_:)):
-            return !closing && inventoryAvailable && session.canCaptureScreenshot && captureTask == nil && capturePanel == nil
+            return canSaveScreenshot
+        case #selector(discardRemoteScreenshot(_:)):
+            return !closing && completedScreenshot != nil && captureTask == nil && capturePanel == nil
         case #selector(recordScreen(_:)), #selector(recordScreenTo(_:)): return canStartRecording
         case #selector(stopScreenRecording(_:)):
             return !closing && !finishingRecording && session.hasUnfinishedRecording && session.recordingState != .stopping
@@ -3905,7 +3913,7 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
 
     private func response(to alert: NSAlert) async -> NSApplication.ModalResponse {
         guard let window else { return .cancel }
-        return await presentRecordingAlert(alert, window)
+        return await presentAlert(alert, window)
     }
 
     private var captureDirectory: URL? {
@@ -3938,7 +3946,7 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
         panel.nameFieldStringValue = recordingDestination?.url.lastPathComponent ?? recordingFilename
         recordingPanel = panel
         update()
-        let result = await presentRecordingSavePanel(panel, window)
+        let result = await presentSavePanel(panel, window)
         recordingPanel = nil
         update()
         guard result == .OK, let destination = panel.url else { throw CancellationError() }
@@ -3986,13 +3994,56 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
         }
     }
 
+    private var canSaveScreenshot: Bool {
+        !closing && captureTask == nil && capturePanel == nil
+            && (completedScreenshot != nil || inventoryAvailable && session.canCaptureScreenshot)
+    }
+
     private func saveScreenshot() {
-        guard let window, !closing, inventoryAvailable, captureTask == nil, capturePanel == nil,
-              session.canCaptureScreenshot else { return }
+        guard canSaveScreenshot else { return }
+        runCaptureOperation { [self] in
+            let destination = try await chooseScreenshotDestination()
+            guard !closing else { throw CancellationError() }
+            try await captureAndSaveScreenshot(to: destination)
+        }
+    }
+
+    private func captureScreenshot(to destination: URL) {
+        guard canSaveScreenshot else { return }
+        runCaptureOperation { [self] in try await captureAndSaveScreenshot(to: destination) }
+    }
+
+    private func runCaptureOperation(_ operation: @escaping @MainActor () async throws -> Void) {
+        issue = nil
+        captureTask = Task { [self] in
+            defer { captureTask = nil; update() }
+            do { try await operation() }
+            catch is CancellationError { throw CancellationError() }
+            catch { showIssue(error); throw error }
+        }
+        update()
+    }
+
+    private func captureAndSaveScreenshot(to destination: URL) async throws {
+        if completedScreenshot == nil {
+            completedScreenshot = try await session.captureScreenshot()
+        }
+        try await saveCompletedScreenshot(to: destination)
+    }
+
+    private func saveCompletedScreenshot(to destination: URL) async throws {
+        guard let image = completedScreenshot else {
+            throw RemoteDeviceWindowError.unavailable("There is no screenshot to save.")
+        }
+        try await writeImage(image, destination)
+        completedScreenshot = nil
+    }
+
+    private func chooseScreenshotDestination() async throws -> URL {
+        guard let window else { throw CancellationError() }
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.png]
         panel.canCreateDirectories = true
-        let preferences = UserDefaults(suiteName: "dev.lynnswap.NeoSimulator.Renderer") ?? .standard
         panel.directoryURL = captureDirectory
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
@@ -4001,33 +4052,41 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
             .replacingOccurrences(of: "/", with: ".").replacingOccurrences(of: ":", with: ".")
         capturePanel = panel
         update()
-        panel.beginSheetModal(for: window) { [weak self] response in
-            guard let self, self.capturePanel === panel else { return }
-            self.capturePanel = nil
-            defer { self.update() }
-            guard response == .OK, let destination = panel.url, !self.closing,
-                  self.inventoryAvailable, self.session.canCaptureScreenshot else { return }
-            preferences.set(destination.deletingLastPathComponent().path, forKey: "ScreenShotSaveLocation")
-            self.captureScreenshot(to: destination)
+        defer { capturePanel = nil; update() }
+        guard await presentSavePanel(panel, window) == .OK, let destination = panel.url else { throw CancellationError() }
+        let preferences = UserDefaults(suiteName: "dev.lynnswap.NeoSimulator.Renderer") ?? .standard
+        preferences.set(destination.deletingLastPathComponent().path, forKey: "ScreenShotSaveLocation")
+        return destination
+    }
+
+    @objc func discardRemoteScreenshot(_ sender: Any?) {
+        guard !closing, completedScreenshot != nil, captureTask == nil, capturePanel == nil else { return }
+        runCaptureOperation { [self] in
+            let alert = NSAlert()
+            alert.messageText = "Discard the screenshot?"
+            alert.informativeText = "The screenshot has not been saved. This action cannot be undone."
+            alert.addButton(withTitle: "Cancel")
+            alert.addButton(withTitle: "Discard")
+            guard await response(to: alert) == .alertSecondButtonReturn else { throw CancellationError() }
+            completedScreenshot = nil
         }
     }
 
-    private func captureScreenshot(to destination: URL) {
-        guard !closing, inventoryAvailable, captureTask == nil, session.canCaptureScreenshot else { return }
-        issue = nil
-        // The accepted command belongs to this window's session, even if selection changes elsewhere.
-        let session = session
-        captureTask = Task { [self] in
-            defer { captureTask = nil; update() }
-            do {
-                let image = try await session.captureScreenshot()
-                try await Self.writeScreenshot(image, to: destination)
-            } catch {
-                showIssue(error)
-                throw error
-            }
+    private func finishScreenshotBeforeDisconnect() async throws {
+        guard completedScreenshot != nil else { return }
+        let alert = NSAlert()
+        alert.messageText = "Save the screenshot before closing?"
+        alert.informativeText = "Your screenshot will be lost if you don’t save it."
+        alert.addButton(withTitle: "Save…")
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Don’t Save")
+        switch await response(to: alert) {
+        case .alertFirstButtonReturn:
+            let destination = try await chooseScreenshotDestination()
+            try await saveCompletedScreenshot(to: destination)
+        case .alertThirdButtonReturn: completedScreenshot = nil
+        default: throw CancellationError()
         }
-        update()
     }
 
     @concurrent

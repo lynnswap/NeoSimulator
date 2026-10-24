@@ -173,8 +173,15 @@ so on. If saving fails, the error includes the file's location for recovery.
 ### Physical-device and VM captures
 
 With a physical-device or VM screen active, **File → Save Screenshot…**
-(Command-S) saves its remote pixels as PNG. Capture actions are disabled when
-the connection cannot supply them.
+(Command-S) saves its remote pixels as PNG. New captures require a connection
+that can supply them.
+
+If saving a screenshot fails, **Save Screenshot…** retries with the same captured
+image, even after disconnection. To capture a new image, save the retained one
+or confirm **Discard Screenshot…** first. Before closing, quitting, reconnecting,
+or switching Display Host, NeoSimulator asks you to save or discard an unsaved
+screenshot. Cancel in the save panel or close confirmation keeps the image;
+cancelling Close also keeps the window open.
 
 Choose **Record Screen** in the toolbar or File menu (Command-R) to start a
 recording. **Stop Recording** finishes it and saves an MP4 movie in the chosen
