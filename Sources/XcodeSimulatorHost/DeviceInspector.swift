@@ -241,17 +241,21 @@ public struct DeviceInspector: Sendable {
             if !replacingExistingFile, manager.fileExists(atPath: destination.path) {
                 throw CocoaError(.fileWriteFileExists)
             }
+            let container: URL?
+            if case .simulator = device {
+                let source = try await applicationContainerURL(bundleIdentifier: bundleIdentifier)
+                try validateExportDestination(destination, outside: source)
+                container = source
+            } else { container = nil }
             let package = destination.deletingLastPathComponent().appendingPathComponent(".NeoSimulator-export-\(UUID().uuidString).xcappdata", isDirectory: true)
             try manager.createDirectory(at: package, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
             staging = package
             let data = package.appendingPathComponent("AppData", isDirectory: true)
-            switch device {
-            case .simulator:
-                let container = try await applicationContainerURL(bundleIdentifier: bundleIdentifier)
+            if let container {
                 try manager.copyItem(at: container, to: data)
                 let metadata = data.appendingPathComponent(".com.apple.mobile_container_manager.metadata.plist")
                 if manager.fileExists(atPath: metadata.path) { try manager.removeItem(at: metadata) }
-            case .remote:
+            } else {
                 _ = try await coreDevice(["device", "copy", "from", "--source", ".", "--destination", data.path,
                     "--domain-type", "appDataContainer", "--domain-identifier", bundleIdentifier], operation: "Download Application Data")
             }
@@ -264,6 +268,30 @@ public struct DeviceInspector: Sendable {
         } catch {
             throw failure(error, operation: "Download Application Data", source: .file(destination),
                 partialCompletion: staging.map { .applicationDataDownload(destination: $0) })
+        }
+    }
+
+    private func validateExportDestination(_ destination: URL, outside container: URL) throws {
+        let manager = FileManager.default
+        let source = container.resolvingSymlinksInPath()
+        let parent = destination.deletingLastPathComponent().resolvingSymlinksInPath()
+        var relationship: FileManager.URLRelationship = .other
+        try manager.getRelationship(&relationship, ofDirectoryAt: source, toItemAt: parent)
+        guard relationship == .other else {
+            throw DeviceInspectorError.invalidApplicationData("Choose an export location outside the application's data container.")
+        }
+        if manager.fileExists(atPath: destination.path) {
+            let target = destination.resolvingSymlinksInPath()
+            try manager.getRelationship(&relationship, ofDirectoryAt: source, toItemAt: target)
+            guard relationship == .other else {
+                throw DeviceInspectorError.invalidApplicationData("The export cannot replace the application's data container or its contents.")
+            }
+            if try target.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true {
+                try manager.getRelationship(&relationship, ofDirectoryAt: target, toItemAt: source)
+                guard relationship == .other else {
+                    throw DeviceInspectorError.invalidApplicationData("The export cannot replace a directory containing the application's data container.")
+                }
+            }
         }
     }
 

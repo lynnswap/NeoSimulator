@@ -139,6 +139,44 @@ import Testing
         #expect(try String(contentsOf: marker, encoding: .utf8) == "preserved")
     }
 
+    @Test(arguments: ["nested", "same", "ancestor"])
+    func exportDoesNotModifyItsLiveSourceContainer(destinationKind: String) async throws {
+        let directory = try TemporaryTestDirectory()
+        let manager = FileManager.default
+        let container = directory.url.appendingPathComponent("Container", isDirectory: true)
+        let alias = directory.url.appendingPathComponent("ContainerAlias", isDirectory: true)
+        try manager.createDirectory(at: container, withIntermediateDirectories: false)
+        try manager.createSymbolicLink(at: alias, withDestinationURL: container)
+        let document = container.appendingPathComponent("document")
+        try Data("live data".utf8).write(to: document)
+        // A regressed nested export must fail before it can recursively copy its own output.
+        try manager.setAttributes([.posixPermissions: 0o555], ofItemAtPath: container.path)
+        defer { try? manager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: container.path) }
+        let destination: URL = switch destinationKind {
+        case "nested": alias.appendingPathComponent("Export.xcappdata")
+        case "same": container
+        default: directory.url
+        }
+        let calls = InspectorCalls { _ in Self.output(container.path) }
+        let inspector = Self.simulator(transport: .init(run: { try await calls.run($0) }))
+        do {
+            try await inspector.downloadApplicationData(bundleIdentifier: "dev.example.app", to: destination, replacingExistingFile: true)
+            Issue.record("Export changed a location overlapping its live source")
+        } catch let failure as DeviceInspectorFailure {
+            if case .applicationDataDownload(let retained) = failure.partialCompletion {
+                try? manager.removeItem(at: retained)
+                Issue.record("Export created staging before checking source overlap")
+            }
+            guard case .invalidApplicationData = failure.error as? DeviceInspectorError else {
+                Issue.record("Export failed after touching the filesystem rather than rejecting the overlapping location")
+                return
+            }
+        }
+        #expect(try String(contentsOf: document, encoding: .utf8) == "live data")
+        #expect(try manager.contentsOfDirectory(atPath: container.path) == ["document"])
+        #expect(try manager.contentsOfDirectory(atPath: directory.url.path).sorted() == ["Container", "ContainerAlias"])
+    }
+
     @Test func remoteReplacementStopsOnlyTheSelectedAppUsingFileURLExecutables() async throws {
         let directory = try TemporaryTestDirectory()
         let calls = InspectorCalls { command in
