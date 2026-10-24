@@ -9,7 +9,9 @@ device in the main window and choose **View Screen** to open it. You can also
 use **Device** in the Dock menu, **File → Open Simulator**, or **Window → Simulators**
 to start a device or reopen its window. The manager's device menus group devices
 by OS version.
-The browser supports search. Open Simulator groups devices by runtime; a
+The browser supports search. Use the filter button beside **+** to narrow the
+list by running state or device type, or sort by name, operating system, or
+state. **+** opens New Simulator. Open Simulator groups devices by runtime; a
 checkmark means a device has a window, and a dash means it is running without
 one. Hold Option to show its runtime and device type.
 
@@ -98,9 +100,11 @@ custom app URL schemes in the active device.
 
 ## Debug and simulate conditions
 
-The main window's inspector changes the selected device's Appearance, Text
-Size, Increase Contrast, and Location where supported. Controls that the
-selected device cannot supply are unavailable.
+The main window's inspector changes the selected device's Appearance, Liquid
+Glass, Color Filter, Text Size, accessibility settings, Location, and Sound.
+Sound includes volume and the Mac's input and output devices. Select **System
+Default** to follow the Mac's current audio route. Start the simulator to read
+and change its settings; controls that it cannot supply are unavailable.
 
 Device and Features menus include Home, Lock, Shake, orientation, appearance,
 biometric enrollment and matches, Apple Pay authorization, preferred text size,

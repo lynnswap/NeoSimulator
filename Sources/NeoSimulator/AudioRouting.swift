@@ -19,6 +19,10 @@ enum AudioScope: UInt64 {
     var noun: String { self == .input ? "input" : "output" }
 }
 
+enum AudioRouteChange: Sendable {
+    case availableDevices, selectedDevice
+}
+
 /// Host audio device reported by CoreSimDeviceIO.
 struct HostAudioDevice: Equatable {
     var uid: String
@@ -87,6 +91,35 @@ struct AudioRouteState: Equatable {
 }
 
 extension PreferenceStore {
+    /// Per-device routes share the manager's defaults domain, including when the renderer reconnects.
+    private func deviceAudioPreferences() throws -> any PreferenceStore {
+        guard self is UserDefaults else { return self }
+        guard let defaults = UserDefaults(suiteName: "dev.lynnswap.NeoSimulator"), defaults.synchronize() else {
+            throw HostError.operation("Could not read the saved simulator audio route.")
+        }
+        return defaults
+    }
+
+    func preferredAudioRoutes(forDevice identifier: String, in scope: AudioScope) throws -> [String] {
+        let saved = try deviceAudioPreferences().object(forKey: Self.deviceAudioRouteKey(identifier, scope)) as? String
+        let route = saved == "systemDefault" ? AudioRouting.systemDefault : saved
+        guard let route else { return recentAudioRoutes(in: scope) }
+        return [route] + recentAudioRoutes(in: scope).filter { $0 != route }
+    }
+
+    func saveAudioRoute(_ route: String, forDevice identifier: String, in scope: AudioScope) throws {
+        let store = try deviceAudioPreferences()
+        store.set(route == AudioRouting.systemDefault ? "systemDefault" : route,
+                  forKey: Self.deviceAudioRouteKey(identifier, scope))
+        if let defaults = store as? UserDefaults, !defaults.synchronize() {
+            throw HostError.operation("Could not save the simulator audio route for the next connection.")
+        }
+    }
+
+    private static func deviceAudioRouteKey(_ identifier: String, _ scope: AudioScope) -> String {
+        "DeviceAudioRoute.\(identifier).\(scope.noun)"
+    }
+
     /// Most-recent-first routes; missing, empty, or malformed preferences mean System Default.
     func recentAudioRoutes(in scope: AudioScope) -> [String] {
         if let routes = object(forKey: Self.recentAudioRoutesKey(scope)) as? [String], !routes.isEmpty { return routes }

@@ -81,8 +81,6 @@ final class SimulatorRuntime {
 /// SimulatorKit display members and the IDEPlaygroundSimulator display factory.
 @MainActor
 struct SimulatorDisplayInterface {
-    let screenClass: AnyClass
-    let makeScreen: NativeObjCMethod<AnyObject?, AnyObject, UInt32>
     let screen: NativeObjCMethod<AnyObject?>
     let isDefault: NativeObjCMethod<Bool>
     let isCarPlay: NativeObjCMethod<Bool>
@@ -101,6 +99,8 @@ struct SimulatorDisplayInterface {
     let displayClass: NativeSwiftMethod<() -> UInt16>
     /// `SimDevice.screenAdapter`, the device's `SimDeviceScreenAdapter`.
     let screenAdapter = ScreenAdapterGetter()
+    /// Screens currently published by the device's screen adapter.
+    let adapterScreens: NativeSwiftMethod<() -> [UInt32: NativeSwiftValue]>
     typealias AdapterEventHandler = NativeSwiftClosure<(NativeSwiftValue) -> Void>
     /// Screen-adapter registration. Releasing the token ends callbacks except those already queued.
     let registerAdapterEvents: NativeSwiftMethod<(UInt32?, DispatchQueue, AdapterEventHandler) -> AnyObject>
@@ -181,11 +181,7 @@ struct SimulatorDisplayInterface {
         else {
             throw HostError.unavailable("SimulatorKit display classes are unavailable")
         }
-        self.screenClass = screenClass
         self.factoryClass = factoryClass
-        makeScreen = try runtime.resolveAndWait(
-            .message("initWithDevice:screenID:", as: ((AnyObject, UInt32) -> AnyObject?).self),
-            on: screenClass)
         screen = try runtime.resolveAndWait(.message("screen", as: (() -> AnyObject?).self), on: screenClass)
         isDefault = try runtime.resolveAndWait(.message("isDefault", as: (() -> Bool).self), on: screenClass)
         isCarPlay = try runtime.resolveAndWait(.message("isCarPlay", as: (() -> Bool).self), on: screenClass)
@@ -218,9 +214,10 @@ struct SimulatorDisplayInterface {
             "register(types:queue:handler:)",
             as: ((NativeSwiftValue, DispatchQueue, ScreenEventHandler) -> NativeSwiftValue).self,
             valueABIs: eventABIs))
-        registerAdapterEvents = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimDeviceScreenAdapter")
-            .resolveAndWait(.method("register(screenID:queue:handler:)",
-                                    as: ((UInt32?, DispatchQueue, AdapterEventHandler) -> AnyObject).self))
+        let adapterType = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimDeviceScreenAdapter")
+        adapterScreens = try adapterType.resolveAndWait(.getter("screens", as: (() -> [UInt32: NativeSwiftValue]).self))
+        registerAdapterEvents = try adapterType.resolveAndWait(.method("register(screenID:queue:handler:)",
+            as: ((UInt32?, DispatchQueue, AdapterEventHandler) -> AnyObject).self))
         // Screen proxies are bound on connection; their protocols must declare these messages.
         for (name, selectors) in SimulatorExternalScreenConnection.selectors + SimulatorConnection.backlightSelectors {
             guard let declared = objc_getProtocol(name) else {
@@ -368,11 +365,11 @@ struct SimulatorDisplayInterface {
 
     /// The device's default non-CarPlay screen, or nil while it is not ready.
     func defaultScreen(of device: SimulatorDevice) -> (identifier: UInt32, object: AnyObject)? {
-        for identifier: UInt32 in 0...63 {
-            // Invalid screen IDs raise exceptions, which arrive as errors;
-            // absence is retried during boot.
-            guard let allocated = allocate(screenClass),
-                let screen = try? unsafe makeScreen.unsafeInvoke(on: allocated, device.object, identifier),
+        // The synchronous screen initializer waits for missing IDs and blocks AppKit during boot.
+        guard let adapter = try? screenAdapter.adapter(of: device.object),
+              let screens = try? unsafe adapterScreens.unsafeInvoke(on: adapter) else { return nil }
+        for (identifier, value) in screens.sorted(by: { $0.key < $1.key }) {
+            guard let screen = try? value.withCopy({ $0 as AnyObject }),
                 let _ = try? unsafe self.screen.unsafeInvoke(on: screen),
                 (try? unsafe isDefault.unsafeInvoke(on: screen)) == true,
                 (try? unsafe isCarPlay.unsafeInvoke(on: screen)) == false
@@ -994,7 +991,7 @@ struct SimulatorAudioInterface {
     /// Connects to the device's audio route port, which a booted device that
     /// has `SimFeatureRoutableAudio` provides.
     func connect(to device: SimulatorDevice,
-                 changed: @escaping @MainActor () -> Void) throws -> SimulatorAudioConnection {
+                 changed: @escaping @MainActor (AudioRouteChange) -> Void) throws -> SimulatorAudioConnection {
         guard let io = try unsafe deviceIO.unsafeInvoke(on: device.object) else {
             throw HostError.unavailable("The device did not provide its I/O ports.")
         }
@@ -1050,7 +1047,7 @@ final class SimulatorAudioConnection: SimulatorAudioRoutes {
     private var members: HostAudioDeviceMembers?
     private var isConnected = true
 
-    fileprivate init(port: AnyObject, changed: @escaping @MainActor () -> Void) throws {
+    fileprivate init(port: AnyObject, changed: @escaping @MainActor (AudioRouteChange) -> Void) throws {
         let object = ABIRuntime.shared.object(port)
         availableDevices = try object.resolveAndWait(.message(
             "availableHostDevices", as: (() -> [AnyObject]?).self))
@@ -1083,15 +1080,15 @@ final class SimulatorAudioConnection: SimulatorAudioRoutes {
 
     // Audio-port callbacks may ignore the completion queue. Bridge to the main actor explicitly.
     private nonisolated static func devicesChanged(
-        _ changed: @escaping @MainActor () -> Void
+        _ changed: @escaping @MainActor (AudioRouteChange) -> Void
     ) -> SimulatorAudioInterface.DevicesChanged {
-        { _ in DispatchQueue.main.async { MainActor.assumeIsolated { changed() } } }
+        { _ in DispatchQueue.main.async { MainActor.assumeIsolated { changed(.availableDevices) } } }
     }
 
     private nonisolated static func routeChanged(
-        _ changed: @escaping @MainActor () -> Void
+        _ changed: @escaping @MainActor (AudioRouteChange) -> Void
     ) -> SimulatorAudioInterface.RouteChanged {
-        { _, _ in DispatchQueue.main.async { MainActor.assumeIsolated { changed() } } }
+        { _, _ in DispatchQueue.main.async { MainActor.assumeIsolated { changed(.selectedDevice) } } }
     }
 
     private nonisolated static func routeCompleted(
@@ -1403,7 +1400,7 @@ protocol SimulatorDisplay: AnyObject {
                            events: @escaping @MainActor (SimulatorPasteboardEvent) -> Void) throws -> any SimulatorPasteboard
     /// Connects to the device's audio route port. `changed` runs on the main
     /// actor after each change the port reports, until it disconnects.
-    func connectAudioRoutes(changed: @escaping @MainActor () -> Void) throws -> any SimulatorAudioRoutes
+    func connectAudioRoutes(changed: @escaping @MainActor (AudioRouteChange) -> Void) throws -> any SimulatorAudioRoutes
     /// Observes the existing or subsequently connected TVOut screen on the main actor.
     /// Each connection reports property changes through `changed` until disconnected.
     /// Releasing the token ends reports except queued callbacks; nil means no adapter.
@@ -1636,7 +1633,7 @@ final class SimulatorConnection: SimulatorDisplay {
                            events: @escaping @MainActor (SimulatorPasteboardEvent) -> Void) throws -> any SimulatorPasteboard {
         try runtime.pasteboard.connect(to: device, managing: pasteboard, events: events)
     }
-    func connectAudioRoutes(changed: @escaping @MainActor () -> Void) throws -> any SimulatorAudioRoutes {
+    func connectAudioRoutes(changed: @escaping @MainActor (AudioRouteChange) -> Void) throws -> any SimulatorAudioRoutes {
         try runtime.audio.connect(to: device, changed: changed)
     }
     func registerForExternalScreen(

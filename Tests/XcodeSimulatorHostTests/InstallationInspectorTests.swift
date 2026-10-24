@@ -631,3 +631,84 @@ struct XcodeConnectionsTests {
         #expect(SimulatorProcessConnections.decode(arguments([device, footprint, "GPUTOOLS_XCODE_DEVELOPER_PATH=/Applications/Other.app/Contents/Developer"]), executablePath: executable, event: event) == nil)
     }
 }
+
+@Suite
+struct SimulatorSettingsBackendTests {
+    private func envelope(_ value: String) -> Data { Data(("{\"result\":" + value + "}").utf8) }
+    private let defaultRoute = "{\"systemDefault\":{}}"
+
+    @Test func extendedQueriesReturnSupportedValuesAndHostAudioChoices() {
+        let microphone = SimulatorAudioDevice(identifier: "mic-uid", name: "Microphone")
+        let speaker = SimulatorAudioDevice(identifier: "speaker-uid", name: "Speaker")
+        let backend = SimulatorSettingsBackend(run: { tool, arguments in
+            if tool == .simctl {
+                return Data((arguments.last == "appearance" ? "dark" : arguments.last == "content_size" ? "large" : "enabled").utf8)
+            }
+            if arguments.contains("appearance") {
+                return envelope("""
+                {"lookAndFeel":"Tinted Liquid Glass","supportedLooksAndFeels":["Clear Liquid Glass","Tinted Liquid Glass"],
+                 "liquidGlassOpacity":0.6,"colorFilter":{"enabled":true,"filterType":{"name":"Protanopia"},"intensity":0.75},
+                 "reduceMotion":{"enabled":true},"reduceTransparency":{"enabled":false},"showBorders":{"enabled":true}}
+                """)
+            }
+            if arguments.contains("voiceover") { return envelope("{\"enabled\":false}") }
+            if arguments.contains("audio") {
+                return envelope("{\"volume\":60,\"audioInputDevice\":\(defaultRoute),\"audioOutputDevice\":{\"device\":{\"_0\":\"speaker-uid\"}}}")
+            }
+            return envelope("{\"availableScenarios\":[{\"name\":\"City Run\",\"localizedName\":\"City Run localized\"}]}")
+        }, audioDevices: { ([microphone], [speaker]) })
+        let value = backend.read(identifier: "device-A")
+        #expect(value.appearance == "dark" && value.contentSize == "large" && value.increaseContrast == true)
+        #expect(value.supportedLooksAndFeels == [.clear, .tinted])
+        #expect(value.lookAndFeel == "Tinted Liquid Glass" && value.liquidGlassOpacity == 0.6)
+        #expect(value.colorFilter == .protanopia && value.colorFilterIntensity == 0.75)
+        #expect(value.reduceMotion == true && value.reduceTransparency == false && value.showBorders == true)
+        #expect(value.voiceOver == false && value.volume == 60)
+        #expect(value.audioInputDevice == "systemDefault" && value.audioOutputDevice == "speaker-uid")
+        #expect(value.audioInputDevices == [microphone] && value.audioOutputDevices == [speaker])
+        #expect(value.locationAvailable && value.locationScenarios == [.init(name: "City Run", displayName: "City Run localized")])
+        #expect(value.issues.isEmpty)
+    }
+
+    @Test func unavailableExtendedQueriesPreserveLegacySettingsAndLocationWithDiagnostics() {
+        var queried: [[String]] = []
+        let backend = SimulatorSettingsBackend(run: { tool, arguments in
+            if tool == .devicectl {
+                queried.append(arguments)
+                throw CLIError.unavailable("unsupported", "This device is unavailable to CoreDevice.")
+            }
+            if arguments.first == "location" { return Data("Name                 Description\n========================================================\nCity Run             City Run\n".utf8) }
+            return Data((arguments.last == "appearance" ? "light" : arguments.last == "content_size" ? "small" : "disabled").utf8)
+        }, audioDevices: { ([], []) })
+        let value = backend.read(identifier: "custom-set-device")
+        #expect(value.appearance == "light" && value.contentSize == "small" && value.increaseContrast == false)
+        #expect(value.reduceMotion == nil && value.voiceOver == nil && value.volume == nil && value.colorFilter == nil)
+        #expect(value.locationAvailable && value.locationScenarios.map(\.name) == ["City Run"])
+        #expect(value.issues.count == 4)
+        #expect(queried.count == 4 && queried.allSatisfy { $0.contains("custom-set-device") })
+    }
+
+    @Test func writesUseTheTargetDeviceAndPreserveCommandFailures() throws {
+        var commands: [(SimulatorSettingsBackend.Tool, [String])] = []
+        var fail = false
+        let backend = SimulatorSettingsBackend(run: { tool, arguments in
+            commands.append((tool, arguments))
+            if fail { throw CLIError.io("device-setting", "The device rejected this setting.") }
+            return Data()
+        }, audioDevices: { ([], []) })
+        try backend.set(.colorFilter(.deuteranopia, intensity: 0.75), identifier: "device-B")
+        try backend.set(.voiceOver(true), identifier: "device-B")
+        try backend.set(.audioOutputDevice("speaker-uid"), identifier: "device-B")
+        try backend.set(.contentSize("accessibility-large"), identifier: "device-B")
+        try backend.set(.locationScenario("City Run"), identifier: "device-B")
+        let suffix = ["--device", "device-B", "--quiet", "--timeout", "10", "--json-output", "-"]
+        #expect(commands[0].1 == ["device", "settings", "appearance", "--color-filter", "on", "--color-filter-type", "deuteranopia", "--color-filter-intensity", "0.75"] + suffix)
+        #expect(commands[1].1 == ["device", "settings", "voiceover", "--enable"] + suffix)
+        #expect(commands[2].1 == ["device", "settings", "audio", "--output-device", "speaker-uid"] + suffix)
+        #expect(commands[0...2].allSatisfy { $0.0 == .devicectl })
+        #expect(commands[3].0 == .simctl && commands[3].1 == ["ui", "device-B", "content_size", "accessibility-large"])
+        #expect(commands[4].0 == .simctl && commands[4].1 == ["location", "device-B", "run", "City Run"])
+        fail = true
+        #expect(throws: CLIError.self) { try backend.set(.liquidGlassOpacity(0.75), identifier: "device-B") }
+    }
+}

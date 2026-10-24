@@ -1,4 +1,6 @@
 import AppKit
+import SwiftUI
+import UniformTypeIdentifiers
 import XcodeSimulatorHost
 
 @MainActor
@@ -13,13 +15,17 @@ final class SimulatorManagerModel {
     private(set) var settingsIssue: String?
     private(set) var inspectedDeviceIdentifier: String?
     private var inspectedState: String?
+    private var settingsRefreshRequested = false
+    private var inspectionGeneration = 0
+    private var inspectionTask: Task<Void, Never>?
     var onChange: (() -> Void)?
     var onError: ((any Error) -> Void)?
     private var refreshing = false
     private var refreshWaiters: [CheckedContinuation<Void, Never>] = []
     private var synchronizing = false
     private var stopping = false
-    private var pendingOperations: [(activity: String, run: @MainActor () async throws -> Void)] = []
+    private var operationTask: Task<Void, Never>?
+    private var pendingOperations: [(activity: String, refreshCatalog: Bool, run: @MainActor () async throws -> Void)] = []
 
     init(rendererApplicationURL: URL) {
         controller = SimulatorHostController(rendererApplicationURL: rendererApplicationURL)
@@ -63,7 +69,7 @@ final class SimulatorManagerModel {
     }
 
     func refresh() async {
-        guard !isBusy, !refreshing else { return }
+        guard !stopping, !isBusy, !refreshing else { return }
         await refreshCatalog()
     }
 
@@ -71,7 +77,7 @@ final class SimulatorManagerModel {
         if refreshing { await withCheckedContinuation { refreshWaiters.append($0) } }
         else { refreshing = true }
         defer {
-            inspectedState = nil
+            settingsRefreshRequested = true
             onChange?()
             if refreshWaiters.isEmpty { refreshing = false }
             else { refreshWaiters.removeFirst().resume() }
@@ -96,7 +102,7 @@ final class SimulatorManagerModel {
     }
 
     func synchronizeConnections() async {
-        guard !synchronizing, !refreshing, !isBusy else { return }
+        guard !stopping, !synchronizing, !refreshing, !isBusy else { return }
         synchronizing = true
         defer { synchronizing = false }
         do {
@@ -109,6 +115,7 @@ final class SimulatorManagerModel {
     }
 
     func rendererDevicesDidChange(testingVisibilityChanged: Bool) async {
+        guard !stopping else { return }
         if testingVisibilityChanged {
             do { try await controller.testingDeviceVisibilityDidChange() }
             catch {
@@ -120,28 +127,50 @@ final class SimulatorManagerModel {
     }
 
     func inspectDevice(_ identifier: String?) async {
+        guard !stopping else { return }
         let state = devices.first { $0.identifier == identifier }?.state
-        guard inspectedDeviceIdentifier != identifier || inspectedState != state else { return }
-        inspectedDeviceIdentifier = identifier
-        inspectedState = state
-        deviceSettings = nil
-        settingsIssue = nil
-        onChange?()
-        guard let identifier else { return }
-        do {
-            let settings = try await controller.deviceSettings(identifier: identifier)
-            guard inspectedDeviceIdentifier == identifier, inspectedState == state else { return }
-            deviceSettings = settings
-            if !settings.issues.isEmpty {
-                NSLog("NeoSimulator settings: %@", settings.issues.joined(separator: "\n"))
-            }
-            onChange?()
-        } catch {
-            guard inspectedDeviceIdentifier == identifier, inspectedState == state else { return }
-            settingsIssue = error.localizedDescription
-            NSLog("NeoSimulator settings: %@", (error as? SimulatorHostFailure)?.technicalDetails ?? String(describing: error))
+        if inspectedDeviceIdentifier != identifier || inspectedState != state {
+            inspectedDeviceIdentifier = identifier
+            inspectedState = state
+            inspectionGeneration += 1
+            settingsRefreshRequested = true
+            deviceSettings = nil
+            settingsIssue = nil
             onChange?()
         }
+        guard identifier != nil else { settingsRefreshRequested = false; return }
+        if let inspectionTask { await inspectionTask.value; return }
+        guard settingsRefreshRequested else { return }
+        inspectionTask = Task {
+            defer { self.inspectionTask = nil }
+            while !self.stopping, !Task.isCancelled, self.settingsRefreshRequested,
+                  let identifier = self.inspectedDeviceIdentifier {
+                self.settingsRefreshRequested = false
+                let generation = self.inspectionGeneration
+                do {
+                    let settings = try await self.controller.deviceSettings(identifier: identifier)
+                    guard !self.stopping, !Task.isCancelled, self.inspectionGeneration == generation else { continue }
+                    self.deviceSettings = settings
+                    self.settingsIssue = nil
+                    if !settings.issues.isEmpty {
+                        NSLog("NeoSimulator settings: %@", settings.issues.joined(separator: "\n"))
+                    }
+                } catch {
+                    guard !self.stopping, !Task.isCancelled, self.inspectionGeneration == generation else { continue }
+                    self.settingsIssue = error.localizedDescription
+                    NSLog("NeoSimulator settings: %@", (error as? SimulatorHostFailure)?.technicalDetails ?? String(describing: error))
+                }
+                self.onChange?()
+            }
+        }
+        await inspectionTask?.value
+    }
+
+    private func refreshInspectedSettings(for identifier: String) async {
+        guard !stopping, inspectedDeviceIdentifier == identifier else { return }
+        inspectionGeneration += 1
+        settingsRefreshRequested = true
+        await inspectDevice(identifier)
     }
 
     func setAppearance(_ value: String, for identifier: String) { set(.appearance(value), identifier: identifier) }
@@ -152,16 +181,26 @@ final class SimulatorManagerModel {
     }
     func clearLocation(for identifier: String) { set(.clearLocation, identifier: identifier) }
 
+    func setDeviceSetting(_ setting: SimulatorDeviceSetting, for identifier: String) {
+        set(setting, identifier: identifier)
+    }
+
     private func set(_ setting: SimulatorDeviceSetting, identifier: String) {
-        perform("Updating simulator settings…") {
-            try await self.controller.setDeviceSetting(setting, identifier: identifier)
-            self.inspectedState = nil
+        perform("Updating simulator settings…", refreshCatalog: false) {
+            do { try await self.controller.setDeviceSetting(setting, identifier: identifier) }
+            catch {
+                await self.refreshInspectedSettings(for: identifier)
+                throw error
+            }
+            await self.refreshInspectedSettings(for: identifier)
         }
     }
 
     func quitRenderer(keepingDevicesRunning: Bool?) async throws {
         stopping = true
-        pendingOperations.removeAll()
+        pendingOperations.removeAll { $0.refreshCatalog }
+        inspectionTask?.cancel()
+        await operationTask?.value
         do { try await controller.quitRenderer(keepingDevicesRunning: keepingDevicesRunning) }
         catch { stopping = false; throw error }
     }
@@ -174,27 +213,33 @@ final class SimulatorManagerModel {
         backgroundIssue = message
     }
 
-    private func perform(_ activity: String, operation: @escaping @MainActor () async throws -> Void) {
+    private func perform(_ activity: String, refreshCatalog: Bool = true,
+                         operation: @escaping @MainActor () async throws -> Void) {
         guard !stopping else { return }
-        pendingOperations.append((activity, operation))
-        guard !isBusy else { return }
-        isBusy = true
-        Task {
-            while !stopping, !pendingOperations.isEmpty {
-                let next = pendingOperations.removeFirst()
+        pendingOperations.append((activity, refreshCatalog, operation))
+        if refreshCatalog { isBusy = true }
+        guard operationTask == nil else { onChange?(); return }
+        operationTask = Task {
+            defer {
+                self.operationTask = nil
+                self.isBusy = false
+                self.activity = ""
+                self.onChange?()
+            }
+            while !self.pendingOperations.isEmpty {
+                let next = self.pendingOperations.removeFirst()
+                self.isBusy = next.refreshCatalog || self.pendingOperations.contains { $0.refreshCatalog }
                 self.activity = next.activity
-                onChange?()
+                self.onChange?()
                 var failure: (any Error)?
                 do { try await next.run() }
                 catch { failure = error }
-                await refreshCatalog()
-                if let failure { onError?(failure) }
+                if next.refreshCatalog, !self.stopping { await self.refreshCatalog() }
+                if let failure { self.onError?(failure) }
             }
-            isBusy = false
-            self.activity = ""
-            onChange?()
         }
     }
+
 }
 
 @MainActor
@@ -358,7 +403,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate()
     }
 
-    @objc private func showNewSimulator(_ sender: Any?) {
+    @objc func showNewSimulator(_ sender: Any?) {
         guard !quitting else { return }
         if let newSimulatorWindow {
             newSimulatorWindow.showWindow(nil)
@@ -521,7 +566,7 @@ enum NeoSimulatorApplication {
 
 @MainActor
 final class ManagerWindowController: NSWindowController, NSTableViewDataSource, NSTableViewDelegate,
-                                     NSSearchFieldDelegate, NSToolbarDelegate {
+                                     NSSearchFieldDelegate, NSToolbarDelegate, NSMenuDelegate {
     private let model: SimulatorManagerModel
     private let splitController = NSSplitViewController()
     private let table = NSTableView()
@@ -529,21 +574,53 @@ final class ManagerWindowController: NSWindowController, NSTableViewDataSource, 
     private let deviceImage = NSImageView()
     private let deviceName = NSTextField(labelWithString: "Select a Simulator")
     private let deviceRuntime = NSTextField(labelWithString: "")
-    private let deviceState = NSTextField(labelWithString: "")
     private let viewScreen = NSButton(title: "View Screen", target: nil, action: nil)
     private let activity = NSTextField(labelWithString: "")
     private let progress = NSProgressIndicator()
-    private let appearancePopup = NSPopUpButton()
-    private let textSize = NSSlider(value: 3, minValue: 0, maxValue: 11, target: nil, action: nil)
-    private let textSizeDescription = NSTextField(wrappingLabelWithString: "")
-    private let contrast = NSButton(checkboxWithTitle: "Increase Contrast", target: nil, action: nil)
-    private let locationPopup = NSPopUpButton(frame: .zero, pullsDown: true)
-    private let settingsMessage = NSTextField(wrappingLabelWithString: "Select a simulator to change its settings.")
+    private var inspectorHost: NSHostingController<ManagerDeviceSettingsView>?
     private var updatingSelection = false
     private var filteredDevices: [SimulatorHostDevice] = []
     private var selectedIdentifier: String?
     private var refreshItem: NSToolbarItem?
     private let refreshIdentifier = NSToolbarItem.Identifier("RefreshSimulators")
+    private let newSimulatorIdentifier = NSToolbarItem.Identifier("NewSimulator")
+    private let filterIdentifier = NSToolbarItem.Identifier("FilterSimulators")
+    private var filterItem: NSMenuToolbarItem?
+    private var stateFilter = DeviceStateFilter.all
+    private var familyFilter: String?
+    private var sortOrder = DeviceSortOrder.name
+
+    private enum DeviceStateFilter: Int, CaseIterable {
+        case all, booted, shutdown
+
+        var title: String {
+            switch self {
+            case .all: "All States"
+            case .booted: "Running"
+            case .shutdown: "Shut Down"
+            }
+        }
+
+        func includes(_ device: SimulatorHostDevice) -> Bool {
+            switch self {
+            case .all: true
+            case .booted: device.state == "Booted"
+            case .shutdown: device.state == "Shutdown"
+            }
+        }
+    }
+
+    private enum DeviceSortOrder: Int, CaseIterable {
+        case name, operatingSystem, state
+
+        var title: String {
+            switch self {
+            case .name: "Name"
+            case .operatingSystem: "Operating System"
+            case .state: "State"
+            }
+        }
+    }
 
     init(model: SimulatorManagerModel) {
         self.model = model
@@ -575,8 +652,16 @@ final class ManagerWindowController: NSWindowController, NSTableViewDataSource, 
         let previous = selectedIdentifier
         let query = search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         filteredDevices = model.devices.filter {
-            query.isEmpty || $0.name.localizedStandardContains(query) || $0.runtimeName.localizedStandardContains(query)
+            stateFilter.includes($0) && (familyFilter == nil || $0.productFamily == familyFilter)
+                && (query.isEmpty || $0.name.localizedStandardContains(query) || $0.runtimeName.localizedStandardContains(query))
         }.sorted {
+            if sortOrder == .operatingSystem {
+                let order = $0.runtimeName.compare($1.runtimeName, options: .numeric)
+                if order != .orderedSame { return order == .orderedDescending }
+            } else if sortOrder == .state {
+                let order = $0.state.localizedStandardCompare($1.state)
+                if order != .orderedSame { return order == .orderedAscending }
+            }
             let nameOrder = $0.name.localizedStandardCompare($1.name)
             if nameOrder != .orderedSame { return nameOrder == .orderedAscending }
             let versionOrder = $0.runtimeName.compare($1.runtimeName, options: .numeric)
@@ -592,6 +677,7 @@ final class ManagerWindowController: NSWindowController, NSTableViewDataSource, 
         }
         updatingSelection = false
         updateSelection()
+        updateFilterItem()
         refreshItem?.isEnabled = !model.isBusy
         activity.stringValue = model.isBusy ? model.activity : (model.backgroundIssue ?? "")
         activity.toolTip = activity.stringValue
@@ -602,14 +688,9 @@ final class ManagerWindowController: NSWindowController, NSTableViewDataSource, 
 
     private func buildSidebar() {
         let controller = NSViewController()
-        let view = NSView()
-        controller.view = view
         search.placeholderString = "Search Simulators"
         search.delegate = self
-        search.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(search)
         let scroll = NSScrollView()
-        scroll.translatesAutoresizingMaskIntoConstraints = false
         scroll.drawsBackground = false
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
@@ -628,20 +709,21 @@ final class ManagerWindowController: NSWindowController, NSTableViewDataSource, 
         table.doubleAction = #selector(openSelectedDevice(_:))
         table.setAccessibilityLabel("Simulators")
         scroll.documentView = table
-        view.addSubview(scroll)
-        NSLayoutConstraint.activate([
-            search.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
-            search.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
-            search.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
-            scroll.topAnchor.constraint(equalTo: search.bottomAnchor, constant: 10),
-            scroll.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            scroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-        ])
+        controller.view = scroll
         let sidebar = NSSplitViewItem(sidebarWithViewController: controller)
-        sidebar.minimumThickness = 220
+        sidebar.minimumThickness = 260
         sidebar.maximumThickness = 360
         sidebar.preferredThicknessFraction = 0.26
+        let searchAccessory = NSSplitViewItemAccessoryViewController()
+        searchAccessory.automaticallyAppliesContentInsets = false
+        searchAccessory.preferredScrollEdgeEffectStyle = .soft
+        let searchContainer = NSStackView(views: [search])
+        searchContainer.orientation = .vertical
+        searchContainer.edgeInsets = NSEdgeInsets(top: 10, left: 12, bottom: 10, right: 12)
+        search.widthAnchor.constraint(equalTo: searchContainer.widthAnchor, constant: -24).isActive = true
+        searchContainer.frame.size = NSSize(width: 260, height: search.fittingSize.height + 20)
+        searchAccessory.view = searchContainer
+        sidebar.addTopAlignedAccessoryViewController(searchAccessory)
         splitController.addSplitViewItem(sidebar)
     }
 
@@ -649,31 +731,29 @@ final class ManagerWindowController: NSWindowController, NSTableViewDataSource, 
         let controller = NSViewController()
         let view = NSView()
         controller.view = view
-        deviceImage.contentTintColor = .tertiaryLabelColor
-        deviceImage.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 72, weight: .ultraLight)
         deviceImage.imageScaling = .scaleProportionallyUpOrDown
         deviceImage.translatesAutoresizingMaskIntoConstraints = false
         deviceImage.setAccessibilityHidden(true)
-        deviceName.font = .systemFont(ofSize: 23, weight: .semibold)
+        deviceName.font = .systemFont(ofSize: 17, weight: .semibold)
         deviceName.alignment = .center
         deviceName.lineBreakMode = .byTruncatingTail
         deviceRuntime.font = .systemFont(ofSize: 13)
         deviceRuntime.textColor = .secondaryLabelColor
         deviceRuntime.alignment = .center
         deviceRuntime.lineBreakMode = .byTruncatingTail
-        deviceState.font = .systemFont(ofSize: 12)
-        deviceState.textColor = .secondaryLabelColor
         viewScreen.bezelStyle = .rounded
         viewScreen.controlSize = .large
+        viewScreen.image = NSImage(systemSymbolName: "rectangle.badge.person.crop", accessibilityDescription: nil)
+        viewScreen.imagePosition = .imageLeading
         viewScreen.target = self
         viewScreen.action = #selector(openSelectedDevice(_:))
         viewScreen.keyEquivalent = "\r"
-        let stack = NSStackView(views: [deviceImage, deviceName, deviceRuntime, deviceState, viewScreen])
+        let stack = NSStackView(views: [deviceImage, deviceName, deviceRuntime, viewScreen])
         stack.orientation = .vertical
         stack.alignment = .centerX
         stack.spacing = 10
         stack.setCustomSpacing(24, after: deviceImage)
-        stack.setCustomSpacing(20, after: deviceState)
+        stack.setCustomSpacing(20, after: deviceRuntime)
         stack.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(stack)
         progress.style = .spinning
@@ -689,8 +769,9 @@ final class ManagerWindowController: NSWindowController, NSTableViewDataSource, 
         activityStack.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(activityStack)
         NSLayoutConstraint.activate([
-            deviceImage.widthAnchor.constraint(equalToConstant: 110),
-            deviceImage.heightAnchor.constraint(equalToConstant: 130),
+            deviceImage.widthAnchor.constraint(equalToConstant: 192),
+            deviceImage.heightAnchor.constraint(equalToConstant: 192),
+            viewScreen.widthAnchor.constraint(greaterThanOrEqualToConstant: 112),
             stack.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             stack.centerYAnchor.constraint(equalTo: view.centerYAnchor, constant: -24),
             stack.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 24),
@@ -709,80 +790,27 @@ final class ManagerWindowController: NSWindowController, NSTableViewDataSource, 
     }
 
     private func buildInspector() {
-        let controller = NSViewController()
-        let view = NSView()
-        controller.view = view
-        let title = NSTextField(labelWithString: "Device Settings")
-        title.font = .systemFont(ofSize: 13, weight: .semibold)
-        appearancePopup.addItems(withTitles: ["Light", "Dark"])
-        appearancePopup.target = self
-        appearancePopup.action = #selector(changeAppearance(_:))
-        appearancePopup.setAccessibilityLabel("Appearance")
-        textSize.numberOfTickMarks = SimulatorDeviceSettings.contentSizes.count
-        textSize.allowsTickMarkValuesOnly = true
-        textSize.isContinuous = false
-        textSize.target = self
-        textSize.action = #selector(changeTextSize(_:))
-        textSize.setAccessibilityLabel("Text Size")
-        textSizeDescription.font = .systemFont(ofSize: 11)
-        textSizeDescription.textColor = .secondaryLabelColor
-        contrast.target = self
-        contrast.action = #selector(changeContrast(_:))
-        locationPopup.addItems(withTitles: ["Set Location", "None", "Custom…"])
-        locationPopup.target = self
-        locationPopup.action = #selector(changeLocation(_:))
-        locationPopup.setAccessibilityLabel("Location")
-        settingsMessage.font = .systemFont(ofSize: 11)
-        settingsMessage.textColor = .secondaryLabelColor
-        let stack = NSStackView()
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 22
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        stack.addArrangedSubview(title)
-        for (label, fields) in [("Appearance", [appearancePopup as NSView]),
-                                ("Text Size", [textSize as NSView, textSizeDescription as NSView]),
-                                ("Accessibility", [contrast as NSView]),
-                                ("Location", [locationPopup as NSView])] {
-            let caption = NSTextField(labelWithString: label)
-            caption.font = .systemFont(ofSize: 11)
-            caption.textColor = .secondaryLabelColor
-            let group = NSStackView(views: [caption] + fields)
-            group.orientation = .vertical
-            group.alignment = .leading
-            group.spacing = 7
-            stack.addArrangedSubview(group)
-            group.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-            for field in fields { field.widthAnchor.constraint(equalTo: group.widthAnchor).isActive = true }
-        }
-        stack.addArrangedSubview(settingsMessage)
-        settingsMessage.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        let scroll = NSScrollView()
-        scroll.translatesAutoresizingMaskIntoConstraints = false
-        scroll.drawsBackground = false
-        scroll.hasVerticalScroller = true
-        scroll.autohidesScrollers = true
-        let document = ManagerInspectorDocumentView()
-        document.translatesAutoresizingMaskIntoConstraints = false
-        document.addSubview(stack)
-        scroll.documentView = document
-        view.addSubview(scroll)
-        NSLayoutConstraint.activate([
-            scroll.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
-            scroll.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            scroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
-            stack.topAnchor.constraint(equalTo: document.topAnchor, constant: 22),
-            stack.leadingAnchor.constraint(equalTo: document.leadingAnchor, constant: 20),
-            stack.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -20),
-            stack.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -22),
-        ])
-        let inspector = NSSplitViewItem(inspectorWithViewController: controller)
-        inspector.minimumThickness = 250
-        inspector.maximumThickness = 320
+        let host = NSHostingController(rootView: makeDeviceSettingsView())
+        inspectorHost = host
+        let inspector = NSSplitViewItem(inspectorWithViewController: host)
+        inspector.minimumThickness = 280
+        inspector.maximumThickness = 360
         inspector.canCollapse = false
         splitController.addSplitViewItem(inspector)
+    }
+
+    private func makeDeviceSettingsView() -> ManagerDeviceSettingsView {
+        let device = selectedDevice
+        let inspectingSelection = model.inspectedDeviceIdentifier == device?.identifier
+        let settings = inspectingSelection ? model.deviceSettings : nil
+        return ManagerDeviceSettingsView(device: device, settings: settings, isBusy: model.isBusy,
+                                         issue: inspectingSelection ? model.settingsIssue : nil, apply: { [weak self] setting in
+            guard let identifier = device?.identifier else { return }
+            self?.model.setDeviceSetting(setting, for: identifier)
+        }, customLocation: { [weak self] in
+            guard let identifier = device?.identifier else { return }
+            self?.presentLocationEditor(for: identifier)
+        })
     }
 
     func numberOfRows(in tableView: NSTableView) -> Int { filteredDevices.count }
@@ -818,10 +846,10 @@ final class ManagerWindowController: NSWindowController, NSTableViewDataSource, 
     private func updateSelection() {
         let device = selectedDevice
         deviceName.stringValue = device?.name ?? "Select a Simulator"
-        deviceRuntime.stringValue = device?.runtimeName ?? "Choose a device in the sidebar to view its screen."
-        deviceState.stringValue = device.map { stateLabel($0.state) } ?? ""
-        deviceImage.image = NSImage(systemSymbolName: device.map(symbolName(for:)) ?? "iphone", accessibilityDescription: nil)
-        deviceImage.contentTintColor = device == nil ? .tertiaryLabelColor : .secondaryLabelColor
+        deviceRuntime.stringValue = device.map { "\($0.runtimeName) Simulator" }
+            ?? "Choose a device in the sidebar to view its screen."
+        deviceImage.image = device.flatMap(devicePreview(for:))
+        deviceImage.contentTintColor = nil
         viewScreen.isHidden = device == nil
         viewScreen.isEnabled = !model.isBusy && device.map { ["Booted", "Shutdown"].contains($0.state) } == true
         updateDeviceSettings()
@@ -829,54 +857,7 @@ final class ManagerWindowController: NSWindowController, NSTableViewDataSource, 
     }
 
     private func updateDeviceSettings() {
-        let settings = model.inspectedDeviceIdentifier == selectedIdentifier ? model.deviceSettings : nil
-        let enabled = !model.isBusy && selectedDevice?.state == "Booted"
-        appearancePopup.isEnabled = enabled && settings?.appearance != nil
-        appearancePopup.selectItem(at: settings?.appearance == nil ? -1 : settings?.appearance == "dark" ? 1 : 0)
-        if let value = settings?.contentSize,
-           let index = SimulatorDeviceSettings.contentSizes.firstIndex(of: value) {
-            textSize.doubleValue = Double(index)
-            textSizeDescription.stringValue = value.split(separator: "-").map { $0.capitalized }.joined(separator: " ")
-        } else {
-            textSize.doubleValue = 0
-            textSizeDescription.stringValue = settings == nil ? "" : "Unavailable"
-        }
-        textSize.isEnabled = enabled && settings?.contentSize != nil
-        contrast.isEnabled = enabled && settings?.increaseContrast != nil
-        contrast.allowsMixedState = settings?.increaseContrast == nil
-        contrast.state = settings?.increaseContrast.map { $0 ? .on : .off } ?? .mixed
-        locationPopup.isEnabled = enabled && settings?.locationAvailable == true
-        if selectedDevice == nil { settingsMessage.stringValue = "Select a simulator to change its settings." }
-        else if selectedDevice?.state != "Booted" { settingsMessage.stringValue = "Start this simulator to change its settings." }
-        else if model.settingsIssue != nil || settings?.issues.isEmpty == false {
-            settingsMessage.stringValue = "Some settings could not be loaded. Refresh to try again."
-        } else if settings == nil { settingsMessage.stringValue = "Loading settings…" }
-        else { settingsMessage.stringValue = "" }
-        settingsMessage.toolTip = model.settingsIssue ?? settings?.issues.joined(separator: "\n")
-        settingsMessage.isHidden = settingsMessage.stringValue.isEmpty
-    }
-
-    @objc private func changeAppearance(_ sender: NSPopUpButton) {
-        guard let identifier = selectedIdentifier else { return }
-        model.setAppearance(sender.indexOfSelectedItem == 1 ? "dark" : "light", for: identifier)
-    }
-
-    @objc private func changeTextSize(_ sender: NSSlider) {
-        guard let identifier = selectedIdentifier else { return }
-        let index = Int(sender.doubleValue.rounded())
-        guard SimulatorDeviceSettings.contentSizes.indices.contains(index) else { return }
-        model.setContentSize(SimulatorDeviceSettings.contentSizes[index], for: identifier)
-    }
-
-    @objc private func changeContrast(_ sender: NSButton) {
-        guard let identifier = selectedIdentifier else { return }
-        model.setIncreaseContrast(sender.state == .on, for: identifier)
-    }
-
-    @objc private func changeLocation(_ sender: NSPopUpButton) {
-        guard let identifier = selectedIdentifier else { return }
-        if sender.indexOfSelectedItem == 1 { model.clearLocation(for: identifier) }
-        else if sender.indexOfSelectedItem == 2 { presentLocationEditor(for: identifier) }
+        inspectorHost?.rootView = makeDeviceSettingsView()
     }
 
     private func presentLocationEditor(for identifier: String, latitude: String = "0", longitude: String = "0") {
@@ -919,6 +900,16 @@ final class ManagerWindowController: NSWindowController, NSTableViewDataSource, 
         }
     }
 
+    private func devicePreview(for device: SimulatorHostDevice) -> NSImage? {
+        if let modelIdentifier = device.modelIdentifier,
+           let type = UTType.types(tag: modelIdentifier,
+                                   tagClass: UTTagClass(rawValue: "com.apple.device-model-code"),
+                                   conformingTo: nil).first(where: \.isDeclared) {
+            return NSWorkspace.shared.icon(for: type)
+        }
+        return NSImage(systemSymbolName: symbolName(for: device), accessibilityDescription: nil)
+    }
+
     private func symbolName(for device: SimulatorHostDevice) -> String {
         switch device.productFamily {
         case "iPad": "ipad"
@@ -939,13 +930,36 @@ final class ManagerWindowController: NSWindowController, NSTableViewDataSource, 
     @objc private func refresh(_ sender: Any?) { Task { await model.refresh() } }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.toggleSidebar, .sidebarTrackingSeparator, .flexibleSpace, refreshIdentifier, .inspectorTrackingSeparator]
+        [.toggleSidebar, .flexibleSpace, newSimulatorIdentifier, filterIdentifier, .sidebarTrackingSeparator,
+         .flexibleSpace, refreshIdentifier, .inspectorTrackingSeparator]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { toolbarDefaultItemIdentifiers(toolbar) }
 
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
                  willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
+        if itemIdentifier == newSimulatorIdentifier {
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            item.label = "New Simulator"
+            item.toolTip = "New Simulator"
+            item.image = NSImage(systemSymbolName: "plus", accessibilityDescription: "New Simulator")
+            item.target = NSApp.delegate
+            item.action = #selector(AppDelegate.showNewSimulator(_:))
+            item.visibilityPriority = .high
+            return item
+        }
+        if itemIdentifier == filterIdentifier {
+            let item = NSMenuToolbarItem(itemIdentifier: itemIdentifier)
+            item.label = "Filter"
+            item.toolTip = "Filter and Sort Simulators"
+            item.showsIndicator = false
+            item.visibilityPriority = .high
+            item.menu = NSMenu(title: "Filter and Sort Simulators")
+            item.menu.delegate = self
+            filterItem = item
+            updateFilterItem()
+            return item
+        }
         guard itemIdentifier == refreshIdentifier else { return nil }
         let item = NSToolbarItem(itemIdentifier: itemIdentifier)
         item.label = "Refresh"
@@ -957,6 +971,64 @@ final class ManagerWindowController: NSWindowController, NSTableViewDataSource, 
         item.isEnabled = !model.isBusy
         refreshItem = item
         return item
+    }
+
+    private func updateFilterItem() {
+        let active = stateFilter != .all || familyFilter != nil
+        filterItem?.image = NSImage(systemSymbolName: active ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease",
+                                   accessibilityDescription: active ? "Filter, active" : "Filter")
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        guard menu === filterItem?.menu else { return }
+        menu.removeAllItems()
+        menu.addItem(.sectionHeader(title: "State"))
+        for filter in DeviceStateFilter.allCases {
+            let item = NSMenuItem(title: filter.title, action: #selector(filterState(_:)), keyEquivalent: "")
+            item.target = self
+            item.tag = filter.rawValue
+            item.state = stateFilter == filter ? .on : .off
+            menu.addItem(item)
+        }
+        menu.addItem(.separator())
+        menu.addItem(.sectionHeader(title: "Device Type"))
+        let allTypes = NSMenuItem(title: "All Types", action: #selector(filterFamily(_:)), keyEquivalent: "")
+        allTypes.target = self
+        allTypes.state = familyFilter == nil ? .on : .off
+        menu.addItem(allTypes)
+        for family in Set(model.devices.map(\.productFamily)).sorted() {
+            let item = NSMenuItem(title: family, action: #selector(filterFamily(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = family
+            item.state = familyFilter == family ? .on : .off
+            menu.addItem(item)
+        }
+        menu.addItem(.separator())
+        menu.addItem(.sectionHeader(title: "Sort By"))
+        for order in DeviceSortOrder.allCases {
+            let item = NSMenuItem(title: order.title, action: #selector(sortDevices(_:)), keyEquivalent: "")
+            item.target = self
+            item.tag = order.rawValue
+            item.state = sortOrder == order ? .on : .off
+            menu.addItem(item)
+        }
+    }
+
+    @objc private func filterState(_ sender: NSMenuItem) {
+        guard let filter = DeviceStateFilter(rawValue: sender.tag) else { return }
+        stateFilter = filter
+        update()
+    }
+
+    @objc private func filterFamily(_ sender: NSMenuItem) {
+        familyFilter = sender.representedObject as? String
+        update()
+    }
+
+    @objc private func sortDevices(_ sender: NSMenuItem) {
+        guard let order = DeviceSortOrder(rawValue: sender.tag) else { return }
+        sortOrder = order
+        update()
     }
 }
 
@@ -1218,6 +1290,239 @@ final class SettingsWindowController: NSWindowController {
 }
 
 @MainActor
-private final class ManagerInspectorDocumentView: NSView {
-    override var isFlipped: Bool { true }
+private struct ManagerDeviceSettingsView: View {
+    let device: SimulatorHostDevice?
+    let settings: SimulatorDeviceSettings?
+    let isBusy: Bool
+    let issue: String?
+    let apply: (SimulatorDeviceSetting) -> Void
+    let customLocation: () -> Void
+
+    private struct Choice: Identifiable {
+        let id: String
+        let title: String
+    }
+
+    var body: some View {
+        Form {
+            if device?.state == "Booted", settings == nil, issue == nil {
+                ProgressView("Loading settings…")
+            } else {
+                if device != nil {
+                    Section {
+                        appearanceRows
+                        accessibilityRows
+                    }
+                    locationSection
+                    soundSection
+                }
+                if let message {
+                    Section {
+                        Text(message)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .help(issue ?? settings?.issues.joined(separator: "\n") ?? "")
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .labelStyle(.titleAndIcon)
+        .disabled(isBusy || device?.state != "Booted")
+    }
+
+    private var appearanceRows: some View {
+        Group {
+            picker("Appearance", symbol: "circle.lefthalf.filled", value: settings?.appearance,
+                   choices: [Choice(id: "light", title: "Light"), Choice(id: "dark", title: "Dark")]) {
+                apply(.appearance($0))
+            }
+            slider("Liquid Glass", symbol: "drop.halffull", value: settings?.liquidGlassOpacity, range: 0...1) {
+                apply(.liquidGlassOpacity($0))
+            }
+            picker("Color Filter", symbol: "camera.filters", value: settings?.colorFilter?.rawValue,
+                   choices: SimulatorColorFilter.allCases.map { Choice(id: $0.rawValue, title: filterTitle($0)) }) {
+                if let value = SimulatorColorFilter(rawValue: $0) { apply(.colorFilter(value)) }
+            }
+            if let filter = settings?.colorFilter, filter != .none, filter != .grayscale {
+                slider("Intensity", symbol: "slider.horizontal.3", value: settings?.colorFilterIntensity, range: 0.25...1) {
+                    apply(.colorFilter(filter, intensity: $0))
+                }
+            }
+            slider("Text Size", symbol: "textformat.size", value: textSizeIndex, range: 0...11,
+                   tickMarks: SimulatorDeviceSettings.contentSizes.count, help: textSizeDescription) {
+                let index = Int($0.rounded())
+                guard SimulatorDeviceSettings.contentSizes.indices.contains(index) else { return }
+                apply(.contentSize(SimulatorDeviceSettings.contentSizes[index]))
+            }
+        }
+    }
+
+    private var accessibilityRows: some View {
+        Group {
+            toggle("Reduce Motion", symbol: "figure.walk.motion", value: settings?.reduceMotion, setting: SimulatorDeviceSetting.reduceMotion)
+            toggle("Increase Contrast", symbol: "circle.lefthalf.striped.horizontal", value: settings?.increaseContrast, setting: SimulatorDeviceSetting.increaseContrast)
+            toggle("Show Borders", symbol: "square.dashed", value: settings?.showBorders, setting: SimulatorDeviceSetting.showBorders)
+            toggle("Reduce Transparency", symbol: "square.on.square", value: settings?.reduceTransparency, setting: SimulatorDeviceSetting.reduceTransparency)
+            toggle("VoiceOver", symbol: "person.wave.2", value: settings?.voiceOver, setting: SimulatorDeviceSetting.voiceOver)
+        }
+    }
+
+    private var locationSection: some View {
+        Section {
+            LabeledContent {
+                Menu(locationTitle) {
+                    Button("None") { apply(.clearLocation) }
+                    Button("Custom…", action: customLocation)
+                    if settings?.locationScenarios.isEmpty == false { Divider() }
+                    ForEach(settings?.locationScenarios ?? [], id: \.name) { scenario in
+                        Button(scenario.displayName) { apply(.locationScenario(scenario.name)) }
+                    }
+                }
+                .disabled(settings?.locationAvailable != true)
+            } label: {
+                Label("Location", systemImage: "location")
+            }
+        }
+    }
+
+    private var soundSection: some View {
+        Section {
+            slider("Sound", symbol: "speaker.wave.2", value: settings?.volume.map(Double.init), range: 0...100) {
+                apply(.volume(Int($0.rounded())))
+            }
+            picker("Output", symbol: "speaker", value: settings?.audioOutputDevice,
+                   choices: (settings?.audioOutputDevices ?? []).map { Choice(id: $0.identifier, title: $0.name) }) {
+                apply(.audioOutputDevice($0))
+            }
+            picker("Input", symbol: "mic", value: settings?.audioInputDevice,
+                   choices: (settings?.audioInputDevices ?? []).map { Choice(id: $0.identifier, title: $0.name) }) {
+                apply(.audioInputDevice($0))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func picker(_ title: String, symbol: String, value: String?, choices: [Choice], action: @escaping (String) -> Void) -> some View {
+        if let value {
+            Picker(selection: Binding(get: { value }, set: action)) {
+                if !choices.contains(where: { $0.id == value }) { Text("Unavailable").tag(value) }
+                ForEach(choices) { Text($0.title).tag($0.id) }
+            } label: {
+                Label(title, systemImage: symbol)
+            }
+            .disabled(choices.isEmpty)
+            .buttonStyle(.borderless)
+        } else {
+            unavailable(title, symbol: symbol)
+        }
+    }
+
+    @ViewBuilder
+    private func toggle(_ title: String, symbol: String, value: Bool?, setting: @escaping (Bool) -> SimulatorDeviceSetting) -> some View {
+        if let value {
+            Toggle(isOn: Binding(get: { value }, set: { apply(setting($0)) })) {
+                Label(title, systemImage: symbol)
+            }
+            .toggleStyle(.switch)
+        } else {
+            unavailable(title, symbol: symbol)
+        }
+    }
+
+    @ViewBuilder
+    private func slider(_ title: String, symbol: String, value: Double?, range: ClosedRange<Double>, tickMarks: Int = 0,
+                        help: String = "", action: @escaping (Double) -> Void) -> some View {
+        if let value {
+            LabeledContent {
+                ManagerSettingSlider(value: value, range: range, tickMarks: tickMarks, label: title, changed: action)
+                    .frame(minWidth: 90, maxWidth: .infinity, minHeight: 22)
+                    .help(help)
+            } label: {
+                Label(title, systemImage: symbol)
+                    .layoutPriority(1)
+            }
+        } else {
+            unavailable(title, symbol: symbol)
+        }
+    }
+
+    private func unavailable(_ title: String, symbol: String) -> some View {
+        LabeledContent {
+            Text("Unavailable").foregroundStyle(.secondary)
+        } label: {
+            Label(title, systemImage: symbol)
+        }
+    }
+
+    private var textSizeIndex: Double? {
+        settings?.contentSize.flatMap { SimulatorDeviceSettings.contentSizes.firstIndex(of: $0) }.map(Double.init)
+    }
+
+    private var textSizeDescription: String {
+        settings?.contentSize?.split(separator: "-").map { $0.capitalized }.joined(separator: " ") ?? ""
+    }
+
+    private var locationTitle: String {
+        switch settings?.locationMode {
+        case "none": "None"
+        case "custom": "Custom"
+        case "scenario": settings?.locationScenarios.first { $0.name == settings?.locationScenario }?.displayName ?? "Unavailable"
+        default: "Set Location"
+        }
+    }
+
+    private var message: String? {
+        guard let device else { return "Select a simulator to change its settings." }
+        guard device.state == "Booted" else { return "Start this simulator to change its settings." }
+        if issue != nil || settings?.issues.isEmpty == false { return "Some settings could not be loaded for this simulator." }
+        return settings == nil ? "Loading settings…" : nil
+    }
+
+    private func filterTitle(_ filter: SimulatorColorFilter) -> String {
+        switch filter {
+        case .none: "None"
+        case .grayscale: "Grayscale"
+        case .protanopia: "Protanopia"
+        case .deuteranopia: "Deuteranopia"
+        case .tritanopia: "Tritanopia"
+        }
+    }
+}
+
+@MainActor
+private struct ManagerSettingSlider: NSViewRepresentable {
+    let value: Double
+    let range: ClosedRange<Double>
+    let tickMarks: Int
+    let label: String
+    let changed: (Double) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(changed: changed) }
+
+    func makeNSView(context: Context) -> NSSlider {
+        let slider = NSSlider()
+        slider.isContinuous = false
+        slider.controlSize = .regular
+        slider.target = context.coordinator
+        slider.action = #selector(Coordinator.change(_:))
+        return slider
+    }
+
+    func updateNSView(_ slider: NSSlider, context: Context) {
+        context.coordinator.changed = changed
+        slider.minValue = range.lowerBound
+        slider.maxValue = range.upperBound
+        slider.doubleValue = value
+        slider.numberOfTickMarks = tickMarks
+        slider.allowsTickMarkValuesOnly = tickMarks > 0
+        slider.isEnabled = context.environment.isEnabled
+        slider.setAccessibilityLabel(label)
+    }
+
+    final class Coordinator: NSObject {
+        var changed: (Double) -> Void
+        init(changed: @escaping (Double) -> Void) { self.changed = changed }
+        @objc func change(_ sender: NSSlider) { changed(sender.doubleValue) }
+    }
 }

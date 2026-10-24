@@ -547,7 +547,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
     /// Routes the device to the app's new choice, presenting a failure on this window.
     private func audioRouteChosen(in scope: AudioScope) {
         guard !closed else { return }
-        session.synchronizeAudioRoute(in: scope) { [weak self] in self?.present($0) }
+        session.applyChosenAudioRoute(in: scope) { [weak self] in self?.present($0) }
     }
 
     /// Starts a location change before returning, so that changes reach the
