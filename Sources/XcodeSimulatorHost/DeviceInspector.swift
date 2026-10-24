@@ -49,6 +49,9 @@ public enum DeviceInspectorPartialCompletion: Equatable, Sendable {
     /// The incomplete download is retained at this URL for recovery.
     case applicationDataDownload(destination: URL)
     case applicationDataReplacement(bundleIdentifier: String, applicationMayBeStopped: Bool, dataMayBeModified: Bool)
+    /// The remaining URL is owned staging data. destinationUpdated distinguishes a
+    /// completed export with a cleanup failure from an incomplete transfer.
+    case reportDownload(destination: URL, remainingURL: URL, destinationUpdated: Bool)
 }
 
 public struct DeviceInspectorFailure: Error, LocalizedError, Sendable {
@@ -71,6 +74,7 @@ public enum DeviceInspectorError: Error, LocalizedError, Sendable {
     case invalidResponse(String)
     case applicationNotFound(String)
     case profileNotFound(String)
+    case reportNotFound(String)
     case invalidApplicationData(String)
     case cleanupFailed(directory: URL, operationError: (any Error)?, cleanupError: any Error)
 
@@ -80,6 +84,7 @@ public enum DeviceInspectorError: Error, LocalizedError, Sendable {
         case .commandFailed(let status, let stdout, let stderr): "Command failed (\(status)): \(stderr.isEmpty ? stdout : stderr)"
         case .applicationNotFound(let identifier): "The application \(identifier) is no longer installed."
         case .profileNotFound(let identifier): "The profile \(identifier) is no longer installed."
+        case .reportNotFound(let path): "The report \(path) is no longer available."
         case .cleanupFailed(let directory, let operationError, let cleanupError):
             [operationError?.localizedDescription, "Could not remove \(directory.path): \(cleanupError.localizedDescription)"].compactMap { $0 }.joined(separator: "\n")
         }
@@ -479,7 +484,7 @@ public struct DeviceInspector: Sendable {
         catch { throw failure(error, operation: operation) }
     }
 
-    @concurrent private func coreDeviceResult(_ arguments: [String], operation: String) async throws -> DeviceInspectorValue {
+    @concurrent func coreDeviceResult(_ arguments: [String], operation: String) async throws -> DeviceInspectorValue {
         do {
             let data = try await coreDevice(arguments, operation: operation, timeout: 30)
             let response = try JSONDecoder().decode(DeviceInspectorValue.self, from: data)
@@ -488,7 +493,7 @@ public struct DeviceInspector: Sendable {
         } catch { throw failure(error, operation: operation, source: .coreDevice) }
     }
 
-    @concurrent private func coreDevice(_ arguments: [String], operation: String, timeout: Int? = nil) async throws -> Data {
+    @concurrent func coreDevice(_ arguments: [String], operation: String, timeout: Int? = nil) async throws -> Data {
         do {
             let identifier: String
             switch device {
