@@ -1,4 +1,5 @@
 import AppKit
+import Quartz
 import SwiftUI
 import UniformTypeIdentifiers
 import XcodeSimulatorHost
@@ -551,6 +552,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task {
             do {
                 mainWindow?.stopInspectorReads()
+                try await mainWindow?.finishInspectorPreviews()
                 inventoryObservationTask?.cancel()
                 await inventoryObservation?.stop()
                 await inventoryObservationTask?.value
@@ -559,6 +561,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 sender.reply(toApplicationShouldTerminate: true)
             } catch {
                 quitting = false
+                mainWindow?.resumeInspectorAfterCancelledQuit()
                 startInventoryObservation()
                 present(error)
                 sender.reply(toApplicationShouldTerminate: false)
@@ -1144,6 +1147,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     }
 
     func stopInspectorReads() { deviceInspector.stopReading() }
+    func finishInspectorPreviews() async throws { try await deviceInspector.finishPreviews() }
+    func resumeInspectorAfterCancelledQuit() { deviceInspector.resumeAfterCancelledQuit() }
 
     private func makeDeviceSettingsView() -> AnyView {
         guard selectedDevices.count == 1, let selection = selectedDevices.first else {
@@ -2247,6 +2252,8 @@ private struct InspectorOperationFailure: LocalizedError {
             return [stopped ? "The application may have been stopped." : nil,
                     modified ? "Its data may have been partially replaced. Inspect the application before retrying." : nil]
                 .compactMap { $0 }.joined(separator: " ")
+        case .reportDownload(let destination, let remaining, let updated):
+            return "\(updated ? "The report was saved to \(destination.path). " : "")The remaining transfer data is at \(remaining.path)."
         case nil: return nil
         }
     }
@@ -2257,12 +2264,13 @@ private final class ManagerDeviceInspectorController: NSViewController, NSTableV
                                                        NSSearchFieldDelegate, NSMenuDelegate {
     enum Page { case content, info }
     private enum Content: Int, CaseIterable {
-        case applications, configuration, provisioning
+        case applications, configuration, provisioning, reports
         var title: String {
             switch self {
             case .applications: "Applications"
             case .configuration: "Configuration Profiles"
             case .provisioning: "Provisioning Profiles"
+            case .reports: "Reports"
             }
         }
         var profileKind: DeviceProfileKind { self == .provisioning ? .provisioning : .configuration }
@@ -2279,6 +2287,21 @@ private final class ManagerDeviceInspectorController: NSViewController, NSTableV
     private var iconTask: Task<Void, Never>?
     private var applications: [DeviceApplication] = []
     private var profiles: [DeviceProfile] = []
+    private var reports: [DeviceReport] = []
+    private var reportRows: [DeviceReport] = []
+    private let reportFilter = NSPopUpButton()
+    private var reportTypeFilter: String?
+    private var previewGeneration = 0
+    private var activePreviewTask: Task<Void, Never>?
+    private var previewWindow: ManagerReportPreviewWindowController?
+    private var currentPreview: DeviceReportPreview?
+    private var retainedPreviews: [URL: DeviceReportPreview] = [:]
+    private var previewTasks: [UUID: Task<Void, Never>] = [:]
+    private var cleanupInFlight: Set<URL> = []
+    private var cleanupFailures: [URL: any Error] = [:]
+    private var preparingToQuit = false
+    private let previewButton = NSButton(image: NSImage(systemSymbolName: "eye", accessibilityDescription: "Quick Look")!, target: nil, action: nil)
+    private let downloadButton = NSButton(image: NSImage(systemSymbolName: "square.and.arrow.down", accessibilityDescription: "Download Report")!, target: nil, action: nil)
     private var appRows: [DeviceApplication] = []
     private var profileRows: [DeviceProfile] = []
     private var selectedRecordID: String?
@@ -2326,7 +2349,9 @@ private final class ManagerDeviceInspectorController: NSViewController, NSTableV
         table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
         table.dataSource = self
         table.delegate = self
-        table.setAccessibilityLabel("Installed Applications and Profiles")
+        table.target = self
+        table.doubleAction = #selector(openSelectedRecord(_:))
+        table.setAccessibilityLabel("Installed Applications, Profiles, and Reports")
         listScroll.documentView = table
         listScroll.hasVerticalScroller = true
         listScroll.autohidesScrollers = true
@@ -2374,17 +2399,25 @@ private final class ManagerDeviceInspectorController: NSViewController, NSTableV
         addChild(contentSplit)
         addChild(detail)
         addChild(info)
-        let contentStack = NSStackView(views: [contentPicker, search, contentSplit.view])
+        reportFilter.addItem(withTitle: "All Report Types")
+        reportFilter.target = self
+        reportFilter.action = #selector(changeReportFilter(_:))
+        reportFilter.setAccessibilityLabel("Report Type")
+        let contentStack = NSStackView(views: [contentPicker, search, reportFilter, contentSplit.view])
         contentStack.orientation = .vertical
         contentStack.alignment = .leading
         contentStack.spacing = 8
         pin(contentStack, in: contentView)
         for child in contentStack.views { child.widthAnchor.constraint(equalTo: contentStack.widthAnchor).isActive = true }
         pin(info.view, in: infoView)
-        for button in [addButton, removeButton, launchButton, reloadButton] { button.bezelStyle = .automatic; button.target = self }
+        for button in [addButton, removeButton, launchButton, previewButton, downloadButton, reloadButton] { button.bezelStyle = .automatic; button.target = self }
         addButton.action = #selector(install(_:))
         removeButton.action = #selector(remove(_:))
         launchButton.action = #selector(launch(_:))
+        previewButton.action = #selector(quickLookReport(_:))
+        downloadButton.action = #selector(downloadReport(_:))
+        previewButton.toolTip = "Quick Look"
+        downloadButton.toolTip = "Download Report…"
         reloadButton.action = #selector(refreshInspector(_:))
         addButton.toolTip = "Install…"
         removeButton.toolTip = "Remove…"
@@ -2395,7 +2428,7 @@ private final class ManagerDeviceInspectorController: NSViewController, NSTableV
         actions.image = NSImage(systemSymbolName: "ellipsis", accessibilityDescription: "Application Actions")
         actions.imagePosition = .imageOnly
         actions.setAccessibilityLabel("Application Actions")
-        let buttons = NSStackView(views: [addButton, removeButton, launchButton, actions, NSView(), reloadButton])
+        let buttons = NSStackView(views: [addButton, removeButton, launchButton, actions, previewButton, downloadButton, NSView(), reloadButton])
         buttons.orientation = .horizontal
         buttons.spacing = 6
         let footer = NSStackView(views: [progress, status])
@@ -2447,17 +2480,21 @@ private final class ManagerDeviceInspectorController: NSViewController, NSTableV
         self.isManaging = isManaging
         self.isVisible = isVisible
         if changed {
+            dismissReportPreview()
             stopReading()
             inspector = nil
             applications = []
             profiles = []
+            reports = []
+            reportTypeFilter = nil
+            rebuildReportFilter()
             selectedRecordID = nil
             lastIssue = nil
             info.setProperties([:])
             updateRows()
         }
         if isVisible && (changed || becameVisible) { reload() }
-        else if !isVisible { stopReading() }
+        else if !isVisible { stopReading(); dismissReportPreview() }
         updateControls()
     }
 
@@ -2473,11 +2510,17 @@ private final class ManagerDeviceInspectorController: NSViewController, NSTableV
     private func updateVisibility() {
         contentView.isHidden = page != .content
         infoView.isHidden = page != .info
-        for control in [addButton, removeButton, launchButton, actions] { control.isHidden = page != .content }
+        let showingReports = page == .content && content == .reports
+        for control in [addButton, removeButton, launchButton, actions] { control.isHidden = page != .content || showingReports }
+        previewButton.isHidden = !showingReports
+        downloadButton.isHidden = !showingReports
+        reportFilter.isHidden = !showingReports
+        if page != .content { dismissReportPreview() }
     }
 
     private var selectedApp: DeviceApplication? { appRows.first { $0.id == selectedRecordID } }
     private var selectedProfile: DeviceProfile? { profileRows.first { $0.id == selectedRecordID } }
+    private var selectedReport: DeviceReport? { reportRows.first { $0.relativePath == selectedRecordID } }
     private var simulatorIsRunning: Bool {
         guard case .simulator(let simulator) = device else { return false }
         return simulator.isAvailable && simulator.state == "Booted"
@@ -2492,7 +2535,7 @@ private final class ManagerDeviceInspectorController: NSViewController, NSTableV
     private var canReplaceData: Bool {
         canTransferData && (simulatorIsRunning || (supports("processcontrol") && supports("streamprocesslist") && canReadApplications))
     }
-    private var available: Bool { device != nil && inspector != nil && !isManaging && !reading }
+    private var available: Bool { device != nil && inspector != nil && !isManaging && !reading && !preparingToQuit }
 
     private func updateControls() {
         let apps = content == .applications
@@ -2503,19 +2546,24 @@ private final class ManagerDeviceInspectorController: NSViewController, NSTableV
         launchButton.isEnabled = available && selectedApp != nil && (simulatorIsRunning || supports("launchapplication") || supports("applicationcontrol"))
         actions.isHidden = page != .content || !apps
         actions.isEnabled = available && selectedApp != nil
+        let reportTransfer = available && selectedReport?.resources.isReadable != false && inspector?.supportsReportDownload == true
+        previewButton.isEnabled = reportTransfer && selectedReport != nil && selectedReport?.resources.isDirectory == false && activePreviewTask == nil
+        downloadButton.isEnabled = reportTransfer && selectedReport != nil
+        reportFilter.isEnabled = !reading
         reloadButton.isEnabled = device != nil && !reading && !isManaging
-        progress.isHidden = !reading && !isManaging
+        progress.isHidden = !reading && !isManaging && activePreviewTask == nil
         if progress.isHidden { progress.stopAnimation(nil) } else { progress.startAnimation(nil) }
         if device == nil { status.stringValue = "Select one device to inspect it." }
         else if isManaging { status.stringValue = "An operation is in progress on this device…" }
         else if reading { status.stringValue = "Loading…" }
+        else if activePreviewTask != nil { status.stringValue = "Preparing preview…" }
         else { status.stringValue = lastIssue ?? "" }
         status.isHidden = status.stringValue.isEmpty
     }
 
     func reload() {
         stopReading()
-        guard isVisible, let device else { updateControls(); return }
+        guard isVisible, !preparingToQuit, let device else { updateControls(); return }
         let request = generation
         let page = self.page
         let content = self.content
@@ -2557,6 +2605,20 @@ private final class ManagerDeviceInspectorController: NSViewController, NSTableV
                     applications = apps
                     updateRows()
                     lastIssue = apps.isEmpty ? "No applications installed." : nil
+                } else if content == .reports {
+                    guard inspector.supportsReportListing || device.kind == .simulator else {
+                        throw DeviceInspectorError.unsupported("This device does not currently support reports. Connect and unlock it, then refresh.")
+                    }
+                    let snapshot = try await inspector.reports()
+                    guard generation == request, !Task.isCancelled else { return }
+                    reports = snapshot.reports.sorted {
+                        if $0.modificationDate != $1.modificationDate { return ($0.modificationDate ?? .distantPast) > ($1.modificationDate ?? .distantPast) }
+                        return $0.relativePath.localizedStandardCompare($1.relativePath) == .orderedAscending
+                    }
+                    rebuildReportFilter()
+                    updateRows()
+                    lastIssue = snapshot.issues.isEmpty ? (reports.isEmpty ? "No reports available." : nil)
+                        : "\(snapshot.issues.count) reports returned incomplete metadata. Available reports are shown."
                 } else {
                     guard canReadProfiles else {
                         let message: String
@@ -2585,11 +2647,13 @@ private final class ManagerDeviceInspectorController: NSViewController, NSTableV
     }
 
     @objc private func changeContent(_ sender: NSPopUpButton) {
+        dismissReportPreview()
         content = Content(rawValue: sender.indexOfSelectedItem) ?? .applications
+        updateVisibility()
         selectedRecordID = nil
         profiles = []
         search.stringValue = ""
-        search.placeholderString = content == .applications ? "Search Applications" : "Search Profiles"
+        search.placeholderString = content == .applications ? "Search Applications" : (content == .reports ? "Search Reports" : "Search Profiles")
         updateRows()
         reload()
     }
@@ -2599,16 +2663,24 @@ private final class ManagerDeviceInspectorController: NSViewController, NSTableV
     private func updateRows() {
         let query = search.stringValue
         appRows = content == .applications ? applications.filter { query.isEmpty || $0.name.localizedStandardContains(query) || $0.bundleIdentifier.localizedStandardContains(query) } : []
-        profileRows = content == .applications ? [] : profiles.filter { $0.kind == content.profileKind && (query.isEmpty || $0.name.localizedStandardContains(query) || $0.identifier.localizedStandardContains(query)) }
+        profileRows = content == .applications || content == .reports ? [] : profiles.filter { $0.kind == content.profileKind && (query.isEmpty || $0.name.localizedStandardContains(query) || $0.identifier.localizedStandardContains(query)) }
+        reportRows = content == .reports ? reports.filter { report in
+            (reportTypeFilter == nil || reportType(report) == reportTypeFilter) && (query.isEmpty ||
+                [report.name, report.relativePath, report.type.fileExtension, report.type.recordedLogType, report.type.bugType]
+                    .compactMap { $0 }.contains { $0.localizedStandardContains(query) })
+        } : []
         reloadingTable = true
         table.reloadData()
-        let index = content == .applications ? appRows.firstIndex { $0.id == selectedRecordID } : profileRows.firstIndex { $0.id == selectedRecordID }
+        let index = content == .applications ? appRows.firstIndex { $0.id == selectedRecordID }
+            : content == .reports ? reportRows.firstIndex { $0.relativePath == selectedRecordID } : profileRows.firstIndex { $0.id == selectedRecordID }
         if let index { table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false) }
-        else { table.deselectAll(nil); selectedRecordID = nil }
+        else { table.deselectAll(nil); selectedRecordID = nil; dismissReportPreview() }
         reloadingTable = false
         updateDetail()
     }
-    func numberOfRows(in tableView: NSTableView) -> Int { content == .applications ? appRows.count : profileRows.count }
+    func numberOfRows(in tableView: NSTableView) -> Int {
+        content == .applications ? appRows.count : (content == .reports ? reportRows.count : profileRows.count)
+    }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let id = NSUserInterfaceItemIdentifier("InspectorRecord")
         let cell = tableView.makeView(withIdentifier: id, owner: self) as? ManagerInspectorRecordCell ?? ManagerInspectorRecordCell()
@@ -2619,6 +2691,12 @@ private final class ManagerDeviceInspectorController: NSViewController, NSTableV
             cell.subtitle.stringValue = app.bundleIdentifier
             if device?.kind == .simulator, let path = app.bundlePath { cell.icon.image = NSWorkspace.shared.icon(forFile: path) }
             else { cell.icon.image = NSImage(systemSymbolName: "app", accessibilityDescription: nil) }
+        } else if content == .reports {
+            let report = reportRows[row]
+            cell.title.stringValue = report.name
+            cell.subtitle.stringValue = [report.modificationDate?.formatted(date: .abbreviated, time: .shortened),
+                report.size.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) }].compactMap { $0 }.joined(separator: " · ")
+            cell.icon.image = NSImage(systemSymbolName: report.resources.isDirectory ? "folder" : "doc.text", accessibilityDescription: nil)
         } else {
             let profile = profileRows[row]
             cell.title.stringValue = profile.name
@@ -2630,7 +2708,9 @@ private final class ManagerDeviceInspectorController: NSViewController, NSTableV
     func tableViewSelectionDidChange(_ notification: Notification) {
         guard !reloadingTable else { return }
         let row = table.selectedRow
-        selectedRecordID = row < 0 ? nil : (content == .applications ? appRows[row].id : profileRows[row].id)
+        let id = row < 0 ? nil : (content == .applications ? appRows[row].id : (content == .reports ? reportRows[row].relativePath : profileRows[row].id))
+        if selectedRecordID != id { dismissReportPreview() }
+        selectedRecordID = id
         updateDetail()
     }
 
@@ -2638,7 +2718,7 @@ private final class ManagerDeviceInspectorController: NSViewController, NSTableV
         iconTask?.cancel()
         iconTask = nil
         headerImage.image = nil
-        headerName.stringValue = content == .applications ? "Select an Application" : "Select a Profile"
+        headerName.stringValue = content == .applications ? "Select an Application" : (content == .reports ? "Select a Report" : "Select a Profile")
         headerSubtitle.stringValue = ""
         headerSubtitle.toolTip = nil
         detail.setProperties([:])
@@ -2671,6 +2751,22 @@ private final class ManagerDeviceInspectorController: NSViewController, NSTableV
             headerSubtitle.toolTip = "Installed payload bodies and entitlement values are not supplied by the device's public profile list."
             headerImage.image = NSImage(systemSymbolName: "doc.badge.gearshape", accessibilityDescription: nil)
             detail.setProperties(profile.metadata)
+        } else if let report = selectedReport {
+            headerName.stringValue = report.name
+            headerSubtitle.stringValue = report.relativePath
+            headerImage.image = NSImage(systemSymbolName: report.resources.isDirectory ? "folder" : "doc.text", accessibilityDescription: nil)
+            var properties = report.metadata
+            properties["relativePath"] = .string(report.relativePath)
+            properties["fileExtension"] = .string(report.type.fileExtension)
+            if let type = report.type.recordedLogType { properties["recordedLogType"] = .string(type) }
+            if let bug = report.type.bugType { properties["bugType"] = .string(bug) }
+            var resources: [String: DeviceInspectorValue] = ["isDirectory": .boolean(report.resources.isDirectory)]
+            if let value = report.resources.isReadable { resources["isReadable"] = .boolean(value) }
+            if let value = report.resources.isHidden { resources["isHidden"] = .boolean(value) }
+            if let value = report.resources.isSymbolicLink { resources["isSymbolicLink"] = .boolean(value) }
+            if let value = report.resources.isWritable { resources["isWritable"] = .boolean(value) }
+            properties["resources"] = .object(resources)
+            detail.setProperties(properties)
         }
         updateControls()
     }
@@ -2690,6 +2786,137 @@ private final class ManagerDeviceInspectorController: NSViewController, NSTableV
             menu.addItem(item)
         }
         menu.autoenablesItems = false
+    }
+
+    private func reportType(_ report: DeviceReport) -> String {
+        if let type = report.type.recordedLogType { return "Log Type: " + type }
+        return report.type.fileExtension.isEmpty ? "No File Extension" : "." + report.type.fileExtension
+    }
+
+    private func rebuildReportFilter() {
+        let types = Set(reports.map(reportType)).sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+        if let reportTypeFilter, !types.contains(reportTypeFilter) { self.reportTypeFilter = nil }
+        reportFilter.removeAllItems()
+        reportFilter.addItems(withTitles: ["All Report Types"] + types)
+        if let reportTypeFilter { reportFilter.selectItem(withTitle: reportTypeFilter) }
+    }
+
+    @objc private func changeReportFilter(_ sender: NSPopUpButton) {
+        reportTypeFilter = sender.indexOfSelectedItem == 0 ? nil : sender.titleOfSelectedItem
+        updateRows()
+    }
+
+    @objc private func openSelectedRecord(_ sender: Any?) {
+        if content == .reports { quickLookReport(sender) }
+        else if content == .applications { launch(sender) }
+    }
+
+    @objc private func downloadReport(_ sender: Any?) {
+        guard available, downloadButton.isEnabled, let report = selectedReport, let inspector, let window = view.window else { return }
+        let panel = NSSavePanel()
+        panel.title = "Download Report"
+        panel.message = "Download \(report.name) from \(inspector.device.name)."
+        panel.nameFieldStringValue = (report.relativePath as NSString).lastPathComponent
+        panel.canCreateDirectories = true
+        panel.isExtensionHidden = false
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard response == .OK, let url = panel.url, let self else { return }
+            self.mutate(using: inspector) { _ = try await $0.downloadReport(report, to: url, replacingExistingFile: true) }
+        }
+    }
+
+    @objc private func quickLookReport(_ sender: Any?) {
+        guard available, previewButton.isEnabled, !preparingToQuit, let report = selectedReport, let inspector else { return }
+        dismissReportPreview()
+        let request = previewGeneration
+        let taskID = UUID()
+        let cache = URL.cachesDirectory.appending(path: "dev.lynnswap.NeoSimulator/ReportPreviews", directoryHint: .isDirectory)
+        let task = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                previewTasks.removeValue(forKey: taskID)
+                if previewGeneration == request { activePreviewTask = nil; updateControls() }
+            }
+            do {
+                let preview = try await inspector.previewReport(report, in: cache)
+                retainedPreviews[preview.url] = preview
+                guard !Task.isCancelled, previewGeneration == request, !preparingToQuit,
+                      device?.id == report.deviceID, selectedReport?.id == report.id else {
+                    removePreview(preview)
+                    return
+                }
+                currentPreview = preview
+                let window = ManagerReportPreviewWindowController(report: report, deviceName: inspector.device.name, url: preview.url)
+                window.onClose = { [weak self] in self?.dismissReportPreview(closeWindow: false) }
+                previewWindow = window
+                window.showWindow(nil)
+            } catch {
+                if let failure = error as? DeviceInspectorFailure, case .cleanupFailed(let directory, _, _) = failure.error as? DeviceInspectorError {
+                    cleanupFailures[directory] = error
+                    if !preparingToQuit { model.onError?(InspectorOperationFailure(deviceName: inspector.device.name, error: error)) }
+                } else if !Task.isCancelled, previewGeneration == request {
+                    lastIssue = error.localizedDescription
+                }
+            }
+        }
+        activePreviewTask = task
+        previewTasks[taskID] = task
+        updateControls()
+    }
+
+    private func dismissReportPreview(closeWindow: Bool = true) {
+        previewGeneration += 1
+        activePreviewTask?.cancel()
+        activePreviewTask = nil
+        let window = previewWindow
+        previewWindow = nil
+        if closeWindow { window?.close() }
+        if let preview = currentPreview {
+            currentPreview = nil
+            removePreview(preview)
+        }
+        if isViewLoaded { updateControls() }
+    }
+
+    private func removePreview(_ preview: DeviceReportPreview) {
+        guard cleanupInFlight.insert(preview.url).inserted else { return }
+        let taskID = UUID()
+        previewTasks[taskID] = Task { [weak self] in
+            guard let self else { return }
+            defer { cleanupInFlight.remove(preview.url); previewTasks.removeValue(forKey: taskID) }
+            do {
+                try await preview.removeCachedCopy()
+                retainedPreviews.removeValue(forKey: preview.url)
+                cleanupFailures.removeValue(forKey: preview.url)
+            } catch {
+                cleanupFailures[preview.url] = error
+                if !preparingToQuit { model.onError?(InspectorOperationFailure(deviceName: preview.report.name, error: error)) }
+            }
+        }
+    }
+
+    func finishPreviews() async throws {
+        preparingToQuit = true
+        dismissReportPreview()
+        for preview in Array(retainedPreviews.values) { removePreview(preview) }
+        // A cancelled download can finish by scheduling its cache removal; drain both.
+        while !previewTasks.isEmpty {
+            for task in Array(previewTasks.values) { await task.value }
+        }
+        for (directory, original) in cleanupFailures where retainedPreviews[directory] == nil {
+            do {
+                try await removeFailedReportPreviewDirectory(directory)
+                cleanupFailures.removeValue(forKey: directory)
+            } catch {
+                cleanupFailures[directory] = DeviceInspectorError.cleanupFailed(directory: directory, operationError: original, cleanupError: error)
+            }
+        }
+        if let failure = cleanupFailures.values.first { throw failure }
+    }
+
+    func resumeAfterCancelledQuit() {
+        preparingToQuit = false
+        reload()
     }
 
     private func mutate(using inspector: DeviceInspector, operation: @escaping @Sendable (DeviceInspector) async throws -> Void) {
@@ -3022,4 +3249,43 @@ private final class ManagerInspectorPropertiesController: NSViewController, NSOu
         label.toolTip = label.stringValue
         return label
     }
+}
+
+
+@MainActor
+private final class ManagerReportPreviewWindowController: NSWindowController, NSWindowDelegate {
+    private let previewView: QLPreviewView
+    private var closed = false
+    var onClose: (() -> Void)?
+
+    init(report: DeviceReport, deviceName: String, url: URL) {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 620),
+                              styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+        window.title = report.name
+        window.subtitle = deviceName
+        window.minSize = NSSize(width: 360, height: 260)
+        window.isReleasedWhenClosed = false
+        previewView = QLPreviewView(frame: window.contentLayoutRect, style: .normal)
+        super.init(window: window)
+        previewView.shouldCloseWithWindow = false
+        previewView.autostarts = false
+        window.contentView = previewView
+        window.delegate = self
+        window.center()
+        previewView.previewItem = url as NSURL
+    }
+    required init?(coder: NSCoder) { nil }
+    func windowWillClose(_ notification: Notification) {
+        guard !closed else { return }
+        closed = true
+        previewView.close()
+        onClose?()
+        onClose = nil
+    }
+}
+
+
+@concurrent private func removeFailedReportPreviewDirectory(_ directory: URL) async throws {
+    do { try FileManager.default.removeItem(at: directory) }
+    catch let error as CocoaError where error.code == .fileNoSuchFile {}
 }
