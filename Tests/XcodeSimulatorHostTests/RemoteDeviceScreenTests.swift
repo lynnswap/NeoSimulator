@@ -93,7 +93,8 @@ struct RemoteDeviceScreenTests {
     }
 
     @Test func frameCaptureDecodesImageIODataAndReleasesWaitersOnFailureOrCancellation() async throws {
-        let capture = RemoteScreenFrameCapture()
+        let noDeadline: RemoteScreenFrameCapture.ScheduleTimeout = { _, _ in {} }
+        let capture = RemoteScreenFrameCapture(scheduleTimeout: noDeadline)
         let context = try #require(CGContext(data: nil, width: 2, height: 3, bitsPerComponent: 8, bytesPerRow: 8,
             space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
         let data = NSMutableData()
@@ -107,24 +108,95 @@ struct RemoteDeviceScreenTests {
             Issue.record("Invalid image data was accepted")
         } catch { #expect((error as? CLIError)?.identifier == "remote-screen-image") }
 
-        let waiting = Task { try await capture.capture { capture.fail(ScreenFixtureError.stream) } }
+        let interrupted = RemoteScreenFrameCapture(scheduleTimeout: noDeadline)
+        let waiting = Task { try await interrupted.capture { interrupted.fail(ScreenFixtureError.stream) } }
         do { _ = try await waiting.value; Issue.record("The stream failure was lost") }
         catch { #expect(error as? ScreenFixtureError == .stream) }
 
+        let canceled = RemoteScreenFrameCapture(scheduleTimeout: noDeadline)
         var pendingCapture: Task<CGImage, any Error>?
         await withCheckedContinuation { (started: CheckedContinuation<Void, Never>) in
-            pendingCapture = Task { try await capture.capture { started.resume() } }
+            pendingCapture = Task { try await canceled.capture { started.resume() } }
         }
         let task = try #require(pendingCapture)
         task.cancel()
         do { _ = try await task.value; Issue.record("Capture cancellation was lost") }
         catch { #expect(error is CancellationError) }
-        let retry = try await capture.capture { capture.receive(data as Data) }
-        #expect(retry.width == 2)
+        let retry = Task.immediate { try await canceled.capture { canceled.receive(data as Data) } }
+        canceled.receive(data as Data)
+        #expect(try await retry.value.width == 2)
+    }
 
-        let expired = RemoteScreenFrameCapture(timeout: .milliseconds(1))
-        do { _ = try await expired.capture {}; Issue.record("A missing frame never timed out") }
+    @Test func startupAndCanceledRepliesDrainBeforeANewCaptureRequestIsSent() async throws {
+        let capture = RemoteScreenFrameCapture(scheduleTimeout: { _, _ in {} })
+        func png(width: Int) throws -> Data {
+            let context = try #require(CGContext(data: nil, width: width, height: 1, bitsPerComponent: 8, bytesPerRow: width * 4,
+                space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+            let data = NSMutableData()
+            let output = try #require(CGImageDestinationCreateWithData(data, UTType.png.identifier as CFString, 1, nil))
+            CGImageDestinationAddImage(output, try #require(context.makeImage()), nil)
+            #expect(CGImageDestinationFinalize(output))
+            return data as Data
+        }
+        var sends: [String] = []
+        try await withCheckedThrowingContinuation { (started: CheckedContinuation<Void, any Error>) in
+            do {
+                try capture.requestInitialFrame { sends.append("startup"); started.resume() }
+            } catch { started.resume(throwing: error) }
+        }
+        let startupReply = try png(width: 1)
+        let canceledReply = try png(width: 3)
+        var firstSent: CheckedContinuation<Void, Never>?
+        let first = Task.immediate { try await capture.capture { sends.append("first"); firstSent?.resume() } }
+        #expect(sends == ["startup"])
+        await withCheckedContinuation { sent in
+            firstSent = sent
+            capture.receive(startupReply)
+        }
+        capture.receive(try png(width: 2))
+        #expect(try await first.value.width == 2)
+
+        var canceling: Task<CGImage, any Error>?
+        await withCheckedContinuation { (sent: CheckedContinuation<Void, Never>) in
+            canceling = Task.immediate { try await capture.capture { sends.append("canceled"); sent.resume() } }
+        }
+        let canceled = try #require(canceling)
+        canceled.cancel()
+        do { _ = try await canceled.value; Issue.record("Capture cancellation was lost") }
+        catch { #expect(error is CancellationError) }
+        var retrySent: CheckedContinuation<Void, Never>?
+        let retry = Task.immediate { try await capture.capture { sends.append("retry"); retrySent?.resume() } }
+        await withCheckedContinuation { sent in
+            retrySent = sent
+            capture.receive(canceledReply)
+        }
+        capture.receive(try png(width: 4))
+        #expect(try await retry.value.width == 4)
+        #expect(sends == ["startup", "first", "canceled", "retry"])
+    }
+
+    @Test func aNativeTimeoutRequiresReconnectBeforeRetryingOnTheSameStream() async throws {
+        var deadline: (@MainActor () -> Void)?
+        let capture = RemoteScreenFrameCapture(scheduleTimeout: { _, action in
+            deadline = action
+            return { deadline = nil }
+        })
+        var sends = 0
+        var waiting: Task<CGImage, any Error>?
+        await withCheckedContinuation { (sent: CheckedContinuation<Void, Never>) in
+            waiting = Task.immediate { try await capture.capture { sends += 1; sent.resume() } }
+        }
+        let pending = try #require(waiting)
+        let expire = try #require(deadline)
+        expire()
+        do { _ = try await pending.value; Issue.record("A missing frame never timed out") }
         catch { #expect((error as? CLIError)?.identifier == "remote-screen-capture-timeout") }
+        capture.receive(Data())
+        do {
+            _ = try await capture.capture { sends += 1 }
+            Issue.record("A late untagged reply could be reused after a timeout")
+        } catch { #expect((error as? CLIError)?.identifier == "remote-screen-capture-reconnect") }
+        #expect(sends == 1)
     }
 
     private func device() throws -> CoreDeviceDevice {

@@ -55,11 +55,13 @@ final class CoreDeviceMediaStreamTransport: RemoteScreenTransport {
                 await self.finishObservation(error: error)
             }
         }
-        // Activation establishes the transport; a decoded-frame event separately proves pixels arrived.
-        events(.connected)
         let requestFrame = try created.type.resolveAndWait(.method("CoreDeviceMediaStreamSupport.VideoStream.requestLastDecodedFrame()",
             as: (() async -> Void).self))
-        try await unsafe requestFrame.unsafeInvoke(on: created)
+        try capture.requestInitialFrame {
+            try await unsafe requestFrame.unsafeInvoke(on: created)
+        }
+        // Activation establishes the transport; a decoded-frame event separately proves pixels arrived.
+        events(.connected)
     }
 
     func captureScreenshot() async throws -> CGImage {
