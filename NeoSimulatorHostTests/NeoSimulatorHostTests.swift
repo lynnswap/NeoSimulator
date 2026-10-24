@@ -3564,7 +3564,7 @@ struct InputFocusTests {
         preferences.set(["Headset"], forKey: HostPreferences.recentAudioOutputDeviceUIDs)
         port.report { $0.outputRoute = "Headset" }
         #expect(items(output) == ["System (MacBook Pro Speakers)", "BlackHole 2ch", "MacBook Pro Speakers", "USB Headset ✓"])
-        port.report { $0.defaultOutput = "Elsewhere" }
+        port.report(.availableDevices) { $0.defaultOutput = "Elsewhere" }
         #expect(items(output).first == "System")
         // SimulatorKit substitutes the Mac's default when the guest's route is missing.
         #expect(port.current.outputRoute == "Headset")
@@ -3591,18 +3591,27 @@ struct InputFocusTests {
         #expect(preferences.recentAudioRoutes(in: .output) == [AudioRouting.systemDefault])
         #expect(ports.allSatisfy { $0.requests.isEmpty })
         #expect(silentDisplay.audioConnections == 0)
+        for identifier in ["A", "B"] {
+            try preferences.saveAudioRoute("Speakers", forDevice: identifier, in: .output)
+        }
 
         a.selectAudioRoute("Loopback", in: .output)
         #expect(preferences.values[HostPreferences.recentAudioOutputDeviceUIDs] as? [String]
             == ["Loopback", AudioRouting.systemDefault])
         #expect(ports.map(\.requests) == [["output Loopback"], ["output Loopback"]])
         #expect(ports.allSatisfy { $0.current.outputRoute == "Loopback" && $0.current.inputRoute == AudioRouting.systemDefault })
+        for identifier in ["A", "B"] {
+            #expect(try preferences.preferredAudioRoutes(forDevice: identifier, in: .output).first == "Loopback")
+        }
         #expect(preferences.recentAudioRoutes(in: .input) == [AudioRouting.systemDefault])
 
         b.selectAudioRoute("Gone", in: .output)
         #expect(ports.map(\.requests) == [["output Loopback"], ["output Loopback"]])
         b.selectAudioRoute(AudioRouting.systemDefault, in: .output)
         #expect(ports.map(\.requests.last) == ["output \(AudioRouting.systemDefault)", "output \(AudioRouting.systemDefault)"])
+        for identifier in ["A", "B"] {
+            #expect(try preferences.preferredAudioRoutes(forDevice: identifier, in: .output).first == AudioRouting.systemDefault)
+        }
         for route in ["Loopback", "One", "Two", "Three", "Gone"] { a.selectAudioRoute(route, in: .input) }
         #expect(preferences.recentAudioRoutes(in: .input) == ["Gone", "Three", "Two", "One", "Loopback"])
         #expect(preferences.recentAudioRoutes(in: .output) == [AudioRouting.systemDefault, "Gone", "Loopback"])
@@ -3621,20 +3630,21 @@ struct InputFocusTests {
         defer { controller.invalidate() }
         controller.session.connectAudioRoutes { Issue.record($0) }
         #expect(port.requests == ["output Loopback"])
-        port.report { $0.devices.append(Self.headset) }
+        port.report(.availableDevices) { $0.devices.append(Self.headset) }
         #expect(port.requests.last == "output Headset")
-        port.report { $0.devices.removeAll { $0 == Self.headset } }
+        port.report(.availableDevices) { $0.devices.removeAll { $0 == Self.headset } }
         #expect(port.requests.last == "output Loopback")
         port.report { $0.outputRoute = "Speakers" }
-        #expect(port.requests.last == "output Loopback" && port.requests.count == 4)
-        #expect(port.current.outputRoute == "Loopback")
-        port.report { $0.defaultOutput = "Loopback" }
+        #expect(port.requests.last == "output Loopback" && port.requests.count == 3)
+        #expect(port.current.outputRoute == "Speakers")
+        #expect(controller.session.audioRoutes?.outputRoute == "Speakers")
+        port.report(.availableDevices) { $0.defaultOutput = "Loopback" }
         #expect(port.requests.count == 4)
         // Without a usable recent route or system default, leave the guest's route unchanged.
         preferences.set([AudioRouting.systemDefault], forKey: HostPreferences.recentAudioOutputDeviceUIDs)
-        port.report { $0.devices = [Self.microphone, Self.loopback] }
+        port.report(.availableDevices) { $0.devices = [Self.microphone, Self.loopback] }
         #expect(port.requests.count == 4)
-        port.report { $0.devices.append(Self.speakers) }
+        port.report(.availableDevices) { $0.devices.append(Self.speakers) }
         #expect(port.requests.last == "output \(AudioRouting.systemDefault)")
 
         controller.invalidate()
@@ -3642,6 +3652,24 @@ struct InputFocusTests {
         let count = port.requests.count
         port.report { $0.outputRoute = "Speakers" }
         #expect(port.requests.count == count)
+    }
+
+    @Test func reconnectingAudioPreservesTheDeviceChoiceInsteadOfTheGlobalRecentRoute() throws {
+        let preferences = MemoryPreferences()
+        preferences.set(["Headset", AudioRouting.systemDefault], forKey: HostPreferences.recentAudioOutputDeviceUIDs)
+        try preferences.saveAudioRoute("Loopback", forDevice: "A", in: .output)
+        for _ in 0..<2 {
+            let port = TestAudioRoutes([Self.microphone, Self.loopback, Self.speakers, Self.headset])
+            let (controller, _) = try makeAudioController(port, device: "A", preferences: preferences)
+            controller.session.connectAudioRoutes { Issue.record($0) }
+            #expect(port.current.outputRoute == "Loopback")
+            port.report { $0.outputRoute = "Speakers" }
+            #expect(port.requests == ["output Loopback"])
+            #expect(controller.session.audioRoutes?.outputRoute == "Speakers")
+            port.report(.availableDevices) { $0.devices.removeAll { $0 == Self.headset } }
+            #expect(port.requests == ["output Loopback", "output Loopback"])
+            controller.invalidate()
+        }
     }
 
     @Test func audioRouteFailuresOfAChoiceArePresentedAndOthersLogged() throws {
@@ -6379,7 +6407,7 @@ private final class TestDisplay: SimulatorDisplay {
     /// Nil simulates a failed port connection.
     var audioPort: TestAudioRoutes?
     var audioConnections = 0
-    func connectAudioRoutes(changed: @escaping @MainActor () -> Void) throws -> any SimulatorAudioRoutes {
+    func connectAudioRoutes(changed: @escaping @MainActor (AudioRouteChange) -> Void) throws -> any SimulatorAudioRoutes {
         audioConnections += 1
         guard let audioPort else { throw HostError.unavailable("The device has no audio route port.") }
         audioPort.changed = changed
@@ -6464,7 +6492,7 @@ private final class TestAudioRoutes: SimulatorAudioRoutes {
     var routeError: Error?
     /// Throws before recording the request.
     var refusal: Error?
-    var changed: (() -> Void)?
+    var changed: ((AudioRouteChange) -> Void)?
     private(set) var isDisconnected = false
 
     init(_ devices: [HostAudioDevice], input: String = AudioRouting.systemDefault,
@@ -6491,9 +6519,9 @@ private final class TestAudioRoutes: SimulatorAudioRoutes {
         changed = nil
     }
 
-    func report(_ change: (inout AudioRouteState) -> Void) {
+    func report(_ reason: AudioRouteChange = .selectedDevice, _ change: (inout AudioRouteState) -> Void) {
         change(&current)
-        changed?()
+        changed?(reason)
     }
 }
 

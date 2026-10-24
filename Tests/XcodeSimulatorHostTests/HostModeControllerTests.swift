@@ -970,7 +970,7 @@ struct HostModeControllerTests {
         let data = Data(#"""
         {
           "devicetypes": [
-            {"identifier":"phone-type","productFamily":"iPhone"},
+            {"identifier":"phone-type","productFamily":"iPhone","modelIdentifier":"iPhone19,2"},
             {"identifier":"tv-type","productFamily":"Apple TV"}
           ],
           "runtimes": [
@@ -1000,6 +1000,8 @@ struct HostModeControllerTests {
         #expect(reportedFailure)
         #expect(Set(devices.map(\.identifier)) == ["phone", "tv"])
         #expect(devices.first(where: { $0.identifier == "phone" })?.state == "Booted")
+        #expect(devices.first(where: { $0.identifier == "phone" })?.modelIdentifier == "iPhone19,2")
+        #expect(devices.first(where: { $0.identifier == "tv" })?.modelIdentifier == nil)
         #expect(devices.first(where: { $0.identifier == "tv" })?.runtimeName == "tvOS 27.0")
     }
 }

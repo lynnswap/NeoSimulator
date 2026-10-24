@@ -994,7 +994,7 @@ struct SimulatorAudioInterface {
     /// Connects to the device's audio route port, which a booted device that
     /// has `SimFeatureRoutableAudio` provides.
     func connect(to device: SimulatorDevice,
-                 changed: @escaping @MainActor () -> Void) throws -> SimulatorAudioConnection {
+                 changed: @escaping @MainActor (AudioRouteChange) -> Void) throws -> SimulatorAudioConnection {
         guard let io = try unsafe deviceIO.unsafeInvoke(on: device.object) else {
             throw HostError.unavailable("The device did not provide its I/O ports.")
         }
@@ -1050,7 +1050,7 @@ final class SimulatorAudioConnection: SimulatorAudioRoutes {
     private var members: HostAudioDeviceMembers?
     private var isConnected = true
 
-    fileprivate init(port: AnyObject, changed: @escaping @MainActor () -> Void) throws {
+    fileprivate init(port: AnyObject, changed: @escaping @MainActor (AudioRouteChange) -> Void) throws {
         let object = ABIRuntime.shared.object(port)
         availableDevices = try object.resolveAndWait(.message(
             "availableHostDevices", as: (() -> [AnyObject]?).self))
@@ -1083,15 +1083,15 @@ final class SimulatorAudioConnection: SimulatorAudioRoutes {
 
     // Audio-port callbacks may ignore the completion queue. Bridge to the main actor explicitly.
     private nonisolated static func devicesChanged(
-        _ changed: @escaping @MainActor () -> Void
+        _ changed: @escaping @MainActor (AudioRouteChange) -> Void
     ) -> SimulatorAudioInterface.DevicesChanged {
-        { _ in DispatchQueue.main.async { MainActor.assumeIsolated { changed() } } }
+        { _ in DispatchQueue.main.async { MainActor.assumeIsolated { changed(.availableDevices) } } }
     }
 
     private nonisolated static func routeChanged(
-        _ changed: @escaping @MainActor () -> Void
+        _ changed: @escaping @MainActor (AudioRouteChange) -> Void
     ) -> SimulatorAudioInterface.RouteChanged {
-        { _, _ in DispatchQueue.main.async { MainActor.assumeIsolated { changed() } } }
+        { _, _ in DispatchQueue.main.async { MainActor.assumeIsolated { changed(.selectedDevice) } } }
     }
 
     private nonisolated static func routeCompleted(
@@ -1403,7 +1403,7 @@ protocol SimulatorDisplay: AnyObject {
                            events: @escaping @MainActor (SimulatorPasteboardEvent) -> Void) throws -> any SimulatorPasteboard
     /// Connects to the device's audio route port. `changed` runs on the main
     /// actor after each change the port reports, until it disconnects.
-    func connectAudioRoutes(changed: @escaping @MainActor () -> Void) throws -> any SimulatorAudioRoutes
+    func connectAudioRoutes(changed: @escaping @MainActor (AudioRouteChange) -> Void) throws -> any SimulatorAudioRoutes
     /// Observes the existing or subsequently connected TVOut screen on the main actor.
     /// Each connection reports property changes through `changed` until disconnected.
     /// Releasing the token ends reports except queued callbacks; nil means no adapter.
@@ -1636,7 +1636,7 @@ final class SimulatorConnection: SimulatorDisplay {
                            events: @escaping @MainActor (SimulatorPasteboardEvent) -> Void) throws -> any SimulatorPasteboard {
         try runtime.pasteboard.connect(to: device, managing: pasteboard, events: events)
     }
-    func connectAudioRoutes(changed: @escaping @MainActor () -> Void) throws -> any SimulatorAudioRoutes {
+    func connectAudioRoutes(changed: @escaping @MainActor (AudioRouteChange) -> Void) throws -> any SimulatorAudioRoutes {
         try runtime.audio.connect(to: device, changed: changed)
     }
     func registerForExternalScreen(

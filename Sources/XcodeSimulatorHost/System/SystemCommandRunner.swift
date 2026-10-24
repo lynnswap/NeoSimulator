@@ -40,6 +40,13 @@ struct SystemCommandRunner: CommandRunning {
                        arguments: deviceSetPath.map { ["--set", $0] + arguments } ?? arguments, environment: environment)
     }
 
+    func runDevicectl(xcodeURL: URL, arguments: [String]) throws -> CommandOutput {
+        var environment = ProcessInfo.processInfo.environment
+        environment["DEVELOPER_DIR"] = xcodeURL.appendingPathComponent("Contents/Developer", isDirectory: true).path
+        return try run(executable: URL(fileURLWithPath: "/Library/Developer/PrivateFrameworks/CoreDevice.framework/Versions/A/Resources/bin/devicectl"),
+                       arguments: arguments, environment: environment)
+    }
+
     func run(executable: URL, arguments: [String]) throws -> CommandOutput {
         try run(executable: executable, arguments: arguments, environment: nil)
     }

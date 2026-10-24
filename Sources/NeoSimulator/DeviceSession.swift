@@ -1102,22 +1102,24 @@ final class DeviceSession {
     /// Why the device's audio port could not connect.
     @ObservationIgnored private var audioConnectionFailure: Error?
 
-    /// Connects the audio port and applies recent routes initially and after port changes.
+    /// Connects the audio port and restores the device's route initially and when host devices change.
     /// Routing failures go to `failure`.
     func connectAudioRoutes(failure: @escaping @MainActor (Error) -> Void) {
         guard routesAudio, audioConnection == nil, !isDisconnected else { return }
         do {
-            audioConnection = try display.connectAudioRoutes { [weak self] in self?.audioRoutesChanged(failure: failure) }
+            audioConnection = try display.connectAudioRoutes { [weak self] change in
+                self?.audioRoutesChanged(change, failure: failure)
+            }
         } catch {
             audioConnectionFailure = error
             failure(error)
             return
         }
-        audioRoutesChanged(failure: failure)
+        audioRoutesChanged(.availableDevices, failure: failure)
     }
 
-    /// Updates audio state and synchronizes both directions with recent routes.
-    private func audioRoutesChanged(failure: @escaping @MainActor (Error) -> Void) {
+    /// Guest route reports are observations, including changes made by the manager or other tools.
+    private func audioRoutesChanged(_ change: AudioRouteChange, failure: @escaping @MainActor (Error) -> Void) {
         guard let audioConnection else { return }
         do {
             audioRoutes = try audioConnection.state()
@@ -1125,11 +1127,24 @@ final class DeviceSession {
             failure(HostError.operation("Could not read the audio routes of \(device.name): \(error.localizedDescription)"))
             return
         }
-        synchronizeAudioRoute(in: .input, failure: failure)
-        synchronizeAudioRoute(in: .output, failure: failure)
+        if case .availableDevices = change {
+            synchronizeAudioRoute(in: .input, failure: failure)
+            synchronizeAudioRoute(in: .output, failure: failure)
+        }
     }
 
-    /// Uses the first recent route already selected or available on the Mac.
+    /// An explicit app-menu command applies to every window and becomes that device's saved choice.
+    func applyChosenAudioRoute(in scope: AudioScope, failure: @escaping @MainActor (Error) -> Void) {
+        guard routesAudio, !isDisconnected else { return }
+        do {
+            if let route = preferences.recentAudioRoutes(in: scope).first {
+                try preferences.saveAudioRoute(route, forDevice: device.id, in: scope)
+            }
+            synchronizeAudioRoute(in: scope, failure: failure)
+        } catch { failure(error) }
+    }
+
+    /// Prefers the device's saved route, falling back to recent routes available on the Mac.
     /// Keeps the current route when none is available; reports a failed port connection.
     func synchronizeAudioRoute(in scope: AudioScope, failure: @escaping @MainActor (Error) -> Void) {
         guard routesAudio, !isDisconnected else { return }
@@ -1139,7 +1154,10 @@ final class DeviceSession {
             failure(HostError.operation("Could not change the audio \(scope.noun) of \(name): \(reason)"))
             return
         }
-        switch state.decision(among: preferences.recentAudioRoutes(in: scope), in: scope) {
+        let preferred: [String]
+        do { preferred = try preferences.preferredAudioRoutes(forDevice: device.id, in: scope) }
+        catch { failure(error); return }
+        switch state.decision(among: preferred, in: scope) {
         case .current:
             break
         case .unavailable:

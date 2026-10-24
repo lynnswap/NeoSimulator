@@ -29,8 +29,9 @@ public struct SimulatorHostDevice: Sendable, Equatable {
     public let state: String
     public let ownerXcodeURL: URL?
     public let deviceSetPath: String?
+    public let modelIdentifier: String?
 
-    public init(identifier: String, name: String, descriptiveName: String, runtimeIdentifier: String, runtimeName: String, productFamily: String, state: String, ownerXcodeURL: URL? = nil, deviceSetPath: String? = nil) {
+    public init(identifier: String, name: String, descriptiveName: String, runtimeIdentifier: String, runtimeName: String, productFamily: String, state: String, ownerXcodeURL: URL? = nil, deviceSetPath: String? = nil, modelIdentifier: String? = nil) {
         self.identifier = identifier
         self.name = name
         self.descriptiveName = descriptiveName
@@ -40,6 +41,7 @@ public struct SimulatorHostDevice: Sendable, Equatable {
         self.state = state
         self.ownerXcodeURL = ownerXcodeURL
         self.deviceSetPath = deviceSetPath
+        self.modelIdentifier = modelIdentifier
     }
 }
 
@@ -216,7 +218,8 @@ public actor SimulatorHostController {
                 let owner = renderers.first { $0.deviceIdentifiers.contains(device.identifier) }
                 return SimulatorHostDevice(identifier: device.identifier, name: device.name, descriptiveName: device.descriptiveName,
                     runtimeIdentifier: device.runtimeIdentifier, runtimeName: device.runtimeName, productFamily: device.productFamily,
-                    state: device.state, ownerXcodeURL: owner.map { URL(fileURLWithPath: $0.xcodePath, isDirectory: true) }, deviceSetPath: device.deviceSetPath)
+                    state: device.state, ownerXcodeURL: owner.map { URL(fileURLWithPath: $0.xcodePath, isDirectory: true) },
+                    deviceSetPath: device.deviceSetPath, modelIdentifier: device.modelIdentifier)
             }
         }
     }
@@ -533,6 +536,7 @@ enum SimulatorDeviceCatalog {
         struct DeviceType: Decodable {
             let identifier: String
             let productFamily: String
+            let modelIdentifier: String?
         }
         let devicetypes: [DeviceType]
         let runtimes: [Runtime]
@@ -549,7 +553,7 @@ enum SimulatorDeviceCatalog {
     static func decode(_ data: Data, deviceSetPath: String? = nil) throws -> [SimulatorHostDevice] {
         let catalog = try JSONDecoder().decode(Catalog.self, from: data)
         let supportedFamilies: Set<String> = ["iPhone", "iPad", "Apple TV", "Apple Watch", "Apple Vision"]
-        let supportedTypes = Dictionary(uniqueKeysWithValues: catalog.devicetypes.filter { supportedFamilies.contains($0.productFamily) }.map { ($0.identifier, $0.productFamily) })
+        let supportedTypes = Dictionary(uniqueKeysWithValues: catalog.devicetypes.filter { supportedFamilies.contains($0.productFamily) }.map { ($0.identifier, $0) })
         return catalog.runtimes.filter(\.isAvailable).flatMap { runtime in
             (catalog.devices[runtime.identifier] ?? []).filter { $0.isAvailable && supportedTypes[$0.deviceTypeIdentifier] != nil }.map { device in
                 SimulatorHostDevice(
@@ -558,9 +562,10 @@ enum SimulatorDeviceCatalog {
                     descriptiveName: "\(device.name) — \(runtime.name)",
                     runtimeIdentifier: runtime.identifier,
                     runtimeName: runtime.name,
-                    productFamily: supportedTypes[device.deviceTypeIdentifier] ?? "iPhone",
+                    productFamily: supportedTypes[device.deviceTypeIdentifier]?.productFamily ?? "iPhone",
                     state: device.state,
-                    deviceSetPath: deviceSetPath
+                    deviceSetPath: deviceSetPath,
+                    modelIdentifier: supportedTypes[device.deviceTypeIdentifier]?.modelIdentifier
                 )
             }
         }.sorted {
