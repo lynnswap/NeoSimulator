@@ -93,8 +93,17 @@ struct InstallationInspector {
             at: deviceHubImplementationURL,
             identifier: "device-hub-implementation"
         )
+        let deviceKitBinaryURL = try validatedFrameworkBinary(
+            at: xcode.applicationURL.appendingPathComponent(
+                ToolConstants.deviceKitPath,
+                isDirectory: true
+            ),
+            expectedBundleIdentifier: ToolConstants.deviceKitBundleIdentifier,
+            identifier: "device-kit",
+            requiredXcodeMajorVersion: xcode.version.major
+        )
         try validateSurface(
-            of: deviceHubImplementationURL,
+            of: deviceKitBinaryURL,
             requiredStrings: [ToolConstants.deviceHubPreference.key],
             identifier: "device-hub-preference-key",
             description: "Device Hub in Xcode \(xcode.version) build \(xcode.buildVersion)"

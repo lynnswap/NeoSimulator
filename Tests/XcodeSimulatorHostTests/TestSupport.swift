@@ -514,13 +514,19 @@ struct InstallationFixture {
         )
         let deviceHubImplementationURL = deviceHubURL
             .appendingPathComponent(ToolConstants.deviceHubImplementationPath)
-        let deviceHubContent = includeDeviceHubKey
-            ? "prefix\(ToolConstants.deviceHubPreference.key)suffix"
-            : "missing-key"
-        try Data(deviceHubContent.utf8).write(to: deviceHubImplementationURL)
+        try Data("fixture-device-hub".utf8).write(to: deviceHubImplementationURL)
         try FileManager.default.setAttributes(
             [.posixPermissions: 0o755],
             ofItemAtPath: deviceHubImplementationURL.path
+        )
+
+        try makeFramework(
+            at: url.appendingPathComponent(ToolConstants.deviceKitPath, isDirectory: true),
+            bundleIdentifier: ToolConstants.deviceKitBundleIdentifier,
+            executable: "DeviceKit",
+            dtXcode: dtXcode,
+            bundleVersion: "1",
+            binaryContent: [includeDeviceHubKey ? ToolConstants.deviceHubPreference.key : "missing-key"]
         )
 
         let binaryURL = url.appendingPathComponent(ToolConstants.ideIOSSupportCorePath)
