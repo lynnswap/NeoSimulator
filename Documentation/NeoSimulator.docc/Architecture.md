@@ -39,6 +39,27 @@ The manager remains in the Dock in both modes. Its Dock Device menu and File
 Open Simulator menu share the device catalog and launch action. They group
 devices by runtime. Xcode resolution is internal to the controller.
 
+The browser reads simulator catalogs and CoreDevice inventory independently.
+Simulator identity includes its UDID and device-set path; physical devices and
+virtual machines use their CoreDevice command identifier. A failed source
+does not remove devices returned by the other sources. Simulator catalogs
+remain authoritative for simulator availability and runtime information.
+CoreDevice contributes capabilities without duplicating those simulator rows.
+
+Management actions retain the selected identities through asynchronous work.
+The controller reports each device's result and completed steps, so a partial
+failure does not require repeating successful operations. Operations on a live
+simulator wait for the renderer's recording and display cleanup before running
+commands that remove its session.
+
+Nearby pairing owns a dedicated CoreDevice manager and a RemotePairing
+advertisement session. `DevicePairingSession` owns PIN requests, retry delays,
+and cancellation; closing its window drains those tasks and ends the
+advertisement. VM power and removal operations resolve CoreDevice capability
+implementations for the current target. These private interfaces run in the
+manager process through ABIBridge, so availability and ABI failures affect that
+process. Simulator display and clipboard ownership remain in their renderers.
+
 Each Xcode installation has its own renderer process. The renderer has a
 distinct bundle identity and runs separately because its loaded Objective-C
 framework classes cannot be unloaded. This allows device windows to use

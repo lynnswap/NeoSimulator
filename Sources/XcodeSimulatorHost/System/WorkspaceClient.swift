@@ -522,9 +522,15 @@ final class RendererDeviceRequestWaiter {
     private var observer: NSObjectProtocol?
     private var timeout: Task<Void, Never>?
     private var continuation: CheckedContinuation<Void, any Error>?
+    private var handled = true
 
     func release(_ identifier: String, from renderer: RendererRegistration) async throws {
         try await request("release-device", acknowledgement: "RendererReleased", identifier: identifier, renderer: renderer, timeoutSeconds: 120)
+    }
+
+    func restart(_ identifier: String, in renderer: RendererRegistration, erasing: Bool) async throws -> Bool {
+        try await request(erasing ? "erase-device" : "restart-device", acknowledgement: "RendererManaged", identifier: identifier, renderer: renderer, timeoutSeconds: 450)
+        return handled
     }
 
     func open(_ identifier: String, in renderer: RendererRegistration) async throws {
@@ -547,11 +553,13 @@ final class RendererDeviceRequestWaiter {
                 ) { [weak self] notification in
                     let releasedIdentifier = notification.userInfo?["udid"] as? String
                     let failure = notification.userInfo?["error"] as? String
+                    let handled = notification.userInfo?["handled"] as? Bool ?? true
                     Task { @MainActor in
                         guard releasedIdentifier == identifier else { return }
                         if let failure {
                             self?.finish(.failure(CLIError.temporary("renderer-device-request", failure)))
                         } else {
+                            self?.handled = handled
                             self?.finish(.success(()))
                         }
                     }

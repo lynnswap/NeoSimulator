@@ -83,6 +83,8 @@ struct DeviceInventoryTests {
         #expect(Set(inventory.map(\.identifier)) == ["ready", "unavailable", "orphan"])
         #expect(inventory.allSatisfy { $0.deviceSetPath == "/testing" })
         #expect(inventory.first { $0.identifier == "unavailable" }?.isAvailable == false)
+        #expect(inventory.first { $0.identifier == "ready" }?.pairIdentifiers == ["pair-id"])
+        #expect(inventory.first { $0.identifier == "unavailable" }?.pairIdentifiers == ["pair-id"])
         let orphan = try #require(inventory.first { $0.identifier == "orphan" })
         #expect(!orphan.isAvailable && orphan.runtimeIdentifier == "removed-runtime")
         #expect(orphan.lastUsedAt == Date(timeIntervalSince1970: 0.25))
@@ -141,7 +143,8 @@ struct DeviceInventoryTests {
      "devices":{"runtime":[
        {"udid":"ready","deviceTypeIdentifier":"phone-type","name":"Ready","state":"Booted","isAvailable":true},
        {"udid":"unavailable","deviceTypeIdentifier":"phone-type","name":"Unavailable","state":"Shutdown","isAvailable":false}],
-       "removed-runtime":[{"udid":"orphan","deviceTypeIdentifier":"removed-type","name":"Orphan","state":"Shutdown","isAvailable":false,"lastUsedAt":"1970-01-01T00:00:00.250Z"}]}}
+       "removed-runtime":[{"udid":"orphan","deviceTypeIdentifier":"removed-type","name":"Orphan","state":"Shutdown","isAvailable":false,"lastUsedAt":"1970-01-01T00:00:00.250Z"}]},
+     "pairs":{"pair-id":{"watch":{"udid":"unavailable"},"phone":{"udid":"ready"}}}}
     """#.utf8)
 }
 

@@ -33,8 +33,9 @@ public struct SimulatorHostDevice: Sendable, Equatable {
     public let isAvailable: Bool
     public let lastUsedAt: Date?
     public let capabilities: Set<String>
+    public let pairIdentifiers: Set<String>
 
-    public init(identifier: String, name: String, descriptiveName: String, runtimeIdentifier: String, runtimeName: String, productFamily: String, state: String, ownerXcodeURL: URL? = nil, deviceSetPath: String? = nil, modelIdentifier: String? = nil, isAvailable: Bool = true, lastUsedAt: Date? = nil, capabilities: Set<String> = []) {
+    public init(identifier: String, name: String, descriptiveName: String, runtimeIdentifier: String, runtimeName: String, productFamily: String, state: String, ownerXcodeURL: URL? = nil, deviceSetPath: String? = nil, modelIdentifier: String? = nil, isAvailable: Bool = true, lastUsedAt: Date? = nil, capabilities: Set<String> = [], pairIdentifiers: Set<String> = []) {
         self.identifier = identifier
         self.name = name
         self.descriptiveName = descriptiveName
@@ -48,6 +49,7 @@ public struct SimulatorHostDevice: Sendable, Equatable {
         self.isAvailable = isAvailable
         self.lastUsedAt = lastUsedAt
         self.capabilities = capabilities
+        self.pairIdentifiers = pairIdentifiers
     }
 }
 
@@ -483,6 +485,40 @@ public actor SimulatorHostController {
         return (device, xcode.applicationURL)
     }
 
+    func deviceManagementContext(for original: SimulatorHostDevice, requiresRenderer: Bool) async throws -> DeviceManagementContext {
+        let owner = try await registeredRenderers().first { $0.deviceIdentifiers.contains(original.identifier) }
+        let candidates = try owner.map { [try makeInspector().xcode(at: URL(fileURLWithPath: $0.xcodePath))] }
+            ?? availableXcodes()
+        var firstFailure: (any Error)?
+        for xcode in candidates {
+            do {
+                let current = try await Self.readManagementCatalog(xcodeURL: xcode.applicationURL, path: original.deviceSetPath)
+                guard let device = current.first(where: { $0.identifier == original.identifier }) else { continue }
+                if requiresRenderer, owner != nil {
+                    let alternatePaths: [String?] = original.deviceSetPath == nil
+                        ? SimulatorDeviceSets.testingPath().map { [$0] } ?? [] : [nil]
+                    for path in alternatePaths {
+                        if let path, !FileManager.default.fileExists(atPath: path) { continue }
+                        let alternate = try await Self.readManagementCatalog(xcodeURL: xcode.applicationURL, path: path)
+                        if alternate.contains(where: { $0.identifier == device.identifier }) {
+                            throw CLIError.configuration("renderer-device-set-ambiguous", "This simulator identifier exists in more than one device set. Its live display cannot be managed unambiguously.")
+                        }
+                    }
+                }
+                return DeviceManagementContext(device: device, xcodeURL: xcode.applicationURL, renderer: requiresRenderer ? owner : nil)
+            } catch { if firstFailure == nil { firstFailure = error } }
+        }
+        if let firstFailure { throw firstFailure }
+        throw CLIError.unavailable("simulator-device", "The selected simulator is no longer available.")
+    }
+
+    @concurrent
+    private static func readManagementCatalog(xcodeURL: URL, path: String?) async throws -> [SimulatorHostDevice] {
+        let output = try SystemCommandRunner().runSimctl(xcodeURL: xcodeURL, arguments: ["list", "--json"], deviceSetPath: path)
+        guard output.terminationStatus == 0 else { throw CLIError.io("simulator-management", output.stderrText) }
+        return try SimulatorDeviceCatalog.decode(output.stdout, deviceSetPath: path, includeUnavailable: true)
+    }
+
     private func resolveDeviceXcode(identifier: String, preferredURL: URL?) throws -> XcodeInstallation {
         if let preferredURL { return try resolveXcode(preferredURL) }
         var candidates: [XcodeInstallation] = []
@@ -506,7 +542,7 @@ public actor SimulatorHostController {
     private func makeCore() async throws -> HostModeController {
         HostModeController(defaultsStore: DefaultsStore(), receiptStore: try ReceiptStore(), installationInspector: makeInspector(), workspace: await .live)
     }
-    private func operation<T>(_ body: () async throws -> T) async throws -> T {
+    func operation<T>(_ body: () async throws -> T) async throws -> T {
         if operationInProgress { await withCheckedContinuation { operationWaiters.append($0) } }
         else { operationInProgress = true }
         defer {
@@ -561,6 +597,12 @@ enum SimulatorDeviceCatalog {
         let devicetypes: [DeviceType]
         let runtimes: [Runtime]
         let devices: [String: [Device]]
+        struct Pair: Decodable {
+            struct Member: Decodable { let udid: String }
+            let watch: Member
+            let phone: Member
+        }
+        let pairs: [String: Pair]?
     }
 
     static func appendingTestingDevices(
@@ -597,7 +639,10 @@ enum SimulatorDeviceCatalog {
                     deviceSetPath: deviceSetPath,
                     modelIdentifier: type?.modelIdentifier,
                     isAvailable: available,
-                    lastUsedAt: lastUsedAt
+                    lastUsedAt: lastUsedAt,
+                    pairIdentifiers: Set((catalog.pairs ?? [:]).compactMap { pairID, pair in
+                        pair.watch.udid == device.udid || pair.phone.udid == device.udid ? pairID : nil
+                    })
                 )
             }
         }.sorted {

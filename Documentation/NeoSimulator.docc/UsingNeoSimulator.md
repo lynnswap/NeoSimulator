@@ -6,14 +6,35 @@ Open devices, manage their windows, and capture their screens.
 
 Open NeoSimulator.app and select **NeoSimulator** as the display host. Select a
 device in the main window and choose **View Screen** to open it. You can also
-use **Device** in the Dock menu, **File → Open Simulator**, or **Window → Simulators**
+use **Device** in the Dock menu, **File → Open Simulator**, or **View → Show Devices**
 to start a device or reopen its window. The manager's device menus group devices
 by OS version.
-The browser supports search. Use the filter button beside **+** to narrow the
-list by running state or device type, or sort by name, operating system, or
-state. **+** opens New Simulator. Open Simulator groups devices by runtime; a
+The browser lists simulators, physical devices, and virtual machines in
+Available and Unavailable groups. Search by name, model, or operating system.
+Use the filter button beside **+** to choose a device kind, availability, or
+family, change the sort order, or turn grouping off. **+** offers New Simulator
+and Pair Device.
+Open Simulator groups devices by runtime; a
 checkmark means a device has a window, and a dash means it is running without
 one. Hold Option to show its runtime and device type.
+
+Select one or more devices and open the **Device** menu or Control-click the
+selection for its management actions. Actions depend on the device's current
+state and supported capabilities. Rename and Clone apply to one device; select
+an iPhone and an Apple Watch from the same simulator set to pair them. Erase and
+Remove ask for confirmation. If an operation fails for part of a selection,
+the error identifies those devices and any completed steps.
+
+Choose **File → Pair Device…** to find nearby devices and make this Mac
+discoverable. Select a device and enter its pairing PIN when requested. A
+rejected PIN can be entered again after any delay required by the device.
+Closing the pairing window cancels discovery and any pending PIN request.
+Virtual machines offer Start, Shut Down, Pause, Resume, and Remove when their
+current CoreDevice capabilities support those operations.
+
+Screen viewing and the settings inspector currently use simulator sessions.
+Physical devices and virtual machines remain available for their supported
+management actions.
 
 **File → New Simulator…** creates a device from the installed runtimes. For an
 iPhone, **Paired Apple Watch** adds a second page for a compatible watch.

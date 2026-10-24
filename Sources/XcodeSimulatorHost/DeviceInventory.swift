@@ -229,7 +229,7 @@ extension SimulatorHostDevice {
         Self(identifier: identifier, name: name, descriptiveName: descriptiveName, runtimeIdentifier: runtimeIdentifier,
              runtimeName: runtimeName, productFamily: productFamily, state: state, ownerXcodeURL: ownerXcodeURL,
              deviceSetPath: deviceSetPath, modelIdentifier: modelIdentifier, isAvailable: isAvailable,
-             lastUsedAt: lastUsedAt, capabilities: capabilities ?? self.capabilities)
+             lastUsedAt: lastUsedAt, capabilities: capabilities ?? self.capabilities, pairIdentifiers: pairIdentifiers)
     }
 }
 
