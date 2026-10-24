@@ -205,10 +205,6 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             do { try await openSimulatorLocally(withIdentifier: identifier, bootIfNeeded: bootIfNeeded) }
             catch {
                 result["error"] = error.localizedDescription
-                if sessions[identifier] == nil && connections[identifier] == nil {
-                    ownedDeviceIdentifiers.remove(identifier)
-                    updateRegistration()
-                }
                 if requestIdentifier == nil, !(error is CancellationError) {
                     NSAlert(error: error).runModal()
                     showDeviceBrowser()
@@ -631,11 +627,16 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         for identifier in sessions.keys where !identifiers.contains(identifier) && restarting[identifier] == nil {
             sessions.removeValue(forKey: identifier)?.invalidate()
             awaitingReconnect.removeValue(forKey: identifier)
-            ownedDeviceIdentifiers.remove(identifier)
         }
         for identifier in connections.keys where !identifiers.contains(identifier) {
             connections[identifier]?.cancel()
         }
+        // An accepted open still owns a booting guest even if display connection fails.
+        // Only the catalog's stopped/missing devices without an in-flight operation release ownership.
+        let running = Set(devices.filter { $0.state != 1 }.map(\.identity))
+        let pending = openingDevices.union(bootOperations.keys).union(restarting.keys)
+            .union(connections.keys).union(releasingDevices)
+        ownedDeviceIdentifiers.formIntersection(running.union(pending))
         // A restart's boot is not a new boot, so a window closed during the
         // restart stays closed.
         suppressed.formIntersection(identifiers.union(restarting.keys))
@@ -1047,8 +1048,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         let captureFailures = CaptureThumbnail.finishAll()
         let keepsRunning = quitChoice.map { $0 == .keepRunning }
             ?? UserDefaults.standard.bool(forKey: HostPreferences.detachOnAppQuit)
-        let devices = keepsRunning ? [] : sessions.values.map {
-            (identifier: $0.session.device.id, deviceSetPath: $0.session.tools.deviceSetPath)
+        let devices = keepsRunning ? [] : ownedDeviceIdentifiers.union(sessions.keys).sorted().map {
+            (identifier: $0.identifier, deviceSetPath: $0.deviceSetPath)
         }
         guard recordings.hasActiveRecordings || !devices.isEmpty || !closingShutdowns.isEmpty
                 || sessions.values.contains(where: { $0.session.hasExternalDisplay })
