@@ -29,8 +29,8 @@ Virtual machines offer Start, Shut Down, Pause, Resume, and Remove when their
 current CoreDevice capabilities support those operations.
 
 Choose **View Screen** for a connected physical device or virtual machine to
-open its screen when the device supports it. The settings inspector currently
-provides simulator settings.
+open its screen when the device supports it. The settings inspector shows the
+controls that the selected device supports.
 
 **File → New Simulator…** creates a device from the installed runtimes. For an
 iPhone, **Paired Apple Watch** adds a second page for a compatible watch.
@@ -48,7 +48,7 @@ right side of the toolbar:
 
 | Page | Contents |
 | --- | --- |
-| Settings | The selected simulator's appearance, accessibility, location, and sound controls. |
+| Settings | The selected device's available appearance, accessibility, location, and sound controls. |
 | Content | Installed applications, configuration profiles, and provisioning profiles. |
 | Info | Available device properties, with expandable groups for details. |
 
@@ -234,8 +234,10 @@ message about records it could not read.
 The main window's inspector changes the selected device's Appearance, Liquid
 Glass, Color Filter, Text Size, accessibility settings, Location, and Sound.
 Sound includes volume and the Mac's input and output devices. Select **System
-Default** to follow the Mac's current audio route. Start the simulator to read
-and change its settings; controls that it cannot supply are unavailable.
+Default** to follow the Mac's current audio route. Start a simulator or connect
+a physical device or virtual machine to read and change its available settings.
+Unsupported controls show **Unavailable**. If part of a query fails, the remaining
+settings stay available; use Refresh to try the failed query again.
 
 Device and Features menus include Home, Lock, Shake, orientation, appearance,
 biometric enrollment and matches, Apple Pay authorization, preferred text size,
