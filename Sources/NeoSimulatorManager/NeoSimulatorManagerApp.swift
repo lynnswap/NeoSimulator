@@ -678,6 +678,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if let previous {
                     do { try await previous.embed(in: mainWindow.liveScreenContainer) }
                     catch let restorationError {
+                        if let current = mainWindow.liveDeviceIdentifier {
+                            mainWindow.showDevicePreview(ifDisplaying: current)
+                        }
                         throw HostError.operation([error.localizedDescription,
                             "Could not restore the previous device screen: \(restorationError.localizedDescription)"].joined(separator: "\n"))
                     }
