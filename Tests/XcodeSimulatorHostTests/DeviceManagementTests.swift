@@ -182,7 +182,7 @@ private actor ManagementFixture {
 
     private func context(_ device: SimulatorHostDevice, requiresRenderer: Bool) async throws -> DeviceManagementContext {
         let renderer = hasRenderer && requiresRenderer ? RendererRegistration(processIdentifier: 1, applicationPath: "/Renderer.app",
-            xcodePath: "/Xcode.app", sessionIdentifier: "session", deviceIdentifiers: [device.identifier]) : nil
+            xcodePath: "/Xcode.app", sessionIdentifier: "session", deviceIdentifiers: [device.inventoryID]) : nil
         if !managementCatalogs.isEmpty {
             let catalogs = managementCatalogs
             let selected = try await SimulatorHostController.managementDevice(for: device, xcodeURLs: catalogs.map { $0.0 }) { xcode, path in

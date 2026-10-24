@@ -5062,7 +5062,7 @@ struct InputFocusTests {
             availableDevice("c", "iPhone 16", runtime: "iOS 26.5", state: 1),
         ]
         func items(_ devices: [AvailableDevice]) -> [NSMenuItem] {
-            OpenSimulatorMenu.items(for: devices, hasWindow: { $0 == "a" }, action: #selector(NSText.copy(_:)),
+            OpenSimulatorMenu.items(for: devices, hasWindow: { $0 == SimulatorDeviceIdentifier("a") }, action: #selector(NSText.copy(_:)),
                                     target: nil)
         }
         let runtimes = items(devices)
@@ -5073,7 +5073,7 @@ struct InputFocusTests {
         #expect(first.map(\.isAlternate) == [false, true, false, true])
         #expect(first.map(\.keyEquivalentModifierMask) == [[], .option, [], .option])
         #expect(first.map(\.state) == [.on, .on, .mixed, .mixed])
-        #expect(first.map { $0.representedObject as? String } == ["a", "a", "b", "b"])
+        #expect(first.map { $0.representedObject as? SimulatorDeviceIdentifier } == ["a", "a", "b", "b"].map { SimulatorDeviceIdentifier($0) })
         #expect(items(Array(devices.prefix(2))).map(\.title) == first.map(\.title))
     }
 
@@ -7116,12 +7116,32 @@ struct HostBehaviorTests {
         #expect(throws: HostError.self) { try monitor.check() }
     }
 
+    @Test func browserAndMenusKeepSameUDIDDevicesInTheirOwnSets() async throws {
+        let source = TestCatalog()
+        let normal = availableDevice("same", "Normal", runtime: "iOS 27", state: 1)
+        let clone = AvailableDevice(identifier: "same", name: "Testing", descriptiveName: "Testing", runtimeIdentifier: normal.runtimeIdentifier,
+                                    runtimeName: normal.runtimeName, productFamily: 1, deviceTypeName: "iPhone", state: 1, deviceSetPath: "/custom/XCTestDevices")
+        source.devices = [normal, clone]
+        let model = DeviceBrowserModel(source: source)
+        await model.open(clone)?.value
+        #expect(source.opened == [clone.identity])
+        #expect(model.devices.first { $0.identity == normal.identity }?.state == 1)
+        #expect(model.devices.first { $0.identity == clone.identity }?.state == 3)
+        await model.open(normal)?.value
+        #expect(source.opened == [clone.identity, normal.identity])
+        let items = OpenSimulatorMenu.items(for: [normal, clone], hasWindow: { $0 == clone.identity }, action: #selector(NSText.copy(_:)), target: nil)
+        #expect(items.map { $0.representedObject as? SimulatorDeviceIdentifier } == [normal.identity, normal.identity, clone.identity, clone.identity])
+        #expect(normal.identity.preferenceIdentifier == "same")
+        #expect(clone.identity.preferenceIdentifier != normal.identity.preferenceIdentifier)
+        #expect(try JSONDecoder().decode([SimulatorDeviceIdentifier].self, from: JSONEncoder().encode([normal.identity, clone.identity])) == [normal.identity, clone.identity])
+    }
+
     @Test func browserReflectsCatalogChangesAndReportsBootErrors() async throws {
         let source = TestCatalog()
         let model = DeviceBrowserModel(source: source)
         let device = try #require(model.devices.first)
         await model.open(device)?.value
-        #expect(source.opened == [device.id])
+        #expect(source.opened == [device.identity])
         #expect(model.devices.first?.isBooted == true)
         source.failure = HostError.operation("Boot failed")
         await model.open(device)?.value
@@ -7173,11 +7193,13 @@ struct HostBehaviorTests {
 
     @Test func managerRequestsOpenTheExplicitDeviceAndKeepQuitChoices() throws {
         let identifier = UUID().uuidString
-        let options = try HostLaunchOptions(arguments: ["--managed", "--xcode", "/Xcode.app", "--device", identifier])
+        let options = try HostLaunchOptions(arguments: ["--managed", "--xcode", "/Xcode.app", "--device", identifier, "--device-set", "/custom/XCTestDevices"])
         #expect(options.deviceIdentifier == identifier)
         #expect(options.isManaged)
         #expect(try RendererRequest(url: #require(URL(string: "neosimulator-renderer://open-device?udid=\(identifier)")))
-            == .openDevice(identifier))
+            == .openDevice(SimulatorDeviceIdentifier(identifier)))
+        #expect(try RendererRequest(url: #require(URL(string: "neosimulator-renderer://open-device?udid=\(identifier)&deviceSetPath=/custom/XCTestDevices")))
+            == .openDevice(SimulatorDeviceIdentifier(identifier, deviceSetPath: "/custom/XCTestDevices")))
         #expect(try RendererRequest(url: #require(URL(string: "neosimulator-renderer://quit"))) == .quit(asks: false))
         #expect(try RendererRequest(url: #require(URL(string: "neosimulator-renderer://quit?ask=true"))) == .quit(asks: true))
         #expect(try RendererRequest(url: #require(URL(string: "neosimulator-renderer://activate"))) == .activate)
@@ -7210,15 +7232,15 @@ struct HostBehaviorTests {
 @MainActor
 private final class TestCatalog: DeviceBrowserSource {
     var devices = [availableDevice("phone", "Phone", runtime: "iOS 27", state: 1)]
-    var opened: [String] = []
+    var opened: [SimulatorDeviceIdentifier] = []
     var failure: Error?
     func availableSimulatorDevices() -> [AvailableDevice] { devices }
-    func openSimulator(withIdentifier identifier: String) async throws {
+    func openSimulator(withIdentifier identifier: SimulatorDeviceIdentifier) async throws {
         if let failure { throw failure }
         opened.append(identifier)
         devices = devices.map {
             var device = $0
-            device.state = 3
+            if device.identity == identifier { device.state = 3 }
             return device
         }
     }

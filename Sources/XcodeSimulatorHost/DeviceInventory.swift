@@ -1,9 +1,53 @@
 import Foundation
 
 /// CoreDevice identifiers are command destinations; simulator UDIDs also retain their device-set identity.
-public enum DeviceInventoryID: Hashable, Sendable {
+public enum DeviceInventoryID: Hashable, Sendable, Codable {
     case simulator(udid: String, deviceSetPath: String?)
     case coreDevice(String)
+
+    private enum CodingKeys: String, CodingKey { case identifier, deviceSetPath, coreDeviceIdentifier }
+    public init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        if let identifier = try values.decodeIfPresent(String.self, forKey: .coreDeviceIdentifier) {
+            self = .coreDevice(identifier)
+        } else {
+            self = .simulator(udid: try values.decode(String.self, forKey: .identifier),
+                              deviceSetPath: try values.decodeIfPresent(String.self, forKey: .deviceSetPath))
+        }
+    }
+    public func encode(to encoder: any Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .simulator(let identifier, let path):
+            try values.encode(identifier, forKey: .identifier)
+            try values.encodeIfPresent(path, forKey: .deviceSetPath)
+        case .coreDevice(let identifier): try values.encode(identifier, forKey: .coreDeviceIdentifier)
+        }
+    }
+
+    var sortKey: String {
+        switch self {
+        case .simulator(let identifier, let path): "simulator:\(identifier):\(path ?? "")"
+        case .coreDevice(let identifier): "coredevice:\(identifier)"
+        }
+    }
+
+    var simulatorAddress: (identifier: String, deviceSetPath: String?) {
+        get throws {
+            guard case .simulator(let identifier, let path) = self else {
+                throw CLIError.configuration("simulator-device", "Choose a simulator for this operation.")
+            }
+            return (identifier, path)
+        }
+    }
+
+    var preferenceIdentifier: String {
+        switch self {
+        case .simulator(let identifier, nil): identifier
+        case .simulator(let identifier, let path?): "set:\(path.utf8.count):\(path):\(identifier)"
+        case .coreDevice(let identifier): identifier
+        }
+    }
 }
 
 public enum DeviceInventoryKind: Equatable, Sendable {
@@ -135,8 +179,7 @@ extension SimulatorHostController {
         let result = await snapshot
         let devices = result.devices.map { item -> InventoryDevice in
             guard case .simulator(let device) = item else { return item }
-            let owner = owners.first { $0.deviceIdentifiers.contains(device.identifier) }
-            return .simulator(device.inventoryCopy(ownerXcodeURL: owner.map { URL(fileURLWithPath: $0.xcodePath) }))
+            return .simulator(device.inventoryCopy(owners: owners))
         }
         return DeviceInventorySnapshot(devices: devices, issues: result.issues + issues)
     }
@@ -225,6 +268,11 @@ struct SimulatorInventoryReader {
 }
 
 extension SimulatorHostDevice {
+    func inventoryCopy(owners: [RendererRegistration]) -> Self {
+        let owner = owners.first { $0.deviceIdentifiers.contains(inventoryID) }
+        return inventoryCopy(ownerXcodeURL: owner.map { URL(fileURLWithPath: $0.xcodePath) })
+    }
+
     func inventoryCopy(ownerXcodeURL: URL?, capabilities: Set<String>? = nil) -> Self {
         Self(identifier: identifier, name: name, descriptiveName: descriptiveName, runtimeIdentifier: runtimeIdentifier,
              runtimeName: runtimeName, productFamily: productFamily, state: state, ownerXcodeURL: ownerXcodeURL,
@@ -310,4 +358,8 @@ enum CoreDeviceInventoryDecoder {
             )
         }
     }
+}
+
+extension SimulatorHostDevice {
+    public var inventoryID: DeviceInventoryID { .simulator(udid: identifier, deviceSetPath: deviceSetPath) }
 }

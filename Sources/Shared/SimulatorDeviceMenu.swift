@@ -15,8 +15,8 @@ enum SimulatorPreferences {
     }
 }
 
-struct SimulatorMenuDevice {
-    let identifier: String
+struct SimulatorMenuDevice<ID: Hashable> {
+    let identifier: ID
     let name: String
     let descriptiveName: String
     let runtimeIdentifier: String
@@ -26,9 +26,9 @@ struct SimulatorMenuDevice {
 
 @MainActor
 enum SimulatorDeviceMenu {
-    static func items(for devices: [SimulatorMenuDevice], hasWindow: (String) -> Bool,
+    static func items<ID: Hashable>(for devices: [SimulatorMenuDevice<ID>], hasWindow: (ID) -> Bool,
                       action: Selector, target: AnyObject?) -> [NSMenuItem] {
-        func deviceItems(_ device: SimulatorMenuDevice) -> [NSMenuItem] {
+        func deviceItems(_ device: SimulatorMenuDevice<ID>) -> [NSMenuItem] {
             let state: NSControl.StateValue =
                 device.state == 2 || device.state == 3 ? (hasWindow(device.identifier) ? .on : .mixed) : .off
             return [(device.name, false), (device.descriptiveName, true)].map { title, isAlternate in
@@ -41,7 +41,7 @@ enum SimulatorDeviceMenu {
                 return item
             }
         }
-        var runtimes: [(identifier: String, name: String, devices: [SimulatorMenuDevice])] = []
+        var runtimes: [(identifier: String, name: String, devices: [SimulatorMenuDevice<ID>])] = []
         for device in devices {
             if let index = runtimes.firstIndex(where: { $0.identifier == device.runtimeIdentifier }) {
                 runtimes[index].devices.append(device)

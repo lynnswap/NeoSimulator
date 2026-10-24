@@ -30,7 +30,7 @@ final class SimulatorManagerModel {
     private(set) var backgroundIssue: String?
     private(set) var deviceSettings: SimulatorDeviceSettings?
     private(set) var settingsIssue: String?
-    private(set) var inspectedDeviceIdentifier: String?
+    private(set) var inspectedDeviceIdentifier: DeviceInventoryID?
     private var inspectedState: String?
     private var settingsRefreshRequested = false
     private var inspectionGeneration = 0
@@ -71,13 +71,13 @@ final class SimulatorManagerModel {
         }
     }
 
-    func openDevice(_ identifier: String) {
-        perform("Opening simulator…") { try await self.controller.openDevice(identifier: identifier) }
+    func openDevice(_ identifier: DeviceInventoryID) {
+        perform("Opening simulator…") { try await self.controller.openDevice(identifier) }
     }
 
     func openScreen(for device: InventoryDevice) {
         switch device {
-        case .simulator(let simulator): openDevice(simulator.identifier)
+        case .simulator(let simulator): openDevice(simulator.inventoryID)
         case .remote(let remote):
             perform("Opening device screen…") {
                 if self.status?.host != .neo {
@@ -259,9 +259,9 @@ final class SimulatorManagerModel {
         await refresh()
     }
 
-    func inspectDevice(_ identifier: String?) async {
+    func inspectDevice(_ identifier: DeviceInventoryID?) async {
         guard !stopping else { return }
-        let state = devices.first { $0.identifier == identifier }?.state
+        let state = devices.first { $0.inventoryID == identifier }?.state
         if inspectedDeviceIdentifier != identifier || inspectedState != state {
             inspectedDeviceIdentifier = identifier
             inspectedState = state
@@ -281,7 +281,7 @@ final class SimulatorManagerModel {
                 self.settingsRefreshRequested = false
                 let generation = self.inspectionGeneration
                 do {
-                    let settings = try await self.controller.deviceSettings(identifier: identifier)
+                    let settings = try await self.controller.deviceSettings(for: identifier)
                     guard !self.stopping, !Task.isCancelled, self.inspectionGeneration == generation else { continue }
                     self.deviceSettings = settings
                     self.settingsIssue = nil
@@ -299,32 +299,29 @@ final class SimulatorManagerModel {
         await inspectionTask?.value
     }
 
-    private func refreshInspectedSettings(for identifier: String) async {
+    private func refreshInspectedSettings(for identifier: DeviceInventoryID) async {
         guard !stopping, inspectedDeviceIdentifier == identifier else { return }
         inspectionGeneration += 1
         settingsRefreshRequested = true
         await inspectDevice(identifier)
     }
 
-    func setAppearance(_ value: String, for identifier: String) { set(.appearance(value), identifier: identifier) }
-    func setContentSize(_ value: String, for identifier: String) { set(.contentSize(value), identifier: identifier) }
-    func setIncreaseContrast(_ enabled: Bool, for identifier: String) { set(.increaseContrast(enabled), identifier: identifier) }
-    func setLocation(latitude: Double, longitude: Double, for identifier: String) {
+    func setAppearance(_ value: String, for identifier: DeviceInventoryID) { set(.appearance(value), identifier: identifier) }
+    func setContentSize(_ value: String, for identifier: DeviceInventoryID) { set(.contentSize(value), identifier: identifier) }
+    func setIncreaseContrast(_ enabled: Bool, for identifier: DeviceInventoryID) { set(.increaseContrast(enabled), identifier: identifier) }
+    func setLocation(latitude: Double, longitude: Double, for identifier: DeviceInventoryID) {
         set(.location(latitude: latitude, longitude: longitude), identifier: identifier)
     }
-    func clearLocation(for identifier: String) { set(.clearLocation, identifier: identifier) }
+    func clearLocation(for identifier: DeviceInventoryID) { set(.clearLocation, identifier: identifier) }
 
-    func setDeviceSetting(_ setting: SimulatorDeviceSetting, for identifier: String) {
+    func setDeviceSetting(_ setting: SimulatorDeviceSetting, for identifier: DeviceInventoryID) {
         set(setting, identifier: identifier)
     }
 
-    private func set(_ setting: SimulatorDeviceSetting, identifier: String) {
-        guard !managingDeviceIDs.contains(where: { id in
-            if case .simulator(let udid, _) = id { return udid == identifier }
-            return false
-        }) else { return }
+    private func set(_ setting: SimulatorDeviceSetting, identifier: DeviceInventoryID) {
+        guard !managingDeviceIDs.contains(identifier) else { return }
         perform("Updating simulator settings…", refreshCatalog: false) {
-            do { try await self.controller.setDeviceSetting(setting, identifier: identifier) }
+            do { try await self.controller.setDeviceSetting(setting, for: identifier) }
             catch {
                 await self.refreshInspectedSettings(for: identifier)
                 throw error
@@ -437,10 +434,10 @@ private final class SimulatorDevicesMenu: NSMenu, NSMenuDelegate {
             case "Shutting Down": 4
             default: 0
             }
-            return SimulatorMenuDevice(identifier: device.identifier, name: device.name,
+            return SimulatorMenuDevice(identifier: device.inventoryID, name: device.name,
                 descriptiveName: device.descriptiveName, runtimeIdentifier: device.runtimeIdentifier,
                 runtimeName: device.runtimeName, state: state)
-        }, hasWindow: { identifier in model.devices.first { $0.identifier == identifier }?.ownerXcodeURL != nil },
+        }, hasWindow: { identifier in model.devices.first { $0.inventoryID == identifier }?.ownerXcodeURL != nil },
            action: #selector(openDevice(_:)), target: self)
         if menu.items.isEmpty {
             let item = NSMenuItem(title: model.isBusy ? model.activity : "No Simulators", action: nil, keyEquivalent: "")
@@ -450,7 +447,7 @@ private final class SimulatorDevicesMenu: NSMenu, NSMenuDelegate {
     }
 
     @objc private func openDevice(_ sender: NSMenuItem) {
-        guard let identifier = sender.representedObject as? String else { return }
+        guard let identifier = sender.representedObject as? DeviceInventoryID else { return }
         model.openDevice(identifier)
     }
 }
@@ -616,7 +613,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case "open-device":
                 let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
                 guard let identifier = query.first(where: { $0.name == "udid" })?.value else { continue }
-                model.openDevice(identifier)
+                model.openDevice(.simulator(udid: identifier, deviceSetPath: query.first(where: { $0.name == "deviceSetPath" })?.value))
             case "quit":
                 if URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
                     .first(where: { $0.name == "ask" })?.value == "true" {
@@ -1267,18 +1264,14 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             return inspectorMessage("Simulator Unavailable", description:
                 "The simulator’s runtime is unavailable. Install a compatible runtime to use its settings.")
         }
-        guard !isSimulatorRouteAmbiguous(device) else {
-            return inspectorMessage("Simulator Identifier Is Ambiguous", description:
-                "More than one simulator set contains this device identifier. Screen and settings access cannot distinguish the selected device yet.")
-        }
-        let inspectingSelection = model.inspectedDeviceIdentifier == device.identifier
+        let inspectingSelection = model.inspectedDeviceIdentifier == device.inventoryID
         return AnyView(ManagerDeviceSettingsView(device: device,
             settings: inspectingSelection ? model.deviceSettings : nil,
             isBusy: model.isBusy || model.managingDeviceIDs.contains(selection.id),
             issue: inspectingSelection ? model.settingsIssue : nil, apply: { [weak self] setting in
-                self?.model.setDeviceSetting(setting, for: device.identifier)
+                self?.model.setDeviceSetting(setting, for: device.inventoryID)
             }, customLocation: { [weak self] in
-                self?.presentLocationEditor(for: device.identifier)
+                self?.presentLocationEditor(for: device.inventoryID)
             }))
     }
 
@@ -1382,13 +1375,12 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         deviceImage.contentTintColor = nil
         viewScreen.isHidden = selections.count != 1
         viewScreen.isEnabled = selections.count == 1 && selections.first.map(canViewScreen) == true
-        viewScreen.toolTip = selectedSimulator.map { isSimulatorRouteAmbiguous($0) } == true
-            ? "Screen access cannot distinguish simulators with the same identifier in different sets." : nil
+        viewScreen.toolTip = nil
         updateDeviceSettings()
         Task { [weak self] in
             guard let self else { return }
             let identifier = self.selectedSimulator.flatMap {
-                $0.isAvailable && !self.isSimulatorRouteAmbiguous($0) ? $0.identifier : nil
+                $0.isAvailable ? $0.inventoryID : nil
             }
             await self.model.inspectDevice(identifier)
         }
@@ -1401,7 +1393,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
                                isVisible: inspectorMode != 0)
     }
 
-    private func presentLocationEditor(for identifier: String, latitude: String = "0", longitude: String = "0") {
+    private func presentLocationEditor(for identifier: DeviceInventoryID, latitude: String = "0", longitude: String = "0") {
         guard let window else { return }
         let alert = NSAlert()
         alert.messageText = "Set Location"
@@ -1520,19 +1512,11 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         }
     }
 
-    private func isSimulatorRouteAmbiguous(_ device: SimulatorHostDevice) -> Bool {
-        let paths = model.inventory.compactMap { item -> SimulatorHostDevice? in
-            guard case .simulator(let simulator) = item, simulator.identifier == device.identifier else { return nil }
-            return simulator
-        }.map(\.deviceSetPath)
-        return Set(paths).count > 1
-    }
-
     private func canViewScreen(_ device: InventoryDevice) -> Bool {
         guard !model.isBusy, !model.managingDeviceIDs.contains(device.id) else { return false }
         switch device {
         case .simulator(let simulator):
-            return simulator.isAvailable && !isSimulatorRouteAmbiguous(simulator) && ["Booted", "Shutdown"].contains(simulator.state)
+            return simulator.isAvailable && ["Booted", "Shutdown"].contains(simulator.state)
         case .remote(let remote):
             return remote.isAvailable && (remote.kind == .virtualMachine || remote.capabilities.contains("com.apple.coredevice.feature.viewdevicescreen"))
         }

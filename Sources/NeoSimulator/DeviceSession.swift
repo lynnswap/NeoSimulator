@@ -780,14 +780,14 @@ final class DeviceSession {
 
     /// The per-device keyboard preference controls both host typing and the guest keyboard.
     var connectsHardwareKeyboard: Bool {
-        supportsKeyboard && preferences.connectsHardwareKeyboard(forDevice: device.id)
+        supportsKeyboard && preferences.connectsHardwareKeyboard(forDevice: device.identity.preferenceIdentifier)
     }
 
     /// Saves the choice before applying it, so a failed change remains selected and can be retried.
     func toggleHardwareKeyboard() async throws {
         guard canPerformCommands else { return }
-        let connects = !preferences.connectsHardwareKeyboard(forDevice: device.id)
-        preferences.setConnectsHardwareKeyboard(connects, forDevice: device.id)
+        let connects = !preferences.connectsHardwareKeyboard(forDevice: device.identity.preferenceIdentifier)
+        preferences.setConnectsHardwareKeyboard(connects, forDevice: device.identity.preferenceIdentifier)
         try await display.setHardwareKeyboardConnected(connects)
     }
 
@@ -812,7 +812,7 @@ final class DeviceSession {
     /// Each failure is reported independently; the app-wide choice is only a fallback.
     func applyKeyboardSettings(failure: (Error) -> Void) async {
         guard canPerformCommands else { return }
-        do { try await display.setHardwareKeyboardConnected(preferences.connectsHardwareKeyboard(forDevice: device.id)) }
+        do { try await display.setHardwareKeyboardConnected(preferences.connectsHardwareKeyboard(forDevice: device.identity.preferenceIdentifier)) }
         catch { failure(error) }
         do { try await syncKeyboardLanguage() } catch { failure(error) }
     }
@@ -905,7 +905,7 @@ final class DeviceSession {
 
     /// Reflects a location already applied by the manager without applying it again.
     func refreshLocationSelection() throws {
-        if let preset = try DeviceLocationPreset.load(for: device.id, among: locationScenarios) {
+        if let preset = try DeviceLocationPreset.load(for: device.identity.preferenceIdentifier, among: locationScenarios) {
             location = preset.selection
         }
     }
@@ -918,7 +918,7 @@ final class DeviceSession {
         guard !isDisconnected else { return }
         locationScenarios = scenarios
         guard !scenarios.isEmpty, location == nil else { return }
-        if let preset = try DeviceLocationPreset.load(for: device.id, among: scenarios) {
+        if let preset = try DeviceLocationPreset.load(for: device.identity.preferenceIdentifier, among: scenarios) {
             try await use(preset.selection, coordinate: preset.coordinate, savesDevicePreset: false)
         } else {
             try await use(.saved(among: scenarios), savesDevicePreset: false)
@@ -947,12 +947,12 @@ final class DeviceSession {
         selection.save()
         var savedCoordinate = coordinate
         if savedCoordinate == nil, selection == .custom {
-            savedCoordinate = try DeviceLocationPreset.load(for: device.id, among: locationScenarios)?.coordinate
+            savedCoordinate = try DeviceLocationPreset.load(for: device.identity.preferenceIdentifier, among: locationScenarios)?.coordinate
         }
         let coordinate = savedCoordinate ?? (UserDefaults.standard.double(forKey: HostPreferences.locationLatitude),
                                               UserDefaults.standard.double(forKey: HostPreferences.locationLongitude))
         if savesDevicePreset {
-            try DeviceLocationPreset(selection: selection, coordinate: selection == .custom ? coordinate : nil).save(for: device.id)
+            try DeviceLocationPreset(selection: selection, coordinate: selection == .custom ? coordinate : nil).save(for: device.identity.preferenceIdentifier)
         }
         switch selection {
         case .none: try await display.clearSimulatedLocation()
@@ -1138,7 +1138,7 @@ final class DeviceSession {
         guard routesAudio, !isDisconnected else { return }
         do {
             if let route = preferences.recentAudioRoutes(in: scope).first {
-                try preferences.saveAudioRoute(route, forDevice: device.id, in: scope)
+                try preferences.saveAudioRoute(route, forDevice: device.identity.preferenceIdentifier, in: scope)
             }
             synchronizeAudioRoute(in: scope, failure: failure)
         } catch { failure(error) }
@@ -1155,7 +1155,7 @@ final class DeviceSession {
             return
         }
         let preferred: [String]
-        do { preferred = try preferences.preferredAudioRoutes(forDevice: device.id, in: scope) }
+        do { preferred = try preferences.preferredAudioRoutes(forDevice: device.identity.preferenceIdentifier, in: scope) }
         catch { failure(error); return }
         switch state.decision(among: preferred, in: scope) {
         case .current:
@@ -1289,7 +1289,7 @@ final class DeviceSession {
         if let choice = choiceDuringWait {
             choiceDuringWait = nil
             applyExternalDisplay(choice.mode, failure: choice.failure)
-        } else if let mode = ExternalDisplayMode(rawValue: preferences.externalDisplayTag(forDevice: device.id)),
+        } else if let mode = ExternalDisplayMode(rawValue: preferences.externalDisplayTag(forDevice: device.identity.preferenceIdentifier)),
                   mode != .disabled, mode != .carPlay || capabilities.supportsCarPlay {
             applyExternalDisplay(mode, failure: failure)
         }
@@ -1299,7 +1299,7 @@ final class DeviceSession {
     /// Retries external-screen discovery when needed. Reports all failures for a choice together.
     func chooseExternalDisplay(_ mode: ExternalDisplayMode, failure: @escaping @MainActor (Error) -> Void) {
         guard capabilities.supportsExternalDisplays, mode != .carPlay || capabilities.supportsCarPlay else { return }
-        preferences.setExternalDisplayTag(mode.rawValue, forDevice: device.id)
+        preferences.setExternalDisplayTag(mode.rawValue, forDevice: device.identity.preferenceIdentifier)
         guard canPerformCommands else { return }
         if externalScreenConnection == nil, externalScreenRegistration == nil {
             choiceDuringWait = (mode, failure)

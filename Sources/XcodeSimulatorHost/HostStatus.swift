@@ -107,8 +107,13 @@ public enum SimulatorDeviceSetting: Sendable {
 
 extension SimulatorHostController {
     public func deviceSettings(identifier: String) async throws -> SimulatorDeviceSettings {
+        try await deviceSettings(for: .simulator(udid: identifier, deviceSetPath: nil))
+    }
+
+    public func deviceSettings(for deviceID: DeviceInventoryID) async throws -> SimulatorDeviceSettings {
         do {
-            let (device, xcodeURL) = try await settingsDevice(identifier)
+            let (device, xcodeURL) = try await settingsDevice(deviceID)
+            let identifier = deviceID.preferenceIdentifier
             guard device.state == "Booted" else { return SimulatorDeviceSettings() }
             var settings = await Self.readSettings(device: device, xcodeURL: xcodeURL)
             if let defaults = ToolConstants.managerDefaults {
@@ -126,8 +131,13 @@ extension SimulatorHostController {
     }
 
     public func setDeviceSetting(_ setting: SimulatorDeviceSetting, identifier: String) async throws {
+        try await setDeviceSetting(setting, for: .simulator(udid: identifier, deviceSetPath: nil))
+    }
+
+    public func setDeviceSetting(_ setting: SimulatorDeviceSetting, for deviceID: DeviceInventoryID) async throws {
         do {
-            let (device, xcodeURL) = try await settingsDevice(identifier)
+            let (device, xcodeURL) = try await settingsDevice(deviceID)
+            let identifier = deviceID.preferenceIdentifier
             try await Self.writeSetting(setting, device: device, xcodeURL: xcodeURL)
             let audioRoute: (scope: String, route: String)?
             switch setting {
@@ -161,7 +171,7 @@ extension SimulatorHostController {
                 }
                 DistributedNotificationCenter.default().postNotificationName(
                     Notification.Name("dev.lynnswap.NeoSimulator.DeviceLocationChanged"),
-                    object: identifier, userInfo: nil, deliverImmediately: true)
+                    object: device.identifier, userInfo: device.deviceSetPath.map { ["deviceSetPath": $0] }, deliverImmediately: true)
             }
         } catch let error as SimulatorHostFailure { throw error }
         catch { throw SimulatorHostFailure(error) }

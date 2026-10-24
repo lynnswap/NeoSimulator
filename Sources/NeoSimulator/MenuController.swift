@@ -363,16 +363,16 @@ final class OpenSimulatorMenu: NSObject, NSMenuDelegate {
     }
 
     /// Groups by runtime in catalog order; Option shows descriptive device names.
-    static func items(for devices: [AvailableDevice], hasWindow: (String) -> Bool,
+    static func items(for devices: [AvailableDevice], hasWindow: (SimulatorDeviceIdentifier) -> Bool,
                       action: Selector, target: AnyObject?) -> [NSMenuItem] {
         SimulatorDeviceMenu.items(for: devices.map {
-            SimulatorMenuDevice(identifier: $0.identifier, name: $0.name, descriptiveName: $0.descriptiveName,
+            SimulatorMenuDevice(identifier: $0.identity, name: $0.name, descriptiveName: $0.descriptiveName,
                                 runtimeIdentifier: $0.runtimeIdentifier, runtimeName: $0.runtimeName, state: $0.state)
         }, hasWindow: hasWindow, action: action, target: target)
     }
 
     @objc private func select(_ sender: NSMenuItem) {
-        guard let application, let identifier = sender.representedObject as? String else { return }
+        guard let application, let identifier = sender.representedObject as? SimulatorDeviceIdentifier else { return }
         Task {
             do { try await application.openSimulator(withIdentifier: identifier) }
             catch is CancellationError {}

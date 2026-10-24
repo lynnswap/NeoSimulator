@@ -8,8 +8,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     private let recordings = RecordingStore()
     private let isManaged: Bool
     private let sessionIdentifier = UUID().uuidString
-    private var ownedDeviceIdentifiers: Set<String> = []
-    private var releasingDevices: Set<String> = []
+    private var ownedDeviceIdentifiers: Set<SimulatorDeviceIdentifier> = []
+    private var releasingDevices: Set<SimulatorDeviceIdentifier> = []
     private var requestObserver: NSObjectProtocol?
     private var locationObserver: NSObjectProtocol?
     private var registrationErrorReported = false
@@ -21,19 +21,19 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     private var testingNotificationToken: UInt64?
     /// Watches for Xcode to create the parallel testing set.
     private var testingSetWatcher: DispatchSourceFileSystemObject?
-    private var sessions: [String: DeviceWindowController] = [:]
-    private var connections: [String: Task<Void, Never>] = [:]
-    private var bootOperations: [String: DeviceTools] = [:]
+    private var sessions: [SimulatorDeviceIdentifier: DeviceWindowController] = [:]
+    private var connections: [SimulatorDeviceIdentifier: Task<Void, Never>] = [:]
+    private var bootOperations: [SimulatorDeviceIdentifier: DeviceTools] = [:]
     /// Running restarts. Their windows stay open while the device is down
     /// and reconnect only after the restart finishes.
-    private var restarting: [String: Task<Void, Never>] = [:]
+    private var restarting: [SimulatorDeviceIdentifier: Task<Void, Never>] = [:]
     /// Windows that reconnect when their restarted device boots.
-    private var awaitingReconnect: [String: DeviceWindowController] = [:]
-    private var suppressed: Set<String> = []
+    private var awaitingReconnect: [SimulatorDeviceIdentifier: DeviceWindowController] = [:]
+    private var suppressed: Set<SimulatorDeviceIdentifier> = []
     /// Shutdowns of devices whose windows closed, which quitting waits for.
-    private var closingShutdowns: [String: Task<Void, Never>] = [:]
+    private var closingShutdowns: [SimulatorDeviceIdentifier: Task<Void, Never>] = [:]
     /// Per-device queues outlive individual sessions; quitting waits for all of them.
-    private var externalDisplayQueues: [String: (name: String, changes: ExternalDisplayChanges)] = [:]
+    private var externalDisplayQueues: [SimulatorDeviceIdentifier: (name: String, changes: ExternalDisplayChanges)] = [:]
     /// Whether another simulator host took over, which leaves devices running.
     private var yieldedToAnotherHost = false
     /// Quitting's device shutdowns, which another host appearing cancels.
@@ -48,8 +48,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     /// The choice Quit NeoSimulator… made, which takes precedence over the
     /// default quit action.
     private var quitChoice: DeviceLifetimeChoice?
-    private var connectionFailures: [String: Error] = [:]
-    private var openingDevices: Set<String> = []
+    private var connectionFailures: [SimulatorDeviceIdentifier: Error] = [:]
+    private var openingDevices: Set<SimulatorDeviceIdentifier> = []
     private var browser: DeviceBrowserWindowController?
     private var newSimulator: NewSimulatorWindowController?
     private var menu: MenuController?
@@ -90,17 +90,20 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         conflicts.onConflict = { [weak self] in self?.handleHostConflict() }
     }
 
-    func start(initialDeviceIdentifier: String? = nil) throws {
+    func start(initialDeviceIdentifier: String? = nil, initialDeviceSetPath: String? = nil) throws {
+        let initialDevice = initialDeviceIdentifier.map { SimulatorDeviceIdentifier($0, deviceSetPath: initialDeviceSetPath) }
         try conflicts.check()
         if isManaged {
-            if let initialDeviceIdentifier { ownedDeviceIdentifiers.insert(initialDeviceIdentifier) }
+            if let initialDevice { ownedDeviceIdentifiers.insert(initialDevice) }
             try writeRegistration()
             requestObserver = DistributedNotificationCenter.default().addObserver(
                 forName: Notification.Name("dev.lynnswap.NeoSimulator.RendererRequest"),
                 object: sessionIdentifier, queue: .main
             ) { [weak self] notification in
                 let action = notification.userInfo?["action"] as? String
-                let identifier = notification.userInfo?["udid"] as? String
+                let udid = notification.userInfo?["udid"] as? String
+                let deviceSetPath = notification.userInfo?["deviceSetPath"] as? String
+                let identifier = udid.map { SimulatorDeviceIdentifier($0, deviceSetPath: deviceSetPath) }
                 let requestIdentifier = notification.userInfo?["requestIdentifier"] as? String
                 let keepRunning = notification.userInfo?["keepRunning"] as? Bool
                 MainActor.assumeIsolated {
@@ -125,7 +128,9 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             forName: Notification.Name("dev.lynnswap.NeoSimulator.DeviceLocationChanged"),
             object: nil, queue: .main
         ) { [weak self] notification in
-            let identifier = notification.object as? String
+            let udid = notification.object as? String
+            let path = notification.userInfo?["deviceSetPath"] as? String
+            let identifier = udid.map { SimulatorDeviceIdentifier($0, deviceSetPath: path) }
             MainActor.assumeIsolated {
                 guard let identifier, let session = self?.sessions[identifier]?.session else { return }
                 do { try session.refreshLocationSelection() }
@@ -151,25 +156,26 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         handoverSignal = handover
         openTestingSet()
         if isManaged {
-            if let initialDeviceIdentifier { openRequestedSimulator(initialDeviceIdentifier) }
+            if let initialDevice { openRequestedSimulator(initialDevice) }
             return
         }
         // Existing booted devices require AttachBootedOnStart; later boots always attach.
         // Testing devices follow Show Parallel Testing Devices independently.
         let defaults = UserDefaults.standard
         let attachesBooted = defaults.bool(forKey: HostPreferences.attachBootedOnStart)
-        if !attachesBooted { suppressed.formUnion(try readDevices().filter { $0.state == 3 }.map(\.identifier)) }
+        if !attachesBooted { suppressed.formUnion(try readDevices().filter { $0.state == 3 }.map(\.identity)) }
         try conflicts.check()
         try scanDevices()
         let attached = attachesBooted && !(sessions.isEmpty && connections.isEmpty)
-        if let initialDeviceIdentifier {
-            openRequestedSimulator(initialDeviceIdentifier)
+        if let initialDevice {
+            openRequestedSimulator(initialDevice)
         } else if !attached, defaults.bool(forKey: HostPreferences.sessionOnLaunch),
            defaults.bool(forKey: HostPreferences.startLastDeviceOnLaunch),
            let device = Self.initialDevice(in: try availableSimulatorDevices(),
-                                           current: defaults.string(forKey: HostPreferences.currentDeviceUDID)) {
+                                           current: defaults.string(forKey: HostPreferences.currentDeviceUDID),
+                                           deviceSetPath: defaults.string(forKey: "CurrentDeviceSetPath")) {
             Task {
-                do { try await openSimulator(withIdentifier: device.identifier) } catch is CancellationError {
+                do { try await openSimulator(withIdentifier: device.identity) } catch is CancellationError {
                 } catch {
                     NSAlert(error: error).runModal()
                     showDeviceBrowser()
@@ -181,9 +187,10 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         }
     }
 
-    private func openRequestedSimulator(_ identifier: String, requestIdentifier: String? = nil, bootIfNeeded: Bool = true) {
+    private func openRequestedSimulator(_ identifier: SimulatorDeviceIdentifier, requestIdentifier: String? = nil, bootIfNeeded: Bool = true) {
         Task {
-            var result = ["udid": identifier]
+            var result = ["udid": identifier.identifier]
+            if let path = identifier.deviceSetPath { result["deviceSetPath"] = path }
             defer {
                 if let requestIdentifier {
                     DistributedNotificationCenter.default().postNotificationName(
@@ -221,7 +228,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         }
     }
 
-    private func receiveManagerRequest(action: String?, identifier: String?, requestIdentifier: String?, keepRunning: Bool?) {
+    private func receiveManagerRequest(action: String?, identifier: SimulatorDeviceIdentifier?, requestIdentifier: String?, keepRunning: Bool?) {
         switch action {
         case "open-device":
             if let identifier { openRequestedSimulator(identifier, requestIdentifier: requestIdentifier) }
@@ -232,7 +239,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         case "release-device":
             guard let identifier, let requestIdentifier else { return }
             Task {
-                var result = ["udid": identifier]
+                var result = ["udid": identifier.identifier]
+                if let path = identifier.deviceSetPath { result["deviceSetPath"] = path }
                 do { try await releaseDevice(identifier) }
                 catch { result["error"] = error.localizedDescription }
                 DistributedNotificationCenter.default().postNotificationName(
@@ -242,7 +250,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         case "restart-device", "erase-device":
             guard let identifier, let requestIdentifier else { return }
             Task {
-                var result: [String: Any] = ["udid": identifier, "handled": false]
+                var result: [String: Any] = ["udid": identifier.identifier, "handled": false]
+                if let path = identifier.deviceSetPath { result["deviceSetPath"] = path }
                 if let controller = sessions[identifier] {
                     result["handled"] = true
                     do {
@@ -268,7 +277,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         }
     }
 
-    private func releaseDevice(_ identifier: String) async throws {
+    private func releaseDevice(_ identifier: SimulatorDeviceIdentifier) async throws {
         guard ownedDeviceIdentifiers.contains(identifier) || sessions[identifier] != nil
                 || connections[identifier] != nil || closingShutdowns[identifier] != nil else { return }
         guard !releasingDevices.contains(identifier) else {
@@ -322,7 +331,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         let applicationPath: String
         let xcodePath: String
         let sessionIdentifier: String
-        let deviceIdentifiers: [String]
+        let deviceIdentifiers: [SimulatorDeviceIdentifier]
     }
 
     private var registrationURL: URL {
@@ -384,7 +393,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     }
 
     /// Prefers the saved device, then the last iPhone in catalog order, then the first device.
-    static func initialDevice(in devices: [AvailableDevice], current: String?) -> AvailableDevice? {
+    static func initialDevice(in catalog: [AvailableDevice], current: String?, deviceSetPath: String? = nil) -> AvailableDevice? {
+        let devices = catalog.filter { $0.deviceSetPath == deviceSetPath }
         if let current = current.flatMap(UUID.init(uuidString:)),
            let device = devices.first(where: { UUID(uuidString: $0.identifier) == current }) {
             return device
@@ -393,10 +403,12 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     }
 
     func availableSimulatorDevices() throws -> [AvailableDevice] {
-        try readDevices().map(Self.describe)
+        var devices = try readDevices()
+        if showsTestingDevices, let testingSet { devices += try readDevices(in: testingSet) }
+        return devices.map(Self.describe)
     }
 
-    func hasVisibleWindow(forDevice identifier: String) -> Bool {
+    func hasVisibleWindow(forDevice identifier: SimulatorDeviceIdentifier) -> Bool {
         sessions[identifier]?.window?.isVisible == true
     }
 
@@ -427,12 +439,12 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         if showsTestingDevices {
             // Reattach every booted testing device, including previously closed windows.
             if let testingSet, let devices = try? readDevices(in: testingSet) {
-                suppressed.subtract(devices.map(\.identifier))
+                suppressed.subtract(devices.map(\.identity))
             }
         } else {
             let hadDeviceWindows = !sessions.isEmpty
             if let testingSet {
-                do { ownedDeviceIdentifiers.subtract(try readDevices(in: testingSet).map(\.identifier)) }
+                do { ownedDeviceIdentifiers.subtract(try readDevices(in: testingSet).map(\.identity)) }
                 catch { report(error) }
             }
             // A restart keeps running without its window.
@@ -516,7 +528,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         AvailableDevice(identifier: device.identifier, name: device.name, descriptiveName: device.descriptiveName,
                         runtimeIdentifier: device.runtimeIdentifier, runtimeName: device.runtimeName,
                         productFamily: device.productFamily, deviceTypeName: device.deviceTypeName,
-                        state: device.state)
+                        state: device.state, deviceSetPath: device.deviceSetPath)
     }
 
     private static func capabilities(of device: SimulatorDevice) -> DeviceCapabilities {
@@ -531,15 +543,16 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                            supportsEnhancedMultitasking: device.supportsEnhancedMultitasking)
     }
 
-    func openSimulator(withIdentifier identifier: String) async throws {
+    func openSimulator(withIdentifier identifier: SimulatorDeviceIdentifier) async throws {
         if isManaged {
-            openManager(command: "open-device", queryItems: [URLQueryItem(name: "udid", value: identifier)])
+            openManager(command: "open-device", queryItems: [URLQueryItem(name: "udid", value: identifier.identifier)]
+                + (identifier.deviceSetPath.map { [URLQueryItem(name: "deviceSetPath", value: $0)] } ?? []))
             return
         }
         try await openSimulatorLocally(withIdentifier: identifier)
     }
 
-    private func openSimulatorLocally(withIdentifier identifier: String, bootIfNeeded: Bool = true) async throws {
+    private func openSimulatorLocally(withIdentifier identifier: SimulatorDeviceIdentifier, bootIfNeeded: Bool = true) async throws {
         guard !releasingDevices.contains(identifier) else { throw CancellationError() }
         openingDevices.insert(identifier)
         defer { openingDevices.remove(identifier) }
@@ -551,7 +564,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         try conflicts.check()
         var devices = try readDevices()
         if showsTestingDevices, let testingSet { devices += try readDevices(in: testingSet) }
-        guard let device = devices.first(where: { $0.identifier == identifier }) else {
+        guard let device = devices.first(where: { $0.identity == identifier }) else {
             throw HostError.operation("The selected simulator is no longer available")
         }
         guard bootIfNeeded || device.state == 3 else {
@@ -562,10 +575,11 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         suppressed.remove(identifier)
         connectionFailures.removeValue(forKey: identifier)
         // Launching starts this device next time.
-        UserDefaults.standard.set(identifier, forKey: HostPreferences.currentDeviceUDID)
+        UserDefaults.standard.set(identifier.identifier, forKey: HostPreferences.currentDeviceUDID)
+        UserDefaults.standard.set(identifier.deviceSetPath, forKey: "CurrentDeviceSetPath")
         // Attach an already booting device when it finishes; avoid a second boot.
         if bootIfNeeded, device.state != 2, device.state != 3, bootOperations[identifier] == nil {
-            let tools = try DeviceTools(identifier: identifier, xcodeURL: runtime.xcodeURL,
+            let tools = try DeviceTools(identifier: identifier.identifier, xcodeURL: runtime.xcodeURL,
                                         deviceSetPath: device.deviceSetPath)
             bootOperations[identifier] = tools
             defer { bootOperations.removeValue(forKey: identifier) }
@@ -603,8 +617,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         try conflicts.check()
         var devices = try readDevices()
         if showsTestingDevices, let testingSet { devices += try readDevices(in: testingSet) }
-        let booted = devices.filter { $0.state == 3 && (!isManaged || ownedDeviceIdentifiers.contains($0.identifier)) }
-        let identifiers = Set(booted.map(\.identifier))
+        let booted = devices.filter { $0.state == 3 && (!isManaged || ownedDeviceIdentifiers.contains($0.identity)) }
+        let identifiers = Set(booted.map(\.identity))
         let hadDeviceWindows = !sessions.isEmpty
         for identifier in sessions.keys where !identifiers.contains(identifier) && restarting[identifier] == nil {
             sessions.removeValue(forKey: identifier)?.invalidate()
@@ -620,12 +634,12 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         connectionFailures = connectionFailures.filter { identifiers.contains($0.key) }
         // A restarting device connects only after its restart ends, also when
         // its window was hidden meanwhile.
-        for device in booted where restarting[device.identifier] == nil
-            && (sessions[device.identifier] == nil || awaitingReconnect[device.identifier] != nil)
-            && connections[device.identifier] == nil
-            && !releasingDevices.contains(device.identifier)
-            && !suppressed.contains(device.identifier)
-            && connectionFailures[device.identifier] == nil {
+        for device in booted where restarting[device.identity] == nil
+            && (sessions[device.identity] == nil || awaitingReconnect[device.identity] != nil)
+            && connections[device.identity] == nil
+            && !releasingDevices.contains(device.identity)
+            && !suppressed.contains(device.identity)
+            && connectionFailures[device.identity] == nil {
             connect(device)
         }
         if hadDeviceWindows && sessions.isEmpty { showDeviceBrowser() }
@@ -633,7 +647,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     }
 
     private func connect(_ device: SimulatorDevice) {
-        let identifier = device.identifier
+        let identifier = device.identity
         connections[identifier] = Task { [weak self] in
             guard let self else { return }
             defer {
@@ -653,7 +667,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                         let session = DeviceSession(
                             device: Self.describe(device), capabilities: Self.capabilities(of: device),
                             display: connection,
-                            tools: try DeviceTools(identifier: identifier, xcodeURL: runtime.xcodeURL,
+                            tools: try DeviceTools(identifier: identifier.identifier, xcodeURL: runtime.xcodeURL,
                                                    deviceSetPath: device.deviceSetPath),
                             recordings: recordings, pasteboardSync: pasteboardSync,
                             externalDisplayChanges: externalDisplayChanges(of: device))
@@ -724,8 +738,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     /// The changes sent to `device`'s external display, which every session of
     /// the device shares.
     private func externalDisplayChanges(of device: SimulatorDevice) -> ExternalDisplayChanges {
-        let changes = externalDisplayQueues[device.identifier]?.changes ?? ExternalDisplayChanges()
-        externalDisplayQueues[device.identifier] = (device.name, changes)
+        let changes = externalDisplayQueues[device.identity]?.changes ?? ExternalDisplayChanges()
+        externalDisplayQueues[device.identity] = (device.name, changes)
         return changes
     }
 
@@ -738,7 +752,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
 
     /// Closes the device unless this close or DetachOnWindowClose requests keeping it booted.
     private func deviceWindowClosed(_ controller: DeviceWindowController, choice: DeviceLifetimeChoice?) {
-        let identifier = controller.session.device.id
+        let identifier = controller.session.device.identity
         sessions.removeValue(forKey: identifier)
         awaitingReconnect.removeValue(forKey: identifier)
         ownedDeviceIdentifiers.remove(identifier)
@@ -754,7 +768,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     /// Shuts down a device whose window closed once its recording is saved,
     /// abandoning a restart in progress.
     private func shutDownClosedDevice(_ session: DeviceSession) {
-        let identifier = session.device.id
+        let identifier = session.device.identity
         // The restart stays tracked until it unwinds, so opening waits for it.
         let restart = restarting[identifier]
         restart?.cancel()
@@ -762,7 +776,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         guard closingShutdowns[identifier] == nil else { return }
         let tools: DeviceTools
         do {
-            tools = try DeviceTools(identifier: identifier, xcodeURL: runtime.xcodeURL,
+            tools = try DeviceTools(identifier: identifier.identifier, xcodeURL: runtime.xcodeURL,
                                     deviceSetPath: session.tools.deviceSetPath)
         } catch {
             hostLog("Could not shut down \(identifier): \(error.localizedDescription)")
@@ -773,7 +787,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             await session.finishRecording()
             guard let self, !self.yieldedToAnotherHost,
                   !Task.isCancelled,
-                  self.isRunning(identifier, deviceSetPath: tools.deviceSetPath) else {
+                  self.isRunning(identifier.identifier, deviceSetPath: tools.deviceSetPath) else {
                 self?.closingShutdowns.removeValue(forKey: identifier)
                 self?.updateRegistration()
                 return
@@ -890,7 +904,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     /// Disconnects, shuts down, optionally erases, boots, and reconnects the existing window.
     private func restartDevice(_ controller: DeviceWindowController, erasing: Bool,
                                completion: ((Error?) -> Void)? = nil) {
-        let identifier = controller.session.device.id
+        let identifier = controller.session.device.identity
         guard !stopped, sessions[identifier] === controller, restarting[identifier] == nil,
               bootOperations[identifier] == nil else {
             completion?(HostError.operation("This simulator already has a device operation in progress."))
@@ -898,7 +912,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         }
         let tools: DeviceTools
         do {
-            tools = try DeviceTools(identifier: identifier, xcodeURL: runtime.xcodeURL,
+            tools = try DeviceTools(identifier: identifier.identifier, xcodeURL: runtime.xcodeURL,
                                     deviceSetPath: controller.session.tools.deviceSetPath)
         } catch {
             if let completion { completion(error) } else { controller.present(error) }
