@@ -103,7 +103,7 @@ Reopen a detached device through Open Simulator or the device browser.
 Closing a physical-device or VM screen disconnects the screen and leaves the
 device running. Use **Device → Shut Down** to shut down a supported VM.
 
-Quitting normally shuts down devices with open windows. **Quit NeoSimulator…**
+Quitting normally shuts down simulators with open windows. **Quit NeoSimulator…**
 (Option-Command-Q) asks whether to keep them running. Settings can change both
 defaults. Switching the display host leaves devices running so the next host can attach.
 

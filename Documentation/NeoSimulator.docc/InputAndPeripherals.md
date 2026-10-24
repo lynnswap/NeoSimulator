@@ -2,7 +2,7 @@
 
 Control device input, exchange pasteboards, and connect audio or displays.
 
-## Keyboard and touch
+## Simulator keyboard and touch
 
 The active device window receives keyboard input. **I/O → Keyboard → Connect
 Hardware Keyboard** (Shift-Command-K) is saved per device and defaults to on.
@@ -42,7 +42,21 @@ Neo does not capture the Mac's pointer and keyboard using Simulator.app's
 **I/O → Input** commands. Those facilities require Apple-only entitlements;
 see <doc:SimulatorIntegration>.
 
-## Pasteboard
+## Physical-device and VM input
+
+Input controls depend on the device's screen connection. Native screen-sharing
+views handle keyboard and pointer events with their own controls.
+
+For other remote screens, click or drag to send a single touch when the device
+supports touch input. On devices without touch support, a left click sends
+pointer input when available. Right clicks, other mouse buttons, and pointer
+movement require pointer support. Keyboard input is available when the device
+supports it. NeoSimulator releases held inputs when the window loses focus.
+
+Simulator's Option and Control gestures described above apply only to simulator
+windows.
+
+## Simulator pasteboard
 
 **Edit → Get Pasteboard** replaces the Mac pasteboard with the active device's
 contents. **Send Pasteboard** replaces the device's contents with the Mac's.
