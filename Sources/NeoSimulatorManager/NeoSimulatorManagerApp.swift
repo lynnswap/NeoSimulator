@@ -3497,9 +3497,6 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
         window.toolbar = toolbar
         window.center()
         inputView.enqueue = { [weak self] operation in self?.enqueueInput(operation) }
-        inputView.onPointerUnavailable = { [weak self] in
-            self?.showIssue(RemoteDeviceWindowError.unavailable("Touch and pointer control are not available for this display yet."))
-        }
         session.onStateChange = { [weak self] in self?.update() }
         update()
     }
@@ -4024,8 +4021,9 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
 private final class RemoteDeviceInputView: NSView {
     let session: RemoteDeviceScreenSession
     var enqueue: ((@escaping @MainActor () async throws -> Void) -> Void)?
-    var isInputEnabled = false
-    var onPointerUnavailable: (() -> Void)?
+    var isInputEnabled = false {
+        didSet { if oldValue && !isInputEnabled { releaseFocus() } }
+    }
     override var acceptsFirstResponder: Bool { true }
     override var isFlipped: Bool { true }
 
@@ -4038,6 +4036,7 @@ private final class RemoteDeviceInputView: NSView {
     required init?(coder: NSCoder) { nil }
     override func hitTest(_ point: NSPoint) -> NSView? { isInputEnabled ? super.hitTest(point) : nil }
     func releaseFocus() {
+        resetMouseGestures()
         enqueue? { [session] in try await session.releaseInputs() }
     }
     override func resignFirstResponder() -> Bool { releaseFocus(); return super.resignFirstResponder() }
@@ -4064,13 +4063,104 @@ private final class RemoteDeviceInputView: NSView {
         }
     }
 
+    private enum MouseInputKind { case touch, pointer }
+    private struct MouseGesture {
+        let kind: MouseInputKind
+        let clicks: Int
+    }
+    private var mouseGestures: [Int: MouseGesture] = [:]
+    private var inputGeneration = 0
+    private var pointerTracking: NSTrackingArea?
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let pointerTracking { removeTrackingArea(pointerTracking) }
+        let tracking = NSTrackingArea(rect: .zero, options: [.mouseMoved, .activeInKeyWindow, .inVisibleRect], owner: self)
+        addTrackingArea(tracking)
+        pointerTracking = tracking
+    }
+
+    private func resetMouseGestures() {
+        inputGeneration += 1
+        mouseGestures.removeAll()
+    }
+
+    private func enqueueMouseInput(_ operation: @escaping @MainActor () async throws -> Void) {
+        let generation = inputGeneration
+        enqueue? { [weak self, session] in
+            guard self?.inputGeneration == generation else { return }
+            do { try await operation() }
+            catch {
+                if self?.inputGeneration == generation { self?.resetMouseGestures() }
+                do { try await session.releaseInputs() }
+                catch let cleanup {
+                    throw RemoteDeviceWindowError.cleanup([error.localizedDescription, cleanup.localizedDescription])
+                }
+                throw error
+            }
+        }
+    }
+
     override func mouseDown(with event: NSEvent) {
         guard isInputEnabled else { return }
         window?.makeFirstResponder(self)
-        if !session.inputCapabilities.isDisjoint(with: [.pointer, .digitizer]) { onPointerUnavailable?() }
+        let kind: MouseInputKind
+        if event.buttonNumber == 0, session.inputCapabilities.contains(.digitizer) { kind = .touch }
+        else if session.inputCapabilities.contains(.pointer) { kind = .pointer }
+        else { return }
+        guard let locations = session.inputLocations(atWindowPoint: event.locationInWindow) else { return }
+        let button = event.buttonNumber
+        let clicks = event.clickCount
+        mouseGestures[button] = MouseGesture(kind: kind, clicks: clicks)
+        enqueueMouseInput { [session] in
+            switch kind {
+            case .touch: try await session.sendTouch(at: locations.touch, phase: .began)
+            case .pointer: try await session.sendPointerButton(button, phase: .down, clicks: clicks, at: locations.pointer)
+            }
+        }
     }
     override func rightMouseDown(with event: NSEvent) { mouseDown(with: event) }
     override func otherMouseDown(with event: NSEvent) { mouseDown(with: event) }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard isInputEnabled, let gesture = mouseGestures[event.buttonNumber] else { return }
+        guard let locations = session.inputLocations(atWindowPoint: event.locationInWindow, clampingToDisplay: true) else {
+            releaseFocus()
+            return
+        }
+        let button = event.buttonNumber
+        enqueueMouseInput { [session] in
+            switch gesture.kind {
+            case .touch: try await session.sendTouch(at: locations.touch, phase: .moved)
+            case .pointer: try await session.sendPointerButton(button, phase: .dragged, clicks: gesture.clicks, at: locations.pointer)
+            }
+        }
+    }
+    override func rightMouseDragged(with event: NSEvent) { mouseDragged(with: event) }
+    override func otherMouseDragged(with event: NSEvent) { mouseDragged(with: event) }
+
+    override func mouseUp(with event: NSEvent) {
+        guard isInputEnabled, let gesture = mouseGestures.removeValue(forKey: event.buttonNumber) else { return }
+        guard let locations = session.inputLocations(atWindowPoint: event.locationInWindow, clampingToDisplay: true) else {
+            releaseFocus()
+            return
+        }
+        let button = event.buttonNumber
+        enqueueMouseInput { [session] in
+            switch gesture.kind {
+            case .touch: try await session.sendTouch(at: locations.touch, phase: .ended)
+            case .pointer: try await session.sendPointerButton(button, phase: .up, clicks: gesture.clicks, at: locations.pointer)
+            }
+        }
+    }
+    override func rightMouseUp(with event: NSEvent) { mouseUp(with: event) }
+    override func otherMouseUp(with event: NSEvent) { mouseUp(with: event) }
+
+    override func mouseMoved(with event: NSEvent) {
+        guard isInputEnabled, session.inputCapabilities.contains(.pointer),
+              let locations = session.inputLocations(atWindowPoint: event.locationInWindow) else { return }
+        enqueueMouseInput { [session] in try await session.movePointer(to: locations.pointer) }
+    }
 
     private static let keyUsage: [UInt16: UInt16] = {
         let pairs: [(Int, Int)] = [
