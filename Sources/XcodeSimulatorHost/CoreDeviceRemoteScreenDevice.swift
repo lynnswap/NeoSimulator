@@ -80,6 +80,7 @@ enum CoreDeviceScreenTransport {
         guard try remote.supports("com.apple.coredevice.feature.viewdevicescreen") else {
             throw CLIError.unavailable("remote-screen-capability", "The device does not currently expose a screen connection.")
         }
+        try await CoreDeviceDisplayGeometry.loadRuntime()
         return try CoreDeviceMediaStreamTransport(remote: remote, contentView: contentView)
     }
 }

@@ -199,6 +199,35 @@ struct RemoteDeviceScreenTests {
         #expect(sends == 1)
     }
 
+    @Test func sharedFramebufferConvertsTheDisplayedSurfaceWithoutTreatingVideoCropAsHIDRegion() throws {
+        let container = NSView(frame: CGRect(x: 0, y: 0, width: 600, height: 600))
+        let framebuffer = RemoteScreenFramebuffer(frame: container.bounds)
+        container.addSubview(framebuffer)
+        framebuffer.update(display: .init(size: CGSize(width: 200, height: 400), angle: 90))
+        #expect(framebuffer.inputLocations(at: CGPoint(x: 60, y: 420), from: container, clampingToDisplay: false) == nil)
+        framebuffer.update(attributes: RemoteDeviceVideoAttributes(aspectRatio: CGSize(width: 800, height: 400),
+            contentsRect: CGRect(x: 0.125, y: 0.25, width: 0.5, height: 0.5), scaleFactor: 2, orientation: .landscapeLeft))
+        // The landscape display occupies x=0...600, y=150...450. AppKit's container is not flipped.
+        let topLeft = try #require(framebuffer.inputLocations(at: CGPoint(x: 60, y: 420), from: container,
+                                                             clampingToDisplay: false))
+        #expect(abs(topLeft.touch.x - 0.1) < 0.0001)
+        #expect(abs(topLeft.touch.y - 0.9) < 0.0001)
+        #expect(abs(topLeft.pointer.x - 0.1) < 0.0001)
+        #expect(abs(topLeft.pointer.y - 0.1) < 0.0001)
+        #expect(framebuffer.inputLocations(at: CGPoint(x: 300, y: 550), from: container, clampingToDisplay: false) == nil)
+        let release = try #require(framebuffer.inputLocations(at: CGPoint(x: 300, y: 550), from: container,
+                                                             clampingToDisplay: true))
+        #expect(abs(release.pointer.y) < 0.0001)
+        framebuffer.update(display: .init(size: CGSize(width: 200, height: 400), angle: 0))
+        let portrait = try #require(framebuffer.inputLocations(at: CGPoint(x: 180, y: 540), from: container,
+                                                              clampingToDisplay: false))
+        #expect(abs(portrait.touch.x - 0.1) < 0.0001)
+        #expect(abs(portrait.touch.y - 0.1) < 0.0001)
+        #expect(portrait.pointer == portrait.touch)
+        framebuffer.update(display: nil)
+        #expect(framebuffer.inputLocations(at: CGPoint(x: 300, y: 300), from: container, clampingToDisplay: true) == nil)
+    }
+
     private func device() throws -> CoreDeviceDevice {
         let data = Data(#"{"result":{"devices":[{"identifier":"command-identifier","properties":{"hardware":{"reality":"physical","udid":"hardware-identifier"},"state":{"name":"Fixture Device"},"connection":{"state":"connected"}},"capabilities":[]}]}}"#.utf8)
         return try #require(CoreDeviceInventoryDecoder.decode(data).first)

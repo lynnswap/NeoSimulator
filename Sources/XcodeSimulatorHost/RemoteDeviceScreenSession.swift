@@ -39,7 +39,9 @@ public final class RemoteDeviceScreenSession {
     public private(set) var lastError: (any Error)?
     public private(set) var videoAttributes: RemoteDeviceVideoAttributes?
     public private(set) var hasReceivedFrame = false
-    public private(set) var inputCapabilities: Set<RemoteDeviceInputKind> = []
+    public var inputCapabilities: Set<RemoteDeviceInputKind> {
+        state == .connected ? transport?.inputCapabilities ?? [] : []
+    }
     public var onStateChange: (() -> Void)?
 
     private let makeTransport: @MainActor (CoreDeviceDevice, NSView) async throws -> any RemoteScreenTransport
@@ -100,7 +102,6 @@ public final class RemoteDeviceScreenSession {
                 }
                 try Task.checkCancellation()
                 guard generation == token else { throw CancellationError() }
-                inputCapabilities = transport.inputCapabilities
                 onStateChange?()
             } catch {
                 do { try await transport.stop() }
@@ -142,7 +143,6 @@ public final class RemoteDeviceScreenSession {
                     failure = failure.map { Self.combining(error, cleanup: $0) } ?? error
                 }
             }
-            inputCapabilities = []
             if let failure { throw failure }
         }
         stopping = task
@@ -189,6 +189,15 @@ public final class RemoteDeviceScreenSession {
         try await transport?.releaseInputs()
     }
 
+    /// Converts an AppKit window location to the screen's unit input coordinates.
+    /// Returns nil before display geometry arrives or outside the display. Clamp an ongoing drag's
+    /// final location to the display so its matching release can still be delivered.
+    public func inputLocations(atWindowPoint point: CGPoint,
+                               clampingToDisplay: Bool = false) -> RemoteDeviceInputLocations? {
+        guard state == .connected else { return nil }
+        return transport?.inputLocations(atWindowPoint: point, clampingToDisplay: clampingToDisplay)
+    }
+
     public func sendKey(_ usage: UInt16, state: RemoteDeviceButtonState) async throws {
         try await send(.key(usage, state))
     }
@@ -223,6 +232,7 @@ public final class RemoteDeviceScreenSession {
         case .frameReceived: hasReceivedFrame = true
         case .failure(let error): lastError = error; state = .failed
         case .disconnected: state = .stopped
+        case .inputGeometryChanged: break
         }
         onStateChange?()
     }
@@ -242,6 +252,7 @@ enum RemoteScreenInput: Sendable {
 
 enum RemoteScreenTransportEvent {
     case connected, disconnected, frameReceived
+    case inputGeometryChanged
     case attributes(RemoteDeviceVideoAttributes)
     case failure(any Error)
 }
@@ -252,6 +263,7 @@ protocol RemoteScreenTransport: AnyObject {
     var nativeInputView: NSView? { get }
     var canCaptureScreenshot: Bool { get }
     var canRecordScreen: Bool { get }
+    func inputLocations(atWindowPoint point: CGPoint, clampingToDisplay: Bool) -> RemoteDeviceInputLocations?
     func captureScreenshot() async throws -> CGImage
     func startRecording(displayUniqueID: String?) async throws -> any RemoteScreenRecordingHandle
     func start(events: @escaping @MainActor (RemoteScreenTransportEvent) -> Void) async throws
@@ -267,6 +279,7 @@ extension RemoteScreenTransport {
     func startRecording(displayUniqueID: String?) async throws -> any RemoteScreenRecordingHandle {
         throw CLIError.unavailable("remote-screen-recording", "This device does not currently provide screen recording.")
     }
+    func inputLocations(atWindowPoint point: CGPoint, clampingToDisplay: Bool) -> RemoteDeviceInputLocations? { nil }
     func captureScreenshot() async throws -> CGImage {
         throw CLIError.unavailable("remote-screen-capture", "This screen connection does not provide screenshot capture.")
     }

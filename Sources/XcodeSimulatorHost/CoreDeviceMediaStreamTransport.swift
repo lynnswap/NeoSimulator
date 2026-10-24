@@ -6,7 +6,8 @@ final class CoreDeviceMediaStreamTransport: RemoteScreenTransport {
     private let remote: CoreDeviceRemoteScreenDevice
     private let input: CoreDeviceScreenInput
     private let bindings: MediaStreamBindings
-    private let layer = CALayer()
+    private let framebuffer = RemoteScreenFramebuffer(frame: .zero)
+    private let displayGeometry: CoreDeviceDisplayGeometry
     private let capture = RemoteScreenFrameCapture()
     private let contentView: NSView
     private var session: NativeSwiftValue?
@@ -15,7 +16,12 @@ final class CoreDeviceMediaStreamTransport: RemoteScreenTransport {
     private var disconnecting: Task<Void, any Error>?
     private var events: (@MainActor (RemoteScreenTransportEvent) -> Void)?
     private var stopped = false
-    private(set) var inputCapabilities: Set<RemoteDeviceInputKind> = []
+    private var observationFinished = false
+    private var observationFailure: (any Error)?
+    private var hardwareInputCapabilities: Set<RemoteDeviceInputKind> = []
+    var inputCapabilities: Set<RemoteDeviceInputKind> {
+        framebuffer.isReady ? hardwareInputCapabilities : hardwareInputCapabilities.subtracting([.pointer, .digitizer])
+    }
     var canCaptureScreenshot: Bool { !stopped && stream != nil }
     private(set) var canRecordScreen = false
 
@@ -24,29 +30,41 @@ final class CoreDeviceMediaStreamTransport: RemoteScreenTransport {
         self.contentView = contentView
         input = CoreDeviceScreenInput(remote: remote)
         bindings = try MediaStreamBindings(runtime: remote.runtime)
-        layer.contentsGravity = .resizeAspect
-        layer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
+        displayGeometry = try CoreDeviceDisplayGeometry(remote: remote)
+        framebuffer.autoresizingMask = [.width, .height]
     }
 
     func start(events: @escaping @MainActor (RemoteScreenTransportEvent) -> Void) async throws {
-        guard !stopped else { throw CancellationError() }
+        try checkConnection()
         self.events = events
-        inputCapabilities = try input.capabilities()
+        hardwareInputCapabilities = try input.capabilities()
         canRecordScreen = try remote.supports("com.apple.coredevice.feature.screenrecording")
-        layer.frame = contentView.bounds
-        contentView.layer?.addSublayer(layer)
+        framebuffer.frame = contentView.bounds
+        contentView.addSubview(framebuffer)
+        try await displayGeometry.start { [weak self] result in
+            guard let self, !self.stopped else { return }
+            switch result {
+            case .success(let display):
+                self.framebuffer.update(display: display)
+                self.events?(.inputGeometryChanged)
+            case .failure(let error):
+                self.framebuffer.update(display: nil)
+                Task { @MainActor [weak self] in await self?.finishObservation(error: error) }
+            }
+        }
+        try checkConnection()
         let session = try unsafe bindings.makeSession.unsafeInvoke(UUID())
         self.session = session
-        let configuration = try unsafe bindings.makeConfiguration.unsafeInvoke(layer, 30)
+        let configuration = try unsafe bindings.makeConfiguration.unsafeInvoke(framebuffer.sourceLayer, 30)
         let created = try await unsafe bindings.makeVideoStream.unsafeInvoke(on: session, configuration, remote.object).copyUnderlyingValue()
         stream = created
         try Task.checkCancellation()
-        guard !stopped else { throw CancellationError() }
+        try checkConnection()
         let activate = try created.type.resolveAndWait(.method("CoreDeviceMediaStreamSupport.MediaStreamProtocol.activate()",
             as: (() async throws -> NativeSwiftValue).self, valueABIs: bindings.eventABIs))
         let sequence = try await unsafe activate.unsafeInvoke(on: created)
         try Task.checkCancellation()
-        guard !stopped else { throw CancellationError() }
+        try checkConnection()
         observation = Task { [weak self] in
             guard let self else { return }
             do {
@@ -82,15 +100,20 @@ final class CoreDeviceMediaStreamTransport: RemoteScreenTransport {
         try await remote.startRecording(displayUniqueID: displayUniqueID)
     }
     func releaseInputs() async throws { try await input.releaseInputs() }
+    func inputLocations(atWindowPoint point: CGPoint, clampingToDisplay: Bool) -> RemoteDeviceInputLocations? {
+        framebuffer.inputLocations(at: contentView.convert(point, from: nil), from: contentView,
+                                   clampingToDisplay: clampingToDisplay)
+    }
 
     func stop() async throws {
         stopped = true
+        displayGeometry.stop()
         events = nil
         capture.fail(CancellationError())
-        inputCapabilities = []
+        hardwareInputCapabilities = []
         canRecordScreen = false
         observation?.cancel()
-        defer { layer.removeFromSuperlayer() }
+        defer { framebuffer.removeFromSuperview() }
         var failure: (any Error)?
         do { try await disconnectNative() } catch { failure = error }
         let task = observation
@@ -100,12 +123,26 @@ final class CoreDeviceMediaStreamTransport: RemoteScreenTransport {
     }
 
     private func finishObservation(error: (any Error)?) async {
+        guard !stopped, !observationFinished else { return }
+        observationFinished = true
+        observationFailure = error
+        observation?.cancel()
+        hardwareInputCapabilities = []
+        displayGeometry.stop()
         var failure = error
         do { try await disconnectNative() }
         catch { failure = failure.map { RemoteDeviceScreenSession.combining($0, cleanup: error) } ?? error }
+        observationFailure = failure
         capture.fail(failure ?? CLIError.unavailable("remote-screen-disconnected", "The remote screen connection ended before its screenshot arrived."))
         if let failure { events?(.failure(failure)) }
         else { events?(.disconnected) }
+    }
+
+    private func checkConnection() throws {
+        if stopped { throw CancellationError() }
+        if observationFinished {
+            throw observationFailure ?? CLIError.unavailable("remote-screen-disconnected", "The remote screen connection ended.")
+        }
     }
 
     private func disconnectNative() async throws {
@@ -141,7 +178,9 @@ final class CoreDeviceMediaStreamTransport: RemoteScreenTransport {
             try Task.checkCancellation()
             guard !stopped else { return }
             if let attributes = try event.resolveEnumPayloadAndWait(forCase: "remoteVideoAttributesChanged") {
-                events?(.attributes(try bindings.attributes(attributes)))
+                let value = try bindings.attributes(attributes)
+                framebuffer.update(attributes: value)
+                events?(.attributes(value))
             } else if let frame = try event.resolveEnumPayloadAndWait(forCase: "receivedLastDecodedFrame") {
                 guard let data = try frame.withCopy({ $0 as? Data }) else {
                     throw CLIError.io("remote-screen-frame", "The remote screen supplied an unexpected frame payload.")
