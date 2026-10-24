@@ -10,9 +10,11 @@ import Testing
         try await session.start()
         #expect(session.canRecordScreen)
         try await session.startRecording(displayUniqueID: "fixture-display")
+        #expect(session.hasUnfinishedRecording)
         let result = try #require(try await session.stopRecording())
         #expect(result.data == RecordingFixtureHandle.result.data && result.duration == 2.5 && result.codec == "fixture-codec")
         #expect(transport.requestedDisplay == "fixture-display")
+        #expect(!session.hasUnfinishedRecording)
         do { try await session.startRecording(); Issue.record("An unsaved recording was overwritten") }
         catch { #expect(session.completedRecording?.data == result.data) }
         try await session.stop()
@@ -32,8 +34,10 @@ import Testing
         }
         let start = Task { try await session.startRecording() }
         await gate.waitUntilEntered()
+        #expect(session.hasUnfinishedRecording)
         let shutdown = Task { try await session.stop() }
         await stopping.wait()
+        #expect(session.hasUnfinishedRecording)
         gate.finish()
         try await start.value
         try await shutdown.value
@@ -45,16 +49,28 @@ import Testing
         let transport = RecordingFixtureTransport()
         let session = try session(transport)
         try await session.start()
+        var unfinishedAtLastNotification = false
+        session.onStateChange = { [weak session] in
+            unfinishedAtLastNotification = session?.hasUnfinishedRecording == true
+        }
+        transport.failNextStart = true
+        do { try await session.startRecording(); Issue.record("Recording start failure was ignored") }
+        catch {
+            #expect(session.recordingState == .failed && !session.hasUnfinishedRecording)
+            #expect(!unfinishedAtLastNotification)
+        }
         try await session.startRecording()
         transport.handle.failNextStop = true
         do { try await session.stop(); Issue.record("Recording failure was ignored") }
         catch {
             #expect(session.recordingState == .failed && session.recordingError != nil)
+            #expect(session.hasUnfinishedRecording && unfinishedAtLastNotification)
             #expect(!transport.operations.contains("screen-stop"))
         }
         try await session.stop()
         #expect(transport.handle.stopAttempts == 2)
-        #expect(transport.operations == ["record-start", "record-stop", "record-stop", "screen-stop"])
+        #expect(transport.operations == ["record-start", "record-start", "record-stop", "record-stop", "screen-stop"])
+        #expect(!session.hasUnfinishedRecording && !unfinishedAtLastNotification)
         #expect(session.completedRecording?.data == RecordingFixtureHandle.result.data)
     }
 
@@ -112,7 +128,7 @@ private final class RecordingFixtureGate {
     func finish() { release?.resume(); release = nil }
 }
 
-private enum RecordingFixtureError: Error { case stop }
+private enum RecordingFixtureError: Error { case start, stop }
 
 @MainActor
 private final class RecordingFixtureHandle: RemoteScreenRecordingHandle {
@@ -133,6 +149,7 @@ private final class RecordingFixtureTransport: RemoteScreenTransport {
     let inputCapabilities: Set<RemoteDeviceInputKind> = []
     let canRecordScreen = true
     let handle = RecordingFixtureHandle()
+    var failNextStart = false
     private let startGate: RecordingFixtureGate?
     private(set) var requestedDisplay: String?
     private(set) var operations: [String] = []
@@ -143,6 +160,7 @@ private final class RecordingFixtureTransport: RemoteScreenTransport {
     func start(events: @escaping @MainActor (RemoteScreenTransportEvent) -> Void) async throws { events(.connected) }
     func startRecording(displayUniqueID: String?) async throws -> any RemoteScreenRecordingHandle {
         operations.append("record-start")
+        if failNextStart { failNextStart = false; throw RecordingFixtureError.start }
         requestedDisplay = displayUniqueID
         await startGate?.hold()
         return handle

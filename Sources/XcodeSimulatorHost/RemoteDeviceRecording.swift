@@ -28,6 +28,7 @@ final class RemoteScreenRecording {
     private var handle: (any RemoteScreenRecordingHandle)?
     private var starting: Task<Void, any Error>?
     private var stopping: Task<RemoteDeviceRecording?, any Error>?
+    var hasUnfinishedRecording: Bool { starting != nil || handle != nil || stopping != nil }
 
     func start(using begin: @escaping @MainActor () async throws -> any RemoteScreenRecordingHandle) async throws {
         try Task.checkCancellation()
@@ -51,7 +52,7 @@ final class RemoteScreenRecording {
             }
         }
         starting = task
-        defer { starting = nil }
+        defer { starting = nil; onChange?() }
         do {
             try await task.value
             try Task.checkCancellation()
@@ -83,7 +84,7 @@ final class RemoteScreenRecording {
             return result
         }
         stopping = task
-        defer { stopping = nil }
+        defer { stopping = nil; onChange?() }
         do { return try await task.value }
         catch {
             lastError = error

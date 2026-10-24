@@ -30,6 +30,8 @@ public final class RemoteDeviceScreenSession {
     public var canCaptureScreenshot: Bool { state == .connected && transport?.canCaptureScreenshot == true }
     public var canRecordScreen: Bool { state == .connected && transport?.canRecordScreen == true }
     public var recordingState: RemoteDeviceRecordingState { recording.state }
+    /// True while starting, stopping, or retaining a handle after a failed stop.
+    public var hasUnfinishedRecording: Bool { recording.hasUnfinishedRecording }
     /// Retained until explicitly discarded, including after a save failure or screen shutdown.
     public var completedRecording: RemoteDeviceRecording? { recording.completed }
     public var recordingError: (any Error)? { recording.lastError }
