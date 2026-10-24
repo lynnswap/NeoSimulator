@@ -14,6 +14,12 @@ final class SimulatorManagerModel {
             return device
         }
     }
+    var menuDevices: [SimulatorHostDevice] {
+        let simulators = inventory.compactMap { if case .simulator(let device) = $0 { device } else { nil } }
+        let counts = Dictionary(grouping: simulators, by: \.identifier).mapValues(\.count)
+        // These menu actions carry only a UDID, so they cannot distinguish device sets.
+        return devices.filter { counts[$0.identifier] == 1 }
+    }
     private(set) var managingDeviceIDs: Set<DeviceInventoryID> = []
     private(set) var isBusy = false
     private(set) var activity = ""
@@ -31,6 +37,7 @@ final class SimulatorManagerModel {
     private var refreshWaiters: [CheckedContinuation<Void, Never>] = []
     private var statusRefreshTask: Task<Void, Never>?
     private var statusIssue: (any Error)?
+    private var observationIssue: String?
     private var inventoryIssues: [DeviceInventoryIssue] = []
     private var synchronizing = false
     private var inventoryRefreshRequested = false
@@ -147,8 +154,11 @@ final class SimulatorManagerModel {
     }
 
     private func updateInventoryIssue() {
-        if inventoryIssues.isEmpty, statusIssue == nil { backgroundIssue = nil }
-        else { reportBackgroundError(InventoryReadError(issues: inventoryIssues, statusError: statusIssue)) }
+        if inventoryIssues.isEmpty, statusIssue == nil, observationIssue == nil { backgroundIssue = nil }
+        else {
+            reportBackgroundError(InventoryReadError(issues: inventoryIssues, statusError: statusIssue,
+                                                     observationIssue: observationIssue))
+        }
     }
 
     func inventoryDidChange() async {
@@ -157,10 +167,17 @@ final class SimulatorManagerModel {
         await refresh()
     }
 
+    func inventoryObservationRecovered() {
+        guard !stopping else { return }
+        observationIssue = nil
+        updateInventoryIssue()
+    }
+
     func inventoryObservationFailed(_ error: any Error) {
         guard !stopping else { return }
         NSLog("NeoSimulator automatic device updates: %@", String(describing: error))
-        backgroundIssue = "Automatic device updates are unavailable. Use Refresh to update the device list."
+        observationIssue = "Automatic device updates are unavailable. Use Refresh to update the device list."
+        updateInventoryIssue()
         onChange?()
     }
 
@@ -315,6 +332,7 @@ final class SimulatorManagerModel {
 private struct InventoryReadError: LocalizedError {
     let issues: [DeviceInventoryIssue]
     let statusError: (any Error)?
+    let observationIssue: String?
 
     var errorDescription: String? {
         let messages = issues.map { issue in
@@ -325,7 +343,7 @@ private struct InventoryReadError: LocalizedError {
             }
             return "\(source): \(issue.error.localizedDescription)"
         }
-        return (messages + [statusError?.localizedDescription].compactMap { $0 }).joined(separator: "\n")
+        return (messages + [statusError?.localizedDescription, observationIssue].compactMap { $0 }).joined(separator: "\n")
     }
 }
 
@@ -358,7 +376,7 @@ private final class SimulatorDevicesMenu: NSMenu, NSMenuDelegate {
     required init(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
-        menu.items = SimulatorDeviceMenu.items(for: model.devices.map { device in
+        menu.items = SimulatorDeviceMenu.items(for: model.menuDevices.map { device in
             let state: UInt = switch device.state {
             case "Booted": 3
             case "Booting": 2
@@ -468,6 +486,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let observation = try DeviceInventoryObservation()
                 self.inventoryObservation = observation
                 observation.onChange = { [weak self] in
+                    // Preserve source-event order before the asynchronous inventory read.
+                    self?.model.inventoryObservationRecovered()
                     Task { await self?.model.inventoryDidChange() }
                 }
                 observation.onError = { [weak self] error in
