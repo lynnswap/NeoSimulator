@@ -7,6 +7,8 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
     private static let mainWindowItem = NSToolbarItem.Identifier("ShowInMainWindow")
     let toolbar = NSToolbar(identifier: "DeviceToolbar")
     private weak var controller: DeviceWindowController?
+    private var pluginDelegate: PluginToolbarDelegate?
+    private var showsMainWindowAction = false
     private let commands: [DeviceCommand.ID]
     /// The modifier keys held now, which the buttons follow.
     var modifierFlags: () -> NSEvent.ModifierFlags = { NSEvent.modifierFlags }
@@ -34,6 +36,7 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
     }
 
     isolated deinit {
+        pluginDelegate?.restore()
         if let modifierMonitor { NSEvent.removeMonitor(modifierMonitor) }
         if let pointerTracking { pointerTracking.view.removeTrackingArea(pointerTracking.area) }
     }
@@ -48,6 +51,16 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
                                   owner: self, userInfo: nil)
         view.addTrackingArea(area)
         pointerTracking = (view, area)
+    }
+
+    /// Preserves the plugin's toolbar and delegate while adding the host's presentation action.
+    func attachPluginToolbar(_ toolbar: NSToolbar, to window: NSWindow) {
+        pluginDelegate?.restore()
+        let delegate = PluginToolbarDelegate(toolbar: toolbar, owner: self)
+        pluginDelegate = delegate
+        toolbar.delegate = delegate
+        window.toolbar = toolbar
+        updateMainWindowAction(in: toolbar)
     }
 
     /// Read physical modifier state so synthetic releases sent to devices do not
@@ -117,9 +130,15 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
     }
 
     func setShowsMainWindowAction(_ visible: Bool) {
+        showsMainWindowAction = visible
+        updateMainWindowAction(in: toolbar)
+        if let pluginToolbar = pluginDelegate?.toolbar { updateMainWindowAction(in: pluginToolbar) }
+    }
+
+    private func updateMainWindowAction(in toolbar: NSToolbar) {
         if let index = toolbar.items.firstIndex(where: { $0.itemIdentifier == Self.mainWindowItem }) {
-            if !visible { toolbar.removeItem(at: index) }
-        } else if visible { toolbar.insertItem(withItemIdentifier: Self.mainWindowItem, at: 0) }
+            if !showsMainWindowAction { toolbar.removeItem(at: index) }
+        } else if showsMainWindowAction { toolbar.insertItem(withItemIdentifier: Self.mainWindowItem, at: 0) }
     }
 
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
@@ -150,6 +169,60 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
         item.autovalidates = false
         configure(item, id)
         return item
+    }
+
+    @MainActor
+    private final class PluginToolbarDelegate: NSObject, NSToolbarDelegate {
+        weak var toolbar: NSToolbar?
+        private weak var original: (any NSToolbarDelegate)?
+        private weak var owner: DeviceToolbar?
+
+        init(toolbar: NSToolbar, owner: DeviceToolbar) {
+            self.toolbar = toolbar
+            original = toolbar.delegate
+            self.owner = owner
+        }
+
+        func restore() {
+            guard let toolbar, toolbar.delegate === self else { return }
+            if let index = toolbar.items.firstIndex(where: { $0.itemIdentifier == DeviceToolbar.mainWindowItem }) {
+                toolbar.removeItem(at: index)
+            }
+            toolbar.delegate = original
+        }
+
+        func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier identifier: NSToolbarItem.Identifier,
+                     willBeInsertedIntoToolbar inserted: Bool) -> NSToolbarItem? {
+            if identifier == DeviceToolbar.mainWindowItem {
+                return owner?.toolbar(toolbar, itemForItemIdentifier: identifier, willBeInsertedIntoToolbar: inserted)
+            }
+            return original?.toolbar?(toolbar, itemForItemIdentifier: identifier, willBeInsertedIntoToolbar: inserted)
+        }
+
+        func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+            let identifiers = original?.toolbarDefaultItemIdentifiers?(toolbar) ?? []
+            return owner?.showsMainWindowAction == true ? [DeviceToolbar.mainWindowItem] + identifiers : identifiers
+        }
+
+        func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+            let identifiers = original?.toolbarAllowedItemIdentifiers?(toolbar) ?? toolbar.items.map(\.itemIdentifier)
+            return identifiers.contains(DeviceToolbar.mainWindowItem) ? identifiers : [DeviceToolbar.mainWindowItem] + identifiers
+        }
+
+        func toolbarSelectableItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+            original?.toolbarSelectableItemIdentifiers?(toolbar) ?? []
+        }
+
+        func toolbarImmovableItemIdentifiers(_ toolbar: NSToolbar) -> Set<NSToolbarItem.Identifier> {
+            original?.toolbarImmovableItemIdentifiers?(toolbar) ?? []
+        }
+
+        func toolbar(_ toolbar: NSToolbar, itemIdentifier: NSToolbarItem.Identifier, canBeInsertedAt index: Int) -> Bool {
+            original?.toolbar?(toolbar, itemIdentifier: itemIdentifier, canBeInsertedAt: index) ?? true
+        }
+
+        func toolbarWillAddItem(_ notification: Notification) { original?.toolbarWillAddItem?(notification) }
+        func toolbarDidRemoveItem(_ notification: Notification) { original?.toolbarDidRemoveItem?(notification) }
     }
 
     /// Prefers an enabled alternate, then the Option alternate, then the base command.

@@ -2,7 +2,7 @@ import AppKit
 import UniformTypeIdentifiers
 
 @MainActor
-final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenuItemValidation, DisplayScaling {
+final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenuItemValidation, NSToolbarItemValidation, DisplayScaling {
     /// The device's current connection. A restart replaces it after the
     /// device boots again, keeping this window.
     private(set) var session: DeviceSession
@@ -70,13 +70,17 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     var onShowInMainWindow: (() -> Void)? {
         didSet { deviceToolbar?.setShowsMainWindowAction(onShowInMainWindow != nil) }
     }
-    private var canShowInMainWindow: Bool {
+    var canMovePresentation: Bool {
         guard !closed, !isFullScreen, let window = presentationWindow else { return false }
-        return window.attachedSheet == nil && !window.styleMask.contains(.fullScreen) && onShowInMainWindow != nil
+        return window.attachedSheet == nil && !window.styleMask.contains(.fullScreen)
     }
+    private var canShowInMainWindow: Bool { canMovePresentation && onShowInMainWindow != nil }
     @objc func showInMainWindow(_ sender: Any?) {
         guard canShowInMainWindow else { return }
         onShowInMainWindow?()
+    }
+    func validateToolbarItem(_ item: NSToolbarItem) -> Bool {
+        item.action != #selector(showInMainWindow(_:)) || canShowInMainWindow
     }
     /// The window of the device's external display while the display is on.
     private(set) var externalDisplayWindow: ExternalDisplayWindowController?
@@ -310,7 +314,9 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
                     let becameKey = notification.name == NSWindow.didBecomeKeyNotification
                     MainActor.assumeIsolated {
                         guard let self else { return }
-                        if becameKey { self.activateDisplay() }
+                        if becameKey {
+                            self.activateDisplay(focusingInput: presented.firstResponder === self.session.display.inputView)
+                        }
                         else { self.windowDidResignKey(Notification(name: NSWindow.didResignKeyNotification)) }
                     }
                 })
@@ -337,7 +343,9 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
             guard let self else { return }
             self.keyboard.attach(to: self.presentationWindow)
             self.observePresentationWindow()
-            if self.presentationWindow?.isKeyWindow == true { self.activateDisplay() }
+            if let window = self.presentationWindow, window.isKeyWindow {
+                self.activateDisplay(focusingInput: !self.isEmbedded || window.firstResponder === self.session.display.inputView)
+            }
         }
         if let embeddedContainer {
             content.isEmbedded = true
@@ -390,12 +398,13 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     private func showUserInterfacePlugin(_ plugin: SimulatorUserInterfacePlugin) {
         guard let window else { return }
         if let toolbar = plugin.toolbar {
-            window.toolbar = toolbar
+            deviceToolbar?.attachPluginToolbar(toolbar, to: window)
             // The plugin's toolbar takes the window's toolbar style.
             deviceToolbar?.apply(window.toolbarStyle, to: window)
         }
         // The overlay is the display's input view now.
-        if window.isKeyWindow { focusInput() }
+        if let presented = presentationWindow, presented.isKeyWindow,
+           !isEmbedded || (presented.firstResponder as? NSView)?.isDescendant(of: content) == true { focusInput() }
     }
 
     /// Plugin-toolbar Home action.
@@ -433,6 +442,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         }
         // Preserve scale across reconnection, then fit the new display shape below the window's top edge.
         let scale = WindowScale.usable(self.session.display.renderScale) ?? 1
+        let restoreInputFocus = !isEmbedded || presentationWindow?.firstResponder === self.session.display.inputView
         isRestarting = false
         self.session = session
         content.removeFromSuperview()
@@ -451,7 +461,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         didRotate()
         if present { showAndActivate() } else { readInitialOrientation() }
         // A window that stayed key gets no new key notification.
-        if window?.isKeyWindow == true { activateDisplay() }
+        if presentationWindow?.isKeyWindow == true { activateDisplay(focusingInput: restoreInputFocus) }
     }
 
     func showAndActivate() {
@@ -1195,12 +1205,12 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
 
     func windowDidBecomeKey(_ notification: Notification) { activateDisplay() }
 
-    private func activateDisplay() {
+    private func activateDisplay(focusingInput: Bool = true) {
         guard !closed else { return }
         isKey = true
         session.display.setActive(true)
         updateKeyboardInput()
-        focusInput()
+        if focusingInput { focusInput() }
     }
     func windowDidResignKey(_ notification: Notification) {
         guard !closed else { return }

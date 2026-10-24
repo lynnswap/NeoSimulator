@@ -30,6 +30,7 @@ final class DisplayKeyboardInput {
 
     /// Transfers keyboard ownership together with the display's presentation.
     func attach(to window: NSWindow?) {
+        guard self.window !== window else { return }
         setEnabled(false)
         self.window = window
     }

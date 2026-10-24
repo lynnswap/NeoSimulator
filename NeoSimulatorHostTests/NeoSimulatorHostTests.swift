@@ -18,7 +18,7 @@ struct InputFocusTests {
         let session = controller.session
         let parent = NSViewController()
         parent.view = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 600))
-        let window = NSWindow(contentRect: parent.view.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        let window = KeyPresentationWindow(contentRect: parent.view.frame, styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentViewController = parent
         defer { window.close() }
@@ -51,6 +51,15 @@ struct InputFocusTests {
         #expect(controller.window?.contentView === content)
         controller.embed(in: parent)
         #expect(controller.session === session && display.disconnectCount == 0 && closes == 0)
+        let search = NSSearchField(frame: NSRect(x: 0, y: 0, width: 200, height: 24))
+        parent.view.addSubview(search)
+        #expect(window.makeFirstResponder(search))
+        let editor = window.firstResponder
+        #expect(editor !== display.inputView)
+        NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: window)
+        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
+        #expect(window.firstResponder === editor)
+        controller.focusInput()
         await controller.prepareForRestart()
         let replacement = TestDisplay()
         let replacementSession = try makeSession(replacement, features: [DeviceCapabilities.keyboard])
@@ -58,6 +67,7 @@ struct InputFocusTests {
         #expect(controller.isEmbedded && controller.presentationViewController.parent === parent)
         #expect(controller.session === replacementSession && compactPresentations == 1)
         #expect(replacement.disconnectCount == 0 && display.disconnectCount == 1 && closes == 0)
+        #expect(window.firstResponder === replacement.inputView && replacement.keyboard.last == true)
         controller.invalidate()
         #expect(replacement.disconnectCount == 1 && display.disconnectCount == 1 && closes == 0)
     }
@@ -858,12 +868,33 @@ struct InputFocusTests {
         let overlay = InputView()
         display.view.addSubview(overlay)
         let toolbar = NSToolbar(identifier: "PluginToolbar")
+        let pluginDelegate = TestPluginToolbarDelegate()
+        toolbar.delegate = pluginDelegate
+        toolbar.insertItem(withItemIdentifier: TestPluginToolbarDelegate.itemIdentifier, at: 0)
         // SimulatorKit loads the Apple Vision Pro plugin before opening its window.
         display.plugin = SimulatorUserInterfacePlugin(overlayView: overlay, toolbar: toolbar)
         let controller = try makeController(display, family: .vision, features: [], userInterfacePlugin: true)
         defer { controller.invalidate() }
         let window = try #require(controller.window)
         #expect(window.toolbar === toolbar)
+        var mainWindowRequests = 0
+        controller.onShowInMainWindow = { mainWindowRequests += 1 }
+        let mainWindowItem = try #require(toolbar.items.first { $0.itemIdentifier.rawValue == "ShowInMainWindow" })
+        #expect(toolbar.items.contains { $0.itemIdentifier == TestPluginToolbarDelegate.itemIdentifier })
+        #expect(toolbar.delegate?.toolbarSelectableItemIdentifiers?(toolbar) == [TestPluginToolbarDelegate.itemIdentifier])
+        #expect(NSApp.sendAction(try #require(mainWindowItem.action), to: mainWindowItem.target, from: mainWindowItem))
+        #expect(mainWindowRequests == 1)
+        controller.windowWillEnterFullScreen(Notification(name: NSWindow.willEnterFullScreenNotification, object: window))
+        mainWindowItem.validate()
+        #expect(!mainWindowItem.isEnabled)
+        controller.showInMainWindow(nil)
+        #expect(mainWindowRequests == 1)
+        controller.windowDidFailToEnterFullScreen(window)
+        mainWindowItem.validate()
+        #expect(mainWindowItem.isEnabled)
+        controller.onShowInMainWindow = nil
+        #expect(!toolbar.items.contains { $0.itemIdentifier.rawValue == "ShowInMainWindow" })
+        #expect(toolbar.items.contains { $0.itemIdentifier == TestPluginToolbarDelegate.itemIdentifier })
         controller.focusInput()
         #expect(window.firstResponder === overlay)
         #expect(!overlay.modifiers.isEmpty && display.input.modifiers.isEmpty)
@@ -6288,6 +6319,24 @@ private final class InputView: NSView {
         presses.append(event)
         if passesOnPresses { super.mouseDown(with: event) }
     }
+}
+
+/// Models key-window state without showing or activating a window on the WindowServer.
+@MainActor
+private final class KeyPresentationWindow: NSWindow {
+    override var isKeyWindow: Bool { true }
+}
+
+@MainActor
+private final class TestPluginToolbarDelegate: NSObject, NSToolbarDelegate {
+    static let itemIdentifier = NSToolbarItem.Identifier("PluginControl")
+    func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier identifier: NSToolbarItem.Identifier,
+                 willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
+        NSToolbarItem(itemIdentifier: identifier)
+    }
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [Self.itemIdentifier] }
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [Self.itemIdentifier] }
+    func toolbarSelectableItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [Self.itemIdentifier] }
 }
 /// Models menu handling by Apple Vision Pro's XROS.VirtualHMDInputView overlay.
 @MainActor
