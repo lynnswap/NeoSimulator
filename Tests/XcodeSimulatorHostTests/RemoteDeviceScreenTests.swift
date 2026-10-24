@@ -17,6 +17,9 @@ struct RemoteDeviceScreenTests {
         #expect(receivedID == "command-identifier")
         #expect(session.deviceID == .coreDevice("command-identifier"))
         #expect(session.state == .connected && !session.hasReceivedFrame)
+        transport.emit(.attributes(RemoteDeviceVideoAttributes(aspectRatio: CGSize(width: 2, height: 1),
+            contentsRect: CGRect(x: 0, y: 0, width: 1, height: 1), scaleFactor: 2, orientation: .landscapeRight)))
+        #expect(session.videoAttributes?.orientation == .landscapeRight)
         transport.emit(.frameReceived)
         #expect(session.hasReceivedFrame)
         try await session.sendKey(4, state: .down)

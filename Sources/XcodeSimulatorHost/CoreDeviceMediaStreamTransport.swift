@@ -134,6 +134,8 @@ private final class MediaStreamBindings {
     private let ratio: NativeSwiftMethod<() -> CGSize>
     private let contentsRect: NativeSwiftMethod<() -> CGRect>
     private let scaleFactor: NativeSwiftMethod<() -> Float>
+    private let orientation: NativeSwiftMethod<() -> NativeSwiftValue>
+    private let orientationRawValue: NativeSwiftMethod<() -> String>
 
     init(runtime: ABIRuntime) throws {
         try CoreDeviceRemoteScreenDevice.load("/Library/Developer/PrivateFrameworks/CoreDevice.framework/Versions/A/Frameworks/CoreDeviceMediaStreamSupport.framework/Versions/A/CoreDeviceMediaStreamSupport")
@@ -155,10 +157,14 @@ private final class MediaStreamBindings {
         ratio = try attributes.resolveAndWait(.getter("ratio", as: (() -> CGSize).self, receiverABI: abi))
         contentsRect = try attributes.resolveAndWait(.getter("contentsRect", as: (() -> CGRect).self, receiverABI: abi))
         scaleFactor = try attributes.resolveAndWait(.getter("scaleFactor", as: (() -> Float).self, receiverABI: abi))
+        orientation = try attributes.resolveAndWait(.getter("orientation", as: (() -> NativeSwiftValue).self, receiverABI: abi))
+        let direction = try runtime.resolveSwiftTypeAndWait(named: "CoreDevice.DeviceOrientation")
+        orientationRawValue = try direction.resolveAndWait(.getter("rawValue", as: (() -> String).self))
     }
 
     func attributes(_ value: NativeSwiftValue) throws -> RemoteDeviceVideoAttributes {
         try unsafe RemoteDeviceVideoAttributes(aspectRatio: ratio.unsafeInvoke(on: value),
-            contentsRect: contentsRect.unsafeInvoke(on: value), scaleFactor: scaleFactor.unsafeInvoke(on: value))
+            contentsRect: contentsRect.unsafeInvoke(on: value), scaleFactor: scaleFactor.unsafeInvoke(on: value),
+            orientation: RemoteDeviceOrientation(rawValue: orientationRawValue.unsafeInvoke(on: orientation.unsafeInvoke(on: value))))
     }
 }

@@ -6,10 +6,15 @@ public enum RemoteDevicePointerPhase: String, Sendable { case down, up, dragged 
 public enum RemoteDeviceTouchPhase: String, Sendable { case began, moved, ended }
 public enum RemoteDeviceTouchEdge: String, Sendable { case none, top, left, right, bottom }
 
+public enum RemoteDeviceOrientation: String, Sendable {
+    case unknown, portrait, portraitUpsideDown, landscapeLeft, landscapeRight, faceUp, faceDown
+}
+
 public struct RemoteDeviceVideoAttributes: Equatable, Sendable {
     public let aspectRatio: CGSize
     public let contentsRect: CGRect
     public let scaleFactor: Float
+    public let orientation: RemoteDeviceOrientation?
 }
 
 /// Owns one CoreDevice screen connection and its input resources on the main actor.
