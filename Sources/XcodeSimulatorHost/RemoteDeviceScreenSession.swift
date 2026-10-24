@@ -79,6 +79,7 @@ public final class RemoteDeviceScreenSession {
                 try Task.checkCancellation()
                 guard generation == token else { throw CancellationError() }
                 self.transport = transport
+                onStateChange?()
                 try await transport.start { [weak self] event in
                     guard let self, self.generation == token else { return }
                     self.receive(event)

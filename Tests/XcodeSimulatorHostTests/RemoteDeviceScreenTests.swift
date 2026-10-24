@@ -13,7 +13,12 @@ struct RemoteDeviceScreenTests {
             receivedID = target.identifier
             return transport
         }
+        var exposedInputWhileConnecting = false
+        session.onStateChange = {
+            if session.state == .connecting && session.nativeInputView != nil { exposedInputWhileConnecting = true }
+        }
         try await session.start()
+        #expect(exposedInputWhileConnecting)
         #expect(receivedID == "command-identifier")
         #expect(session.deviceID == .coreDevice("command-identifier"))
         #expect(session.state == .connected && !session.hasReceivedFrame)
@@ -96,6 +101,7 @@ private enum ScreenFixtureError: LocalizedError {
 @MainActor
 private final class ScreenFixtureTransport: RemoteScreenTransport {
     let inputCapabilities: Set<RemoteDeviceInputKind> = [.keyboard]
+    let nativeInputView: NSView? = NSView()
     private let suspendStart: Bool
     var failCleanup: Bool
     private(set) var closed = false
