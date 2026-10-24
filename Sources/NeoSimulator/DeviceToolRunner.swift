@@ -187,7 +187,10 @@ final class DeviceTools {
         }
         do { try await boot() } catch {
             if error is CancellationError { throw error }
-            throw failure("booting", completed: erasing && eraseFailure == nil ? ["shut down", "erased"] : ["shut down"], error)
+            if let eraseFailure {
+                throw HostError.operation("\(operation) failed while erasing: \(eraseFailure.localizedDescription) Restarting also failed while booting: \(error.localizedDescription) The device was shut down.")
+            }
+            throw failure("booting", completed: erasing ? ["shut down", "erased"] : ["shut down"], error)
         }
         if let eraseFailure { throw failure("erasing", completed: ["shut down", "booted again"], eraseFailure) }
     }

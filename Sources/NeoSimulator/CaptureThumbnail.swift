@@ -80,6 +80,57 @@ final class CapturedContent {
     }
 }
 
+/// Runs presentation effects and deadlines independently of the thumbnail's lifecycle.
+@MainActor
+protocol CaptureThumbnailTiming {
+    func animateWindow(_ window: NSWindow, duration: Double, timing: CAMediaTimingFunctionName?, changes: (NSWindow) -> Void, completion: @escaping @MainActor () -> Void)
+    func animateLayer(duration: Double, timing: CAMediaTimingFunctionName, changes: () -> Void,
+                      completion: @escaping @MainActor () -> Void)
+    func fadeIn(_ layer: CALayer, duration: Double, completion: @escaping @MainActor () -> Void)
+    func schedule(after duration: Duration, action: @escaping @MainActor () -> Void) -> () -> Void
+}
+
+@MainActor
+private struct AppKitCaptureThumbnailTiming: CaptureThumbnailTiming {
+    func animateWindow(_ window: NSWindow, duration: Double, timing: CAMediaTimingFunctionName?, changes: (NSWindow) -> Void, completion: @escaping @MainActor () -> Void) {
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = duration
+            if let timing { context.timingFunction = CAMediaTimingFunction(name: timing) }
+            changes(window.animator())
+        }, completionHandler: { MainActor.assumeIsolated { completion() } })
+    }
+
+    func animateLayer(duration: Double, timing: CAMediaTimingFunctionName, changes: () -> Void,
+                      completion: @escaping @MainActor () -> Void) {
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(duration)
+        CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: timing))
+        CATransaction.setCompletionBlock { MainActor.assumeIsolated { completion() } }
+        changes()
+        CATransaction.commit()
+    }
+
+    func fadeIn(_ layer: CALayer, duration: Double, completion: @escaping @MainActor () -> Void) {
+        CATransaction.begin()
+        CATransaction.setCompletionBlock { MainActor.assumeIsolated { completion() } }
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = 0
+        fade.toValue = 1
+        fade.duration = duration
+        fade.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        layer.add(fade, forKey: "fadeIn")
+        CATransaction.commit()
+    }
+
+    func schedule(after duration: Duration, action: @escaping @MainActor () -> Void) -> () -> Void {
+        let task = Task {
+            do { try await Task.sleep(for: duration) } catch { return }
+            action()
+        }
+        return { task.cancel() }
+    }
+}
+
 /// Floating capture preview. Dismissal saves to the default folder;
 /// menu actions and dragging can consume the capture instead.
 @MainActor
@@ -112,7 +163,8 @@ final class CaptureThumbnail: NSObject {
     /// The destination relative to the device window, which can move.
     private var parentOffset = NSPoint.zero
     private let report: (Error) -> Void
-    private var timer: Task<Void, Never>?
+    private let timing: any CaptureThumbnailTiming
+    private var cancelTimer: (() -> Void)?
     private var pauses = 0
     private var hiding = false
     /// Whether it has appeared and its timer runs.
@@ -126,8 +178,10 @@ final class CaptureThumbnail: NSObject {
     /// Animates from `source` in screen coordinates. `rotation` corrects the unrotated framebuffer.
     /// `spacing` is the offset from the device window; `report` receives save/use failures.
     init(_ content: CapturedContent, image: NSImage?, parent: NSWindow, source: NSRect, rotation: Double = 0,
-         cornerRadius: CGFloat = 0, spacing: NSSize, report: @escaping (Error) -> Void) {
+         cornerRadius: CGFloat = 0, spacing: NSSize, timing: any CaptureThumbnailTiming = AppKitCaptureThumbnailTiming(),
+         report: @escaping (Error) -> Void) {
         self.content = content
+        self.timing = timing
         self.parent = parent
         self.source = source
         self.cornerRadius = cornerRadius
@@ -135,7 +189,7 @@ final class CaptureThumbnail: NSObject {
         self.report = report
         window = NSWindow(contentRect: source, styleMask: .borderless, backing: .buffered, defer: false)
         view = CaptureThumbnailView(content: content, image: image, rotation: rotation, cornerRadius: cornerRadius,
-                                    report: report)
+                                    timing: timing, report: report)
         super.init()
         window.animationBehavior = .none
         window.isMovableByWindowBackground = false
@@ -162,12 +216,10 @@ final class CaptureThumbnail: NSObject {
             window.orderFront(nil)
             view.flash { [weak self] in
                 guard let self, !self.hiding else { return }
-                NSAnimationContext.runAnimationGroup({ context in
-                    context.duration = 0.3
-                    context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-                    self.window.animator().setFrame(self.currentDestination, display: true)
+                self.timing.animateWindow(self.window, duration: 0.3, timing: .easeInEaseOut, changes: { target in
+                    target.setFrame(self.currentDestination, display: true)
                     self.view.showAsThumbnail()
-                }, completionHandler: { [weak self] in self?.didShow() })
+                }, completion: { [weak self] in self?.didShow() })
             }
         case .movie:
             window.setFrame(destination, display: true)
@@ -239,20 +291,16 @@ final class CaptureThumbnail: NSObject {
     }
 
     private func startTimer() {
-        timer?.cancel()
+        cancelTimer?()
         guard shown, pauses == 0, !finished else { return }
-        let duration = duration
-        timer = Task { [weak self] in
-            do { try await Task.sleep(for: duration) } catch { return }
-            self?.hide(animated: true)
-        }
+        cancelTimer = timing.schedule(after: duration) { [weak self] in self?.hide(animated: true) }
     }
 
     /// Hover, an open menu, a drag, or a moving device window keeps the
     /// thumbnail up; the timer starts again when they end.
     func pause() {
         pauses += 1
-        timer?.cancel()
+        cancelTimer?()
         // Only the timer's hide can be taken back; a capture the user used is done.
         if hiding, !finished, !dismissedExplicitly, !content.isResolved { cancelHide() }
     }
@@ -264,11 +312,10 @@ final class CaptureThumbnail: NSObject {
 
     private func cancelHide() {
         hiding = false
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.1
-            window.animator().setFrame(currentDestination, display: true)
-            window.animator().alphaValue = 1
-        }
+        timing.animateWindow(window, duration: 0.1, timing: nil, changes: { target in
+            target.setFrame(currentDestination, display: true)
+            target.alphaValue = 1
+        }, completion: {})
     }
 
     /// Ends the thumbnail. Unless the user dismissed it through its menu or a
@@ -277,20 +324,18 @@ final class CaptureThumbnail: NSObject {
         // Ending at once also ends a hide in progress.
         guard !finished, !hiding || !animated else { return }
         hiding = true
-        timer?.cancel()
+        cancelTimer?()
         guard animated, shown, let parent, parent.isVisible else { finish(); return }
         // Beside the window, it slides under it from where it is now.
         let frame = window.frame
         let distance = frame.width + spacing.width + cornerRadius
-        NSAnimationContext.runAnimationGroup({ context in
-            context.duration = 0.35
-            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        timing.animateWindow(window, duration: 0.35, timing: .easeInEaseOut, changes: { target in
             switch position {
-            case .right: window.animator().setFrame(frame.offsetBy(dx: -distance, dy: 0), display: true)
-            case .left: window.animator().setFrame(frame.offsetBy(dx: distance, dy: 0), display: true)
-            case .over: window.animator().alphaValue = 0
+            case .right: target.setFrame(frame.offsetBy(dx: -distance, dy: 0), display: true)
+            case .left: target.setFrame(frame.offsetBy(dx: distance, dy: 0), display: true)
+            case .over: target.alphaValue = 0
             }
-        }, completionHandler: { [weak self] in
+        }, completion: { [weak self] in
             guard let self, self.hiding else { return }
             self.finish()
         })
@@ -307,7 +352,7 @@ final class CaptureThumbnail: NSObject {
         guard !finished else { return nil }
         finished = true
         hiding = true
-        timer?.cancel()
+        cancelTimer?()
         moveWatch?.cancel()
         for observer in observers { NotificationCenter.default.removeObserver(observer) }
         observers.removeAll()
@@ -550,6 +595,7 @@ private final class CaptureThumbnailAction {
 @MainActor
 private final class CaptureThumbnailView: NSView, NSMenuDelegate, NSDraggingSource {
     weak var owner: CaptureThumbnail?
+    private let timing: any CaptureThumbnailTiming
     private let content: CapturedContent
     private let image: NSImage?
     private let contentLayer = CALayer()
@@ -564,8 +610,9 @@ private final class CaptureThumbnailView: NSView, NSMenuDelegate, NSDraggingSour
     private var movieFrame: NSImage?
     private var mouseDownLocation: NSPoint?
 
-    init(content: CapturedContent, image: NSImage?, rotation: Double, cornerRadius: CGFloat,
+    init(content: CapturedContent, image: NSImage?, rotation: Double, cornerRadius: CGFloat, timing: any CaptureThumbnailTiming,
          report: @escaping (Error) -> Void) {
+        self.timing = timing
         self.content = content
         self.image = image
         self.rotation = rotation
@@ -645,21 +692,13 @@ private final class CaptureThumbnailView: NSView, NSMenuDelegate, NSDraggingSour
 
     /// The white flash: half opacity in 0.15 seconds, then gone in 0.15.
     func flash(then completion: @escaping @MainActor () -> Void) {
-        CATransaction.begin()
-        CATransaction.setAnimationDuration(0.15)
-        CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeIn))
-        CATransaction.setCompletionBlock {
-            MainActor.assumeIsolated {
-                CATransaction.begin()
-                CATransaction.setAnimationDuration(0.15)
-                CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeOut))
-                CATransaction.setCompletionBlock { MainActor.assumeIsolated { completion() } }
-                self.whiteLayer.opacity = 0
-                CATransaction.commit()
-            }
-        }
-        whiteLayer.opacity = 0.5
-        CATransaction.commit()
+        timing.animateLayer(duration: 0.15, timing: .easeIn, changes: {
+            whiteLayer.opacity = 0.5
+        }, completion: { [self] in
+            timing.animateLayer(duration: 0.15, timing: .easeOut, changes: {
+                whiteLayer.opacity = 0
+            }, completion: completion)
+        })
     }
 
     /// The thumbnail's black 4-point frame. Its corners are a quarter of the
@@ -675,16 +714,7 @@ private final class CaptureThumbnailView: NSView, NSMenuDelegate, NSDraggingSour
     }
 
     func fadeIn(duration: Double, then completion: @escaping @MainActor () -> Void) {
-        let root = layer!
-        CATransaction.begin()
-        CATransaction.setCompletionBlock { MainActor.assumeIsolated { completion() } }
-        let fade = CABasicAnimation(keyPath: "opacity")
-        fade.fromValue = 0
-        fade.toValue = 1
-        fade.duration = duration
-        fade.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-        root.add(fade, forKey: "fadeIn")
-        CATransaction.commit()
+        timing.fadeIn(layer!, duration: duration, completion: completion)
     }
 
     func stop() { player?.pause() }

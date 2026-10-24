@@ -239,6 +239,25 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                     Notification.Name("dev.lynnswap.NeoSimulator.RendererReleased"), object: requestIdentifier,
                     userInfo: result, deliverImmediately: true)
             }
+        case "restart-device", "erase-device":
+            guard let identifier, let requestIdentifier else { return }
+            Task {
+                var result: [String: Any] = ["udid": identifier, "handled": false]
+                if let controller = sessions[identifier] {
+                    result["handled"] = true
+                    do {
+                        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+                            restartDevice(controller, erasing: action == "erase-device") { failure in
+                                if let failure { continuation.resume(throwing: failure) }
+                                else { continuation.resume() }
+                            }
+                        }
+                    } catch { result["error"] = error.localizedDescription }
+                }
+                DistributedNotificationCenter.default().postNotificationName(
+                    Notification.Name("dev.lynnswap.NeoSimulator.RendererManaged"), object: requestIdentifier,
+                    userInfo: result, deliverImmediately: true)
+            }
         case "activate": activateWindows()
         case "show-browser": showDeviceBrowser()
         case "quit":
@@ -869,21 +888,28 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     // MARK: Restart
 
     /// Disconnects, shuts down, optionally erases, boots, and reconnects the existing window.
-    private func restartDevice(_ controller: DeviceWindowController, erasing: Bool) {
+    private func restartDevice(_ controller: DeviceWindowController, erasing: Bool,
+                               completion: ((Error?) -> Void)? = nil) {
         let identifier = controller.session.device.id
         guard !stopped, sessions[identifier] === controller, restarting[identifier] == nil,
-              bootOperations[identifier] == nil else { return }
+              bootOperations[identifier] == nil else {
+            completion?(HostError.operation("This simulator already has a device operation in progress."))
+            return
+        }
         let tools: DeviceTools
         do {
             tools = try DeviceTools(identifier: identifier, xcodeURL: runtime.xcodeURL,
                                     deviceSetPath: controller.session.tools.deviceSetPath)
         } catch {
-            controller.present(error)
+            if let completion { completion(error) } else { controller.present(error) }
             return
         }
         // Holding the operation slot disables other device commands while
         // an active recording finishes.
-        guard controller.session.reserve() else { return }
+        guard controller.session.reserve() else {
+            completion?(HostError.operation("This simulator already has a device operation in progress."))
+            return
+        }
         awaitingReconnect[identifier] = controller
         bootOperations[identifier] = tools
         restarting[identifier] = Task { [weak self] in
@@ -893,11 +919,12 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                 try Task.checkCancellation()
                 try await tools.restart(erasing: erasing)
             } catch { failure = error }
-            guard let self else { return }
+            guard let self else { completion?(CancellationError()); return }
             self.bootOperations.removeValue(forKey: identifier)
             self.restarting.removeValue(forKey: identifier)
             // A window whose device is still down closes; a booted device reconnects.
             self.rescan()
+            if let completion { completion(failure); return }
             guard let failure, !(failure is CancellationError), !self.stopped else { return }
             if self.sessions[identifier] === controller { controller.present(failure) } else { self.report(failure) }
         }

@@ -2864,7 +2864,9 @@ struct InputFocusTests {
         try """
             #!/bin/sh
             echo "$1" >> "\(log.path)"
-            [ "$1" = "$(cat "\(fail.path)" 2>/dev/null)" ] && { echo "$1 failed" >&2; exit 1; }
+            case " $(cat "\(fail.path)" 2>/dev/null) " in
+              *" $1 "*) echo "$1 failed" >&2; exit 1 ;;
+            esac
             exit 0
             """.write(to: simctl, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: simctl.path)
@@ -2891,6 +2893,11 @@ struct InputFocusTests {
         #expect(boot.calls == ["shutdown", "boot"])
         #expect(boot.error?.hasPrefix("Restart failed while booting") == true)
         #expect(boot.error?.hasSuffix("The device was shut down.") == true)
+        let eraseAndBoot = await run(erasing: true, failing: "erase boot")
+        #expect(eraseAndBoot.calls == ["shutdown", "erase", "boot"])
+        #expect(eraseAndBoot.error?.contains("erase failed") == true)
+        #expect(eraseAndBoot.error?.contains("boot failed") == true)
+        #expect(eraseAndBoot.error?.hasSuffix("The device was shut down.") == true)
     }
 
     @Test func aRestartKeepsTheWindowAndReconnectsItsNewSession() async throws {

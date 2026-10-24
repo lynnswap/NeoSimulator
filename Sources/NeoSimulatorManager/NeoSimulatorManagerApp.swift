@@ -7,7 +7,20 @@ import XcodeSimulatorHost
 final class SimulatorManagerModel {
     private let controller: SimulatorHostController
     private(set) var status: SimulatorHostStatus?
-    private(set) var devices: [SimulatorHostDevice] = []
+    private(set) var inventory: [InventoryDevice] = []
+    var devices: [SimulatorHostDevice] {
+        inventory.compactMap { item in
+            guard case .simulator(let device) = item, device.isAvailable else { return nil }
+            return device
+        }
+    }
+    var menuDevices: [SimulatorHostDevice] {
+        let simulators = inventory.compactMap { if case .simulator(let device) = $0 { device } else { nil } }
+        let counts = Dictionary(grouping: simulators, by: \.identifier).mapValues(\.count)
+        // These menu actions carry only a UDID, so they cannot distinguish device sets.
+        return devices.filter { counts[$0.identifier] == 1 }
+    }
+    private(set) var managingDeviceIDs: Set<DeviceInventoryID> = []
     private(set) var isBusy = false
     private(set) var activity = ""
     private(set) var backgroundIssue: String?
@@ -22,9 +35,15 @@ final class SimulatorManagerModel {
     var onError: ((any Error) -> Void)?
     private var refreshing = false
     private var refreshWaiters: [CheckedContinuation<Void, Never>] = []
+    private var statusRefreshTask: Task<Void, Never>?
+    private var statusIssue: (any Error)?
+    private var observationIssue: String?
+    private var inventoryIssues: [DeviceInventoryIssue] = []
     private var synchronizing = false
+    private var inventoryRefreshRequested = false
     private var stopping = false
     private var operationTask: Task<Void, Never>?
+    private var managementTasks: [UUID: Task<Void, Never>] = [:]
     private var pendingOperations: [(activity: String, refreshCatalog: Bool, run: @MainActor () async throws -> Void)] = []
 
     init(rendererApplicationURL: URL) {
@@ -32,7 +51,7 @@ final class SimulatorManagerModel {
     }
 
     func start() {
-        perform("Starting simulators…") {
+        perform("Loading devices…") {
             let status = try await self.controller.status()
             self.status = status
             if status.restorationAvailable { try await self.controller.selectHost(status.host) }
@@ -53,6 +72,7 @@ final class SimulatorManagerModel {
 
     func createSimulator(named name: String, deviceType: String, runtime: String,
                          context: SimulatorCreationContext) async throws -> String {
+        guard !stopping else { throw CancellationError() }
         let identifier = try await controller.createSimulator(named: name, deviceType: deviceType, runtime: runtime,
                                                                context: context)
         await refresh()
@@ -60,8 +80,31 @@ final class SimulatorManagerModel {
     }
 
     func pairSimulators(watch: String, phone: String, context: SimulatorCreationContext) async throws {
+        guard !stopping else { throw CancellationError() }
         try await controller.pairSimulators(watch: watch, phone: phone, context: context)
         await refresh()
+    }
+
+    func manage(_ action: DeviceManagementAction, devices: [InventoryDevice]) {
+        guard !stopping else { return }
+        var identifiers = Set<DeviceInventoryID>()
+        let targets = devices.filter { identifiers.insert($0.id).inserted }
+        guard !targets.isEmpty, managingDeviceIDs.isDisjoint(with: identifiers) else { return }
+        managingDeviceIDs.formUnion(identifiers)
+        let request = UUID()
+        managementTasks[request] = Task {
+            defer {
+                self.managingDeviceIDs.subtract(identifiers)
+                self.managementTasks.removeValue(forKey: request)
+                self.onChange?()
+            }
+            let report = await self.controller.manage(action, devices: targets)
+            if !self.stopping { await self.refreshCatalog() }
+            if report.results.contains(where: { $0.error != nil }) {
+                self.onError?(DeviceManagementFailure(devices: targets, report: report))
+            }
+        }
+        onChange?()
     }
 
     func restoreDefaults(force: Bool = false) {
@@ -82,23 +125,60 @@ final class SimulatorManagerModel {
             if refreshWaiters.isEmpty { refreshing = false }
             else { refreshWaiters.removeFirst().resume() }
         }
-        do {
-            status = try await controller.status()
-            var merged: [SimulatorHostDevice] = []
-            var identifiers = Set<String>()
-            var firstError: (any Error)?
-            for xcode in try await controller.installedXcodes() {
-                do {
-                    for device in try await controller.devices(xcodeURL: xcode.url) where identifiers.insert(device.identifier).inserted {
-                        merged.append(device)
-                    }
-                } catch { if firstError == nil { firstError = error } }
+        repeat {
+            inventoryRefreshRequested = false
+            refreshHostStatus()
+            let snapshot = await controller.inventory()
+            inventory = snapshot.devices
+            inventoryIssues = snapshot.issues
+            updateInventoryIssue()
+        } while inventoryRefreshRequested && !stopping
+    }
+
+    private func refreshHostStatus() {
+        guard statusRefreshTask == nil else { return }
+        statusRefreshTask = Task {
+            defer { self.statusRefreshTask = nil }
+            do {
+                let status = try await self.controller.status()
+                guard !self.stopping, !Task.isCancelled else { return }
+                self.status = status
+                self.statusIssue = nil
+            } catch {
+                guard !self.stopping, !Task.isCancelled else { return }
+                self.statusIssue = error
             }
-            if merged.isEmpty, let firstError { throw firstError }
-            devices = merged
-            if let firstError { reportBackgroundError(firstError) }
-            else { backgroundIssue = nil }
-        } catch { reportBackgroundError(error) }
+            self.updateInventoryIssue()
+            self.onChange?()
+        }
+    }
+
+    private func updateInventoryIssue() {
+        if inventoryIssues.isEmpty, statusIssue == nil, observationIssue == nil { backgroundIssue = nil }
+        else {
+            reportBackgroundError(InventoryReadError(issues: inventoryIssues, statusError: statusIssue,
+                                                     observationIssue: observationIssue))
+        }
+    }
+
+    func inventoryDidChange() async {
+        guard !stopping else { return }
+        inventoryRefreshRequested = true
+        await refresh()
+    }
+
+    func inventoryObservationRecovered() {
+        guard !stopping else { return }
+        observationIssue = nil
+        updateInventoryIssue()
+    }
+
+    func inventoryObservationFailed(_ error: any Error) {
+        guard !stopping else { return }
+        NSLog("NeoSimulator automatic device updates: %@", String(describing: error))
+        observationIssue = "Automatic device updates are unavailable. Use Refresh to update the device list."
+        updateInventoryIssue()
+        onChange?()
     }
 
     func synchronizeConnections() async {
@@ -186,6 +266,10 @@ final class SimulatorManagerModel {
     }
 
     private func set(_ setting: SimulatorDeviceSetting, identifier: String) {
+        guard !managingDeviceIDs.contains(where: { id in
+            if case .simulator(let udid, _) = id { return udid == identifier }
+            return false
+        }) else { return }
         perform("Updating simulator settings…", refreshCatalog: false) {
             do { try await self.controller.setDeviceSetting(setting, identifier: identifier) }
             catch {
@@ -200,7 +284,10 @@ final class SimulatorManagerModel {
         stopping = true
         pendingOperations.removeAll { $0.refreshCatalog }
         inspectionTask?.cancel()
+        statusRefreshTask?.cancel()
         await operationTask?.value
+        for task in Array(managementTasks.values) { await task.value }
+        await statusRefreshTask?.value
         do { try await controller.quitRenderer(keepingDevicesRunning: keepingDevicesRunning) }
         catch { stopping = false; throw error }
     }
@@ -234,12 +321,46 @@ final class SimulatorManagerModel {
                 var failure: (any Error)?
                 do { try await next.run() }
                 catch { failure = error }
-                if next.refreshCatalog, !self.stopping { await self.refreshCatalog() }
+                if (next.refreshCatalog || self.inventoryRefreshRequested), !self.stopping { await self.refreshCatalog() }
                 if let failure { self.onError?(failure) }
             }
         }
     }
 
+}
+
+private struct InventoryReadError: LocalizedError {
+    let issues: [DeviceInventoryIssue]
+    let statusError: (any Error)?
+    let observationIssue: String?
+
+    var errorDescription: String? {
+        let messages = issues.map { issue in
+            let source: String = switch issue.source {
+            case .coreDevice: "Devices"
+            case .rendererOwnership: "Open Screens"
+            case .simulators(let xcode, _): xcode?.deletingPathExtension().lastPathComponent ?? "Simulators"
+            }
+            return "\(source): \(issue.error.localizedDescription)"
+        }
+        return (messages + [statusError?.localizedDescription, observationIssue].compactMap { $0 }).joined(separator: "\n")
+    }
+}
+
+private struct DeviceManagementFailure: LocalizedError {
+    let devices: [InventoryDevice]
+    let report: DeviceManagementReport
+
+    var errorDescription: String? { "Some device operations could not be completed." }
+
+    var recoverySuggestion: String? {
+        report.results.compactMap { result -> String? in
+            guard let error = result.error else { return nil }
+            let name = devices.first { $0.id == result.deviceID }?.name ?? "Device"
+            let completed = result.completedSteps.isEmpty ? "" : "\nCompleted: \(result.completedSteps.joined(separator: ", "))."
+            return "\(name): \(error.localizedDescription)\(completed)"
+        }.joined(separator: "\n\n")
+    }
 }
 
 @MainActor
@@ -255,7 +376,7 @@ private final class SimulatorDevicesMenu: NSMenu, NSMenuDelegate {
     required init(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
-        menu.items = SimulatorDeviceMenu.items(for: model.devices.map { device in
+        menu.items = SimulatorDeviceMenu.items(for: model.menuDevices.map { device in
             let state: UInt = switch device.state {
             case "Booted": 3
             case "Booting": 2
@@ -282,6 +403,34 @@ private final class SimulatorDevicesMenu: NSMenu, NSMenuDelegate {
 }
 
 @MainActor
+private final class SelectedDeviceMenu: NSMenu, NSMenuDelegate {
+    private let actions: () -> NSMenu?
+
+    init(actions: @escaping () -> NSMenu?) {
+        self.actions = actions
+        super.init(title: "Device")
+        delegate = self
+        autoenablesItems = false
+    }
+
+    required init(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        removeAllItems()
+        if let source = actions() {
+            let items = source.items
+            source.removeAllItems()
+            for item in items { addItem(item) }
+        }
+        if items.isEmpty {
+            let item = NSMenuItem(title: "Select a Device", action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            addItem(item)
+        }
+    }
+}
+
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let rendererURL = Bundle.main.bundleURL.appendingPathComponent("Contents/Applications/NeoSimulatorRenderer.app")
     private lazy var model = SimulatorManagerModel(rendererApplicationURL: rendererURL)
@@ -293,6 +442,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var rendererDevicesObserver: NSObjectProtocol?
     private var workspaceObserver: NSObjectProtocol?
     private var connectionTimer: Timer?
+    private var inventoryObservation: DeviceInventoryObservation?
+    private var inventoryObservationTask: Task<Void, Never>?
     private var quitKeepingDevicesRunning: Bool?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -317,10 +468,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         showDevices(nil)
         model.start()
+        startInventoryObservation()
         connectionTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self, !self.quitting else { return }
                 await self.model.synchronizeConnections()
+            }
+        }
+    }
+
+    private func startInventoryObservation() {
+        guard inventoryObservationTask == nil, inventoryObservation == nil else { return }
+        inventoryObservationTask = Task { [weak self] in
+            guard let self else { return }
+            defer { self.inventoryObservationTask = nil }
+            do {
+                let observation = try DeviceInventoryObservation()
+                self.inventoryObservation = observation
+                observation.onChange = { [weak self] in
+                    // Preserve source-event order before the asynchronous inventory read.
+                    self?.model.inventoryObservationRecovered()
+                    Task { await self?.model.inventoryDidChange() }
+                }
+                observation.onError = { [weak self] error in
+                    self?.model.inventoryObservationFailed(error)
+                }
+                try await observation.start()
+            } catch is CancellationError {
+                await self.inventoryObservation?.stop()
+            } catch {
+                self.inventoryObservation = nil
+                self.model.inventoryObservationFailed(error)
             }
         }
     }
@@ -345,10 +523,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         quitting = true
         Task {
             do {
+                inventoryObservationTask?.cancel()
+                await inventoryObservation?.stop()
+                await inventoryObservationTask?.value
+                inventoryObservation = nil
                 try await model.quitRenderer(keepingDevicesRunning: quitKeepingDevicesRunning)
                 sender.reply(toApplicationShouldTerminate: true)
             } catch {
                 quitting = false
+                startInventoryObservation()
                 present(error)
                 sender.reply(toApplicationShouldTerminate: false)
             }
@@ -383,7 +566,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
         addDevicesMenu("Device", to: menu)
         menu.addItem(.separator())
-        addItem("Show Simulators", action: #selector(showDevices(_:)), to: menu)
+        addItem("Show Devices", action: #selector(showDevices(_:)), to: menu)
         addItem("Settings…", action: #selector(showSettings(_:)), to: menu)
         Task { await model.refresh() }
         return menu
@@ -519,8 +702,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for (title, selector, key) in [("Cut", "cut:", "x"), ("Copy", "copy:", "c"), ("Paste", "paste:", "v"), ("Select All", "selectAll:", "a")] {
             addItem(title, action: Selector(selector), key: key, to: edit).target = nil
         }
+        let device = NSMenuItem(title: "Device", action: nil, keyEquivalent: "")
+        device.submenu = SelectedDeviceMenu { [weak self] in self?.mainWindow?.menuForSelectedDevices() }
+        main.addItem(device)
         let view = addSubmenu("View", to: main)
-        addItem("Show Simulators", action: #selector(showDevices(_:)), to: view)
+        addItem("Show Devices", action: #selector(showDevices(_:)), to: view)
         let window = addSubmenu("Window", to: main)
         addItem("Minimize", action: #selector(NSWindow.performMiniaturize(_:)), key: "m", to: window).target = nil
         addItem("Bring All to Front", action: #selector(NSApplication.arrangeInFront(_:)), to: window, target: NSApp)
@@ -565,59 +751,102 @@ enum NeoSimulatorApplication {
 
 
 @MainActor
-final class ManagerWindowController: NSWindowController, NSTableViewDataSource, NSTableViewDelegate,
+final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource, NSOutlineViewDelegate,
                                      NSSearchFieldDelegate, NSToolbarDelegate, NSMenuDelegate {
     private let model: SimulatorManagerModel
     private let splitController = NSSplitViewController()
-    private let table = NSTableView()
+    private let table = NSOutlineView()
     private let search = NSSearchField()
     private let deviceImage = NSImageView()
-    private let deviceName = NSTextField(labelWithString: "Select a Simulator")
+    private let deviceName = NSTextField(labelWithString: "Select a Device")
     private let deviceRuntime = NSTextField(labelWithString: "")
     private let viewScreen = NSButton(title: "View Screen", target: nil, action: nil)
     private let activity = NSTextField(labelWithString: "")
     private let progress = NSProgressIndicator()
-    private var inspectorHost: NSHostingController<ManagerDeviceSettingsView>?
+    private var inspectorHost: NSHostingController<AnyView>?
     private var updatingSelection = false
-    private var filteredDevices: [SimulatorHostDevice] = []
-    private var selectedIdentifier: String?
+    private var rows: [DeviceRow] = []
+    private var selectedIdentifiers = Set<DeviceInventoryID>()
+    private let availableGroup = AvailabilityGroup(available: true)
+    private let unavailableGroup = AvailabilityGroup(available: false)
+    private var expandedGroups: Set<Bool> = [true, false]
+    private var loadedRows = false
+    private var groupByAvailability = true
+    private let deviceMenu = NSMenu(title: "Device Actions")
     private var refreshItem: NSToolbarItem?
     private let refreshIdentifier = NSToolbarItem.Identifier("RefreshSimulators")
     private let newSimulatorIdentifier = NSToolbarItem.Identifier("NewSimulator")
     private let filterIdentifier = NSToolbarItem.Identifier("FilterSimulators")
     private var filterItem: NSMenuToolbarItem?
-    private var stateFilter = DeviceStateFilter.all
+    private var kindFilter = DeviceKindFilter.all
+    private var availabilityFilter = DeviceAvailabilityFilter.all
     private var familyFilter: String?
     private var sortOrder = DeviceSortOrder.name
 
-    private enum DeviceStateFilter: Int, CaseIterable {
-        case all, booted, shutdown
+    private final class DeviceRow: NSObject {
+        let id: DeviceInventoryID
+        init(id: DeviceInventoryID) { self.id = id }
+    }
+
+    private final class AvailabilityGroup: NSObject {
+        let available: Bool
+        var title: String { available ? "Available" : "Unavailable" }
+        init(available: Bool) { self.available = available }
+    }
+
+    private enum DeviceKindFilter: Int, CaseIterable {
+        case all, simulators, physical, virtualMachines
 
         var title: String {
             switch self {
-            case .all: "All States"
-            case .booted: "Running"
-            case .shutdown: "Shut Down"
+            case .all: "All Devices"
+            case .simulators: "Simulators"
+            case .physical: "Physical Devices"
+            case .virtualMachines: "Virtual Machines"
             }
         }
 
-        func includes(_ device: SimulatorHostDevice) -> Bool {
+        func includes(_ device: InventoryDevice) -> Bool {
             switch self {
             case .all: true
-            case .booted: device.state == "Booted"
-            case .shutdown: device.state == "Shutdown"
+            case .simulators: device.kind == .simulator
+            case .physical: device.kind == .physical
+            case .virtualMachines: device.kind == .virtualMachine
+            }
+        }
+    }
+
+    private enum DeviceAvailabilityFilter: Int, CaseIterable {
+        case all, available, unavailable
+
+        var title: String {
+            switch self {
+            case .all: "All Availability"
+            case .available: "Available"
+            case .unavailable: "Unavailable"
+            }
+        }
+
+        func includes(_ device: InventoryDevice) -> Bool {
+            switch self {
+            case .all: true
+            case .available: device.isAvailable
+            case .unavailable: !device.isAvailable
             }
         }
     }
 
     private enum DeviceSortOrder: Int, CaseIterable {
-        case name, operatingSystem, state
+        case availability, recent, name, fidelity, platform, operatingSystem
 
         var title: String {
             switch self {
+            case .availability: "Availability"
+            case .recent: "Recent"
             case .name: "Name"
+            case .fidelity: "Fidelity"
+            case .platform: "Platform"
             case .operatingSystem: "Operating System"
-            case .state: "State"
             }
         }
     }
@@ -649,33 +878,22 @@ final class ManagerWindowController: NSWindowController, NSTableViewDataSource, 
     required init?(coder: NSCoder) { nil }
 
     func update() {
-        let previous = selectedIdentifier
-        let query = search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        filteredDevices = model.devices.filter {
-            stateFilter.includes($0) && (familyFilter == nil || $0.productFamily == familyFilter)
-                && (query.isEmpty || $0.name.localizedStandardContains(query) || $0.runtimeName.localizedStandardContains(query))
-        }.sorted {
-            if sortOrder == .operatingSystem {
-                let order = $0.runtimeName.compare($1.runtimeName, options: .numeric)
-                if order != .orderedSame { return order == .orderedDescending }
-            } else if sortOrder == .state {
-                let order = $0.state.localizedStandardCompare($1.state)
-                if order != .orderedSame { return order == .orderedAscending }
+        selectedIdentifiers.formIntersection(Set(model.inventory.map(\.id)))
+        if groupByAvailability, loadedRows {
+            for group in availabilityGroups where table.row(forItem: group) >= 0 {
+                if table.isItemExpanded(group) { expandedGroups.insert(group.available) }
+                else { expandedGroups.remove(group.available) }
             }
-            let nameOrder = $0.name.localizedStandardCompare($1.name)
-            if nameOrder != .orderedSame { return nameOrder == .orderedAscending }
-            let versionOrder = $0.runtimeName.compare($1.runtimeName, options: .numeric)
-            return versionOrder == .orderedSame ? $0.identifier < $1.identifier : versionOrder == .orderedDescending
         }
+        rows = filteredDevices.map { DeviceRow(id: $0.id) }
         updatingSelection = true
         table.reloadData()
-        if let previous, let index = filteredDevices.firstIndex(where: { $0.identifier == previous }) {
-            table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
-        } else {
-            selectedIdentifier = nil
-            table.deselectAll(nil)
+        if groupByAvailability {
+            for group in availabilityGroups where expandedGroups.contains(group.available) { table.expandItem(group) }
         }
+        restoreVisibleSelection()
         updatingSelection = false
+        loadedRows = true
         updateSelection()
         updateFilterItem()
         refreshItem?.isEnabled = !model.isBusy
@@ -686,28 +904,92 @@ final class ManagerWindowController: NSWindowController, NSTableViewDataSource, 
         if model.isBusy { progress.startAnimation(nil) } else { progress.stopAnimation(nil) }
     }
 
+    private var filteredDevices: [InventoryDevice] {
+        let query = search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        return model.inventory.filter {
+            kindFilter.includes($0) && availabilityFilter.includes($0)
+                && (familyFilter == nil || family(of: $0) == familyFilter)
+                && (query.isEmpty || $0.name.localizedStandardContains(query)
+                    || ($0.operatingSystem?.localizedStandardContains(query) ?? false)
+                    || (modelName(of: $0)?.localizedStandardContains(query) ?? false))
+        }.sorted(by: precedes)
+    }
+
+    private func precedes(_ lhs: InventoryDevice, _ rhs: InventoryDevice) -> Bool {
+        switch sortOrder {
+        case .availability:
+            if lhs.isAvailable != rhs.isAvailable { return lhs.isAvailable }
+        case .recent:
+            let a = lhs.lastActivityDate ?? .distantPast, b = rhs.lastActivityDate ?? .distantPast
+            if a != b { return a > b }
+        case .fidelity:
+            let a = fidelity(of: lhs), b = fidelity(of: rhs)
+            if a != b { return a < b }
+        case .platform:
+            let order = platform(of: lhs).localizedStandardCompare(platform(of: rhs))
+            if order != .orderedSame { return order == .orderedAscending }
+        case .operatingSystem:
+            let order = (lhs.operatingSystem ?? "").compare(rhs.operatingSystem ?? "", options: .numeric)
+            if order != .orderedSame { return order == .orderedDescending }
+        case .name: break
+        }
+        let names = lhs.name.localizedStandardCompare(rhs.name)
+        if names != .orderedSame { return names == .orderedAscending }
+        let versions = version(of: lhs).compare(version(of: rhs), options: .numeric)
+        if versions != .orderedSame { return versions == .orderedDescending }
+        return stableKey(lhs.id) < stableKey(rhs.id)
+    }
+
+    private var availabilityGroups: [AvailabilityGroup] {
+        [availableGroup, unavailableGroup].filter { group in
+            switch availabilityFilter {
+            case .all: true
+            case .available: group.available
+            case .unavailable: !group.available
+            }
+        }
+    }
+
+    private func device(for row: DeviceRow) -> InventoryDevice? { model.inventory.first { $0.id == row.id } }
+
+    private func children(of group: AvailabilityGroup) -> [DeviceRow] {
+        rows.filter { device(for: $0)?.isAvailable == group.available }
+    }
+
+    private func restoreVisibleSelection() {
+        let indexes = IndexSet((0..<table.numberOfRows).filter { index in
+            (table.item(atRow: index) as? DeviceRow).map { selectedIdentifiers.contains($0.id) } ?? false
+        })
+        table.selectRowIndexes(indexes, byExtendingSelection: false)
+    }
+
     private func buildSidebar() {
         let controller = NSViewController()
-        search.placeholderString = "Search Simulators"
+        search.placeholderString = "Search Devices"
         search.delegate = self
         let scroll = NSScrollView()
         scroll.drawsBackground = false
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
-        table.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("Device")))
+        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("Device"))
+        table.addTableColumn(column)
+        table.outlineTableColumn = column
         table.headerView = nil
         table.style = .sourceList
         table.rowHeight = 52
         table.intercellSpacing = NSSize(width: 0, height: 2)
         table.backgroundColor = .clear
         table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
-        table.allowsMultipleSelection = false
+        table.allowsMultipleSelection = true
         table.allowsEmptySelection = true
         table.dataSource = self
         table.delegate = self
         table.target = self
         table.doubleAction = #selector(openSelectedDevice(_:))
-        table.setAccessibilityLabel("Simulators")
+        table.setAccessibilityLabel("Devices")
+        deviceMenu.delegate = self
+        deviceMenu.autoenablesItems = false
+        table.menu = deviceMenu
         scroll.documentView = table
         controller.view = scroll
         let sidebar = NSSplitViewItem(sidebarWithViewController: controller)
@@ -799,61 +1081,148 @@ final class ManagerWindowController: NSWindowController, NSTableViewDataSource, 
         splitController.addSplitViewItem(inspector)
     }
 
-    private func makeDeviceSettingsView() -> ManagerDeviceSettingsView {
-        let device = selectedDevice
-        let inspectingSelection = model.inspectedDeviceIdentifier == device?.identifier
-        let settings = inspectingSelection ? model.deviceSettings : nil
-        return ManagerDeviceSettingsView(device: device, settings: settings, isBusy: model.isBusy,
-                                         issue: inspectingSelection ? model.settingsIssue : nil, apply: { [weak self] setting in
-            guard let identifier = device?.identifier else { return }
-            self?.model.setDeviceSetting(setting, for: identifier)
-        }, customLocation: { [weak self] in
-            guard let identifier = device?.identifier else { return }
-            self?.presentLocationEditor(for: identifier)
-        })
+    private func makeDeviceSettingsView() -> AnyView {
+        guard selectedDevices.count == 1, let selection = selectedDevices.first else {
+            return inspectorMessage(selectedDevices.isEmpty ? "Select a Device" : "Multiple Devices Selected",
+                                    description: "Select one simulator to adjust its settings.")
+        }
+        guard case .simulator(let device) = selection else {
+            return inspectorMessage("Settings Unavailable", description:
+                "This inspector currently supports simulator settings. Settings for \(kindTitle(selection).lowercased()) devices are not supported yet.")
+        }
+        guard device.isAvailable else {
+            return inspectorMessage("Simulator Unavailable", description:
+                "The simulator’s runtime is unavailable. Install a compatible runtime to use its settings.")
+        }
+        guard !isSimulatorRouteAmbiguous(device) else {
+            return inspectorMessage("Simulator Identifier Is Ambiguous", description:
+                "More than one simulator set contains this device identifier. Screen and settings access cannot distinguish the selected device yet.")
+        }
+        let inspectingSelection = model.inspectedDeviceIdentifier == device.identifier
+        return AnyView(ManagerDeviceSettingsView(device: device,
+            settings: inspectingSelection ? model.deviceSettings : nil,
+            isBusy: model.isBusy || model.managingDeviceIDs.contains(selection.id),
+            issue: inspectingSelection ? model.settingsIssue : nil, apply: { [weak self] setting in
+                self?.model.setDeviceSetting(setting, for: device.identifier)
+            }, customLocation: { [weak self] in
+                self?.presentLocationEditor(for: device.identifier)
+            }))
     }
 
-    func numberOfRows(in tableView: NSTableView) -> Int { filteredDevices.count }
+    private func inspectorMessage(_ title: String, description: String) -> AnyView {
+        AnyView(ContentUnavailableView(title, systemImage: "slider.horizontal.3", description: Text(description)))
+    }
 
-    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        guard filteredDevices.indices.contains(row) else { return nil }
-        let device = filteredDevices[row]
-        let identifier = NSUserInterfaceItemIdentifier("SimulatorRow")
-        let cell = tableView.makeView(withIdentifier: identifier, owner: self) as? SimulatorSidebarCellView
+    func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
+        if let group = item as? AvailabilityGroup { return children(of: group).count }
+        return item == nil ? (groupByAvailability ? availabilityGroups.count : rows.count) : 0
+    }
+
+    func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any {
+        if let group = item as? AvailabilityGroup { return children(of: group)[index] }
+        return groupByAvailability ? availabilityGroups[index] as Any : rows[index] as Any
+    }
+
+    func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool { item is AvailabilityGroup }
+    func outlineView(_ outlineView: NSOutlineView, isGroupItem item: Any) -> Bool { item is AvailabilityGroup }
+    func outlineView(_ outlineView: NSOutlineView, shouldSelectItem item: Any) -> Bool { item is DeviceRow }
+    func outlineView(_ outlineView: NSOutlineView, heightOfRowByItem item: Any) -> CGFloat {
+        item is AvailabilityGroup ? 26 : 52
+    }
+
+    func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
+        if let group = item as? AvailabilityGroup {
+            let identifier = NSUserInterfaceItemIdentifier("DeviceAvailabilityGroup")
+            let cell = outlineView.makeView(withIdentifier: identifier, owner: self) as? NSTableCellView ?? NSTableCellView()
+            cell.identifier = identifier
+            if cell.textField == nil {
+                let label = NSTextField(labelWithString: "")
+                label.font = .systemFont(ofSize: 11, weight: .semibold)
+                label.textColor = .secondaryLabelColor
+                label.translatesAutoresizingMaskIntoConstraints = false
+                cell.addSubview(label)
+                cell.textField = label
+                NSLayoutConstraint.activate([
+                    label.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 4),
+                    label.trailingAnchor.constraint(lessThanOrEqualTo: cell.trailingAnchor, constant: -4),
+                    label.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+                ])
+            }
+            cell.textField?.stringValue = group.title
+            return cell
+        }
+        guard let row = item as? DeviceRow, let device = device(for: row) else { return nil }
+        let identifier = NSUserInterfaceItemIdentifier("DeviceRow")
+        let cell = outlineView.makeView(withIdentifier: identifier, owner: self) as? SimulatorSidebarCellView
             ?? SimulatorSidebarCellView()
         cell.identifier = identifier
         cell.textField?.stringValue = device.name
-        cell.subtitle.stringValue = "Simulator"
-        cell.version.stringValue = device.runtimeName.split(separator: " ").first { $0.first?.isNumber == true }.map(String.init) ?? ""
+        cell.subtitle.stringValue = device.kind == .simulator ? "Simulator" : (modelName(of: device) ?? "")
+        cell.subtitle.isHidden = cell.subtitle.stringValue.isEmpty
+        cell.version.stringValue = version(of: device)
         cell.imageView?.image = NSImage(systemSymbolName: symbolName(for: device), accessibilityDescription: nil)
-        cell.setAccessibilityLabel("\(device.name), \(device.runtimeName), \(stateLabel(device.state))")
+        let managing = model.managingDeviceIDs.contains(device.id)
+        cell.progress.isHidden = !managing
+        if managing { cell.progress.startAnimation(nil) } else { cell.progress.stopAnimation(nil) }
+        cell.alphaValue = device.isAvailable ? 1 : 0.6
+        cell.setAccessibilityLabel("\(device.name), \(device.operatingSystem ?? kindTitle(device)), \(device.isAvailable ? "Available" : "Unavailable")")
         return cell
     }
 
-    func tableViewSelectionDidChange(_ notification: Notification) {
+    func outlineViewSelectionDidChange(_ notification: Notification) {
         guard !updatingSelection else { return }
-        selectedIdentifier = filteredDevices.indices.contains(table.selectedRow) ? filteredDevices[table.selectedRow].identifier : nil
+        selectedIdentifiers = Set(table.selectedRowIndexes.compactMap { (table.item(atRow: $0) as? DeviceRow)?.id })
         updateSelection()
     }
 
     func controlTextDidChange(_ notification: Notification) { update() }
 
-    private var selectedDevice: SimulatorHostDevice? {
-        guard let selectedIdentifier else { return nil }
-        return model.devices.first { $0.identifier == selectedIdentifier }
+    private var selectedDevices: [InventoryDevice] {
+        let visibleSelection = Set(table.selectedRowIndexes.compactMap { (table.item(atRow: $0) as? DeviceRow)?.id })
+        return model.inventory.filter { visibleSelection.contains($0.id) }.sorted(by: precedes)
+    }
+
+    private var selectedSimulator: SimulatorHostDevice? {
+        guard selectedDevices.count == 1, case .simulator(let device) = selectedDevices[0] else { return nil }
+        return device
     }
 
     private func updateSelection() {
-        let device = selectedDevice
-        deviceName.stringValue = device?.name ?? "Select a Simulator"
-        deviceRuntime.stringValue = device.map { "\($0.runtimeName) Simulator" }
-            ?? "Choose a device in the sidebar to view its screen."
-        deviceImage.image = device.flatMap(devicePreview(for:))
+        let selections = selectedDevices
+        if selections.count == 1, let device = selections.first {
+            deviceName.stringValue = device.name
+            if case .simulator(let simulator) = device { deviceRuntime.stringValue = "\(simulator.runtimeName) Simulator" }
+            else {
+                deviceRuntime.stringValue = [device.operatingSystem, modelName(of: device), kindTitle(device)]
+                    .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
+            }
+            deviceImage.image = devicePreview(for: device)
+        } else if selections.isEmpty {
+            deviceName.stringValue = "Select a Device"
+            deviceRuntime.stringValue = "Choose a device in the sidebar to view its details."
+            deviceImage.image = nil
+        } else {
+            deviceName.stringValue = "\(selections.count) Devices"
+            deviceRuntime.stringValue = "Select one device to view its details."
+            deviceImage.image = NSImage(systemSymbolName: "square.stack.3d.up", accessibilityDescription: nil)
+        }
         deviceImage.contentTintColor = nil
-        viewScreen.isHidden = device == nil
-        viewScreen.isEnabled = !model.isBusy && device.map { ["Booted", "Shutdown"].contains($0.state) } == true
+        let simulator = selectedSimulator
+        viewScreen.isHidden = simulator == nil
+        viewScreen.isEnabled = !model.isBusy && simulator.map {
+            $0.isAvailable && !isSimulatorRouteAmbiguous($0) && ["Booted", "Shutdown"].contains($0.state)
+                && !model.managingDeviceIDs.contains(.simulator(udid: $0.identifier, deviceSetPath: $0.deviceSetPath))
+        } == true
+        viewScreen.toolTip = simulator.map { isSimulatorRouteAmbiguous($0) } == true
+            ? "Screen access cannot distinguish simulators with the same identifier in different sets." : nil
         updateDeviceSettings()
-        Task { await model.inspectDevice(selectedIdentifier) }
+        Task { [weak self] in
+            guard let self else { return }
+            let identifier = self.selectedSimulator.flatMap {
+                $0.isAvailable && !self.isSimulatorRouteAmbiguous($0) ? $0.identifier : nil
+            }
+            await self.model.inspectDevice(identifier)
+        }
     }
 
     private func updateDeviceSettings() {
@@ -900,7 +1269,7 @@ final class ManagerWindowController: NSWindowController, NSTableViewDataSource, 
         }
     }
 
-    private func devicePreview(for device: SimulatorHostDevice) -> NSImage? {
+    private func devicePreview(for device: InventoryDevice) -> NSImage? {
         if let modelIdentifier = device.modelIdentifier,
            let type = UTType.types(tag: modelIdentifier,
                                    tagClass: UTTagClass(rawValue: "com.apple.device-model-code"),
@@ -910,20 +1279,87 @@ final class ManagerWindowController: NSWindowController, NSTableViewDataSource, 
         return NSImage(systemSymbolName: symbolName(for: device), accessibilityDescription: nil)
     }
 
-    private func symbolName(for device: SimulatorHostDevice) -> String {
-        switch device.productFamily {
+    private func modelName(of device: InventoryDevice) -> String? {
+        if case .remote(let remote) = device { return remote.modelName }
+        return nil
+    }
+
+    private func family(of device: InventoryDevice) -> String {
+        if case .simulator(let simulator) = device { return simulator.productFamily }
+        let identifier = device.modelIdentifier ?? ""
+        if identifier.hasPrefix("iPad") { return "iPad" }
+        if identifier.hasPrefix("iPhone") { return "iPhone" }
+        if identifier.hasPrefix("Watch") { return "Apple Watch" }
+        if identifier.hasPrefix("AppleTV") { return "Apple TV" }
+        if identifier.hasPrefix("Reality") { return "Apple Vision" }
+        if platform(of: device).localizedCaseInsensitiveContains("mac") { return "Mac" }
+        return platform(of: device).isEmpty ? "Other" : platform(of: device)
+    }
+
+    private func symbolName(for device: InventoryDevice) -> String {
+        switch family(of: device) {
         case "iPad": "ipad"
         case "Apple TV": "appletv"
         case "Apple Watch": "applewatch"
-        case "Apple Vision": "visionpro"
-        default: "iphone"
+        case "Apple Vision", "visionOS": "visionpro"
+        case "Mac": "desktopcomputer"
+        case "iPhone": "iphone"
+        default: device.kind == .virtualMachine ? "desktopcomputer" : "externaldrive"
         }
     }
 
-    private func stateLabel(_ state: String) -> String { state == "Shutdown" ? "Shut Down" : state }
+    private func platform(of device: InventoryDevice) -> String {
+        switch device {
+        case .simulator(let simulator): simulator.runtimeName.split(separator: " ").first.map(String.init) ?? ""
+        case .remote(let remote): remote.platform ?? ""
+        }
+    }
+
+    private func version(of device: InventoryDevice) -> String {
+        switch device {
+        case .simulator(let simulator):
+            simulator.runtimeName.split(separator: " ").first { $0.first?.isNumber == true }.map(String.init) ?? ""
+        case .remote(let remote): remote.osVersion ?? ""
+        }
+    }
+
+    private func kindTitle(_ device: InventoryDevice) -> String {
+        switch device.kind {
+        case .simulator: "Simulator"
+        case .physical: "Physical"
+        case .virtualMachine: "Virtual Machine"
+        case .other: "Other"
+        }
+    }
+
+    private func fidelity(of device: InventoryDevice) -> Int {
+        switch device.kind {
+        case .physical: 0
+        case .virtualMachine: 1
+        case .simulator: 2
+        case .other: 3
+        }
+    }
+
+    private func stableKey(_ identifier: DeviceInventoryID) -> String {
+        switch identifier {
+        case .simulator(let udid, let path): "simulator:\(udid):\(path.map { "set:\($0)" } ?? "default")"
+        case .coreDevice(let identifier): "coredevice:\(identifier)"
+        }
+    }
+
+    private func isSimulatorRouteAmbiguous(_ device: SimulatorHostDevice) -> Bool {
+        let paths = model.inventory.compactMap { item -> SimulatorHostDevice? in
+            guard case .simulator(let simulator) = item, simulator.identifier == device.identifier else { return nil }
+            return simulator
+        }.map(\.deviceSetPath)
+        return Set(paths).count > 1
+    }
 
     @objc private func openSelectedDevice(_ sender: Any?) {
-        guard let device = selectedDevice, !model.isBusy, ["Booted", "Shutdown"].contains(device.state) else { return }
+        guard let device = selectedSimulator, device.isAvailable, !isSimulatorRouteAmbiguous(device), !model.isBusy,
+              !model.managingDeviceIDs.contains(.simulator(udid: device.identifier, deviceSetPath: device.deviceSetPath)),
+              ["Booted", "Shutdown"].contains(device.state) else { return }
         model.openDevice(device.identifier)
     }
 
@@ -951,10 +1387,10 @@ final class ManagerWindowController: NSWindowController, NSTableViewDataSource, 
         if itemIdentifier == filterIdentifier {
             let item = NSMenuToolbarItem(itemIdentifier: itemIdentifier)
             item.label = "Filter"
-            item.toolTip = "Filter and Sort Simulators"
+            item.toolTip = "Filter and Sort Devices"
             item.showsIndicator = false
             item.visibilityPriority = .high
-            item.menu = NSMenu(title: "Filter and Sort Simulators")
+            item.menu = NSMenu(title: "Filter and Sort Devices")
             item.menu.delegate = self
             filterItem = item
             updateFilterItem()
@@ -963,7 +1399,7 @@ final class ManagerWindowController: NSWindowController, NSTableViewDataSource, 
         guard itemIdentifier == refreshIdentifier else { return nil }
         let item = NSToolbarItem(itemIdentifier: itemIdentifier)
         item.label = "Refresh"
-        item.toolTip = "Refresh Simulators"
+        item.toolTip = "Refresh Devices"
         item.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "Refresh")
         item.target = self
         item.action = #selector(refresh(_:))
@@ -973,30 +1409,196 @@ final class ManagerWindowController: NSWindowController, NSTableViewDataSource, 
         return item
     }
 
+    private struct ManagementRequest {
+        let action: DeviceManagementAction
+        let identifiers: Set<DeviceInventoryID>
+    }
+
+    func menuForSelectedDevices() -> NSMenu {
+        let menu = NSMenu(title: "Device")
+        menu.autoenablesItems = false
+        populateDeviceMenu(menu, devices: selectedDevices)
+        return menu
+    }
+
+    private func updateDeviceMenu() {
+        if table.clickedRow >= 0 {
+            guard let row = table.item(atRow: table.clickedRow) as? DeviceRow else {
+                deviceMenu.removeAllItems()
+                return
+            }
+            if !selectedIdentifiers.contains(row.id) {
+                selectedIdentifiers = [row.id]
+                updatingSelection = true
+                restoreVisibleSelection()
+                updatingSelection = false
+                updateSelection()
+            }
+        }
+        populateDeviceMenu(deviceMenu, devices: selectedDevices)
+    }
+
+    private func populateDeviceMenu(_ menu: NSMenu, devices: [InventoryDevice]) {
+        menu.removeAllItems()
+        let identifiers = Set(devices.map(\.id))
+        let idle = !model.isBusy && identifiers.isDisjoint(with: model.managingDeviceIDs)
+        if devices.count == 1, case .simulator(let simulator) = devices[0], simulator.isAvailable,
+           !isSimulatorRouteAmbiguous(simulator),
+           ["Booted", "Shutdown"].contains(simulator.state) {
+            let item = NSMenuItem(title: "View Screen", action: #selector(openDeviceFromMenu(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = devices[0].id
+            item.isEnabled = idle
+            menu.addItem(item)
+        }
+        let name = devices.first?.name ?? ""
+        let operations: [(String, DeviceManagementAction)] = [
+            ("Rename…", .rename(name)), ("Clone…", .clone("\(name) Copy")),
+            ("Start", .start), ("Shut Down", .shutdown), ("Restart", .restart),
+            ("Pause", .pause), ("Resume", .resume),
+            ("Pair Simulators", .pair), ("Unpair", .unpair),
+            ("Erase Content and Settings…", .erase), ("Remove…", .remove),
+        ]
+        for (title, action) in operations where supports(action, devices: devices) {
+            if !menu.items.isEmpty, case .rename = action { menu.addItem(.separator()) }
+            if case .erase = action, !menu.items.isEmpty { menu.addItem(.separator()) }
+            let item = NSMenuItem(title: title, action: #selector(performManagement(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = ManagementRequest(action: action, identifiers: identifiers)
+            item.isEnabled = idle
+            menu.addItem(item)
+        }
+        if menu.items.isEmpty {
+            let item = NSMenuItem(title: devices.isEmpty ? "No Devices Selected" : "No Actions Available", action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            menu.addItem(item)
+        }
+    }
+
+    private func supports(_ action: DeviceManagementAction, devices: [InventoryDevice]) -> Bool {
+        guard !devices.isEmpty, devices.allSatisfy({ $0.supports(action) }) else { return false }
+        switch action {
+        case .rename, .clone: return devices.count == 1
+        case .pair:
+            guard devices.count == 2,
+                  case .simulator(let first) = devices[0], case .simulator(let second) = devices[1] else { return false }
+            return Set([first.productFamily, second.productFamily]) == Set(["iPhone", "Apple Watch"])
+                && first.deviceSetPath == second.deviceSetPath
+        default: return true
+        }
+    }
+
+    @objc private func openDeviceFromMenu(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? DeviceInventoryID,
+              let item = model.inventory.first(where: { $0.id == id }),
+              case .simulator(let device) = item, device.isAvailable, !isSimulatorRouteAmbiguous(device),
+              !model.isBusy, !model.managingDeviceIDs.contains(id), ["Booted", "Shutdown"].contains(device.state) else { return }
+        model.openDevice(device.identifier)
+    }
+
+    @objc private func performManagement(_ sender: NSMenuItem) {
+        guard let request = sender.representedObject as? ManagementRequest else { return }
+        let devices = model.inventory.filter { request.identifiers.contains($0.id) }
+        guard devices.count == request.identifiers.count, supports(request.action, devices: devices), !model.isBusy,
+              request.identifiers.isDisjoint(with: model.managingDeviceIDs) else { return }
+        switch request.action {
+        case .rename: presentNameEditor(for: devices[0], cloning: false)
+        case .clone: presentNameEditor(for: devices[0], cloning: true)
+        case .erase, .remove: confirmManagement(request.action, devices: devices)
+        default: model.manage(request.action, devices: devices)
+        }
+    }
+
+    private func presentNameEditor(for device: InventoryDevice, cloning: Bool) {
+        guard let window else { return }
+        let alert = NSAlert()
+        alert.messageText = cloning ? "Clone \(device.name)" : "Rename \(device.name)"
+        alert.informativeText = cloning ? "Enter a name for the new simulator." : "Enter a new device name."
+        alert.addButton(withTitle: cloning ? "Clone" : "Rename")
+        alert.addButton(withTitle: "Cancel")
+        let field = NSTextField(string: cloning ? "\(device.name) Copy" : device.name)
+        field.frame.size = NSSize(width: 300, height: field.fittingSize.height)
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+        let submit = alert.buttons[0]
+        let observer = NotificationCenter.default.addObserver(forName: NSControl.textDidChangeNotification,
+            object: field, queue: .main) { _ in
+                MainActor.assumeIsolated { submit.isEnabled = !field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            }
+        alert.beginSheetModal(for: window) { [weak self] response in
+            NotificationCenter.default.removeObserver(observer)
+            guard response == .alertFirstButtonReturn, let self else { return }
+            let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty, let current = self.model.inventory.first(where: { $0.id == device.id }) else { return }
+            self.model.manage(cloning ? .clone(name) : .rename(name), devices: [current])
+        }
+    }
+
+    private func confirmManagement(_ action: DeviceManagementAction, devices: [InventoryDevice]) {
+        guard let window else { return }
+        let removing: Bool
+        if case .remove = action { removing = true } else { removing = false }
+        let subject = devices.count == 1 ? "“\(devices[0].name)”" : "\(devices.count) devices"
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = removing ? "Remove \(subject)?" : "Erase \(subject)?"
+        if removing {
+            alert.informativeText = devices.contains { $0.kind == .virtualMachine }
+                ? "The selected devices and their stored data will be permanently removed. Removing a virtual machine also deletes its associated assets. This cannot be undone."
+                : "The selected devices and their data will be permanently removed. This cannot be undone."
+        } else {
+            alert.informativeText = "All content and settings on the selected devices will be permanently erased. This cannot be undone."
+        }
+        alert.addButton(withTitle: removing ? "Remove" : "Erase")
+        alert.addButton(withTitle: "Cancel")
+        alert.buttons[0].hasDestructiveAction = true
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn, let self else { return }
+            let identifiers = Set(devices.map(\.id))
+            let current = self.model.inventory.filter { identifiers.contains($0.id) }
+            guard current.count == identifiers.count else { return }
+            self.model.manage(action, devices: current)
+        }
+    }
+
     private func updateFilterItem() {
-        let active = stateFilter != .all || familyFilter != nil
+        let active = kindFilter != .all || availabilityFilter != .all || familyFilter != nil
         filterItem?.image = NSImage(systemSymbolName: active ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease",
                                    accessibilityDescription: active ? "Filter, active" : "Filter")
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
+        if menu === deviceMenu { updateDeviceMenu(); return }
         guard menu === filterItem?.menu else { return }
         menu.removeAllItems()
-        menu.addItem(.sectionHeader(title: "State"))
-        for filter in DeviceStateFilter.allCases {
-            let item = NSMenuItem(title: filter.title, action: #selector(filterState(_:)), keyEquivalent: "")
+        menu.addItem(.sectionHeader(title: "Devices"))
+        for filter in DeviceKindFilter.allCases {
+            let item = NSMenuItem(title: filter.title, action: #selector(filterKind(_:)), keyEquivalent: "")
             item.target = self
             item.tag = filter.rawValue
-            item.state = stateFilter == filter ? .on : .off
+            item.state = kindFilter == filter ? .on : .off
             menu.addItem(item)
         }
         menu.addItem(.separator())
-        menu.addItem(.sectionHeader(title: "Device Type"))
-        let allTypes = NSMenuItem(title: "All Types", action: #selector(filterFamily(_:)), keyEquivalent: "")
+        menu.addItem(.sectionHeader(title: "Availability"))
+        for filter in DeviceAvailabilityFilter.allCases {
+            let item = NSMenuItem(title: filter.title, action: #selector(filterAvailability(_:)), keyEquivalent: "")
+            item.target = self
+            item.tag = filter.rawValue
+            item.state = availabilityFilter == filter ? .on : .off
+            menu.addItem(item)
+        }
+        let grouping = NSMenuItem(title: "Group by Availability", action: #selector(toggleAvailabilityGroups(_:)), keyEquivalent: "")
+        grouping.target = self
+        grouping.state = groupByAvailability ? .on : .off
+        menu.addItem(grouping)
+        menu.addItem(.separator())
+        menu.addItem(.sectionHeader(title: "Device Family"))
+        let allTypes = NSMenuItem(title: "All Families", action: #selector(filterFamily(_:)), keyEquivalent: "")
         allTypes.target = self
         allTypes.state = familyFilter == nil ? .on : .off
         menu.addItem(allTypes)
-        for family in Set(model.devices.map(\.productFamily)).sorted() {
+        for family in Set(model.inventory.map { family(of: $0) }).sorted() {
             let item = NSMenuItem(title: family, action: #selector(filterFamily(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = family
@@ -1014,9 +1616,27 @@ final class ManagerWindowController: NSWindowController, NSTableViewDataSource, 
         }
     }
 
-    @objc private func filterState(_ sender: NSMenuItem) {
-        guard let filter = DeviceStateFilter(rawValue: sender.tag) else { return }
-        stateFilter = filter
+    @objc private func filterKind(_ sender: NSMenuItem) {
+        guard let filter = DeviceKindFilter(rawValue: sender.tag) else { return }
+        kindFilter = filter
+        update()
+    }
+
+    @objc private func filterAvailability(_ sender: NSMenuItem) {
+        guard let filter = DeviceAvailabilityFilter(rawValue: sender.tag) else { return }
+        availabilityFilter = filter
+        update()
+    }
+
+    @objc private func toggleAvailabilityGroups(_ sender: Any?) {
+        if groupByAvailability {
+            for group in availabilityGroups {
+                if table.isItemExpanded(group) { expandedGroups.insert(group.available) }
+                else { expandedGroups.remove(group.available) }
+            }
+        }
+        groupByAvailability.toggle()
+        loadedRows = false
         update()
     }
 
@@ -1030,12 +1650,14 @@ final class ManagerWindowController: NSWindowController, NSTableViewDataSource, 
         sortOrder = order
         update()
     }
+
 }
 
 @MainActor
 private final class SimulatorSidebarCellView: NSTableCellView {
     let subtitle = NSTextField(labelWithString: "Simulator")
     let version = NSTextField(labelWithString: "")
+    let progress = NSProgressIndicator()
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -1055,6 +1677,13 @@ private final class SimulatorSidebarCellView: NSTableCellView {
         version.translatesAutoresizingMaskIntoConstraints = false
         version.setContentCompressionResistancePriority(.required, for: .horizontal)
         version.setContentHuggingPriority(.required, for: .horizontal)
+        progress.style = .spinning
+        progress.controlSize = .small
+        progress.isDisplayedWhenStopped = false
+        progress.isHidden = true
+        let trailing = NSStackView(views: [progress, version])
+        trailing.spacing = 6
+        trailing.translatesAutoresizingMaskIntoConstraints = false
         let labels = NSStackView(views: [name, subtitle])
         labels.orientation = .vertical
         labels.alignment = .leading
@@ -1062,7 +1691,7 @@ private final class SimulatorSidebarCellView: NSTableCellView {
         labels.translatesAutoresizingMaskIntoConstraints = false
         addSubview(icon)
         addSubview(labels)
-        addSubview(version)
+        addSubview(trailing)
         imageView = icon
         textField = name
         NSLayoutConstraint.activate([
@@ -1071,12 +1700,12 @@ private final class SimulatorSidebarCellView: NSTableCellView {
             icon.widthAnchor.constraint(equalToConstant: 25),
             icon.heightAnchor.constraint(equalToConstant: 30),
             labels.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 9),
-            labels.trailingAnchor.constraint(equalTo: version.leadingAnchor, constant: -10),
+            labels.trailingAnchor.constraint(equalTo: trailing.leadingAnchor, constant: -10),
             labels.centerYAnchor.constraint(equalTo: centerYAnchor),
             name.widthAnchor.constraint(equalTo: labels.widthAnchor),
             subtitle.widthAnchor.constraint(equalTo: labels.widthAnchor),
-            version.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
-            version.centerYAnchor.constraint(equalTo: centerYAnchor),
+            trailing.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            trailing.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
     }
 
