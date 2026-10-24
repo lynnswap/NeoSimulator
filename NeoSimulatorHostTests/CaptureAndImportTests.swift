@@ -2,6 +2,7 @@ import AppKit
 import AVFoundation
 import Foundation
 import ImageIO
+import QuartzCore
 import Testing
 
 @Suite @MainActor
@@ -456,76 +457,80 @@ struct CaptureThumbnailTests {
         #expect(try savedNames(in: directory) == ["Cancelled.png", "Dragged.png", "Late.png", "Movie.gif", "Unclaimed.png"])
     }
 
-    /// Waits for the thumbnail's appearance animation to finish.
-    private func shownThumbnail(named name: String, in directory: URL) async throws -> (CaptureThumbnail, NSWindow, NSWindow) {
+    /// Completes the real presentation pipeline without depending on WindowServer rendering.
+    private func shownThumbnail(named name: String, in directory: URL)
+        throws -> (CaptureThumbnail, NSWindow, NSWindow, ControlledThumbnailTiming) {
         let (window, source) = deviceWindow()
+        let timing = ControlledThumbnailTiming()
         let thumbnail = CaptureThumbnail(try capture(named: name, in: directory), image: nil, parent: window,
-                                         source: source, spacing: NSSize(width: 10, height: 10)) { _ in }
+                                         source: source, spacing: NSSize(width: 10, height: 10), timing: timing) { _ in }
         thumbnail.show()
         let shown = try #require(window.childWindows?.last)
-        for _ in 0..<100 where !thumbnail.shown { try await Task.sleep(for: .milliseconds(20)) }
+        timing.completeAnimations()
         #expect(thumbnail.shown)
-        return (thumbnail, window, shown)
+        return (thumbnail, window, shown, timing)
     }
 
-    @Test func aThumbnailStaysWithItsWindowWhenTheWindowMoves() async throws {
+    @Test func aThumbnailStaysWithItsWindowWhenTheWindowMoves() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        let (thumbnail, window, shown) = try await shownThumbnail(named: "Moved.png", in: directory)
+        let (thumbnail, window, shown, timing) = try shownThumbnail(named: "Moved.png", in: directory)
         defer { window.close() }
         window.setFrameOrigin(NSPoint(x: window.frame.minX + 100, y: window.frame.minY + 50))
         let expected = NSRect(x: window.frame.maxX + 10, y: window.frame.minY + 10, width: 50, height: 80)
         #expect(shown.frame == expected)
         thumbnail.hide(animated: true)
-        try await Task.sleep(for: .milliseconds(100))
         thumbnail.pause()
-        try await Task.sleep(for: .milliseconds(300))
+        timing.completeAnimations()
         #expect(shown.frame == expected)
+        #expect(try savedNames(in: directory).isEmpty)
         thumbnail.resume()
         CaptureThumbnail.finishAll()
         #expect(try savedNames(in: directory) == ["Moved.png"])
     }
 
-    @Test func aHoverDoesNotBringBackAThumbnailTheUserDismissed() async throws {
+    @Test func aHoverDoesNotBringBackAThumbnailTheUserDismissed() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        let (thumbnail, window, _) = try await shownThumbnail(named: "Deleted.png", in: directory)
+        let (thumbnail, window, _, timing) = try shownThumbnail(named: "Deleted.png", in: directory)
         defer { window.close() }
         let delete = try #require(thumbnail.menu().items.first { $0.title == "Delete" })
         #expect(NSApp.sendAction(try #require(delete.action), to: delete.target, from: delete))
         thumbnail.pause()
-        for _ in 0..<50 where !CaptureThumbnail.active.isEmpty { try await Task.sleep(for: .milliseconds(20)) }
+        timing.completeAnimations()
         #expect(CaptureThumbnail.active.isEmpty)
         #expect(try savedNames(in: directory).isEmpty)
     }
 
-    @Test func aNewCaptureEndsAThumbnailThatIsHiding() async throws {
+    @Test func aNewCaptureEndsAThumbnailThatIsHiding() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        let (previous, window, _) = try await shownThumbnail(named: "Previous.png", in: directory)
+        let (previous, window, _, timing) = try shownThumbnail(named: "Previous.png", in: directory)
         defer { window.close() }
         previous.hide(animated: true)
         let next = CaptureThumbnail(try capture(named: "Next.png", in: directory), image: nil, parent: window,
-                                    source: window.frame.insetBy(dx: 20, dy: 40), spacing: .zero) { _ in }
+                                    source: window.frame.insetBy(dx: 20, dy: 40), spacing: .zero, timing: timing) { _ in }
         next.show()
         #expect(try savedNames(in: directory) == ["Previous.png"])
         #expect(CaptureThumbnail.active.map(ObjectIdentifier.init) == [ObjectIdentifier(next)])
         previous.pause()
-        #expect(CaptureThumbnail.active.count == 1)
+        timing.completeAnimations()
+        #expect(CaptureThumbnail.active.map(ObjectIdentifier.init) == [ObjectIdentifier(next)])
         CaptureThumbnail.finishAll()
     }
 
-    @Test func quittingSavesAThumbnailThatIsHiding() async throws {
+    @Test func quittingSavesAThumbnailThatIsHiding() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        let (thumbnail, window, _) = try await shownThumbnail(named: "Hiding.png", in: directory)
+        let (thumbnail, window, _, timing) = try shownThumbnail(named: "Hiding.png", in: directory)
         defer { window.close() }
         thumbnail.hide(animated: true)
         #expect(CaptureThumbnail.finishAll().isEmpty)
+        timing.completeAnimations()
         #expect(try savedNames(in: directory) == ["Hiding.png"])
         #expect(CaptureThumbnail.active.isEmpty)
     }
@@ -547,23 +552,76 @@ struct CaptureThumbnailTests {
         #expect(try Data(contentsOf: destination) == Data("Promised.png".utf8))
     }
 
-    @Test func aShownScreenshotShrinksBesideItsWindowAndSavesItselfWhenItsTimerEnds() async throws {
+    @Test func aShownScreenshotShrinksBesideItsWindowAndSavesItselfWhenItsTimerEnds() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         let (window, source) = deviceWindow()
         defer { window.close() }
+        let timing = ControlledThumbnailTiming()
         let thumbnail = CaptureThumbnail(try capture(named: "Timed.png", in: directory), image: nil, parent: window,
-                                         source: source, spacing: NSSize(width: 10, height: 10)) { _ in }
+                                         source: source, spacing: NSSize(width: 10, height: 10), timing: timing) { _ in }
         thumbnail.show()
         let shown = try #require(window.childWindows?.last)
         #expect(shown.frame == source.insetBy(dx: -5, dy: -5))
-        for _ in 0..<100 where !thumbnail.shown { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(!thumbnail.shown && timing.deadlineDurations.isEmpty)
+        timing.completeAnimations()
+        #expect(thumbnail.shown)
+        #expect(timing.deadlineDurations == [.seconds(5)])
         #expect(shown.frame == NSRect(x: window.frame.maxX + 10, y: window.frame.minY + 10, width: 50, height: 80))
         #expect(try savedNames(in: directory).isEmpty)
-        for _ in 0..<400 where !CaptureThumbnail.active.isEmpty { try await Task.sleep(for: .milliseconds(25)) }
+        thumbnail.pause()
+        #expect(timing.deadlineDurations.isEmpty)
+        timing.expireDeadlines()
+        #expect(try savedNames(in: directory).isEmpty)
+        thumbnail.resume()
+        timing.expireDeadlines()
+        #expect(try savedNames(in: directory).isEmpty)
+        timing.completeAnimations()
         #expect(CaptureThumbnail.active.isEmpty)
         #expect(try savedNames(in: directory) == ["Timed.png"])
     }
 
+}
+
+/// Models completion and deadlines; window/layer changes still use the production thumbnail pipeline.
+@MainActor
+private final class ControlledThumbnailTiming: CaptureThumbnailTiming {
+    private var completions: [@MainActor () -> Void] = []
+    private var deadlines: [UUID: (Duration, @MainActor () -> Void)] = [:]
+    var deadlineDurations: [Duration] { deadlines.values.map { $0.0 } }
+
+    func animateWindow(_ window: NSWindow, duration: Double, timing: CAMediaTimingFunctionName?, changes: (NSWindow) -> Void, completion: @escaping @MainActor () -> Void) {
+        changes(window)
+        completions.append(completion)
+    }
+
+    func animateLayer(duration: Double, timing: CAMediaTimingFunctionName, changes: () -> Void,
+                      completion: @escaping @MainActor () -> Void) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        changes()
+        CATransaction.commit()
+        completions.append(completion)
+    }
+
+    func fadeIn(_ layer: CALayer, duration: Double, completion: @escaping @MainActor () -> Void) {
+        completions.append(completion)
+    }
+
+    func schedule(after duration: Duration, action: @escaping @MainActor () -> Void) -> () -> Void {
+        let identifier = UUID()
+        deadlines[identifier] = (duration, action)
+        return { [weak self] in self?.deadlines[identifier] = nil }
+    }
+
+    func completeAnimations() {
+        while !completions.isEmpty { completions.removeFirst()() }
+    }
+
+    func expireDeadlines() {
+        let current = deadlines.values.map { $0.1 }
+        deadlines.removeAll()
+        for action in current { action() }
+    }
 }
