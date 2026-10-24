@@ -291,7 +291,7 @@ public actor SimulatorHostController {
                 return observation.catalogChanged
             }
             let rendererDefaults = UserDefaults(suiteName: ToolConstants.neoHostBundleIdentifier)
-            let managerDefaults = UserDefaults(suiteName: "dev.lynnswap.NeoSimulator")
+            let managerDefaults = ToolConstants.managerDefaults
             let attachInitially = rendererDefaults?.object(forKey: "AttachBootedOnStart") as? Bool
                 ?? managerDefaults?.object(forKey: "AttachBootedOnStart") as? Bool ?? true
             var changed = false
@@ -462,6 +462,17 @@ public actor SimulatorHostController {
             }
             return try self.resolveDeviceXcode(identifier: identifier, preferredURL: nil).applicationURL
         }
+    }
+
+    // Settings reads must remain available while a renderer command waits for a device's screen.
+    func settingsDevice(_ identifier: String) async throws -> (SimulatorHostDevice, URL) {
+        let owner = try await registeredRenderers().first { $0.deviceIdentifiers.contains(identifier) }
+        let xcode = try owner.map { try resolveXcode(URL(fileURLWithPath: $0.xcodePath)) }
+            ?? resolveDeviceXcode(identifier: identifier, preferredURL: nil)
+        guard let device = try deviceCatalog(xcode: xcode).first(where: { $0.identifier == identifier }) else {
+            throw CLIError.unavailable("simulator-device", "The selected simulator is no longer available.")
+        }
+        return (device, xcode.applicationURL)
     }
 
     private func resolveDeviceXcode(identifier: String, preferredURL: URL?) throws -> XcodeInstallation {
@@ -773,7 +784,7 @@ enum SimulatorStartupSelection {
 enum SimulatorDeviceSets {
     static func testingPath() -> String? {
         let renderer = UserDefaults(suiteName: ToolConstants.neoHostBundleIdentifier)
-        let manager = UserDefaults(suiteName: "dev.lynnswap.NeoSimulator")
+        let manager = ToolConstants.managerDefaults
         return testingPath(showTesting: renderer?.object(forKey: "ShowTestingDevices") as? Bool ?? manager?.object(forKey: "ShowTestingDevices") as? Bool ?? true,
                            customPath: renderer?.string(forKey: "TestingDeviceSetPath") ?? manager?.string(forKey: "TestingDeviceSetPath"))
     }

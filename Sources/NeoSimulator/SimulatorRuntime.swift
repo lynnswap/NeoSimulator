@@ -81,8 +81,6 @@ final class SimulatorRuntime {
 /// SimulatorKit display members and the IDEPlaygroundSimulator display factory.
 @MainActor
 struct SimulatorDisplayInterface {
-    let screenClass: AnyClass
-    let makeScreen: NativeObjCMethod<AnyObject?, AnyObject, UInt32>
     let screen: NativeObjCMethod<AnyObject?>
     let isDefault: NativeObjCMethod<Bool>
     let isCarPlay: NativeObjCMethod<Bool>
@@ -101,6 +99,8 @@ struct SimulatorDisplayInterface {
     let displayClass: NativeSwiftMethod<() -> UInt16>
     /// `SimDevice.screenAdapter`, the device's `SimDeviceScreenAdapter`.
     let screenAdapter = ScreenAdapterGetter()
+    /// Screens currently published by the device's screen adapter.
+    let adapterScreens: NativeSwiftMethod<() -> [UInt32: NativeSwiftValue]>
     typealias AdapterEventHandler = NativeSwiftClosure<(NativeSwiftValue) -> Void>
     /// Screen-adapter registration. Releasing the token ends callbacks except those already queued.
     let registerAdapterEvents: NativeSwiftMethod<(UInt32?, DispatchQueue, AdapterEventHandler) -> AnyObject>
@@ -181,11 +181,7 @@ struct SimulatorDisplayInterface {
         else {
             throw HostError.unavailable("SimulatorKit display classes are unavailable")
         }
-        self.screenClass = screenClass
         self.factoryClass = factoryClass
-        makeScreen = try runtime.resolveAndWait(
-            .message("initWithDevice:screenID:", as: ((AnyObject, UInt32) -> AnyObject?).self),
-            on: screenClass)
         screen = try runtime.resolveAndWait(.message("screen", as: (() -> AnyObject?).self), on: screenClass)
         isDefault = try runtime.resolveAndWait(.message("isDefault", as: (() -> Bool).self), on: screenClass)
         isCarPlay = try runtime.resolveAndWait(.message("isCarPlay", as: (() -> Bool).self), on: screenClass)
@@ -218,9 +214,10 @@ struct SimulatorDisplayInterface {
             "register(types:queue:handler:)",
             as: ((NativeSwiftValue, DispatchQueue, ScreenEventHandler) -> NativeSwiftValue).self,
             valueABIs: eventABIs))
-        registerAdapterEvents = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimDeviceScreenAdapter")
-            .resolveAndWait(.method("register(screenID:queue:handler:)",
-                                    as: ((UInt32?, DispatchQueue, AdapterEventHandler) -> AnyObject).self))
+        let adapterType = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimDeviceScreenAdapter")
+        adapterScreens = try adapterType.resolveAndWait(.getter("screens", as: (() -> [UInt32: NativeSwiftValue]).self))
+        registerAdapterEvents = try adapterType.resolveAndWait(.method("register(screenID:queue:handler:)",
+            as: ((UInt32?, DispatchQueue, AdapterEventHandler) -> AnyObject).self))
         // Screen proxies are bound on connection; their protocols must declare these messages.
         for (name, selectors) in SimulatorExternalScreenConnection.selectors + SimulatorConnection.backlightSelectors {
             guard let declared = objc_getProtocol(name) else {
@@ -368,11 +365,11 @@ struct SimulatorDisplayInterface {
 
     /// The device's default non-CarPlay screen, or nil while it is not ready.
     func defaultScreen(of device: SimulatorDevice) -> (identifier: UInt32, object: AnyObject)? {
-        for identifier: UInt32 in 0...63 {
-            // Invalid screen IDs raise exceptions, which arrive as errors;
-            // absence is retried during boot.
-            guard let allocated = allocate(screenClass),
-                let screen = try? unsafe makeScreen.unsafeInvoke(on: allocated, device.object, identifier),
+        // The synchronous screen initializer waits for missing IDs and blocks AppKit during boot.
+        guard let adapter = try? screenAdapter.adapter(of: device.object),
+              let screens = try? unsafe adapterScreens.unsafeInvoke(on: adapter) else { return nil }
+        for (identifier, value) in screens.sorted(by: { $0.key < $1.key }) {
+            guard let screen = try? value.withCopy({ $0 as AnyObject }),
                 let _ = try? unsafe self.screen.unsafeInvoke(on: screen),
                 (try? unsafe isDefault.unsafeInvoke(on: screen)) == true,
                 (try? unsafe isCarPlay.unsafeInvoke(on: screen)) == false

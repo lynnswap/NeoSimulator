@@ -734,7 +734,7 @@ final class ManagerWindowController: NSWindowController, NSTableViewDataSource, 
         deviceImage.imageScaling = .scaleProportionallyUpOrDown
         deviceImage.translatesAutoresizingMaskIntoConstraints = false
         deviceImage.setAccessibilityHidden(true)
-        deviceName.font = .systemFont(ofSize: 23, weight: .semibold)
+        deviceName.font = .systemFont(ofSize: 17, weight: .semibold)
         deviceName.alignment = .center
         deviceName.lineBreakMode = .byTruncatingTail
         deviceRuntime.font = .systemFont(ofSize: 13)
@@ -743,6 +743,8 @@ final class ManagerWindowController: NSWindowController, NSTableViewDataSource, 
         deviceRuntime.lineBreakMode = .byTruncatingTail
         viewScreen.bezelStyle = .rounded
         viewScreen.controlSize = .large
+        viewScreen.image = NSImage(systemSymbolName: "rectangle.badge.person.crop", accessibilityDescription: nil)
+        viewScreen.imagePosition = .imageLeading
         viewScreen.target = self
         viewScreen.action = #selector(openSelectedDevice(_:))
         viewScreen.keyEquivalent = "\r"
@@ -1303,26 +1305,29 @@ private struct ManagerDeviceSettingsView: View {
 
     var body: some View {
         Form {
-            if device != nil {
-                Section {
-                    appearanceRows
-                    accessibilityRows
+            if device?.state == "Booted", settings == nil, issue == nil {
+                ProgressView("Loading settings…")
+            } else {
+                if device != nil {
+                    Section {
+                        appearanceRows
+                        accessibilityRows
+                    }
+                    locationSection
+                    soundSection
                 }
-                locationSection
-                soundSection
-            }
-            if let message {
-                Section {
-                    Text(message)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .help(issue ?? settings?.issues.joined(separator: "\n") ?? "")
+                if let message {
+                    Section {
+                        Text(message)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .help(issue ?? settings?.issues.joined(separator: "\n") ?? "")
+                    }
                 }
             }
         }
         .formStyle(.grouped)
         .labelStyle(.titleAndIcon)
-        .controlSize(.small)
         .disabled(isBusy || device?.state != "Booted")
     }
 
@@ -1407,6 +1412,7 @@ private struct ManagerDeviceSettingsView: View {
                 Label(title, systemImage: symbol)
             }
             .disabled(choices.isEmpty)
+            .buttonStyle(.borderless)
         } else {
             unavailable(title, symbol: symbol)
         }
@@ -1434,6 +1440,7 @@ private struct ManagerDeviceSettingsView: View {
                     .help(help)
             } label: {
                 Label(title, systemImage: symbol)
+                    .layoutPriority(1)
             }
         } else {
             unavailable(title, symbol: symbol)
@@ -1496,7 +1503,7 @@ private struct ManagerSettingSlider: NSViewRepresentable {
     func makeNSView(context: Context) -> NSSlider {
         let slider = NSSlider()
         slider.isContinuous = false
-        slider.controlSize = .small
+        slider.controlSize = .regular
         slider.target = context.coordinator
         slider.action = #selector(Coordinator.change(_:))
         return slider

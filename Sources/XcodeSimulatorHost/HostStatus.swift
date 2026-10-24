@@ -111,7 +111,7 @@ extension SimulatorHostController {
             let (device, xcodeURL) = try await settingsDevice(identifier)
             guard device.state == "Booted" else { return SimulatorDeviceSettings() }
             var settings = await Self.readSettings(device: device, xcodeURL: xcodeURL)
-            if let defaults = UserDefaults(suiteName: "dev.lynnswap.NeoSimulator") {
+            if let defaults = ToolConstants.managerDefaults {
                 if defaults.synchronize() {
                     let record = defaults.dictionary(forKey: "DeviceLocationPreset.\(identifier)")
                     if let mode = record?["mode"] as? String, ["none", "custom", "scenario"].contains(mode) {
@@ -136,7 +136,7 @@ extension SimulatorHostController {
             default: audioRoute = nil
             }
             if let audioRoute {
-                guard let defaults = UserDefaults(suiteName: "dev.lynnswap.NeoSimulator") else {
+                guard let defaults = ToolConstants.managerDefaults else {
                     throw CLIError.io("device-audio-save", "The audio route was applied, but could not be saved for the next connection.")
                 }
                 defaults.set(audioRoute.route, forKey: "DeviceAudioRoute.\(identifier).\(audioRoute.scope)")
@@ -152,7 +152,7 @@ extension SimulatorHostController {
             default: preset = nil
             }
             if let preset {
-                guard let defaults = UserDefaults(suiteName: "dev.lynnswap.NeoSimulator") else {
+                guard let defaults = ToolConstants.managerDefaults else {
                     throw CLIError.io("device-location-save", "The location was applied, but could not be saved for the next connection.")
                 }
                 defaults.set(preset, forKey: "DeviceLocationPreset.\(identifier)")
@@ -165,14 +165,6 @@ extension SimulatorHostController {
             }
         } catch let error as SimulatorHostFailure { throw error }
         catch { throw SimulatorHostFailure(error) }
-    }
-
-    private func settingsDevice(_ identifier: String) async throws -> (SimulatorHostDevice, URL) {
-        let xcodeURL = try await self.xcodeURL(forDevice: identifier)
-        guard let device = try await devices(xcodeURL: xcodeURL).first(where: { $0.identifier == identifier }) else {
-            throw CLIError.unavailable("simulator-device", "The selected simulator is no longer available.")
-        }
-        return (device, xcodeURL)
     }
 
     @concurrent

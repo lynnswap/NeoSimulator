@@ -9,6 +9,7 @@ enum ToolConstants {
     static let deviceHubBundleIdentifier = "com.apple.dt.Devices"
     static let deviceKitBundleIdentifier = "com.apple.dt.DeviceKit"
     static let simulatorBundleIdentifier = "com.apple.iphonesimulator"
+    static let neoManagerBundleIdentifier = "dev.lynnswap.NeoSimulator"
     static let neoHostBundleIdentifier = "dev.lynnswap.NeoSimulator.Renderer"
     static let coreSimulatorBundleIdentifier = "com.apple.CoreSimulator"
     static let coreDeviceBundleIdentifier = "com.apple.CoreDevice"
@@ -19,6 +20,12 @@ enum ToolConstants {
     static let simulatorKitBundleIdentifier = "com.apple.SimulatorKit"
     static let idePlaygroundSimulatorBundleIdentifier =
         "com.apple.dt.IDE.IDEPlaygroundSimulator"
+
+    static var managerDefaults: UserDefaults? {
+        // Foundation rejects the current app's bundle identifier as a suite name.
+        Bundle.main.bundleIdentifier == neoManagerBundleIdentifier
+            ? .standard : UserDefaults(suiteName: neoManagerBundleIdentifier)
+    }
 
     static let xcodePreference = ManagedPreference(
         domain: "com.apple.dt.Xcode",
