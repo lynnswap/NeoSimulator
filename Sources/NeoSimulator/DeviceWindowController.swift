@@ -15,6 +15,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     /// precedence over the default close action.
     private var closeChoice: DeviceLifetimeChoice?
     private let onRestart: (DeviceWindowController, _ erasing: Bool) -> Void
+    private let onShutDown: ((DeviceWindowController) -> Void)?
     private var content: DeviceContentView
     private let fitting: DisplayFitting
     private let keyboard: DisplayKeyboardInput
@@ -99,7 +100,8 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
          presentCompactWindow: @escaping (NSWindow) -> Void = { $0.makeKeyAndOrderFront(nil) },
          userInterfacePluginLookUp: (attempts: Int, interval: Duration) = (40, .milliseconds(250)),
          onClose: @escaping (DeviceWindowController, DeviceLifetimeChoice?) -> Void,
-         onRestart: @escaping (DeviceWindowController, _ erasing: Bool) -> Void = { _, _ in }) throws {
+         onRestart: @escaping (DeviceWindowController, _ erasing: Bool) -> Void = { _, _ in },
+         onShutDown: ((DeviceWindowController) -> Void)? = nil) throws {
         self.session = session
         self.userInterfacePluginLookUp = userInterfacePluginLookUp
         self.preferences = preferences
@@ -113,6 +115,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         savedScale = saved.scale
         self.onClose = onClose
         self.onRestart = onRestart
+        self.onShutDown = onShutDown
         content = DeviceContentView(display: session.display.view)
         let natural = session.display.size(for: 1)
         guard natural.width > 0, natural.height > 0 else {
@@ -540,6 +543,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     }
 
     func shutDown() {
+        if let onShutDown { onShutDown(self); return }
         session.run({ [session] in try await session.shutDown() }, failure: { [weak self] in self?.present($0) })
     }
 

@@ -15,6 +15,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     var onError: ((Error) -> Void)?
     var onChange: (() -> Void)?
     var onRestart: ((SimulatorDeviceIdentifier, Bool) -> Void)?
+    var onShutDown: ((SimulatorDeviceIdentifier) -> Void)?
+    var isStopped: Bool { stopped }
     var openedDeviceIdentifiers: Set<SimulatorDeviceIdentifier> { Set(sessions.keys) }
     private let owner: RendererOwnerIdentity?
     private let sessionIdentifier = UUID().uuidString
@@ -819,6 +821,9 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                             connectExternalDisplay(of: session)
                             return
                         }
+                        let shutDown: ((DeviceWindowController) -> Void)? = isInProcess ? { [weak self] controller in
+                            self?.onShutDown?(controller.session.device.identity)
+                        } : nil
                         let controller = try DeviceWindowController(
                             session: session, touchPressure: touchPressure, tvRemote: tvRemote, onClose: { [weak self] in
                                 self?.deviceWindowClosed($0, choice: $1)
@@ -826,7 +831,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                                 guard let self else { return }
                                 if isInProcess { onRestart?(controller.session.device.identity, erasing) }
                                 else { restartDevice(controller, erasing: erasing) }
-                            })
+                            }, onShutDown: shutDown)
                         try conflicts.check()
                         sessions[identifier] = controller
                         if !isInProcess { controller.showNewWindow(cascadingFrom: &nextWindowPosition) }

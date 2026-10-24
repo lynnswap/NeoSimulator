@@ -10,8 +10,10 @@ struct InputFocusTests {
         let display = TestDisplay()
         var closes = 0
         var compactPresentations = 0
+        var shutdownRequests = 0
         let controller = try makeController(display, features: [DeviceCapabilities.keyboard],
-            presentCompactWindow: { _ in compactPresentations += 1 }, onClose: { _, _ in closes += 1 })
+            presentCompactWindow: { _ in compactPresentations += 1 }, onClose: { _, _ in closes += 1 },
+            onShutDown: { _ in shutdownRequests += 1 })
         defer { controller.invalidate() }
         let session = controller.session
         let parent = NSViewController()
@@ -33,6 +35,8 @@ struct InputFocusTests {
         controller.focusInput()
         #expect(window.firstResponder === display.inputView)
         #expect(controller.session === session && display.disconnectCount == 0)
+        controller.perform(.shutDown)
+        #expect(shutdownRequests == 1 && display.isBooted && session.isConnected)
         parent.view.setFrameSize(NSSize(width: 300, height: 480))
         parent.view.layoutSubtreeIfNeeded()
         let content = controller.presentationViewController.view
@@ -6009,7 +6013,8 @@ struct InputFocusTests {
                                 performWindowDrag: @escaping (NSWindow, NSEvent) -> Void = { _, _ in },
                                 presentCompactWindow: @escaping (NSWindow) -> Void = { $0.makeKeyAndOrderFront(nil) },
                                 onClose: @escaping (DeviceWindowController, DeviceLifetimeChoice?) -> Void = { _, _ in },
-                                onRestart: @escaping (DeviceWindowController, Bool) -> Void = { _, _ in })
+                                onRestart: @escaping (DeviceWindowController, Bool) -> Void = { _, _ in },
+                                onShutDown: ((DeviceWindowController) -> Void)? = nil)
         throws -> DeviceWindowController {
         let session = try makeSession(display, family: family, features: features, framebufferMask: framebufferMask,
                                       simctl: simctl, devicectl: devicectl, recordingProcess: recordingProcess,
@@ -6025,7 +6030,7 @@ struct InputFocusTests {
             tvRemote: tvRemote ?? TVRemoteController(target: { nil }),
             performWindowDrag: performWindowDrag, presentCompactWindow: presentCompactWindow,
             userInterfacePluginLookUp: userInterfacePluginLookUp,
-            onClose: onClose, onRestart: onRestart)
+            onClose: onClose, onRestart: onRestart, onShutDown: onShutDown)
     }
 
     /// Yields between checks so image rendering cannot starve other main-actor tests.
