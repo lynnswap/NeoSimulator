@@ -4,8 +4,11 @@ Open devices, manage their windows, and capture their screens.
 
 ## Open and create devices
 
-Start the beta host with `xcode-simulator-host use neo`. Use **File → Open
-Simulator** or **Window → Simulators** to start a device or reopen its window.
+Open NeoSimulator.app and select **NeoSimulator** as the display host. Select a
+device in the main window and choose **View Screen** to open it. You can also
+use **Device** in the Dock menu, **File → Open Simulator**, or **Window → Simulators**
+to start a device or reopen its window. The manager's device menus group devices
+by OS version.
 The browser supports search. Open Simulator groups devices by runtime; a
 checkmark means a device has a window, and a dash means it is running without
 one. Hold Option to show its runtime and device type.
@@ -16,8 +19,8 @@ Creation does not boot the new devices. If creation or pairing fails after a
 device was created, the error names the devices kept. Install runtimes in Xcode.
 
 Neo supports iPhone, iPad, Apple Watch, Apple TV, and Apple Vision Pro. Menus show
-the controls supported by the active device. The selected Xcode supplies device
-artwork and the visionOS user-interface plugin.
+the controls supported by the active device. Each renderer uses its Xcode installation for device artwork and the visionOS
+user-interface plugin.
 
 ## Close, restart, or quit
 
@@ -28,15 +31,15 @@ Reopen a detached device through Open Simulator or the device browser.
 
 Quitting normally shuts down devices with open windows. **Quit NeoSimulator…**
 (Option-Command-Q) asks whether to keep them running. Settings can change both
-defaults. CLI host switching leaves devices running so the next host can attach.
+defaults. Switching the display host leaves devices running so the next host can attach.
 
 **Device → Restart** and **Erase All Content and Settings…** retain the window
 and reconnect after boot. An active recording is saved first. **Shut Down**
 stops the device and removes its window.
 
-By default, Neo attaches already-booted devices, or starts the last selected
-device when none attach. Settings can change this behavior; see
-<doc:Configuration>.
+**Start the last used simulator on launch** in Settings controls launch
+restoration. The `AttachBootedOnStart` preference controls attachment of devices
+that are already booted when the manager starts. See <doc:Configuration>.
 
 ## Arrange windows
 
@@ -94,6 +97,10 @@ completed imports and failed files. **I/O → Open URL…** opens web addresses 
 custom app URL schemes in the active device.
 
 ## Debug and simulate conditions
+
+The main window's inspector changes the selected device's Appearance, Text
+Size, Increase Contrast, and Location where supported. Controls that the
+selected device cannot supply are unavailable.
 
 Device and Features menus include Home, Lock, Shake, orientation, appearance,
 biometric enrollment and matches, Apple Pay authorization, preferred text size,

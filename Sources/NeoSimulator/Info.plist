@@ -7,9 +7,9 @@
     <key>CFBundleDisplayName</key>
     <string>NeoSimulator</string>
     <key>CFBundleExecutable</key>
-    <string>NeoSimulator</string>
+    <string>$(EXECUTABLE_NAME)</string>
     <key>CFBundleIdentifier</key>
-    <string>dev.lynnswap.NeoSimulator</string>
+    <string>dev.lynnswap.NeoSimulator.Renderer</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
@@ -22,8 +22,17 @@
     <string>$(CURRENT_PROJECT_VERSION)</string>
     <key>LSMinimumSystemVersion</key>
     <string>$(MACOSX_DEPLOYMENT_TARGET)</string>
-    <key>LSMultipleInstancesProhibited</key>
+    <key>LSUIElement</key>
     <true/>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>dev.lynnswap.NeoSimulator.Renderer</string>
+            <key>CFBundleURLSchemes</key>
+            <array><string>neosimulator-renderer</string></array>
+        </dict>
+    </array>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSPrincipalClass</key>

@@ -529,8 +529,11 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
         // changes, so that the device window cannot hide it.
         customLocation.window?.level = window?.level ?? .normal
         let defaults = UserDefaults.standard
-        customLocation.show(latitude: defaults.double(forKey: HostPreferences.locationLatitude),
-                            longitude: defaults.double(forKey: HostPreferences.locationLongitude))
+        do {
+            let coordinate = try DeviceLocationPreset.load(for: session.device.id, among: session.locationScenarios)?.coordinate
+            customLocation.show(latitude: coordinate?.latitude ?? defaults.double(forKey: HostPreferences.locationLatitude),
+                                longitude: coordinate?.longitude ?? defaults.double(forKey: HostPreferences.locationLongitude))
+        } catch { present(error) }
     }
 
     /// I/O ▸ Audio Input or Audio Output: saves `route` as the app's most

@@ -97,7 +97,7 @@ window ends CarPlay. Its options panel is unavailable.
 | --- | --- |
 | Apple Watch | Lock, Side Button, Digital Crown scrolling over the screen, Double Tap, Wrist Flick on watchOS 12+, and Simulate Fall where supported. Always On follows the watch backlight. |
 | Apple TV | **Window → Show Apple TV Remote** (Shift-Command-R). Hold a button to keep it pressed. Click the touch surface for Select; hold Option over it for touch input. |
-| Apple Vision Pro | The selected Xcode's `XROS.simdeviceui` overlay, camera modes, Reset Camera, Re-Center Open Apps, Simulated Scenes, immersion, gaze target, FaceTime simulation, and Optic ID. |
+| Apple Vision Pro | The renderer's `XROS.simdeviceui` overlay, camera modes, Reset Camera, Re-Center Open Apps, Simulated Scenes, immersion, gaze target, FaceTime simulation, and Optic ID. |
 
 Vision's Capture Pointer and Capture Keyboard buttons do not capture Mac input.
 Set Immersion To requires guest permission to change immersion. Simulated Scenes

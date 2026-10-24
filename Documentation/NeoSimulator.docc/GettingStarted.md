@@ -1,62 +1,35 @@
 # Getting started
 
-Install the CLI and select a display host.
+Install NeoSimulator.app and choose the host that displays your simulators.
 
 ## Requirements
 
-- Apple Silicon and macOS 26.4 or later.
-- Xcode 27 or later for Build & Run.
-- Xcode 26 for Legacy mode.
-- Swift 6.4 or later for source builds.
+- Apple Silicon Mac with macOS 26.4 or later.
+- Xcode 27 or later, selected with `xcode-select`.
+- Simulator runtimes installed through Xcode.
 
-## Install and select a host
+## Install and choose a host
 
-```bash
-curl -fsSL https://github.com/lynnswap/NeoSimulator/releases/latest/download/install.sh | sh
-```
+Download the DMG from [Releases](https://github.com/lynnswap/NeoSimulator/releases),
+open it, and drag **NeoSimulator.app** to **Applications**. Launch the app and
+choose **NeoSimulator** or **Device Hub** under **Display Host** in Settings.
 
-Follow any PATH instructions printed by the installer, then choose a host:
+Use Xcode for Build & Run as usual. NeoSimulator remains in the Dock while
+Device Hub displays devices, so you can switch back at any time.
+Switching hosts leaves devices running for the next host to attach.
 
-| Command | Host | Use |
-| --- | --- | --- |
-| `xcode-simulator-host use legacy` | Xcode 26 Simulator.app | Recommended; Apple's complete Simulator UI. |
-| `xcode-simulator-host use neo` | Bundled NeoSimulator | Beta; works without Xcode 26. |
-| `xcode-simulator-host use device-hub` | Selected Xcode's Device Hub | Return to Xcode's default host. |
+Select a device in the main window and choose **View Screen** to open it.
+You can also open **Device** in the Dock menu or **File → Open Simulator** and
+choose its OS version and name. Selecting an already-running device brings its
+window forward.
 
-Keep Xcode 27+ selected and use Build & Run as usual. Legacy supplies only the
-Simulator UI. It automatically chooses the newest validated Xcode 26 under
-`/Applications`; use `--legacy-xcode` to choose another installation:
+## Update or uninstall
 
-```bash
-xcode-simulator-host use legacy --legacy-xcode /Applications/Xcode_26.app
-```
+Quit NeoSimulator, replace the app in Applications with the new version, and
+reopen it. Before uninstalling, choose **Restore Original Settings…** in Settings
+to restore the original preferences saved when host management began. See
+<doc:Configuration> for recovery and the receipt location.
 
-Repeating `use legacy` or `use neo` revalidates and restarts that host, even when
-the CoreSimulator preferences are already correct. This also applies a changed
-Xcode selection to Neo's loaded frameworks.
-
-## Inspect or undo the change
-
-```bash
-xcode-simulator-host status --verbose
-xcode-simulator-host restore
-```
-
-Status is read-only. Restore recovers the preferences saved before the first
-change. Run it before uninstalling the CLI or deleting its state. For Xcode
-selection and conflict recovery, see <doc:Configuration>.
-
-Both direct-host modes use undocumented Xcode preferences, and Neo uses private
-Apple frameworks. Each installation must pass compatibility checks. A failed
-check stops the switch; the tool does not fall back to Device Hub.
-
-## Choose an install directory
-
-```bash
-curl -fsSL https://github.com/lynnswap/NeoSimulator/releases/latest/download/install.sh \
-  | sh -s -- --bindir "$HOME/bin"
-```
-
-The installer keeps the CLI and app in a fixed relative layout. It resolves a
-symlinked destination, stages both products, and verifies them before replacing
-an existing installation. Move or install them together.
+The app replaces the previous CLI distribution and Legacy mode. It keeps the
+existing recovery receipt. For exact cleanup paths for an older CLI install,
+see the [migration instructions](https://github.com/lynnswap/NeoSimulator#migrating-from-the-cli).

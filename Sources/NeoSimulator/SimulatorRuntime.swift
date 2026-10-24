@@ -34,6 +34,14 @@ final class SimulatorRuntime {
         try validateLoadedImages()
     }
 
+    static func creationCatalog(xcodeURL: URL) throws -> SimulatorCatalog {
+        try load(URL(fileURLWithPath: "/Library/Developer/PrivateFrameworks/CoreSimulator.framework"))
+        let interface = try CoreSimulatorInterface(runtime: .shared)
+        let set = try SimulatorDeviceSet(interface: interface,
+                                         developerDirectory: xcodeURL.appendingPathComponent("Contents/Developer").path)
+        return try set.readCatalog()
+    }
+
     private static func load(_ url: URL) throws {
         guard let executable = Bundle(url: url)?.executableURL else {
             throw HostError.unavailable("Missing framework at \(url.path)")

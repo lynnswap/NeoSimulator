@@ -1,12 +1,13 @@
 # Simulator integration
 
-Private simulator interfaces are validated against the selected Xcode before use.
+Private simulator interfaces are validated against the internally resolved Xcode
+before use.
 
 ## Runtime boundary
 
 Neo loads CoreSimulator, SimulatorKit, and IDEPlaygroundSimulator through
 [ABIBridge](https://github.com/lynnswap/ABIBridge). Direct `simctl` and `devicectl`
-operations use the selected installation's validated tools. The app does not
+operations use the resolved installation's validated tools. The app does not
 load Simulator.app code or resources and does not modify or re-sign Xcode.
 
 The compatibility gate checks:
@@ -16,11 +17,11 @@ The compatibility gate checks:
 - The `EXPECTED_VERSION` in each tool wrapper against its installed framework.
 - The simulator CoreDevice plugin's version and generation, and forbidden
   DeviceKit or Device Hub load paths.
-- The packaged app and its private runtime contract, including Objective-C
+- The packaged renderer and its private runtime contract, including Objective-C
   messages, Swift members, C symbols, and loaded-image provenance.
 
-The app's `--validate-runtime` mode resolves the same interfaces used by the GUI
-without creating an application or device session. The gate inspects tool
+The embedded renderer's internal `--validate-runtime` mode resolves the same
+interfaces used by the GUI without creating an application or device session. The gate inspects tool
 wrappers but does not execute them, avoiding their implicit first-launch setup.
 Device UI plugins such as `XROS.simdeviceui` load when SimulatorKit connects a
 display; their provenance is checked then.
@@ -28,11 +29,6 @@ display; their provenance is checked then.
 Xcode 27 is the minimum generation. Later versions are accepted only when the
 required contracts still match. An unavailable interface stops the operation;
 there is no compatibility bypass or Device Hub fallback.
-
-Legacy separately requires an intact Apple-signed Xcode 26 and nested
-Simulator.app. Terminating an already-running Legacy app validates the app and
-its supported directory layout without requiring unrelated parent-Xcode
-resources to remain intact.
 
 ## Reference evidence
 

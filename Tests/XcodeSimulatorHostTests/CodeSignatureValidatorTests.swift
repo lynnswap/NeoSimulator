@@ -167,7 +167,7 @@ struct CodeSignatureValidatorTests {
         )
         #expect(
             AppleCodeValidationPolicy.application.validationFlags.rawValue
-                == commonFlags | kSecCSRestrictToAppLike
+                == commonFlags | kSecCSRestrictToAppLike | kSecCSDoNotValidateResources
         )
     }
 

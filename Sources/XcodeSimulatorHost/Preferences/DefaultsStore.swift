@@ -1,6 +1,40 @@
 import CoreFoundation
 import Foundation
 
+protocol PreferenceDomainAccessing {
+    func readDomain(_ domain: String, keys: [String]) throws -> [String: Any]
+    func write(_ value: StoredBoolean, to preference: ManagedPreference) throws
+}
+
+struct SystemPreferenceDomains: PreferenceDomainAccessing {
+    private let runner: any CommandRunning
+    init(runner: any CommandRunning = SystemCommandRunner()) { self.runner = runner }
+
+    func readDomain(_ domain: String, keys: [String]) throws -> [String: Any] {
+        let output = try run(["export", domain, "-"], operation: "read")
+        let values = try PropertyListSerialization.propertyList(from: output, options: [], format: nil)
+        guard let dictionary = values as? [String: Any] else {
+            throw CLIError.configuration("preference-domain-type", "Preferences for \(domain) are not a dictionary with String keys.")
+        }
+        return dictionary.filter { keys.contains($0.key) }
+    }
+
+    func write(_ value: StoredBoolean, to preference: ManagedPreference) throws {
+        let arguments = value.booleanValue.map {
+            ["write", preference.domain, preference.key, "-bool", $0 ? "true" : "false"]
+        } ?? ["delete", preference.domain, preference.key]
+        _ = try run(arguments, operation: "write")
+    }
+
+    private func run(_ arguments: [String], operation: String) throws -> Data {
+        let output = try runner.run(executable: URL(fileURLWithPath: "/usr/bin/defaults"), arguments: arguments)
+        guard output.terminationStatus == 0 else {
+            throw CLIError.io("preference-\(operation)", output.stderrText)
+        }
+        return output.stdout
+    }
+}
+
 struct DefaultsStore {
     struct StateMismatch: Error, Equatable {
         let expected: [ManagedPreferenceState]
@@ -13,24 +47,19 @@ struct DefaultsStore {
         let resultingState: ManagedPreferenceState
     }
 
-    private static let executable = URL(fileURLWithPath: "/usr/bin/defaults")
+    private let domains: any PreferenceDomainAccessing
 
-    private let runner: any CommandRunning
-
-    init(runner: any CommandRunning) {
-        self.runner = runner
+    init(domains: any PreferenceDomainAccessing = SystemPreferenceDomains()) {
+        self.domains = domains
     }
 
     func readState() throws -> ManagedPreferenceState {
-        let existingDomains = try existingDomains()
         return ManagedPreferenceState(
             xcodeSession: try read(
-                ToolConstants.xcodePreference,
-                existingDomains: existingDomains
+                ToolConstants.xcodePreference
             ),
             deviceHubAutoStartSuppression: try read(
-                ToolConstants.deviceHubPreference,
-                existingDomains: existingDomains
+                ToolConstants.deviceHubPreference
             )
         )
     }
@@ -141,45 +170,8 @@ struct DefaultsStore {
         )
     }
 
-    private func read(
-        _ preference: ManagedPreference,
-        existingDomains: Set<String>
-    ) throws -> StoredBoolean {
-        guard existingDomains.contains(preference.domain) else {
-            return .absent
-        }
-
-        let output = try runner.run(
-            executable: Self.executable,
-            arguments: ["export", preference.domain, "-"]
-        )
-        guard output.terminationStatus == 0 else {
-            throw commandFailure(
-                identifier: "preference-read",
-                action: "read \(preference.domain).\(preference.key)",
-                output: output
-            )
-        }
-
-        let object: Any
-        do {
-            object = try PropertyListSerialization.propertyList(
-                from: output.stdout,
-                options: [],
-                format: nil
-            )
-        } catch {
-            throw CLIError.io(
-                "preference-decode",
-                "could not decode \(preference.domain): \(error.localizedDescription)"
-            )
-        }
-        guard let domain = object as? [String: Any] else {
-            throw CLIError.configuration(
-                "preference-domain-type",
-                "\(preference.domain) is not a property-list dictionary"
-            )
-        }
+    private func read(_ preference: ManagedPreference) throws -> StoredBoolean {
+        let domain = try domains.readDomain(preference.domain, keys: [preference.key])
         guard let rawValue = domain[preference.key] else {
             return .absent
         }
@@ -196,58 +188,7 @@ struct DefaultsStore {
         return StoredBoolean(number.boolValue)
     }
 
-    private func existingDomains() throws -> Set<String> {
-        let output = try runner.run(
-            executable: Self.executable,
-            arguments: ["domains"]
-        )
-        guard output.terminationStatus == 0 else {
-            throw commandFailure(
-                identifier: "preference-read",
-                action: "list preference domains",
-                output: output
-            )
-        }
-
-        return Set(
-            output.stdoutText
-                .split(separator: ",")
-                .map { candidate in
-                    candidate.trimmingCharacters(in: .whitespacesAndNewlines)
-                }
-                .filter { !$0.isEmpty }
-        )
-    }
-
     private func write(_ value: StoredBoolean, to preference: ManagedPreference) throws {
-        let arguments: [String]
-        switch value {
-        case .absent:
-            arguments = ["delete", preference.domain, preference.key]
-        case .falseValue:
-            arguments = ["write", preference.domain, preference.key, "-bool", "false"]
-        case .trueValue:
-            arguments = ["write", preference.domain, preference.key, "-bool", "true"]
-        }
-
-        let output = try runner.run(executable: Self.executable, arguments: arguments)
-        guard output.terminationStatus == 0 else {
-            throw commandFailure(
-                identifier: "preference-write",
-                action: "write \(preference.domain).\(preference.key)",
-                output: output
-            )
-        }
-    }
-
-    private func commandFailure(
-        identifier: String,
-        action: String,
-        output: CommandOutput
-    ) -> CLIError {
-        let detail = output.stderrText.isEmpty
-            ? "exit status \(output.terminationStatus)"
-            : output.stderrText
-        return CLIError.io(identifier, "could not \(action): \(detail)")
+        try domains.write(value, to: preference)
     }
 }

@@ -483,34 +483,6 @@ struct LocationScenario: Equatable {
     let localizedName: String
 }
 
-/// Creation catalog in CoreSimulator order.
-struct SimulatorCatalog {
-    struct DeviceType: Equatable {
-        let identifier: String
-        let name: String
-        let productFamily: Int
-    }
-
-    struct Runtime: Equatable {
-        let identifier: String
-        let name: String
-    }
-
-    let deviceTypes: [DeviceType]
-    let runtimes: [Runtime]
-    /// Supported device-type identifiers keyed by runtime.
-    let supportedDeviceTypes: [String: Set<String>]
-    /// Watch-first CoreSimulator pairing validation.
-    let canPair: @MainActor (_ watchType: String, _ watchRuntime: String,
-                             _ phoneType: String, _ phoneRuntime: String) -> Bool
-
-    func runtime(_ runtime: String, supports deviceType: String) -> Bool {
-        supportedDeviceTypes[runtime]?.contains(deviceType) == true
-    }
-
-    func deviceType(_ identifier: String) -> DeviceType? { deviceTypes.first { $0.identifier == identifier } }
-}
-
 /// Device set owned by one developer directory.
 @MainActor
 final class SimulatorDeviceSet {

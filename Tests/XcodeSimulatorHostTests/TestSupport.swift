@@ -23,7 +23,7 @@ final class TemporaryTestDirectory {
     }
 }
 
-final class FakeSystemCommandRunner: CommandRunning {
+final class FakeSystemCommandRunner: CommandRunning, PreferenceDomainAccessing {
     struct Call: Equatable {
         let executable: URL
         let arguments: [String]
@@ -37,17 +37,16 @@ final class FakeSystemCommandRunner: CommandRunning {
     var domains: [String: [String: Any]] = [:]
     var selectedDeveloperDirectory: URL?
     var failMutationNumbers: Set<Int> = []
-    var failExportNumber: Int?
-    var failFirstExportAfterMutationCount: Int?
-    var failMissingDomainExports = false
-    var failDomainListing = false
+    var failPreferenceReadNumber: Int?
+    var failFirstPreferenceReadAfterMutationCount: Int?
+    var failPreferenceReads = false
     var neoHostRuntimeValidationStatus: Int32 = 0
     var neoHostRuntimeValidationError = ""
     var failureTiming: FailureTiming = .beforeMutation
     var beforeRun: ((Call) -> Void)?
     private(set) var calls: [Call] = []
     private(set) var mutationCount = 0
-    private var exportCount = 0
+    private var preferenceReadCount = 0
 
     func run(executable: URL, arguments: [String]) throws -> CommandOutput {
         let call = Call(executable: executable, arguments: arguments)
@@ -55,8 +54,6 @@ final class FakeSystemCommandRunner: CommandRunning {
         beforeRun?(call)
 
         switch executable.path {
-        case "/usr/bin/defaults":
-            return try runDefaults(arguments)
         case "/usr/bin/xcode-select":
             guard arguments == ["-p"], let selectedDeveloperDirectory else {
                 return failure("no selected developer directory")
@@ -81,6 +78,39 @@ final class FakeSystemCommandRunner: CommandRunning {
         }
     }
 
+    func readDomain(_ domain: String, keys: [String]) throws -> [String: Any] {
+        recordPreferenceAccess(["read", domain])
+        if failPreferenceReads { throw CLIError.io("preference-read", "injected domain read failure") }
+        guard let values = domains[domain] else { return [:] }
+        preferenceReadCount += 1
+        if failPreferenceReadNumber == preferenceReadCount {
+            throw CLIError.io("preference-read", "injected read failure")
+        }
+        if failFirstPreferenceReadAfterMutationCount == mutationCount {
+            failFirstPreferenceReadAfterMutationCount = nil
+            throw CLIError.io("preference-read", "injected post-mutation read failure")
+        }
+        return values.filter { keys.contains($0.key) }
+    }
+
+    func write(_ value: StoredBoolean, to preference: ManagedPreference) throws {
+        recordPreferenceAccess(["write", preference.domain, preference.key])
+        mutationCount += 1
+        if failMutationNumbers.contains(mutationCount), failureTiming == .beforeMutation {
+            throw CLIError.io("preference-write", "injected write failure")
+        }
+        setStoredValue(value.booleanValue, for: preference)
+        if failMutationNumbers.contains(mutationCount), failureTiming == .afterMutation {
+            throw CLIError.io("preference-write", "injected post-write failure")
+        }
+    }
+
+    private func recordPreferenceAccess(_ arguments: [String]) {
+        let call = Call(executable: URL(fileURLWithPath: "/usr/bin/defaults"), arguments: arguments)
+        calls.append(call)
+        beforeRun?(call)
+    }
+
     func storedBoolean(_ preference: ManagedPreference) -> StoredBoolean {
         guard let raw = domains[preference.domain]?[preference.key] else {
             return .absent
@@ -94,83 +124,6 @@ final class FakeSystemCommandRunner: CommandRunning {
         } else {
             domains[preference.domain]?[preference.key] = nil
         }
-    }
-
-    private func runDefaults(_ arguments: [String]) throws -> CommandOutput {
-        guard let operation = arguments.first else {
-            return failure("missing defaults operation")
-        }
-
-        switch operation {
-        case "domains":
-            guard arguments.count == 1 else {
-                return failure("invalid domains arguments")
-            }
-            if failDomainListing {
-                return failure("injected domain listing failure")
-            }
-            return success(domains.keys.sorted().joined(separator: ", "))
-
-        case "export":
-            guard arguments.count == 3, arguments[2] == "-" else {
-                return failure("invalid export arguments")
-            }
-            exportCount += 1
-            if failExportNumber == exportCount {
-                return failure("injected export failure")
-            }
-            if failFirstExportAfterMutationCount == mutationCount {
-                failFirstExportAfterMutationCount = nil
-                return failure("injected post-mutation export failure")
-            }
-            guard let domain = domains[arguments[1]] else {
-                if failMissingDomainExports {
-                    return failure("domain does not exist")
-                }
-                return try exportedDomain([:])
-            }
-            return try exportedDomain(domain)
-
-        case "write":
-            guard arguments.count == 5, arguments[3] == "-bool" else {
-                return failure("invalid write arguments")
-            }
-            mutationCount += 1
-            if failMutationNumbers.contains(mutationCount), failureTiming == .beforeMutation {
-                return failure("injected write failure")
-            }
-            domains[arguments[1], default: [:]][arguments[2]] = arguments[4] == "true"
-            if failMutationNumbers.contains(mutationCount), failureTiming == .afterMutation {
-                return failure("injected post-write failure")
-            }
-            return success()
-
-        case "delete":
-            guard arguments.count == 3 else {
-                return failure("invalid delete arguments")
-            }
-            mutationCount += 1
-            if failMutationNumbers.contains(mutationCount), failureTiming == .beforeMutation {
-                return failure("injected delete failure")
-            }
-            domains[arguments[1]]?[arguments[2]] = nil
-            if failMutationNumbers.contains(mutationCount), failureTiming == .afterMutation {
-                return failure("injected post-delete failure")
-            }
-            return success()
-
-        default:
-            return failure("unexpected defaults operation")
-        }
-    }
-
-    private func exportedDomain(_ domain: [String: Any]) throws -> CommandOutput {
-        let data = try PropertyListSerialization.data(
-            fromPropertyList: domain,
-            format: .xml,
-            options: 0
-        )
-        return CommandOutput(terminationStatus: 0, stdout: data, stderr: Data())
     }
 
     private func success(_ text: String = "") -> CommandOutput {
@@ -199,32 +152,25 @@ final class WorkspaceRecorder {
 
     var runningXcodes: [RunningApplication] = []
     var runningNeoHosts: [RunningApplication] = []
-    var runningLegacySimulators: [RunningApplication] = []
     var deviceHubCount = 0
     var neoHostCount = 0
-    var legacySimulatorCount = 0
     var terminateDeviceHubsError: (any Error)?
     var terminateNeoHostsError: (any Error)?
-    var terminateLegacySimulatorsError: (any Error)?
     var onTerminateDeviceHubs: (() async -> Void)?
     var onTerminateNeoHosts: (() async -> Void)?
-    var onTerminateLegacySimulators: (() async -> Void)?
     private(set) var requestedDeviceHubURLs: [URL] = []
     private(set) var requestedNeoHostURLs: [URL] = []
-    private(set) var requestedLegacySimulatorURLSets: [[URL]] = []
     var openedNeoHosts: [NeoHostOpen] = []
-    var openedLegacySimulators: [URL] = []
+    var openedDeviceHubs: [URL] = []
+    var openDeviceHubError: (any Error)?
     var openNeoHostError: (any Error)?
-    var openLegacySimulatorError: (any Error)?
     var onOpenNeoHost: ((NeoHostOpen) async throws -> Void)?
-    var onOpenLegacySimulator: ((URL) async throws -> Void)?
     private(set) var events: [String] = []
 
     var client: WorkspaceClient {
         WorkspaceClient(
             runningXcodes: { self.runningXcodes },
             runningNeoHosts: { self.runningNeoHosts },
-            runningLegacySimulators: { self.runningLegacySimulators },
             terminateDeviceHubs: { url in
                 self.events.append("terminate-device-hubs")
                 self.requestedDeviceHubURLs.append(url)
@@ -243,18 +189,7 @@ final class WorkspaceRecorder {
                 }
                 return self.neoHostCount
             },
-            terminateLegacySimulators: { urls in
-                self.events.append("terminate-legacy-simulators")
-                self.requestedLegacySimulatorURLSets.append(urls)
-                await self.onTerminateLegacySimulators?()
-                if let terminateLegacySimulatorsError =
-                    self.terminateLegacySimulatorsError
-                {
-                    throw terminateLegacySimulatorsError
-                }
-                return self.legacySimulatorCount
-            },
-            openNeoHost: { applicationURL, xcodeURL in
+            openNeoHost: { applicationURL, xcodeURL, _ in
                 self.events.append("open-neo-host")
                 let request = NeoHostOpen(
                     applicationURL: applicationURL,
@@ -269,17 +204,15 @@ final class WorkspaceRecorder {
                 }
                 return applicationURL
             },
-            openLegacySimulator: { applicationURL in
-                self.events.append("open-legacy-simulator")
-                self.openedLegacySimulators.append(applicationURL)
-                if let onOpenLegacySimulator = self.onOpenLegacySimulator {
-                    try await onOpenLegacySimulator(applicationURL)
-                }
-                if let openLegacySimulatorError = self.openLegacySimulatorError {
-                    throw openLegacySimulatorError
-                }
+            openDeviceHub: { applicationURL in
+                self.events.append("open-device-hub")
+                self.openedDeviceHubs.append(applicationURL)
+                if let error = self.openDeviceHubError { throw error }
                 return applicationURL
-            }
+            },
+            quitNeoHost: { _, _, _ in self.neoHostCount },
+            openDeviceURL: { _, _, _, _ in }
+
         )
     }
 }
@@ -288,8 +221,6 @@ struct InstallationFixture {
     let directory: TemporaryTestDirectory
     let applicationsURL: URL
     let targetXcodeURL: URL
-    let legacyXcodeURLs: [URL]
-    let commandExecutableURL: URL
     let neoHostURL: URL
     let coreSimulatorFrameworkURL: URL
     let coreDeviceFrameworkURL: URL
@@ -300,9 +231,6 @@ struct InstallationFixture {
         includeHiddenKey: Bool = true,
         includeDeviceHubKey: Bool = true,
         includeNeoHost: Bool = true,
-        legacyVersions: [(String, String, String)] = [
-            ("Xcode_26.app", "26.6", "17F109"),
-        ],
         coreSimulatorXcodeMajorVersion: Int? = nil,
         coreDeviceXcodeMajorVersion: Int? = nil,
         simulatorCoreDevicePluginXcodeMajorVersion: Int? = nil,
@@ -336,21 +264,6 @@ struct InstallationFixture {
             devicectlExpectedVersion: devicectlExpectedVersion,
             dtXcode: dtXcode
         )
-
-        var legacyXcodeURLs: [URL] = []
-        for entry in legacyVersions {
-            let url = applicationsURL.appendingPathComponent(
-                entry.0,
-                isDirectory: true
-            )
-            try Self.makeLegacyXcode(
-                at: url,
-                version: entry.1,
-                build: entry.2
-            )
-            legacyXcodeURLs.append(url)
-        }
-        self.legacyXcodeURLs = legacyXcodeURLs
 
         coreSimulatorFrameworkURL = directory.url.appendingPathComponent(
             "Library/Developer/PrivateFrameworks/CoreSimulator.framework",
@@ -406,15 +319,8 @@ struct InstallationFixture {
                 ?? simctlExpectedVersion
         )
 
-        commandExecutableURL = directory.url.appendingPathComponent(
-            "prefix/bin/\(ToolConstants.name)"
-        )
-        try Self.writeExecutable(
-            content: "fixture-command",
-            to: commandExecutableURL
-        )
         neoHostURL = directory.url.appendingPathComponent(
-            "prefix/libexec/xcode-simulator-host/NeoSimulator.app",
+            "prefix/Applications/NeoSimulatorRenderer.app",
             isDirectory: true
         )
         if includeNeoHost {
@@ -424,12 +330,6 @@ struct InstallationFixture {
 
     var developerDirectoryURL: URL {
         targetXcodeURL.appendingPathComponent("Contents/Developer", isDirectory: true)
-    }
-
-    var legacySimulatorURLs: [URL] {
-        legacyXcodeURLs.map {
-            $0.appendingPathComponent(ToolConstants.simulatorPath, isDirectory: true)
-        }
     }
 
     var simctlWrapperURL: URL {
@@ -560,36 +460,6 @@ struct InstallationFixture {
             dtXcode: dtXcode,
             bundleVersion: String(dtXcode),
             binaryContent: ["fixture-ide-playground-simulator"]
-        )
-    }
-
-    static func makeLegacyXcode(
-        at url: URL,
-        version: String,
-        build: String
-    ) throws {
-        try makeXcodeBase(at: url, version: version, build: build)
-
-        let versionComponents = try ToolVersion(version).components
-        let minor = versionComponents.count > 1 ? versionComponents[1] : 0
-        let dtXcode = versionComponents[0] * 100 + minor * 10
-        let simulatorURL = url.appendingPathComponent(
-            ToolConstants.simulatorPath,
-            isDirectory: true
-        )
-        try writePropertyList(
-            [
-                "CFBundleIdentifier": ToolConstants.simulatorBundleIdentifier,
-                "CFBundleExecutable": "Simulator",
-                "CFBundleShortVersionString": "16.0",
-                "CFBundleVersion": "1063.4",
-                "DTXcode": String(dtXcode),
-            ],
-            to: simulatorURL.appendingPathComponent("Contents/Info.plist")
-        )
-        try writeExecutable(
-            content: "fixture-simulator",
-            to: simulatorURL.appendingPathComponent("Contents/MacOS/Simulator")
         )
     }
 
@@ -749,14 +619,13 @@ struct ControllerFixture {
         let inspector = InstallationInspector(
             runner: runner,
             environment: ["DEVELOPER_DIR": installations.developerDirectoryURL.path],
-            legacySearchRoots: [installations.applicationsURL],
-            commandExecutableURL: installations.commandExecutableURL,
+            rendererApplicationURL: installations.neoHostURL,
             coreSimulatorFrameworkURL: installations.coreSimulatorFrameworkURL,
             coreDeviceFrameworkURL: installations.coreDeviceFrameworkURL,
             signatureValidator: signatureValidator
         )
         controller = HostModeController(
-            defaultsStore: DefaultsStore(runner: runner),
+            defaultsStore: DefaultsStore(domains: runner),
             receiptStore: receiptStore,
             installationInspector: inspector,
             workspace: workspace.client,

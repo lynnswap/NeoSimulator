@@ -49,7 +49,7 @@ enum AppleCodeValidationPolicy: Sendable {
             | kSecCSStrictValidate
             | kSecCSRestrictSymlinks
         if self == .application {
-            rawFlags |= kSecCSRestrictToAppLike
+            rawFlags |= kSecCSRestrictToAppLike | kSecCSDoNotValidateResources
         }
         return SecCSFlags(rawValue: rawFlags)
     }

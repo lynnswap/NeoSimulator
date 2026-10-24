@@ -2,181 +2,81 @@
 set -euo pipefail
 
 usage() {
-  cat <<'EOF'
-Usage: scripts/build-release.sh --version <tag> [--dist-root <dir>]
+  cat <<'USAGE'
+Usage: scripts/build-release.sh --version <tag> [--build-number <positive-integer>] [--dist-root <dir>]
 
-Builds the arm64 CLI and companion app, then stages them under:
-  <dist-root>/arm64/bin/xcode-simulator-host
-  <dist-root>/arm64/libexec/xcode-simulator-host/NeoSimulator.app
-EOF
+Builds and ad-hoc signs the arm64 NeoSimulator.app, including its renderer.
+Public Developer ID signing and notarization run separately in release.yml.
+USAGE
 }
 
 version=""
+build_number="1"
 dist_root="dist"
-arch="arm64"
-cli_product="xcode-simulator-host"
-host_product="NeoSimulator"
-host_bundle_identifier="dev.lynnswap.NeoSimulator"
-host_workspace="NeoSimulator.xcworkspace"
-
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --version)
-      version="${2:-}"
+    --version|--build-number|--dist-root)
+      if [[ $# -lt 2 || -z "$2" || "$2" == --* ]]; then
+        echo "Missing value for $1." >&2
+        exit 1
+      fi
+      case "$1" in
+        --version) version="$2" ;;
+        --build-number) build_number="$2" ;;
+        --dist-root) dist_root="$2" ;;
+      esac
       shift 2
       ;;
-    --dist-root)
-      dist_root="${2:-}"
-      shift 2
-      ;;
-    -h|--help)
-      usage
-      exit 0
-      ;;
-    *)
-      echo "Unknown argument: $1" >&2
-      usage >&2
-      exit 1
-      ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "Unknown argument: $1" >&2; usage >&2; exit 1 ;;
   esac
 done
-
-if [[ ! "$version" =~ ^v[0-9]+[.][0-9]+[.][0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+if [[ ! "$version" =~ ^v([0-9]+[.][0-9]+[.][0-9]+)(-[0-9A-Za-z.-]+)?$ ]]; then
   echo "Release tag must look like v1.2.3 or v1.2.3-rc.1." >&2
   exit 1
 fi
-
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-if [[ "$dist_root" = /* ]]; then
-  dist_base="$dist_root"
-else
-  dist_base="$repo_root/$dist_root"
-fi
-
-out_dir="$dist_base/$arch"
-stage_dir=""
-
-cleanup() {
-  if [[ -n "$stage_dir" && -d "$stage_dir" ]]; then
-    rm -rf "$stage_dir"
-  fi
-}
-trap cleanup EXIT
-
-pushd "$repo_root" >/dev/null
-
-expected_version="${version#v}"
-expected_marketing_version="${expected_version%%-*}"
-NEOSIMULATOR_BUILD_VERSION="$expected_version" \
-  swift build -c release --arch "$arch" --product "$cli_product"
-bin_path="$(
-  NEOSIMULATOR_BUILD_VERSION="$expected_version" \
-    swift build -c release --arch "$arch" --show-bin-path
-)"
-cli_source_path="$bin_path/$cli_product"
-
-actual_version="$("$cli_source_path" --version)"
-if [[ "$actual_version" != "$expected_version" ]]; then
-  echo "Binary version does not match release tag." >&2
-  echo "Expected: $expected_version" >&2
-  echo "Actual:   $actual_version" >&2
+marketing_version="${BASH_REMATCH[1]}"
+if [[ ! "$build_number" =~ ^[1-9][0-9]*$ ]]; then
+  echo "--build-number must be a positive integer." >&2
   exit 1
 fi
-
-host_derived_data="$repo_root/.build/$host_product"
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ "$dist_root" != /* ]]; then dist_root="$repo_root/$dist_root"; fi
+derived_data="$repo_root/.build/NeoSimulator"
+mkdir -p "$dist_root"
+staging="$(mktemp -d "$dist_root/.arm64.stage.XXXXXX")"
+trap 'rm -rf "$staging"' EXIT
+# Xcode can retain resources removed from a target in an existing app bundle.
+# Recreate the bundles while keeping compiled dependencies in DerivedData.
+rm -rf "$derived_data/Build/Products/Release/NeoSimulator.app" \
+  "$derived_data/Build/Products/Release/NeoSimulatorRenderer.app"
 xcodebuild \
   -quiet \
-  -workspace "$host_workspace" \
-  -scheme "$host_product" \
+  -workspace "$repo_root/NeoSimulator.xcworkspace" \
+  -scheme NeoSimulator \
   -configuration Release \
-  -derivedDataPath "$host_derived_data" \
-  ARCHS="$arch" \
+  -destination 'generic/platform=macOS' \
+  -derivedDataPath "$derived_data" \
+  ARCHS=arm64 \
   ONLY_ACTIVE_ARCH=YES \
   CODE_SIGNING_ALLOWED=NO \
-  MARKETING_VERSION="$expected_marketing_version" \
+  CODE_SIGNING_REQUIRED=NO \
+  MARKETING_VERSION="$marketing_version" \
+  CURRENT_PROJECT_VERSION="$build_number" \
   build
-host_source_app="$host_derived_data/Build/Products/Release/$host_product.app"
-host_source_path="$host_source_app/Contents/MacOS/$host_product"
-host_info_plist="$host_source_app/Contents/Info.plist"
-# AppKit builds Settings… from this schema.
-host_settings_plist="$host_source_app/Contents/Resources/Settings.bundle/Root.plist"
-
-for source_path in "$cli_source_path" "$host_source_path" "$host_info_plist" "$host_settings_plist"; do
-  if [[ ! -f "$source_path" ]]; then
-    echo "Failed to locate release input: $source_path" >&2
+app="$staging/NeoSimulator.app"
+ditto "$derived_data/Build/Products/Release/NeoSimulator.app" "$app"
+renderer="$app/Contents/Applications/NeoSimulatorRenderer.app"
+for bundle in "$renderer" "$app"; do
+  executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$bundle/Contents/Info.plist")"
+  if [[ "$(lipo -archs "$bundle/Contents/MacOS/$executable")" != arm64 ]]; then
+    echo "Expected an arm64 executable in $bundle." >&2
     exit 1
   fi
+  codesign --force --options runtime --sign - --timestamp=none "$bundle"
 done
-
-if [[ ! -x "$cli_source_path" || ! -x "$host_source_path" ]]; then
-  echo "Release products must be executable." >&2
-  exit 1
-fi
-
-plist_value() {
-  /usr/libexec/PlistBuddy -c "Print :$1" "$host_info_plist" 2>/dev/null || true
-}
-
-host_short_version="$(plist_value CFBundleShortVersionString)"
-if [[ "$host_short_version" != "$expected_marketing_version" ]]; then
-  echo "Companion app marketing version does not match the release tag." >&2
-  echo "Expected: $expected_marketing_version" >&2
-  echo "Actual:   $host_short_version" >&2
-  exit 1
-fi
-if [[ "$(plist_value CFBundleExecutable)" != "$host_product" ]]; then
-  echo "Host Info.plist must declare CFBundleExecutable=$host_product." >&2
-  exit 1
-fi
-if [[ "$(plist_value CFBundleIdentifier)" != "$host_bundle_identifier" ]]; then
-  echo "Host Info.plist must declare CFBundleIdentifier=$host_bundle_identifier." >&2
-  exit 1
-fi
-if [[ "$(plist_value CFBundlePackageType)" != "APPL" ]]; then
-  echo "Host Info.plist must declare CFBundlePackageType=APPL." >&2
-  exit 1
-fi
-
-mkdir -p "$dist_base"
-stage_dir="$(mktemp -d "${dist_base%/}/.${arch}.stage.XXXXXX")"
-bin_out="$stage_dir/bin"
-host_app="$stage_dir/libexec/$cli_product/$host_product.app"
-host_contents="$host_app/Contents"
-host_macos="$host_contents/MacOS"
-host_settings="$host_contents/Resources/Settings.bundle"
-mkdir -p "$bin_out" "$host_macos" "$host_settings"
-
-cli_target_path="$bin_out/$cli_product"
-host_target_path="$host_macos/$host_product"
-install -m 755 "$cli_source_path" "$cli_target_path"
-install -m 755 "$host_source_path" "$host_target_path"
-install -m 644 "$host_info_plist" "$host_contents/Info.plist"
-install -m 644 "$host_settings_plist" "$host_settings/Root.plist"
-
-if command -v lipo >/dev/null 2>&1; then
-  for binary in "$cli_target_path" "$host_target_path"; do
-    archs="$(lipo -archs "$binary")"
-    if [[ "$archs" != "$arch" ]]; then
-      echo "Expected $arch binary, got $archs: $binary" >&2
-      exit 1
-    fi
-  done
-fi
-
-if ! command -v codesign >/dev/null 2>&1; then
-  echo "codesign is required to build the companion app." >&2
-  exit 1
-fi
-codesign --force --sign - --timestamp=none "$cli_target_path" >/dev/null
-codesign --force --sign - --timestamp=none "$host_app" >/dev/null
-codesign --verify --strict "$cli_target_path"
-codesign --verify --deep --strict "$host_app"
-
-rm -rf "$out_dir"
-mv "$stage_dir" "$out_dir"
-stage_dir=""
-
-popd >/dev/null
-
-echo "Staged release CLI at: $out_dir/bin/$cli_product"
-echo "Staged companion app at: $out_dir/libexec/$cli_product/$host_product.app"
+codesign --verify --deep --strict "$app"
+rm -rf "$dist_root/arm64"
+mv "$staging" "$dist_root/arm64"
+trap - EXIT
+echo "Staged app: $dist_root/arm64/NeoSimulator.app"

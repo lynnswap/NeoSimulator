@@ -3,21 +3,38 @@ import AppKit
 struct HostLaunchOptions {
     let xcodeURL: URL
     let validatesRuntime: Bool
+    let readsCreationCatalog: Bool
     let startupResultURL: URL?
+    let deviceIdentifier: String?
+    let isManaged: Bool
 
     init(arguments: [String]) throws {
         var xcodePath: String?
         var resultPath: String?
+        var device: String?
         var validate = false
+        var creationCatalog = false
+        var managed = false
         var index = 0
         func invalid() -> HostError {
-            .invalidArguments("Expected [--validate-runtime] [--startup-result /absolute/path] --xcode /absolute/path/to/Xcode.app")
+            .invalidArguments("Expected [--managed] [--validate-runtime] [--startup-result /absolute/path] [--device UDID] --xcode /absolute/path/to/Xcode.app")
         }
         while index < arguments.count {
             switch arguments[index] {
+            case "--managed":
+                guard !managed else { throw invalid() }
+                managed = true
             case "--validate-runtime":
                 guard !validate else { throw invalid() }
                 validate = true
+            case "--creation-catalog":
+                guard !creationCatalog else { throw invalid() }
+                creationCatalog = true
+            case "--device":
+                index += 1
+                guard index < arguments.count, device == nil,
+                      let identifier = UUID(uuidString: arguments[index]) else { throw invalid() }
+                device = identifier.uuidString
             case "--xcode", "--startup-result":
                 let option = arguments[index]
                 index += 1
@@ -36,7 +53,10 @@ struct HostLaunchOptions {
         guard let xcodePath, !(validate && resultPath != nil) else { throw invalid() }
         xcodeURL = URL(fileURLWithPath: xcodePath, isDirectory: true).standardizedFileURL.resolvingSymlinksInPath()
         validatesRuntime = validate
+        readsCreationCatalog = creationCatalog
         startupResultURL = resultPath.map { URL(fileURLWithPath: $0).standardizedFileURL }
+        deviceIdentifier = device
+        isManaged = managed
     }
 
     func validateInstallation() throws {
@@ -47,6 +67,33 @@ struct HostLaunchOptions {
         guard FileManager.default.fileExists(atPath: xcodeURL.appendingPathComponent("Contents/Developer").path,
                                              isDirectory: &isDirectory), isDirectory.boolValue else {
             throw HostError.unavailable("\(xcodeURL.path) has no Contents/Developer directory")
+        }
+    }
+}
+
+enum RendererRequest: Equatable {
+    case openDevice(String)
+    case quit(asks: Bool)
+    case activate
+    case showBrowser
+
+    init(url: URL) throws {
+        guard url.scheme == "neosimulator-renderer", let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            throw HostError.invalidArguments("Unsupported renderer URL: \(url.absoluteString)")
+        }
+        switch components.host {
+        case "activate": self = .activate
+        case "show-browser": self = .showBrowser
+        case "open-device":
+            guard let value = components.queryItems?.first(where: { $0.name == "udid" })?.value,
+                  let identifier = UUID(uuidString: value) else {
+                throw HostError.invalidArguments("The renderer URL requires a device UDID.")
+            }
+            self = .openDevice(identifier.uuidString)
+        case "quit":
+            self = .quit(asks: components.queryItems?.first(where: { $0.name == "ask" })?.value == "true")
+        default:
+            throw HostError.invalidArguments("Unsupported renderer URL: \(url.absoluteString)")
         }
     }
 }
@@ -64,12 +111,18 @@ enum NeoSimulatorApp {
 #endif
         let arguments = Array(CommandLine.arguments.dropFirst())
         if arguments == ["--help"] {
-            print("usage: NeoSimulator [--validate-runtime] [--startup-result /absolute/path] --xcode /absolute/path/to/Xcode.app")
+            print("usage: NeoSimulatorRenderer [--managed] [--validate-runtime] [--startup-result /absolute/path] [--device UDID] --xcode /absolute/path/to/Xcode.app")
             return
         }
         do {
             let options = try HostLaunchOptions(arguments: arguments)
             try options.validateInstallation()
+            if options.readsCreationCatalog {
+                let catalog = try SimulatorRuntime.creationCatalog(xcodeURL: options.xcodeURL)
+                let data = try JSONEncoder().encode(SimulatorCatalog.Snapshot(catalog: catalog))
+                try FileHandle.standardOutput.write(contentsOf: data)
+                return
+            }
             if options.validatesRuntime {
                 _ = try SimulatorRuntime(xcodeURL: options.xcodeURL)
                 return
@@ -77,12 +130,13 @@ enum NeoSimulatorApp {
             let conflicts = HostConflictMonitor()
             try conflicts.check()
             let runtime = try SimulatorRuntime(xcodeURL: options.xcodeURL)
+            HostPreferences.migrateStandalonePreferences()
             let app = NSApplication.shared
-            app.setActivationPolicy(.regular)
-            let controller = try HostApplication(runtime: runtime, conflicts: conflicts)
+            app.setActivationPolicy(.accessory)
+            let controller = try HostApplication(runtime: runtime, conflicts: conflicts, isManaged: options.isManaged)
             app.delegate = controller
             app.finishLaunching()
-            try controller.start()
+            try controller.start(initialDeviceIdentifier: options.deviceIdentifier)
             do { try conflicts.check() }
             catch {
                 controller.shutdown()

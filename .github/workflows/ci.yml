@@ -41,8 +41,8 @@ jobs:
           xcodebuild -version
           swift --version
 
-      - name: Test
-        run: swift test
+      - name: Test package
+        run: xcodebuild test -workspace Tools/PackageTests.xcworkspace -scheme XcodeSimulatorHost -destination 'platform=macOS,arch=arm64'
 
       - name: Test native input focus
         run: scripts/test-input-focus.sh
@@ -56,7 +56,6 @@ jobs:
             scripts/build-local.sh \
             scripts/test-input-focus.sh \
             scripts/build-release.sh \
-            scripts/package-release.sh \
-            scripts/render-install-script.sh \
-            scripts/verify-release-assets.sh
-          sh -n scripts/install-release.sh.in
+            scripts/package-release.sh
+          python3 -m compileall -q scripts
+          python3 -m unittest discover -s scripts/tests -v

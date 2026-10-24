@@ -5,6 +5,40 @@ import Testing
 
 @Suite
 struct InstallationInspectorTests {
+    @Test func simulatorCommandsPreserveXcodeSelectionWithoutInvokingInstallingWrapper() throws {
+        let fixture = try InstallationFixture(simctlExpectedVersion: "9999", coreSimulatorBundleVersion: "1174.9.2")
+        try Data(#"""
+        #!/bin/sh
+        printf install > "$0.install"
+        exit 99
+        """#.utf8).write(to: fixture.simctlWrapperURL)
+        try Data(#"""
+        #!/bin/sh
+        printf '%s\n' "$DEVELOPER_DIR" "$@"
+        """#.utf8).write(to: fixture.simctlBinaryURL)
+        let output = try SystemCommandRunner().runSimctl(
+            xcodeURL: fixture.targetXcodeURL, arguments: ["list", "--json"],
+            coreSimulatorFrameworkURL: fixture.coreSimulatorFrameworkURL
+        )
+        #expect(output.terminationStatus == 0)
+        #expect(output.stdoutText == "\(fixture.developerDirectoryURL.path)\nlist\n--json")
+        #expect(!FileManager.default.fileExists(atPath: fixture.simctlWrapperURL.path + ".install"))
+    }
+
+    @Test func testingCloneBootUsesTheRecordedDeviceSet() throws {
+        let fixture = try InstallationFixture()
+        try Data(#"""
+        #!/bin/sh
+        printf '%s\n' "$@"
+        """#.utf8).write(to: fixture.simctlBinaryURL)
+        let output = try SystemCommandRunner().runSimctl(
+            xcodeURL: fixture.targetXcodeURL, arguments: ["boot", "clone"], deviceSetPath: "/custom/XCTestDevices",
+            coreSimulatorFrameworkURL: fixture.coreSimulatorFrameworkURL
+        )
+        #expect(output.terminationStatus == 0)
+        #expect(output.stdoutText == "--set\n/custom/XCTestDevices\nboot\nclone")
+    }
+
     @Test func validatesSelectedXcode27AndNeoHostComponents() throws {
         let fixture = try InstallationFixture()
         let inspector = makeInspector(fixture)
@@ -69,224 +103,12 @@ struct InstallationInspectorTests {
         #expect(host.coreDeviceVersion == "700.2")
     }
 
-    @Test func legacyModeChoosesTheHighestValidatedXcode26() throws {
-        let fixture = try InstallationFixture(
-            legacyVersions: [
-                ("Xcode_26.3.app", "26.3", "17C529"),
-                ("Xcode_26.6.app", "26.6", "17F109"),
-                ("Xcode_26.5.app", "26.5", "17F42"),
-            ]
-        )
-        let inspector = makeInspector(fixture)
-
-        let simulator = try inspector.legacySimulator(explicitXcodeURL: nil)
-
-        #expect(simulator.xcode.applicationURL == fixture.legacyXcodeURLs[1])
-        #expect(simulator.xcode.version == (try ToolVersion("26.6")))
-        #expect(simulator.xcode.buildVersion == "17F109")
-        #expect(simulator.applicationURL == fixture.legacySimulatorURLs[1])
-    }
-
-    @Test func explicitLegacyXcodeMustBeVersion26() throws {
-        let fixture = try InstallationFixture()
-
-        do {
-            _ = try makeInspector(fixture).legacySimulator(
-                explicitXcodeURL: fixture.targetXcodeURL
-            )
-            Issue.record("expected non-Xcode 26 legacy host to fail")
-        } catch let error as CLIError {
-            #expect(error.identifier == "legacy-xcode-version")
-            #expect(error.category == .unavailable)
-        }
-    }
-
-    @Test func legacyXcodeMustPassApplicationSignatureValidation() throws {
-        let fixture = try InstallationFixture()
-        let inspector = InstallationInspector(
-            runner: FakeSystemCommandRunner(),
-            environment: ["DEVELOPER_DIR": fixture.developerDirectoryURL.path],
-            legacySearchRoots: [fixture.applicationsURL],
-            signatureValidator: CodeSignatureValidator(
-                { _, _ in
-                    throw CLIError.software(
-                        "generic-signature-validator",
-                        "application validation used the generic code validator"
-                    )
-                },
-                validateAppleApplication: { _, identifier in
-                    guard identifier != ToolConstants.xcodeBundleIdentifier else {
-                        throw CLIError.unavailable(
-                            "legacy-xcode-signature",
-                            "injected invalid legacy Xcode signature"
-                        )
-                    }
-                    throw CLIError.software(
-                        "unexpected-application-signature",
-                        "unexpected application identifier \(identifier)"
-                    )
-                }
-            )
-        )
-
-        do {
-            _ = try inspector.legacySimulator(
-                explicitXcodeURL: fixture.legacyXcodeURLs[0]
-            )
-            Issue.record("expected invalid legacy Xcode signature to fail")
-        } catch let error as CLIError {
-            #expect(error.identifier == "legacy-xcode-signature")
-        }
-    }
-
-    @Test(arguments: [false, true])
-    func legacySimulatorMustPassApplicationSignatureValidation(forTermination: Bool) throws {
-        let fixture = try InstallationFixture()
-        let inspector = InstallationInspector(
-            runner: FakeSystemCommandRunner(),
-            environment: ["DEVELOPER_DIR": fixture.developerDirectoryURL.path],
-            legacySearchRoots: [fixture.applicationsURL],
-            signatureValidator: CodeSignatureValidator(
-                { _, _ in
-                    throw CLIError.software(
-                        "generic-signature-validator",
-                        "application validation used the generic code validator"
-                    )
-                },
-                validateAppleApplication: { _, identifier in
-                    switch identifier {
-                    case ToolConstants.xcodeBundleIdentifier:
-                        return
-                    case ToolConstants.simulatorBundleIdentifier:
-                        throw CLIError.unavailable(
-                            "legacy-simulator-signature",
-                            "injected invalid legacy Simulator signature"
-                        )
-                    default:
-                        throw CLIError.software(
-                            "unexpected-application-signature",
-                            "unexpected application identifier \(identifier)"
-                        )
-                    }
-                }
-            )
-        )
-
-        do {
-            if forTermination {
-                _ = try inspector.validatedLegacySimulatorApplicationForTermination(
-                    at: fixture.legacySimulatorURLs[0]
-                )
-            } else {
-                _ = try inspector.legacySimulator(
-                    explicitXcodeURL: fixture.legacyXcodeURLs[0]
-                )
-            }
-            Issue.record("expected invalid legacy Simulator signature to fail")
-        } catch let error as CLIError {
-            #expect(error.identifier == "legacy-simulator-signature")
-        }
-    }
-
-    @Test func legacySimulatorBundleMustIdentifyXcode26() throws {
-        let fixture = try InstallationFixture()
-        let infoURL = fixture.legacySimulatorURLs[0]
-            .appendingPathComponent("Contents/Info.plist")
-        let data = try Data(contentsOf: infoURL)
-        guard var info = try PropertyListSerialization.propertyList(
-            from: data,
-            options: [],
-            format: nil
-        ) as? [String: Any] else {
-            Issue.record("invalid test fixture Info.plist")
-            return
-        }
-        info["DTXcode"] = "2700"
-        let modifiedData = try PropertyListSerialization.data(
-            fromPropertyList: info,
-            format: .xml,
-            options: 0
-        )
-        try modifiedData.write(to: infoURL)
-
-        do {
-            _ = try makeInspector(fixture).legacySimulator(
-                explicitXcodeURL: fixture.legacyXcodeURLs[0]
-            )
-            Issue.record("expected mismatched Simulator DTXcode to fail")
-        } catch let error as CLIError {
-            #expect(error.identifier == "legacy-simulator-bundle")
-        }
-    }
-
-    @Test func validatesRunningLegacySimulatorOutsideDiscoveryRoots() throws {
-        let fixture = try InstallationFixture(legacyVersions: [])
-        let externalXcodeURL = fixture.directory.url.appendingPathComponent(
-            "External Toolchains/Xcode_26.6.app",
-            isDirectory: true
-        )
-        try InstallationFixture.makeLegacyXcode(
-            at: externalXcodeURL,
-            version: "26.6",
-            build: "17F109"
-        )
-        let simulatorURL = externalXcodeURL.appendingPathComponent(
-            ToolConstants.simulatorPath,
-            isDirectory: true
-        )
-        let inspector = makeInspector(fixture)
-
-        #expect(inspector.legacySimulatorApplications().isEmpty)
-
-        let validatedURL = try inspector.validatedLegacySimulatorApplicationForTermination(
-            at: simulatorURL
-        )
-
-        #expect(validatedURL == simulatorURL)
-    }
-
-    @Test func terminationChecksOnlyTheSimulatorApplicationSignature() throws {
-        let fixture = try InstallationFixture()
-        let simulatorURL = fixture.legacySimulatorURLs[0]
-        let inspector = InstallationInspector(
-            runner: FakeSystemCommandRunner(),
-            signatureValidator: CodeSignatureValidator(
-                { _, _ in
-                    throw CLIError.software("unexpected-code-validation", "expected application validation")
-                },
-                validateAppleApplication: { url, identifier in
-                    guard url == simulatorURL,
-                          identifier == ToolConstants.simulatorBundleIdentifier else {
-                        throw CLIError.software("unexpected-signature-target", "termination must validate the Simulator application")
-                    }
-                }
-            )
-        )
-
-        let result = try inspector.validatedLegacySimulatorApplicationForTermination(at: simulatorURL)
-
-        #expect(result == simulatorURL)
-    }
-
-    @Test func terminationRejectsACopiedSimulatorOutsideItsXcodeLocation() throws {
-        let fixture = try InstallationFixture()
-        let copiedURL = fixture.directory.url.appendingPathComponent("Simulator.app")
-        try FileManager.default.copyItem(at: fixture.legacySimulatorURLs[0], to: copiedURL)
-
-        do {
-            _ = try makeInspector(fixture).validatedLegacySimulatorApplicationForTermination(at: copiedURL)
-            Issue.record("expected the copied Simulator to be rejected")
-        } catch let error as CLIError {
-            #expect(error.identifier == "legacy-simulator-location")
-        }
-    }
-
     @Test func selectedXcodeMustBeIntactAppleSignedCode() throws {
         let fixture = try InstallationFixture()
         let inspector = InstallationInspector(
             runner: FakeSystemCommandRunner(),
             environment: ["DEVELOPER_DIR": fixture.developerDirectoryURL.path],
-            commandExecutableURL: fixture.commandExecutableURL,
+            rendererApplicationURL: fixture.neoHostURL,
             coreSimulatorFrameworkURL: fixture.coreSimulatorFrameworkURL,
             coreDeviceFrameworkURL: fixture.coreDeviceFrameworkURL,
             signatureValidator: CodeSignatureValidator { _, identifier in
@@ -309,7 +131,7 @@ struct InstallationInspectorTests {
         let inspector = InstallationInspector(
             runner: FakeSystemCommandRunner(),
             environment: ["DEVELOPER_DIR": fixture.developerDirectoryURL.path],
-            commandExecutableURL: fixture.commandExecutableURL,
+            rendererApplicationURL: fixture.neoHostURL,
             coreSimulatorFrameworkURL: fixture.coreSimulatorFrameworkURL,
             coreDeviceFrameworkURL: fixture.coreDeviceFrameworkURL,
             signatureValidator: CodeSignatureValidator { _, identifier in
@@ -377,7 +199,7 @@ struct InstallationInspectorTests {
         let inspector = InstallationInspector(
             runner: runner,
             environment: ["DEVELOPER_DIR": fixture.developerDirectoryURL.path],
-            commandExecutableURL: fixture.commandExecutableURL,
+            rendererApplicationURL: fixture.neoHostURL,
             coreSimulatorFrameworkURL: fixture.coreSimulatorFrameworkURL,
             coreDeviceFrameworkURL: fixture.coreDeviceFrameworkURL,
             signatureValidator: .acceptingTestFixtures
@@ -394,100 +216,11 @@ struct InstallationInspectorTests {
         }
     }
 
-    @Test func globalCoreSimulatorMustMatchTheSelectedXcodeMajor() throws {
-        let fixture = try InstallationFixture(
-            targetVersion: "28.0",
-            targetBuild: "28A100",
-            coreSimulatorXcodeMajorVersion: 27
-        )
+    @Test func actualRuntimeProbeDecidesCompatibilityAcrossInstalledFrameworkVersions() throws {
+        let fixture = try InstallationFixture(coreSimulatorXcodeMajorVersion: 28, coreDeviceXcodeMajorVersion: 28, simulatorCoreDevicePluginXcodeMajorVersion: 28, coreSimulatorBundleVersion: "1171.5", coreDeviceBundleVersion: "642.14", simulatorCoreDevicePluginBundleVersion: "1171.8")
         let inspector = makeInspector(fixture)
         let xcode = try inspector.validatedTargetXcode()
-
-        do {
-            _ = try inspector.validatedNeoHost(for: xcode)
-            Issue.record("expected mismatched CoreSimulator generation to fail")
-        } catch let error as CLIError {
-            #expect(error.identifier == "core-simulator-bundle")
-        }
-    }
-
-    @Test func globalCoreDeviceMustMatchTheSelectedXcodeMajor() throws {
-        let fixture = try InstallationFixture(
-            targetVersion: "28.0",
-            targetBuild: "28A100",
-            coreDeviceXcodeMajorVersion: 27
-        )
-        let inspector = makeInspector(fixture)
-        let xcode = try inspector.validatedTargetXcode()
-
-        do {
-            _ = try inspector.validatedNeoHost(for: xcode)
-            Issue.record("expected mismatched CoreDevice generation to fail")
-        } catch let error as CLIError {
-            #expect(error.identifier == "core-device-bundle")
-        }
-    }
-
-    @Test func simulatorCoreDevicePluginMustMatchTheSelectedXcodeMajor() throws {
-        let fixture = try InstallationFixture(
-            targetVersion: "28.0",
-            targetBuild: "28A100",
-            simulatorCoreDevicePluginXcodeMajorVersion: 27
-        )
-        let inspector = makeInspector(fixture)
-        let xcode = try inspector.validatedTargetXcode()
-
-        do {
-            _ = try inspector.validatedNeoHost(for: xcode)
-            Issue.record("expected mismatched plugin generation to fail")
-        } catch let error as CLIError {
-            #expect(error.identifier == "simulator-core-device-plugin-bundle")
-        }
-    }
-
-    @Test func staleCoreSimulatorVersionIsRejected() throws {
-        let fixture = try InstallationFixture(
-            coreSimulatorBundleVersion: "1171.5"
-        )
-        let inspector = makeInspector(fixture)
-        let xcode = try inspector.validatedTargetXcode()
-
-        do {
-            _ = try inspector.validatedNeoHost(for: xcode)
-            Issue.record("expected stale CoreSimulator version to fail")
-        } catch let error as CLIError {
-            #expect(error.identifier == "core-simulator-bundle")
-        }
-    }
-
-    @Test func staleCoreDeviceVersionIsRejected() throws {
-        let fixture = try InstallationFixture(
-            coreDeviceBundleVersion: "642.14"
-        )
-        let inspector = makeInspector(fixture)
-        let xcode = try inspector.validatedTargetXcode()
-
-        do {
-            _ = try inspector.validatedNeoHost(for: xcode)
-            Issue.record("expected stale CoreDevice version to fail")
-        } catch let error as CLIError {
-            #expect(error.identifier == "core-device-bundle")
-        }
-    }
-
-    @Test func simulatorCoreDevicePluginMustMatchCoreSimulatorVersion() throws {
-        let fixture = try InstallationFixture(
-            simulatorCoreDevicePluginBundleVersion: "1171.5"
-        )
-        let inspector = makeInspector(fixture)
-        let xcode = try inspector.validatedTargetXcode()
-
-        do {
-            _ = try inspector.validatedNeoHost(for: xcode)
-            Issue.record("expected stale simulator plugin version to fail")
-        } catch let error as CLIError {
-            #expect(error.identifier == "simulator-core-device-plugin-bundle")
-        }
+        #expect(try inspector.validatedNeoHost(for: xcode).xcode == xcode)
     }
 
     @Test func missingWrapperIsRejected() throws {
@@ -657,7 +390,7 @@ struct InstallationInspectorTests {
         let inspector = InstallationInspector(
             runner: runner,
             environment: ["DEVELOPER_DIR": fixture.developerDirectoryURL.path],
-            commandExecutableURL: fixture.commandExecutableURL,
+            rendererApplicationURL: fixture.neoHostURL,
             coreSimulatorFrameworkURL: fixture.coreSimulatorFrameworkURL,
             coreDeviceFrameworkURL: fixture.coreDeviceFrameworkURL,
             signatureValidator: .acceptingTestFixtures
@@ -679,38 +412,6 @@ struct InstallationInspectorTests {
                     ),
                 ]
         )
-    }
-
-    @Test func packagedHostIsResolvedRelativeToTheCommandBinary() throws {
-        let fixture = try InstallationFixture()
-        let inspector = makeInspector(fixture)
-
-        #expect(try inspector.neoHostApplicationURL() == fixture.neoHostURL)
-    }
-
-    @Test func packagedHostUsesTheResolvedCommandBinaryBehindASymlink() throws {
-        let fixture = try InstallationFixture()
-        let symlinkURL = fixture.directory.url.appendingPathComponent(
-            "shim/bin/\(ToolConstants.name)"
-        )
-        try FileManager.default.createDirectory(
-            at: symlinkURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try FileManager.default.createSymbolicLink(
-            at: symlinkURL,
-            withDestinationURL: fixture.commandExecutableURL
-        )
-        let inspector = InstallationInspector(
-            runner: FakeSystemCommandRunner(),
-            environment: ["DEVELOPER_DIR": fixture.developerDirectoryURL.path],
-            commandExecutableURL: symlinkURL,
-            coreSimulatorFrameworkURL: fixture.coreSimulatorFrameworkURL,
-            coreDeviceFrameworkURL: fixture.coreDeviceFrameworkURL,
-            signatureValidator: .acceptingTestFixtures
-        )
-
-        #expect(try inspector.neoHostApplicationURL() == fixture.neoHostURL)
     }
 
     @Test func missingPackagedHostFailsBeforeNeoModeCanBeUsed() throws {
@@ -740,8 +441,7 @@ struct InstallationInspectorTests {
         InstallationInspector(
             runner: FakeSystemCommandRunner(),
             environment: ["DEVELOPER_DIR": fixture.developerDirectoryURL.path],
-            legacySearchRoots: [fixture.applicationsURL],
-            commandExecutableURL: fixture.commandExecutableURL,
+            rendererApplicationURL: fixture.neoHostURL,
             coreSimulatorFrameworkURL: fixture.coreSimulatorFrameworkURL,
             coreDeviceFrameworkURL: fixture.coreDeviceFrameworkURL,
             signatureValidator: CodeSignatureValidator { _, identifier in
@@ -758,5 +458,176 @@ struct InstallationInspectorTests {
 
     private func overwrite(_ content: String, at url: URL) throws {
         try Data(content.utf8).write(to: url)
+    }
+}
+
+@Suite
+struct XcodeConnectionsTests {
+    private func connection(pid: Int32, start: UInt64, device: String = "A", xcode: String = "Xcode27.1") -> XcodeSimulatorConnection {
+        .init(event: .init(processIdentifier: pid, startSeconds: start, startMicroseconds: 0), deviceIdentifier: device, xcodeURL: URL(fileURLWithPath: "/Applications/\(xcode).app"))
+    }
+
+    @Test func usesNewestRunPerDeviceAndRecognizesReusedPID() async throws {
+        let tracker = XcodeConnectionTracker()
+        let older = connection(pid: 1, start: 10)
+        let newer = connection(pid: 2, start: 20, xcode: "Xcode27.2")
+        let otherDevice = connection(pid: 3, start: 15, device: "B")
+        var transfers: [XcodeSimulatorConnection] = []
+        #expect(try await tracker.synchronize(observations: [newer, older, otherDevice], runningDeviceIdentifiers: ["A", "B"]) { transfers.append($0) })
+        #expect(transfers == [otherDevice, newer])
+        #expect(try await !tracker.synchronize(observations: [older], runningDeviceIdentifiers: ["A", "B"]) { transfers.append($0) })
+        let reused = connection(pid: 2, start: 30)
+        #expect(try await tracker.synchronize(observations: [reused], runningDeviceIdentifiers: ["A", "B"]) { transfers.append($0) })
+        #expect(transfers == [otherDevice, newer, reused])
+    }
+
+    @Test func failedTransferRetriesAndNewerRunSupersedesPendingSource() async throws {
+        let tracker = XcodeConnectionTracker()
+        let original = connection(pid: 1, start: 10)
+        let otherDevice = connection(pid: 4, start: 15, device: "B")
+        var transfers: [XcodeSimulatorConnection] = []
+        await #expect(throws: CLIError.self) {
+            _ = try await tracker.synchronize(observations: [original, otherDevice], runningDeviceIdentifiers: ["A", "B"]) {
+                if $0.deviceIdentifier == "A" { throw CLIError.io("test", "release failed") }
+                transfers.append($0)
+            }
+        }
+        #expect(try await tracker.synchronize(observations: [], runningDeviceIdentifiers: ["A", "B"]) { transfers.append($0) })
+        #expect(transfers == [otherDevice, original])
+        let pending = connection(pid: 2, start: 20)
+        await #expect(throws: CLIError.self) {
+            _ = try await tracker.synchronize(observations: [pending], runningDeviceIdentifiers: ["A", "B"]) { _ in throw CLIError.io("test", "launch failed after release") }
+        }
+        let latest = connection(pid: 3, start: 30, xcode: "Xcode27.2")
+        #expect(try await tracker.synchronize(observations: [latest], runningDeviceIdentifiers: ["A", "B"]) { transfers.append($0) })
+        #expect(transfers == [otherDevice, original, latest])
+    }
+
+    @Test func shutdownCancelsFailedTransferWithoutReplayingItAfterReboot() async throws {
+        let tracker = XcodeConnectionTracker()
+        let pending = connection(pid: 1, start: 10)
+        await #expect(throws: CLIError.self) {
+            _ = try await tracker.synchronize(observations: [pending], runningDeviceIdentifiers: ["A"]) { _ in
+                throw CLIError.io("test", "launch failed after release")
+            }
+        }
+        #expect(tracker.hasPendingConnection(forDevice: "A"))
+        var transfers: [XcodeSimulatorConnection] = []
+        #expect(try await !tracker.synchronize(observations: [], runningDeviceIdentifiers: []) { transfers.append($0) })
+        #expect(!tracker.hasPendingConnection(forDevice: "A"))
+        #expect(tracker.xcodeURL(forDevice: "A") == pending.xcodeURL)
+        #expect(try await !tracker.synchronize(observations: [pending], runningDeviceIdentifiers: ["A"]) { transfers.append($0) })
+        let nextRun = connection(pid: 2, start: 20)
+        #expect(try await tracker.synchronize(observations: [nextRun], runningDeviceIdentifiers: ["A"]) { transfers.append($0) })
+        #expect(transfers == [nextRun])
+    }
+
+    @Test func bootTransitionsRestoreOnceAndDoNotReopenClosedBootedWindows() {
+        let tracker = SimulatorBootTracker()
+        func device(_ identifier: String, _ state: String) -> SimulatorHostDevice {
+            .init(identifier: identifier, name: identifier, descriptiveName: identifier, runtimeIdentifier: "runtime", runtimeName: "iOS", productFamily: "iPhone", state: state)
+        }
+        #expect(tracker.observe([device("A", "Booted"), device("B", "Shutdown")], attachInitially: false).devicesToAttach.isEmpty)
+        #expect(tracker.observe([device("A", "Booted"), device("B", "Booted")], attachInitially: false).devicesToAttach == ["B"])
+        #expect(tracker.observe([device("A", "Booted"), device("B", "Booted")], attachInitially: false).devicesToAttach == ["B"])
+        tracker.didAttach("B")
+        // Losing registry ownership while still Booted means a window was closed, not a new boot.
+        #expect(tracker.observe([device("A", "Booted"), device("B", "Booted")], attachInitially: true).devicesToAttach.isEmpty)
+        _ = tracker.observe([device("A", "Shutdown"), device("B", "Booted")], attachInitially: true)
+        #expect(tracker.observe([device("A", "Booted"), device("B", "Booted")], attachInitially: true).devicesToAttach == ["A"])
+        tracker.reset()
+        #expect(tracker.observe([device("A", "Booted"), device("B", "Booted")], attachInitially: true).devicesToAttach == ["A", "B"])
+    }
+
+    @Test func testingVisibilityChangesReattachClonesAndPreserveNormalWindowChoices() {
+        let tracker = SimulatorBootTracker()
+        func device(_ identifier: String, _ state: String = "Booted", testing: Bool = false) -> SimulatorHostDevice {
+            .init(identifier: identifier, name: identifier, descriptiveName: identifier, runtimeIdentifier: "runtime", runtimeName: "iOS", productFamily: "iPhone", state: state, deviceSetPath: testing ? "/custom/XCTestDevices" : nil)
+        }
+        let closedNormal = device("closed")
+        let clone = device("testing", testing: true)
+        #expect(tracker.observe([closedNormal, device("pending", "Shutdown"), clone], attachInitially: false).devicesToAttach.isEmpty)
+        let current = [closedNormal, device("pending"), clone]
+        #expect(tracker.observe(current, attachInitially: false).devicesToAttach == ["pending"])
+        // OFF and ON can both occur before another catalog snapshot is read.
+        tracker.forgetTestingDevices()
+        #expect(tracker.observe(current, attachInitially: false).devicesToAttach == ["pending", "testing"])
+        tracker.didAttach("pending")
+        tracker.didAttach("testing")
+        #expect(tracker.observe(current, attachInitially: false).devicesToAttach.isEmpty)
+    }
+
+    @Test func catalogChangesRefreshUnownedDevicesWithoutAttachingThem() {
+        let tracker = SimulatorBootTracker()
+        func device(_ identifier: String, _ state: String, name: String = "iPhone") -> SimulatorHostDevice {
+            .init(identifier: identifier, name: name, descriptiveName: name, runtimeIdentifier: "runtime", runtimeName: "iOS", productFamily: "iPhone", state: state)
+        }
+        let original = device("A", "Booted")
+        #expect(tracker.observe([original, original], attachInitially: false).catalogChanged)
+        let unchanged = tracker.observe([original], attachInitially: false)
+        #expect(!unchanged.catalogChanged)
+        #expect(unchanged.devicesToAttach.isEmpty)
+        let shutdown = tracker.observe([device("A", "Shutdown")], attachInitially: false)
+        #expect(shutdown.catalogChanged)
+        #expect(shutdown.devicesToAttach.isEmpty)
+        let renamed = tracker.observe([device("A", "Shutdown", name: "Renamed")], attachInitially: false)
+        #expect(renamed.catalogChanged)
+        #expect(renamed.devicesToAttach.isEmpty)
+        let created = tracker.observe([device("A", "Shutdown", name: "Renamed"), device("B", "Shutdown")], attachInitially: false)
+        #expect(created.catalogChanged)
+        #expect(created.devicesToAttach.isEmpty)
+        #expect(tracker.observe([], attachInitially: false).catalogChanged)
+        let deviceHub = tracker.observe([original], attachInitially: false, allowsAttachments: false)
+        #expect(deviceHub.catalogChanged)
+        #expect(deviceHub.devicesToAttach.isEmpty)
+        #expect(!tracker.observe([original], attachInitially: false, allowsAttachments: false).catalogChanged)
+    }
+
+    @Test func startupLastDeviceRespectsSavedSelectionAndDisabledPreferences() {
+        let device = SimulatorHostDevice(identifier: "CFB0DFE8-2184-4B1C-A6EF-9B4AEEDCB823", name: "iPhone", descriptiveName: "iPhone", runtimeIdentifier: "runtime", runtimeName: "iOS", productFamily: "iPhone", state: "Shutdown")
+        #expect(SimulatorStartupSelection.device(in: [device], attachInitially: true, startsSession: true, startsLastDevice: true, current: device.identifier.lowercased(), hasOwnedDevices: false) == device)
+        #expect(SimulatorStartupSelection.device(in: [device], attachInitially: true, startsSession: false, startsLastDevice: true, current: device.identifier, hasOwnedDevices: false) == nil)
+        #expect(SimulatorStartupSelection.device(in: [device], attachInitially: true, startsSession: true, startsLastDevice: false, current: device.identifier, hasOwnedDevices: false) == nil)
+        #expect(SimulatorStartupSelection.device(in: [device], attachInitially: true, startsSession: true, startsLastDevice: true, current: device.identifier, hasOwnedDevices: true) == nil)
+        let booted = SimulatorHostDevice(identifier: "other", name: "iPad", descriptiveName: "iPad", runtimeIdentifier: "runtime", runtimeName: "iOS", productFamily: "iPad", state: "Booted")
+        #expect(SimulatorStartupSelection.device(in: [device, booted], attachInitially: true, startsSession: true, startsLastDevice: true, current: device.identifier, hasOwnedDevices: false) == nil)
+    }
+
+    @Test func disablingTestingDevicesDiscardsPendingCloneConnections() async throws {
+        let tracker = XcodeConnectionTracker()
+        let clone = XcodeSimulatorConnection(event: .init(processIdentifier: 1, startSeconds: 10, startMicroseconds: 0),
+            deviceIdentifier: "clone", xcodeURL: URL(fileURLWithPath: "/Applications/Xcode.app"), deviceSetPath: "/custom/XCTestDevices")
+        await #expect(throws: CLIError.self) {
+            _ = try await tracker.synchronize(observations: [clone], runningDeviceIdentifiers: ["clone"], testingDeviceSetPath: clone.deviceSetPath) { _ in throw CLIError.io("test", "retry") }
+        }
+        #expect(try await !tracker.synchronize(observations: [], runningDeviceIdentifiers: ["clone"]) { _ in Issue.record("A hidden testing device must not be attached.") })
+        #expect(!tracker.hasPendingConnection(forDevice: "clone"))
+    }
+
+    @Test func launchEnvironmentRequiresMatchingDeviceAndUnambiguousXcodeFootprint() {
+        let identifier = "CFB0DFE8-2184-4B1C-A6EF-9B4AEEDCB823"
+        let executable = "/Users/test/Library/Developer/CoreSimulator/Devices/\(identifier)/data/Containers/Bundle/Application/ID/App.app/App"
+        let event = XcodeSimulatorConnection.Event(processIdentifier: 42, startSeconds: 10, startMicroseconds: 20)
+        func arguments(_ environment: [String]) -> Data {
+            var result = withUnsafeBytes(of: Int32(2)) { Data($0) }
+            result.append(Data((executable + "\0\0" + executable + "\0argument with spaces\0" + environment.joined(separator: "\0") + "\0\0").utf8))
+            return result
+        }
+        let device = "SIMULATOR_UDID=\(identifier)"
+        let footprint = "DYLD_FRAMEWORK_PATH=/build/Debug:/Applications/Xcode 27.1.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/Library/Frameworks"
+        let result = SimulatorProcessConnections.decode(arguments([device, footprint]), executablePath: executable, event: event)
+        #expect(result?.deviceIdentifier == identifier)
+        #expect(result?.xcodeURL.path == "/Applications/Xcode 27.1.app")
+        let testingPath = "/custom/XCTestDevices"
+        let cloneExecutable = "\(testingPath)/\(identifier)/data/Containers/Bundle/Application/ID/App.app/App"
+        let enabledPath = SimulatorDeviceSets.testingPath(showTesting: true, customPath: testingPath)
+        #expect(SimulatorProcessConnections.decode(arguments([device, footprint]), executablePath: cloneExecutable, event: event, testingDeviceSetPath: enabledPath)?.deviceSetPath == testingPath)
+        let disabledPath = SimulatorDeviceSets.testingPath(showTesting: false, customPath: testingPath)
+        #expect(disabledPath == nil)
+        #expect(SimulatorProcessConnections.decode(arguments([device, footprint]), executablePath: cloneExecutable, event: event, testingDeviceSetPath: disabledPath) == nil)
+        #expect(SimulatorProcessConnections.decode(arguments([device, footprint]), executablePath: cloneExecutable, event: event, testingDeviceSetPath: "/other/XCTestDevices") == nil)
+        #expect(SimulatorProcessConnections.decode(arguments([device]), executablePath: executable, event: event) == nil)
+        #expect(SimulatorProcessConnections.decode(arguments([device, footprint]), executablePath: executable.replacingOccurrences(of: identifier, with: "OTHER"), event: event) == nil)
+        #expect(SimulatorProcessConnections.decode(arguments([device, footprint, "GPUTOOLS_XCODE_DEVELOPER_PATH=/Applications/Other.app/Contents/Developer"]), executablePath: executable, event: event) == nil)
     }
 }
