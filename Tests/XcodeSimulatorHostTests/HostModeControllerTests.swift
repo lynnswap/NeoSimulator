@@ -7,6 +7,28 @@ import Testing
 @MainActor
 @Suite
 struct HostModeControllerTests {
+    @Test func managedRendererLaunchIncludesTheManagersExactIdentity() throws {
+        let owner = RendererOwnerIdentity(processIdentifier: 321, launchDate: Date(timeIntervalSinceReferenceDate: 123456.125))
+        let arguments = WorkspaceClient.rendererLaunchArguments(owner: owner,
+            startupResultURL: URL(fileURLWithPath: "/Startup/result"), xcodeURL: URL(fileURLWithPath: "/Xcode.app"),
+            deviceIdentifier: "device-id")
+        #expect(arguments == ["--managed", "--owner-pid", "321", "--owner-launch-date", "123456.125",
+                              "--startup-result", "/Startup/result", "--xcode", "/Xcode.app", "--device", "device-id"])
+    }
+
+    @Test func rendererRegistrationNeverAdoptsAnotherManagerOrAReusedManagerPID() throws {
+        let owner = RendererOwnerIdentity(processIdentifier: 321, launchDate: Date(timeIntervalSinceReferenceDate: 123456.125))
+        let identities: [(Int32?, Date?)] = [(321, owner.launchDate), (nil, nil), (123, owner.launchDate),
+                                           (321, owner.launchDate.addingTimeInterval(1))]
+        let registrations = try identities.enumerated().map { index, identity in
+            let registration = RendererRegistration(processIdentifier: Int32(index + 1), applicationPath: "/Renderer.app",
+                xcodePath: "/Xcode.app", sessionIdentifier: "session-\(index)", deviceIdentifiers: [],
+                ownerProcessIdentifier: identity.0, ownerLaunchDate: identity.1)
+            return try JSONDecoder().decode(RendererRegistration.self, from: JSONEncoder().encode(registration))
+        }
+        #expect(registrations.filter { $0.isOwned(by: owner) }.map(\.sessionIdentifier) == ["session-0"])
+    }
+
     @Test func neoAndDeviceHubModesRoundTripTheOriginalAbsentState() async throws {
         let fixture = try ControllerFixture()
         fixture.workspace.deviceHubCount = 1
