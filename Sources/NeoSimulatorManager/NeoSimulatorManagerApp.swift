@@ -25,7 +25,8 @@ final class SimulatorManagerModel {
     private(set) var deviceSettings: SimulatorDeviceSettings?
     private(set) var settingsIssue: String?
     private(set) var inspectedDeviceIdentifier: DeviceInventoryID?
-    private var inspectedState: String?
+    // Query context also invalidates pending results when connection or capabilities change.
+    private var inspectedDevice: InventoryDevice?
     private var settingsRefreshRequested = false
     private var inspectionGeneration = 0
     private var inspectionTask: Task<Void, Never>?
@@ -273,27 +274,27 @@ final class SimulatorManagerModel {
 
     func inspectDevice(_ identifier: DeviceInventoryID?) async {
         guard !stopping else { return }
-        let state = devices.first { $0.inventoryID == identifier }?.state
-        if inspectedDeviceIdentifier != identifier || inspectedState != state {
+        let device = inventory.first { $0.id == identifier }
+        if inspectedDeviceIdentifier != identifier || inspectedDevice != device {
             inspectedDeviceIdentifier = identifier
-            inspectedState = state
+            inspectedDevice = device
             inspectionGeneration += 1
             settingsRefreshRequested = true
             deviceSettings = nil
             settingsIssue = nil
             onChange?()
         }
-        guard identifier != nil else { settingsRefreshRequested = false; return }
+        guard device?.canInspectSettings == true else { settingsRefreshRequested = false; return }
         if let inspectionTask { await inspectionTask.value; return }
         guard settingsRefreshRequested else { return }
         inspectionTask = Task {
             defer { self.inspectionTask = nil }
             while !self.stopping, !Task.isCancelled, self.settingsRefreshRequested,
-                  let identifier = self.inspectedDeviceIdentifier {
+                  let device = self.inspectedDevice, device.canInspectSettings {
                 self.settingsRefreshRequested = false
                 let generation = self.inspectionGeneration
                 do {
-                    let settings = try await self.controller.deviceSettings(for: identifier)
+                    let settings = try await self.controller.deviceSettings(for: device)
                     guard !self.stopping, !Task.isCancelled, self.inspectionGeneration == generation else { continue }
                     self.deviceSettings = settings
                     self.settingsIssue = nil
@@ -331,9 +332,9 @@ final class SimulatorManagerModel {
     }
 
     private func set(_ setting: SimulatorDeviceSetting, identifier: DeviceInventoryID) {
-        guard !managingDeviceIDs.contains(identifier) else { return }
-        perform("Updating simulator settings…", refreshCatalog: false) {
-            do { try await self.controller.setDeviceSetting(setting, for: identifier) }
+        guard !managingDeviceIDs.contains(identifier), let device = inventory.first(where: { $0.id == identifier }) else { return }
+        perform("Updating device settings…", refreshCatalog: false) {
+            do { try await self.controller.setDeviceSetting(setting, for: device) }
             catch {
                 await self.refreshInspectedSettings(for: identifier)
                 throw error
@@ -1273,24 +1274,16 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     private func makeDeviceSettingsView() -> AnyView {
         guard selectedDevices.count == 1, let selection = selectedDevices.first else {
             return inspectorMessage(selectedDevices.isEmpty ? "Select a Device" : "Multiple Devices Selected",
-                                    description: "Select one simulator to adjust its settings.")
+                                    description: "Select one device to adjust its settings.")
         }
-        guard case .simulator(let device) = selection else {
-            return inspectorMessage("Settings Unavailable", description:
-                "This inspector currently supports simulator settings. Settings for \(kindTitle(selection).lowercased()) devices are not supported yet.")
-        }
-        guard device.isAvailable else {
-            return inspectorMessage("Simulator Unavailable", description:
-                "The simulator’s runtime is unavailable. Install a compatible runtime to use its settings.")
-        }
-        let inspectingSelection = model.inspectedDeviceIdentifier == device.inventoryID
-        return AnyView(ManagerDeviceSettingsView(device: device,
+        let inspectingSelection = model.inspectedDeviceIdentifier == selection.id
+        return AnyView(ManagerDeviceSettingsView(device: selection,
             settings: inspectingSelection ? model.deviceSettings : nil,
             isBusy: model.isBusy || model.managingDeviceIDs.contains(selection.id),
             issue: inspectingSelection ? model.settingsIssue : nil, apply: { [weak self] setting in
-                self?.model.setDeviceSetting(setting, for: device.inventoryID)
+                self?.model.setDeviceSetting(setting, for: selection.id)
             }, customLocation: { [weak self] in
-                self?.presentLocationEditor(for: device.inventoryID)
+                self?.presentLocationEditor(for: selection.id)
             }))
     }
 
@@ -1398,9 +1391,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         updateDeviceSettings()
         Task { [weak self] in
             guard let self else { return }
-            let identifier = self.selectedSimulator.flatMap {
-                $0.isAvailable ? $0.inventoryID : nil
-            }
+            let identifier = self.selectedDevices.count == 1 ? self.selectedDevices.first?.id : nil
             await self.model.inspectDevice(identifier)
         }
     }
@@ -1416,7 +1407,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         guard let window else { return }
         let alert = NSAlert()
         alert.messageText = "Set Location"
-        alert.informativeText = "Enter a latitude and longitude for the selected simulator."
+        alert.informativeText = "Enter a latitude and longitude for the selected device."
         alert.addButton(withTitle: "Set Location")
         alert.addButton(withTitle: "Cancel")
         let latitudeField = NSTextField(string: latitude)
@@ -2108,9 +2099,18 @@ final class SettingsWindowController: NSWindowController {
     }
 }
 
+private extension InventoryDevice {
+    var canInspectSettings: Bool {
+        switch self {
+        case .simulator(let device): device.isAvailable && device.state == "Booted"
+        case .remote(let device): device.isAvailable
+        }
+    }
+}
+
 @MainActor
 private struct ManagerDeviceSettingsView: View {
-    let device: SimulatorHostDevice?
+    let device: InventoryDevice?
     let settings: SimulatorDeviceSettings?
     let isBusy: Bool
     let issue: String?
@@ -2124,7 +2124,7 @@ private struct ManagerDeviceSettingsView: View {
 
     var body: some View {
         Form {
-            if device?.state == "Booted", settings == nil, issue == nil {
+            if device?.canInspectSettings == true, settings == nil, issue == nil {
                 ProgressView("Loading settings…")
             } else {
                 if device != nil {
@@ -2147,7 +2147,7 @@ private struct ManagerDeviceSettingsView: View {
         }
         .formStyle(.grouped)
         .labelStyle(.titleAndIcon)
-        .disabled(isBusy || device?.state != "Booted")
+        .disabled(isBusy || device?.canInspectSettings != true)
     }
 
     private var appearanceRows: some View {
@@ -2292,9 +2292,15 @@ private struct ManagerDeviceSettingsView: View {
     }
 
     private var message: String? {
-        guard let device else { return "Select a simulator to change its settings." }
-        guard device.state == "Booted" else { return "Start this simulator to change its settings." }
-        if issue != nil || settings?.issues.isEmpty == false { return "Some settings could not be loaded for this simulator." }
+        guard let device else { return "Select a device to change its settings." }
+        switch device {
+        case .simulator(let simulator):
+            guard simulator.isAvailable else { return "Install a compatible runtime to use this simulator’s settings." }
+            guard simulator.state == "Booted" else { return "Start this simulator to change its settings." }
+        case .remote(let remote):
+            guard remote.isAvailable else { return "Connect this device to change its settings." }
+        }
+        if issue != nil || settings?.issues.isEmpty == false { return "Some settings could not be loaded for this device." }
         return settings == nil ? "Loading settings…" : nil
     }
 
