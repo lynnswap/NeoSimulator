@@ -8,6 +8,11 @@ public struct SimulatorXcode: Sendable, Equatable {
     public let name: String
 }
 
+public struct SimulatorCreationContext: Sendable {
+    public let xcodeURL: URL
+    public let data: Data
+}
+
 public struct SimulatorHostStatus: Sendable {
     public let host: SimulatorHost
     public let restorationAvailable: Bool
@@ -121,6 +126,47 @@ public actor SimulatorHostController {
             try self.availableXcodes().map {
                 SimulatorXcode(url: $0.applicationURL, version: $0.version.description, name: $0.applicationURL.deletingPathExtension().lastPathComponent)
             }
+        }
+    }
+
+    public func creationCatalog() async throws -> SimulatorCreationContext {
+        try await operation {
+            guard let bundle = Bundle(url: self.rendererApplicationURL), bundle.bundleIdentifier == ToolConstants.neoHostBundleIdentifier,
+                  let executable = bundle.executableURL else {
+                throw CLIError.unavailable("neo-host-bundle", "The embedded simulator display could not be found.")
+            }
+            var candidates: [XcodeInstallation] = []
+            if let selected = try? self.makeInspector().selectedXcode() { candidates.append(selected) }
+            candidates.append(contentsOf: try self.availableXcodes())
+            var seen = Set<URL>()
+            var firstFailure: (any Error)?
+            for xcode in candidates where seen.insert(xcode.applicationURL).inserted {
+                do {
+                    let output = try self.runner.run(executable: executable, arguments: ["--creation-catalog", "--xcode", xcode.applicationURL.path])
+                    guard output.terminationStatus == 0 else { throw CLIError.unavailable("creation-catalog", output.stderrText) }
+                    return SimulatorCreationContext(xcodeURL: xcode.applicationURL, data: output.stdout)
+                } catch {
+                    if firstFailure == nil { firstFailure = error }
+                    self.catalogLogger.warning("Simulator creation catalog unavailable for \(xcode.applicationURL.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                }
+            }
+            if let firstFailure { throw firstFailure }
+            throw CLIError.unavailable("creation-catalog", "No compatible simulator creation catalog is available.")
+        }
+    }
+
+    public func createSimulator(named name: String, deviceType: String, runtime: String, context: SimulatorCreationContext) async throws -> String {
+        try await operation {
+            let xcode = try self.resolveXcode(context.xcodeURL)
+            let output = try self.runSimctl(xcode: xcode, arguments: ["create", name, deviceType, runtime])
+            return String(decoding: output, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+    }
+
+    public func pairSimulators(watch: String, phone: String, context: SimulatorCreationContext) async throws {
+        try await operation {
+            let xcode = try self.resolveXcode(context.xcodeURL)
+            _ = try self.runSimctl(xcode: xcode, arguments: ["pair", watch, phone])
         }
     }
 

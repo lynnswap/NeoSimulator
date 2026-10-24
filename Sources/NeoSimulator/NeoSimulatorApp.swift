@@ -3,6 +3,7 @@ import AppKit
 struct HostLaunchOptions {
     let xcodeURL: URL
     let validatesRuntime: Bool
+    let readsCreationCatalog: Bool
     let startupResultURL: URL?
     let deviceIdentifier: String?
     let isManaged: Bool
@@ -12,6 +13,7 @@ struct HostLaunchOptions {
         var resultPath: String?
         var device: String?
         var validate = false
+        var creationCatalog = false
         var managed = false
         var index = 0
         func invalid() -> HostError {
@@ -25,6 +27,9 @@ struct HostLaunchOptions {
             case "--validate-runtime":
                 guard !validate else { throw invalid() }
                 validate = true
+            case "--creation-catalog":
+                guard !creationCatalog else { throw invalid() }
+                creationCatalog = true
             case "--device":
                 index += 1
                 guard index < arguments.count, device == nil,
@@ -48,6 +53,7 @@ struct HostLaunchOptions {
         guard let xcodePath, !(validate && resultPath != nil) else { throw invalid() }
         xcodeURL = URL(fileURLWithPath: xcodePath, isDirectory: true).standardizedFileURL.resolvingSymlinksInPath()
         validatesRuntime = validate
+        readsCreationCatalog = creationCatalog
         startupResultURL = resultPath.map { URL(fileURLWithPath: $0).standardizedFileURL }
         deviceIdentifier = device
         isManaged = managed
@@ -111,6 +117,12 @@ enum NeoSimulatorApp {
         do {
             let options = try HostLaunchOptions(arguments: arguments)
             try options.validateInstallation()
+            if options.readsCreationCatalog {
+                let catalog = try SimulatorRuntime.creationCatalog(xcodeURL: options.xcodeURL)
+                let data = try JSONEncoder().encode(SimulatorCatalog.Snapshot(catalog: catalog))
+                try FileHandle.standardOutput.write(contentsOf: data)
+                return
+            }
             if options.validatesRuntime {
                 _ = try SimulatorRuntime(xcodeURL: options.xcodeURL)
                 return

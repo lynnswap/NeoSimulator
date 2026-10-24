@@ -5187,7 +5187,11 @@ struct InputFocusTests {
 
     @Test func newSimulatorOffersAPairedWatchOnlyForAnIPhone() throws {
         _ = NSApplication.shared
-        let form = NewSimulatorWindowController(catalog: pairingCatalog(), create: { _, _, _ in "" }, pair: { _, _ in })
+        let data = try JSONEncoder().encode(SimulatorCatalog.Snapshot(catalog: pairingCatalog()))
+        let catalog = try JSONDecoder().decode(SimulatorCatalog.Snapshot.self, from: data).catalog()
+        #expect(catalog.canPair("w1", "new", "phone", "ios"))
+        #expect(!catalog.canPair("w2", "new", "phone", "ios"))
+        let form = NewSimulatorWindowController(catalog: catalog, create: { _, _, _ in "" }, pair: { _, _ in })
         defer { form.close() }
         form.showWindow(nil)
         func choose(_ title: String, in popUp: NSPopUpButton) {

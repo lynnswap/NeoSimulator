@@ -73,6 +73,12 @@ Catalog and device-setting commands call the installed CoreSimulator `simctl`
 directly with the resolved Xcode's `DEVELOPER_DIR`. Discovery does not run the
 Xcode wrapper's first-launch installation.
 
+New Simulator uses a shared AppKit form in the manager. A short-lived,
+read-only renderer utility exports the CoreSimulator creation catalog and
+validated watch/phone pairings without starting a display host. Creation and
+pairing commands retain that catalog's developer context, including in Device
+Hub mode.
+
 ## App ownership
 
 | Owner | Responsibility |

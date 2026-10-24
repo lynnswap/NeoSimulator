@@ -16,7 +16,10 @@ final class SimulatorManagerModel {
     var onChange: (() -> Void)?
     var onError: ((any Error) -> Void)?
     private var refreshing = false
+    private var refreshWaiters: [CheckedContinuation<Void, Never>] = []
     private var synchronizing = false
+    private var stopping = false
+    private var pendingOperations: [(activity: String, run: @MainActor () async throws -> Void)] = []
 
     init(rendererApplicationURL: URL) {
         controller = SimulatorHostController(rendererApplicationURL: rendererApplicationURL)
@@ -38,14 +41,41 @@ final class SimulatorManagerModel {
         perform("Opening simulator…") { try await self.controller.openDevice(identifier: identifier) }
     }
 
+    func creationCatalog() async throws -> SimulatorCreationContext {
+        try await controller.creationCatalog()
+    }
+
+    func createSimulator(named name: String, deviceType: String, runtime: String,
+                         context: SimulatorCreationContext) async throws -> String {
+        let identifier = try await controller.createSimulator(named: name, deviceType: deviceType, runtime: runtime,
+                                                               context: context)
+        await refresh()
+        return identifier
+    }
+
+    func pairSimulators(watch: String, phone: String, context: SimulatorCreationContext) async throws {
+        try await controller.pairSimulators(watch: watch, phone: phone, context: context)
+        await refresh()
+    }
+
     func restoreDefaults(force: Bool = false) {
         perform("Restoring original settings…") { try await self.controller.restore(force: force) }
     }
 
     func refresh() async {
-        guard !refreshing, !isBusy else { return }
-        refreshing = true
-        defer { refreshing = false; inspectedState = nil; onChange?() }
+        guard !isBusy, !refreshing else { return }
+        await refreshCatalog()
+    }
+
+    private func refreshCatalog() async {
+        if refreshing { await withCheckedContinuation { refreshWaiters.append($0) } }
+        else { refreshing = true }
+        defer {
+            inspectedState = nil
+            onChange?()
+            if refreshWaiters.isEmpty { refreshing = false }
+            else { refreshWaiters.removeFirst().resume() }
+        }
         do {
             status = try await controller.status()
             var merged: [SimulatorHostDevice] = []
@@ -130,7 +160,10 @@ final class SimulatorManagerModel {
     }
 
     func quitRenderer(keepingDevicesRunning: Bool?) async throws {
-        try await controller.quitRenderer(keepingDevicesRunning: keepingDevicesRunning)
+        stopping = true
+        pendingOperations.removeAll()
+        do { try await controller.quitRenderer(keepingDevicesRunning: keepingDevicesRunning) }
+        catch { stopping = false; throw error }
     }
 
     private func reportBackgroundError(_ error: any Error) {
@@ -142,19 +175,24 @@ final class SimulatorManagerModel {
     }
 
     private func perform(_ activity: String, operation: @escaping @MainActor () async throws -> Void) {
+        guard !stopping else { return }
+        pendingOperations.append((activity, operation))
         guard !isBusy else { return }
         isBusy = true
-        self.activity = activity
-        onChange?()
         Task {
-            var failure: (any Error)?
-            do { try await operation() }
-            catch { failure = error }
+            while !stopping, !pendingOperations.isEmpty {
+                let next = pendingOperations.removeFirst()
+                self.activity = next.activity
+                onChange?()
+                var failure: (any Error)?
+                do { try await next.run() }
+                catch { failure = error }
+                await refreshCatalog()
+                if let failure { onError?(failure) }
+            }
             isBusy = false
             self.activity = ""
             onChange?()
-            await refresh()
-            if let failure { onError?(failure) }
         }
     }
 }
@@ -204,6 +242,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var model = SimulatorManagerModel(rendererApplicationURL: rendererURL)
     private var mainWindow: ManagerWindowController?
     private var settingsWindow: SettingsWindowController?
+    private var newSimulatorWindow: NewSimulatorWindowController?
+    private var preparingNewSimulator: Task<Void, Never>?
     private var quitting = false
     private var rendererDevicesObserver: NSObjectProtocol?
     private var workspaceObserver: NSObjectProtocol?
@@ -318,6 +358,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate()
     }
 
+    @objc private func showNewSimulator(_ sender: Any?) {
+        guard !quitting else { return }
+        if let newSimulatorWindow {
+            newSimulatorWindow.showWindow(nil)
+            newSimulatorWindow.window?.makeKeyAndOrderFront(nil)
+            NSApp.activate()
+            return
+        }
+        guard preparingNewSimulator == nil else { return }
+        preparingNewSimulator = Task { [weak self] in
+            guard let self else { return }
+            defer { self.preparingNewSimulator = nil }
+            do {
+                let context = try await self.model.creationCatalog()
+                let snapshot = try JSONDecoder().decode(SimulatorCatalog.Snapshot.self, from: context.data)
+                guard !self.quitting else { return }
+                let form = NewSimulatorWindowController(catalog: snapshot.catalog(), create: { [model = self.model] name, type, runtime in
+                    try await model.createSimulator(named: name, deviceType: type, runtime: runtime, context: context)
+                }, pair: { [model = self.model] watch, phone in
+                    try await model.pairSimulators(watch: watch, phone: phone, context: context)
+                }, onClose: { [weak self] in
+                    self?.newSimulatorWindow = nil
+                })
+                self.newSimulatorWindow = form
+                form.showWindow(nil)
+                form.window?.makeKeyAndOrderFront(nil)
+                NSApp.activate()
+            } catch { self.present(error) }
+        }
+    }
+
     @objc private func quitAsking(_ sender: Any?) {
         guard !model.isBusy, !quitting else { return }
         let defaults = UserDefaults(suiteName: "dev.lynnswap.NeoSimulator.Renderer") ?? .standard
@@ -391,6 +462,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         quitWithChoice.keyEquivalentModifierMask = [.command, .option]
         quitWithChoice.isAlternate = true
         let file = addSubmenu("File", to: main)
+        addItem("New Simulator…", action: #selector(showNewSimulator(_:)), key: "n", to: file)
         addDevicesMenu("Open Simulator", to: file)
         addItem("Close Window", action: #selector(NSWindow.performClose(_:)), key: "w", to: file).target = nil
         let edit = addSubmenu("Edit", to: main)
