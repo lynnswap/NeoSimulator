@@ -252,6 +252,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         embeddedContainer = container
         Self.embeddedController = self
         content.isEmbedded = true
+        content.isSizedToDisplay = false
         content.displayGap = 0
         content.frame = container.bounds
         content.autoresizingMask = [.width, .height]
@@ -336,7 +337,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         content.importFiles = { [weak self] in self?.importFiles($0) }
         content.onDisplaySizeChange = { [weak self] in
             guard let self, self.isEmbedded else { return }
-            self.fitting.fit()
+            self.session.display.resize(to: self.content.availableDisplaySize)
         }
         presentationViewController.view = content
         content.onWindowChange = { [weak self] in
