@@ -18,12 +18,6 @@ final class SimulatorManagerModel {
             return device
         }
     }
-    var menuDevices: [SimulatorHostDevice] {
-        let simulators = inventory.compactMap { if case .simulator(let device) = $0 { device } else { nil } }
-        let counts = Dictionary(grouping: simulators, by: \.identifier).mapValues(\.count)
-        // These menu actions carry only a UDID, so they cannot distinguish device sets.
-        return devices.filter { counts[$0.identifier] == 1 }
-    }
     private(set) var managingDeviceIDs: Set<DeviceInventoryID> = []
     private(set) var isBusy = false
     private(set) var activity = ""
@@ -426,7 +420,7 @@ private final class SimulatorDevicesMenu: NSMenu, NSMenuDelegate {
     required init(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
-        menu.items = SimulatorDeviceMenu.items(for: model.menuDevices.map { device in
+        menu.items = SimulatorDeviceMenu.items(for: model.devices.map { device in
             let state: UInt = switch device.state {
             case "Booted": 3
             case "Booting": 2

@@ -562,7 +562,7 @@ extension SimulatorHostController {
     public func inspector(for device: InventoryDevice) async throws -> DeviceInspector {
         let preferred: URL?
         if case .simulator(let simulator) = device {
-            let owner = try await registeredRenderers().first { $0.deviceIdentifiers.contains(simulator.identifier) }
+            let owner = try await registeredRenderers().first { $0.deviceIdentifiers.contains(simulator.inventoryID) }
             preferred = owner.map { URL(fileURLWithPath: $0.xcodePath) } ?? simulator.ownerXcodeURL
         } else { preferred = nil }
         return try await makeDeviceInspector(device: device, preferredXcodeURL: preferred, rendererApplicationURL: rendererApplicationURL)
