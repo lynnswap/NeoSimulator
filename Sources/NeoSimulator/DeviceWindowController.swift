@@ -70,7 +70,14 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     var onShowInMainWindow: (() -> Void)? {
         didSet { deviceToolbar?.setShowsMainWindowAction(onShowInMainWindow != nil) }
     }
-    @objc func showInMainWindow(_ sender: Any?) { onShowInMainWindow?() }
+    private var canShowInMainWindow: Bool {
+        guard !closed, !isFullScreen, let window = presentationWindow else { return false }
+        return window.attachedSheet == nil && !window.styleMask.contains(.fullScreen) && onShowInMainWindow != nil
+    }
+    @objc func showInMainWindow(_ sender: Any?) {
+        guard canShowInMainWindow else { return }
+        onShowInMainWindow?()
+    }
     /// The window of the device's external display while the display is on.
     private(set) var externalDisplayWindow: ExternalDisplayWindowController?
     /// How often and how long the window looks for its display's
@@ -492,7 +499,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         case #selector(recordScreen(_:)): command = .recordScreen
         case #selector(recordScreenTo(_:)): command = .recordScreenAs
         case #selector(stopScreenRecording(_:)): command = .stopRecording
-        case #selector(showInMainWindow(_:)): return !closed && onShowInMainWindow != nil
+        case #selector(showInMainWindow(_:)): return canShowInMainWindow
         default: return !closed && session.canPerformCommands
         }
         guard let command, !closed else { return false }
