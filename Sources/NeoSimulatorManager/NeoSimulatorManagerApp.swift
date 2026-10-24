@@ -1013,13 +1013,13 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
                               styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                               backing: .buffered, defer: false)
         window.title = "NeoSimulator"
-        window.minSize = NSSize(width: 800, height: 480)
         window.isReleasedWhenClosed = false
         window.toolbarStyle = .unified
         super.init(window: window)
         buildSidebar()
         buildDevicePane()
         buildInspector()
+        splitController.view.heightAnchor.constraint(greaterThanOrEqualToConstant: 480).isActive = true
         window.contentViewController = splitController
         let toolbar = NSToolbar(identifier: "NeoSimulatorDevices")
         toolbar.delegate = self
@@ -1229,6 +1229,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
 
     private func buildInspector() {
         let host = NSHostingController(rootView: makeDeviceSettingsView())
+        // AppKit owns the pane size; content-derived bounds must not constrain the window.
+        host.sizingOptions = []
         inspectorHost = host
         inspectorContainer.view = NSView()
         let inspector = NSSplitViewItem(inspectorWithViewController: inspectorContainer)
