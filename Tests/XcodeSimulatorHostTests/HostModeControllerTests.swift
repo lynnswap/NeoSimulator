@@ -14,6 +14,10 @@ struct HostModeControllerTests {
             deviceIdentifier: "device-id")
         #expect(arguments == ["--managed", "--owner-pid", "321", "--owner-launch-date", "123456.125",
                               "--startup-result", "/Startup/result", "--xcode", "/Xcode.app", "--device", "device-id"])
+        let headless = WorkspaceClient.rendererLaunchArguments(owner: owner,
+            startupResultURL: URL(fileURLWithPath: "/Startup/result"), xcodeURL: URL(fileURLWithPath: "/Xcode.app"),
+            deviceIdentifier: "device-id", headless: true)
+        #expect(headless == arguments + ["--headless"])
     }
 
     @Test func rendererRegistrationNeverAdoptsAnotherManagerOrAReusedManagerPID() throws {

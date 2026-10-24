@@ -536,6 +536,7 @@ struct XcodeConnectionsTests {
             let acknowledgement = switch info["action"] {
             case "release-device": "RendererReleased"
             case "restart-device": "RendererManaged"
+            case "close-device": "RendererClosed"
             default: "RendererOpened"
             }
             let name = Notification.Name("dev.lynnswap.NeoSimulator.\(acknowledgement)")
@@ -548,7 +549,38 @@ struct XcodeConnectionsTests {
         try await waiter.attach(target, in: renderer)
         try await waiter.release(target, from: renderer)
         #expect(try await waiter.restart(target, in: renderer, erasing: false))
-        #expect(requests.compactMap { $0["action"] } == ["open-device", "attach-device", "release-device", "restart-device"])
+        try await waiter.close(target, in: renderer, keepingDeviceRunning: true)
+        try await waiter.close(target, in: renderer, keepingDeviceRunning: false)
+        #expect(requests.compactMap { $0["action"] } == ["open-device", "attach-device", "release-device", "restart-device", "close-device", "close-device"])
+        #expect(requests.suffix(2).compactMap { $0["keepRunning"] } == ["true", "false"])
+    }
+
+    @Test @MainActor func closeDeviceAcknowledgementPreservesFailureAndAllowsRetry() async throws {
+        let center = NotificationCenter()
+        let target = DeviceInventoryID.simulator(udid: "device-id", deviceSetPath: nil)
+        let renderer = RendererRegistration(processIdentifier: 1, applicationPath: "/Renderer.app", xcodePath: "/Xcode.app",
+                                            sessionIdentifier: "owner-session", deviceIdentifiers: [target])
+        var rejected = true
+        var requests = 0
+        let waiter = RendererDeviceRequestWaiter(acknowledgements: center, scheduleTimeout: { _, _ in {} }) { info, session in
+            requests += 1
+            #expect(session == renderer.sessionIdentifier && info["action"] == "close-device")
+            #expect(info["udid"] == "device-id" && info["deviceSetPath"] == nil && info["keepRunning"] == "false")
+            var reply = ["udid": "device-id"]
+            if rejected { reply["error"] = "Fixture guest shutdown failed" }
+            center.post(name: Notification.Name("dev.lynnswap.NeoSimulator.RendererClosed"),
+                        object: info["requestIdentifier"], userInfo: reply)
+        }
+        do {
+            try await waiter.close(target, in: renderer, keepingDeviceRunning: false)
+            Issue.record("A failed close acknowledgement was accepted")
+        } catch let error as CLIError {
+            #expect(error.identifier == "renderer-device-request")
+            #expect(error.message == "Fixture guest shutdown failed")
+        }
+        rejected = false
+        try await waiter.close(target, in: renderer, keepingDeviceRunning: false)
+        #expect(requests == 2)
     }
 
     @Test func usesNewestRunPerDeviceAndRecognizesReusedPID() async throws {

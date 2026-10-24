@@ -5,7 +5,7 @@ Open devices, manage their apps and profiles, and capture their screens.
 ## Open and create devices
 
 Open NeoSimulator.app and select **NeoSimulator** as the display host. Select a
-device in the main window and choose **View Screen** to open it. You can also
+device in the main window and choose **View Screen** to use its screen in the center pane. You can also
 use **Device** in the Dock menu, **File → Open Simulator**, or **View → Show Devices**
 to start a device or reopen its window. The manager's device menus group devices
 by OS version.
@@ -17,7 +17,7 @@ Open Simulator groups devices by runtime; a
 checkmark means a device has a window, and a dash means it is running without
 one. Hold Option to show its runtime and device type.
 
-Select one or more devices and open the **Device** menu or Control-click the
+Select one or more devices and open **Device → Manage Selected Devices** or Control-click the
 selection for its management actions. Actions depend on the device's current
 state and supported capabilities. Rename and Clone apply to one device; select
 an iPhone and an Apple Watch from the same simulator set to pair them. Erase and
@@ -38,8 +38,22 @@ Creation does not boot the new devices. If creation or pairing fails after a
 device was created, the error names the devices kept. Install runtimes in Xcode.
 
 Neo supports iPhone, iPad, Apple Watch, Apple TV, and Apple Vision Pro. Menus show
-the controls supported by the active device. Each renderer uses its Xcode installation for device artwork and the visionOS
-user-interface plugin.
+the controls supported by the active device. Device association with Xcode is automatic.
+
+## Main and compact windows
+
+Choose **Switch to Compact Window** in the main toolbar to move the live screen
+into its own window. Choose **Show in Main Window** in that window to return to
+the browser with the same device selected. Moving the screen preserves its
+connection, recording, and unsaved captures. Finish an open sheet or leave full
+screen before switching windows.
+
+The main toolbar provides the selected screen's supported device actions.
+Simulator controls are also available in **Device**, **I/O**, **Features**, and
+**Debug**. Window scale commands apply to compact simulator windows; the center
+pane fits the screen automatically. Selecting a different device leaves the
+previous connection running. Closing the main window also leaves connections
+running; quitting NeoSimulator applies the app's device lifetime setting.
 
 ## Inspect a device
 
