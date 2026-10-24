@@ -570,10 +570,10 @@ struct XcodeConnectionsTests {
                 throw CLIError.io("test", "launch failed after release")
             }
         }
-        #expect(tracker.hasPendingConnection(forDevice: "A"))
+        #expect(tracker.hasPendingConnection(forDevice: .simulator(udid: "A", deviceSetPath: nil)))
         var transfers: [XcodeSimulatorConnection] = []
         #expect(try await !tracker.synchronize(observations: [], runningDeviceIdentifiers: []) { transfers.append($0) })
-        #expect(!tracker.hasPendingConnection(forDevice: "A"))
+        #expect(!tracker.hasPendingConnection(forDevice: .simulator(udid: "A", deviceSetPath: nil)))
         #expect(tracker.xcodeURL(forDevice: .simulator(udid: "A", deviceSetPath: nil)) == pending.xcodeURL)
         #expect(try await !tracker.synchronize(observations: [pending], runningDeviceIdentifiers: [.simulator(udid: "A", deviceSetPath: nil)]) { transfers.append($0) })
         let nextRun = connection(pid: 2, start: 20)
