@@ -688,6 +688,35 @@ struct InputFocusTests {
         #expect(pushes() == [1, 2, 4])
     }
 
+    @Test func copiesReachSameUDIDDevicesInOtherSetsWithoutEcho() async throws {
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("dev.lynnswap.NeoSimulatorTests.\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        let preferences = MemoryPreferences()
+        preferences.values[HostPreferences.pasteboardAutomaticSync] = true
+        var sessions: [DeviceSession] = []
+        let sync = PasteboardSync(preferences: preferences) { sessions }
+        var connections: [TestPasteboard] = []
+        for path in [nil, "/fixture/XCTestDevices"] as [String?] {
+            let display = TestDisplay()
+            let session = try makeSession(display, features: [DeviceCapabilities.pasteboard], device: "same",
+                deviceSetPath: path, pasteboard: pasteboard, pasteboardSync: sync)
+            sessions.append(session)
+            session.startPasteboardSync()
+            connections.append(try #require(display.pasteboards.first))
+        }
+        defer { sessions.forEach { $0.disconnect() } }
+        let before = connections.map { $0.transfers.count }
+        pasteboard.clearContents()
+        pasteboard.setString("copied", forType: .string)
+        await withCheckedContinuation { continuation in
+            connections[0].send(.applied(generation: pasteboard.changeCount))
+            // This marker runs after the forwarding block scheduled in this run-loop mode.
+            RunLoop.main.perform(inModes: [.default]) { continuation.resume() }
+        }
+        #expect(connections[0].transfers.count == before[0])
+        #expect(connections[1].transfers.count == before[1] + 1)
+    }
+
     @Test func synchronizedDevicesReconnectAtOnceWhenTheConnectionCloses() throws {
         let pasteboard = NSPasteboard(name: NSPasteboard.Name("dev.lynnswap.NeoSimulatorTests.\(UUID().uuidString)"))
         defer { pasteboard.releaseGlobally() }
@@ -3971,6 +4000,31 @@ struct InputFocusTests {
         #expect(controller.externalDisplayWindow != nil && screen.displays.count == 2)
     }
 
+    @Test func externalDisplayGeometryKeepsSameUDIDDeviceSetsSeparate() throws {
+        _ = NSApplication.shared
+        let preferences = MemoryPreferences()
+        let screens = NSScreen.screens.map(\.frame)
+        let normal = SimulatorDeviceIdentifier("same")
+        let clone = SimulatorDeviceIdentifier("same", deviceSetPath: "/fixture/XCTestDevices")
+        preferences.setWindowGeometry(center: NSPoint(x: 10, y: 20), scale: 0.25,
+            forDevice: normal.preferenceIdentifier, screens: screens, kind: .externalDisplay)
+        preferences.setWindowGeometry(center: NSPoint(x: 30, y: 40), scale: 0.5,
+            forDevice: clone.preferenceIdentifier, screens: screens, kind: .externalDisplay)
+        let display = TestDisplay()
+        let session = try makeSession(TestDisplay(), device: "same", deviceSetPath: clone.deviceSetPath, preferences: preferences)
+        defer { session.disconnect() }
+        let external = try ExternalDisplayWindowController(session: session, display: display,
+            state: ExternalScreenState(isPoweredOn: true, pixelSize: CGSize(width: 32, height: 32), scale: 1),
+            deviceWindow: nil, preferences: preferences, onClose: {})
+        #expect(display.renderScale == 0.5)
+        external.window?.setFrameOrigin(NSPoint(x: 100, y: 200))
+        external.invalidate()
+        let original = preferences.windowGeometry(forDevice: normal.preferenceIdentifier, screens: screens, kind: .externalDisplay)
+        let saved = preferences.windowGeometry(forDevice: clone.preferenceIdentifier, screens: screens, kind: .externalDisplay)
+        #expect(original.center == NSPoint(x: 10, y: 20) && original.scale == 0.25)
+        #expect(saved.center != NSPoint(x: 30, y: 40) && saved.scale == 0.5)
+    }
+
     @Test func closingTheExternalDisplaysWindowChoosesDisabled() throws {
         _ = NSApplication.shared
         let preferences = MemoryPreferences()
@@ -6005,6 +6059,7 @@ struct InputFocusTests {
                              openLog: @escaping (URL) async throws -> Void = { _ in },
                              screenPointsPerInch: Double? = nil,
                              device identifier: String = "test-device",
+                             deviceSetPath: String? = nil,
                              preferences: MemoryPreferences = MemoryPreferences(),
                              keyboardLanguage: @escaping @MainActor () -> String? = { "fr" },
                              pasteboard: NSPasteboard? = nil,
@@ -6015,7 +6070,7 @@ struct InputFocusTests {
                              enhancedMultitasking: Bool = false) throws -> DeviceSession {
         // Keep the external-display timeout short enough to exercise expiry.
         DeviceSession(
-            device: availableDevice(identifier, "Test iPhone", runtime: "iOS", state: 3),
+            device: availableDevice(identifier, "Test iPhone", runtime: "iOS", state: 3, deviceSetPath: deviceSetPath),
             capabilities: DeviceCapabilities(family: family, runtimeVersion: runtimeVersion,
                                              supportsFeature: { features.contains($0) },
                                              hasFramebufferMask: framebufferMask,
@@ -7250,10 +7305,10 @@ private final class TestCatalog: DeviceBrowserSource {
     }
 }
 
-private func availableDevice(_ identifier: String, _ name: String, runtime: String, state: UInt) -> AvailableDevice {
+private func availableDevice(_ identifier: String, _ name: String, runtime: String, state: UInt, deviceSetPath: String? = nil) -> AvailableDevice {
     AvailableDevice(identifier: identifier, name: name, descriptiveName: "\(runtime) - \(name)",
                     runtimeIdentifier: "runtime \(runtime)", runtimeName: runtime,
-                    productFamily: name.hasPrefix("iPad") ? 2 : 1, deviceTypeName: name, state: state)
+                    productFamily: name.hasPrefix("iPad") ? 2 : 1, deviceTypeName: name, state: state, deviceSetPath: deviceSetPath)
 }
 
 @Suite @MainActor

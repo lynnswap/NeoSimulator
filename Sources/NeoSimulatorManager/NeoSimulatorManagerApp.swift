@@ -39,6 +39,7 @@ final class SimulatorManagerModel {
     private var statusIssue: (any Error)?
     private var observationIssue: String?
     private var inventoryIssues: [DeviceInventoryIssue] = []
+    var isRemoteInventoryComplete: Bool { !inventoryIssues.contains { $0.source == .coreDevice } }
     private var synchronizing = false
     private var inventoryRefreshRequested = false
     private var stopping = false
@@ -653,9 +654,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func updateRemoteWindows() {
-        for (id, controller) in remoteWindows {
-            let current = model.inventory.first { $0.id == id }
-            controller.updateInventory(current)
+        if model.isRemoteInventoryComplete {
+            for (id, controller) in remoteWindows {
+                let current = model.inventory.first { $0.id == id }
+                controller.updateInventory(current)
+            }
         }
         let host = model.status?.host
         let changedToDeviceHub = host == .deviceHub && lastRemoteHost != .deviceHub

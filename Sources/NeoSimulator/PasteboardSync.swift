@@ -46,7 +46,7 @@ final class PasteboardSync {
         changedSession = nil
         // Simulator.app observes the change only while synchronization is on.
         guard isOn else { return }
-        for session in sessions() where session.device.id != source.device.id {
+        for session in sessions() where session.device.identity != source.device.identity {
             session.sendSynchronizedPasteboard()
         }
     }
