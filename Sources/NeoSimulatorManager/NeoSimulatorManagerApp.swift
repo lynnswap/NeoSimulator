@@ -2,6 +2,7 @@ import AppKit
 import Quartz
 import Carbon
 import IOKit.hid
+import ImageIO
 import SwiftUI
 import UniformTypeIdentifiers
 import XcodeSimulatorHost
@@ -3400,6 +3401,8 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
     private var connectionTask: Task<Void, Never>?
     private var stoppingTask: Task<Void, any Error>?
     private var inputTask: Task<Void, Never>?
+    private var captureTask: Task<Void, any Error>?
+    private var capturePanel: NSSavePanel?
     private var closing = false
     private var mayClose = false
     private var compact = false
@@ -3504,7 +3507,7 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
 
     private func update() {
         let connected = session.state == .connected && !closing
-        let busy = session.state == .connecting || session.state == .stopping
+        let busy = session.state == .connecting || session.state == .stopping || captureTask != nil
         let native = session.nativeInputView
         inputView.isHidden = native != nil
         native?.isHidden = closing
@@ -3513,14 +3516,17 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
         for name in ["home", "lock", "volumeDown", "volumeUp"] {
             toolbarItems[name]?.isEnabled = connected && session.inputCapabilities.contains(.button)
         }
-        toolbarItems["capture"]?.isEnabled = false
-        toolbarItems["capture"]?.toolTip = "Screenshot capture is not available for this display yet."
+        toolbarItems["capture"]?.isEnabled = connected && inventoryAvailable && session.canCaptureScreenshot
+            && captureTask == nil && capturePanel == nil
+        toolbarItems["capture"]?.toolTip = session.canCaptureScreenshot ? "Save Screenshot…"
+            : "Screenshot capture is not available for this display yet."
         toolbarItems["reconnect"]?.isEnabled = !busy && !closing && inventoryAvailable
         retryButton.isHidden = session.state != .failed && session.state != .stopped
         retryButton.isEnabled = !closing && inventoryAvailable
         progress.isHidden = !busy
         if busy { progress.startAnimation(nil) } else { progress.stopAnimation(nil) }
-        if let issue { statusLabel.stringValue = issue }
+        if captureTask != nil { statusLabel.stringValue = "Saving screenshot…" }
+        else if let issue { statusLabel.stringValue = issue }
         else if let error = session.lastError { statusLabel.stringValue = error.localizedDescription }
         else if !inventoryAvailable { statusLabel.stringValue = "The device is unavailable." }
         else {
@@ -3552,13 +3558,23 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
     private func stop() async throws {
         if let stoppingTask { try await stoppingTask.value; return }
         closing = true
+        capturePanel?.cancel(nil)
+        capturePanel = nil
         window?.makeFirstResponder(nil)
         connectionTask?.cancel()
+        let acceptedCapture = captureTask
         update()
         let task = Task { [self] in
+            var failure: (any Error)?
+            do { try await acceptedCapture?.value }
+            catch { failure = error }
             await inputTask?.value
-            try await session.stop()
+            do { try await session.stop() }
+            catch {
+                failure = failure.map { RemoteDeviceWindowError.cleanup([$0.localizedDescription, error.localizedDescription]) } ?? error
+            }
             await connectionTask?.value
+            if let failure { throw failure }
         }
         stoppingTask = task
         defer { stoppingTask = nil; closing = false; update() }
@@ -3623,6 +3639,7 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
         menuItem.representedObject = itemIdentifier.rawValue
         item.menuFormRepresentation = menuItem
         toolbarItems[itemIdentifier.rawValue] = item
+        update()
         return item
     }
     @objc private func toolbarAction(_ sender: Any) {
@@ -3662,7 +3679,69 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
     }
 
     private func saveScreenshot() {
-        showIssue(RemoteDeviceWindowError.unavailable("Screenshot capture is not available for this display yet."))
+        guard let window, !closing, inventoryAvailable, captureTask == nil, capturePanel == nil,
+              session.canCaptureScreenshot else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.png]
+        panel.canCreateDirectories = true
+        let preferences = UserDefaults(suiteName: "dev.lynnswap.NeoSimulator.Renderer") ?? .standard
+        if let path = preferences.string(forKey: "ScreenShotSaveLocation") {
+            let path = NSString(string: path).expandingTildeInPath
+            var isDirectory: ObjCBool = false
+            if FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue {
+                panel.directoryURL = URL(fileURLWithPath: path, isDirectory: true)
+            }
+        }
+        if panel.directoryURL == nil {
+            panel.directoryURL = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first
+        }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
+        panel.nameFieldStringValue = "Device Screenshot - \(window.title) - \(formatter.string(from: Date())).png"
+            .replacingOccurrences(of: "/", with: ".").replacingOccurrences(of: ":", with: ".")
+        capturePanel = panel
+        update()
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard let self, self.capturePanel === panel else { return }
+            self.capturePanel = nil
+            defer { self.update() }
+            guard response == .OK, let destination = panel.url, !self.closing,
+                  self.inventoryAvailable, self.session.canCaptureScreenshot else { return }
+            preferences.set(destination.deletingLastPathComponent().path, forKey: "ScreenShotSaveLocation")
+            self.captureScreenshot(to: destination)
+        }
+    }
+
+    private func captureScreenshot(to destination: URL) {
+        guard !closing, inventoryAvailable, captureTask == nil, session.canCaptureScreenshot else { return }
+        issue = nil
+        // The accepted command belongs to this window's session, even if selection changes elsewhere.
+        let session = session
+        captureTask = Task { [self] in
+            defer { captureTask = nil; update() }
+            do {
+                let image = try await session.captureScreenshot()
+                try await Self.writeScreenshot(image, to: destination)
+            } catch {
+                showIssue(error)
+                throw error
+            }
+        }
+        update()
+    }
+
+    @concurrent
+    private nonisolated static func writeScreenshot(_ image: CGImage, to destination: URL) async throws {
+        let data = NSMutableData()
+        guard let output = CGImageDestinationCreateWithData(data, UTType.png.identifier as CFString, 1, nil) else {
+            throw RemoteDeviceWindowError.unavailable("The screenshot could not be encoded as PNG.")
+        }
+        CGImageDestinationAddImage(output, image, nil)
+        guard CGImageDestinationFinalize(output) else {
+            throw RemoteDeviceWindowError.unavailable("The screenshot could not be encoded as PNG.")
+        }
+        try (data as Data).write(to: destination, options: .atomic)
     }
 }
 
