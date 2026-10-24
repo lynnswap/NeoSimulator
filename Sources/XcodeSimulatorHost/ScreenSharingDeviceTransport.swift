@@ -75,6 +75,7 @@ final class ScreenSharingDeviceTransport: NSObject, RemoteScreenTransport {
     }
 
     func send(_ input: RemoteScreenInput) async throws { try await self.input.send(input) }
+    func releaseInputs() async throws { try await input.releaseInputs() }
 
     func stop() async throws {
         stopped = true

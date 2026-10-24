@@ -10,6 +10,8 @@ final class CoreDeviceScreenInput {
     private var buttons: Set<Button> = []
     private var pointerButtons: [Int: CGPoint] = [:]
     private var touch: (CGPoint, CGPoint?, RemoteDeviceTouchEdge)?
+    private var operationInProgress = false
+    private var operationWaiters: [CheckedContinuation<Void, Never>] = []
 
     static let features: [RemoteDeviceInputKind: String] = [
         .keyboard: "com.apple.coredevice.feature.remote.hid.keyboard",
@@ -25,6 +27,8 @@ final class CoreDeviceScreenInput {
     }
 
     func send(_ input: RemoteScreenInput) async throws {
+        await beginOperation()
+        defer { finishOperation() }
         try Task.checkCancellation()
         try await sendNative(input)
         switch input {
@@ -43,6 +47,8 @@ final class CoreDeviceScreenInput {
     }
 
     func releaseInputs() async throws {
+        await beginOperation()
+        defer { finishOperation() }
         var failures: [String] = []
         if let (point, second, edge) = touch {
             do { try await sendNative(.touch(point, second, .ended, edge)); touch = nil }
@@ -62,6 +68,16 @@ final class CoreDeviceScreenInput {
         }
         if !failures.isEmpty { throw CLIError.io("remote-input-release", failures.joined(separator: "\n")) }
         implementations.removeAll()
+    }
+
+    private func beginOperation() async {
+        if operationInProgress { await withCheckedContinuation { operationWaiters.append($0) } }
+        else { operationInProgress = true }
+    }
+
+    private func finishOperation() {
+        if operationWaiters.isEmpty { operationInProgress = false }
+        else { operationWaiters.removeFirst().resume() }
     }
 
     private func implementation(_ kind: RemoteDeviceInputKind, named capability: String) async throws -> NativeSwiftValue {

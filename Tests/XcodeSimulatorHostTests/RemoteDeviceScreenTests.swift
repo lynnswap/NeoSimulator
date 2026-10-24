@@ -21,6 +21,9 @@ struct RemoteDeviceScreenTests {
         #expect(session.hasReceivedFrame)
         try await session.sendKey(4, state: .down)
         #expect(transport.downKeys == [4])
+        try await session.releaseInputs()
+        #expect(transport.downKeys.isEmpty && !transport.closed && session.state == .connected)
+        try await session.sendKey(4, state: .down)
         try await session.stop()
         #expect(transport.downKeys.isEmpty && transport.closed)
         #expect(session.state == .stopped && session.inputCapabilities.isEmpty)
@@ -134,12 +137,16 @@ private final class ScreenFixtureTransport: RemoteScreenTransport {
         }
     }
 
+    func releaseInputs() async throws {
+        if failCleanup { throw ScreenFixtureError.cleanup }
+        downKeys = []
+    }
+
     func stop() async throws {
         let continuation = pendingStart
         pendingStart = nil
         continuation?.resume(throwing: CancellationError())
-        if failCleanup { throw ScreenFixtureError.cleanup }
-        downKeys = []
+        try await releaseInputs()
         closed = true
     }
 

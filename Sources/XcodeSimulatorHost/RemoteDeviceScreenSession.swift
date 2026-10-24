@@ -138,6 +138,11 @@ public final class RemoteDeviceScreenSession {
         }
     }
 
+    /// Releases inputs owned by this connection without disconnecting its screen.
+    public func releaseInputs() async throws {
+        try await transport?.releaseInputs()
+    }
+
     public func sendKey(_ usage: UInt16, state: RemoteDeviceButtonState) async throws {
         try await send(.key(usage, state))
     }
@@ -201,6 +206,7 @@ protocol RemoteScreenTransport: AnyObject {
     var nativeInputView: NSView? { get }
     func start(events: @escaping @MainActor (RemoteScreenTransportEvent) -> Void) async throws
     func send(_ input: RemoteScreenInput) async throws
+    func releaseInputs() async throws
     func stop() async throws
 }
 
