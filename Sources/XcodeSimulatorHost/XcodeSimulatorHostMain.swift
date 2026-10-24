@@ -658,7 +658,10 @@ enum SimulatorDeviceCatalog {
         let catalog = try JSONDecoder().decode(Catalog.self, from: data)
         let supportedFamilies: Set<String> = ["iPhone", "iPad", "Apple TV", "Apple Watch", "Apple Vision"]
         let supportedTypes = Dictionary(uniqueKeysWithValues: catalog.devicetypes.filter { supportedFamilies.contains($0.productFamily) }.map { ($0.identifier, $0) })
-        let runtimes = Dictionary(uniqueKeysWithValues: catalog.runtimes.map { ($0.identifier, $0) })
+        // Multiple installed builds can share a runtime identifier.
+        let runtimes = Dictionary(catalog.runtimes.map { ($0.identifier, $0) }, uniquingKeysWith: { first, next in
+            !first.isAvailable && next.isAvailable ? next : first
+        })
         return catalog.devices.flatMap { runtimeIdentifier, devices in
             let runtime = runtimes[runtimeIdentifier]
             return devices.compactMap { device -> SimulatorHostDevice? in
