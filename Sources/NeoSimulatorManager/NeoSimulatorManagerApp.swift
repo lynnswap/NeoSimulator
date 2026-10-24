@@ -3407,6 +3407,15 @@ private enum RemoteDeviceWindowError: LocalizedError {
 
 @MainActor
 private final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, NSToolbarDelegate, NSMenuItemValidation {
+    private enum RecordingDestination: Sendable {
+        case automatic(URL), selected(URL)
+
+        var url: URL {
+            switch self {
+            case .automatic(let url), .selected(let url): url
+            }
+        }
+    }
     let device: CoreDeviceDevice
     let session: RemoteDeviceScreenSession
     var onClose: (() -> Void)?
@@ -3424,7 +3433,7 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
     private var recordingTaskIdentifier: UUID?
     private var finishingRecording = false
     private var recordingPanel: NSSavePanel?
-    private var recordingDestination: URL?
+    private var recordingDestination: RecordingDestination?
     private var closing = false
     private var mayClose = false
     private var compact = false
@@ -3796,14 +3805,14 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
         runRecordingOperation { [self] in
             let destination = try await chooseRecordingDestination()
             guard !closing, inventoryAvailable, session.canRecordScreen else { throw CancellationError() }
-            recordingDestination = destination
+            recordingDestination = .selected(destination)
             try await session.startRecording()
         }
     }
 
     private func startRecording(to destination: URL) {
         guard canStartRecording else { return }
-        recordingDestination = destination
+        recordingDestination = .automatic(destination)
         runRecordingOperation { [session] in try await session.startRecording() }
     }
 
@@ -3816,7 +3825,7 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
             if let recordingDestination { try await saveCompletedRecording(to: recordingDestination) }
             else if session.completedRecording != nil {
                 let destination = try await chooseRecordingDestination()
-                try await saveCompletedRecording(to: destination)
+                try await saveCompletedRecording(to: .selected(destination))
             }
         }
     }
@@ -3825,7 +3834,7 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
         guard !closing, session.completedRecording != nil, recordingTask == nil else { return }
         runRecordingOperation { [self] in
             let destination = try await chooseRecordingDestination()
-            try await saveCompletedRecording(to: destination)
+            try await saveCompletedRecording(to: .selected(destination))
         }
     }
 
@@ -3881,7 +3890,7 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
         switch await response(to: alert) {
         case .alertFirstButtonReturn:
             let destination = try await chooseRecordingDestination()
-            try await saveCompletedRecording(to: destination)
+            try await saveCompletedRecording(to: .selected(destination))
         case .alertThirdButtonReturn:
             session.discardCompletedRecording()
             recordingDestination = nil
@@ -3920,8 +3929,8 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.mpeg4Movie]
         panel.canCreateDirectories = true
-        panel.directoryURL = recordingDestination?.deletingLastPathComponent() ?? captureDirectory
-        panel.nameFieldStringValue = recordingDestination?.lastPathComponent ?? recordingFilename
+        panel.directoryURL = recordingDestination?.url.deletingLastPathComponent() ?? captureDirectory
+        panel.nameFieldStringValue = recordingDestination?.url.lastPathComponent ?? recordingFilename
         recordingPanel = panel
         update()
         let result = await presentRecordingSavePanel(panel, window)
@@ -3933,7 +3942,7 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
         return destination
     }
 
-    private func saveCompletedRecording(to destination: URL) async throws {
+    private func saveCompletedRecording(to destination: RecordingDestination) async throws {
         guard let recording = session.completedRecording else { return }
         try await Self.writeRecording(recording, to: destination)
         session.discardCompletedRecording()
@@ -3941,8 +3950,35 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
     }
 
     @concurrent
-    private nonisolated static func writeRecording(_ recording: RemoteDeviceRecording, to destination: URL) async throws {
-        try recording.data.write(to: destination, options: .atomic)
+    private nonisolated static func writeRecording(_ recording: RemoteDeviceRecording, to destination: RecordingDestination) async throws {
+        switch destination {
+        case .selected(let url):
+            try recording.data.write(to: url, options: .atomic)
+        case .automatic(let url):
+            let manager = FileManager.default
+            let folder = url.deletingLastPathComponent()
+            let temporary = folder.appendingPathComponent(".NeoSimulatorRecording-\(UUID().uuidString).mp4")
+            do {
+                try recording.data.write(to: temporary, options: .atomic)
+                let base = url.deletingPathExtension().lastPathComponent
+                for number in 1...99 {
+                    let candidate = number == 1 ? url : folder.appendingPathComponent("\(base) #\(number).\(url.pathExtension)")
+                    do {
+                        try manager.moveItem(at: temporary, to: candidate)
+                        return
+                    } catch CocoaError.fileWriteFileExists { continue }
+                }
+                throw RemoteDeviceWindowError.unavailable("Could not save \(url.lastPathComponent): names through #99 are already taken in \(folder.path).")
+            } catch {
+                do { try manager.removeItem(at: temporary) }
+                catch let cleanup as CocoaError where cleanup.code == .fileNoSuchFile {}
+                catch let cleanup {
+                    throw RemoteDeviceWindowError.cleanup([error.localizedDescription,
+                        "Temporary recording remains at \(temporary.path): \(cleanup.localizedDescription)"])
+                }
+                throw error
+            }
+        }
     }
 
     private func saveScreenshot() {
