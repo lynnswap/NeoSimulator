@@ -1,74 +1,45 @@
 # Configuration and recovery
 
-Select Xcode, inspect host state, and restore saved preferences.
+Select a display host and restore saved Xcode preferences from the app.
 
-## Select Xcode
+## Select a display host
 
-Commands use `DEVELOPER_DIR`, falling back to `xcode-select -p`:
+Choose **NeoSimulator** or **Device Hub** under **Display Host** in Settings.
+This is an app-wide choice; changing hosts leaves devices running. Routing
+preferences apply across Xcode installations.
 
-```bash
-DEVELOPER_DIR=/Applications/Xcode_27.app/Contents/Developer \
-  xcode-simulator-host use neo
-```
-
-The selection supplies Neo's private frameworks and Xcode's Build & Run tools.
-`--legacy-xcode` chooses only the Legacy UI:
-
-```bash
-xcode-simulator-host use legacy \
-  --legacy-xcode /Volumes/Developer/Xcode_26.app
-```
-
-Use an absolute path to an intact Apple-signed Xcode 26 bundle. A Simulator.app
-copied outside that bundle is not accepted. The selected Xcode 27+ remains the
-Build & Run owner. Managed preferences are shared across Xcode installations.
-
-## Read status
-
-```bash
-xcode-simulator-host status
-xcode-simulator-host status --verbose
-```
-
-Both commands are read-only. Compact status shows the CoreSimulator or Device
-Hub route. It cannot distinguish Legacy from Neo: they share the same route.
-Verbose status includes selected Xcode and component versions, host availability,
-running processes, managed preferences, and receipt state. Add `--legacy-xcode`
-to inspect a specific Legacy candidate without selecting it.
+Continue using Xcode for Build & Run. The main window's inspector contains
+settings for the selected simulator, separate from the app-wide display host.
 
 ## Recover original preferences
 
-```bash
-xcode-simulator-host restore
-```
+Choose **Restore Original Settings…** in Settings before uninstalling. This
+restores the original values saved when host management began, including whether a key
+was absent or false. If another tool changed a managed preference, review the
+reported conflict. Choose **Restore Saved Values…** and confirm only when you
+intend to replace the current routing preferences with the saved originals.
 
-The receipt at
-`~/Library/Application Support/xcode-simulator-host/state.plist` records original
-and expected values, including the difference between an absent key and false.
-Run restore before deleting the receipt or uninstalling. Commands must run as
-your normal user, without `sudo`.
+The recovery receipt remains at
+`~/Library/Application Support/xcode-simulator-host/state.plist`, including for
+installations migrated from the previous CLI. Keep it until recovery is complete.
+A host launch failure after committing preferences leaves this receipt available
+for restoration. Device-operation failures appear in that device's window and
+do not select another host.
 
-If another tool changed a managed preference, inspect verbose status first.
-To deliberately replace that conflicting Boolean value with the saved original:
+## App preferences
 
-```bash
-xcode-simulator-host restore --force
-```
+**NeoSimulator → Settings…** (Command-,) contains General and Capture settings.
+General controls the display host, reopening the last simulator, keeping devices
+running when closing or quitting, and touch indicators. Capture controls the
+device mask, GIF image size, and the file-size versus animation-smoothness choice.
 
-`--force` does not accept malformed or non-Boolean preferences. If the saved
-route is CoreSimulator, restore leaves the choice of display host to you.
-To explicitly return to Xcode's default route, use `use device-hub`.
-
-## Neo preferences
-
-**NeoSimulator → Settings…** (Command-,) exposes launch, close, quit, touch
-indicator, capture-mask, and animated-GIF preferences. The app's defaults domain
-is `dev.lynnswap.NeoSimulator`.
+Renderer preferences use `dev.lynnswap.NeoSimulator.Renderer`. Existing values
+are migrated from `dev.lynnswap.NeoSimulator` on first use.
 
 | Preference | Effect |
 | --- | --- |
 | `AttachBootedOnStart` | Attach devices that are already booted at launch. |
-| `SessionOnLaunch`, `StartLastDeviceOnLaunch`, `CurrentDeviceUDID` | Control whether launch starts the last device when no windows attach. |
+| `SessionOnLaunch`, `StartLastDeviceOnLaunch`, `CurrentDeviceUDID` | Reopen the last simulator when launch restoration is enabled. The Settings checkbox updates both launch flags. |
 | `DetachOnWindowClose`, `DetachOnAppQuit` | Leave devices running when closing or quitting. |
 | `ShowSingleTouches`, `ShowPinches` | Show touch indicators; initially off and on respectively. |
 | `ScreenShotSaveLocation`, `ScreenShotUseMask` | Screenshot folder and capture mask. |
@@ -85,20 +56,3 @@ is `dev.lynnswap.NeoSimulator`.
 keyboard and external-display choices are per-device entries in
 `DevicePreferences`. CoreSimulator's `FramebufferServerGPUPolicy` is shared with
 other simulator hosts.
-
-## Command failures
-
-| Exit code | Meaning |
-| ---: | --- |
-| 0 | Success or documented no-op |
-| 64 | Invalid invocation |
-| 69 | Unavailable Xcode, host, framework, symbol, tool, or plugin |
-| 70 | Internal invariant failure |
-| 73 | Cannot create receipt or lock |
-| 74 | Preference or state I/O failure |
-| 75 | Operation locked, or a managed app did not terminate |
-| 78 | Malformed configuration or conflicting state |
-
-A host launch failure after preference commit is reported as partial completion.
-The receipt remains available for restore. Optional device-operation failures
-appear in that device's window and do not select another host.

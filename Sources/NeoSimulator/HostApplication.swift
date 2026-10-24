@@ -6,6 +6,12 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     private let conflicts: HostConflictMonitor
     private let deviceSet: SimulatorDeviceSet
     private let recordings = RecordingStore()
+    private let isManaged: Bool
+    private let sessionIdentifier = UUID().uuidString
+    private var ownedDeviceIdentifiers: Set<String> = []
+    private var releasingDevices: Set<String> = []
+    private var requestObserver: NSObjectProtocol?
+    private var registrationErrorReported = false
     private var isTerminating = false
     private var recordingTerminationErrors: [Error] = []
     private var notificationToken: UInt64?
@@ -34,13 +40,15 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     /// SIGTERM hands devices to another host and must interrupt a quit waiting on an alert.
     private var handoverSignal: DispatchSourceSignal?
     private static weak var handoverTarget: HostApplication?
-    /// Whether the command-line tool asked for a handover; the host then
+    /// Whether the manager asked for a handover; the host then
     /// ends without waiting on alerts.
     private var handoverRequested = false
+    private var managerRequestedQuit = false
     /// The choice Quit NeoSimulator… made, which takes precedence over the
     /// default quit action.
     private var quitChoice: DeviceLifetimeChoice?
-    private var reportedFailures: Set<String> = []
+    private var connectionFailures: [String: Error] = [:]
+    private var openingDevices: Set<String> = []
     private var browser: DeviceBrowserWindowController?
     private var newSimulator: NewSimulatorWindowController?
     private var menu: MenuController?
@@ -59,10 +67,11 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     /// `defaults write`, to the device windows.
     private var touchIndicatorObservation: DefaultsObservation?
 
-    init(runtime: SimulatorRuntime, conflicts: HostConflictMonitor) throws {
+    init(runtime: SimulatorRuntime, conflicts: HostConflictMonitor, isManaged: Bool = false) throws {
         try conflicts.check()
         self.runtime = runtime
         self.conflicts = conflicts
+        self.isManaged = isManaged
         deviceSet = try runtime.openDeviceSet()
         HostPreferences.registerDefaults()
         super.init()
@@ -79,8 +88,25 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         conflicts.onConflict = { [weak self] in self?.handleHostConflict() }
     }
 
-    func start() throws {
+    func start(initialDeviceIdentifier: String? = nil) throws {
         try conflicts.check()
+        if isManaged {
+            if let initialDeviceIdentifier { ownedDeviceIdentifiers.insert(initialDeviceIdentifier) }
+            try writeRegistration()
+            requestObserver = DistributedNotificationCenter.default().addObserver(
+                forName: Notification.Name("dev.lynnswap.NeoSimulator.RendererRequest"),
+                object: sessionIdentifier, queue: .main
+            ) { [weak self] notification in
+                let action = notification.userInfo?["action"] as? String
+                let identifier = notification.userInfo?["udid"] as? String
+                let requestIdentifier = notification.userInfo?["requestIdentifier"] as? String
+                let keepRunning = notification.userInfo?["keepRunning"] as? Bool
+                MainActor.assumeIsolated {
+                    self?.receiveManagerRequest(action: action, identifier: identifier, requestIdentifier: requestIdentifier,
+                                                keepRunning: keepRunning)
+                }
+            }
+        }
         menu = MenuController(application: self,
                               gpuPolicy: UserDefaults(suiteName: GPUPolicy.suiteName).map(GPUPolicy.init),
                               pasteboardSync: pasteboardSync)
@@ -108,6 +134,10 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         handover.resume()
         handoverSignal = handover
         openTestingSet()
+        if isManaged {
+            if let initialDeviceIdentifier { openRequestedSimulator(initialDeviceIdentifier) }
+            return
+        }
         // Existing booted devices require AttachBootedOnStart; later boots always attach.
         // Testing devices follow Show Parallel Testing Devices independently.
         let defaults = UserDefaults.standard
@@ -116,7 +146,9 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         try conflicts.check()
         try scanDevices()
         let attached = attachesBooted && !(sessions.isEmpty && connections.isEmpty)
-        if !attached, defaults.bool(forKey: HostPreferences.sessionOnLaunch),
+        if let initialDeviceIdentifier {
+            openRequestedSimulator(initialDeviceIdentifier)
+        } else if !attached, defaults.bool(forKey: HostPreferences.sessionOnLaunch),
            defaults.bool(forKey: HostPreferences.startLastDeviceOnLaunch),
            let device = Self.initialDevice(in: try availableSimulatorDevices(),
                                            current: defaults.string(forKey: HostPreferences.currentDeviceUDID)) {
@@ -131,6 +163,183 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             // A pending connection can still end without a window.
             showDeviceBrowser()
         }
+    }
+
+    private func openRequestedSimulator(_ identifier: String, requestIdentifier: String? = nil) {
+        Task {
+            var result = ["udid": identifier]
+            defer {
+                if let requestIdentifier {
+                    DistributedNotificationCenter.default().postNotificationName(
+                        Notification.Name("dev.lynnswap.NeoSimulator.RendererOpened"), object: requestIdentifier,
+                        userInfo: result, deliverImmediately: true)
+                }
+            }
+            do { try await openSimulatorLocally(withIdentifier: identifier) }
+            catch {
+                result["error"] = error.localizedDescription
+                if sessions[identifier] == nil && connections[identifier] == nil {
+                    ownedDeviceIdentifiers.remove(identifier)
+                    updateRegistration()
+                }
+                if requestIdentifier == nil, !(error is CancellationError) {
+                    NSAlert(error: error).runModal()
+                    showDeviceBrowser()
+                }
+            }
+        }
+    }
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls {
+            do {
+                switch try RendererRequest(url: url) {
+                case .openDevice(let identifier): openRequestedSimulator(identifier)
+                case .quit(let asks):
+                    if asks { quitAsking() }
+                    else { Self.requestTermination() }
+                case .activate: activateWindows()
+                case .showBrowser: showDeviceBrowser()
+                }
+            } catch { NSAlert(error: error).runModal() }
+        }
+    }
+
+    private func receiveManagerRequest(action: String?, identifier: String?, requestIdentifier: String?, keepRunning: Bool?) {
+        switch action {
+        case "open-device":
+            if let identifier { openRequestedSimulator(identifier, requestIdentifier: requestIdentifier) }
+        case "release-device":
+            guard let identifier, let requestIdentifier else { return }
+            Task {
+                var result = ["udid": identifier]
+                do { try await releaseDevice(identifier) }
+                catch { result["error"] = error.localizedDescription }
+                DistributedNotificationCenter.default().postNotificationName(
+                    Notification.Name("dev.lynnswap.NeoSimulator.RendererReleased"), object: requestIdentifier,
+                    userInfo: result, deliverImmediately: true)
+            }
+        case "activate": activateWindows()
+        case "show-browser": showDeviceBrowser()
+        case "quit":
+            managerRequestedQuit = true
+            if let keepRunning { quitChoice = keepRunning ? .keepRunning : .shutDown }
+            Self.requestTermination()
+        default: break
+        }
+    }
+
+    private func releaseDevice(_ identifier: String) async throws {
+        guard ownedDeviceIdentifiers.contains(identifier) || sessions[identifier] != nil
+                || connections[identifier] != nil || closingShutdowns[identifier] != nil else { return }
+        guard !releasingDevices.contains(identifier) else {
+            throw HostError.operation("This simulator is already being handed over.")
+        }
+        releasingDevices.insert(identifier)
+        defer { releasingDevices.remove(identifier) }
+        suppressed.insert(identifier)
+        let connection = connections[identifier]
+        let restart = restarting[identifier]
+        let closing = closingShutdowns[identifier]
+        connection?.cancel()
+        restart?.cancel()
+        closing?.cancel()
+        bootOperations[identifier]?.cancel()
+        await connection?.value
+        await restart?.value
+        await closing?.value
+        if let controller = sessions[identifier] {
+            if let recording = controller.session.recording {
+                recording.stop()
+                try await recording.waitUntilFinished()
+            }
+            controller.invalidate()
+            sessions.removeValue(forKey: identifier)
+        }
+        awaitingReconnect.removeValue(forKey: identifier)
+        if let changes = externalDisplayQueues[identifier]?.changes {
+            let deadline = ContinuousClock.now + .seconds(UserDefaults.standard.double(forKey: HostPreferences.terminationTimeout))
+            guard await changes.idle(before: deadline) else {
+                throw HostError.operation("The simulator's external displays did not finish disconnecting.")
+            }
+            externalDisplayQueues.removeValue(forKey: identifier)
+        }
+        ownedDeviceIdentifiers.remove(identifier)
+        releasingDevices.remove(identifier)
+        do { try writeRegistration() }
+        catch {
+            ownedDeviceIdentifiers.insert(identifier)
+            throw HostError.operation("The simulator disconnected, but its ownership could not be updated: \(error.localizedDescription)")
+        }
+    }
+
+    private func activateWindows() {
+        if sessions.isEmpty { showDeviceBrowser() }
+        else { for controller in sessions.values { controller.showAndActivate() } }
+    }
+
+    private struct Registration: Codable {
+        let processIdentifier: Int32
+        let applicationPath: String
+        let xcodePath: String
+        let sessionIdentifier: String
+        let deviceIdentifiers: [String]
+    }
+
+    private var registrationURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/NeoSimulator/renderers")
+            .appendingPathComponent("\(ProcessInfo.processInfo.processIdentifier).json")
+    }
+
+    private func writeRegistration() throws {
+        let url = registrationURL
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+        let registration = Registration(processIdentifier: ProcessInfo.processInfo.processIdentifier,
+                                        applicationPath: Bundle.main.bundleURL.standardizedFileURL.path,
+                                        xcodePath: runtime.xcodeURL.standardizedFileURL.path,
+                                        sessionIdentifier: sessionIdentifier,
+                                        deviceIdentifiers: ownedDeviceIdentifiers.union(closingShutdowns.keys).union(releasingDevices).sorted())
+        try JSONEncoder().encode(registration).write(to: url, options: .atomic)
+        DistributedNotificationCenter.default().postNotificationName(
+            Notification.Name("dev.lynnswap.NeoSimulator.RendererDevicesDidChange"),
+            object: sessionIdentifier, userInfo: nil, deliverImmediately: true)
+    }
+
+    private func updateRegistration() {
+        guard isManaged, !stopped else { return }
+        do { try writeRegistration() }
+        catch {
+            if !registrationErrorReported {
+                registrationErrorReported = true
+                hostLog("Could not update simulator ownership: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    func showManagerSettings() { openManager(command: "settings") }
+
+    private func openManager(command: String, queryItems: [URLQueryItem] = []) {
+        var components = URLComponents()
+        components.scheme = "neosimulator"
+        components.host = command
+        components.queryItems = queryItems.isEmpty ? nil : queryItems
+        guard let url = components.url else { return }
+        let managerURL = Bundle.main.bundleURL.deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+        Task {
+            do {
+                try await openManagerURL(url, at: managerURL)
+            } catch { NSAlert(error: error).runModal() }
+        }
+    }
+
+    private func openManagerURL(_ url: URL, at managerURL: URL) async throws {
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        configuration.allowsRunningApplicationSubstitution = false
+        try await NSWorkspace.shared.open([url], withApplicationAt: managerURL, configuration: configuration)
     }
 
     /// Prefers the saved device, then the last iPhone in catalog order, then the first device.
@@ -274,6 +483,17 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     }
 
     func openSimulator(withIdentifier identifier: String) async throws {
+        if isManaged {
+            openManager(command: "open-device", queryItems: [URLQueryItem(name: "udid", value: identifier)])
+            return
+        }
+        try await openSimulatorLocally(withIdentifier: identifier)
+    }
+
+    private func openSimulatorLocally(withIdentifier identifier: String) async throws {
+        guard !releasingDevices.contains(identifier) else { throw CancellationError() }
+        openingDevices.insert(identifier)
+        defer { openingDevices.remove(identifier) }
         // A restart boots the device itself, and a closed window shuts it
         // down; opening waits for either instead of acting on the device meanwhile.
         while let pending = restarting[identifier] ?? closingShutdowns[identifier] { await pending.value }
@@ -283,8 +503,10 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         guard let device = try readDevices().first(where: { $0.identifier == identifier }) else {
             throw HostError.operation("The selected simulator is no longer available")
         }
+        ownedDeviceIdentifiers.insert(identifier)
+        if isManaged { try writeRegistration() }
         suppressed.remove(identifier)
-        reportedFailures.remove(identifier)
+        connectionFailures.removeValue(forKey: identifier)
         // Launching starts this device next time.
         UserDefaults.standard.set(identifier, forKey: HostPreferences.currentDeviceUDID)
         // Attach an already booting device when it finishes; avoid a second boot.
@@ -294,8 +516,19 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             defer { bootOperations.removeValue(forKey: identifier) }
             try await tools.boot()
         }
-        rescan()
-        guard let controller = sessions[identifier] else { return }
+        let deadline = ContinuousClock.now + .seconds(120)
+        while sessions[identifier] == nil {
+            try Task.checkCancellation()
+            guard !stopped, !isTerminating, !releasingDevices.contains(identifier),
+                  !isManaged || ownedDeviceIdentifiers.contains(identifier) else { throw CancellationError() }
+            try scanDevices()
+            if let pending = connections[identifier] { await pending.value }
+            if let failure = connectionFailures[identifier] { throw failure }
+            if sessions[identifier] != nil { break }
+            guard ContinuousClock.now < deadline else { throw HostError.unavailable("The simulator did not finish opening.") }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        guard let controller = sessions[identifier] else { throw CancellationError() }
         // Refresh synchronization when a connected device is selected again.
         controller.session.updatePasteboardSync()
         controller.showAndActivate()
@@ -311,15 +544,17 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
 
     private func scanDevices() throws {
         guard !stopped, !isTerminating else { return }
+        defer { updateRegistration() }
         try conflicts.check()
         var devices = try readDevices()
         if showsTestingDevices, let testingSet { devices += try readDevices(in: testingSet) }
-        let booted = devices.filter { $0.state == 3 }
+        let booted = devices.filter { $0.state == 3 && (!isManaged || ownedDeviceIdentifiers.contains($0.identifier)) }
         let identifiers = Set(booted.map(\.identifier))
         let hadDeviceWindows = !sessions.isEmpty
         for identifier in sessions.keys where !identifiers.contains(identifier) && restarting[identifier] == nil {
             sessions.removeValue(forKey: identifier)?.invalidate()
             awaitingReconnect.removeValue(forKey: identifier)
+            ownedDeviceIdentifiers.remove(identifier)
         }
         for identifier in connections.keys where !identifiers.contains(identifier) {
             connections[identifier]?.cancel()
@@ -327,14 +562,15 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         // A restart's boot is not a new boot, so a window closed during the
         // restart stays closed.
         suppressed.formIntersection(identifiers.union(restarting.keys))
-        reportedFailures.formIntersection(identifiers)
+        connectionFailures = connectionFailures.filter { identifiers.contains($0.key) }
         // A restarting device connects only after its restart ends, also when
         // its window was hidden meanwhile.
         for device in booted where restarting[device.identifier] == nil
             && (sessions[device.identifier] == nil || awaitingReconnect[device.identifier] != nil)
             && connections[device.identifier] == nil
+            && !releasingDevices.contains(device.identifier)
             && !suppressed.contains(device.identifier)
-            && !reportedFailures.contains(device.identifier) {
+            && connectionFailures[device.identifier] == nil {
             connect(device)
         }
         if hadDeviceWindows && sessions.isEmpty { showDeviceBrowser() }
@@ -398,8 +634,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                 throw HostError.unavailable("No integrated screen became available for \(device.name)")
             } catch is CancellationError {
             } catch {
-                reportedFailures.insert(identifier)
-                report(error)
+                connectionFailures[identifier] = error
+                if !openingDevices.contains(identifier) { report(error) }
             }
         }
     }
@@ -450,11 +686,13 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         let identifier = controller.session.device.id
         sessions.removeValue(forKey: identifier)
         awaitingReconnect.removeValue(forKey: identifier)
+        ownedDeviceIdentifiers.remove(identifier)
         // A device left running keeps its window closed until it shuts down.
         suppressed.insert(identifier)
         let keepsRunning = choice.map { $0 == .keepRunning }
             ?? UserDefaults.standard.bool(forKey: HostPreferences.detachOnWindowClose)
         if !keepsRunning { shutDownClosedDevice(controller.session) }
+        updateRegistration()
         if sessions.isEmpty { showDeviceBrowser() }
     }
 
@@ -479,8 +717,10 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             await restart?.value
             await session.finishRecording()
             guard let self, !self.yieldedToAnotherHost,
+                  !Task.isCancelled,
                   self.isRunning(identifier, deviceSetPath: tools.deviceSetPath) else {
                 self?.closingShutdowns.removeValue(forKey: identifier)
+                self?.updateRegistration()
                 return
             }
             do { try await tools.shutdown() } catch is CancellationError {
@@ -488,6 +728,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                 hostLog("Could not shut down \(identifier): \(error.localizedDescription)")
             }
             self.closingShutdowns.removeValue(forKey: identifier)
+            self.updateRegistration()
         }
     }
 
@@ -526,6 +767,10 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     /// Quit NeoSimulator…: asks whether to shut the devices down, and quits
     /// unless the choice is Cancel.
     func quitAsking() {
+        if isManaged {
+            openManager(command: "quit", queryItems: [URLQueryItem(name: "ask", value: "true")])
+            return
+        }
         let alert = DeviceLifetimeChoice.alert(
             quitting: true, keepsRunningByDefault: UserDefaults.standard.bool(forKey: HostPreferences.detachOnAppQuit))
         guard let choice = DeviceLifetimeChoice.choice(
@@ -646,12 +891,20 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
 
     func showDeviceBrowser() {
         guard !stopped else { return }
+        if isManaged {
+            openManager(command: "devices")
+            return
+        }
         if browser == nil { browser = DeviceBrowserWindowController(source: self) }
         browser?.show()
     }
 
     private func report(_ error: Error) {
         hostLog(error.localizedDescription)
+        if isManaged {
+            NSAlert(error: error).runModal()
+            return
+        }
         showDeviceBrowser()
         browser?.report(error)
     }
@@ -676,14 +929,17 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if sessions.isEmpty { showDeviceBrowser() }
-        else { for session in sessions.values { session.showAndActivate() } }
+        activateWindows()
         return true
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     /// Finalizes recordings, disconnects windows, waits for external-display cleanup, then shuts down.
     /// Explicit detach choices, DetachOnAppQuit, and handover preserve booted devices.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if isManaged, !managerRequestedQuit, !handoverRequested, !yieldedToAnotherHost {
+            openManager(command: "quit")
+            return .terminateCancel
+        }
         guard !isTerminating else { return .terminateLater }
         // Pending captures are saved now, and those that recordings finish
         // while quitting are saved without a thumbnail.
@@ -750,6 +1006,15 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     func shutdown() {
         guard !stopped else { return }
         stopped = true
+        if let requestObserver {
+            DistributedNotificationCenter.default().removeObserver(requestObserver)
+            self.requestObserver = nil
+        }
+        if isManaged {
+            do { try FileManager.default.removeItem(at: registrationURL) }
+            catch where (error as NSError).code == NSFileNoSuchFileError {}
+            catch { hostLog("Could not remove simulator ownership: \(error.localizedDescription)") }
+        }
         conflicts.onConflict = nil
         touchIndicatorObservation = nil
         if let notificationToken {

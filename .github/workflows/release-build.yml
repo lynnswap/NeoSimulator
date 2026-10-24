@@ -1,0 +1,168 @@
+name: Release Build
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version label for the validation DMG (no release or tag is created)
+        required: true
+        default: v0.0.0-validation
+        type: string
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+    outputs:
+      artifact-id:
+        value: ${{ jobs.unsigned-dmg.outputs.artifact-id }}
+      dmg-sha256:
+        value: ${{ jobs.unsigned-dmg.outputs.dmg-sha256 }}
+      dmg-filename:
+        value: ${{ jobs.unsigned-dmg.outputs.dmg-filename }}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  unsigned-dmg:
+    name: Unsigned Release DMG
+    runs-on: xcode-27
+    timeout-minutes: 30
+    outputs:
+      artifact-id: ${{ steps.artifact.outputs.artifact-id }}
+      dmg-sha256: ${{ steps.provenance.outputs.dmg-sha256 }}
+      dmg-filename: ${{ steps.provenance.outputs.dmg-filename }}
+    env:
+      CODE_SIGN_IDENTITY: ''
+      NOTARYTOOL_KEYCHAIN_PROFILE: ''
+    steps:
+      - name: Check out the tested commit
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate build inputs
+        id: inputs
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            version="${REQUESTED_VERSION}"
+          else
+            version="v0.0.0-validation.${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
+          fi
+          if [[ ! "$version" =~ ^v[0-9]+[.][0-9]+[.][0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Version must look like v1.2.3 or v1.2.3-validation." >&2
+            exit 1
+          fi
+          if [[ "$(git rev-parse HEAD)" != "${GITHUB_SHA}" ]]; then
+            echo "Checked-out commit does not match this workflow run." >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Show build environment
+        run: |
+          xcodebuild -version
+          xcrun swift --version
+          python3 --version
+
+      - name: Set up Python for release tools
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.13'
+
+      - name: Install pinned DMG tools
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/release-tools"
+          "$RUNNER_TEMP/release-tools/bin/python3" -m pip install \
+            --require-hashes --only-binary=:all: \
+            -r scripts/release-requirements.txt
+          echo "$RUNNER_TEMP/release-tools/bin" >> "$GITHUB_PATH"
+
+      - name: Build the validation app
+        env:
+          BUILD_VERSION: ${{ steps.inputs.outputs.version }}
+        run: |
+          scripts/build-release.sh \
+            --version "$BUILD_VERSION" \
+            --build-number "$GITHUB_RUN_NUMBER" \
+            --dist-root "$RUNNER_TEMP/release-dist"
+
+      - name: Create and validate the DMG
+        env:
+          BUILD_VERSION: ${{ steps.inputs.outputs.version }}
+        run: |
+          scripts/package-release.sh \
+            --version "$BUILD_VERSION" \
+            --dist-root "$RUNNER_TEMP/release-dist" \
+            --output-dir "$RUNNER_TEMP/release-artifacts"
+
+      - name: Record build provenance and checksums
+        id: provenance
+        env:
+          BUILD_VERSION: ${{ steps.inputs.outputs.version }}
+        run: |
+          set -euo pipefail
+          git diff --exit-code
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+
+          output = Path(os.environ["RUNNER_TEMP"]) / "release-artifacts"
+          metadata = {
+              "version": os.environ["BUILD_VERSION"],
+              "source_sha": os.environ["GITHUB_SHA"],
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "build_number": os.environ["GITHUB_RUN_NUMBER"],
+              "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "xcode": subprocess.check_output(["xcodebuild", "-version"], text=True).strip(),
+              "distribution": "validation-only",
+              "developer_id_signed": False,
+              "notarized": False,
+          }
+          (output / "build-info.json").write_text(json.dumps(metadata, indent=2) + "\n")
+          PY
+          cd "$RUNNER_TEMP/release-artifacts"
+          shasum -a 256 "NeoSimulator_${BUILD_VERSION#v}.dmg" build-info.json > SHA256SUMS
+          shasum -a 256 -c SHA256SUMS
+          echo "dmg-sha256=$(shasum -a 256 "NeoSimulator_${BUILD_VERSION#v}.dmg" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+          echo "dmg-filename=NeoSimulator_${BUILD_VERSION#v}.dmg" >> "$GITHUB_OUTPUT"
+
+      - name: Upload validation artifacts
+        id: artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: NeoSimulator-validation-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release-artifacts/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+      - name: Summarize validation build
+        env:
+          BUILD_VERSION: ${{ steps.inputs.outputs.version }}
+          ARTIFACT_URL: ${{ steps.artifact.outputs.artifact-url }}
+        run: |
+          {
+            echo '## Validation DMG'
+            echo
+            echo 'This app has an ad-hoc signature. The DMG is not Developer ID signed or notarized and is not a public release.'
+            echo
+            printf 'Version label: %s\n\n' "$BUILD_VERSION"
+            printf 'Source commit: %s\n\n' "$GITHUB_SHA"
+            printf '[Download the DMG, build metadata, and checksums](%s)\n' "$ARTIFACT_URL"
+          } >> "$GITHUB_STEP_SUMMARY"

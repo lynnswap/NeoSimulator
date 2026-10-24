@@ -8,10 +8,9 @@ Choose a CoreSimulator display host for Xcode 27+.
 
 ## Overview
 
-`xcode-simulator-host` selects Apple's Xcode 26 Simulator.app, the bundled
-NeoSimulator beta, or Xcode's Device Hub. Xcode 27+ continues to handle Build &
-Run. The Neo app uses the selected Xcode's private simulator frameworks to
-display and control devices without requiring Simulator.app.
+NeoSimulator.app switches between its simulator windows and Xcode's Device
+Hub through Settings. Xcode 27+ continues to handle Build & Run. Neo uses
+Xcode's private simulator frameworks to display and control devices. Its Dock menu groups available devices by OS version.
 
 ## Topics
 

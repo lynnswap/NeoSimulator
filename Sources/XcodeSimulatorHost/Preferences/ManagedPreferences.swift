@@ -58,23 +58,14 @@ enum SimulatorRoute: Equatable {
     case deviceHub
 }
 
-enum HostMode: String, Codable, Equatable {
+public enum SimulatorHost: String, CaseIterable, Sendable {
     case neo
-    case legacy
     case deviceHub = "device-hub"
 
     var targetState: ManagedPreferenceState {
         switch self {
-        case .neo, .legacy:
-            .coreSimulator
-        case .deviceHub:
-            .deviceHub
+        case .neo: .coreSimulator
+        case .deviceHub: .deviceHub
         }
     }
-}
-
-enum HostRequest: Equatable {
-    case neo
-    case legacy(xcodeURL: URL?)
-    case deviceHub
 }

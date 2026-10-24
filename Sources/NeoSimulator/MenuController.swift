@@ -17,10 +17,6 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
     private var keyWindowObserver: (any NSObjectProtocol)?
     private var activeWindow: DeviceWindowController? { DeviceWindowController.keyDeviceWindow }
 
-    /// `-[NSApplication(NSSimplePreferences) orderFrontPreferencesPanel:]`,
-    /// which AppKit implements without declaring it.
-    static let showSettings = Selector(("orderFrontPreferencesPanel:"))
-
     init(application: HostApplication?, gpuPolicy: GPUPolicy? = nil, pasteboardSync: PasteboardSync? = nil) {
         self.application = application
         self.gpuPolicy = gpuPolicy
@@ -37,8 +33,7 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
         let app = menu("NeoSimulator", in: main)
         item("About NeoSimulator", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), in: app, target: NSApp)
         app.addItem(.separator())
-        // AppKit supplies this private Settings.bundle action through the responder chain.
-        item("Settings…", action: Self.showSettings, key: ",", in: app).target = nil
+        item("Settings…", action: #selector(showManagerSettings(_:)), key: ",", in: app)
         app.addItem(.separator())
         item("Hide NeoSimulator", action: #selector(NSApplication.hide(_:)), key: "h", in: app, target: NSApp)
         item("Hide Others", action: #selector(NSApplication.hideOtherApplications(_:)), key: "h", modifiers: [.command, .option], in: app, target: NSApp)
@@ -282,6 +277,9 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
             return true
         }
         if item.action == #selector(quitAsking(_:)) { return application != nil }
+        if item.action == #selector(showManagerSettings(_:)) {
+            return application != nil
+        }
         // Asking applies to a connected device window, not to an external display's.
         if item.action == #selector(closeAsking(_:)) {
             return (NSApp.keyWindow?.windowController as? DeviceWindowController)?.session.canPerformCommands == true
@@ -331,6 +329,7 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
         (NSApp.keyWindow?.windowController as? DeviceWindowController)?.closeAsking()
     }
     @objc private func quitAsking(_ sender: Any?) { application?.quitAsking() }
+    @objc private func showManagerSettings(_ sender: Any?) { application?.showManagerSettings() }
     @objc private func minimizeWindow(_ sender: Any?) { NSApp.keyWindow?.performMiniaturize(sender) }
     @objc private func fullScreen(_ sender: Any?) { NSApp.keyWindow?.toggleFullScreen(sender) }
     @objc private func showHelp(_ sender: Any?) {
@@ -366,37 +365,10 @@ final class OpenSimulatorMenu: NSObject, NSMenuDelegate {
     /// Groups by runtime in catalog order; Option shows descriptive device names.
     static func items(for devices: [AvailableDevice], hasWindow: (String) -> Bool,
                       action: Selector, target: AnyObject?) -> [NSMenuItem] {
-        func deviceItems(_ device: AvailableDevice) -> [NSMenuItem] {
-            // A booting or booted device is on with a window and mixed without.
-            let state: NSControl.StateValue =
-                device.state == 2 || device.state == 3 ? (hasWindow(device.identifier) ? .on : .mixed) : .off
-            return [(device.name, false), (device.descriptiveName, true)].map { title, isAlternate in
-                let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
-                item.target = target
-                item.representedObject = device.identifier
-                item.state = state
-                item.isAlternate = isAlternate
-                item.keyEquivalentModifierMask = isAlternate ? .option : []
-                return item
-            }
-        }
-        var runtimes: [(identifier: String, name: String, devices: [AvailableDevice])] = []
-        for device in devices {
-            if let index = runtimes.firstIndex(where: { $0.identifier == device.runtimeIdentifier }) {
-                runtimes[index].devices.append(device)
-            } else {
-                runtimes.append((device.runtimeIdentifier, device.runtimeName, [device]))
-            }
-        }
-        guard runtimes.count > 1 else { return devices.flatMap(deviceItems) }
-        return runtimes.map { runtime in
-            let item = NSMenuItem(title: runtime.name, action: nil, keyEquivalent: "")
-            let submenu = NSMenu(title: runtime.name)
-            submenu.items = runtime.devices.flatMap(deviceItems)
-            item.submenu = submenu
-            item.state = submenu.items.contains { $0.state != .off } ? .mixed : .off
-            return item
-        }
+        SimulatorDeviceMenu.items(for: devices.map {
+            SimulatorMenuDevice(identifier: $0.identifier, name: $0.name, descriptiveName: $0.descriptiveName,
+                                runtimeIdentifier: $0.runtimeIdentifier, runtimeName: $0.runtimeName, state: $0.state)
+        }, hasWindow: hasWindow, action: action, target: target)
     }
 
     @objc private func select(_ sender: NSMenuItem) {

@@ -3363,6 +3363,34 @@ struct InputFocusTests {
         #expect(try await restore() == (LocationSelection.none, [.cleared]))
     }
 
+    @Test func connectingKeepsTheSelectedDevicesLocationInsteadOfTheAppWideDefault() async throws {
+        let restoreDefaults = removeLocationPreferences()
+        defer { restoreDefaults() }
+        HostPreferences.registerDefaults()
+        let identifier = UUID().uuidString
+        let key = "DeviceLocationPreset.\(identifier)"
+        let defaults = try #require(UserDefaults(suiteName: "dev.lynnswap.NeoSimulator"))
+        defer { defaults.removeObject(forKey: key); defaults.synchronize() }
+        defaults.set(["mode": "custom", "latitude": 12.5, "longitude": 34.5], forKey: key)
+        #expect(defaults.synchronize())
+        func connect() async throws -> TestDisplay {
+            let display = TestDisplay()
+            display.scenarios = Self.scenarios
+            let session = try makeSession(display, device: identifier)
+            try await session.restoreLocation()
+            return display
+        }
+        #expect(try await connect().appliedLocations == [.coordinate(12.5, 34.5)])
+        let display = TestDisplay()
+        display.scenarios = Self.scenarios
+        let session = try makeSession(display, device: identifier)
+        try await session.setCustomLocation(latitude: 45.5, longitude: 67.5)
+        #expect(try await connect().appliedLocations == [.coordinate(45.5, 67.5)])
+        defaults.set(["mode": "none"], forKey: key)
+        #expect(defaults.synchronize())
+        #expect(try await connect().appliedLocations == [.cleared])
+    }
+
     @Test func aRestoreWaitingForScenariosKeepsLaterChoicesAndEndedSessions() async throws {
         let restoreDefaults = removeLocationPreferences()
         defer { restoreDefaults() }
@@ -4956,8 +4984,17 @@ struct InputFocusTests {
         let keys = [HostPreferences.locationMode, HostPreferences.locationScenario,
                     HostPreferences.locationLatitude, HostPreferences.locationLongitude]
         let saved = UserDefaults.standard.persistentDomain(forName: Bundle.main.bundleIdentifier ?? "")
+        let shared = UserDefaults(suiteName: "dev.lynnswap.NeoSimulator")
+        let presetKey = "DeviceLocationPreset.test-device"
+        let savedPreset = shared?.object(forKey: presetKey)
+        shared?.removeObject(forKey: presetKey)
+        shared?.synchronize()
         for key in keys { UserDefaults.standard.removeObject(forKey: key) }
-        return { for key in keys { UserDefaults.standard.set(saved?[key], forKey: key) } }
+        return {
+            for key in keys { UserDefaults.standard.set(saved?[key], forKey: key) }
+            shared?.set(savedPreset, forKey: presetKey)
+            shared?.synchronize()
+        }
     }
 
     @Test func orientationCommandsNeedTheDefaultDeviceSet() throws {
@@ -5760,17 +5797,20 @@ struct InputFocusTests {
         #expect(second.touchIndicators == [.singleTouches, .edgeGestures])
     }
 
-    @Test func settingsShowAppKitsPanelForTheAppsSettingsBundle() throws {
+    @Test func settingsOpenTheManager() throws {
         _ = NSApplication.shared
-        MenuController(application: nil).install()
-        defer { NSApp.mainMenu = nil }
+        let controller = MenuController(application: nil)
+        controller.install()
+        defer {
+            NSApp.mainMenu = nil
+            withExtendedLifetime(controller) {}
+        }
         let app = try #require(NSApp.mainMenu?.items.first?.submenu)
-        #expect(app.items.prefix(4).map { $0.isSeparatorItem ? "-" : $0.title } == ["About NeoSimulator", "-", "Settings…", "-"])
         let settings = try #require(app.items.first { $0.title == "Settings…" })
         #expect(settings.keyEquivalent == "," && settings.keyEquivalentModifierMask == .command)
-        let action = try #require(settings.action)
-        #expect(settings.target == nil && action == Selector(("orderFrontPreferencesPanel:")))
-        #expect(NSApp.target(forAction: action, to: nil, from: settings) as AnyObject === NSApp)
+        #expect(settings.target is MenuController)
+        #expect(!app.items.contains { $0.title == "Device Settings…" })
+        #expect(!app.items.contains { $0.title == "Display Host" })
     }
 
     /// Follows the key-window responder chain without making a test window key.
@@ -7055,6 +7095,41 @@ struct HostBehaviorTests {
         #expect(throws: (any Error).self) {
             try HostLaunchOptions(arguments: ["--xcode", "relative.app"])
         }
+    }
+
+    @Test func managerRequestsOpenTheExplicitDeviceAndKeepQuitChoices() throws {
+        let identifier = UUID().uuidString
+        let options = try HostLaunchOptions(arguments: ["--managed", "--xcode", "/Xcode.app", "--device", identifier])
+        #expect(options.deviceIdentifier == identifier)
+        #expect(options.isManaged)
+        #expect(try RendererRequest(url: #require(URL(string: "neosimulator-renderer://open-device?udid=\(identifier)")))
+            == .openDevice(identifier))
+        #expect(try RendererRequest(url: #require(URL(string: "neosimulator-renderer://quit"))) == .quit(asks: false))
+        #expect(try RendererRequest(url: #require(URL(string: "neosimulator-renderer://quit?ask=true"))) == .quit(asks: true))
+        #expect(try RendererRequest(url: #require(URL(string: "neosimulator-renderer://activate"))) == .activate)
+        #expect(try RendererRequest(url: #require(URL(string: "neosimulator-renderer://show-browser"))) == .showBrowser)
+        #expect(throws: (any Error).self) {
+            try RendererRequest(url: #require(URL(string: "neosimulator-renderer://open-device")))
+        }
+    }
+
+    @Test func rendererMigrationPreservesStandaloneSettingsOnceWithoutOverwritingNewChoices() throws {
+        let source = "NeoSimulatorTests.Source.\(UUID().uuidString)"
+        let target = "NeoSimulatorTests.Renderer.\(UUID().uuidString)"
+        let defaults = UserDefaults.standard
+        defer {
+            defaults.removePersistentDomain(forName: source)
+            defaults.removePersistentDomain(forName: target)
+        }
+        defaults.setPersistentDomain([HostPreferences.showChrome: false, HostPreferences.detachOnAppQuit: true], forName: source)
+        defaults.setPersistentDomain([HostPreferences.showChrome: true], forName: target)
+        HostPreferences.migrateStandalonePreferences(defaults: defaults, sourceDomain: source, targetDomain: target)
+        let migrated = try #require(defaults.persistentDomain(forName: target))
+        #expect(migrated[HostPreferences.showChrome] as? Bool == true)
+        #expect(migrated[HostPreferences.detachOnAppQuit] as? Bool == true)
+        defaults.setPersistentDomain([HostPreferences.detachOnAppQuit: false], forName: source)
+        HostPreferences.migrateStandalonePreferences(defaults: defaults, sourceDomain: source, targetDomain: target)
+        #expect(defaults.persistentDomain(forName: target)?[HostPreferences.detachOnAppQuit] as? Bool == true)
     }
 }
 

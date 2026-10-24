@@ -20,169 +20,6 @@ struct SimulatorRouteStatus: Equatable {
     let preferences: ManagedPreferenceState
     let receiptStatus: ReceiptStatus
 
-    var rendered: String {
-        let route = routeLine
-        switch receiptStatus {
-        case .pendingBefore, .pendingTarget:
-            return """
-                \(route)
-                Attention: an interrupted change needs recovery. Run 'xcode-simulator-host status --verbose'.
-                """
-        case .ambiguousIntermediate, .conflict:
-            return """
-                \(route)
-                Attention: preferences need review. Run 'xcode-simulator-host status --verbose'.
-                """
-        case .unmanaged, .managed:
-            return route
-        }
-    }
-
-    fileprivate var routeLine: String {
-        switch preferences.effectiveRoute {
-        case .deviceHub:
-            "Simulator route: Device Hub"
-        case .coreSimulator:
-            "Simulator route: CoreSimulator"
-        }
-    }
-}
-
-struct HostStatus: Equatable {
-    let xcode: XcodeInstallation
-    let routeStatus: SimulatorRouteStatus
-    let neoHost: NeoHostInstallation?
-    let legacySimulator: SimulatorInstallation?
-    let receiptURL: URL
-    let runningXcodes: [RunningApplication]
-    let runningNeoHosts: [RunningApplication]
-    let runningLegacySimulators: [RunningApplication]
-
-    var rendered: String {
-        var lines = [
-            routeStatus.routeLine,
-            "",
-            "Selected Xcode: \(xcode.version) (\(xcode.buildVersion))",
-            "  \(xcode.applicationURL.path)",
-        ]
-
-        if let neoHost {
-            lines.append("NeoSimulator: validated")
-            lines.append("  \(neoHost.applicationURL.path)")
-            lines.append("  SimulatorKit: \(neoHost.simulatorKitBinaryURL.path)")
-            lines.append(
-                "  IDEPlaygroundSimulator: \(neoHost.idePlaygroundSimulatorBinaryURL.path)"
-            )
-            lines.append("  CoreSimulator: \(neoHost.coreSimulatorBinaryURL.path)")
-            lines.append("  CoreSimulator version: \(neoHost.coreSimulatorVersion)")
-            lines.append("  simctl wrapper: \(neoHost.simctlWrapperURL.path)")
-            lines.append("  simctl: \(neoHost.simctlBinaryURL.path)")
-            lines.append("  CoreDevice: \(neoHost.coreDeviceBinaryURL.path)")
-            lines.append("  CoreDevice version: \(neoHost.coreDeviceVersion)")
-            lines.append("  devicectl wrapper: \(neoHost.devicectlWrapperURL.path)")
-            lines.append("  devicectl: \(neoHost.devicectlBinaryURL.path)")
-            lines.append(
-                "  Simulator CoreDevice plugin (\(neoHost.coreSimulatorVersion)): \(neoHost.simulatorCoreDevicePluginBinaryURL.path)"
-            )
-        } else {
-            lines.append("NeoSimulator: unavailable")
-        }
-
-        if let legacySimulator {
-            lines.append("Legacy Simulator: validated")
-            lines.append("  Simulator \(legacySimulator.version) (\(legacySimulator.buildVersion))")
-            lines.append("  \(legacySimulator.applicationURL.path)")
-            lines.append(
-                "  Xcode \(legacySimulator.xcode.version) (\(legacySimulator.xcode.buildVersion)): \(legacySimulator.xcode.applicationURL.path)"
-            )
-        } else {
-            lines.append("Legacy Simulator: unavailable")
-        }
-
-        lines.append("")
-        switch routeStatus.receiptStatus {
-        case .unmanaged:
-            lines.append("Restoration receipt: none")
-        case .managed(let original):
-            lines.append("Restoration receipt: managed (original: \(original))")
-            lines.append("  \(receiptURL.path)")
-        case .pendingBefore:
-            lines.append("Restoration receipt: pending mutation not applied; run a use or restore command to recover")
-            lines.append("  \(receiptURL.path)")
-        case .pendingTarget:
-            lines.append("Restoration receipt: pending mutation applied; run a use or restore command to recover")
-            lines.append("  \(receiptURL.path)")
-        case .ambiguousIntermediate:
-            lines.append("Restoration receipt: AMBIGUOUS INTERMEDIATE STATE")
-            lines.append("  This may be an interrupted write or an external change; nothing will be overwritten automatically.")
-            lines.append("  Inspect the receipt, then use restore --force only if the saved original should win.")
-            lines.append("  \(receiptURL.path)")
-        case .conflict(let expected, let observed):
-            lines.append("Restoration receipt: CONFLICT")
-            lines.append("  expected: \(expected)")
-            lines.append("  observed: \(observed)")
-            lines.append("  \(receiptURL.path)")
-        }
-
-        lines.append("")
-        if runningXcodes.isEmpty {
-            lines.append("Running Xcode processes: none")
-        } else {
-            lines.append("Running Xcode processes: \(runningXcodes.count) (hot switching is supported)")
-            for application in runningXcodes {
-                let path = application.bundleURL?.path ?? "unknown path"
-                lines.append("  pid \(application.processIdentifier): \(path)")
-            }
-        }
-
-        if runningNeoHosts.isEmpty {
-            lines.append("Running NeoSimulator processes: none")
-        } else {
-            lines.append(
-                "Running NeoSimulator processes: \(runningNeoHosts.count)"
-            )
-            for application in runningNeoHosts {
-                let path = application.bundleURL?.path ?? "unknown path"
-                lines.append("  pid \(application.processIdentifier): \(path)")
-            }
-        }
-
-        if runningLegacySimulators.isEmpty {
-            lines.append("Running legacy Simulator processes: none")
-        } else {
-            lines.append(
-                "Running legacy Simulator processes: \(runningLegacySimulators.count)"
-            )
-            for application in runningLegacySimulators {
-                let path = application.bundleURL?.path ?? "unknown path"
-                lines.append("  pid \(application.processIdentifier): \(path)")
-            }
-        }
-
-        lines.append("")
-        lines.append("Preference details:")
-        lines.append(
-            "  CoreSimulator session: \(routeStatus.preferences.xcodeSession.statusDescription)"
-        )
-        lines.append(
-            "  Suppress Device Hub auto-start: \(routeStatus.preferences.deviceHubAutoStartSuppression.statusDescription)"
-        )
-        lines.append("  Scope: shared by all installed Xcode versions")
-        return lines.joined(separator: "\n")
-    }
-}
-
-private extension StoredBoolean {
-    var statusDescription: String {
-        switch self {
-        case .absent:
-            "not set (default)"
-        case .falseValue:
-            "false"
-        case .trueValue:
-            "true"
-        }
-    }
 }
 
 struct ModeChangeReport: Equatable {
@@ -192,51 +29,6 @@ struct ModeChangeReport: Equatable {
     let receiptURL: URL?
     let terminatedDeviceHubCount: Int
     let terminatedNeoHostCount: Int
-    let terminatedLegacySimulatorCount: Int
-
-    var rendered: String {
-        var lines = ["Selected simulator host: \(host.mode.rawValue)"]
-
-        lines.append("Xcode: \(xcode.version) (\(xcode.buildVersion))")
-        switch host {
-        case .neo(let neoHost):
-            lines.append("NeoSimulator: \(neoHost.applicationURL.path)")
-        case .legacy(let simulator):
-            lines.append("Legacy Simulator: \(simulator.applicationURL.path)")
-        case .deviceHub:
-            break
-        }
-        let routeName = host.mode.targetState.effectiveRoute == .coreSimulator
-            ? "CoreSimulator"
-            : "Device Hub"
-        lines.append(
-            didChangePreferences
-                ? "Preference route: changed to \(routeName)"
-                : "Preference route: already \(routeName)"
-        )
-        if terminatedDeviceHubCount > 0 {
-            lines.append("Closed Device Hub instances: \(terminatedDeviceHubCount)")
-        }
-        if terminatedNeoHostCount > 0 {
-            lines.append(
-                "Closed NeoSimulator instances: \(terminatedNeoHostCount)"
-            )
-        }
-        if terminatedLegacySimulatorCount > 0 {
-            lines.append(
-                "Closed legacy Simulator instances: \(terminatedLegacySimulatorCount)"
-            )
-        }
-        if let receiptURL {
-            lines.append("Restoration receipt: saved at \(receiptURL.path)")
-        } else if didChangePreferences {
-            lines.append("Restoration receipt: removed after returning to the original state")
-        } else {
-            lines.append("Restoration receipt: none")
-        }
-        lines.append("Xcode can remain open; the next Run uses this mode.")
-        return lines.joined(separator: "\n")
-    }
 }
 
 struct RestoreReport: Equatable {
@@ -244,46 +36,107 @@ struct RestoreReport: Equatable {
     let restoredState: ManagedPreferenceState?
     let receiptURL: URL
     let terminatedNeoHostCount: Int
-    let terminatedLegacySimulatorCount: Int
+}
 
-    var rendered: String {
-        guard let restoredState else {
-            var lines = ["No restoration receipt exists; preferences did not change."]
-            if terminatedNeoHostCount > 0 {
-                lines.append(
-                    "Closed NeoSimulator instances: \(terminatedNeoHostCount)"
-                )
+public struct SimulatorDeviceSettings: Sendable {
+    public static let contentSizes = ["extra-small", "small", "medium", "large", "extra-large", "extra-extra-large", "extra-extra-extra-large", "accessibility-medium", "accessibility-large", "accessibility-extra-large", "accessibility-extra-extra-large", "accessibility-extra-extra-extra-large"]
+    public let appearance: String?
+    public let contentSize: String?
+    public let increaseContrast: Bool?
+    public let locationAvailable: Bool
+    public let issues: [String]
+}
+
+public enum SimulatorDeviceSetting: Sendable {
+    case appearance(String)
+    case contentSize(String)
+    case increaseContrast(Bool)
+    case location(latitude: Double, longitude: Double)
+    case clearLocation
+}
+
+extension SimulatorHostController {
+    public func deviceSettings(identifier: String) async throws -> SimulatorDeviceSettings {
+        do {
+            let (device, xcodeURL) = try await settingsDevice(identifier)
+            guard device.state == "Booted" else {
+                return SimulatorDeviceSettings(appearance: nil, contentSize: nil, increaseContrast: nil, locationAvailable: false, issues: [])
             }
-            if terminatedLegacySimulatorCount > 0 {
-                lines.append(
-                    "Closed legacy Simulator instances: \(terminatedLegacySimulatorCount)"
-                )
+            var issues: [String] = []
+            func read(_ setting: String) -> String? {
+                do { return try runSettingsCommand(xcodeURL: xcodeURL, arguments: ["ui", identifier, setting]) }
+                catch {
+                    issues.append("\(setting): \(error.localizedDescription)")
+                    return nil
+                }
             }
-            return lines.joined(separator: "\n")
-        }
-        var lines: [String]
-        if !didRestore {
-            lines = [
-                "Preferences already matched the saved original: \(restoredState)",
-                "Removed restoration receipt: \(receiptURL.path)",
-            ]
-        } else {
-            lines = [
-                "Restored original preferences: \(restoredState)",
-                "Removed restoration receipt: \(receiptURL.path)",
-                "Xcode can remain open; the next Run uses the restored configuration.",
-            ]
-        }
-        if terminatedNeoHostCount > 0 {
-            lines.append(
-                "Closed NeoSimulator instances: \(terminatedNeoHostCount)"
+            let appearance = read("appearance")
+            let size = read("content_size")
+            let contrast = read("increase_contrast")
+            let locationAvailable: Bool
+            do {
+                _ = try runSettingsCommand(xcodeURL: xcodeURL, arguments: ["location", identifier, "list"])
+                locationAvailable = true
+            } catch {
+                issues.append("location: \(error.localizedDescription)")
+                locationAvailable = false
+            }
+            return SimulatorDeviceSettings(
+                appearance: appearance.flatMap { ["light", "dark"].contains($0) ? $0 : nil },
+                contentSize: size.flatMap { SimulatorDeviceSettings.contentSizes.contains($0) ? $0 : nil },
+                increaseContrast: contrast == "enabled" ? true : contrast == "disabled" ? false : nil,
+                locationAvailable: locationAvailable,
+                issues: issues
             )
+        } catch let error as SimulatorHostFailure { throw error }
+        catch { throw SimulatorHostFailure(error) }
+    }
+
+    public func setDeviceSetting(_ setting: SimulatorDeviceSetting, identifier: String) async throws {
+        do {
+            let (_, xcodeURL) = try await settingsDevice(identifier)
+            let arguments: [String] = switch setting {
+            case .appearance(let value): ["ui", identifier, "appearance", value]
+            case .contentSize(let value): ["ui", identifier, "content_size", value]
+            case .increaseContrast(let enabled): ["ui", identifier, "increase_contrast", enabled ? "enabled" : "disabled"]
+            case .location(let latitude, let longitude):
+                ["location", identifier, "set", "\(latitude),\(longitude)"]
+            case .clearLocation: ["location", identifier, "clear"]
+            }
+            _ = try runSettingsCommand(xcodeURL: xcodeURL, arguments: arguments)
+            let preset: [String: Any]?
+            switch setting {
+            case .location(let latitude, let longitude): preset = ["mode": "custom", "latitude": latitude, "longitude": longitude]
+            case .clearLocation: preset = ["mode": "none"]
+            default: preset = nil
+            }
+            if let preset {
+                guard let defaults = UserDefaults(suiteName: "dev.lynnswap.NeoSimulator") else {
+                    throw CLIError.io("device-location-save", "The location was applied, but could not be saved for the next connection.")
+                }
+                defaults.set(preset, forKey: "DeviceLocationPreset.\(identifier)")
+                guard defaults.synchronize() else {
+                    throw CLIError.io("device-location-save", "The location was applied, but could not be saved for the next connection.")
+                }
+            }
+        } catch let error as SimulatorHostFailure { throw error }
+        catch { throw SimulatorHostFailure(error) }
+    }
+
+    private func settingsDevice(_ identifier: String) async throws -> (SimulatorHostDevice, URL) {
+        guard let device = try await devices().first(where: { $0.identifier == identifier }) else {
+            throw CLIError.unavailable("simulator-device", "The selected simulator is no longer available.")
         }
-        if terminatedLegacySimulatorCount > 0 {
-            lines.append(
-                "Closed legacy Simulator instances: \(terminatedLegacySimulatorCount)"
-            )
-        }
-        return lines.joined(separator: "\n")
+        let xcodeURL: URL
+        if let owner = device.ownerXcodeURL { xcodeURL = owner }
+        else { xcodeURL = try await self.xcodeURL(forDevice: identifier) }
+        return (device, xcodeURL)
+    }
+
+    private func runSettingsCommand(xcodeURL: URL, arguments: [String]) throws -> String {
+        let result = try SystemCommandRunner().run(
+            executable: xcodeURL.appendingPathComponent(ToolConstants.simctlWrapperPath), arguments: arguments)
+        guard result.terminationStatus == 0 else { throw CLIError.io("device-setting", result.stderrText) }
+        return result.stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

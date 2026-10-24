@@ -5,9 +5,22 @@ import Testing
 
 @Suite
 struct DefaultsStoreTests {
+    @Test func systemPreferencesPreserveThreeStatesAtExactUserScope() throws {
+        let domains = SystemPreferenceDomains()
+        let preference = ManagedPreference(domain: "dev.lynnswap.NeoSimulator.tests.\(UUID().uuidString)", key: "Boolean")
+        defer { try? domains.write(.absent, to: preference) }
+        #expect(try domains.readDomain(preference.domain, keys: [preference.key]).isEmpty)
+        try domains.write(.falseValue, to: preference)
+        #expect(try domains.readDomain(preference.domain, keys: [preference.key])[preference.key] as? Bool == false)
+        try domains.write(.trueValue, to: preference)
+        #expect(try domains.readDomain(preference.domain, keys: [preference.key])[preference.key] as? Bool == true)
+        try domains.write(.absent, to: preference)
+        #expect(try domains.readDomain(preference.domain, keys: [preference.key]).isEmpty)
+    }
+
     @Test func absentFalseAndTrueRemainDistinct() throws {
         let runner = FakeSystemCommandRunner()
-        let store = DefaultsStore(runner: runner)
+        let store = DefaultsStore(domains: runner)
 
         #expect(try store.readState() == .deviceHub)
 
@@ -22,25 +35,19 @@ struct DefaultsStoreTests {
         )
     }
 
-    @Test func missingDomainsAreReadAsAbsentWithoutExporting() throws {
+    @Test func missingDomainsAreReadAsAbsent() throws {
         let runner = FakeSystemCommandRunner()
-        runner.failMissingDomainExports = true
-        let store = DefaultsStore(runner: runner)
+        let store = DefaultsStore(domains: runner)
 
         #expect(try store.readState() == .deviceHub)
-        #expect(
-            runner.calls.filter {
-                $0.executable.path == "/usr/bin/defaults"
-                    && $0.arguments.first == "export"
-            }.isEmpty
-        )
+
     }
 
-    @Test func exportFailureForAnExistingDomainIsNotTreatedAsAbsent() {
+    @Test func domainReadFailureIsNotTreatedAsAbsent() {
         let runner = FakeSystemCommandRunner()
         runner.setStoredValue(false, for: ToolConstants.xcodePreference)
-        runner.failExportNumber = 1
-        let store = DefaultsStore(runner: runner)
+        runner.failPreferenceReadNumber = 1
+        let store = DefaultsStore(domains: runner)
 
         do {
             _ = try store.readState()
@@ -53,10 +60,10 @@ struct DefaultsStoreTests {
         }
     }
 
-    @Test func domainListingFailureIsNotTreatedAsAbsent() {
+    @Test func preferenceReadFailureIsNotTreatedAsAbsent() {
         let runner = FakeSystemCommandRunner()
-        runner.failDomainListing = true
-        let store = DefaultsStore(runner: runner)
+        runner.failPreferenceReads = true
+        let store = DefaultsStore(domains: runner)
 
         do {
             _ = try store.readState()
@@ -71,7 +78,7 @@ struct DefaultsStoreTests {
 
     @Test func applyWritesAndVerifiesBothPreferences() throws {
         let runner = FakeSystemCommandRunner()
-        let store = DefaultsStore(runner: runner)
+        let store = DefaultsStore(domains: runner)
 
         #expect(try store.apply(.coreSimulator, from: .deviceHub))
         #expect(runner.storedBoolean(ToolConstants.xcodePreference) == .trueValue)
@@ -89,7 +96,7 @@ struct DefaultsStoreTests {
     @Test func nonBooleanValueIsRejectedBeforeMutation() {
         let runner = FakeSystemCommandRunner()
         runner.setStoredValue("true", for: ToolConstants.xcodePreference)
-        let store = DefaultsStore(runner: runner)
+        let store = DefaultsStore(domains: runner)
 
         do {
             _ = try store.apply(.coreSimulator, from: .deviceHub)
@@ -106,7 +113,7 @@ struct DefaultsStoreTests {
     @Test func failedMutationLeavesVerificationToTheTransactionOwner() {
         let runner = FakeSystemCommandRunner()
         runner.failMutationNumbers = [2]
-        let store = DefaultsStore(runner: runner)
+        let store = DefaultsStore(domains: runner)
 
         #expect(throws: CLIError.self) {
             try store.apply(.coreSimulator, from: .deviceHub)
@@ -118,7 +125,7 @@ struct DefaultsStoreTests {
     @Test func unexpectedCurrentStateIsNeverOverwritten() throws {
         let runner = FakeSystemCommandRunner()
         runner.setStoredValue(false, for: ToolConstants.xcodePreference)
-        let store = DefaultsStore(runner: runner)
+        let store = DefaultsStore(domains: runner)
 
         do {
             _ = try store.apply(.coreSimulator, from: .deviceHub)
@@ -145,14 +152,14 @@ struct DefaultsStoreTests {
             guard !injectedChange,
                   runner.mutationCount == 1,
                   call.executable.path == "/usr/bin/defaults",
-                  call.arguments == ["domains"]
+                  call.arguments == ["read", ToolConstants.xcodePreference.domain]
             else {
                 return
             }
             injectedChange = true
             runner.setStoredValue(false, for: ToolConstants.deviceHubPreference)
         }
-        let store = DefaultsStore(runner: runner)
+        let store = DefaultsStore(domains: runner)
 
         do {
             _ = try store.apply(.deviceHub, from: .coreSimulator)
@@ -184,14 +191,14 @@ struct DefaultsStoreTests {
             guard !injectedChange,
                   runner.mutationCount == 1,
                   call.executable.path == "/usr/bin/defaults",
-                  call.arguments == ["domains"]
+                  call.arguments == ["read", ToolConstants.xcodePreference.domain]
             else {
                 return
             }
             injectedChange = true
             runner.setStoredValue(false, for: ToolConstants.deviceHubPreference)
         }
-        let store = DefaultsStore(runner: runner)
+        let store = DefaultsStore(domains: runner)
 
         do {
             _ = try store.rollback(

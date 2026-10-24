@@ -2,7 +2,6 @@ import Foundation
 
 struct CLIError: Error, Equatable, LocalizedError {
     enum Category: Int32, Equatable {
-        case usage = 64
         case unavailable = 69
         case software = 70
         case cannotCreate = 73
@@ -17,14 +16,6 @@ struct CLIError: Error, Equatable, LocalizedError {
 
     var errorDescription: String? {
         message
-    }
-
-    var rendered: String {
-        "error[\(identifier)]: \(message)"
-    }
-
-    static func usage(_ message: String) -> CLIError {
-        CLIError(category: .usage, identifier: "usage", message: message)
     }
 
     static func unavailable(_ identifier: String, _ message: String) -> CLIError {

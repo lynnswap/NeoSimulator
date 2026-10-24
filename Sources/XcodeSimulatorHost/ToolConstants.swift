@@ -4,13 +4,12 @@ enum ToolConstants {
     static let name = "xcode-simulator-host"
 
     static let minimumSupportedXcodeMajorVersion = 27
-    static let legacyXcodeMajorVersion = 26
 
     static let xcodeBundleIdentifier = "com.apple.dt.Xcode"
     static let deviceHubBundleIdentifier = "com.apple.dt.Devices"
     static let deviceKitBundleIdentifier = "com.apple.dt.DeviceKit"
     static let simulatorBundleIdentifier = "com.apple.iphonesimulator"
-    static let neoHostBundleIdentifier = "dev.lynnswap.NeoSimulator"
+    static let neoHostBundleIdentifier = "dev.lynnswap.NeoSimulator.Renderer"
     static let coreSimulatorBundleIdentifier = "com.apple.CoreSimulator"
     static let coreDeviceBundleIdentifier = "com.apple.CoreDevice"
     static let simctlBundleIdentifier = "com.apple.CoreSimulator.simctl"
@@ -36,7 +35,6 @@ enum ToolConstants {
     static let deviceHubPath = "Contents/Applications/DeviceHub.app"
     static let deviceHubImplementationPath = "Contents/MacOS/DeviceHub"
     static let deviceKitPath = "Contents/SharedFrameworks/DeviceKit.framework"
-    static let simulatorPath = "Contents/Developer/Applications/Simulator.app"
     static let simulatorKitPath =
         "Contents/SharedFrameworks/SimulatorKit.framework"
     static let idePlaygroundSimulatorPath =
@@ -51,6 +49,4 @@ enum ToolConstants {
     static let devicectlBinaryPath = "Versions/A/Resources/bin/devicectl"
     static let simulatorCoreDevicePluginPath =
         "Versions/A/PlugIns/SimulatorCoreDevicePlugin.coredeviceplugin"
-    static let neoHostRelativePath =
-        "../libexec/xcode-simulator-host/NeoSimulator.app"
 }

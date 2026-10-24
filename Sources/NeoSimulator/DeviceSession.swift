@@ -90,6 +90,15 @@ struct DeviceCapabilities {
 
 /// Simulator-compatible standard-defaults keys.
 enum HostPreferences {
+    /// Moving the renderer into the app changes its defaults domain.
+    /// Existing renderer settings remain editable in the new domain after this one-time copy.
+    static func migrateStandalonePreferences(defaults: UserDefaults = .standard,
+                                             sourceDomain: String = "dev.lynnswap.NeoSimulator",
+                                             targetDomain: String = "dev.lynnswap.NeoSimulator.Renderer") {
+        SimulatorPreferences.migrateStandalonePreferences(defaults: defaults, sourceDomain: sourceDomain,
+                                                          targetDomain: targetDomain)
+    }
+
     /// SimulatorKit reads this standard-defaults key to follow the guest's interface orientation.
     static let rotateWindowWhenSignaledByGuest = "RotateWindowWhenSignaledByGuest"
     /// Debug ▸ Show Parallel Testing Devices, on unless turned off.
@@ -224,6 +233,58 @@ enum LocationSelection: Equatable {
             defaults.set(name, forKey: HostPreferences.locationScenario)
             defaults.set(Self.scenarioMode, forKey: HostPreferences.locationMode)
         }
+    }
+}
+
+/// Shared desired locations survive a renderer handoff without replacing another device's choice.
+struct DeviceLocationPreset {
+    let selection: LocationSelection
+    let coordinate: (latitude: Double, longitude: Double)?
+
+    static func load(for identifier: String, among scenarios: [LocationScenario]) throws -> Self? {
+        let defaults = try store()
+        guard defaults.synchronize() else { throw HostError.operation("Could not read the saved simulator location.") }
+        let key = "DeviceLocationPreset.\(identifier)"
+        guard let value = defaults.object(forKey: key) else { return nil }
+        guard let record = value as? [String: Any], let mode = record["mode"] as? String else {
+            throw HostError.operation("The saved simulator location is invalid.")
+        }
+        switch mode {
+        case "none": return Self(selection: .none, coordinate: nil)
+        case "custom":
+            guard let latitude = record["latitude"] as? Double, let longitude = record["longitude"] as? Double,
+                  (-90...90).contains(latitude), (-180...180).contains(longitude) else {
+                throw HostError.operation("The saved simulator coordinates are invalid.")
+            }
+            return Self(selection: .custom, coordinate: (latitude, longitude))
+        case "scenario":
+            guard let name = record["scenario"] as? String else {
+                throw HostError.operation("The saved simulator location scenario is invalid.")
+            }
+            return Self(selection: scenarios.contains { $0.name == name } ? .scenario(name) : .none, coordinate: nil)
+        default: throw HostError.operation("The saved simulator location is invalid.")
+        }
+    }
+
+    func save(for identifier: String) throws {
+        let defaults = try Self.store()
+        var record: [String: Any]
+        switch selection {
+        case .none: record = ["mode": "none"]
+        case .custom:
+            guard let coordinate else { throw HostError.operation("No simulator coordinates were provided.") }
+            record = ["mode": "custom", "latitude": coordinate.latitude, "longitude": coordinate.longitude]
+        case .scenario(let name): record = ["mode": "scenario", "scenario": name]
+        }
+        defaults.set(record, forKey: "DeviceLocationPreset.\(identifier)")
+        guard defaults.synchronize() else { throw HostError.operation("Could not save the simulator location.") }
+    }
+
+    private static func store() throws -> UserDefaults {
+        guard let defaults = UserDefaults(suiteName: "dev.lynnswap.NeoSimulator") else {
+            throw HostError.operation("The simulator location settings are unavailable.")
+        }
+        return defaults
     }
 }
 
@@ -850,7 +911,11 @@ final class DeviceSession {
         guard !isDisconnected else { return }
         locationScenarios = scenarios
         guard !scenarios.isEmpty, location == nil else { return }
-        try await use(.saved(among: scenarios))
+        if let preset = try DeviceLocationPreset.load(for: device.id, among: scenarios) {
+            try await use(preset.selection, coordinate: preset.coordinate, savesDevicePreset: false)
+        } else {
+            try await use(.saved(among: scenarios), savesDevicePreset: false)
+        }
     }
 
     /// Features ▸ Location ▸ None or a scenario, for this device only; the
@@ -865,19 +930,27 @@ final class DeviceSession {
         guard canPerformCommands else { return }
         UserDefaults.standard.set(latitude, forKey: HostPreferences.locationLatitude)
         UserDefaults.standard.set(longitude, forKey: HostPreferences.locationLongitude)
-        try await use(.custom)
+        try await use(.custom, coordinate: (latitude, longitude))
     }
 
     // Save before applying so failure preserves the choice for retry.
-    private func use(_ selection: LocationSelection) async throws {
+    private func use(_ selection: LocationSelection, coordinate: (latitude: Double, longitude: Double)? = nil,
+                     savesDevicePreset: Bool = true) async throws {
         location = selection
         selection.save()
+        var savedCoordinate = coordinate
+        if savedCoordinate == nil, selection == .custom {
+            savedCoordinate = try DeviceLocationPreset.load(for: device.id, among: locationScenarios)?.coordinate
+        }
+        let coordinate = savedCoordinate ?? (UserDefaults.standard.double(forKey: HostPreferences.locationLatitude),
+                                              UserDefaults.standard.double(forKey: HostPreferences.locationLongitude))
+        if savesDevicePreset {
+            try DeviceLocationPreset(selection: selection, coordinate: selection == .custom ? coordinate : nil).save(for: device.id)
+        }
         switch selection {
         case .none: try await display.clearSimulatedLocation()
         case .custom:
-            try await display.setLocation(
-                latitude: UserDefaults.standard.double(forKey: HostPreferences.locationLatitude),
-                longitude: UserDefaults.standard.double(forKey: HostPreferences.locationLongitude))
+            try await display.setLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
         case .scenario(let name): try await display.setLocationScenario(name)
         }
     }

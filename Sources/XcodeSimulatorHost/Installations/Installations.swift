@@ -1,6 +1,6 @@
 import Foundation
 
-struct XcodeInstallation: Equatable {
+struct XcodeInstallation: Equatable, Sendable {
     let applicationURL: URL
     let version: ToolVersion
     let buildVersion: String
@@ -13,7 +13,7 @@ struct XcodeInstallation: Equatable {
     }
 }
 
-struct NeoHostInstallation: Equatable {
+struct NeoHostInstallation: Equatable, Sendable {
     let applicationURL: URL
     let xcode: XcodeInstallation
     let simulatorKitBinaryURL: URL
@@ -29,24 +29,14 @@ struct NeoHostInstallation: Equatable {
     let simulatorCoreDevicePluginBinaryURL: URL
 }
 
-struct SimulatorInstallation: Equatable {
-    let applicationURL: URL
-    let xcode: XcodeInstallation
-    let version: String
-    let buildVersion: String
-}
-
-enum ResolvedHost: Equatable {
+enum ResolvedHost: Equatable, Sendable {
     case neo(NeoHostInstallation)
-    case legacy(SimulatorInstallation)
     case deviceHub
 
-    var mode: HostMode {
+    var mode: SimulatorHost {
         switch self {
         case .neo:
             .neo
-        case .legacy:
-            .legacy
         case .deviceHub:
             .deviceHub
         }

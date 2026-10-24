@@ -9,3 +9,4 @@ DerivedData/
 .swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
 .swiftpm/xcode/xcshareddata/xcschemes/
 .netrc
+__pycache__/

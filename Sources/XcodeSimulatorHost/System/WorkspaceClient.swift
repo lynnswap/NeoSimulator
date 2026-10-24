@@ -1,7 +1,7 @@
 import AppKit
 import Foundation
 
-struct RunningApplication: Equatable {
+struct RunningApplication: Equatable, Sendable {
     let processIdentifier: pid_t
     let bundleIdentifier: String?
     let bundleURL: URL?
@@ -32,7 +32,7 @@ private let neoHostStartupPayload = Data("ready\n".utf8)
 private final class ApplicationTerminationWaiter {
     private let application: NSRunningApplication
     private let identity: ManagedApplicationIdentity
-    private let timeoutInterval: TimeInterval
+    private let timeoutInterval: TimeInterval?
     private var observation: NSKeyValueObservation?
     private var continuation: CheckedContinuation<Void, any Error>?
     private var cancellationRequested = false
@@ -41,14 +41,14 @@ private final class ApplicationTerminationWaiter {
     init(
         application: NSRunningApplication,
         identity: ManagedApplicationIdentity,
-        timeoutInterval: TimeInterval
+        timeoutInterval: TimeInterval?
     ) {
         self.application = application
         self.identity = identity
         self.timeoutInterval = timeoutInterval
     }
 
-    func terminate() async throws {
+    func terminate(request: (() throws -> Bool)? = nil) async throws {
         guard !application.isTerminated else {
             return
         }
@@ -73,34 +73,42 @@ private final class ApplicationTerminationWaiter {
                         self?.finish(.success(()))
                     }
                 }
-                let timeoutTimer = Timer(
-                    timeInterval: timeoutInterval,
-                    repeats: false
-                ) { [weak self] _ in
-                    Task { @MainActor in
-                        guard let self else {
-                            return
-                        }
-                        self.finish(
-                            .failure(
-                                CLIError.temporary(
-                                    "\(self.identity.errorIdentifier)-termination-timeout",
-                                    "\(self.identity.displayName) pid \(self.application.processIdentifier) did not finish terminating before the operation deadline"
+                if let timeoutInterval {
+                    let timeoutTimer = Timer(
+                        timeInterval: timeoutInterval,
+                        repeats: false
+                    ) { [weak self] _ in
+                        Task { @MainActor in
+                            guard let self else {
+                                return
+                            }
+                            self.finish(
+                                .failure(
+                                    CLIError.temporary(
+                                        "\(self.identity.errorIdentifier)-termination-timeout",
+                                        "\(self.identity.displayName) pid \(self.application.processIdentifier) did not finish terminating before the operation deadline"
+                                    )
                                 )
                             )
-                        )
+                        }
                     }
+                    self.timeoutTimer = timeoutTimer
+                    RunLoop.main.add(timeoutTimer, forMode: .common)
                 }
-                self.timeoutTimer = timeoutTimer
-                RunLoop.main.add(timeoutTimer, forMode: .common)
 
                 if application.isTerminated {
                     finish(.success(()))
                     return
                 }
 
-                let requested = identity.terminatesWithSignal
-                    ? kill(application.processIdentifier, SIGTERM) == 0 : application.terminate()
+                let requested: Bool
+                do {
+                    requested = try request?() ?? (identity.terminatesWithSignal
+                        ? kill(application.processIdentifier, SIGTERM) == 0 : application.terminate())
+                } catch {
+                    finish(.failure(error))
+                    return
+                }
                 if !requested {
                     RunLoop.main.perform(inModes: [.common]) { [weak self] in
                         Task { @MainActor in
@@ -148,18 +156,18 @@ private final class ApplicationTerminationWaiter {
     }
 }
 
-@MainActor
-struct WorkspaceClient {
-    var runningXcodes: () -> [RunningApplication]
-    var runningNeoHosts: () -> [RunningApplication]
-    var runningLegacySimulators: () -> [RunningApplication]
-    var terminateDeviceHubs: (URL) async throws -> Int
-    var terminateNeoHosts: (URL) async throws -> Int
-    var terminateLegacySimulators: ([URL]) async throws -> Int
-    var openNeoHost: (URL, URL) async throws -> URL
-    var openLegacySimulator: (URL) async throws -> URL
+struct WorkspaceClient: Sendable {
+    var runningXcodes: @MainActor @Sendable () -> [RunningApplication]
+    var runningNeoHosts: @MainActor @Sendable () -> [RunningApplication]
+    var terminateDeviceHubs: @MainActor @Sendable (URL) async throws -> Int
+    var terminateNeoHosts: @MainActor @Sendable (URL) async throws -> Int
+    var openNeoHost: @MainActor @Sendable (URL, URL, String?) async throws -> URL
 
-    static let live = WorkspaceClient(
+    var openDeviceHub: @MainActor @Sendable (URL) async throws -> URL
+    var quitNeoHost: @MainActor @Sendable (URL, [RendererRegistration], Bool?) async throws -> Int
+    var openDeviceURL: @MainActor @Sendable (URL, URL, String, URL) async throws -> Void
+
+    @MainActor static let live = WorkspaceClient(
         runningXcodes: {
             runningApplications(
                 withBundleIdentifier: ToolConstants.xcodeBundleIdentifier
@@ -170,19 +178,19 @@ struct WorkspaceClient {
                 withBundleIdentifier: ToolConstants.neoHostBundleIdentifier
             )
         },
-        runningLegacySimulators: {
-            runningApplications(
-                withBundleIdentifier: ToolConstants.simulatorBundleIdentifier
-            )
-        },
         terminateDeviceHubs: { expectedApplicationURL in
-            try await terminateApplications(
-                ManagedApplicationIdentity(
-                    displayName: "Device Hub",
-                    bundleIdentifier: ToolConstants.deviceHubBundleIdentifier,
-                    expectedURLs: [expectedApplicationURL],
-                    errorIdentifier: "device-hub"
-                )
+            let running = runningApplications(withBundleIdentifier: ToolConstants.deviceHubBundleIdentifier)
+            var expectedURLs = [expectedApplicationURL]
+            for application in running {
+                guard let url = application.bundleURL else {
+                    throw CLIError.configuration("device-hub-identity", "A running Device Hub has no application URL.")
+                }
+                try CodeSignatureValidator.live.validateAppleApplication(url, ToolConstants.deviceHubBundleIdentifier)
+                expectedURLs.append(url)
+            }
+            return try await terminateApplications(
+                ManagedApplicationIdentity(displayName: "Device Hub", bundleIdentifier: ToolConstants.deviceHubBundleIdentifier,
+                    expectedURLs: expectedURLs, errorIdentifier: "device-hub")
             )
         },
         terminateNeoHosts: { expectedApplicationURL in
@@ -196,17 +204,7 @@ struct WorkspaceClient {
                 )
             )
         },
-        terminateLegacySimulators: { expectedApplicationURLs in
-            try await terminateApplications(
-                ManagedApplicationIdentity(
-                    displayName: "legacy Simulator",
-                    bundleIdentifier: ToolConstants.simulatorBundleIdentifier,
-                    expectedURLs: expectedApplicationURLs,
-                    errorIdentifier: "legacy-simulator"
-                )
-            )
-        },
-        openNeoHost: { applicationURL, xcodeURL in
+        openNeoHost: { applicationURL, xcodeURL, deviceIdentifier in
             guard Bundle(url: applicationURL)?.bundleIdentifier
                     == ToolConstants.neoHostBundleIdentifier
             else {
@@ -227,14 +225,17 @@ struct WorkspaceClient {
 
             let configuration = NSWorkspace.OpenConfiguration()
             configuration.activates = true
-            configuration.createsNewApplicationInstance = false
+            configuration.createsNewApplicationInstance = true
             configuration.allowsRunningApplicationSubstitution = false
             configuration.arguments = [
+                "--managed",
                 "--startup-result",
                 startupResultURL.path,
                 "--xcode",
                 xcodeURL.path,
             ]
+
+            if let deviceIdentifier { configuration.arguments += ["--device", deviceIdentifier] }
 
             let application = try await NSWorkspace.shared.openApplication(
                 at: applicationURL,
@@ -295,69 +296,50 @@ struct WorkspaceClient {
                 throw launchError
             }
         },
-        openLegacySimulator: { applicationURL in
+        openDeviceHub: { applicationURL in
             let configuration = NSWorkspace.OpenConfiguration()
             configuration.activates = true
-            configuration.createsNewApplicationInstance = false
             configuration.allowsRunningApplicationSubstitution = false
-
-            let application = try await NSWorkspace.shared.openApplication(
-                at: applicationURL,
-                configuration: configuration
-            )
-            let identity = ManagedApplicationIdentity(
-                displayName: "legacy Simulator",
-                bundleIdentifier: ToolConstants.simulatorBundleIdentifier,
-                expectedURLs: [applicationURL],
-                errorIdentifier: "legacy-simulator"
-            )
-            do {
-                guard application.bundleIdentifier
-                        == ToolConstants.simulatorBundleIdentifier
-                else {
-                    throw CLIError.configuration(
-                        "legacy-simulator-identifier",
-                        "LaunchServices opened pid \(application.processIdentifier) with bundle identifier \(application.bundleIdentifier ?? "unknown"); expected \(ToolConstants.simulatorBundleIdentifier)"
-                    )
+            let app = try await NSWorkspace.shared.openApplication(at: applicationURL, configuration: configuration)
+            guard app.bundleIdentifier == ToolConstants.deviceHubBundleIdentifier,
+                  app.bundleURL.map(normalized) == normalized(applicationURL) else {
+                throw CLIError.configuration("device-hub-substitution", "LaunchServices opened an unexpected Device Hub application")
+            }
+            return applicationURL
+        },
+        // Normal quit can wait for recordings, device shutdown, and error alerts.
+        quitNeoHost: { applicationURL, registrations, keepingDevicesRunning in
+            try await terminateApplications(ManagedApplicationIdentity(
+                displayName: "NeoSimulator", bundleIdentifier: ToolConstants.neoHostBundleIdentifier,
+                expectedURLs: [applicationURL], errorIdentifier: "neo-host"
+            ), timeoutInterval: nil, requestTermination: { application in
+                guard let registration = registrations.first(where: { $0.processIdentifier == application.processIdentifier }) else {
+                    throw CLIError.temporary("renderer-registration", "A renderer is still starting. Try quitting again when it is ready.")
                 }
-                guard let openedURL = application.bundleURL else {
-                    throw CLIError.io(
-                        "legacy-simulator-launch",
-                        "LaunchServices opened Simulator without a bundle URL"
-                    )
-                }
-                let expected = normalized(applicationURL)
-                let observed = normalized(openedURL)
-                guard observed == expected else {
-                    throw CLIError.configuration(
-                        "legacy-simulator-substitution",
-                        "requested \(expected.path), but LaunchServices opened \(observed.path)"
-                    )
-                }
-                return observed
-            } catch let launchError {
-                if !application.isTerminated {
-                    _ = application.terminate()
-                }
-                let waiter = ApplicationTerminationWaiter(
-                    application: application,
-                    identity: identity,
-                    timeoutInterval: 10
+                var info: [String: Any] = ["action": "quit"]
+                if let keepingDevicesRunning { info["keepRunning"] = keepingDevicesRunning }
+                DistributedNotificationCenter.default().postNotificationName(
+                    Notification.Name("dev.lynnswap.NeoSimulator.RendererRequest"), object: registration.sessionIdentifier,
+                    userInfo: info, deliverImmediately: true
                 )
-                do {
-                    try await waiter.terminate()
-                } catch let terminationError {
-                    throw CLIError.temporary(
-                        "legacy-simulator-launch-cleanup",
-                        "legacy Simulator launch failed (\(launchError.localizedDescription)), and pid \(application.processIdentifier) could not be terminated (\(terminationError.localizedDescription))"
-                    )
-                }
-                throw launchError
+                return true
+            })
+        },
+        openDeviceURL: { applicationURL, xcodeURL, identifier, url in
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.activates = true
+            configuration.allowsRunningApplicationSubstitution = false
+            configuration.arguments = ["--xcode", xcodeURL.path, "--device", identifier]
+            let application = try await NSWorkspace.shared.open([url], withApplicationAt: applicationURL, configuration: configuration)
+            guard application.bundleIdentifier == ToolConstants.neoHostBundleIdentifier,
+                  application.bundleURL.map(normalized) == normalized(applicationURL) else {
+                throw CLIError.configuration("neo-host-substitution", "LaunchServices opened an unexpected NeoSimulator renderer.")
             }
         }
+
     )
 
-    private static func runningApplications(
+    @MainActor private static func runningApplications(
         withBundleIdentifier bundleIdentifier: String
     ) -> [RunningApplication] {
         NSRunningApplication.runningApplications(
@@ -371,12 +353,14 @@ struct WorkspaceClient {
         }
     }
 
-    private static func terminateApplications(
-        _ identity: ManagedApplicationIdentity
+    @MainActor private static func terminateApplications(
+        _ identity: ManagedApplicationIdentity,
+        timeoutInterval: TimeInterval? = 10,
+        requestTermination: ((NSRunningApplication) throws -> Bool)? = nil
     ) async throws -> Int {
         let expected = Set(identity.expectedURLs.map(normalized))
         let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: .seconds(10))
+        let deadline = timeoutInterval.map { clock.now.advanced(by: .seconds($0)) }
         var terminatedCount = 0
 
         while true {
@@ -411,29 +395,38 @@ struct WorkspaceClient {
             }
 
             for application in applications {
-                let remaining = clock.now.duration(to: deadline)
-                guard remaining > .zero else {
-                    throw CLIError.temporary(
-                        "\(identity.errorIdentifier)-termination-timeout",
-                        "\(identity.displayName) kept running or relaunching for 10 seconds"
-                    )
+                let remainingTimeout: TimeInterval?
+                if let deadline {
+                    let remaining = clock.now.duration(to: deadline)
+                    guard remaining > .zero else {
+                        throw CLIError.temporary(
+                            "\(identity.errorIdentifier)-termination-timeout",
+                            "\(identity.displayName) kept running or relaunching until the operation deadline."
+                        )
+                    }
+                    let components = remaining.components
+                    remainingTimeout = TimeInterval(components.seconds)
+                        + TimeInterval(components.attoseconds) / 1_000_000_000_000_000_000
+                } else {
+                    remainingTimeout = nil
                 }
-                let components = remaining.components
-                let timeoutInterval = TimeInterval(components.seconds)
-                    + TimeInterval(components.attoseconds)
-                        / 1_000_000_000_000_000_000
                 let waiter = ApplicationTerminationWaiter(
                     application: application,
                     identity: identity,
-                    timeoutInterval: timeoutInterval
+                    timeoutInterval: remainingTimeout
                 )
-                try await waiter.terminate()
+                if let requestTermination {
+                    // Observe termination before delivering the session-specific quit policy.
+                    try await waiter.terminate(request: { try requestTermination(application) })
+                } else {
+                    try await waiter.terminate()
+                }
                 terminatedCount += 1
             }
         }
     }
 
-    private static func makeNeoHostStartupDirectory() throws -> URL {
+    @MainActor private static func makeNeoHostStartupDirectory() throws -> URL {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
             "\(ToolConstants.name)-startup-\(UUID().uuidString)",
             isDirectory: true
@@ -453,7 +446,7 @@ struct WorkspaceClient {
         return directory
     }
 
-    private static func waitForNeoHostStartup(
+    @MainActor private static func waitForNeoHostStartup(
         _ application: NSRunningApplication,
         resultURL: URL
     ) async throws {
@@ -503,7 +496,68 @@ struct WorkspaceClient {
         )
     }
 
-    private static func normalized(_ url: URL) -> URL {
+    @MainActor private static func normalized(_ url: URL) -> URL {
         url.resolvingSymlinksInPath().standardizedFileURL
+    }
+}
+
+@MainActor
+final class RendererDeviceRequestWaiter {
+    private var observer: NSObjectProtocol?
+    private var timeout: Task<Void, Never>?
+    private var continuation: CheckedContinuation<Void, any Error>?
+
+    func release(_ identifier: String, from renderer: RendererRegistration) async throws {
+        try await request("release-device", acknowledgement: "RendererReleased", identifier: identifier, renderer: renderer, timeoutSeconds: 120)
+    }
+
+    func open(_ identifier: String, in renderer: RendererRegistration) async throws {
+        try await request("open-device", acknowledgement: "RendererOpened", identifier: identifier, renderer: renderer, timeoutSeconds: 450)
+    }
+
+    private func request(_ action: String, acknowledgement: String, identifier: String, renderer: RendererRegistration, timeoutSeconds: Int) async throws {
+        try Task.checkCancellation()
+        let requestIdentifier = UUID().uuidString
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                self.continuation = continuation
+                observer = DistributedNotificationCenter.default().addObserver(
+                    forName: Notification.Name("dev.lynnswap.NeoSimulator.\(acknowledgement)"),
+                    object: requestIdentifier, queue: .main
+                ) { [weak self] notification in
+                    let releasedIdentifier = notification.userInfo?["udid"] as? String
+                    let failure = notification.userInfo?["error"] as? String
+                    Task { @MainActor in
+                        guard releasedIdentifier == identifier else { return }
+                        if let failure {
+                            self?.finish(.failure(CLIError.temporary("renderer-device-request", failure)))
+                        } else {
+                            self?.finish(.success(()))
+                        }
+                    }
+                }
+                timeout = Task { [weak self] in
+                    do { try await Task.sleep(for: .seconds(timeoutSeconds)) }
+                    catch { return }
+                    self?.finish(.failure(CLIError.temporary("renderer-device-timeout", "The simulator display did not finish the device request.")))
+                }
+                DistributedNotificationCenter.default().postNotificationName(
+                    Notification.Name("dev.lynnswap.NeoSimulator.RendererRequest"), object: renderer.sessionIdentifier,
+                    userInfo: ["action": action, "udid": identifier, "requestIdentifier": requestIdentifier], deliverImmediately: true
+                )
+            }
+        } onCancel: {
+            Task { @MainActor in self.finish(.failure(CancellationError())) }
+        }
+    }
+
+    private func finish(_ result: Result<Void, any Error>) {
+        guard let continuation else { return }
+        self.continuation = nil
+        if let observer { DistributedNotificationCenter.default().removeObserver(observer) }
+        observer = nil
+        timeout?.cancel()
+        timeout = nil
+        continuation.resume(with: result)
     }
 }
