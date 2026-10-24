@@ -1009,7 +1009,8 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
 
     /// Checks prerequisites without changing unavailable commands' checkmarks.
     private func validatesScale(_ mode: WindowScaleMode) -> Bool {
-        session.canPerformCommands && !isFullScreen && (mode != .physicalSize || session.display.displayClass == 0)
+        session.canPerformCommands && !isEmbedded && !isFullScreen
+            && (mode != .physicalSize || session.display.displayClass == 0)
     }
 
     /// Checks minimum scale and screen fit; a window with a bezel may extend beyond the screen.
