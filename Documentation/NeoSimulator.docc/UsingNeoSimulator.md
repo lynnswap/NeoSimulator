@@ -167,6 +167,31 @@ or choose **File → Install App or Import Media…**. Partial failures list bot
 completed imports and failed files. **I/O → Open URL…** opens web addresses and
 custom app URL schemes in the active device.
 
+## Browse device reports
+
+Select a physical device or virtual machine in the main window, choose
+**Content** in the right inspector's toolbar, then **Reports**. Report listing
+and downloads depend on the connected device's capabilities. Reports are
+unavailable for simulators.
+
+Search by report name, path, file extension, or recorded type. **All Report
+Types** lets you filter by the device's recorded log type, or by file extension
+when no log type is supplied. An `.ips` extension alone does not identify a
+report as a crash or hang. Select a report to view its available metadata,
+relative path, and file properties.
+
+Double-click a report file or choose the eye button (**Quick Look**) to preview
+it in a separate window. Closing the preview, selecting another report or
+device, or quitting removes its temporary copy. Use **Download Report…** to
+keep a copy: choose the download button and select a destination in the save
+panel. Confirm replacement if that destination already exists.
+
+A transfer failure preserves an existing destination. If transfer data remains
+on the Mac, the error gives its location for recovery. If saving succeeds but
+cleanup fails, the error identifies both the saved report and the remaining
+data. An incomplete report list keeps the available reports and shows a
+message about records it could not read.
+
 ## Debug and simulate conditions
 
 The main window's inspector changes the selected device's Appearance, Liquid
