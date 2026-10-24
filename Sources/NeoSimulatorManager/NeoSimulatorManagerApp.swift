@@ -2709,7 +2709,7 @@ private final class ManagerDeviceInspectorController: NSViewController, NSTableV
         panel.canChooseDirectories = false
         panel.treatsFilePackagesAsDirectories = false
         panel.allowedContentTypes = content == .applications
-            ? [UTType(filenameExtension: "app") ?? .applicationBundle] + (inspector.device.kind == .simulator ? [] : [UTType(filenameExtension: "ipa") ?? .archive])
+            ? [UTType.applicationBundle]
             : [UTType(filenameExtension: content == .configuration ? "mobileconfig" : "mobileprovision") ?? .data]
         panel.beginSheetModal(for: window) { [weak self] response in
             guard response == .OK, let url = panel.url, let self else { return }
