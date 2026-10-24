@@ -5183,10 +5183,15 @@ struct InputFocusTests {
         let identifier = UUID().uuidString
         let current = AvailableDevice(identifier: identifier, name: "Mine", descriptiveName: "Mine", runtimeIdentifier: "",
                                       runtimeName: "", productFamily: 2, deviceTypeName: "iPad", state: 1)
-        #expect(HostApplication.initialDevice(in: devices + [current], current: identifier.lowercased())?.id == identifier)
-        #expect(HostApplication.initialDevice(in: devices, current: identifier)?.id == "D")
+        #expect(HostApplication.initialDevice(in: devices + [current], current: SimulatorDeviceIdentifier(identifier.lowercased()))?.id == identifier)
+        #expect(HostApplication.initialDevice(in: devices, current: SimulatorDeviceIdentifier(identifier))?.id == "D")
         #expect(HostApplication.initialDevice(in: [devices[0], devices[4]], current: nil)?.id == "A")
         #expect(HostApplication.initialDevice(in: [], current: nil) == nil)
+        let path = "/fixture/TestingDevices"
+        let clone = AvailableDevice(identifier: identifier, name: "Testing iPad", descriptiveName: "Testing iPad", runtimeIdentifier: "", runtimeName: "", productFamily: 2, deviceTypeName: "iPad", state: 1, deviceSetPath: path)
+        let saved = SimulatorDeviceIdentifier(identifier.lowercased(), deviceSetPath: path)
+        #expect(HostApplication.initialDevice(in: devices + [current, clone], current: saved)?.identity == clone.identity)
+        #expect(HostApplication.initialDevice(in: devices + [current], current: saved)?.identity == devices[3].identity)
     }
 
     @Test func newSimulatorKeepsDeviceTypeAndRuntimeCompatible() async throws {

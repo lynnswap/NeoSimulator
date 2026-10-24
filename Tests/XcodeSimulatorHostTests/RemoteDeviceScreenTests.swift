@@ -17,6 +17,8 @@ struct RemoteDeviceScreenTests {
         }
         var exposedInputWhileConnecting = false
         var observedCapabilities: Set<RemoteDeviceInputKind> = []
+        var lostServices: [Set<RemoteDeviceInputKind>] = []
+        session.onInputCapabilitiesLost = { lostServices.append($0) }
         session.onStateChange = {
             if session.state == .connecting && session.nativeInputView != nil { exposedInputWhileConnecting = true }
             observedCapabilities = session.inputCapabilities
@@ -36,7 +38,7 @@ struct RemoteDeviceScreenTests {
         #expect(observedCapabilities == [.keyboard, .pointer, .digitizer])
         transport.inputCapabilities = [.keyboard]
         transport.emit(.inputGeometryChanged)
-        #expect(observedCapabilities == [.keyboard])
+        #expect(observedCapabilities == [.keyboard] && lostServices.isEmpty)
         transport.emit(.frameReceived)
         #expect(session.hasReceivedFrame)
         try await session.sendKey(4, state: .down)
@@ -51,15 +53,76 @@ struct RemoteDeviceScreenTests {
         #expect(session.state == .stopped && session.lastError == nil)
     }
 
+    @Test func nativeCapabilityChangesReachTheSessionAndRetireOnlyTheLostInputService() async throws {
+        let source = ScreenCapabilityFixtureSource()
+        let transport = ScreenFixtureTransport(capabilitySource: source)
+        let session = RemoteDeviceScreenSession(device: try device()) { _, _ in transport }
+        var visible: Set<RemoteDeviceInputKind> = []
+        var lostServices: [Set<RemoteDeviceInputKind>] = []
+        session.onInputCapabilitiesLost = { lostServices.append($0) }
+        session.onStateChange = { visible = session.inputCapabilities }
+        try await session.start()
+        #expect(visible.isEmpty)
+        await source.change(to: [.keyboard, .digitizer, .pointer, .button])
+        #expect(session.nativeInputView != nil && visible == [.keyboard, .digitizer, .pointer, .button])
+        try await session.sendKey(4, state: .down)
+        try await session.sendButton(usagePage: 12, usage: 48, state: .down)
+        #expect(transport.pressed.buttons.count == 1)
+        try await session.sendTouch(at: CGPoint(x: 0.5, y: 0.5), phase: .began)
+        try await session.sendPointerButton(0, phase: .down, at: CGPoint(x: 0.2, y: 0.3))
+        #expect(transport.pressed.touch != nil && transport.pressed.pointerButtons.count == 1)
+        await source.change(to: [.keyboard, .pointer])
+        #expect(visible == [.keyboard, .pointer] && transport.pressed.touch == nil && transport.pressed.buttons.isEmpty)
+        #expect(lostServices == [[.digitizer, .button]])
+        #expect(transport.downKeys == [4] && transport.pressed.pointerButtons.count == 1)
+        await source.change(to: [.keyboard, .digitizer, .pointer, .button])
+        #expect(visible.contains(.digitizer) && visible.contains(.button))
+        #expect(transport.pressed.touch == nil && transport.pressed.buttons.isEmpty && lostServices == [[.digitizer, .button]])
+        let restored: Set<RemoteDeviceInputKind> = [.keyboard, .digitizer, .pointer, .button]
+        await source.change(to: restored)
+        #expect(lostServices == [[.digitizer, .button]] && transport.downKeys == [4])
+        await source.buffer(snapshots: [[], restored])
+        #expect(try source.read() == restored && visible == restored)
+        #expect(lostServices == [[.digitizer, .button], restored])
+        #expect(transport.downKeys.isEmpty && transport.pressed.pointerButtons.isEmpty)
+        try await session.stop()
+        #expect(source.finished && transport.downKeys.isEmpty && transport.pressed.pointerButtons.isEmpty)
+        let reads = source.reads
+        source.lateChange()
+        #expect(source.reads == reads && session.state == .stopped && session.inputCapabilities.isEmpty)
+    }
+
+    @Test func capabilitySnapshotFailureReachesTheSessionAndStoppingDrainsTheObserver() async throws {
+        let source = ScreenCapabilityFixtureSource()
+        let transport = ScreenFixtureTransport(capabilitySource: source)
+        let session = RemoteDeviceScreenSession(device: try device()) { _, _ in transport }
+        try await session.start()
+        let error: any Error = await withCheckedContinuation { received in
+            session.onStateChange = {
+                if let error = session.lastError { received.resume(returning: error) }
+            }
+            source.malformedSnapshot = true
+            source.events.yield([.keyboard])
+        }
+        #expect((error as? CLIError)?.identifier == "remote-input-snapshot" && session.state == .failed)
+        session.onStateChange = nil
+        try await session.stop()
+        #expect(source.finished)
+    }
+
     @Test func cancellationDisconnectsAStartThatCompletesAfterTheWindowStops() async throws {
-        let transport = ScreenFixtureTransport(suspendStart: true)
+        let source = ScreenCapabilityFixtureSource()
+        let transport = ScreenFixtureTransport(suspendStart: true, capabilitySource: source)
         let session = RemoteDeviceScreenSession(device: try device()) { _, _ in transport }
         let start = Task { try await session.start() }
         await transport.waitUntilStarting()
         try await session.stop()
         do { try await start.value; Issue.record("A stopped start completed successfully") }
         catch { #expect(error is CancellationError) }
-        #expect(transport.closed && session.state == .stopped)
+        #expect(transport.closed && session.state == .stopped && source.finished)
+        let reads = source.reads
+        source.lateChange()
+        #expect(source.reads == reads)
         transport.emit(.connected)
         #expect(session.state == .stopped)
     }
@@ -259,19 +322,34 @@ private final class ScreenFixtureTransport: RemoteScreenTransport {
     private let suspendStart: Bool
     var failCleanup: Bool
     private(set) var closed = false
-    private(set) var downKeys: Set<UInt16> = []
+    private(set) var pressed = RemoteScreenPressedInputs()
+    var downKeys: Set<UInt16> { pressed.keys }
+    private let capabilitySource: ScreenCapabilityFixtureSource?
+    private var capabilityObservation: RemoteScreenInputCapabilityObservation?
     private var events: (@MainActor (RemoteScreenTransportEvent) -> Void)?
     private var pendingStart: CheckedContinuation<Void, any Error>?
     private var waitingForStart: CheckedContinuation<Void, Never>?
     private var didStart = false
 
-    init(suspendStart: Bool = false, failCleanup: Bool = false) {
+    init(suspendStart: Bool = false, failCleanup: Bool = false, capabilitySource: ScreenCapabilityFixtureSource? = nil) {
         self.suspendStart = suspendStart
         self.failCleanup = failCleanup
+        self.capabilitySource = capabilitySource
+        if capabilitySource != nil { inputCapabilities = [] }
     }
 
     func start(events: @escaping @MainActor (RemoteScreenTransportEvent) -> Void) async throws {
         self.events = events
+        if let source = capabilitySource {
+            let observation = RemoteScreenInputCapabilityObservation(source: source, read: { try source.read() },
+                invalidateInputs: { [weak self] in self?.pressed.discard(for: $0) })
+            capabilityObservation = observation
+            try observation.start(update: { [weak self] removed in
+                guard let self else { return }
+                self.inputCapabilities = self.capabilityObservation?.capabilities ?? []
+                self.events?(removed.isEmpty ? .inputGeometryChanged : .inputCapabilitiesLost(removed))
+            }, failure: { [weak self] in self?.events?(.failure($0)) })
+        }
         didStart = true
         if suspendStart {
             try await withCheckedThrowingContinuation { continuation in
@@ -295,17 +373,16 @@ private final class ScreenFixtureTransport: RemoteScreenTransport {
     }
 
     func send(_ input: RemoteScreenInput) async throws {
-        if case .key(let key, let state) = input {
-            if state == .down { downKeys.insert(key) } else { downKeys.remove(key) }
-        }
+        pressed.record(input)
     }
 
     func releaseInputs() async throws {
         if failCleanup { throw ScreenFixtureError.cleanup }
-        downKeys = []
+        pressed = RemoteScreenPressedInputs()
     }
 
     func stop() async throws {
+        await capabilityObservation?.stop()
         let continuation = pendingStart
         pendingStart = nil
         continuation?.resume(throwing: CancellationError())
@@ -314,4 +391,55 @@ private final class ScreenFixtureTransport: RemoteScreenTransport {
     }
 
     func emit(_ event: RemoteScreenTransportEvent) { events?(event) }
+}
+
+private enum ScreenCapabilityFixture: Hashable {
+    case hid(RemoteDeviceInputKind), unrelated
+}
+
+@MainActor
+private final class ScreenCapabilityFixtureSource: RemoteScreenInputCapabilitySource {
+    private let stream: AsyncThrowingStream<Set<RemoteDeviceInputKind>, any Error>
+    let events: AsyncThrowingStream<Set<RemoteDeviceInputKind>, any Error>.Continuation
+    private var values: Set<RemoteDeviceInputKind> = []
+    private var changed: CheckedContinuation<Void, Never>?
+    private var pendingChanges = 0
+    private var onChange: (@MainActor (Set<RemoteDeviceInputKind>) -> Void)?
+    var malformedSnapshot = false
+    private(set) var reads = 0
+    private(set) var finished = false
+
+    init() { (stream, events) = AsyncThrowingStream.makeStream() }
+    func read() throws -> Set<RemoteDeviceInputKind> {
+        reads += 1
+        return values
+    }
+    func follow(onSubscribed: @escaping @MainActor () throws -> Void,
+                onChange: @escaping @MainActor (Set<RemoteDeviceInputKind>) -> Void) async throws {
+        self.onChange = onChange
+        defer { finished = true }
+        try onSubscribed()
+        for try await snapshot in stream {
+            defer {
+                if pendingChanges > 0 {
+                    pendingChanges -= 1
+                    if pendingChanges == 0 { changed?.resume(); changed = nil }
+                }
+            }
+            let raw: Any = malformedSnapshot ? [0] : Set(snapshot.map(ScreenCapabilityFixture.hid)).union([.unrelated])
+            let values = try CoreDeviceInputCapabilitySource.hashableCapabilities(in: raw)
+            let kinds = Set(CoreDeviceScreenInput.features.keys.filter { values.contains(AnyHashable(ScreenCapabilityFixture.hid($0))) })
+            onChange(kinds)
+        }
+    }
+    func change(to value: Set<RemoteDeviceInputKind>) async { await buffer(snapshots: [value]) }
+    func buffer(snapshots: [Set<RemoteDeviceInputKind>]) async {
+        values = snapshots.last ?? values
+        await withCheckedContinuation { continuation in
+            changed = continuation
+            pendingChanges = snapshots.count
+            for snapshot in snapshots { events.yield(snapshot) }
+        }
+    }
+    func lateChange() { onChange?([]) }
 }

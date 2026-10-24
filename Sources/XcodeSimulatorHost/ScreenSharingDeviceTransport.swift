@@ -18,7 +18,9 @@ final class ScreenSharingDeviceTransport: NSObject, RemoteScreenTransport {
     private var observing = false
     private var stopped = false
     private var requested = false
-    private(set) var inputCapabilities: Set<RemoteDeviceInputKind> = []
+    private var stopping: Task<Void, any Error>?
+    private let capabilityObservation: RemoteScreenInputCapabilityObservation
+    var inputCapabilities: Set<RemoteDeviceInputKind> { capabilityObservation.capabilities }
     var nativeInputView: NSView? { view }
     var canCaptureScreenshot: Bool { !stopped }
     private(set) var canRecordScreen = false
@@ -31,7 +33,10 @@ final class ScreenSharingDeviceTransport: NSObject, RemoteScreenTransport {
         }
         self.url = url
         self.remote = remote
-        input = CoreDeviceScreenInput(remote: remote)
+        let input = CoreDeviceScreenInput(remote: remote)
+        self.input = input
+        capabilityObservation = RemoteScreenInputCapabilityObservation(source: try CoreDeviceInputCapabilitySource(remote: remote),
+            read: { try input.capabilities() }, invalidateInputs: { input.discardInputs(for: $0) })
         view = viewClass.init(frame: contentView.bounds)
         view.autoresizingMask = [.width, .height]
         let runtime = remote.runtime
@@ -62,7 +67,11 @@ final class ScreenSharingDeviceTransport: NSObject, RemoteScreenTransport {
     func start(events: @escaping @MainActor (RemoteScreenTransportEvent) -> Void) async throws {
         guard !stopped else { throw CancellationError() }
         self.events = events
-        inputCapabilities = try input.capabilities()
+        try capabilityObservation.start(update: { [weak self] removed in
+            self?.events?(removed.isEmpty ? .inputGeometryChanged : .inputCapabilitiesLost(removed))
+        }, failure: { [weak self] error in
+            Task { @MainActor [weak self] in await self?.failConnection(error) }
+        })
         canRecordScreen = try remote.supports("com.apple.coredevice.feature.screenrecording")
         for key in ["isConnected", "isDisconnected"] { view.addObserver(self, forKeyPath: key, options: [.new], context: nil) }
         observing = true
@@ -96,18 +105,36 @@ final class ScreenSharingDeviceTransport: NSObject, RemoteScreenTransport {
     func releaseInputs() async throws { try await input.releaseInputs() }
 
     func stop() async throws {
+        if let stopping { try await stopping.value; return }
         stopped = true
         events = nil
-        inputCapabilities = []
         canRecordScreen = false
         finishStart(throwing: CancellationError())
         removeObservers()
-        var failure: (any Error)?
-        do { try await input.releaseInputs() } catch { failure = error }
-        do { try unsafe close.unsafeInvoke(on: view) }
-        catch { failure = failure.map { RemoteDeviceScreenSession.combining($0, cleanup: error) } ?? error }
-        view.removeFromSuperview()
-        if let failure { throw failure }
+        let task = Task { [self] in
+            await capabilityObservation.stop()
+            var failure: (any Error)?
+            do { try await input.releaseInputs() } catch { failure = error }
+            do { try unsafe close.unsafeInvoke(on: view) }
+            catch { failure = failure.map { RemoteDeviceScreenSession.combining($0, cleanup: error) } ?? error }
+            view.removeFromSuperview()
+            if let failure { throw failure }
+        }
+        stopping = task
+        defer { stopping = nil }
+        try await task.value
+    }
+
+    private func failConnection(_ error: any Error) async {
+        guard !stopped else { return }
+        let notify = events
+        let starting = pendingStart
+        pendingStart = nil
+        var failure = error
+        do { try await stop() }
+        catch { failure = RemoteDeviceScreenSession.combining(failure, cleanup: error) }
+        if let starting { starting.resume(throwing: failure) }
+        else { notify?(.failure(failure)) }
     }
 
     nonisolated override func observeValue(forKeyPath keyPath: String?, of object: Any?,
@@ -129,12 +156,10 @@ final class ScreenSharingDeviceTransport: NSObject, RemoteScreenTransport {
                 events?(.connected)
             } else if try unsafe disconnected.unsafeInvoke(on: view) {
                 let error = CLIError.io("screen-sharing-disconnected", "The remote Screen Sharing connection ended.")
-                if pendingStart != nil { finishStart(throwing: error) }
-                else { events?(.failure(error)) }
+                Task { @MainActor [weak self] in await self?.failConnection(error) }
             }
         } catch {
-            if pendingStart != nil { finishStart(throwing: error) }
-            else { events?(.failure(error)) }
+            Task { @MainActor [weak self] in await self?.failConnection(error) }
         }
     }
 

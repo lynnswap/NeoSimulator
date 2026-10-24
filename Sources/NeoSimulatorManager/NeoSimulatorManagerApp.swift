@@ -3531,6 +3531,7 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
         window.toolbar = toolbar
         window.center()
         inputView.enqueue = { [weak self] operation in self?.enqueueInput(operation) }
+        session.onInputCapabilitiesLost = { [weak self] kinds in self?.inputView.invalidateInputs(for: kinds) }
         session.onStateChange = { [weak self] in self?.update() }
         update()
     }
@@ -3603,7 +3604,10 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
         retryButton.isEnabled = !closing && inventoryAvailable
         progress.isHidden = !busy
         if busy { progress.startAnimation(nil) } else { progress.stopAnimation(nil) }
-        if captureTask != nil { statusLabel.stringValue = "Saving screenshot…" }
+        if let transportIssue = session.lastError?.localizedDescription {
+            statusLabel.stringValue = issue.map { $0 == transportIssue ? $0 : "\($0)\n\(transportIssue)" } ?? transportIssue
+        }
+        else if captureTask != nil { statusLabel.stringValue = "Saving screenshot…" }
         else if session.recordingState == .starting { statusLabel.stringValue = "Starting recording…" }
         else if session.recordingState == .stopping { statusLabel.stringValue = "Finishing recording…" }
         else if recordingTask != nil { statusLabel.stringValue = "Saving recording…" }
@@ -3611,7 +3615,6 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
         else if session.hasUnfinishedRecording { statusLabel.stringValue = "Recording" }
         else if completedScreenshot != nil { statusLabel.stringValue = "Screenshot ready to save." }
         else if session.completedRecording != nil { statusLabel.stringValue = "Recording ready to save." }
-        else if let error = session.lastError { statusLabel.stringValue = error.localizedDescription }
         else if !inventoryAvailable { statusLabel.stringValue = "The device is unavailable." }
         else {
             statusLabel.stringValue = switch session.state {
@@ -3764,7 +3767,7 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
             default: nil
             }
             guard let usage, session.state == .connected, session.inputCapabilities.contains(.button) else { return }
-            enqueueInput { [session] in
+            inputView.enqueueInput(for: .button) { [session] in
                 try await session.sendButton(usagePage: 0x0c, usage: usage, state: .down)
                 try await session.sendButton(usagePage: 0x0c, usage: usage, state: .up)
             }
@@ -4136,32 +4139,51 @@ private final class RemoteDeviceInputView: NSView {
     override func keyDown(with event: NSEvent) {
         guard isInputEnabled, session.inputCapabilities.contains(.keyboard), !event.isARepeat,
               let usage = Self.keyUsage[event.keyCode] else { return }
-        enqueue? { [session] in try await session.sendKey(usage, state: .down) }
+        enqueueInput(for: .keyboard) { [session] in try await session.sendKey(usage, state: .down) }
     }
     override func keyUp(with event: NSEvent) {
         guard isInputEnabled, session.inputCapabilities.contains(.keyboard), let usage = Self.keyUsage[event.keyCode] else { return }
-        enqueue? { [session] in try await session.sendKey(usage, state: .up) }
+        enqueueInput(for: .keyboard) { [session] in try await session.sendKey(usage, state: .up) }
     }
     override func flagsChanged(with event: NSEvent) {
         guard isInputEnabled, session.inputCapabilities.contains(.keyboard), let usage = Self.keyUsage[event.keyCode] else { return }
         if event.keyCode == UInt16(kVK_CapsLock) {
-            enqueue? { [session] in
+            enqueueInput(for: .keyboard) { [session] in
                 try await session.sendKey(usage, state: .down)
                 try await session.sendKey(usage, state: .up)
             }
         } else {
             let state: RemoteDeviceButtonState = CGEventSource.keyState(.combinedSessionState, key: event.keyCode) ? .down : .up
-            enqueue? { [session] in try await session.sendKey(usage, state: state) }
+            enqueueInput(for: .keyboard) { [session] in try await session.sendKey(usage, state: state) }
         }
     }
 
-    private enum MouseInputKind { case touch, pointer }
+    func invalidateInputs(for kinds: Set<RemoteDeviceInputKind>) {
+        for kind in kinds { capabilityGenerations[kind, default: 0] += 1 }
+        mouseGestures = mouseGestures.filter { !kinds.contains($0.value.kind.capability) }
+    }
+
+    func enqueueInput(for kind: RemoteDeviceInputKind, _ operation: @escaping @MainActor () async throws -> Void) {
+        let generation = capabilityGenerations[kind, default: 0]
+        enqueue? { [weak self] in
+            guard self?.capabilityGenerations[kind, default: 0] == generation else { return }
+            try await operation()
+        }
+    }
+
+    private enum MouseInputKind {
+        case touch, pointer
+        var capability: RemoteDeviceInputKind {
+            switch self { case .touch: .digitizer; case .pointer: .pointer }
+        }
+    }
     private struct MouseGesture {
         let kind: MouseInputKind
         let clicks: Int
     }
     private var mouseGestures: [Int: MouseGesture] = [:]
     private var inputGeneration = 0
+    private var capabilityGenerations: [RemoteDeviceInputKind: Int] = [:]
     private var pointerTracking: NSTrackingArea?
 
     override func updateTrackingAreas() {
@@ -4177,12 +4199,14 @@ private final class RemoteDeviceInputView: NSView {
         mouseGestures.removeAll()
     }
 
-    private func enqueueMouseInput(_ operation: @escaping @MainActor () async throws -> Void) {
+    private func enqueueMouseInput(kind: MouseInputKind, _ operation: @escaping @MainActor () async throws -> Void) {
         let generation = inputGeneration
-        enqueue? { [weak self, session] in
+        let capabilityGeneration = capabilityGenerations[kind.capability, default: 0]
+        enqueueInput(for: kind.capability) { [weak self, session] in
             guard self?.inputGeneration == generation else { return }
             do { try await operation() }
             catch {
+                guard self?.capabilityGenerations[kind.capability, default: 0] == capabilityGeneration else { throw error }
                 if self?.inputGeneration == generation { self?.resetMouseGestures() }
                 do { try await session.releaseInputs() }
                 catch let cleanup {
@@ -4204,7 +4228,7 @@ private final class RemoteDeviceInputView: NSView {
         let button = event.buttonNumber
         let clicks = event.clickCount
         mouseGestures[button] = MouseGesture(kind: kind, clicks: clicks)
-        enqueueMouseInput { [session] in
+        enqueueMouseInput(kind: kind) { [session] in
             switch kind {
             case .touch: try await session.sendTouch(at: locations.touch, phase: .began)
             case .pointer: try await session.sendPointerButton(button, phase: .down, clicks: clicks, at: locations.pointer)
@@ -4216,12 +4240,9 @@ private final class RemoteDeviceInputView: NSView {
 
     override func mouseDragged(with event: NSEvent) {
         guard isInputEnabled, let gesture = mouseGestures[event.buttonNumber] else { return }
-        guard let locations = session.inputLocations(atWindowPoint: event.locationInWindow, clampingToDisplay: true) else {
-            releaseFocus()
-            return
-        }
+        guard let locations = session.inputLocations(atWindowPoint: event.locationInWindow, clampingToDisplay: true) else { return }
         let button = event.buttonNumber
-        enqueueMouseInput { [session] in
+        enqueueMouseInput(kind: gesture.kind) { [session] in
             switch gesture.kind {
             case .touch: try await session.sendTouch(at: locations.touch, phase: .moved)
             case .pointer: try await session.sendPointerButton(button, phase: .dragged, clicks: gesture.clicks, at: locations.pointer)
@@ -4238,7 +4259,7 @@ private final class RemoteDeviceInputView: NSView {
             return
         }
         let button = event.buttonNumber
-        enqueueMouseInput { [session] in
+        enqueueMouseInput(kind: gesture.kind) { [session] in
             switch gesture.kind {
             case .touch: try await session.sendTouch(at: locations.touch, phase: .ended)
             case .pointer: try await session.sendPointerButton(button, phase: .up, clicks: gesture.clicks, at: locations.pointer)
@@ -4251,7 +4272,7 @@ private final class RemoteDeviceInputView: NSView {
     override func mouseMoved(with event: NSEvent) {
         guard isInputEnabled, session.inputCapabilities.contains(.pointer),
               let locations = session.inputLocations(atWindowPoint: event.locationInWindow) else { return }
-        enqueueMouseInput { [session] in try await session.movePointer(to: locations.pointer) }
+        enqueueMouseInput(kind: .pointer) { [session] in try await session.movePointer(to: locations.pointer) }
     }
 
     private static let keyUsage: [UInt16: UInt16] = {

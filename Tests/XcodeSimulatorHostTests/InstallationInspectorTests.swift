@@ -669,12 +669,18 @@ struct XcodeConnectionsTests {
 
     @Test func startupLastDeviceRespectsSavedSelectionAndDisabledPreferences() {
         let device = SimulatorHostDevice(identifier: "CFB0DFE8-2184-4B1C-A6EF-9B4AEEDCB823", name: "iPhone", descriptiveName: "iPhone", runtimeIdentifier: "runtime", runtimeName: "iOS", productFamily: "iPhone", state: "Shutdown")
-        #expect(SimulatorStartupSelection.device(in: [device], attachInitially: true, startsSession: true, startsLastDevice: true, current: device.identifier.lowercased(), hasOwnedDevices: false) == device)
-        #expect(SimulatorStartupSelection.device(in: [device], attachInitially: true, startsSession: false, startsLastDevice: true, current: device.identifier, hasOwnedDevices: false) == nil)
-        #expect(SimulatorStartupSelection.device(in: [device], attachInitially: true, startsSession: true, startsLastDevice: false, current: device.identifier, hasOwnedDevices: false) == nil)
-        #expect(SimulatorStartupSelection.device(in: [device], attachInitially: true, startsSession: true, startsLastDevice: true, current: device.identifier, hasOwnedDevices: true) == nil)
+        #expect(SimulatorStartupSelection.device(in: [device], attachInitially: true, startsSession: true, startsLastDevice: true, current: .simulator(udid: device.identifier.lowercased(), deviceSetPath: nil), hasOwnedDevices: false) == device)
+        #expect(SimulatorStartupSelection.device(in: [device], attachInitially: true, startsSession: false, startsLastDevice: true, current: device.inventoryID, hasOwnedDevices: false) == nil)
+        #expect(SimulatorStartupSelection.device(in: [device], attachInitially: true, startsSession: true, startsLastDevice: false, current: device.inventoryID, hasOwnedDevices: false) == nil)
+        #expect(SimulatorStartupSelection.device(in: [device], attachInitially: true, startsSession: true, startsLastDevice: true, current: device.inventoryID, hasOwnedDevices: true) == nil)
+        let path = "/fixture/TestingDevices"
+        let clone = SimulatorHostDevice(identifier: device.identifier, name: "Testing iPad", descriptiveName: "Testing iPad", runtimeIdentifier: "runtime", runtimeName: "iOS", productFamily: "iPad", state: "Shutdown", deviceSetPath: path)
+        let fallback = SimulatorHostDevice(identifier: "fallback", name: "Fallback iPhone", descriptiveName: "Fallback iPhone", runtimeIdentifier: "runtime", runtimeName: "iOS", productFamily: "iPhone", state: "Shutdown")
+        let saved = DeviceInventoryID.simulator(udid: device.identifier.lowercased(), deviceSetPath: path)
+        #expect(SimulatorStartupSelection.device(in: [device, fallback, clone], attachInitially: true, startsSession: true, startsLastDevice: true, current: saved, hasOwnedDevices: false) == clone)
+        #expect(SimulatorStartupSelection.device(in: [device, fallback], attachInitially: true, startsSession: true, startsLastDevice: true, current: saved, hasOwnedDevices: false) == fallback)
         let booted = SimulatorHostDevice(identifier: "other", name: "iPad", descriptiveName: "iPad", runtimeIdentifier: "runtime", runtimeName: "iOS", productFamily: "iPad", state: "Booted")
-        #expect(SimulatorStartupSelection.device(in: [device, booted], attachInitially: true, startsSession: true, startsLastDevice: true, current: device.identifier, hasOwnedDevices: false) == nil)
+        #expect(SimulatorStartupSelection.device(in: [device, booted], attachInitially: true, startsSession: true, startsLastDevice: true, current: device.inventoryID, hasOwnedDevices: false) == nil)
     }
 
     @Test func disablingTestingDevicesDiscardsPendingCloneConnections() async throws {
