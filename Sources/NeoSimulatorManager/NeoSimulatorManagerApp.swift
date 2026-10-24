@@ -2565,7 +2565,7 @@ private final class ManagerDeviceInspectorController: NSViewController, NSTableV
                         } else { message = "This device does not currently support \(content.title.lowercased())." }
                         throw DeviceInspectorError.unsupported(message)
                     }
-                    let snapshot = try await inspector.profiles()
+                    let snapshot = try await inspector.profiles(kind: content.profileKind)
                     guard generation == request, !Task.isCancelled else { return }
                     profiles = snapshot.profiles
                     updateRows()

@@ -57,6 +57,26 @@ import Testing
         #expect(status == 65 && stdout == "partial operation response" && stderr == "device disconnected")
     }
 
+    @Test func configurationProfileQueriesDoNotRequestUnsupportedProvisioningProfiles() async throws {
+        let calls = InspectorCalls { command in
+            guard command.arguments.starts(with: ["device", "profile", "list", "--type", "configuration"]) else {
+                return CommandOutput(terminationStatus: 1, stdout: Data(), stderr: Data("Provisioning profiles are unsupported".utf8))
+            }
+            return Self.output(Self.profiles)
+        }
+        let transport = DeviceInspectorTransport(run: { try await calls.run($0) })
+        let simulator = Self.simulator(deviceSetPath: nil, transport: transport)
+        let simulatorProfiles = try await simulator.profiles()
+        #expect(simulatorProfiles.profiles.map(\.kind) == [.configuration])
+        let remote = try Self.remote(transport: transport)
+        let configuration = try await remote.profiles(kind: .configuration)
+        #expect(configuration.profiles.map(\.kind) == [.configuration])
+        #expect(configuration.partialProvisioningProfiles.isEmpty)
+        let profile = try await remote.profile(identifier: "dev.example.configuration", kind: .configuration)
+        #expect(profile.identifier == "dev.example.configuration")
+        #expect(await calls.commands.count == 3)
+    }
+
     @Test func remoteFinderPathIsNotMistakenForALocalFile() async throws {
         let calls = InspectorCalls { _ in Self.output(Self.apps) }
         let inspector = try Self.remote(transport: .init(run: { try await calls.run($0) }))
@@ -211,8 +231,8 @@ import Testing
     }
 
     private static let xcode = URL(fileURLWithPath: "/Applications/FixtureXcode.app")
-    private static func simulator(transport: DeviceInspectorTransport) -> DeviceInspector {
-        let item = SimulatorHostDevice(identifier: "sim-udid", name: "Simulator", descriptiveName: "Simulator", runtimeIdentifier: "runtime", runtimeName: "iOS 27.2", productFamily: "iPhone", state: "Booted", ownerXcodeURL: xcode, deviceSetPath: "/fixture-device-set")
+    private static func simulator(deviceSetPath: String? = "/fixture-device-set", transport: DeviceInspectorTransport) -> DeviceInspector {
+        let item = SimulatorHostDevice(identifier: "sim-udid", name: "Simulator", descriptiveName: "Simulator", runtimeIdentifier: "runtime", runtimeName: "iOS 27.2", productFamily: "iPhone", state: "Booted", ownerXcodeURL: xcode, deviceSetPath: deviceSetPath)
         return DeviceInspector(device: .simulator(item), simulatorXcodeURL: xcode, transport: transport)
     }
     private static func remote(transport: DeviceInspectorTransport) throws -> DeviceInspector {

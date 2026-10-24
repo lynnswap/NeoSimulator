@@ -314,13 +314,22 @@ public struct DeviceInspector: Sendable {
         }
     }
 
-    @concurrent public func profiles() async throws -> DeviceProfilesSnapshot {
-        let result = try await coreDeviceResult(["device", "profile", "list"], operation: "Read Profiles")
-        guard ["configurationProfiles", "provisioningProfiles", "partialConfigurationProfiles", "partialProvisioningProfiles"].contains(where: { result[$0]?.array != nil }) else {
+    /// Lists the requested profile kind. When omitted, simulators request configuration
+    /// profiles; physical devices and virtual machines request all profile kinds.
+    @concurrent public func profiles(kind: DeviceProfileKind? = nil) async throws -> DeviceProfilesSnapshot {
+        let requestedKind: DeviceProfileKind?
+        if case .simulator = device { requestedKind = kind ?? .configuration }
+        else { requestedKind = kind }
+        var arguments = ["device", "profile", "list"]
+        if let requestedKind { arguments += ["--type", requestedKind.rawValue] }
+        let result = try await coreDeviceResult(arguments, operation: "Read Profiles")
+        let kinds = requestedKind.map { [$0] } ?? DeviceProfileKind.allCases
+        let listKeys = kinds.flatMap { [$0.rawValue + "Profiles", "partial" + $0.rawValue.capitalized + "Profiles"] }
+        guard listKeys.contains(where: { result[$0]?.array != nil }) else {
             throw failure(DeviceInspectorError.invalidResponse("devicectl omitted its profile lists."), operation: "Read Profiles")
         }
         var profiles: [DeviceProfile] = []
-        for kind in DeviceProfileKind.allCases {
+        for kind in kinds {
             for value in result[kind.rawValue + "Profiles"]?.array ?? [] {
                 guard let metadata = value.object,
                       let identifier = metadata[kind == .configuration ? "payloadIdentifier" : "uuid"]?.string ?? metadata["identifier"]?.string else {
@@ -331,13 +340,13 @@ public struct DeviceInspector: Sendable {
             }
         }
         return DeviceProfilesSnapshot(deviceID: device.id, profiles: profiles,
-            partialConfigurationProfiles: result["partialConfigurationProfiles"]?.array ?? [],
-            partialProvisioningProfiles: result["partialProvisioningProfiles"]?.array ?? [])
+            partialConfigurationProfiles: kinds.contains(.configuration) ? result["partialConfigurationProfiles"]?.array ?? [] : [],
+            partialProvisioningProfiles: kinds.contains(.provisioning) ? result["partialProvisioningProfiles"]?.array ?? [] : [])
     }
 
     /// Returns the metadata supplied by the public CLI, not the installed profile payload.
     @concurrent public func profile(identifier: String, kind: DeviceProfileKind) async throws -> DeviceProfile {
-        guard let profile = try await profiles().profiles.first(where: { $0.kind == kind && $0.identifier == identifier }) else {
+        guard let profile = try await profiles(kind: kind).profiles.first(where: { $0.identifier == identifier }) else {
             throw failure(DeviceInspectorError.profileNotFound(identifier), operation: "Read Profile")
         }
         return profile
