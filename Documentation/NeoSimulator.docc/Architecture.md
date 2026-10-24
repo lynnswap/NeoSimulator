@@ -69,6 +69,10 @@ other compatible installations internally. An unsupported `xcode-select`
 selection falls back to an installed Xcode 27 or later. Attaching a debugger to
 an already-running process is not a verified source-association path.
 
+Catalog and device-setting commands call the installed CoreSimulator `simctl`
+directly with the resolved Xcode's `DEVELOPER_DIR`. Discovery does not run the
+Xcode wrapper's first-launch installation.
+
 ## App ownership
 
 | Owner | Responsibility |
@@ -97,8 +101,10 @@ window.
 ## Device lifecycle
 
 Neo observes the default device set and, when present, Xcode's parallel testing
-set. It does not create the testing set. The manager coordinates attachment
-and process-source observations for its renderers. `AttachBootedOnStart`
+set when Show Parallel Testing Devices is enabled. It does not create the
+testing set. The manager coordinates attachment and process-source observations
+for both sets, and commands retain the selected device's set path.
+`AttachBootedOnStart`
 controls the initial booted-device snapshot; later boot transitions can attach
 new devices. Explicitly detached windows remain closed until the device leaves
 the booted state or the user opens it again.

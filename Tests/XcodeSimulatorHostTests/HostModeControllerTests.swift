@@ -947,7 +947,7 @@ struct HostModeControllerTests {
 
 @Suite struct SimulatorDeviceCatalogTests {
     @Test func menusListAvailableDevicesAcrossSupportedFamilies() throws {
-        let devices = try SimulatorDeviceCatalog.decode(Data(#"""
+        let data = Data(#"""
         {
           "devicetypes": [
             {"identifier":"phone-type","productFamily":"iPhone"},
@@ -967,7 +967,17 @@ struct HostModeControllerTests {
             ]
           }
         }
-        """#.utf8))
+        """#.utf8)
+        let devices = try SimulatorDeviceCatalog.decode(data)
+        let clones = try SimulatorDeviceCatalog.decode(data, deviceSetPath: "/custom/XCTestDevices")
+        #expect(clones.allSatisfy { $0.deviceSetPath == "/custom/XCTestDevices" })
+        #expect(devices.allSatisfy { $0.deviceSetPath == nil })
+        var reportedFailure = false
+        let available = SimulatorDeviceCatalog.appendingTestingDevices(to: devices, readTesting: {
+            throw CLIError.io("testing-catalog", "unavailable alternate device set")
+        }, onFailure: { error in reportedFailure = (error as? CLIError)?.identifier == "testing-catalog" })
+        #expect(available == devices)
+        #expect(reportedFailure)
         #expect(Set(devices.map(\.identifier)) == ["phone", "tv"])
         #expect(devices.first(where: { $0.identifier == "phone" })?.state == "Booted")
         #expect(devices.first(where: { $0.identifier == "tv" })?.runtimeName == "tvOS 27.0")

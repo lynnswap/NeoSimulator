@@ -11,6 +11,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     private var ownedDeviceIdentifiers: Set<String> = []
     private var releasingDevices: Set<String> = []
     private var requestObserver: NSObjectProtocol?
+    private var locationObserver: NSObjectProtocol?
     private var registrationErrorReported = false
     private var isTerminating = false
     private var recordingTerminationErrors: [Error] = []
@@ -66,6 +67,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     /// Reports changes to the touch indicator preferences, from Settings or
     /// `defaults write`, to the device windows.
     private var touchIndicatorObservation: DefaultsObservation?
+    private var testingDevicesObservation: DefaultsObservation?
 
     init(runtime: SimulatorRuntime, conflicts: HostConflictMonitor, isManaged: Bool = false) throws {
         try conflicts.check()
@@ -115,7 +117,21 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             .standard, keys: TouchIndicator.allCases.map(\.preferenceKey)) {
             NotificationCenter.default.post(name: TouchIndicator.didChangeNotification, object: UserDefaults.standard)
         }
+        testingDevicesObservation = DefaultsObservation(.standard, keys: [HostPreferences.showTestingDevices]) { [weak self] in
+            self?.applyTestingDeviceVisibility()
+        }
         notificationToken = try deviceSet.observe { [weak self] in self?.rescan() }
+        locationObserver = DistributedNotificationCenter.default().addObserver(
+            forName: Notification.Name("dev.lynnswap.NeoSimulator.DeviceLocationChanged"),
+            object: nil, queue: .main
+        ) { [weak self] notification in
+            let identifier = notification.object as? String
+            MainActor.assumeIsolated {
+                guard let identifier, let session = self?.sessions[identifier]?.session else { return }
+                do { try session.refreshLocationSelection() }
+                catch { self?.report(error) }
+            }
+        }
         signal(SIGTERM, SIG_IGN)
         Self.handoverTarget = self
         let handover = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .global())
@@ -292,7 +308,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             .appendingPathComponent("\(ProcessInfo.processInfo.processIdentifier).json")
     }
 
-    private func writeRegistration() throws {
+    private func writeRegistration(testingVisibilityChanged: Bool = false) throws {
         let url = registrationURL
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true,
                                                 attributes: [.posixPermissions: 0o700])
@@ -304,12 +320,14 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         try JSONEncoder().encode(registration).write(to: url, options: .atomic)
         DistributedNotificationCenter.default().postNotificationName(
             Notification.Name("dev.lynnswap.NeoSimulator.RendererDevicesDidChange"),
-            object: sessionIdentifier, userInfo: nil, deliverImmediately: true)
+            object: sessionIdentifier,
+            userInfo: testingVisibilityChanged ? ["testingVisibilityChanged": true] : nil,
+            deliverImmediately: true)
     }
 
-    private func updateRegistration() {
+    private func updateRegistration(testingVisibilityChanged: Bool = false) {
         guard isManaged, !stopped else { return }
-        do { try writeRegistration() }
+        do { try writeRegistration(testingVisibilityChanged: testingVisibilityChanged) }
         catch {
             if !registrationErrorReported {
                 registrationErrorReported = true
@@ -378,24 +396,32 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     /// Debug ▸ Show Parallel Testing Devices. Hiding closes the testing
     /// devices' windows without shutting the devices down.
     func toggleShowTestingDevices() {
-        let show = !showsTestingDevices
-        UserDefaults.standard.set(show, forKey: HostPreferences.showTestingDevices)
-        if show {
+        UserDefaults.standard.set(!showsTestingDevices, forKey: HostPreferences.showTestingDevices)
+    }
+
+    private func applyTestingDeviceVisibility() {
+        guard !stopped, !isTerminating else { return }
+        if showsTestingDevices {
             // Reattach every booted testing device, including previously closed windows.
             if let testingSet, let devices = try? readDevices(in: testingSet) {
                 suppressed.subtract(devices.map(\.identifier))
             }
         } else {
             let hadDeviceWindows = !sessions.isEmpty
+            if let testingSet {
+                do { ownedDeviceIdentifiers.subtract(try readDevices(in: testingSet).map(\.identifier)) }
+                catch { report(error) }
+            }
             // A restart keeps running without its window.
             for (identifier, controller) in sessions where controller.session.tools.deviceSetPath != nil {
                 sessions.removeValue(forKey: identifier)
                 awaitingReconnect.removeValue(forKey: identifier)
+                ownedDeviceIdentifiers.remove(identifier)
                 controller.invalidate()
             }
             if hadDeviceWindows && sessions.isEmpty { showDeviceBrowser() }
         }
-        rescan()
+        rescan(testingVisibilityChanged: true)
     }
 
     /// Opens TestingDeviceSetPath or ~/Library/Developer/XCTestDevices if it exists.
@@ -500,7 +526,9 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         // A quitting host opens nothing; callers do not report the cancellation.
         guard !stopped, !isTerminating else { throw CancellationError() }
         try conflicts.check()
-        guard let device = try readDevices().first(where: { $0.identifier == identifier }) else {
+        var devices = try readDevices()
+        if showsTestingDevices, let testingSet { devices += try readDevices(in: testingSet) }
+        guard let device = devices.first(where: { $0.identifier == identifier }) else {
             throw HostError.operation("The selected simulator is no longer available")
         }
         ownedDeviceIdentifiers.insert(identifier)
@@ -511,7 +539,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         UserDefaults.standard.set(identifier, forKey: HostPreferences.currentDeviceUDID)
         // Attach an already booting device when it finishes; avoid a second boot.
         if device.state != 2, device.state != 3, bootOperations[identifier] == nil {
-            let tools = try DeviceTools(identifier: identifier, xcodeURL: runtime.xcodeURL)
+            let tools = try DeviceTools(identifier: identifier, xcodeURL: runtime.xcodeURL,
+                                        deviceSetPath: device.deviceSetPath)
             bootOperations[identifier] = tools
             defer { bootOperations.removeValue(forKey: identifier) }
             try await tools.boot()
@@ -534,17 +563,17 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         controller.showAndActivate()
     }
 
-    private func rescan() {
-        do { try scanDevices() }
+    private func rescan(testingVisibilityChanged: Bool = false) {
+        do { try scanDevices(testingVisibilityChanged: testingVisibilityChanged) }
         catch let error as HostError {
             if case .conflict = error { handleHostConflict() }
             else { report(error) }
         } catch { report(error) }
     }
 
-    private func scanDevices() throws {
+    private func scanDevices(testingVisibilityChanged: Bool = false) throws {
         guard !stopped, !isTerminating else { return }
-        defer { updateRegistration() }
+        defer { updateRegistration(testingVisibilityChanged: testingVisibilityChanged) }
         try conflicts.check()
         var devices = try readDevices()
         if showsTestingDevices, let testingSet { devices += try readDevices(in: testingSet) }
@@ -1010,6 +1039,10 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             DistributedNotificationCenter.default().removeObserver(requestObserver)
             self.requestObserver = nil
         }
+        if let locationObserver {
+            DistributedNotificationCenter.default().removeObserver(locationObserver)
+            self.locationObserver = nil
+        }
         if isManaged {
             do { try FileManager.default.removeItem(at: registrationURL) }
             catch where (error as NSError).code == NSFileNoSuchFileError {}
@@ -1017,6 +1050,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         }
         conflicts.onConflict = nil
         touchIndicatorObservation = nil
+        testingDevicesObservation = nil
         if let notificationToken {
             do { try deviceSet.stopObserving(notificationToken) }
             catch { hostLog("Could not unregister simulator notifications: \(error.localizedDescription)") }

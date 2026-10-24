@@ -1865,14 +1865,13 @@ struct InputFocusTests {
         let frame = try #require(first.window?.frame)
         // Closing through the delegate saves geometry for this screen arrangement.
         first.window?.close()
-        let device = (preferences.values[HostPreferences.devicePreferences] as? [String: Any])?["test-device"]
-            as? [String: Any]
+        let device = preferences.preferences(forDevice: "test-device")
         #expect(device?["ChromeTint"] as? String == "#FFFFFF")
         let geometry = device?["SimulatorWindowGeometry"] as? [String: Any]
         #expect((geometry?[elsewhere] as? [String: Any])?["WindowCenter"] as? String == "{10, 20}")
-        let saved = geometry?[preferences.screenConfiguration(for: screens)] as? [String: Any]
-        #expect(saved?["WindowScale"] as? Double == 1.5)
-        #expect(saved?["WindowCenter"] as? String == NSStringFromPoint(NSPoint(x: frame.midX, y: frame.midY)))
+        let saved = preferences.windowGeometry(forDevice: "test-device", screens: screens)
+        #expect(saved.scale == 1.5)
+        #expect(saved.center == NSPoint(x: frame.midX, y: frame.midY))
         let (second, reopened) = try open()
         #expect(reopened.renderScale == 1.5)
         second.invalidate()
@@ -1949,8 +1948,7 @@ struct InputFocusTests {
         window.center()
         #expect(window.frame == placed)
         let configurations = preferences.values[HostPreferences.screenConfigurations] as? [String: [String]]
-        #expect(configurations?.count == 2)
-        #expect(configurations?[elsewhere] == ["{{-9000, 9000}, {640, 480}}"])
+        #expect(configurations == [elsewhere: ["{{-9000, 9000}, {640, 480}}"]])
     }
 
     @Test func restartsAndRotationsKeepTheWindowScale() async throws {
@@ -3388,7 +3386,15 @@ struct InputFocusTests {
         #expect(try await connect().appliedLocations == [.coordinate(45.5, 67.5)])
         defaults.set(["mode": "none"], forKey: key)
         #expect(defaults.synchronize())
+        try session.refreshLocationSelection()
+        #expect(session.location == LocationSelection.none)
+        #expect(display.appliedLocations == [.coordinate(45.5, 67.5)])
         #expect(try await connect().appliedLocations == [.cleared])
+        defaults.set(["mode": "custom", "latitude": 12.5, "longitude": 34.5], forKey: key)
+        #expect(defaults.synchronize())
+        try session.refreshLocationSelection()
+        #expect(session.location == .custom)
+        #expect(display.appliedLocations == [.coordinate(45.5, 67.5)])
     }
 
     @Test func aRestoreWaitingForScenariosKeepsLaterChoicesAndEndedSessions() async throws {
@@ -3868,11 +3874,8 @@ struct InputFocusTests {
         controller.perform(.externalDisplay1920x1080)
         #expect(screen.requests == ["mode 1920x1080@1"])
         #expect(controller.session.externalDisplayMode == .size1920x1080)
-        // Use Simulator.app's key and tag without disturbing other device preferences.
-        let devices = try #require(preferences.values[HostPreferences.devicePreferences] as? [String: Any])
-        let saved = try #require(devices["test-device"] as? [String: Any])
-        #expect(saved["SimulatorExternalDisplay"] as? Int == 2614)
-        #expect(saved["ConnectHardwareKeyboard"] as? Bool == false)
+        #expect(preferences.externalDisplayTag(forDevice: "test-device") == 2614)
+        #expect(!preferences.connectsHardwareKeyboard(forDevice: "test-device"))
         #expect(preferences.externalDisplayTag(forDevice: "other-device") == 2214)
         controller.perform(.externalDisplay3840x2160)
         #expect(screen.requests == ["mode 1920x1080@1", "mode 3840x2160@1"])
@@ -5535,9 +5538,7 @@ struct InputFocusTests {
         a.perform(.connectHardwareKeyboard)
         for _ in 0..<100 where first.hardwareKeyboard.isEmpty { await Task.yield() }
         #expect(first.hardwareKeyboard == [false])
-        // Simulator.app stores this at DevicePreferences[UDID].ConnectHardwareKeyboard.
-        let devices = preferences.values[HostPreferences.devicePreferences] as? [String: [String: Any]]
-        #expect(devices?["A"]?[HostPreferences.connectHardwareKeyboard] as? Bool == false)
+        #expect(!preferences.connectsHardwareKeyboard(forDevice: "A"))
         #expect(connect.state?(a) == .off && connect.state?(b) == .on)
         #expect(first.keyboard == [true, false])
         a.windowDidResignKey(Notification(name: NSWindow.didResignKeyNotification, object: a.window))
@@ -6831,16 +6832,15 @@ struct HostBehaviorTests {
         preferences.setWindowGeometry(center: NSPoint(x: 10.5, y: -20), scale: 1.5, forDevice: "A", screens: two)
         preferences.setWindowGeometry(center: NSPoint(x: 300, y: 400), scale: 0.5, forDevice: "B", screens: two)
         preferences.setWindowGeometry(center: NSPoint(x: 1, y: 2), scale: nil, forDevice: "B", screens: two)
-        // Simulator.app maps ScreenConfigurations UUIDs to DevicePreferences[UDID].SimulatorWindowGeometry.
-        let configurations = preferences.values["ScreenConfigurations"] as? [String: [String]]
-        let (name, frames) = try #require(configurations?.first)
-        #expect(configurations?.count == 1 && UUID(uuidString: name)?.uuidString == name)
-        #expect(frames == ["{{0, 0}, {1512, 982}}", "{{-565, 982}, {2560, 1440}}"])
-        let devices = preferences.values["DevicePreferences"] as? [String: [String: [String: [String: Any]]]]
-        #expect(devices?["A"]?["SimulatorWindowGeometry"]?[name]?["WindowScale"] as? Double == 1.5)
-        #expect(devices?["A"]?["SimulatorWindowGeometry"]?[name]?["WindowCenter"] as? String == "{10.5, -20}")
-        #expect(devices?["B"]?["SimulatorWindowGeometry"]?[name]?["WindowScale"] == nil)
-        #expect(devices?["B"]?["SimulatorWindowGeometry"]?[name]?["WindowCenter"] as? String == "{1, 2}")
+        let name = preferences.screenConfiguration(for: two)
+        #expect(UUID(uuidString: name)?.uuidString == name)
+        #expect(preferences.values["ScreenConfigurations"] == nil)
+        let deviceA = preferences.values["DevicePreferences.A"] as? [String: [String: [String: Any]]]
+        let deviceB = preferences.values["DevicePreferences.B"] as? [String: [String: [String: Any]]]
+        #expect(deviceA?["SimulatorWindowGeometry"]?[name]?["WindowScale"] as? Double == 1.5)
+        #expect(deviceA?["SimulatorWindowGeometry"]?[name]?["WindowCenter"] as? String == "{10.5, -20}")
+        #expect(deviceB?["SimulatorWindowGeometry"]?[name]?["WindowScale"] == nil)
+        #expect(deviceB?["SimulatorWindowGeometry"]?[name]?["WindowCenter"] as? String == "{1, 2}")
         let saved = preferences.windowGeometry(forDevice: "A", screens: two.reversed())
         #expect(saved.center == NSPoint(x: 10.5, y: -20) && saved.scale == 1.5)
         let alone = [laptop], moved = [laptop, NSRect(x: 1512, y: 0, width: 2560, height: 1440)]
@@ -6848,11 +6848,13 @@ struct HostBehaviorTests {
             let other = preferences.windowGeometry(forDevice: "A", screens: screens)
             #expect(other.center == nil && other.scale == nil)
         }
-        #expect((preferences.values["ScreenConfigurations"] as? [String: [String]])?.count == 3)
+        #expect(Set([two, alone, moved].map { preferences.screenConfiguration(for: $0) }).count == 3)
+        #expect(MemoryPreferences().screenConfiguration(for: two.reversed()) == name)
         preferences.setWindowGeometry(center: NSPoint(x: 5, y: 6), scale: 2, forDevice: "A", screens: alone)
         #expect(preferences.windowGeometry(forDevice: "A", screens: alone).center == NSPoint(x: 5, y: 6))
         #expect(preferences.windowGeometry(forDevice: "A", screens: two).center == NSPoint(x: 10.5, y: -20))
         let current = preferences.screenConfiguration(for: alone)
+        preferences.values.removeValue(forKey: "DevicePreferences.A")
         for invalid: Any in [0, -1, "1.5", Double.nan] {
             preferences.values["DevicePreferences"] = ["A": ["SimulatorWindowGeometry": [current: ["WindowScale": invalid]]]]
             #expect(preferences.windowGeometry(forDevice: "A", screens: alone).scale == nil)
@@ -6862,14 +6864,47 @@ struct HostBehaviorTests {
             preferences.values["DevicePreferences"] = ["A": ["SimulatorWindowGeometry": [current: ["WindowCenter": invalid]]]]
             #expect(preferences.windowGeometry(forDevice: "A", screens: alone).center == nil)
         }
-        // Simulator.app replaces malformed arrangements; valid keys must be UUIDs.
+        // Existing valid UUIDs win over the generated arrangement ID.
+        let legacy = UUID().uuidString
+        preferences.values["ScreenConfigurations"] = [legacy: ["{{0, 0}, {1512, 982}}"]]
+        #expect(preferences.screenConfiguration(for: alone) == legacy)
         preferences.values["ScreenConfigurations"] = ["laptop": ["{{0, 0}, {1512, 982}}"]]
-        let named = preferences.screenConfiguration(for: alone)
-        #expect(named != "laptop" && UUID(uuidString: named) != nil)
-        preferences.values["ScreenConfigurations"] = [current: ["{{0, 0}, {1512, 982}}"], "other": [1]] as [String: Any]
-        let replaced = preferences.screenConfiguration(for: alone)
-        #expect(replaced != current)
-        #expect(preferences.values["ScreenConfigurations"] as? [String: [String]] == [replaced: ["{{0, 0}, {1512, 982}}"]])
+        #expect(preferences.screenConfiguration(for: alone) == current)
+        let malformed: [String: Any] = [legacy: ["{{0, 0}, {1512, 982}}"], "other": [1]]
+        preferences.values["ScreenConfigurations"] = malformed
+        #expect(preferences.screenConfiguration(for: alone) == legacy)
+        #expect((preferences.values["ScreenConfigurations"] as? NSDictionary) == (malformed as NSDictionary))
+    }
+
+    @Test func rendererDefaultsPreserveIndependentDeviceSavesAndLegacyGeometry() throws {
+        let domain = "NeoSimulatorTests.\(UUID().uuidString)"
+        let first = try #require(UserDefaults(suiteName: domain))
+        let second = try #require(UserDefaults(suiteName: domain))
+        defer { first.removePersistentDomain(forName: domain) }
+        let screens = [NSRect(x: 0, y: 0, width: 1512, height: 982)]
+        let arrangement = UUID().uuidString
+        let legacy: [String: Any] = [
+            "A": ["SimulatorWindowGeometry": [arrangement: ["WindowCenter": "{10, 20}", "WindowScale": 1.5]],
+                  HostPreferences.connectHardwareKeyboard: true],
+            "B": [HostPreferences.connectHardwareKeyboard: true]
+        ]
+        first.set(legacy, forKey: HostPreferences.devicePreferences)
+        first.set([arrangement: screens.map(NSStringFromRect)], forKey: HostPreferences.screenConfigurations)
+        #expect(first.synchronize())
+        #expect(second.windowGeometry(forDevice: "A", screens: screens).center == NSPoint(x: 10, y: 20))
+        #expect(second.screenConfiguration(for: screens) == arrangement)
+
+        // B saves after A has read its record, but before A commits its change.
+        // A whole-dictionary write would overwrite B's keyboard preference.
+        first.updatePreferences(forDevice: "A") { device in
+            second.setConnectsHardwareKeyboard(false, forDevice: "B")
+            device[HostPreferences.connectHardwareKeyboard] = false
+        }
+        #expect(first.synchronize() && second.synchronize())
+        #expect(!first.connectsHardwareKeyboard(forDevice: "A"))
+        #expect(!first.connectsHardwareKeyboard(forDevice: "B"))
+        #expect(second.windowGeometry(forDevice: "A", screens: screens).scale == 1.5)
+        #expect((first.object(forKey: HostPreferences.devicePreferences) as? NSDictionary) == (legacy as NSDictionary))
     }
 
     @Test func aBezelWithTopPaddingMayReachAboveTheScreen() throws {

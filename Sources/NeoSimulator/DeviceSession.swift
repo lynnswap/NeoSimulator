@@ -903,6 +903,13 @@ final class DeviceSession {
 
     // MARK: Location
 
+    /// Reflects a location already applied by the manager without applying it again.
+    func refreshLocationSelection() throws {
+        if let preset = try DeviceLocationPreset.load(for: device.id, among: locationScenarios) {
+            location = preset.selection
+        }
+    }
+
     /// Restores the saved location after loading the runtime's scenarios. No scenarios means no selection.
     func restoreLocation() async throws {
         let scenarios = try await display.locationScenarios()

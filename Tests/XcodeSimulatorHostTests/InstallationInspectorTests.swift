@@ -5,6 +5,40 @@ import Testing
 
 @Suite
 struct InstallationInspectorTests {
+    @Test func simulatorCommandsPreserveXcodeSelectionWithoutInvokingInstallingWrapper() throws {
+        let fixture = try InstallationFixture(simctlExpectedVersion: "9999", coreSimulatorBundleVersion: "1174.9.2")
+        try Data(#"""
+        #!/bin/sh
+        printf install > "$0.install"
+        exit 99
+        """#.utf8).write(to: fixture.simctlWrapperURL)
+        try Data(#"""
+        #!/bin/sh
+        printf '%s\n' "$DEVELOPER_DIR" "$@"
+        """#.utf8).write(to: fixture.simctlBinaryURL)
+        let output = try SystemCommandRunner().runSimctl(
+            xcodeURL: fixture.targetXcodeURL, arguments: ["list", "--json"],
+            coreSimulatorFrameworkURL: fixture.coreSimulatorFrameworkURL
+        )
+        #expect(output.terminationStatus == 0)
+        #expect(output.stdoutText == "\(fixture.developerDirectoryURL.path)\nlist\n--json")
+        #expect(!FileManager.default.fileExists(atPath: fixture.simctlWrapperURL.path + ".install"))
+    }
+
+    @Test func testingCloneBootUsesTheRecordedDeviceSet() throws {
+        let fixture = try InstallationFixture()
+        try Data(#"""
+        #!/bin/sh
+        printf '%s\n' "$@"
+        """#.utf8).write(to: fixture.simctlBinaryURL)
+        let output = try SystemCommandRunner().runSimctl(
+            xcodeURL: fixture.targetXcodeURL, arguments: ["boot", "clone"], deviceSetPath: "/custom/XCTestDevices",
+            coreSimulatorFrameworkURL: fixture.coreSimulatorFrameworkURL
+        )
+        #expect(output.terminationStatus == 0)
+        #expect(output.stdoutText == "--set\n/custom/XCTestDevices\nboot\nclone")
+    }
+
     @Test func validatesSelectedXcode27AndNeoHostComponents() throws {
         let fixture = try InstallationFixture()
         let inspector = makeInspector(fixture)
@@ -486,6 +520,24 @@ struct XcodeConnectionsTests {
         #expect(tracker.observe([device("A", "Booted"), device("B", "Booted")], attachInitially: true).devicesToAttach == ["A", "B"])
     }
 
+    @Test func testingVisibilityChangesReattachClonesAndPreserveNormalWindowChoices() {
+        let tracker = SimulatorBootTracker()
+        func device(_ identifier: String, _ state: String = "Booted", testing: Bool = false) -> SimulatorHostDevice {
+            .init(identifier: identifier, name: identifier, descriptiveName: identifier, runtimeIdentifier: "runtime", runtimeName: "iOS", productFamily: "iPhone", state: state, deviceSetPath: testing ? "/custom/XCTestDevices" : nil)
+        }
+        let closedNormal = device("closed")
+        let clone = device("testing", testing: true)
+        #expect(tracker.observe([closedNormal, device("pending", "Shutdown"), clone], attachInitially: false).devicesToAttach.isEmpty)
+        let current = [closedNormal, device("pending"), clone]
+        #expect(tracker.observe(current, attachInitially: false).devicesToAttach == ["pending"])
+        // OFF and ON can both occur before another catalog snapshot is read.
+        tracker.forgetTestingDevices()
+        #expect(tracker.observe(current, attachInitially: false).devicesToAttach == ["pending", "testing"])
+        tracker.didAttach("pending")
+        tracker.didAttach("testing")
+        #expect(tracker.observe(current, attachInitially: false).devicesToAttach.isEmpty)
+    }
+
     @Test func catalogChangesRefreshUnownedDevicesWithoutAttachingThem() {
         let tracker = SimulatorBootTracker()
         func device(_ identifier: String, _ state: String, name: String = "iPhone") -> SimulatorHostDevice {
@@ -522,6 +574,17 @@ struct XcodeConnectionsTests {
         #expect(SimulatorStartupSelection.device(in: [device, booted], attachInitially: true, startsSession: true, startsLastDevice: true, current: device.identifier, hasOwnedDevices: false) == nil)
     }
 
+    @Test func disablingTestingDevicesDiscardsPendingCloneConnections() async throws {
+        let tracker = XcodeConnectionTracker()
+        let clone = XcodeSimulatorConnection(event: .init(processIdentifier: 1, startSeconds: 10, startMicroseconds: 0),
+            deviceIdentifier: "clone", xcodeURL: URL(fileURLWithPath: "/Applications/Xcode.app"), deviceSetPath: "/custom/XCTestDevices")
+        await #expect(throws: CLIError.self) {
+            _ = try await tracker.synchronize(observations: [clone], testingDeviceSetPath: clone.deviceSetPath) { _ in throw CLIError.io("test", "retry") }
+        }
+        #expect(try await !tracker.synchronize(observations: []) { _ in Issue.record("A hidden testing device must not be attached.") })
+        #expect(!tracker.hasPendingConnection(forDevice: "clone"))
+    }
+
     @Test func launchEnvironmentRequiresMatchingDeviceAndUnambiguousXcodeFootprint() {
         let identifier = "CFB0DFE8-2184-4B1C-A6EF-9B4AEEDCB823"
         let executable = "/Users/test/Library/Developer/CoreSimulator/Devices/\(identifier)/data/Containers/Bundle/Application/ID/App.app/App"
@@ -536,6 +599,14 @@ struct XcodeConnectionsTests {
         let result = SimulatorProcessConnections.decode(arguments([device, footprint]), executablePath: executable, event: event)
         #expect(result?.deviceIdentifier == identifier)
         #expect(result?.xcodeURL.path == "/Applications/Xcode 27.1.app")
+        let testingPath = "/custom/XCTestDevices"
+        let cloneExecutable = "\(testingPath)/\(identifier)/data/Containers/Bundle/Application/ID/App.app/App"
+        let enabledPath = SimulatorDeviceSets.testingPath(showTesting: true, customPath: testingPath)
+        #expect(SimulatorProcessConnections.decode(arguments([device, footprint]), executablePath: cloneExecutable, event: event, testingDeviceSetPath: enabledPath)?.deviceSetPath == testingPath)
+        let disabledPath = SimulatorDeviceSets.testingPath(showTesting: false, customPath: testingPath)
+        #expect(disabledPath == nil)
+        #expect(SimulatorProcessConnections.decode(arguments([device, footprint]), executablePath: cloneExecutable, event: event, testingDeviceSetPath: disabledPath) == nil)
+        #expect(SimulatorProcessConnections.decode(arguments([device, footprint]), executablePath: cloneExecutable, event: event, testingDeviceSetPath: "/other/XCTestDevices") == nil)
         #expect(SimulatorProcessConnections.decode(arguments([device]), executablePath: executable, event: event) == nil)
         #expect(SimulatorProcessConnections.decode(arguments([device, footprint]), executablePath: executable.replacingOccurrences(of: identifier, with: "OTHER"), event: event) == nil)
         #expect(SimulatorProcessConnections.decode(arguments([device, footprint, "GPUTOOLS_XCODE_DEVELOPER_PATH=/Applications/Other.app/Contents/Developer"]), executablePath: executable, event: event) == nil)

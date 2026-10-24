@@ -35,6 +35,8 @@ device mask, GIF image size, and the file-size versus animation-smoothness choic
 
 Renderer preferences use `dev.lynnswap.NeoSimulator.Renderer`. Existing values
 are migrated from `dev.lynnswap.NeoSimulator` on first use.
+Per-device location choices use `DeviceLocationPreset.<UDID>` in
+`dev.lynnswap.NeoSimulator`, shared by the manager and renderers.
 
 | Preference | Effect |
 | --- | --- |
@@ -48,11 +50,13 @@ are migrated from `dev.lynnswap.NeoSimulator` on first use.
 | `EnableKeyboardSync` | Follow the Mac input-source language; initially on. |
 | `UseTrackpadForce` | Use Force Touch pressure. |
 | `RecentAudioInputDeviceUIDs`, `RecentAudioOutputDeviceUIDs` | Preferred available audio devices. |
-| `LocationMode`, `LocationLatitude`, `LocationLongitude`, `LocationScenario` | Last simulated location. |
+| `LocationMode`, `LocationLatitude`, `LocationLongitude`, `LocationScenario` | Default location for devices without a saved per-device choice. |
 | `SlowMotionAnimation`, `GraphicsQualityOverride` | Debug settings applied on connection. |
 
 `ShowPinchPivotPoint` and `HighlightEdgeGestures` can also be changed through
 `defaults write`. Preference changes are observed while Neo runs. Hardware
-keyboard and external-display choices are per-device entries in
-`DevicePreferences`. CoreSimulator's `FramebufferServerGPUPolicy` is shared with
-other simulator hosts.
+keyboard, external-display choices, and window geometry use independent
+`DevicePreferences.<UDID>` records so renderers can save different devices
+concurrently. Existing entries in the `DevicePreferences` dictionary remain
+readable until that device is next saved. CoreSimulator's
+`FramebufferServerGPUPolicy` is shared with other simulator hosts.

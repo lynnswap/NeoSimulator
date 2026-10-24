@@ -78,6 +78,17 @@ final class SimulatorManagerModel {
         }
     }
 
+    func rendererDevicesDidChange(testingVisibilityChanged: Bool) async {
+        if testingVisibilityChanged {
+            do { try await controller.testingDeviceVisibilityDidChange() }
+            catch {
+                reportBackgroundError(error)
+                onChange?()
+            }
+        }
+        await refresh()
+    }
+
     func inspectDevice(_ identifier: String?) async {
         let state = devices.first { $0.identifier == identifier }?.state
         guard inspectedDeviceIdentifier != identifier || inspectedState != state else { return }
@@ -206,8 +217,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.onError = { [weak self] error in self?.present(error) }
         rendererDevicesObserver = DistributedNotificationCenter.default().addObserver(
             forName: Notification.Name("dev.lynnswap.NeoSimulator.RendererDevicesDidChange"), object: nil, queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor in await self?.model.refresh() }
+        ) { [weak self] notification in
+            let testingVisibilityChanged = notification.userInfo?["testingVisibilityChanged"] as? Bool == true
+            Task { @MainActor in
+                await self?.model.rendererDevicesDidChange(testingVisibilityChanged: testingVisibilityChanged)
+            }
         }
         workspaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main

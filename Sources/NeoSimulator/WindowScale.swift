@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 
 /// Window scaling modes; they resize the presentation without changing the guest screen.
 enum WindowScaleMode: String {
@@ -180,7 +181,6 @@ enum WindowGeometryKind {
 extension PreferenceStore {
     /// Reads the saved center and scale for this screen arrangement.
     /// Zero/unreadable centers and nonpositive scales are absent.
-    /// Reading registers a new screen arrangement if needed.
     func windowGeometry(forDevice identifier: String, screens: [NSRect],
                         kind: WindowGeometryKind = .device) -> (center: NSPoint?, scale: CGFloat?) {
         let configuration = screenConfiguration(for: screens)
@@ -204,34 +204,41 @@ extension PreferenceStore {
         }
     }
 
-    /// The device's own preferences, `DevicePreferences[UDID]`, or nil when
-    /// it has none.
+    /// Reads an independent record, falling back to the previous shared dictionary.
     func preferences(forDevice identifier: String) -> [String: Any]? {
-        (object(forKey: HostPreferences.devicePreferences) as? [String: Any])?[identifier] as? [String: Any]
+        object(forKey: devicePreferencesKey(for: identifier)) as? [String: Any]
+            ?? (object(forKey: HostPreferences.devicePreferences) as? [String: Any])?[identifier] as? [String: Any]
     }
 
-    /// Changes the device's own preferences, keeping the other devices'.
+    /// Each renderer owns its devices; separate keys prevent another renderer's save
+    /// from replacing this device's record. The legacy dictionary remains read-only.
     func updatePreferences(forDevice identifier: String, _ change: (inout [String: Any]) -> Void) {
-        var devices = object(forKey: HostPreferences.devicePreferences) as? [String: Any] ?? [:]
-        var device = devices[identifier] as? [String: Any] ?? [:]
+        var device = preferences(forDevice: identifier) ?? [:]
         change(&device)
-        devices[identifier] = device
-        set(devices, forKey: HostPreferences.devicePreferences)
+        set(device, forKey: devicePreferencesKey(for: identifier))
     }
 
-    /// Finds the screen arrangement independent of order, or saves it under a new UUID.
-    /// Malformed frame lists reset the stored arrangements; invalid UUID keys are skipped.
+    private func devicePreferencesKey(for identifier: String) -> String {
+        "\(HostPreferences.devicePreferences).\(identifier)"
+    }
+
+    /// Keeps existing arrangement UUIDs so saved geometry remains reachable.
+    /// New arrangements have a stable ID without a shared registry to race over.
     func screenConfiguration(for screens: [NSRect]) -> String {
-        var configurations = object(forKey: HostPreferences.screenConfigurations) as? [String: [String]] ?? [:]
-        for (name, frames) in configurations where frames.count == screens.count {
-            let saved = frames.map(NSRectFromString)
-            if screens.allSatisfy(saved.contains), let identifier = UUID(uuidString: name) {
+        let configurations = object(forKey: HostPreferences.screenConfigurations) as? [String: Any] ?? [:]
+        let frames = screens.map(NSStringFromRect).sorted()
+        for name in configurations.keys.sorted() {
+            guard let saved = configurations[name] as? [String], let identifier = UUID(uuidString: name) else { continue }
+            if saved.map({ NSStringFromRect(NSRectFromString($0)) }).sorted() == frames {
                 return identifier.uuidString
             }
         }
-        let identifier = UUID().uuidString
-        configurations[identifier] = screens.map(NSStringFromRect)
-        set(configurations, forKey: HostPreferences.screenConfigurations)
-        return identifier
+        // NSStringFromRect emits a single line. Sorting and separating the frames
+        // preserves screen order independence without process-randomized hashing.
+        let digest = Array(SHA256.hash(data: Data(frames.joined(separator: "\n").utf8)))
+        return UUID(uuid: (digest[0], digest[1], digest[2], digest[3],
+                           digest[4], digest[5], digest[6], digest[7],
+                           digest[8], digest[9], digest[10], digest[11],
+                           digest[12], digest[13], digest[14], digest[15])).uuidString
     }
 }

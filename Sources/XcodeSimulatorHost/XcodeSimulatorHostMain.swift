@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import OSLog
 
 public struct SimulatorXcode: Sendable, Equatable {
     public let url: URL
@@ -22,8 +23,9 @@ public struct SimulatorHostDevice: Sendable, Equatable {
     public let productFamily: String
     public let state: String
     public let ownerXcodeURL: URL?
+    public let deviceSetPath: String?
 
-    public init(identifier: String, name: String, descriptiveName: String, runtimeIdentifier: String, runtimeName: String, productFamily: String, state: String, ownerXcodeURL: URL? = nil) {
+    public init(identifier: String, name: String, descriptiveName: String, runtimeIdentifier: String, runtimeName: String, productFamily: String, state: String, ownerXcodeURL: URL? = nil, deviceSetPath: String? = nil) {
         self.identifier = identifier
         self.name = name
         self.descriptiveName = descriptiveName
@@ -32,6 +34,7 @@ public struct SimulatorHostDevice: Sendable, Equatable {
         self.productFamily = productFamily
         self.state = state
         self.ownerXcodeURL = ownerXcodeURL
+        self.deviceSetPath = deviceSetPath
     }
 }
 
@@ -87,6 +90,8 @@ struct RendererRegistration: Codable, Sendable {
 public actor SimulatorHostController {
     private let rendererApplicationURL: URL
     private let runner = SystemCommandRunner()
+    private let catalogLogger = Logger(subsystem: "dev.lynnswap.NeoSimulator", category: "Catalog")
+    private var lastTestingCatalogDiagnostic: String?
     private let startedAt = Date().timeIntervalSince1970
     private let connectionTracker = XcodeConnectionTracker()
     private let bootTracker = SimulatorBootTracker()
@@ -161,7 +166,7 @@ public actor SimulatorHostController {
                 let owner = renderers.first { $0.deviceIdentifiers.contains(device.identifier) }
                 return SimulatorHostDevice(identifier: device.identifier, name: device.name, descriptiveName: device.descriptiveName,
                     runtimeIdentifier: device.runtimeIdentifier, runtimeName: device.runtimeName, productFamily: device.productFamily,
-                    state: device.state, ownerXcodeURL: owner.map { URL(fileURLWithPath: $0.xcodePath, isDirectory: true) })
+                    state: device.state, ownerXcodeURL: owner.map { URL(fileURLWithPath: $0.xcodePath, isDirectory: true) }, deviceSetPath: device.deviceSetPath)
             }
         }
     }
@@ -186,7 +191,7 @@ public actor SimulatorHostController {
         if route.preferences.effectiveRoute == .coreSimulator {
             try await self.openRendererDevice(identifier, xcode: xcode, core: core)
         } else {
-            if device.state == "Shutdown" { _ = try self.runSimctl(xcode: xcode, arguments: ["boot", identifier]) }
+            if device.state == "Shutdown" { _ = try self.runSimctl(xcode: xcode, arguments: ["boot", identifier], deviceSetPath: device.deviceSetPath) }
             _ = try await core.use(.deviceHub, xcodeURL: xcode.applicationURL)
         }
     }
@@ -222,7 +227,7 @@ public actor SimulatorHostController {
             var changed = false
             var firstFailure: (any Error)?
             do {
-                changed = try await self.connectionTracker.synchronize(observations: SimulatorProcessConnections.read()) { connection in
+                changed = try await self.connectionTracker.synchronize(observations: SimulatorProcessConnections.read(), testingDeviceSetPath: SimulatorDeviceSets.testingPath()) { connection in
                     if !attachInitially && connection.event.startTime < self.startedAt { return }
                     let xcode = try self.makeInspector().xcode(at: connection.xcodeURL)
                     guard try self.deviceCatalog(xcode: xcode).contains(where: { $0.identifier == connection.deviceIdentifier }) else {
@@ -255,7 +260,7 @@ public actor SimulatorHostController {
                 }
                 let current = rendererDefaults?.string(forKey: "CurrentDeviceUDID") ?? managerDefaults?.string(forKey: "CurrentDeviceUDID")
                 self.startupDeviceIdentifier = SimulatorStartupSelection.device(
-                    in: catalog, attachInitially: attachInitially,
+                    in: catalog.filter { $0.deviceSetPath == nil }, attachInitially: attachInitially,
                     startsSession: savedBoolean("SessionOnLaunch"), startsLastDevice: savedBoolean("StartLastDeviceOnLaunch"),
                     current: current, hasOwnedDevices: !ownedIdentifiers.isEmpty
                 )?.identifier
@@ -270,6 +275,11 @@ public actor SimulatorHostController {
             if let firstFailure { throw firstFailure }
             return changed
         }
+    }
+
+    /// Invalidates testing-device attachments after a visibility change, including changes between catalog polls.
+    public func testingDeviceVisibilityDidChange() async throws {
+        try await operation { self.bootTracker.forgetTestingDevices() }
     }
 
     public func quitRenderer(keepingDevicesRunning: Bool? = nil) async throws {
@@ -406,13 +416,25 @@ public actor SimulatorHostController {
         catch let error as SimulatorHostFailure { throw error }
         catch { throw SimulatorHostFailure(error) }
     }
-    private func runSimctl(xcode: XcodeInstallation, arguments: [String]) throws -> Data {
-        let output = try runner.run(executable: xcode.applicationURL.appendingPathComponent(ToolConstants.simctlWrapperPath), arguments: arguments)
+    private func runSimctl(xcode: XcodeInstallation, arguments: [String], deviceSetPath: String? = nil) throws -> Data {
+        let output = try runner.runSimctl(xcodeURL: xcode.applicationURL, arguments: arguments, deviceSetPath: deviceSetPath)
         guard output.terminationStatus == 0 else { throw CLIError.io("simctl", output.stderrText) }
         return output.stdout
     }
     private func deviceCatalog(xcode: XcodeInstallation) throws -> [SimulatorHostDevice] {
-        try SimulatorDeviceCatalog.decode(runSimctl(xcode: xcode, arguments: ["list", "--json"]))
+        let devices = try SimulatorDeviceCatalog.decode(runSimctl(xcode: xcode, arguments: ["list", "--json"]))
+        guard let path = SimulatorDeviceSets.testingPath(), FileManager.default.fileExists(atPath: path) else { return devices }
+        return SimulatorDeviceCatalog.appendingTestingDevices(to: devices, readTesting: {
+            let clones = try SimulatorDeviceCatalog.decode(runSimctl(xcode: xcode, arguments: ["list", "--json"], deviceSetPath: path), deviceSetPath: path)
+            lastTestingCatalogDiagnostic = nil
+            return clones
+        }, onFailure: { error in
+            let detail = "\(path): \(error.localizedDescription)"
+            if lastTestingCatalogDiagnostic != detail {
+                catalogLogger.error("Parallel testing devices are unavailable; normal devices remain available. \(detail, privacy: .public)")
+                lastTestingCatalogDiagnostic = detail
+            }
+        })
     }
 }
 enum SimulatorDeviceCatalog {
@@ -438,7 +460,14 @@ enum SimulatorDeviceCatalog {
         let devices: [String: [Device]]
     }
 
-    static func decode(_ data: Data) throws -> [SimulatorHostDevice] {
+    static func appendingTestingDevices(
+        to devices: [SimulatorHostDevice], readTesting: () throws -> [SimulatorHostDevice], onFailure: (any Error) -> Void
+    ) -> [SimulatorHostDevice] {
+        do { return devices + (try readTesting()) }
+        catch { onFailure(error); return devices }
+    }
+
+    static func decode(_ data: Data, deviceSetPath: String? = nil) throws -> [SimulatorHostDevice] {
         let catalog = try JSONDecoder().decode(Catalog.self, from: data)
         let supportedFamilies: Set<String> = ["iPhone", "iPad", "Apple TV", "Apple Watch", "Apple Vision"]
         let supportedTypes = Dictionary(uniqueKeysWithValues: catalog.devicetypes.filter { supportedFamilies.contains($0.productFamily) }.map { ($0.identifier, $0.productFamily) })
@@ -451,7 +480,8 @@ enum SimulatorDeviceCatalog {
                     runtimeIdentifier: runtime.identifier,
                     runtimeName: runtime.name,
                     productFamily: supportedTypes[device.deviceTypeIdentifier] ?? "iPhone",
-                    state: device.state
+                    state: device.state,
+                    deviceSetPath: deviceSetPath
                 )
             }
         }.sorted {
@@ -478,6 +508,14 @@ struct XcodeSimulatorConnection: Sendable, Equatable {
     let event: Event
     let deviceIdentifier: String
     let xcodeURL: URL
+    let deviceSetPath: String?
+
+    init(event: Event, deviceIdentifier: String, xcodeURL: URL, deviceSetPath: String? = nil) {
+        self.event = event
+        self.deviceIdentifier = deviceIdentifier
+        self.xcodeURL = xcodeURL
+        self.deviceSetPath = deviceSetPath
+    }
 }
 
 final class XcodeConnectionTracker {
@@ -492,9 +530,14 @@ final class XcodeConnectionTracker {
 
     nonisolated(nonsending) func synchronize(
         observations: [XcodeSimulatorConnection],
+        testingDeviceSetPath: String? = nil,
         transfer: (XcodeSimulatorConnection) async throws -> Void
     ) async throws -> Bool {
-        for connection in observations {
+        for (identifier, connection) in latestObserved where connection.deviceSetPath != nil && connection.deviceSetPath != testingDeviceSetPath {
+            latestObserved.removeValue(forKey: identifier)
+            latestApplied.removeValue(forKey: identifier)
+        }
+        for connection in observations where connection.deviceSetPath == nil || connection.deviceSetPath == testingDeviceSetPath {
             if let previous = latestObserved[connection.deviceIdentifier], previous.event >= connection.event { continue }
             latestObserved[connection.deviceIdentifier] = connection
         }
@@ -517,6 +560,7 @@ final class XcodeConnectionTracker {
 
 enum SimulatorProcessConnections {
     static func read() throws -> [XcodeSimulatorConnection] {
+        let testingDeviceSetPath = SimulatorDeviceSets.testingPath()
         let capacity = Int(proc_listallpids(nil, 0)) + 128
         guard capacity > 128 else { throw CLIError.io("process-list", "Could not enumerate simulator application processes.") }
         var processes = [pid_t](repeating: 0, count: capacity)
@@ -527,7 +571,7 @@ enum SimulatorProcessConnections {
             var path = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
             guard proc_pidpath(pid, &path, UInt32(path.count)) > 0 else { continue }
             let executable = String(decoding: path.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
-            guard executable.contains("/CoreSimulator/Devices/"), executable.contains("/data/Containers/Bundle/Application/") else { continue }
+            guard executable.contains("/data/Containers/Bundle/Application/") else { continue }
             var info = proc_bsdinfo()
             guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, Int32(MemoryLayout<proc_bsdinfo>.size)) == MemoryLayout<proc_bsdinfo>.size,
                   info.pbi_uid == getuid() else { continue }
@@ -541,14 +585,14 @@ enum SimulatorProcessConnections {
             var current = proc_bsdinfo()
             guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &current, Int32(MemoryLayout<proc_bsdinfo>.size)) == MemoryLayout<proc_bsdinfo>.size,
                   current.pbi_start_tvsec == info.pbi_start_tvsec, current.pbi_start_tvusec == info.pbi_start_tvusec else { continue }
-            if let connection = decode(data, executablePath: executable, event: .init(processIdentifier: pid, startSeconds: info.pbi_start_tvsec, startMicroseconds: info.pbi_start_tvusec)) {
+            if let connection = decode(data, executablePath: executable, event: .init(processIdentifier: pid, startSeconds: info.pbi_start_tvsec, startMicroseconds: info.pbi_start_tvusec), testingDeviceSetPath: testingDeviceSetPath) {
                 result.append(connection)
             }
         }
         return result
     }
 
-    static func decode(_ arguments: Data, executablePath: String, event: XcodeSimulatorConnection.Event) -> XcodeSimulatorConnection? {
+    static func decode(_ arguments: Data, executablePath: String, event: XcodeSimulatorConnection.Event, testingDeviceSetPath: String? = nil) -> XcodeSimulatorConnection? {
         guard arguments.count >= MemoryLayout<Int32>.size else { return nil }
         let argumentCount = arguments.withUnsafeBytes { $0.loadUnaligned(as: Int32.self) }
         guard argumentCount >= 0 else { return nil }
@@ -568,8 +612,14 @@ enum SimulatorProcessConnections {
             let key = String(entry[..<equals])
             if relevant.contains(key) { environment[key] = String(entry[entry.index(after: equals)...]) }
         }
-        guard let rawIdentifier = environment["SIMULATOR_UDID"], let identifier = UUID(uuidString: rawIdentifier)?.uuidString,
-              executablePath.contains("/CoreSimulator/Devices/\(identifier)/data/Containers/Bundle/Application/") else { return nil }
+        guard let rawIdentifier = environment["SIMULATOR_UDID"], let identifier = UUID(uuidString: rawIdentifier)?.uuidString else { return nil }
+        let defaultDevice = executablePath.contains("/CoreSimulator/Devices/\(identifier)/data/Containers/Bundle/Application/")
+        let testingDevice = testingDeviceSetPath.map { path in
+            URL(fileURLWithPath: executablePath).resolvingSymlinksInPath().path.hasPrefix(
+                URL(fileURLWithPath: path).resolvingSymlinksInPath().appendingPathComponent("\(identifier)/data/Containers/Bundle/Application").path + "/"
+            )
+        } ?? false
+        guard defaultDevice || testingDevice else { return nil }
         var candidates = Set<String>()
         for key in ["GPUTOOLS_XCODE_DEVELOPER_PATH", "DYLD_FRAMEWORK_PATH", "DYLD_LIBRARY_PATH"] {
             for path in (environment[key] ?? "").split(separator: ":") {
@@ -579,7 +629,7 @@ enum SimulatorProcessConnections {
             }
         }
         guard candidates.count == 1, let path = candidates.first, path.hasPrefix("/") else { return nil }
-        return XcodeSimulatorConnection(event: event, deviceIdentifier: identifier, xcodeURL: URL(fileURLWithPath: path, isDirectory: true))
+        return XcodeSimulatorConnection(event: event, deviceIdentifier: identifier, xcodeURL: URL(fileURLWithPath: path, isDirectory: true), deviceSetPath: testingDevice ? testingDeviceSetPath : nil)
     }
 }
 
@@ -595,6 +645,11 @@ final class SimulatorBootTracker {
 
     func reset() { pending = []; initialized = false }
     func didAttach(_ identifier: String) { pending.remove(identifier) }
+    func forgetTestingDevices() {
+        let identifiers = Set(catalog.filter { $0.value.deviceSetPath != nil }.keys)
+        catalog = catalog.filter { $0.value.deviceSetPath == nil }
+        pending.subtract(identifiers)
+    }
 
     func observe(_ devices: [SimulatorHostDevice], attachInitially: Bool, allowsAttachments: Bool = true) -> Observation {
         let current = Dictionary(devices.map { ($0.identifier, $0) }, uniquingKeysWith: { first, _ in first })
@@ -622,5 +677,23 @@ enum SimulatorStartupSelection {
               !(attachInitially && devices.contains(where: { $0.state == "Booted" })) else { return nil }
         if let identifier = current.flatMap(UUID.init(uuidString:)), let chosen = devices.first(where: { UUID(uuidString: $0.identifier) == identifier }) { return chosen }
         return devices.last(where: { $0.productFamily == "iPhone" }) ?? devices.first
+    }
+}
+
+enum SimulatorDeviceSets {
+    static func testingPath() -> String? {
+        let renderer = UserDefaults(suiteName: ToolConstants.neoHostBundleIdentifier)
+        let manager = UserDefaults(suiteName: "dev.lynnswap.NeoSimulator")
+        return testingPath(showTesting: renderer?.object(forKey: "ShowTestingDevices") as? Bool ?? manager?.object(forKey: "ShowTestingDevices") as? Bool ?? true,
+                           customPath: renderer?.string(forKey: "TestingDeviceSetPath") ?? manager?.string(forKey: "TestingDeviceSetPath"))
+    }
+
+    static func testingPath(showTesting: Bool, customPath: String?, homeURL: URL = FileManager.default.homeDirectoryForCurrentUser) -> String? {
+        guard showTesting else { return nil }
+        let path = customPath.map { NSString(string: $0).expandingTildeInPath }
+            ?? homeURL.appendingPathComponent("Library/Developer/XCTestDevices").path
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        guard url != homeURL.appendingPathComponent("Library/Developer/CoreSimulator/Devices").standardizedFileURL else { return nil }
+        return url.path
     }
 }

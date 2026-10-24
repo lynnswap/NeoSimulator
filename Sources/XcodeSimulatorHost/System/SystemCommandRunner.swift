@@ -27,7 +27,24 @@ struct SystemCommandRunner: CommandRunning {
         self.fileManager = fileManager
     }
 
+    func runSimctl(
+        xcodeURL: URL,
+        arguments: [String],
+        deviceSetPath: String? = nil,
+        coreSimulatorFrameworkURL: URL = URL(fileURLWithPath: ToolConstants.coreSimulatorFrameworkPath, isDirectory: true)
+    ) throws -> CommandOutput {
+        var environment = ProcessInfo.processInfo.environment
+        environment["DEVELOPER_DIR"] = xcodeURL.appendingPathComponent("Contents/Developer", isDirectory: true).path
+        // Xcode's shell wrapper can install global developer components before any command, including list.
+        return try run(executable: coreSimulatorFrameworkURL.appendingPathComponent(ToolConstants.simctlBinaryPath),
+                       arguments: deviceSetPath.map { ["--set", $0] + arguments } ?? arguments, environment: environment)
+    }
+
     func run(executable: URL, arguments: [String]) throws -> CommandOutput {
+        try run(executable: executable, arguments: arguments, environment: nil)
+    }
+
+    private func run(executable: URL, arguments: [String], environment: [String: String]?) throws -> CommandOutput {
         let directory = fileManager.temporaryDirectory
             .appendingPathComponent("\(ToolConstants.name)-\(UUID().uuidString)", isDirectory: true)
 
@@ -87,6 +104,7 @@ struct SystemCommandRunner: CommandRunning {
         let process = Process()
         process.executableURL = executable
         process.arguments = arguments
+        process.environment = environment
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = stdoutHandle
         process.standardError = stderrHandle

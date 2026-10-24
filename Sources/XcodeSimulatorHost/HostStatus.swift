@@ -64,7 +64,8 @@ extension SimulatorHostController {
             }
             var issues: [String] = []
             func read(_ setting: String) -> String? {
-                do { return try runSettingsCommand(xcodeURL: xcodeURL, arguments: ["ui", identifier, setting]) }
+                do { return try runSettingsCommand(xcodeURL: xcodeURL, deviceSetPath: device.deviceSetPath,
+                                                   arguments: ["ui", identifier, setting]) }
                 catch {
                     issues.append("\(setting): \(error.localizedDescription)")
                     return nil
@@ -75,7 +76,8 @@ extension SimulatorHostController {
             let contrast = read("increase_contrast")
             let locationAvailable: Bool
             do {
-                _ = try runSettingsCommand(xcodeURL: xcodeURL, arguments: ["location", identifier, "list"])
+                _ = try runSettingsCommand(xcodeURL: xcodeURL, deviceSetPath: device.deviceSetPath,
+                                            arguments: ["location", identifier, "list"])
                 locationAvailable = true
             } catch {
                 issues.append("location: \(error.localizedDescription)")
@@ -94,7 +96,7 @@ extension SimulatorHostController {
 
     public func setDeviceSetting(_ setting: SimulatorDeviceSetting, identifier: String) async throws {
         do {
-            let (_, xcodeURL) = try await settingsDevice(identifier)
+            let (device, xcodeURL) = try await settingsDevice(identifier)
             let arguments: [String] = switch setting {
             case .appearance(let value): ["ui", identifier, "appearance", value]
             case .contentSize(let value): ["ui", identifier, "content_size", value]
@@ -103,7 +105,7 @@ extension SimulatorHostController {
                 ["location", identifier, "set", "\(latitude),\(longitude)"]
             case .clearLocation: ["location", identifier, "clear"]
             }
-            _ = try runSettingsCommand(xcodeURL: xcodeURL, arguments: arguments)
+            _ = try runSettingsCommand(xcodeURL: xcodeURL, deviceSetPath: device.deviceSetPath, arguments: arguments)
             let preset: [String: Any]?
             switch setting {
             case .location(let latitude, let longitude): preset = ["mode": "custom", "latitude": latitude, "longitude": longitude]
@@ -118,6 +120,9 @@ extension SimulatorHostController {
                 guard defaults.synchronize() else {
                     throw CLIError.io("device-location-save", "The location was applied, but could not be saved for the next connection.")
                 }
+                DistributedNotificationCenter.default().postNotificationName(
+                    Notification.Name("dev.lynnswap.NeoSimulator.DeviceLocationChanged"),
+                    object: identifier, userInfo: nil, deliverImmediately: true)
             }
         } catch let error as SimulatorHostFailure { throw error }
         catch { throw SimulatorHostFailure(error) }
@@ -131,9 +136,9 @@ extension SimulatorHostController {
         return (device, xcodeURL)
     }
 
-    private func runSettingsCommand(xcodeURL: URL, arguments: [String]) throws -> String {
-        let result = try SystemCommandRunner().run(
-            executable: xcodeURL.appendingPathComponent(ToolConstants.simctlWrapperPath), arguments: arguments)
+    private func runSettingsCommand(xcodeURL: URL, deviceSetPath: String?, arguments: [String]) throws -> String {
+        let prefix = deviceSetPath.map { ["--set", $0] } ?? []
+        let result = try SystemCommandRunner().runSimctl(xcodeURL: xcodeURL, arguments: prefix + arguments)
         guard result.terminationStatus == 0 else { throw CLIError.io("device-setting", result.stderrText) }
         return result.stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
