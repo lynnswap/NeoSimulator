@@ -3637,7 +3637,12 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
             if let failure { throw failure }
         }
         stoppingTask = task
-        defer { stoppingTask = nil; closing = false; update() }
+        defer {
+            stoppingTask = nil
+            closing = false
+            update()
+            if session.state == .connected { window?.makeFirstResponder(session.nativeInputView ?? inputView) }
+        }
         do { try await task.value }
         catch is CancellationError { throw CancellationError() }
         catch { showIssue(error); throw error }
