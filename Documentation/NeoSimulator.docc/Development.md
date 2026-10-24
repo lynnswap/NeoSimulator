@@ -50,6 +50,15 @@ Release-script tests cover the embedded renderer's release metadata.
 These suites do not replace a live check of an affected private API and guest
 runtime.
 
+Device transport tests use fake dependencies and run without communicating
+with simulators, physical devices, or VMs. Run live device checks through
+NeoSimulator.app so macOS attributes device access to the application. Do not
+connect to devices from standalone test or diagnostic programs.
+
+UI fixtures must work while the Mac is locked. Disable animations and
+synchronize asynchronous work with explicit events or controlled deadlines;
+elapsed sleeps and repeated task yields do not establish completion.
+
 ## Documentation
 
 The article catalog in `Documentation/NeoSimulator.docc` is the source for the

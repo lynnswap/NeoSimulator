@@ -101,10 +101,10 @@ struct DeviceManagementBackend: Sendable {
     var runSimctl: @Sendable (URL, [String], String?) async throws -> Data
     var runDevicectl: @Sendable ([String]) async throws -> Data
     var manageVirtualMachine: @Sendable (DeviceManagementAction, String) async throws -> Void
-    var release: @Sendable (RendererRegistration, String) async throws -> Void
+    var release: @Sendable (RendererRegistration, DeviceInventoryID) async throws -> Void
     /// False means the renderer had no existing window; the backend uses the release/CLI path instead.
-    var restart: @Sendable (RendererRegistration, String, Bool) async throws -> Bool
-    var attach: @Sendable (RendererRegistration, String) async throws -> Void
+    var restart: @Sendable (RendererRegistration, DeviceInventoryID, Bool) async throws -> Bool
+    var attach: @Sendable (RendererRegistration, DeviceInventoryID) async throws -> Void
 
     func manage(_ action: DeviceManagementAction, devices: [InventoryDevice]) async -> DeviceManagementReport {
         var seen = Set<DeviceInventoryID>()
@@ -164,12 +164,12 @@ struct DeviceManagementBackend: Sendable {
                 let usesRestart: Bool = action == .restart || (action == .erase && device.state == "Booted")
                 var handledByRenderer = false
                 if usesRestart, let renderer = resolved.renderer {
-                    handledByRenderer = try await restart(renderer, identifier, action == .erase)
+                    handledByRenderer = try await restart(renderer, device.inventoryID, action == .erase)
                     if handledByRenderer { completed.append(action == .erase ? "Erased and restarted" : "Restarted") }
                 }
                 if !handledByRenderer {
                     if needsCleanup, let renderer = resolved.renderer {
-                        try await release(renderer, identifier)
+                        try await release(renderer, device.inventoryID)
                         completed.append("Display disconnected")
                     }
                     switch action {
@@ -199,7 +199,7 @@ struct DeviceManagementBackend: Sendable {
                             }
                             if let renderer = resolved.renderer {
                                 do {
-                                    try await attach(renderer, identifier)
+                                    try await attach(renderer, device.inventoryID)
                                     completed.append("Display reopened")
                                 } catch {
                                     if let eraseFailure {

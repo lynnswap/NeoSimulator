@@ -1,7 +1,7 @@
 # Architecture
 
-The manager app owns host selection and preference recovery; its embedded
-renderer owns device sessions.
+The manager app owns host selection, preference recovery, and physical-device
+and VM screens. Its embedded renderer owns simulator sessions.
 
 ## Hosts and preferences
 
@@ -111,6 +111,8 @@ Hub mode.
 | `HostApplication` | Observe device sets, own sessions and windows, and coordinate launch and shutdown. |
 | `DeviceSession` | Device connection, input, pasteboard, audio, external-display state, and device operations. |
 | `DeviceWindowController` | Present the device and forward user actions. |
+| `RemoteDeviceScreenSession` | Own one physical-device or VM screen connection, input resources, and unfinished or completed recordings. |
+| `RemoteDeviceWindowController` | Present a remote screen and drain accepted captures, recording saves, and input before disconnecting. |
 | `ExternalDisplayWindowController` | Present a device's external display. |
 | `DeviceCommand`, `MenuController` | Define commands and derive menu state from the active window. |
 | `DeviceToolRunner` | Run and cancel selected-Xcode tool subprocesses. |
@@ -153,3 +155,16 @@ recovery state. Device errors stay with the relevant window. A failed
 capture keeps its recoverable file; partial imports and device creation retain
 and report completed work. None of these failures changes the selected route
 or launches Device Hub as a fallback.
+
+Physical-device screens use CoreDevice's media stream and HID capabilities;
+VMs use Screen Sharing when a VNC endpoint is available. These private
+interfaces run inside the manager app. Screen Sharing's pasteboard sharing is
+disabled. A remote screen closes its owned connections and releases held
+inputs without shutting down the device.
+
+The screen session retains a native recording handle through start and stop,
+including a handle returned after cancellation. Stopping keeps the completed
+movie until a successful atomic save or an explicit discard. A failed stop
+keeps the handle available for retry. Windows drain accepted capture and save
+operations before closing; cancellation of an unsaved-recording prompt keeps
+the window open.

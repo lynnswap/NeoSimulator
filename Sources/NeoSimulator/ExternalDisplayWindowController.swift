@@ -50,7 +50,7 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
         self.deviceWindow = deviceWindow
         self.preferences = preferences
         self.onClose = onClose
-        let saved = preferences.windowGeometry(forDevice: session.device.id, screens: Self.screenFrames,
+        let saved = preferences.windowGeometry(forDevice: session.device.identity.preferenceIdentifier, screens: Self.screenFrames,
                                                kind: .externalDisplay)
         savedCenter = saved.center
         savedScale = saved.scale
@@ -341,7 +341,7 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
         guard !closed, let window else { return }
         preferences.setWindowGeometry(center: NSPoint(x: window.frame.midX, y: window.frame.midY),
                                       scale: WindowScale.usable(display.renderScale),
-                                      forDevice: session.device.id, screens: Self.screenFrames, kind: .externalDisplay)
+                                      forDevice: session.device.identity.preferenceIdentifier, screens: Self.screenFrames, kind: .externalDisplay)
     }
 
     private func disconnect() {

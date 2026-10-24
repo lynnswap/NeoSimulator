@@ -688,6 +688,35 @@ struct InputFocusTests {
         #expect(pushes() == [1, 2, 4])
     }
 
+    @Test func copiesReachSameUDIDDevicesInOtherSetsWithoutEcho() async throws {
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("dev.lynnswap.NeoSimulatorTests.\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        let preferences = MemoryPreferences()
+        preferences.values[HostPreferences.pasteboardAutomaticSync] = true
+        var sessions: [DeviceSession] = []
+        let sync = PasteboardSync(preferences: preferences) { sessions }
+        var connections: [TestPasteboard] = []
+        for path in [nil, "/fixture/XCTestDevices"] as [String?] {
+            let display = TestDisplay()
+            let session = try makeSession(display, features: [DeviceCapabilities.pasteboard], device: "same",
+                deviceSetPath: path, pasteboard: pasteboard, pasteboardSync: sync)
+            sessions.append(session)
+            session.startPasteboardSync()
+            connections.append(try #require(display.pasteboards.first))
+        }
+        defer { sessions.forEach { $0.disconnect() } }
+        let before = connections.map { $0.transfers.count }
+        pasteboard.clearContents()
+        pasteboard.setString("copied", forType: .string)
+        await withCheckedContinuation { continuation in
+            connections[0].send(.applied(generation: pasteboard.changeCount))
+            // This marker runs after the forwarding block scheduled in this run-loop mode.
+            RunLoop.main.perform(inModes: [.default]) { continuation.resume() }
+        }
+        #expect(connections[0].transfers.count == before[0])
+        #expect(connections[1].transfers.count == before[1] + 1)
+    }
+
     @Test func synchronizedDevicesReconnectAtOnceWhenTheConnectionCloses() throws {
         let pasteboard = NSPasteboard(name: NSPasteboard.Name("dev.lynnswap.NeoSimulatorTests.\(UUID().uuidString)"))
         defer { pasteboard.releaseGlobally() }
@@ -3971,6 +4000,31 @@ struct InputFocusTests {
         #expect(controller.externalDisplayWindow != nil && screen.displays.count == 2)
     }
 
+    @Test func externalDisplayGeometryKeepsSameUDIDDeviceSetsSeparate() throws {
+        _ = NSApplication.shared
+        let preferences = MemoryPreferences()
+        let screens = NSScreen.screens.map(\.frame)
+        let normal = SimulatorDeviceIdentifier("same")
+        let clone = SimulatorDeviceIdentifier("same", deviceSetPath: "/fixture/XCTestDevices")
+        preferences.setWindowGeometry(center: NSPoint(x: 10, y: 20), scale: 0.25,
+            forDevice: normal.preferenceIdentifier, screens: screens, kind: .externalDisplay)
+        preferences.setWindowGeometry(center: NSPoint(x: 30, y: 40), scale: 0.5,
+            forDevice: clone.preferenceIdentifier, screens: screens, kind: .externalDisplay)
+        let display = TestDisplay()
+        let session = try makeSession(TestDisplay(), device: "same", deviceSetPath: clone.deviceSetPath, preferences: preferences)
+        defer { session.disconnect() }
+        let external = try ExternalDisplayWindowController(session: session, display: display,
+            state: ExternalScreenState(isPoweredOn: true, pixelSize: CGSize(width: 32, height: 32), scale: 1),
+            deviceWindow: nil, preferences: preferences, onClose: {})
+        #expect(display.renderScale == 0.5)
+        external.window?.setFrameOrigin(NSPoint(x: 100, y: 200))
+        external.invalidate()
+        let original = preferences.windowGeometry(forDevice: normal.preferenceIdentifier, screens: screens, kind: .externalDisplay)
+        let saved = preferences.windowGeometry(forDevice: clone.preferenceIdentifier, screens: screens, kind: .externalDisplay)
+        #expect(original.center == NSPoint(x: 10, y: 20) && original.scale == 0.25)
+        #expect(saved.center != NSPoint(x: 30, y: 40) && saved.scale == 0.5)
+    }
+
     @Test func closingTheExternalDisplaysWindowChoosesDisabled() throws {
         _ = NSApplication.shared
         let preferences = MemoryPreferences()
@@ -5062,7 +5116,7 @@ struct InputFocusTests {
             availableDevice("c", "iPhone 16", runtime: "iOS 26.5", state: 1),
         ]
         func items(_ devices: [AvailableDevice]) -> [NSMenuItem] {
-            OpenSimulatorMenu.items(for: devices, hasWindow: { $0 == "a" }, action: #selector(NSText.copy(_:)),
+            OpenSimulatorMenu.items(for: devices, hasWindow: { $0 == SimulatorDeviceIdentifier("a") }, action: #selector(NSText.copy(_:)),
                                     target: nil)
         }
         let runtimes = items(devices)
@@ -5073,7 +5127,7 @@ struct InputFocusTests {
         #expect(first.map(\.isAlternate) == [false, true, false, true])
         #expect(first.map(\.keyEquivalentModifierMask) == [[], .option, [], .option])
         #expect(first.map(\.state) == [.on, .on, .mixed, .mixed])
-        #expect(first.map { $0.representedObject as? String } == ["a", "a", "b", "b"])
+        #expect(first.map { $0.representedObject as? SimulatorDeviceIdentifier } == ["a", "a", "b", "b"].map { SimulatorDeviceIdentifier($0) })
         #expect(items(Array(devices.prefix(2))).map(\.title) == first.map(\.title))
     }
 
@@ -5129,10 +5183,15 @@ struct InputFocusTests {
         let identifier = UUID().uuidString
         let current = AvailableDevice(identifier: identifier, name: "Mine", descriptiveName: "Mine", runtimeIdentifier: "",
                                       runtimeName: "", productFamily: 2, deviceTypeName: "iPad", state: 1)
-        #expect(HostApplication.initialDevice(in: devices + [current], current: identifier.lowercased())?.id == identifier)
-        #expect(HostApplication.initialDevice(in: devices, current: identifier)?.id == "D")
+        #expect(HostApplication.initialDevice(in: devices + [current], current: SimulatorDeviceIdentifier(identifier.lowercased()))?.id == identifier)
+        #expect(HostApplication.initialDevice(in: devices, current: SimulatorDeviceIdentifier(identifier))?.id == "D")
         #expect(HostApplication.initialDevice(in: [devices[0], devices[4]], current: nil)?.id == "A")
         #expect(HostApplication.initialDevice(in: [], current: nil) == nil)
+        let path = "/fixture/TestingDevices"
+        let clone = AvailableDevice(identifier: identifier, name: "Testing iPad", descriptiveName: "Testing iPad", runtimeIdentifier: "", runtimeName: "", productFamily: 2, deviceTypeName: "iPad", state: 1, deviceSetPath: path)
+        let saved = SimulatorDeviceIdentifier(identifier.lowercased(), deviceSetPath: path)
+        #expect(HostApplication.initialDevice(in: devices + [current, clone], current: saved)?.identity == clone.identity)
+        #expect(HostApplication.initialDevice(in: devices + [current], current: saved)?.identity == devices[3].identity)
     }
 
     @Test func newSimulatorKeepsDeviceTypeAndRuntimeCompatible() async throws {
@@ -6005,6 +6064,7 @@ struct InputFocusTests {
                              openLog: @escaping (URL) async throws -> Void = { _ in },
                              screenPointsPerInch: Double? = nil,
                              device identifier: String = "test-device",
+                             deviceSetPath: String? = nil,
                              preferences: MemoryPreferences = MemoryPreferences(),
                              keyboardLanguage: @escaping @MainActor () -> String? = { "fr" },
                              pasteboard: NSPasteboard? = nil,
@@ -6015,7 +6075,7 @@ struct InputFocusTests {
                              enhancedMultitasking: Bool = false) throws -> DeviceSession {
         // Keep the external-display timeout short enough to exercise expiry.
         DeviceSession(
-            device: availableDevice(identifier, "Test iPhone", runtime: "iOS", state: 3),
+            device: availableDevice(identifier, "Test iPhone", runtime: "iOS", state: 3, deviceSetPath: deviceSetPath),
             capabilities: DeviceCapabilities(family: family, runtimeVersion: runtimeVersion,
                                              supportsFeature: { features.contains($0) },
                                              hasFramebufferMask: framebufferMask,
@@ -7116,12 +7176,32 @@ struct HostBehaviorTests {
         #expect(throws: HostError.self) { try monitor.check() }
     }
 
+    @Test func browserAndMenusKeepSameUDIDDevicesInTheirOwnSets() async throws {
+        let source = TestCatalog()
+        let normal = availableDevice("same", "Normal", runtime: "iOS 27", state: 1)
+        let clone = AvailableDevice(identifier: "same", name: "Testing", descriptiveName: "Testing", runtimeIdentifier: normal.runtimeIdentifier,
+                                    runtimeName: normal.runtimeName, productFamily: 1, deviceTypeName: "iPhone", state: 1, deviceSetPath: "/custom/XCTestDevices")
+        source.devices = [normal, clone]
+        let model = DeviceBrowserModel(source: source)
+        await model.open(clone)?.value
+        #expect(source.opened == [clone.identity])
+        #expect(model.devices.first { $0.identity == normal.identity }?.state == 1)
+        #expect(model.devices.first { $0.identity == clone.identity }?.state == 3)
+        await model.open(normal)?.value
+        #expect(source.opened == [clone.identity, normal.identity])
+        let items = OpenSimulatorMenu.items(for: [normal, clone], hasWindow: { $0 == clone.identity }, action: #selector(NSText.copy(_:)), target: nil)
+        #expect(items.map { $0.representedObject as? SimulatorDeviceIdentifier } == [normal.identity, normal.identity, clone.identity, clone.identity])
+        #expect(normal.identity.preferenceIdentifier == "same")
+        #expect(clone.identity.preferenceIdentifier != normal.identity.preferenceIdentifier)
+        #expect(try JSONDecoder().decode([SimulatorDeviceIdentifier].self, from: JSONEncoder().encode([normal.identity, clone.identity])) == [normal.identity, clone.identity])
+    }
+
     @Test func browserReflectsCatalogChangesAndReportsBootErrors() async throws {
         let source = TestCatalog()
         let model = DeviceBrowserModel(source: source)
         let device = try #require(model.devices.first)
         await model.open(device)?.value
-        #expect(source.opened == [device.id])
+        #expect(source.opened == [device.identity])
         #expect(model.devices.first?.isBooted == true)
         source.failure = HostError.operation("Boot failed")
         await model.open(device)?.value
@@ -7173,11 +7253,17 @@ struct HostBehaviorTests {
 
     @Test func managerRequestsOpenTheExplicitDeviceAndKeepQuitChoices() throws {
         let identifier = UUID().uuidString
-        let options = try HostLaunchOptions(arguments: ["--managed", "--xcode", "/Xcode.app", "--device", identifier])
+        let options = try HostLaunchOptions(arguments: ["--managed", "--xcode", "/Xcode.app", "--device", identifier, "--device-set", "/custom/XCTestDevices"])
         #expect(options.deviceIdentifier == identifier)
         #expect(options.isManaged)
         #expect(try RendererRequest(url: #require(URL(string: "neosimulator-renderer://open-device?udid=\(identifier)")))
-            == .openDevice(identifier))
+            == .openDevice(SimulatorDeviceIdentifier(identifier)))
+        let selected = SimulatorDeviceIdentifier(identifier, deviceSetPath: "/custom/Parallel Testing Devices")
+        var components = URLComponents()
+        components.scheme = "neosimulator-renderer"
+        components.host = "open-device"
+        components.queryItems = selected.queryItems
+        #expect(try RendererRequest(url: #require(components.url)) == .openDevice(selected))
         #expect(try RendererRequest(url: #require(URL(string: "neosimulator-renderer://quit"))) == .quit(asks: false))
         #expect(try RendererRequest(url: #require(URL(string: "neosimulator-renderer://quit?ask=true"))) == .quit(asks: true))
         #expect(try RendererRequest(url: #require(URL(string: "neosimulator-renderer://activate"))) == .activate)
@@ -7210,24 +7296,24 @@ struct HostBehaviorTests {
 @MainActor
 private final class TestCatalog: DeviceBrowserSource {
     var devices = [availableDevice("phone", "Phone", runtime: "iOS 27", state: 1)]
-    var opened: [String] = []
+    var opened: [SimulatorDeviceIdentifier] = []
     var failure: Error?
     func availableSimulatorDevices() -> [AvailableDevice] { devices }
-    func openSimulator(withIdentifier identifier: String) async throws {
+    func openSimulator(withIdentifier identifier: SimulatorDeviceIdentifier) async throws {
         if let failure { throw failure }
         opened.append(identifier)
         devices = devices.map {
             var device = $0
-            device.state = 3
+            if device.identity == identifier { device.state = 3 }
             return device
         }
     }
 }
 
-private func availableDevice(_ identifier: String, _ name: String, runtime: String, state: UInt) -> AvailableDevice {
+private func availableDevice(_ identifier: String, _ name: String, runtime: String, state: UInt, deviceSetPath: String? = nil) -> AvailableDevice {
     AvailableDevice(identifier: identifier, name: name, descriptiveName: "\(runtime) - \(name)",
                     runtimeIdentifier: "runtime \(runtime)", runtimeName: runtime,
-                    productFamily: name.hasPrefix("iPad") ? 2 : 1, deviceTypeName: name, state: state)
+                    productFamily: name.hasPrefix("iPad") ? 2 : 1, deviceTypeName: name, state: state, deviceSetPath: deviceSetPath)
 }
 
 @Suite @MainActor

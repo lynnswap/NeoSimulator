@@ -6,18 +6,20 @@ struct HostLaunchOptions {
     let readsCreationCatalog: Bool
     let startupResultURL: URL?
     let deviceIdentifier: String?
+    let deviceSetPath: String?
     let isManaged: Bool
 
     init(arguments: [String]) throws {
         var xcodePath: String?
         var resultPath: String?
         var device: String?
+        var deviceSet: String?
         var validate = false
         var creationCatalog = false
         var managed = false
         var index = 0
         func invalid() -> HostError {
-            .invalidArguments("Expected [--managed] [--validate-runtime] [--startup-result /absolute/path] [--device UDID] --xcode /absolute/path/to/Xcode.app")
+            .invalidArguments("Expected [--managed] [--validate-runtime] [--startup-result /absolute/path] [--device UDID] [--device-set /absolute/path] --xcode /absolute/path/to/Xcode.app")
         }
         while index < arguments.count {
             switch arguments[index] {
@@ -35,11 +37,14 @@ struct HostLaunchOptions {
                 guard index < arguments.count, device == nil,
                       let identifier = UUID(uuidString: arguments[index]) else { throw invalid() }
                 device = identifier.uuidString
-            case "--xcode", "--startup-result":
+            case "--xcode", "--startup-result", "--device-set":
                 let option = arguments[index]
                 index += 1
                 guard index < arguments.count, (arguments[index] as NSString).isAbsolutePath else { throw invalid() }
-                if option == "--xcode" {
+                if option == "--device-set" {
+                    guard deviceSet == nil else { throw invalid() }
+                    deviceSet = arguments[index]
+                } else if option == "--xcode" {
                     guard xcodePath == nil else { throw invalid() }
                     xcodePath = arguments[index]
                 } else {
@@ -56,6 +61,7 @@ struct HostLaunchOptions {
         readsCreationCatalog = creationCatalog
         startupResultURL = resultPath.map { URL(fileURLWithPath: $0).standardizedFileURL }
         deviceIdentifier = device
+        deviceSetPath = deviceSet
         isManaged = managed
     }
 
@@ -72,7 +78,7 @@ struct HostLaunchOptions {
 }
 
 enum RendererRequest: Equatable {
-    case openDevice(String)
+    case openDevice(SimulatorDeviceIdentifier)
     case quit(asks: Bool)
     case activate
     case showBrowser
@@ -89,7 +95,7 @@ enum RendererRequest: Equatable {
                   let identifier = UUID(uuidString: value) else {
                 throw HostError.invalidArguments("The renderer URL requires a device UDID.")
             }
-            self = .openDevice(identifier.uuidString)
+            self = .openDevice(SimulatorDeviceIdentifier(identifier.uuidString, deviceSetPath: components.queryItems?.first(where: { $0.name == "deviceSetPath" })?.value))
         case "quit":
             self = .quit(asks: components.queryItems?.first(where: { $0.name == "ask" })?.value == "true")
         default:
@@ -111,7 +117,7 @@ enum NeoSimulatorApp {
 #endif
         let arguments = Array(CommandLine.arguments.dropFirst())
         if arguments == ["--help"] {
-            print("usage: NeoSimulatorRenderer [--managed] [--validate-runtime] [--startup-result /absolute/path] [--device UDID] --xcode /absolute/path/to/Xcode.app")
+            print("usage: NeoSimulatorRenderer [--managed] [--validate-runtime] [--startup-result /absolute/path] [--device UDID] [--device-set /absolute/path] --xcode /absolute/path/to/Xcode.app")
             return
         }
         do {
@@ -136,7 +142,7 @@ enum NeoSimulatorApp {
             let controller = try HostApplication(runtime: runtime, conflicts: conflicts, isManaged: options.isManaged)
             app.delegate = controller
             app.finishLaunching()
-            try controller.start(initialDeviceIdentifier: options.deviceIdentifier)
+            try controller.start(initialDeviceIdentifier: options.deviceIdentifier, initialDeviceSetPath: options.deviceSetPath)
             do { try conflicts.check() }
             catch {
                 controller.shutdown()

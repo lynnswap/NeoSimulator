@@ -181,7 +181,6 @@ struct WorkspaceClient: Sendable {
 
     var openDeviceHub: @MainActor @Sendable (URL) async throws -> URL
     var quitNeoHost: @MainActor @Sendable (URL, [RendererRegistration], Bool?) async throws -> Int
-    var openDeviceURL: @MainActor @Sendable (URL, URL, String, URL) async throws -> Void
 
     @MainActor static let live = WorkspaceClient(
         runningXcodes: {
@@ -340,17 +339,6 @@ struct WorkspaceClient: Sendable {
                 )
                 return true
             })
-        },
-        openDeviceURL: { applicationURL, xcodeURL, identifier, url in
-            let configuration = NSWorkspace.OpenConfiguration()
-            configuration.activates = true
-            configuration.allowsRunningApplicationSubstitution = false
-            configuration.arguments = ["--xcode", xcodeURL.path, "--device", identifier]
-            let application = try await NSWorkspace.shared.open([url], withApplicationAt: applicationURL, configuration: configuration)
-            guard application.bundleIdentifier == ToolConstants.neoHostBundleIdentifier,
-                  application.bundleURL.map(normalized) == normalized(applicationURL) else {
-                throw CLIError.configuration("neo-host-substitution", "LaunchServices opened an unexpected NeoSimulator renderer.")
-            }
         }
 
     )
@@ -519,43 +507,62 @@ struct WorkspaceClient: Sendable {
 
 @MainActor
 final class RendererDeviceRequestWaiter {
+    typealias ScheduleTimeout = @MainActor (Duration, @escaping @MainActor () -> Void) -> () -> Void
+    private let scheduleTimeout: ScheduleTimeout
+    private let acknowledgements: NotificationCenter
+    private let send: @MainActor ([String: String], String) -> Void
+
+    init(acknowledgements: NotificationCenter = DistributedNotificationCenter.default(),
+         scheduleTimeout: @escaping ScheduleTimeout = RendererDeviceRequestWaiter.scheduleDeadline,
+         send: @escaping @MainActor ([String: String], String) -> Void = { info, sessionIdentifier in
+             DistributedNotificationCenter.default().postNotificationName(
+                 Notification.Name("dev.lynnswap.NeoSimulator.RendererRequest"), object: sessionIdentifier,
+                 userInfo: info, deliverImmediately: true)
+         }) {
+        self.acknowledgements = acknowledgements
+        self.scheduleTimeout = scheduleTimeout
+        self.send = send
+    }
+
     private var observer: NSObjectProtocol?
-    private var timeout: Task<Void, Never>?
+    private var cancelTimeout: (() -> Void)?
     private var continuation: CheckedContinuation<Void, any Error>?
     private var handled = true
 
-    func release(_ identifier: String, from renderer: RendererRegistration) async throws {
-        try await request("release-device", acknowledgement: "RendererReleased", identifier: identifier, renderer: renderer, timeoutSeconds: 120)
+    func release(_ deviceID: DeviceInventoryID, from renderer: RendererRegistration) async throws {
+        try await request("release-device", acknowledgement: "RendererReleased", deviceID: deviceID, renderer: renderer, timeoutSeconds: 120)
     }
 
-    func restart(_ identifier: String, in renderer: RendererRegistration, erasing: Bool) async throws -> Bool {
-        try await request(erasing ? "erase-device" : "restart-device", acknowledgement: "RendererManaged", identifier: identifier, renderer: renderer, timeoutSeconds: 450)
+    func restart(_ deviceID: DeviceInventoryID, in renderer: RendererRegistration, erasing: Bool) async throws -> Bool {
+        try await request(erasing ? "erase-device" : "restart-device", acknowledgement: "RendererManaged", deviceID: deviceID, renderer: renderer, timeoutSeconds: 450)
         return handled
     }
 
-    func open(_ identifier: String, in renderer: RendererRegistration) async throws {
-        try await request("open-device", acknowledgement: "RendererOpened", identifier: identifier, renderer: renderer, timeoutSeconds: 450)
+    func open(_ deviceID: DeviceInventoryID, in renderer: RendererRegistration) async throws {
+        try await request("open-device", acknowledgement: "RendererOpened", deviceID: deviceID, renderer: renderer, timeoutSeconds: 450)
     }
 
-    func attach(_ identifier: String, in renderer: RendererRegistration) async throws {
-        try await request("attach-device", acknowledgement: "RendererOpened", identifier: identifier, renderer: renderer, timeoutSeconds: 450)
+    func attach(_ deviceID: DeviceInventoryID, in renderer: RendererRegistration) async throws {
+        try await request("attach-device", acknowledgement: "RendererOpened", deviceID: deviceID, renderer: renderer, timeoutSeconds: 450)
     }
 
-    private func request(_ action: String, acknowledgement: String, identifier: String, renderer: RendererRegistration, timeoutSeconds: Int) async throws {
+    private func request(_ action: String, acknowledgement: String, deviceID: DeviceInventoryID, renderer: RendererRegistration, timeoutSeconds: Int) async throws {
+        let (identifier, deviceSetPath) = try deviceID.simulatorAddress
         try Task.checkCancellation()
         let requestIdentifier = UUID().uuidString
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 self.continuation = continuation
-                observer = DistributedNotificationCenter.default().addObserver(
+                observer = acknowledgements.addObserver(
                     forName: Notification.Name("dev.lynnswap.NeoSimulator.\(acknowledgement)"),
                     object: requestIdentifier, queue: .main
                 ) { [weak self] notification in
                     let releasedIdentifier = notification.userInfo?["udid"] as? String
+                    let acknowledgedSet = notification.userInfo?["deviceSetPath"] as? String
                     let failure = notification.userInfo?["error"] as? String
                     let handled = notification.userInfo?["handled"] as? Bool ?? true
                     Task { @MainActor in
-                        guard releasedIdentifier == identifier else { return }
+                        guard releasedIdentifier == identifier, acknowledgedSet == deviceSetPath else { return }
                         if let failure {
                             self?.finish(.failure(CLIError.temporary("renderer-device-request", failure)))
                         } else {
@@ -564,15 +571,12 @@ final class RendererDeviceRequestWaiter {
                         }
                     }
                 }
-                timeout = Task { [weak self] in
-                    do { try await Task.sleep(for: .seconds(timeoutSeconds)) }
-                    catch { return }
+                cancelTimeout = scheduleTimeout(.seconds(timeoutSeconds)) { [weak self] in
                     self?.finish(.failure(CLIError.temporary("renderer-device-timeout", "The simulator display did not finish the device request.")))
                 }
-                DistributedNotificationCenter.default().postNotificationName(
-                    Notification.Name("dev.lynnswap.NeoSimulator.RendererRequest"), object: renderer.sessionIdentifier,
-                    userInfo: ["action": action, "udid": identifier, "requestIdentifier": requestIdentifier], deliverImmediately: true
-                )
+                var info = ["action": action, "udid": identifier, "requestIdentifier": requestIdentifier]
+                if let deviceSetPath { info["deviceSetPath"] = deviceSetPath }
+                send(info, renderer.sessionIdentifier)
             }
         } onCancel: {
             Task { @MainActor in self.finish(.failure(CancellationError())) }
@@ -582,10 +586,19 @@ final class RendererDeviceRequestWaiter {
     private func finish(_ result: Result<Void, any Error>) {
         guard let continuation else { return }
         self.continuation = nil
-        if let observer { DistributedNotificationCenter.default().removeObserver(observer) }
+        if let observer { acknowledgements.removeObserver(observer) }
         observer = nil
-        timeout?.cancel()
-        timeout = nil
+        cancelTimeout?()
+        cancelTimeout = nil
         continuation.resume(with: result)
     }
+
+    private static func scheduleDeadline(_ duration: Duration, action: @escaping @MainActor () -> Void) -> () -> Void {
+        let task = Task {
+            do { try await Task.sleep(for: duration) } catch { return }
+            action()
+        }
+        return { task.cancel() }
+    }
+
 }

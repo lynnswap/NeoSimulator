@@ -87,7 +87,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
         self.tvRemote = tvRemote
         self.performWindowDrag = performWindowDrag
         // Read geometry once per connection for the current screen arrangement.
-        let saved = preferences.windowGeometry(forDevice: session.device.id, screens: Self.screenFrames)
+        let saved = preferences.windowGeometry(forDevice: session.device.identity.preferenceIdentifier, screens: Self.screenFrames)
         savedCenter = saved.center
         savedScale = saved.scale
         self.onClose = onClose
@@ -530,7 +530,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
         customLocation.window?.level = window?.level ?? .normal
         let defaults = UserDefaults.standard
         do {
-            let coordinate = try DeviceLocationPreset.load(for: session.device.id, among: session.locationScenarios)?.coordinate
+            let coordinate = try DeviceLocationPreset.load(for: session.device.identity.preferenceIdentifier, among: session.locationScenarios)?.coordinate
             customLocation.show(latitude: coordinate?.latitude ?? defaults.double(forKey: HostPreferences.locationLatitude),
                                 longitude: coordinate?.longitude ?? defaults.double(forKey: HostPreferences.locationLongitude))
         } catch { present(error) }
@@ -1131,7 +1131,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
         guard !closed, !isRestarting, let window else { return }
         preferences.setWindowGeometry(center: NSPoint(x: window.frame.midX, y: window.frame.midY),
                                       scale: WindowScale.usable(session.display.renderScale),
-                                      forDevice: session.device.id, screens: Self.screenFrames)
+                                      forDevice: session.device.identity.preferenceIdentifier, screens: Self.screenFrames)
     }
     private func disconnect() {
         guard !closed else { return }

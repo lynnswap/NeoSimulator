@@ -274,6 +274,7 @@ final class SimulatorDevice {
     let hasUserInterfacePlugin: Bool
     /// Nil denotes the default device set.
     let deviceSetPath: String?
+    var identity: SimulatorDeviceIdentifier { SimulatorDeviceIdentifier(identifier, deviceSetPath: deviceSetPath) }
     private let interface: CoreSimulatorInterface
 
     fileprivate init?(_ object: AnyObject, deviceSetPath: String?, interface: CoreSimulatorInterface) throws {

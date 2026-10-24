@@ -210,8 +210,7 @@ final class WorkspaceRecorder {
                 if let error = self.openDeviceHubError { throw error }
                 return applicationURL
             },
-            quitNeoHost: { _, _, _ in self.neoHostCount },
-            openDeviceURL: { _, _, _, _ in }
+            quitNeoHost: { _, _, _ in self.neoHostCount }
 
         )
     }
