@@ -3,6 +3,7 @@ import AppKit
 
 @MainActor
 final class ScreenSharingDeviceTransport: NSObject, RemoteScreenTransport {
+    private let remote: CoreDeviceRemoteScreenDevice
     private let input: CoreDeviceScreenInput
     private let url: URL
     private let view: NSView
@@ -20,6 +21,7 @@ final class ScreenSharingDeviceTransport: NSObject, RemoteScreenTransport {
     private(set) var inputCapabilities: Set<RemoteDeviceInputKind> = []
     var nativeInputView: NSView? { view }
     var canCaptureScreenshot: Bool { !stopped }
+    private(set) var canRecordScreen = false
 
     init(remote: CoreDeviceRemoteScreenDevice, url: URL, contentView: NSView) throws {
         try CoreDeviceRemoteScreenDevice.load("/System/Library/PrivateFrameworks/ScreenSharing.framework/ScreenSharing")
@@ -28,6 +30,7 @@ final class ScreenSharingDeviceTransport: NSObject, RemoteScreenTransport {
             throw CLIError.unavailable("screen-sharing-runtime", "Screen Sharing is unavailable with this version of macOS.")
         }
         self.url = url
+        self.remote = remote
         input = CoreDeviceScreenInput(remote: remote)
         view = viewClass.init(frame: contentView.bounds)
         view.autoresizingMask = [.width, .height]
@@ -60,6 +63,7 @@ final class ScreenSharingDeviceTransport: NSObject, RemoteScreenTransport {
         guard !stopped else { throw CancellationError() }
         self.events = events
         inputCapabilities = try input.capabilities()
+        canRecordScreen = try remote.supports("com.apple.coredevice.feature.screenrecording")
         for key in ["isConnected", "isDisconnected"] { view.addObserver(self, forKeyPath: key, options: [.new], context: nil) }
         observing = true
         try await withTaskCancellationHandler {
@@ -86,12 +90,16 @@ final class ScreenSharingDeviceTransport: NSObject, RemoteScreenTransport {
     }
 
     func send(_ input: RemoteScreenInput) async throws { try await self.input.send(input) }
+    func startRecording(displayUniqueID: String?) async throws -> any RemoteScreenRecordingHandle {
+        try await remote.startRecording(displayUniqueID: displayUniqueID)
+    }
     func releaseInputs() async throws { try await input.releaseInputs() }
 
     func stop() async throws {
         stopped = true
         events = nil
         inputCapabilities = []
+        canRecordScreen = false
         finishStart(throwing: CancellationError())
         removeObservers()
         var failure: (any Error)?

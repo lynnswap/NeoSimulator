@@ -28,6 +28,11 @@ public final class RemoteDeviceScreenSession {
     /// ScreenSharing handles AppKit events in this view; media streams use the explicit HID methods below.
     public var nativeInputView: NSView? { transport?.nativeInputView }
     public var canCaptureScreenshot: Bool { state == .connected && transport?.canCaptureScreenshot == true }
+    public var canRecordScreen: Bool { state == .connected && transport?.canRecordScreen == true }
+    public var recordingState: RemoteDeviceRecordingState { recording.state }
+    /// Retained until explicitly discarded, including after a save failure or screen shutdown.
+    public var completedRecording: RemoteDeviceRecording? { recording.completed }
+    public var recordingError: (any Error)? { recording.lastError }
     public private(set) var state = State.idle
     public private(set) var lastError: (any Error)?
     public private(set) var videoAttributes: RemoteDeviceVideoAttributes?
@@ -40,6 +45,7 @@ public final class RemoteDeviceScreenSession {
     private var starting: Task<Void, any Error>?
     private var stopping: Task<Void, any Error>?
     private var generation = 0
+    private let recording = RemoteScreenRecording()
 
     public convenience init(device: CoreDeviceDevice) {
         self.init(device: device, makeTransport: CoreDeviceScreenTransport.make)
@@ -52,13 +58,18 @@ public final class RemoteDeviceScreenSession {
         contentView = NSView(frame: .zero)
         contentView.wantsLayer = true
         contentView.layer?.backgroundColor = NSColor.black.cgColor
+        recording.onChange = { [weak self] in self?.onStateChange?() }
     }
 
     isolated deinit {
         starting?.cancel()
         let transport = transport
+        let recording = recording
         Task { @MainActor in
-            do { try await transport?.stop() }
+            do {
+                _ = try await recording.stop()
+                try await transport?.stop()
+            }
             catch { NSLog("NeoSimulator remote screen cleanup failed: %@", String(describing: error)) }
         }
     }
@@ -117,6 +128,7 @@ public final class RemoteDeviceScreenSession {
         state = .stopping
         onStateChange?()
         let task = Task { [self] in
+            _ = try await recording.stop()
             var failure: (any Error)?
             if let transport {
                 do { try await transport.stop(); self.transport = nil }
@@ -152,6 +164,23 @@ public final class RemoteDeviceScreenSession {
         }
         return try await transport.captureScreenshot()
     }
+
+    /// Starts native recording with CoreDevice's default codec and mask policy.
+    /// A nil display identifier delegates display selection to CoreDevice.
+    public func startRecording(displayUniqueID: String? = nil) async throws {
+        guard state == .connected, let transport else {
+            throw CLIError.unavailable("remote-screen-connection", "Connect the device screen before recording it.")
+        }
+        try await recording.start { try await transport.startRecording(displayUniqueID: displayUniqueID) }
+    }
+
+    /// Finishes an active or pending recording. The returned data remains available in
+    /// completedRecording until the caller saves it or explicitly discards it.
+    @discardableResult
+    public func stopRecording() async throws -> RemoteDeviceRecording? { try await recording.stop() }
+
+    /// Releases the retained completed recording after saving or an explicit discard.
+    public func discardCompletedRecording() { recording.discardCompleted() }
 
     /// Releases inputs owned by this connection without disconnecting its screen.
     public func releaseInputs() async throws {
@@ -220,7 +249,9 @@ protocol RemoteScreenTransport: AnyObject {
     var inputCapabilities: Set<RemoteDeviceInputKind> { get }
     var nativeInputView: NSView? { get }
     var canCaptureScreenshot: Bool { get }
+    var canRecordScreen: Bool { get }
     func captureScreenshot() async throws -> CGImage
+    func startRecording(displayUniqueID: String?) async throws -> any RemoteScreenRecordingHandle
     func start(events: @escaping @MainActor (RemoteScreenTransportEvent) -> Void) async throws
     func send(_ input: RemoteScreenInput) async throws
     func releaseInputs() async throws
@@ -230,6 +261,10 @@ protocol RemoteScreenTransport: AnyObject {
 extension RemoteScreenTransport {
     var nativeInputView: NSView? { nil }
     var canCaptureScreenshot: Bool { false }
+    var canRecordScreen: Bool { false }
+    func startRecording(displayUniqueID: String?) async throws -> any RemoteScreenRecordingHandle {
+        throw CLIError.unavailable("remote-screen-recording", "This device does not currently provide screen recording.")
+    }
     func captureScreenshot() async throws -> CGImage {
         throw CLIError.unavailable("remote-screen-capture", "This screen connection does not provide screenshot capture.")
     }

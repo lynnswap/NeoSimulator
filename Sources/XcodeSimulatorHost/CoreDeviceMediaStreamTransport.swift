@@ -17,6 +17,7 @@ final class CoreDeviceMediaStreamTransport: RemoteScreenTransport {
     private var stopped = false
     private(set) var inputCapabilities: Set<RemoteDeviceInputKind> = []
     var canCaptureScreenshot: Bool { !stopped && stream != nil }
+    private(set) var canRecordScreen = false
 
     init(remote: CoreDeviceRemoteScreenDevice, contentView: NSView) throws {
         self.remote = remote
@@ -31,6 +32,7 @@ final class CoreDeviceMediaStreamTransport: RemoteScreenTransport {
         guard !stopped else { throw CancellationError() }
         self.events = events
         inputCapabilities = try input.capabilities()
+        canRecordScreen = try remote.supports("com.apple.coredevice.feature.screenrecording")
         layer.frame = contentView.bounds
         contentView.layer?.addSublayer(layer)
         let session = try unsafe bindings.makeSession.unsafeInvoke(UUID())
@@ -76,6 +78,9 @@ final class CoreDeviceMediaStreamTransport: RemoteScreenTransport {
     }
 
     func send(_ input: RemoteScreenInput) async throws { try await self.input.send(input) }
+    func startRecording(displayUniqueID: String?) async throws -> any RemoteScreenRecordingHandle {
+        try await remote.startRecording(displayUniqueID: displayUniqueID)
+    }
     func releaseInputs() async throws { try await input.releaseInputs() }
 
     func stop() async throws {
@@ -83,6 +88,7 @@ final class CoreDeviceMediaStreamTransport: RemoteScreenTransport {
         events = nil
         capture.fail(CancellationError())
         inputCapabilities = []
+        canRecordScreen = false
         observation?.cancel()
         defer { layer.removeFromSuperlayer() }
         var failure: (any Error)?
