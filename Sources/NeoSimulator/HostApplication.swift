@@ -7,6 +7,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     private let deviceSet: SimulatorDeviceSet
     private let recordings = RecordingStore()
     private let isManaged: Bool
+    private let owner: RendererOwnerIdentity?
     private let sessionIdentifier = UUID().uuidString
     private var ownedDeviceIdentifiers: Set<SimulatorDeviceIdentifier> = []
     private var releasingDevices: Set<SimulatorDeviceIdentifier> = []
@@ -45,6 +46,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     /// ends without waiting on alerts.
     private var handoverRequested = false
     private var managerRequestedQuit = false
+    private var ownerExitRequested = false
     /// The choice Quit NeoSimulator… made, which takes precedence over the
     /// default quit action.
     private var quitChoice: DeviceLifetimeChoice?
@@ -69,11 +71,12 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     private var touchIndicatorObservation: DefaultsObservation?
     private var testingDevicesObservation: DefaultsObservation?
 
-    init(runtime: SimulatorRuntime, conflicts: HostConflictMonitor, isManaged: Bool = false) throws {
+    init(runtime: SimulatorRuntime, conflicts: HostConflictMonitor, isManaged: Bool = false, owner: RendererOwnerIdentity? = nil) throws {
         try conflicts.check()
         self.runtime = runtime
         self.conflicts = conflicts
         self.isManaged = isManaged
+        self.owner = owner
         deviceSet = try runtime.openDeviceSet()
         HostPreferences.registerDefaults()
         super.init()
@@ -331,6 +334,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
 
     private struct Registration: Codable {
         let processIdentifier: Int32
+        let ownerProcessIdentifier: Int32?
+        let ownerLaunchDate: Date?
         let applicationPath: String
         let xcodePath: String
         let sessionIdentifier: String
@@ -348,6 +353,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true,
                                                 attributes: [.posixPermissions: 0o700])
         let registration = Registration(processIdentifier: ProcessInfo.processInfo.processIdentifier,
+                                        ownerProcessIdentifier: owner?.processIdentifier,
+                                        ownerLaunchDate: owner?.launchDate,
                                         applicationPath: Bundle.main.bundleURL.standardizedFileURL.path,
                                         xcodePath: runtime.xcodeURL.standardizedFileURL.path,
                                         sessionIdentifier: sessionIdentifier,
@@ -810,6 +817,18 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         for shutdown in terminationShutdowns { shutdown.cancel() }
     }
 
+    nonisolated static func requestTerminationAfterOwnerExit() {
+        CFRunLoopPerformBlock(CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue) {
+            MainActor.assumeIsolated {
+                guard let target = handoverTarget else { exit(EX_OK) }
+                // No manager remains to answer dialogs. The saved normal quit policy still applies.
+                target.ownerExitRequested = true
+                requestTermination()
+            }
+        }
+        CFRunLoopWakeUp(CFRunLoopGetMain())
+    }
+
     /// Terminate from a run-loop callback after dismissing modal alerts.
     /// AppKit termination inside a main-queue block or modal loop deadlocks pending main-actor work.
     private static func requestTermination() {
@@ -1000,7 +1019,10 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             await recordings.finishAll()
             guard !isTerminating else { return }
             // A handover ends the host without waiting on alerts.
-            for error in recordingTerminationErrors where !handoverRequested { NSAlert(error: error).runModal() }
+            for error in recordingTerminationErrors {
+                if ownerExitRequested { hostLog(error.localizedDescription) }
+                else if !handoverRequested { NSAlert(error: error).runModal() }
+            }
             recordingTerminationErrors.removeAll()
             Self.requestTermination()
         }
@@ -1014,7 +1036,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     /// Finalizes recordings, disconnects windows, waits for external-display cleanup, then shuts down.
     /// Explicit detach choices, DetachOnAppQuit, and handover preserve booted devices.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        if isManaged, !managerRequestedQuit, !handoverRequested, !yieldedToAnotherHost {
+        if isManaged, !managerRequestedQuit, !handoverRequested, !yieldedToAnotherHost, !ownerExitRequested {
             openManager(command: "quit")
             return .terminateCancel
         }
@@ -1031,7 +1053,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         guard recordings.hasActiveRecordings || !devices.isEmpty || !closingShutdowns.isEmpty
                 || sessions.values.contains(where: { $0.session.hasExternalDisplay })
                 || externalDisplayQueues.values.contains(where: { $0.changes.isBusy }) else {
-            if !captureFailures.isEmpty, !handoverRequested { Self.alert(captureFailures) }
+            if ownerExitRequested { captureFailures.forEach { hostLog($0.localizedDescription) } }
+            else if !captureFailures.isEmpty, !handoverRequested { Self.alert(captureFailures) }
             return .terminateNow
         }
         isTerminating = true
@@ -1041,7 +1064,10 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         Task {
             await recordings.finishAll()
             // A handover ends the host without waiting on alerts.
-            for error in recordingTerminationErrors where !handoverRequested { NSAlert(error: error).runModal() }
+            for error in recordingTerminationErrors {
+                if ownerExitRequested { hostLog(error.localizedDescription) }
+                else if !handoverRequested { NSAlert(error: error).runModal() }
+            }
             recordingTerminationErrors.removeAll()
             // A restart could boot its device again, so it ends first.
             let restarts = Array(restarting.values)
@@ -1056,7 +1082,9 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             let displayFailures = await finishExternalDisplayChanges()
             let failures = await shutDownForTermination(devices)
             shutdown()
-            if !displayFailures.isEmpty || !failures.isEmpty, !handoverRequested {
+            if ownerExitRequested {
+                for failure in displayFailures + failures { hostLog(failure) }
+            } else if !displayFailures.isEmpty || !failures.isEmpty, !handoverRequested {
                 let alert = NSAlert()
                 alert.messageText = failures.isEmpty
                     ? "Some external displays could not be turned off."
@@ -1092,11 +1120,6 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             DistributedNotificationCenter.default().removeObserver(locationObserver)
             self.locationObserver = nil
         }
-        if isManaged {
-            do { try FileManager.default.removeItem(at: registrationURL) }
-            catch where (error as NSError).code == NSFileNoSuchFileError {}
-            catch { hostLog("Could not remove simulator ownership: \(error.localizedDescription)") }
-        }
         conflicts.onConflict = nil
         touchIndicatorObservation = nil
         testingDevicesObservation = nil
@@ -1124,5 +1147,10 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         browser?.close()
         newSimulator?.close()
         browser = nil
+        if isManaged {
+            do { try FileManager.default.removeItem(at: registrationURL) }
+            catch where (error as NSError).code == NSFileNoSuchFileError {}
+            catch { hostLog("Could not remove simulator ownership: \(error.localizedDescription)") }
+        }
     }
 }

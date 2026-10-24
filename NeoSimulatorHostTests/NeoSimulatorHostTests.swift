@@ -1,6 +1,7 @@
 import ABIBridge
 import AppKit
 import Testing
+import Synchronization
 
 @Suite(.serialized) @MainActor
 struct InputFocusTests {
@@ -7253,9 +7254,16 @@ struct HostBehaviorTests {
 
     @Test func managerRequestsOpenTheExplicitDeviceAndKeepQuitChoices() throws {
         let identifier = UUID().uuidString
-        let options = try HostLaunchOptions(arguments: ["--managed", "--xcode", "/Xcode.app", "--device", identifier, "--device-set", "/custom/XCTestDevices"])
+        let options = try HostLaunchOptions(arguments: ["--managed", "--owner-pid", "123", "--owner-launch-date", "1234.5", "--xcode", "/Xcode.app", "--device", identifier, "--device-set", "/custom/XCTestDevices"])
         #expect(options.deviceIdentifier == identifier)
         #expect(options.isManaged)
+        #expect(options.owner == RendererOwnerIdentity(processIdentifier: 123, launchDate: Date(timeIntervalSinceReferenceDate: 1234.5)))
+        #expect(throws: (any Error).self) {
+            try HostLaunchOptions(arguments: ["--managed", "--xcode", "/Xcode.app"])
+        }
+        #expect(throws: (any Error).self) {
+            try HostLaunchOptions(arguments: ["--owner-pid", "123", "--owner-launch-date", "1234.5", "--xcode", "/Xcode.app"])
+        }
         #expect(try RendererRequest(url: #require(URL(string: "neosimulator-renderer://open-device?udid=\(identifier)")))
             == .openDevice(SimulatorDeviceIdentifier(identifier)))
         let selected = SimulatorDeviceIdentifier(identifier, deviceSetPath: "/custom/Parallel Testing Devices")
@@ -7390,4 +7398,71 @@ struct DeviceToolTests {
 // The fixture adds no mutable state to NSRunningApplication's Sendable contract.
 private final class FixtureRunningApplication: NSRunningApplication, @unchecked Sendable {
     override var bundleIdentifier: String? { "com.apple.dt.Devices" }
+}
+
+
+private final class RendererOwnerMonitorFixture: Sendable {
+    struct State {
+        var exit: (@Sendable () -> Void)?
+        var deadline: (@Sendable () -> Void)?
+        var observedPID: Int32?
+        var seconds: TimeInterval?
+        var observationCancelled = false
+        var deadlineCancelled = false
+        var cleanupRequests = 0
+        var forcedExits = 0
+    }
+    let state = Mutex(State())
+
+    func makeMonitor() -> RendererOwnerMonitor {
+        RendererOwnerMonitor(processIdentifier: 123, cleanup: { [self] in
+            state.withLock { $0.cleanupRequests += 1 }
+        }, observeExit: { [self] pid, exit in
+            state.withLock { $0.observedPID = pid; $0.exit = exit }
+            return { [self] in state.withLock { $0.observationCancelled = true } }
+        }, scheduleDeadline: { [self] seconds, deadline in
+            state.withLock { $0.seconds = seconds; $0.deadline = deadline }
+            return { [self] in state.withLock { $0.deadlineCancelled = true } }
+        }, forceExit: { [self] in state.withLock { $0.forcedExits += 1 } })
+    }
+
+    func exitOwner() { state.withLock { $0.exit }?() }
+    func expireDeadline() { state.withLock { $0.deadline }?() }
+}
+
+@Suite struct RendererOwnerMonitorTests {
+    @Test func ownerLossRequestsCleanupOnceAndBoundsAStalledRunLoop() {
+        let fixture = RendererOwnerMonitorFixture()
+        let monitor = fixture.makeMonitor()
+        #expect(fixture.state.withLock { $0.observedPID } == 123)
+        #expect(fixture.state.withLock { $0.seconds } == nil)
+        fixture.exitOwner()
+        fixture.exitOwner()
+        #expect(fixture.state.withLock { $0.cleanupRequests } == 1)
+        #expect(fixture.state.withLock { $0.seconds } == 60)
+        #expect(fixture.state.withLock { $0.forcedExits } == 0)
+        // No run-loop cleanup is completed: only the independently controlled deadline progresses.
+        fixture.expireDeadline()
+        #expect(fixture.state.withLock { $0.forcedExits } == 1)
+        monitor.stop()
+        fixture.expireDeadline()
+        #expect(fixture.state.withLock { $0.forcedExits } == 1)
+        #expect(fixture.state.withLock { $0.observationCancelled && $0.deadlineCancelled })
+    }
+
+    @Test func normalCompletionAndLateCallbacksNeverStartOrForceOrphanCleanup() {
+        let normal = RendererOwnerMonitorFixture()
+        let monitor = normal.makeMonitor()
+        monitor.stop()
+        normal.exitOwner()
+        normal.expireDeadline()
+        #expect(normal.state.withLock { $0.cleanupRequests == 0 && $0.forcedExits == 0 && $0.seconds == nil })
+
+        let orphan = RendererOwnerMonitorFixture()
+        let completing = orphan.makeMonitor()
+        orphan.exitOwner()
+        completing.stop()
+        orphan.expireDeadline()
+        #expect(orphan.state.withLock { $0.cleanupRequests == 1 && $0.forcedExits == 0 && $0.deadlineCancelled })
+    }
 }

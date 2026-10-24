@@ -1,4 +1,102 @@
 import AppKit
+import Darwin
+import Synchronization
+
+
+struct RendererOwnerIdentity: Equatable {
+    let processIdentifier: Int32
+    let launchDate: Date
+
+    @MainActor
+    func isRunning(applicationURL: URL) -> Bool {
+        guard let application = NSRunningApplication(processIdentifier: processIdentifier),
+              !application.isTerminated, application.launchDate == launchDate,
+              let url = application.bundleURL else { return false }
+        return url.standardizedFileURL.resolvingSymlinksInPath()
+            == applicationURL.standardizedFileURL.resolvingSymlinksInPath()
+    }
+}
+
+/// The deadline runs independently of AppKit, including while native display code blocks its run loop.
+final class RendererOwnerMonitor: Sendable {
+    typealias Cancellation = @Sendable () -> Void
+    typealias ObserveExit = @Sendable (Int32, @escaping @Sendable () -> Void) -> Cancellation
+    typealias ScheduleDeadline = @Sendable (TimeInterval, @escaping @Sendable () -> Void) -> Cancellation
+    private struct State {
+        var ownerExited = false
+        var stopped = false
+        var cancelObservation: Cancellation?
+        var cancelDeadline: Cancellation?
+    }
+    private let state = Mutex(State())
+    private let schedule: ScheduleDeadline
+    private let forceExit: @Sendable () -> Void
+    private let cleanup: @Sendable () -> Void
+
+    init(processIdentifier: Int32, cleanup: @escaping @Sendable () -> Void,
+         observeExit: ObserveExit = RendererOwnerMonitor.observeProcess,
+         scheduleDeadline: @escaping ScheduleDeadline = RendererOwnerMonitor.scheduleDeadline,
+         forceExit: @escaping @Sendable () -> Void = { _exit(EX_TEMPFAIL) }) {
+        self.schedule = scheduleDeadline
+        self.forceExit = forceExit
+        self.cleanup = cleanup
+        let cancel = observeExit(processIdentifier) { [weak self] in self?.ownerDidExit() }
+        let stopped = state.withLock { value in
+            if value.stopped { return true }
+            value.cancelObservation = cancel
+            return false
+        }
+        if stopped { cancel() }
+    }
+
+    private func ownerDidExit() {
+        let beginsCleanup = state.withLock { value in
+            guard !value.stopped, !value.ownerExited else { return false }
+            value.ownerExited = true
+            return true
+        }
+        guard beginsCleanup else { return }
+        let cancel = schedule(60) { [weak self] in
+            guard let self, self.state.withLock({ !$0.stopped && $0.ownerExited }) else { return }
+            self.forceExit()
+        }
+        let stopped = state.withLock { value in
+            if value.stopped { return true }
+            value.cancelDeadline = cancel
+            return false
+        }
+        if stopped { cancel(); return }
+        cleanup()
+    }
+
+    func stop() {
+        let cancellations = state.withLock { value -> [Cancellation] in
+            value.stopped = true
+            let result = [value.cancelObservation, value.cancelDeadline].compactMap { $0 }
+            value.cancelObservation = nil
+            value.cancelDeadline = nil
+            return result
+        }
+        for cancel in cancellations { cancel() }
+    }
+
+    deinit { stop() }
+
+    private static func observeProcess(_ pid: Int32, exited: @escaping @Sendable () -> Void) -> Cancellation {
+        let source = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit, queue: .global())
+        source.setEventHandler(handler: exited)
+        source.activate()
+        return { source.cancel() }
+    }
+
+    private static func scheduleDeadline(_ seconds: TimeInterval, expired: @escaping @Sendable () -> Void) -> Cancellation {
+        let source = DispatchSource.makeTimerSource(queue: .global())
+        source.schedule(deadline: .now() + seconds)
+        source.setEventHandler(handler: expired)
+        source.activate()
+        return { source.cancel() }
+    }
+}
 
 struct HostLaunchOptions {
     let xcodeURL: URL
@@ -8,6 +106,7 @@ struct HostLaunchOptions {
     let deviceIdentifier: String?
     let deviceSetPath: String?
     let isManaged: Bool
+    let owner: RendererOwnerIdentity?
 
     init(arguments: [String]) throws {
         var xcodePath: String?
@@ -17,15 +116,27 @@ struct HostLaunchOptions {
         var validate = false
         var creationCatalog = false
         var managed = false
+        var ownerPID: Int32?
+        var ownerLaunchDate: Date?
         var index = 0
         func invalid() -> HostError {
-            .invalidArguments("Expected [--managed] [--validate-runtime] [--startup-result /absolute/path] [--device UDID] [--device-set /absolute/path] --xcode /absolute/path/to/Xcode.app")
+            .invalidArguments("Expected [--managed --owner-pid PID --owner-launch-date SECONDS] [--validate-runtime] [--startup-result /absolute/path] [--device UDID] [--device-set /absolute/path] --xcode /absolute/path/to/Xcode.app")
         }
         while index < arguments.count {
             switch arguments[index] {
             case "--managed":
                 guard !managed else { throw invalid() }
                 managed = true
+            case "--owner-pid":
+                index += 1
+                guard index < arguments.count, ownerPID == nil,
+                      let pid = Int32(arguments[index]), pid > 0 else { throw invalid() }
+                ownerPID = pid
+            case "--owner-launch-date":
+                index += 1
+                guard index < arguments.count, ownerLaunchDate == nil,
+                      let seconds = Double(arguments[index]), seconds.isFinite else { throw invalid() }
+                ownerLaunchDate = Date(timeIntervalSinceReferenceDate: seconds)
             case "--validate-runtime":
                 guard !validate else { throw invalid() }
                 validate = true
@@ -55,7 +166,9 @@ struct HostLaunchOptions {
             }
             index += 1
         }
-        guard let xcodePath, !(validate && resultPath != nil) else { throw invalid() }
+        guard let xcodePath, !(validate && resultPath != nil),
+              managed ? (ownerPID != nil && ownerLaunchDate != nil) : (ownerPID == nil && ownerLaunchDate == nil)
+        else { throw invalid() }
         xcodeURL = URL(fileURLWithPath: xcodePath, isDirectory: true).standardizedFileURL.resolvingSymlinksInPath()
         validatesRuntime = validate
         readsCreationCatalog = creationCatalog
@@ -63,6 +176,7 @@ struct HostLaunchOptions {
         deviceIdentifier = device
         deviceSetPath = deviceSet
         isManaged = managed
+        owner = ownerPID.flatMap { pid in ownerLaunchDate.map { RendererOwnerIdentity(processIdentifier: pid, launchDate: $0) } }
     }
 
     func validateInstallation() throws {
@@ -117,7 +231,7 @@ enum NeoSimulatorApp {
 #endif
         let arguments = Array(CommandLine.arguments.dropFirst())
         if arguments == ["--help"] {
-            print("usage: NeoSimulatorRenderer [--managed] [--validate-runtime] [--startup-result /absolute/path] [--device UDID] [--device-set /absolute/path] --xcode /absolute/path/to/Xcode.app")
+            print("usage: NeoSimulatorRenderer [--managed --owner-pid PID --owner-launch-date SECONDS] [--validate-runtime] [--startup-result /absolute/path] [--device UDID] [--device-set /absolute/path] --xcode /absolute/path/to/Xcode.app")
             return
         }
         do {
@@ -133,13 +247,24 @@ enum NeoSimulatorApp {
                 _ = try SimulatorRuntime(xcodeURL: options.xcodeURL)
                 return
             }
+            // LaunchServices owns the Unix parent. The explicit manager identity owns this renderer.
+            let ownerMonitor: RendererOwnerMonitor?
+            if let owner = options.owner {
+                let managerURL = Bundle.main.bundleURL.deletingLastPathComponent()
+                    .deletingLastPathComponent().deletingLastPathComponent()
+                guard owner.isRunning(applicationURL: managerURL) else { return }
+                ownerMonitor = RendererOwnerMonitor(processIdentifier: owner.processIdentifier,
+                                                     cleanup: HostApplication.requestTerminationAfterOwnerExit)
+                guard owner.isRunning(applicationURL: managerURL) else { ownerMonitor?.stop(); return }
+            } else { ownerMonitor = nil }
+            defer { ownerMonitor?.stop() }
             let conflicts = HostConflictMonitor()
             try conflicts.check()
             let runtime = try SimulatorRuntime(xcodeURL: options.xcodeURL)
             HostPreferences.migrateStandalonePreferences()
             let app = NSApplication.shared
             app.setActivationPolicy(.accessory)
-            let controller = try HostApplication(runtime: runtime, conflicts: conflicts, isManaged: options.isManaged)
+            let controller = try HostApplication(runtime: runtime, conflicts: conflicts, isManaged: options.isManaged, owner: options.owner)
             app.delegate = controller
             app.finishLaunching()
             try controller.start(initialDeviceIdentifier: options.deviceIdentifier, initialDeviceSetPath: options.deviceSetPath)
