@@ -20,6 +20,24 @@ struct DeviceManagementTests {
         #expect(!commands.contains { $0.arguments.contains("hardware-udid") })
     }
 
+    @Test func managementUsesAnAvailableCatalogAndRetainsUnavailableMetadataTargets() async throws {
+        let newer = URL(fileURLWithPath: "/NewerXcode.app")
+        let compatible = URL(fileURLWithPath: "/CompatibleXcode.app")
+        let unavailable = Self.simulator("A", path: "/testing", isAvailable: false)
+        let available = Self.simulator("A", path: "/testing")
+        let fixture = ManagementFixture(managementCatalogs: [(newer, [unavailable]), (compatible, [available])])
+        let report = await fixture.backend.manage(.start, devices: [.simulator(available)])
+        #expect(report.results.first?.error == nil)
+        let command = try #require(await fixture.commands.first)
+        #expect(command.xcodeURL == compatible && command.arguments == ["boot", "A"] && command.path == "/testing")
+
+        let metadata = ManagementFixture(managementCatalogs: [(newer, [unavailable]), (compatible, [unavailable])])
+        let renamed = await metadata.backend.manage(.rename("Renamed"), devices: [.simulator(unavailable)])
+        #expect(renamed.results.first?.error == nil)
+        let rename = try #require(await metadata.commands.first)
+        #expect(rename.xcodeURL == newer && rename.arguments == ["rename", "A", "Renamed"])
+    }
+
     @Test func failedRendererCleanupPreventsShutdownAndPreservesTheFailure() async throws {
         let fixture = ManagementFixture(hasRenderer: true, failsRelease: true)
         let report = await fixture.backend.manage(.shutdown, devices: [.simulator(Self.simulator("A", state: "Booted"))])
@@ -105,10 +123,10 @@ struct DeviceManagementTests {
     }
 
     private static func simulator(_ identifier: String, state: String = "Shutdown", path: String? = nil,
-                                  family: String = "iPhone", pairIDs: Set<String> = []) -> SimulatorHostDevice {
+                                  family: String = "iPhone", pairIDs: Set<String> = [], isAvailable: Bool = true) -> SimulatorHostDevice {
         SimulatorHostDevice(identifier: identifier, name: identifier, descriptiveName: identifier,
             runtimeIdentifier: "runtime", runtimeName: "iOS 27.0", productFamily: family, state: state,
-            deviceSetPath: path, pairIdentifiers: pairIDs)
+            deviceSetPath: path, isAvailable: isAvailable, pairIdentifiers: pairIDs)
     }
 
     private static func remote(identifier: String, reality: String, features: [String] = [
@@ -125,13 +143,14 @@ struct DeviceManagementTests {
 }
 
 private actor ManagementFixture {
-    struct Command: Sendable { let arguments: [String]; let path: String? }
+    struct Command: Sendable { let arguments: [String]; let path: String?; let xcodeURL: URL? }
     let hasRenderer: Bool
     let failsRelease: Bool
     let restartHasWindow: Bool
     let failingCommand: String?
     let failingIdentifier: String?
     let virtualFeatures: [String: Set<String>]
+    let managementCatalogs: [(URL, [SimulatorHostDevice])]
     private(set) var commands: [Command] = []
     private(set) var displayConnected: Bool
     private(set) var restartRequests = 0
@@ -139,7 +158,8 @@ private actor ManagementFixture {
     private(set) var virtualOperations: [String] = []
 
     init(hasRenderer: Bool = false, failsRelease: Bool = false, restartHasWindow: Bool = true,
-         failingCommand: String? = nil, failingIdentifier: String? = nil, virtualFeatures: [String: Set<String>] = [:]) {
+         failingCommand: String? = nil, failingIdentifier: String? = nil, virtualFeatures: [String: Set<String>] = [:],
+         managementCatalogs: [(URL, [SimulatorHostDevice])] = []) {
         self.hasRenderer = hasRenderer
         self.displayConnected = hasRenderer
         self.failsRelease = failsRelease
@@ -147,11 +167,12 @@ private actor ManagementFixture {
         self.failingCommand = failingCommand
         self.failingIdentifier = failingIdentifier
         self.virtualFeatures = virtualFeatures
+        self.managementCatalogs = managementCatalogs
     }
 
     nonisolated var backend: DeviceManagementBackend {
-        DeviceManagementBackend(context: { device, requiresRenderer in await self.context(device, requiresRenderer: requiresRenderer) }, runSimctl: { _, arguments, path in
-            try await self.run(arguments, path: path)
+        DeviceManagementBackend(context: { device, requiresRenderer in try await self.context(device, requiresRenderer: requiresRenderer) }, runSimctl: { xcode, arguments, path in
+            try await self.run(arguments, path: path, xcodeURL: xcode)
         }, runDevicectl: { try await self.run($0, path: nil) }, manageVirtualMachine: { action, identifier in
             try await self.manageVirtualMachine(action, identifier: identifier)
         }, release: { _, _ in
@@ -159,9 +180,16 @@ private actor ManagementFixture {
         }, restart: { _, _, _ in await self.restart() }, attach: { _, _ in await self.attach() })
     }
 
-    private func context(_ device: SimulatorHostDevice, requiresRenderer: Bool) -> DeviceManagementContext {
+    private func context(_ device: SimulatorHostDevice, requiresRenderer: Bool) async throws -> DeviceManagementContext {
         let renderer = hasRenderer && requiresRenderer ? RendererRegistration(processIdentifier: 1, applicationPath: "/Renderer.app",
             xcodePath: "/Xcode.app", sessionIdentifier: "session", deviceIdentifiers: [device.identifier]) : nil
+        if !managementCatalogs.isEmpty {
+            let catalogs = managementCatalogs
+            let selected = try await SimulatorHostController.managementDevice(for: device, xcodeURLs: catalogs.map { $0.0 }) { xcode, path in
+                return catalogs.first { $0.0 == xcode }?.1.filter { $0.deviceSetPath == path } ?? []
+            }
+            return DeviceManagementContext(device: selected.device, xcodeURL: selected.xcodeURL, renderer: renderer)
+        }
         return DeviceManagementContext(device: device, xcodeURL: URL(fileURLWithPath: "/Xcode.app"), renderer: renderer)
     }
 
@@ -184,11 +212,11 @@ private actor ManagementFixture {
         virtualOperations.append(identifier)
     }
 
-    private func run(_ arguments: [String], path: String?) throws -> Data {
+    private func run(_ arguments: [String], path: String?, xcodeURL: URL? = nil) throws -> Data {
         if ["shutdown", "erase", "delete"].contains(arguments.first ?? ""), displayConnected {
             throw CLIError.io("unsafe-mutation", "The live display was not released before mutation")
         }
-        commands.append(Command(arguments: arguments, path: path))
+        commands.append(Command(arguments: arguments, path: path, xcodeURL: xcodeURL))
         if arguments.first == failingCommand,
            failingIdentifier == nil || arguments.dropFirst().first == failingIdentifier {
             throw CLIError.io("mutation-fixture", "Synthetic command failure")

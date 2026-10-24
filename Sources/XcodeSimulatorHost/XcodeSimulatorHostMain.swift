@@ -489,25 +489,36 @@ public actor SimulatorHostController {
         let owner = try await registeredRenderers().first { $0.deviceIdentifiers.contains(original.identifier) }
         let candidates = try owner.map { [try makeInspector().xcode(at: URL(fileURLWithPath: $0.xcodePath))] }
             ?? availableXcodes()
-        var firstFailure: (any Error)?
-        for xcode in candidates {
-            do {
-                let current = try await Self.readManagementCatalog(xcodeURL: xcode.applicationURL, path: original.deviceSetPath)
-                guard let device = current.first(where: { $0.identifier == original.identifier }) else { continue }
-                if requiresRenderer, owner != nil {
-                    let alternatePaths: [String?] = original.deviceSetPath == nil
-                        ? SimulatorDeviceSets.testingPath().map { [$0] } ?? [] : [nil]
-                    for path in alternatePaths {
-                        if let path, !FileManager.default.fileExists(atPath: path) { continue }
-                        let alternate = try await Self.readManagementCatalog(xcodeURL: xcode.applicationURL, path: path)
-                        if alternate.contains(where: { $0.identifier == device.identifier }) {
-                            throw CLIError.configuration("renderer-device-set-ambiguous", "This simulator identifier exists in more than one device set. Its live display cannot be managed unambiguously.")
-                        }
-                    }
+        let selected = try await Self.managementDevice(for: original, xcodeURLs: candidates.map(\.applicationURL),
+            readCatalog: Self.readManagementCatalog)
+        if requiresRenderer, owner != nil {
+            let alternatePaths: [String?] = original.deviceSetPath == nil
+                ? SimulatorDeviceSets.testingPath().map { [$0] } ?? [] : [nil]
+            for path in alternatePaths {
+                if let path, !FileManager.default.fileExists(atPath: path) { continue }
+                let alternate = try await Self.readManagementCatalog(xcodeURL: selected.xcodeURL, path: path)
+                if alternate.contains(where: { $0.identifier == selected.device.identifier }) {
+                    throw CLIError.configuration("renderer-device-set-ambiguous", "This simulator identifier exists in more than one device set. Its live display cannot be managed unambiguously.")
                 }
-                return DeviceManagementContext(device: device, xcodeURL: xcode.applicationURL, renderer: requiresRenderer ? owner : nil)
+            }
+        }
+        return DeviceManagementContext(device: selected.device, xcodeURL: selected.xcodeURL, renderer: requiresRenderer ? owner : nil)
+    }
+
+    static func managementDevice(for original: SimulatorHostDevice, xcodeURLs: [URL],
+                                 readCatalog: @Sendable (URL, String?) async throws -> [SimulatorHostDevice]) async throws
+        -> (device: SimulatorHostDevice, xcodeURL: URL) {
+        var unavailable: (device: SimulatorHostDevice, xcodeURL: URL)?
+        var firstFailure: (any Error)?
+        for xcodeURL in xcodeURLs {
+            do {
+                let current = try await readCatalog(xcodeURL, original.deviceSetPath)
+                guard let device = current.first(where: { $0.identifier == original.identifier }) else { continue }
+                if device.isAvailable { return (device, xcodeURL) }
+                if unavailable == nil { unavailable = (device, xcodeURL) }
             } catch { if firstFailure == nil { firstFailure = error } }
         }
+        if let unavailable { return unavailable }
         if let firstFailure { throw firstFailure }
         throw CLIError.unavailable("simulator-device", "The selected simulator is no longer available.")
     }

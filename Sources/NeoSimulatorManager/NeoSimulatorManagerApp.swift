@@ -29,6 +29,9 @@ final class SimulatorManagerModel {
     var onError: ((any Error) -> Void)?
     private var refreshing = false
     private var refreshWaiters: [CheckedContinuation<Void, Never>] = []
+    private var statusRefreshTask: Task<Void, Never>?
+    private var statusIssue: (any Error)?
+    private var inventoryIssues: [DeviceInventoryIssue] = []
     private var synchronizing = false
     private var inventoryRefreshRequested = false
     private var stopping = false
@@ -117,16 +120,35 @@ final class SimulatorManagerModel {
         }
         repeat {
             inventoryRefreshRequested = false
-            var statusError: (any Error)?
-            do { status = try await controller.status() }
-            catch { statusError = error }
+            refreshHostStatus()
             let snapshot = await controller.inventory()
             inventory = snapshot.devices
-            if snapshot.issues.isEmpty, statusError == nil { backgroundIssue = nil }
-            else {
-                reportBackgroundError(InventoryReadError(issues: snapshot.issues, statusError: statusError))
-            }
+            inventoryIssues = snapshot.issues
+            updateInventoryIssue()
         } while inventoryRefreshRequested && !stopping
+    }
+
+    private func refreshHostStatus() {
+        guard statusRefreshTask == nil else { return }
+        statusRefreshTask = Task {
+            defer { self.statusRefreshTask = nil }
+            do {
+                let status = try await self.controller.status()
+                guard !self.stopping, !Task.isCancelled else { return }
+                self.status = status
+                self.statusIssue = nil
+            } catch {
+                guard !self.stopping, !Task.isCancelled else { return }
+                self.statusIssue = error
+            }
+            self.updateInventoryIssue()
+            self.onChange?()
+        }
+    }
+
+    private func updateInventoryIssue() {
+        if inventoryIssues.isEmpty, statusIssue == nil { backgroundIssue = nil }
+        else { reportBackgroundError(InventoryReadError(issues: inventoryIssues, statusError: statusIssue)) }
     }
 
     func inventoryDidChange() async {
@@ -245,8 +267,10 @@ final class SimulatorManagerModel {
         stopping = true
         pendingOperations.removeAll { $0.refreshCatalog }
         inspectionTask?.cancel()
+        statusRefreshTask?.cancel()
         await operationTask?.value
         for task in Array(managementTasks.values) { await task.value }
+        await statusRefreshTask?.value
         do { try await controller.quitRenderer(keepingDevicesRunning: keepingDevicesRunning) }
         catch { stopping = false; throw error }
     }
