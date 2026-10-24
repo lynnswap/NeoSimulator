@@ -9,6 +9,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     private let isManaged: Bool
     private let isHeadless: Bool
     private let isInProcess: Bool
+    private let suppliedPasteboardSync: PasteboardSync?
     var onPresent: ((DeviceWindowController) -> Void)?
     var onClose: ((SimulatorDeviceIdentifier, DeviceLifetimeChoice?) -> Void)?
     var onError: ((Error) -> Void)?
@@ -73,7 +74,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     /// Window ▸ Show Apple TV Remote's panel, which every device window shares.
     private let tvRemote = TVRemoteController()
     /// Edit ▸ Automatically Sync Pasteboard, for the devices that have windows.
-    private lazy var pasteboardSync = PasteboardSync { [weak self] in
+    private lazy var pasteboardSync: PasteboardSync = suppliedPasteboardSync ?? PasteboardSync { [weak self] in
         self?.sessions.values.map(\.session) ?? []
     }
     /// Reports changes to the touch indicator preferences, from Settings or
@@ -82,13 +83,15 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     private var testingDevicesObservation: DefaultsObservation?
 
     init(runtime: SimulatorRuntime, conflicts: HostConflictMonitor, isManaged: Bool = false,
-         owner: RendererOwnerIdentity? = nil, headless: Bool = false, inProcess: Bool = false) throws {
+         owner: RendererOwnerIdentity? = nil, headless: Bool = false, inProcess: Bool = false,
+         pasteboardSync: PasteboardSync? = nil) throws {
         try conflicts.check()
         self.runtime = runtime
         self.conflicts = conflicts
         self.isManaged = isManaged
         isHeadless = headless
         isInProcess = inProcess
+        suppliedPasteboardSync = pasteboardSync
         self.owner = owner
         deviceSet = try runtime.openDeviceSet()
         HostPreferences.registerDefaults()
