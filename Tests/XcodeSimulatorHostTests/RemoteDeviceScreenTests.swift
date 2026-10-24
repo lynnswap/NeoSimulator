@@ -16,8 +16,10 @@ struct RemoteDeviceScreenTests {
             return transport
         }
         var exposedInputWhileConnecting = false
+        var observedCapabilities: Set<RemoteDeviceInputKind> = []
         session.onStateChange = {
             if session.state == .connecting && session.nativeInputView != nil { exposedInputWhileConnecting = true }
+            observedCapabilities = session.inputCapabilities
         }
         try await session.start()
         #expect(exposedInputWhileConnecting)
@@ -27,9 +29,14 @@ struct RemoteDeviceScreenTests {
         #expect(session.canCaptureScreenshot)
         let screenshot = try await session.captureScreenshot()
         #expect(screenshot.width == 1 && screenshot.height == 1)
+        transport.inputCapabilities = [.keyboard, .pointer, .digitizer]
         transport.emit(.attributes(RemoteDeviceVideoAttributes(aspectRatio: CGSize(width: 2, height: 1),
             contentsRect: CGRect(x: 0, y: 0, width: 1, height: 1), scaleFactor: 2, orientation: .landscapeRight)))
         #expect(session.videoAttributes?.orientation == .landscapeRight)
+        #expect(observedCapabilities == [.keyboard, .pointer, .digitizer])
+        transport.inputCapabilities = [.keyboard]
+        transport.emit(.inputGeometryChanged)
+        #expect(observedCapabilities == [.keyboard])
         transport.emit(.frameReceived)
         #expect(session.hasReceivedFrame)
         try await session.sendKey(4, state: .down)
@@ -241,7 +248,7 @@ private enum ScreenFixtureError: LocalizedError {
 
 @MainActor
 private final class ScreenFixtureTransport: RemoteScreenTransport {
-    let inputCapabilities: Set<RemoteDeviceInputKind> = [.keyboard]
+    var inputCapabilities: Set<RemoteDeviceInputKind> = [.keyboard]
     let nativeInputView: NSView? = NSView()
     var canCaptureScreenshot: Bool { !closed }
     func captureScreenshot() async throws -> CGImage {
