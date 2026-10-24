@@ -172,8 +172,9 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         } else if !attached, defaults.bool(forKey: HostPreferences.sessionOnLaunch),
            defaults.bool(forKey: HostPreferences.startLastDeviceOnLaunch),
            let device = Self.initialDevice(in: try availableSimulatorDevices(),
-                                           current: defaults.string(forKey: HostPreferences.currentDeviceUDID),
-                                           deviceSetPath: defaults.string(forKey: "CurrentDeviceSetPath")) {
+                                           current: defaults.string(forKey: HostPreferences.currentDeviceUDID).map {
+                                               SimulatorDeviceIdentifier($0, deviceSetPath: defaults.string(forKey: "CurrentDeviceSetPath"))
+                                           }) {
             Task {
                 do { try await openSimulator(withIdentifier: device.identity) } catch is CancellationError {
                 } catch {
@@ -394,11 +395,10 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         try await NSWorkspace.shared.open([url], withApplicationAt: managerURL, configuration: configuration)
     }
 
-    /// Prefers the saved device, then the last iPhone in catalog order, then the first device.
-    static func initialDevice(in catalog: [AvailableDevice], current: String?, deviceSetPath: String? = nil) -> AvailableDevice? {
-        let devices = catalog.filter { $0.deviceSetPath == deviceSetPath }
-        if let current = current.flatMap(UUID.init(uuidString:)),
-           let device = devices.first(where: { UUID(uuidString: $0.identifier) == current }) {
+    /// Prefers the saved identity, then the last iPhone or first device across the available catalog.
+    static func initialDevice(in devices: [AvailableDevice], current: SimulatorDeviceIdentifier?) -> AvailableDevice? {
+        if let current, let identifier = UUID(uuidString: current.identifier),
+           let device = devices.first(where: { $0.identity.deviceSetPath == current.deviceSetPath && UUID(uuidString: $0.identifier) == identifier }) {
             return device
         }
         return devices.last { $0.productFamily == 1 && $0.deviceTypeName.contains("iPhone") } ?? devices.first

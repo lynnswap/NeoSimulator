@@ -342,9 +342,12 @@ public actor SimulatorHostController {
                 func savedBoolean(_ key: String) -> Bool {
                     rendererDefaults?.object(forKey: key) as? Bool ?? managerDefaults?.object(forKey: key) as? Bool ?? true
                 }
-                let current = rendererDefaults?.string(forKey: "CurrentDeviceUDID") ?? managerDefaults?.string(forKey: "CurrentDeviceUDID")
+                let savedDefaults = rendererDefaults?.string(forKey: "CurrentDeviceUDID") != nil ? rendererDefaults : managerDefaults
+                let current = savedDefaults?.string(forKey: "CurrentDeviceUDID").map {
+                    DeviceInventoryID.simulator(udid: $0, deviceSetPath: savedDefaults?.string(forKey: "CurrentDeviceSetPath"))
+                }
                 self.startupDeviceIdentifier = SimulatorStartupSelection.device(
-                    in: catalog.filter { $0.deviceSetPath == rendererDefaults?.string(forKey: "CurrentDeviceSetPath") }, attachInitially: attachInitially,
+                    in: catalog, attachInitially: attachInitially,
                     startsSession: savedBoolean("SessionOnLaunch"), startsLastDevice: savedBoolean("StartLastDeviceOnLaunch"),
                     current: current, hasOwnedDevices: !ownedIdentifiers.isEmpty
                 )?.inventoryID
@@ -852,10 +855,12 @@ final class SimulatorBootTracker {
 }
 
 enum SimulatorStartupSelection {
-    static func device(in devices: [SimulatorHostDevice], attachInitially: Bool, startsSession: Bool, startsLastDevice: Bool, current: String?, hasOwnedDevices: Bool) -> SimulatorHostDevice? {
+    static func device(in devices: [SimulatorHostDevice], attachInitially: Bool, startsSession: Bool, startsLastDevice: Bool, current: DeviceInventoryID?, hasOwnedDevices: Bool) -> SimulatorHostDevice? {
         guard startsSession, startsLastDevice, !hasOwnedDevices,
               !(attachInitially && devices.contains(where: { $0.state == "Booted" })) else { return nil }
-        if let identifier = current.flatMap(UUID.init(uuidString:)), let chosen = devices.first(where: { UUID(uuidString: $0.identifier) == identifier }) { return chosen }
+        if case .simulator(let savedIdentifier, let path)? = current,
+           let identifier = UUID(uuidString: savedIdentifier),
+           let chosen = devices.first(where: { $0.deviceSetPath == path && UUID(uuidString: $0.identifier) == identifier }) { return chosen }
         return devices.last(where: { $0.productFamily == "iPhone" }) ?? devices.first
     }
 }
