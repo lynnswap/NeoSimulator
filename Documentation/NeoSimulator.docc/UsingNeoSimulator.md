@@ -1,6 +1,6 @@
 # Using NeoSimulator
 
-Open devices, manage their windows, and capture their screens.
+Open devices, manage their apps and profiles, and capture their screens.
 
 ## Open and create devices
 
@@ -40,6 +40,58 @@ device was created, the error names the devices kept. Install runtimes in Xcode.
 Neo supports iPhone, iPad, Apple Watch, Apple TV, and Apple Vision Pro. Menus show
 the controls supported by the active device. Each renderer uses its Xcode installation for device artwork and the visionOS
 user-interface plugin.
+
+## Inspect a device
+
+Select one device in the main window, then choose an inspector page from the
+right side of the toolbar:
+
+| Page | Contents |
+| --- | --- |
+| Settings | The selected simulator's appearance, accessibility, location, and sound controls. |
+| Content | Installed applications, configuration profiles, and provisioning profiles. |
+| Info | Available device properties, with expandable groups for details. |
+
+In **Info**, open **Visible Fields** to choose the properties or groups to show.
+NeoSimulator remembers these choices. Choose **Show All Fields** to reset them.
+
+Start a simulator before inspecting its apps or profiles. For physical devices
+and virtual machines, actions depend on the connected device's capabilities.
+If a query fails, read the message in the inspector, reconnect or unlock the
+device as needed, then use the inspector's refresh button.
+
+### Applications
+
+Choose **Content → Applications** and select an app to see its details. Use
+**+** to install an app, **−** to remove the selected app and its data, or the
+play button to launch it. The search field filters the installed apps.
+
+The ellipsis button opens these application actions:
+
+| Action | Use |
+| --- | --- |
+| Show Container in Finder | Open an accessible simulator data container on the Mac. |
+| Export Data… | Save the app's accessible data container as an `.xcappdata` package. |
+| Replace Data… | Stop the app and replace its current data with an `.xcappdata` package or a container folder. |
+
+Export the current data before replacing it if you need a backup. Replacement
+asks for confirmation. If it fails, the app may remain stopped and its data may
+be partly replaced; inspect the app before retrying. Transfer errors identify
+any retained partial download. An existing export is replaced
+only after the new download completes.
+
+### Profiles
+
+Choose **Content → Configuration Profiles** or **Provisioning Profiles**.
+Select a profile to view its installed metadata. Use **+** to install a
+`.mobileconfig` configuration profile or `.mobileprovision` provisioning profile,
+or **−** to remove the selected profile after confirmation. Unavailable
+operations are disabled.
+
+Profiles are unavailable for simulators in custom device sets, including
+parallel testing devices. Simulators support configuration profiles only.
+Installed profile details show metadata supplied by the device; payload bodies
+and entitlement values are unavailable.
 
 ## Close, restart, or quit
 

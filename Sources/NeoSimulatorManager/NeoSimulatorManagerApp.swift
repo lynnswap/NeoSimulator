@@ -107,6 +107,33 @@ final class SimulatorManagerModel {
         onChange?()
     }
 
+    func inspector(for device: InventoryDevice) async throws -> DeviceInspector {
+        guard !stopping else { throw CancellationError() }
+        return try await controller.inspector(for: device)
+    }
+
+    func performInspectorOperation(for device: InventoryDevice,
+                                   operation: @escaping @MainActor () async throws -> Void,
+                                   completion: @escaping @MainActor () -> Void) {
+        guard !stopping, !managingDeviceIDs.contains(device.id) else { return }
+        managingDeviceIDs.insert(device.id)
+        let request = UUID()
+        managementTasks[request] = Task {
+            defer {
+                self.managingDeviceIDs.remove(device.id)
+                self.managementTasks.removeValue(forKey: request)
+                self.onChange?()
+            }
+            do { try await operation() }
+            catch { self.onError?(InspectorOperationFailure(deviceName: device.name, error: error)) }
+            if !self.stopping {
+                await self.refreshCatalog()
+                completion()
+            }
+        }
+        onChange?()
+    }
+
     func restoreDefaults(force: Bool = false) {
         perform("Restoring original settings…") { try await self.controller.restore(force: force) }
     }
@@ -523,6 +550,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         quitting = true
         Task {
             do {
+                mainWindow?.stopInspectorReads()
                 inventoryObservationTask?.cancel()
                 await inventoryObservation?.stop()
                 await inventoryObservationTask?.value
@@ -764,6 +792,10 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     private let activity = NSTextField(labelWithString: "")
     private let progress = NSProgressIndicator()
     private var inspectorHost: NSHostingController<AnyView>?
+    private let inspectorContainer = NSViewController()
+    private lazy var deviceInspector = ManagerDeviceInspectorController(model: model)
+    private var inspectorMode = 0
+    private let inspectorIdentifier = NSToolbarItem.Identifier("DeviceInspector")
     private var updatingSelection = false
     private var rows: [DeviceRow] = []
     private var selectedIdentifiers = Set<DeviceInventoryID>()
@@ -1074,12 +1106,44 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     private func buildInspector() {
         let host = NSHostingController(rootView: makeDeviceSettingsView())
         inspectorHost = host
-        let inspector = NSSplitViewItem(inspectorWithViewController: host)
+        inspectorContainer.view = NSView()
+        let inspector = NSSplitViewItem(inspectorWithViewController: inspectorContainer)
         inspector.minimumThickness = 280
-        inspector.maximumThickness = 360
+        inspector.maximumThickness = 440
         inspector.canCollapse = false
         splitController.addSplitViewItem(inspector)
+        showInspectorController(host)
     }
+
+    private func showInspectorController(_ controller: NSViewController) {
+        guard inspectorContainer.children.first !== controller else { return }
+        for child in inspectorContainer.children {
+            child.view.removeFromSuperview()
+            child.removeFromParent()
+        }
+        inspectorContainer.addChild(controller)
+        let view = controller.view
+        view.translatesAutoresizingMaskIntoConstraints = false
+        inspectorContainer.view.addSubview(view)
+        NSLayoutConstraint.activate([
+            view.leadingAnchor.constraint(equalTo: inspectorContainer.view.leadingAnchor),
+            view.trailingAnchor.constraint(equalTo: inspectorContainer.view.trailingAnchor),
+            view.topAnchor.constraint(equalTo: inspectorContainer.view.topAnchor),
+            view.bottomAnchor.constraint(equalTo: inspectorContainer.view.bottomAnchor),
+        ])
+    }
+
+    @objc private func changeInspector(_ sender: NSToolbarItemGroup) {
+        inspectorMode = sender.selectedIndex
+        if inspectorMode == 0, let inspectorHost { showInspectorController(inspectorHost) }
+        else {
+            deviceInspector.setPage(inspectorMode == 1 ? .content : .info)
+            showInspectorController(deviceInspector)
+        }
+        updateDeviceSettings()
+    }
+
+    func stopInspectorReads() { deviceInspector.stopReading() }
 
     private func makeDeviceSettingsView() -> AnyView {
         guard selectedDevices.count == 1, let selection = selectedDevices.first else {
@@ -1227,6 +1291,9 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
 
     private func updateDeviceSettings() {
         inspectorHost?.rootView = makeDeviceSettingsView()
+        let selection = selectedDevices.count == 1 ? selectedDevices.first : nil
+        deviceInspector.update(device: selection, isManaging: selection.map { model.managingDeviceIDs.contains($0.id) } == true,
+                               isVisible: inspectorMode != 0)
     }
 
     private func presentLocationEditor(for identifier: String, latitude: String = "0", longitude: String = "0") {
@@ -1367,13 +1434,24 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [.toggleSidebar, .flexibleSpace, newSimulatorIdentifier, filterIdentifier, .sidebarTrackingSeparator,
-         .flexibleSpace, refreshIdentifier, .inspectorTrackingSeparator]
+         .flexibleSpace, refreshIdentifier, .inspectorTrackingSeparator, inspectorIdentifier]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { toolbarDefaultItemIdentifiers(toolbar) }
 
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
                  willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
+        if itemIdentifier == inspectorIdentifier {
+            let images = ["slider.horizontal.3", "doc", "info.circle"].compactMap {
+                NSImage(systemSymbolName: $0, accessibilityDescription: nil)
+            }
+            let item = NSToolbarItemGroup(itemIdentifier: itemIdentifier, images: images, selectionMode: .selectOne,
+                                          labels: ["Settings", "Content", "Info"], target: self, action: #selector(changeInspector(_:)))
+            item.label = "Device Inspector"
+            item.selectedIndex = inspectorMode
+            item.visibilityPriority = .high
+            return item
+        }
         if itemIdentifier == newSimulatorIdentifier {
             let item = NSToolbarItem(itemIdentifier: itemIdentifier)
             item.label = "New Simulator"
@@ -2153,5 +2231,795 @@ private struct ManagerSettingSlider: NSViewRepresentable {
         var changed: (Double) -> Void
         init(changed: @escaping (Double) -> Void) { self.changed = changed }
         @objc func change(_ sender: NSSlider) { changed(sender.doubleValue) }
+    }
+}
+
+private struct InspectorOperationFailure: LocalizedError {
+    let deviceName: String
+    let error: any Error
+    var errorDescription: String? { "\(deviceName): \(error.localizedDescription)" }
+    var recoverySuggestion: String? {
+        guard let failure = error as? DeviceInspectorFailure else { return nil }
+        switch failure.partialCompletion {
+        case .applicationDataDownload(let destination):
+            return "The incomplete export is retained at \(destination.path)."
+        case .applicationDataReplacement(_, let stopped, let modified):
+            return [stopped ? "The application may have been stopped." : nil,
+                    modified ? "Its data may have been partially replaced. Inspect the application before retrying." : nil]
+                .compactMap { $0 }.joined(separator: " ")
+        case nil: return nil
+        }
+    }
+}
+
+@MainActor
+private final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataSource, NSTableViewDelegate,
+                                                       NSSearchFieldDelegate, NSMenuDelegate {
+    enum Page { case content, info }
+    private enum Content: Int, CaseIterable {
+        case applications, configuration, provisioning
+        var title: String {
+            switch self {
+            case .applications: "Applications"
+            case .configuration: "Configuration Profiles"
+            case .provisioning: "Provisioning Profiles"
+            }
+        }
+        var profileKind: DeviceProfileKind { self == .provisioning ? .provisioning : .configuration }
+    }
+    private let model: SimulatorManagerModel
+    private var device: InventoryDevice?
+    private var inspector: DeviceInspector?
+    private var page = Page.content
+    private var content = Content.applications
+    private var isManaging = false
+    private var isVisible = false
+    private var generation = 0
+    private var readTask: Task<Void, Never>?
+    private var iconTask: Task<Void, Never>?
+    private var applications: [DeviceApplication] = []
+    private var profiles: [DeviceProfile] = []
+    private var appRows: [DeviceApplication] = []
+    private var profileRows: [DeviceProfile] = []
+    private var selectedRecordID: String?
+    private var reloadingTable = false
+    private let contentPicker = NSPopUpButton()
+    private let search = NSSearchField()
+    private let table = NSTableView()
+    private let listScroll = NSScrollView()
+    private let detail = ManagerInspectorPropertiesController()
+    private let info = ManagerInspectorPropertiesController(visibilityPreferenceKey: "DeviceInfoHiddenFields")
+    private let headerImage = NSImageView()
+    private let headerName = NSTextField(labelWithString: "")
+    private let headerSubtitle = NSTextField(labelWithString: "")
+    private let status = NSTextField(wrappingLabelWithString: "")
+    private let progress = NSProgressIndicator()
+    private let addButton = NSButton(image: NSImage(systemSymbolName: "plus", accessibilityDescription: "Install")!, target: nil, action: nil)
+    private let removeButton = NSButton(image: NSImage(systemSymbolName: "minus", accessibilityDescription: "Remove")!, target: nil, action: nil)
+    private let launchButton = NSButton(image: NSImage(systemSymbolName: "play", accessibilityDescription: "Launch Application")!, target: nil, action: nil)
+    private let actions = NSPopUpButton(frame: .zero, pullsDown: true)
+    private let reloadButton = NSButton(image: NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "Refresh Inspector")!, target: nil, action: nil)
+    private let contentView = NSView()
+    private let infoView = NSView()
+    private var lastIssue: String?
+    private var reading = false
+
+    init(model: SimulatorManagerModel) {
+        self.model = model
+        super.init(nibName: nil, bundle: nil)
+    }
+    required init?(coder: NSCoder) { nil }
+
+    override func loadView() {
+        view = NSView()
+        contentPicker.addItems(withTitles: Content.allCases.map(\.title))
+        contentPicker.target = self
+        contentPicker.action = #selector(changeContent(_:))
+        contentPicker.setAccessibilityLabel("Device Content")
+        search.placeholderString = "Search Applications"
+        search.delegate = self
+        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("Record"))
+        table.addTableColumn(column)
+        table.headerView = nil
+        table.style = .inset
+        table.rowHeight = 44
+        table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
+        table.dataSource = self
+        table.delegate = self
+        table.setAccessibilityLabel("Installed Applications and Profiles")
+        listScroll.documentView = table
+        listScroll.hasVerticalScroller = true
+        listScroll.autohidesScrollers = true
+        listScroll.drawsBackground = false
+        let listController = NSViewController()
+        listController.view = listScroll
+        let detailController = NSViewController()
+        let header = NSStackView(views: [headerImage, NSStackView(views: [headerName, headerSubtitle])])
+        header.orientation = .horizontal
+        header.spacing = 8
+        header.alignment = .centerY
+        if let labels = header.views.last as? NSStackView {
+            labels.orientation = .vertical
+            labels.alignment = .leading
+            labels.spacing = 3
+        }
+        headerName.font = .systemFont(ofSize: 13, weight: .semibold)
+        headerName.lineBreakMode = .byTruncatingTail
+        headerSubtitle.font = .systemFont(ofSize: 11)
+        headerSubtitle.textColor = .secondaryLabelColor
+        headerSubtitle.lineBreakMode = .byTruncatingMiddle
+        headerImage.imageScaling = .scaleProportionallyUpOrDown
+        headerImage.widthAnchor.constraint(equalToConstant: 32).isActive = true
+        headerImage.heightAnchor.constraint(equalToConstant: 32).isActive = true
+        let detailStack = NSStackView(views: [header, detail.view])
+        detailStack.orientation = .vertical
+        detailStack.alignment = .leading
+        detailStack.spacing = 8
+        header.translatesAutoresizingMaskIntoConstraints = false
+        detail.view.translatesAutoresizingMaskIntoConstraints = false
+        detailController.view = detailStack
+        NSLayoutConstraint.activate([
+            header.widthAnchor.constraint(equalTo: detailStack.widthAnchor),
+            detail.view.widthAnchor.constraint(equalTo: detailStack.widthAnchor),
+        ])
+        let contentSplit = NSSplitViewController()
+        contentSplit.splitView.isVertical = false
+        let listItem = NSSplitViewItem(viewController: listController)
+        listItem.minimumThickness = 100
+        listItem.preferredThicknessFraction = 0.45
+        let detailItem = NSSplitViewItem(viewController: detailController)
+        detailItem.minimumThickness = 120
+        contentSplit.addSplitViewItem(listItem)
+        contentSplit.addSplitViewItem(detailItem)
+        addChild(contentSplit)
+        addChild(detail)
+        addChild(info)
+        let contentStack = NSStackView(views: [contentPicker, search, contentSplit.view])
+        contentStack.orientation = .vertical
+        contentStack.alignment = .leading
+        contentStack.spacing = 8
+        pin(contentStack, in: contentView)
+        for child in contentStack.views { child.widthAnchor.constraint(equalTo: contentStack.widthAnchor).isActive = true }
+        pin(info.view, in: infoView)
+        for button in [addButton, removeButton, launchButton, reloadButton] { button.bezelStyle = .automatic; button.target = self }
+        addButton.action = #selector(install(_:))
+        removeButton.action = #selector(remove(_:))
+        launchButton.action = #selector(launch(_:))
+        reloadButton.action = #selector(refreshInspector(_:))
+        addButton.toolTip = "Install…"
+        removeButton.toolTip = "Remove…"
+        launchButton.toolTip = "Launch Application"
+        reloadButton.toolTip = "Refresh Inspector"
+        actions.addItem(withTitle: "Actions")
+        actions.menu?.delegate = self
+        actions.image = NSImage(systemSymbolName: "ellipsis", accessibilityDescription: "Application Actions")
+        actions.imagePosition = .imageOnly
+        actions.setAccessibilityLabel("Application Actions")
+        let buttons = NSStackView(views: [addButton, removeButton, launchButton, actions, NSView(), reloadButton])
+        buttons.orientation = .horizontal
+        buttons.spacing = 6
+        let footer = NSStackView(views: [progress, status])
+        footer.orientation = .horizontal
+        footer.alignment = .top
+        footer.spacing = 6
+        progress.style = .spinning
+        progress.controlSize = .small
+        progress.widthAnchor.constraint(equalToConstant: 16).isActive = true
+        progress.heightAnchor.constraint(equalToConstant: 16).isActive = true
+        status.font = .systemFont(ofSize: 11)
+        status.textColor = .secondaryLabelColor
+        status.setAccessibilityLabel("Inspector Status")
+        let stack = NSStackView(views: [contentView, infoView, buttons, footer])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 10
+        pin(stack, in: view, inset: 12)
+        for child in stack.views { child.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
+        contentView.heightAnchor.constraint(greaterThanOrEqualToConstant: 260).isActive = true
+        updateVisibility()
+        updateControls()
+    }
+
+    private func pin(_ child: NSView, in parent: NSView, inset: CGFloat = 0) {
+        child.translatesAutoresizingMaskIntoConstraints = false
+        parent.addSubview(child)
+        NSLayoutConstraint.activate([
+            child.leadingAnchor.constraint(equalTo: parent.leadingAnchor, constant: inset),
+            child.trailingAnchor.constraint(equalTo: parent.trailingAnchor, constant: -inset),
+            child.topAnchor.constraint(equalTo: parent.topAnchor, constant: inset),
+            child.bottomAnchor.constraint(equalTo: parent.bottomAnchor, constant: -inset),
+        ])
+    }
+
+    func setPage(_ page: Page) {
+        guard self.page != page else { return }
+        self.page = page
+        _ = view
+        updateVisibility()
+        reload()
+    }
+
+    func update(device: InventoryDevice?, isManaging: Bool, isVisible: Bool) {
+        _ = view
+        let changed = self.device != device
+        let becameVisible = !self.isVisible && isVisible
+        self.device = device
+        self.isManaging = isManaging
+        self.isVisible = isVisible
+        if changed {
+            stopReading()
+            inspector = nil
+            applications = []
+            profiles = []
+            selectedRecordID = nil
+            lastIssue = nil
+            info.setProperties([:])
+            updateRows()
+        }
+        if isVisible && (changed || becameVisible) { reload() }
+        else if !isVisible { stopReading() }
+        updateControls()
+    }
+
+    func stopReading() {
+        generation += 1
+        readTask?.cancel()
+        readTask = nil
+        iconTask?.cancel()
+        iconTask = nil
+        reading = false
+    }
+
+    private func updateVisibility() {
+        contentView.isHidden = page != .content
+        infoView.isHidden = page != .info
+        for control in [addButton, removeButton, launchButton, actions] { control.isHidden = page != .content }
+    }
+
+    private var selectedApp: DeviceApplication? { appRows.first { $0.id == selectedRecordID } }
+    private var selectedProfile: DeviceProfile? { profileRows.first { $0.id == selectedRecordID } }
+    private var simulatorIsRunning: Bool {
+        guard case .simulator(let simulator) = device else { return false }
+        return simulator.isAvailable && simulator.state == "Booted"
+    }
+    private func supports(_ feature: String) -> Bool { device?.capabilities.contains("com.apple.coredevice.feature." + feature) == true }
+    private var canReadApplications: Bool { simulatorIsRunning || supports("streamapplist") }
+    private var canReadProfiles: Bool {
+        if case .simulator(let simulator) = device, simulator.deviceSetPath != nil { return false }
+        return supports(content == .provisioning ? "provisioningprofiles" : "configurationprofiles")
+    }
+    private var canTransferData: Bool { selectedApp?.isContainerAccessible == true && (simulatorIsRunning || supports("transferFiles")) }
+    private var canReplaceData: Bool {
+        canTransferData && (simulatorIsRunning || (supports("processcontrol") && supports("streamprocesslist") && canReadApplications))
+    }
+    private var available: Bool { device != nil && inspector != nil && !isManaging && !reading }
+
+    private func updateControls() {
+        let apps = content == .applications
+        contentPicker.isEnabled = !isManaging
+        addButton.isEnabled = available && (apps ? simulatorIsRunning || supports("installapp") : canReadProfiles)
+        removeButton.isEnabled = available && (apps ? selectedApp != nil && selectedApp?.isRemovable != false && (simulatorIsRunning || supports("uninstallapp")) : selectedProfile != nil && canReadProfiles && selectedProfile?.metadata["removalDisallowed"]?.boolean != true)
+        launchButton.isHidden = page != .content || !apps
+        launchButton.isEnabled = available && selectedApp != nil && (simulatorIsRunning || supports("launchapplication") || supports("applicationcontrol"))
+        actions.isHidden = page != .content || !apps
+        actions.isEnabled = available && selectedApp != nil
+        reloadButton.isEnabled = device != nil && !reading && !isManaging
+        progress.isHidden = !reading && !isManaging
+        if progress.isHidden { progress.stopAnimation(nil) } else { progress.startAnimation(nil) }
+        if device == nil { status.stringValue = "Select one device to inspect it." }
+        else if isManaging { status.stringValue = "An operation is in progress on this device…" }
+        else if reading { status.stringValue = "Loading…" }
+        else { status.stringValue = lastIssue ?? "" }
+        status.isHidden = status.stringValue.isEmpty
+    }
+
+    func reload() {
+        stopReading()
+        guard isVisible, let device else { updateControls(); return }
+        let request = generation
+        let page = self.page
+        let content = self.content
+        reading = true
+        lastIssue = nil
+        updateControls()
+        readTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let inspector = try await model.inspector(for: device)
+                guard generation == request, !Task.isCancelled else { return }
+                self.inspector = inspector
+                if page == .info {
+                    let snapshot = await inspector.info()
+                    guard generation == request, !Task.isCancelled else { return }
+                    var properties = snapshot.fields
+                    if properties.isEmpty {
+                        properties["name"] = .string(device.name)
+                        if let os = device.operatingSystem { properties["operatingSystem"] = .string(os) }
+                        if let model = device.modelIdentifier { properties["modelIdentifier"] = .string(model) }
+                        switch device {
+                        case .simulator(let simulator):
+                            properties["udid"] = .string(simulator.identifier)
+                            properties["state"] = .string(simulator.state)
+                        case .remote(let remote):
+                            properties["identifier"] = .string(remote.identifier)
+                            if let udid = remote.udid { properties["udid"] = .string(udid) }
+                            if let connection = remote.connectionState { properties["connectionState"] = .string(connection) }
+                        }
+                    }
+                    info.setProperties(properties)
+                    lastIssue = snapshot.issues.map(\.localizedDescription).joined(separator: "\n")
+                } else if content == .applications {
+                    guard canReadApplications else {
+                        throw DeviceInspectorError.unsupported(device.kind == .simulator ? "Start this simulator to inspect its applications." : "This device does not currently support application inspection. Connect and unlock it, then refresh.")
+                    }
+                    let apps = try await inspector.applications()
+                    guard generation == request, !Task.isCancelled else { return }
+                    applications = apps
+                    updateRows()
+                    lastIssue = apps.isEmpty ? "No applications installed." : nil
+                } else {
+                    guard canReadProfiles else {
+                        let message: String
+                        if case .simulator(let simulator) = device, simulator.deviceSetPath != nil {
+                            message = "Profiles are unavailable for simulators in custom device sets."
+                        } else { message = "This device does not currently support \(content.title.lowercased())." }
+                        throw DeviceInspectorError.unsupported(message)
+                    }
+                    let snapshot = try await inspector.profiles(kind: content.profileKind)
+                    guard generation == request, !Task.isCancelled else { return }
+                    profiles = snapshot.profiles
+                    updateRows()
+                    let partial = content == .configuration ? snapshot.partialConfigurationProfiles : snapshot.partialProvisioningProfiles
+                    lastIssue = partial.isEmpty ? (profileRows.isEmpty ? "No profiles installed." : nil)
+                        : "\(partial.count) profiles returned incomplete records. Available profiles are shown."
+                }
+            } catch {
+                guard generation == request, !Task.isCancelled else { return }
+                lastIssue = error.localizedDescription
+            }
+            guard generation == request, !Task.isCancelled else { return }
+            reading = false
+            readTask = nil
+            updateControls()
+        }
+    }
+
+    @objc private func changeContent(_ sender: NSPopUpButton) {
+        content = Content(rawValue: sender.indexOfSelectedItem) ?? .applications
+        selectedRecordID = nil
+        profiles = []
+        search.stringValue = ""
+        search.placeholderString = content == .applications ? "Search Applications" : "Search Profiles"
+        updateRows()
+        reload()
+    }
+    @objc private func refreshInspector(_ sender: Any?) { reload() }
+    func controlTextDidChange(_ notification: Notification) { updateRows() }
+
+    private func updateRows() {
+        let query = search.stringValue
+        appRows = content == .applications ? applications.filter { query.isEmpty || $0.name.localizedStandardContains(query) || $0.bundleIdentifier.localizedStandardContains(query) } : []
+        profileRows = content == .applications ? [] : profiles.filter { $0.kind == content.profileKind && (query.isEmpty || $0.name.localizedStandardContains(query) || $0.identifier.localizedStandardContains(query)) }
+        reloadingTable = true
+        table.reloadData()
+        let index = content == .applications ? appRows.firstIndex { $0.id == selectedRecordID } : profileRows.firstIndex { $0.id == selectedRecordID }
+        if let index { table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false) }
+        else { table.deselectAll(nil); selectedRecordID = nil }
+        reloadingTable = false
+        updateDetail()
+    }
+    func numberOfRows(in tableView: NSTableView) -> Int { content == .applications ? appRows.count : profileRows.count }
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        let id = NSUserInterfaceItemIdentifier("InspectorRecord")
+        let cell = tableView.makeView(withIdentifier: id, owner: self) as? ManagerInspectorRecordCell ?? ManagerInspectorRecordCell()
+        cell.identifier = id
+        if content == .applications {
+            let app = appRows[row]
+            cell.title.stringValue = app.name
+            cell.subtitle.stringValue = app.bundleIdentifier
+            if device?.kind == .simulator, let path = app.bundlePath { cell.icon.image = NSWorkspace.shared.icon(forFile: path) }
+            else { cell.icon.image = NSImage(systemSymbolName: "app", accessibilityDescription: nil) }
+        } else {
+            let profile = profileRows[row]
+            cell.title.stringValue = profile.name
+            cell.subtitle.stringValue = profile.identifier
+            cell.icon.image = NSImage(systemSymbolName: "doc.badge.gearshape", accessibilityDescription: nil)
+        }
+        return cell
+    }
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        guard !reloadingTable else { return }
+        let row = table.selectedRow
+        selectedRecordID = row < 0 ? nil : (content == .applications ? appRows[row].id : profileRows[row].id)
+        updateDetail()
+    }
+
+    private func updateDetail() {
+        iconTask?.cancel()
+        iconTask = nil
+        headerImage.image = nil
+        headerName.stringValue = content == .applications ? "Select an Application" : "Select a Profile"
+        headerSubtitle.stringValue = ""
+        headerSubtitle.toolTip = nil
+        detail.setProperties([:])
+        if let app = selectedApp {
+            headerName.stringValue = app.name
+            headerSubtitle.stringValue = app.bundleIdentifier
+            detail.setProperties(app.metadata)
+            if device?.kind == .simulator, let path = app.bundlePath { headerImage.image = NSWorkspace.shared.icon(forFile: path) }
+            else { headerImage.image = NSImage(systemSymbolName: "app", accessibilityDescription: nil) }
+            if supports("fetchappicons"), let inspector {
+                let request = generation
+                iconTask = Task { [weak self] in
+                    do {
+                        let data = try await inspector.applicationIcon(bundleIdentifier: app.bundleIdentifier)
+                        guard let self, !Task.isCancelled, generation == request, selectedApp?.id == app.id else { return }
+                        if let image = NSImage(data: data) { headerImage.image = image }
+                    } catch {
+                        guard let self, !Task.isCancelled, generation == request, selectedApp?.id == app.id else { return }
+                        if let failure = error as? DeviceInspectorFailure,
+                           case .cleanupFailed = failure.error as? DeviceInspectorError {
+                            lastIssue = error.localizedDescription
+                            updateControls()
+                        }
+                    }
+                }
+            }
+        } else if let profile = selectedProfile {
+            headerName.stringValue = profile.name
+            headerSubtitle.stringValue = "Installed Profile Metadata"
+            headerSubtitle.toolTip = "Installed payload bodies and entitlement values are not supplied by the device's public profile list."
+            headerImage.image = NSImage(systemSymbolName: "doc.badge.gearshape", accessibilityDescription: nil)
+            detail.setProperties(profile.metadata)
+        }
+        updateControls()
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+        menu.addItem(NSMenuItem(title: "Actions", action: nil, keyEquivalent: ""))
+        let items: [(String, Selector, Bool)] = [
+            ("Show Container in Finder", #selector(revealContainer(_:)), simulatorIsRunning && selectedApp?.isContainerAccessible == true),
+            ("Export Data…", #selector(exportData(_:)), canTransferData),
+            ("Replace Data…", #selector(importData(_:)), canReplaceData),
+        ]
+        for (title, action, enabled) in items {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self
+            item.isEnabled = available && enabled
+            menu.addItem(item)
+        }
+        menu.autoenablesItems = false
+    }
+
+    private func mutate(using inspector: DeviceInspector, operation: @escaping @Sendable (DeviceInspector) async throws -> Void) {
+        let destination = inspector.device
+        model.performInspectorOperation(for: destination, operation: { try await operation(inspector) }) { [weak self] in
+            guard let self, self.device?.id == destination.id else { return }
+            self.reload()
+        }
+    }
+
+    @objc private func install(_ sender: Any?) {
+        guard available, let inspector, let window = view.window else { return }
+        let content = self.content
+        let panel = NSOpenPanel()
+        panel.message = content == .applications ? "Choose an application to install on \(inspector.device.name)." : "Choose a profile to install on \(inspector.device.name)."
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.treatsFilePackagesAsDirectories = false
+        panel.allowedContentTypes = content == .applications
+            ? [UTType.applicationBundle]
+            : [UTType(filenameExtension: content == .configuration ? "mobileconfig" : "mobileprovision") ?? .data]
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard response == .OK, let url = panel.url, let self else { return }
+            self.mutate(using: inspector) { inspector in
+                if content == .applications { try await inspector.installApplication(at: url) }
+                else { try await inspector.installProfile(at: url, kind: content.profileKind) }
+            }
+        }
+    }
+    @objc private func remove(_ sender: Any?) {
+        guard available, removeButton.isEnabled, let inspector, let window = view.window else { return }
+        let app = selectedApp
+        let profile = selectedProfile
+        guard app != nil || profile != nil else { return }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Remove \(app?.name ?? profile!.name) from \(inspector.device.name)?"
+        alert.informativeText = app != nil ? "The application and its data will be removed." : "Settings supplied by this profile will be removed."
+        alert.addButton(withTitle: "Remove")
+        alert.addButton(withTitle: "Cancel")
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn, let self else { return }
+            self.mutate(using: inspector) { inspector in
+                if let app { try await inspector.uninstallApplication(bundleIdentifier: app.bundleIdentifier) }
+                else if let profile { try await inspector.removeProfile(identifier: profile.identifier, kind: profile.kind) }
+            }
+        }
+    }
+    @objc private func launch(_ sender: Any?) {
+        guard available, launchButton.isEnabled, let app = selectedApp, let inspector else { return }
+        mutate(using: inspector) { try await $0.launchApplication(bundleIdentifier: app.bundleIdentifier) }
+    }
+    @objc private func revealContainer(_ sender: Any?) {
+        guard available, simulatorIsRunning, let app = selectedApp, let inspector else { return }
+        let request = generation
+        readTask = Task { [weak self] in
+            do {
+                let url = try await inspector.applicationContainerURL(bundleIdentifier: app.bundleIdentifier)
+                guard let self, generation == request, !Task.isCancelled else { return }
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+            } catch {
+                guard let self, generation == request, !Task.isCancelled else { return }
+                lastIssue = error.localizedDescription
+                updateControls()
+            }
+        }
+    }
+    @objc private func exportData(_ sender: Any?) {
+        guard available, canTransferData, let app = selectedApp, let inspector, let window = view.window else { return }
+        let panel = NSSavePanel()
+        panel.title = "Export Application Data"
+        panel.message = "Export data for \(app.name) on \(inspector.device.name)."
+        panel.nameFieldStringValue = app.bundleIdentifier + ".xcappdata"
+        panel.canCreateDirectories = true
+        panel.isExtensionHidden = false
+        if let type = UTType(filenameExtension: "xcappdata") { panel.allowedContentTypes = [type] }
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard response == .OK, let url = panel.url, let self else { return }
+            self.mutate(using: inspector) {
+                try await $0.downloadApplicationData(bundleIdentifier: app.bundleIdentifier, to: url, replacingExistingFile: true)
+            }
+        }
+    }
+    @objc private func importData(_ sender: Any?) {
+        guard available, canReplaceData, let app = selectedApp, let inspector, let window = view.window else { return }
+        let panel = NSOpenPanel()
+        panel.message = "Choose application data to replace \(app.name)’s data on \(inspector.device.name)."
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.treatsFilePackagesAsDirectories = false
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard response == .OK, let url = panel.url, let self else { return }
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "Replace \(app.name)’s data on \(inspector.device.name)?"
+            alert.informativeText = "The application will be stopped and its current data replaced with the selected data."
+            alert.addButton(withTitle: "Replace")
+            alert.addButton(withTitle: "Cancel")
+            alert.beginSheetModal(for: window) { [weak self] response in
+                guard response == .alertFirstButtonReturn else { return }
+                self?.mutate(using: inspector) { try await $0.replaceApplicationData(bundleIdentifier: app.bundleIdentifier, from: url) }
+            }
+        }
+    }
+}
+
+@MainActor
+private final class ManagerInspectorRecordCell: NSTableCellView {
+    let title = NSTextField(labelWithString: "")
+    let subtitle = NSTextField(labelWithString: "")
+    let icon = NSImageView()
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        title.font = .systemFont(ofSize: 12, weight: .medium)
+        subtitle.font = .systemFont(ofSize: 10)
+        subtitle.textColor = .secondaryLabelColor
+        title.lineBreakMode = .byTruncatingTail
+        subtitle.lineBreakMode = .byTruncatingMiddle
+        let labels = NSStackView(views: [title, subtitle])
+        labels.orientation = .vertical
+        labels.alignment = .leading
+        labels.spacing = 2
+        let stack = NSStackView(views: [icon, labels])
+        stack.orientation = .horizontal
+        stack.alignment = .centerY
+        stack.spacing = 8
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+        NSLayoutConstraint.activate([
+            icon.widthAnchor.constraint(equalToConstant: 28), icon.heightAnchor.constraint(equalToConstant: 28),
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4), stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
+            stack.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+        imageView = icon
+        textField = title
+    }
+    required init?(coder: NSCoder) { nil }
+}
+
+@MainActor
+private final class ManagerInspectorPropertiesController: NSViewController, NSOutlineViewDataSource, NSOutlineViewDelegate, NSMenuDelegate {
+    private final class Property: NSObject {
+        let name: String
+        let value: DeviceInspectorValue
+        let path: [String]
+        let children: [Property]
+        init(name: String, value: DeviceInspectorValue, path: [String]) {
+            self.name = name
+            self.value = value
+            self.path = path
+            switch value {
+            case .object(let fields): children = Self.properties(fields, parentPath: path)
+            case .array(let values): children = values.enumerated().map { Property(name: "Item \($0.offset + 1)", value: $0.element, path: path + [String($0.offset)]) }
+            default: children = []
+            }
+        }
+        private init(name: String, value: DeviceInspectorValue, path: [String], children: [Property]) {
+            self.name = name
+            self.value = value
+            self.path = path
+            self.children = children
+        }
+        static func properties(_ fields: [String: DeviceInspectorValue], parentPath: [String] = []) -> [Property] {
+            fields.keys.sorted { $0.localizedStandardCompare($1) == .orderedAscending }.map { Property(name: $0, value: fields[$0]!, path: parentPath + [$0]) }
+        }
+        func visible(hiding paths: Set<[String]>) -> Property? {
+            guard !paths.contains(path) else { return nil }
+            let visibleChildren = children.compactMap { $0.visible(hiding: paths) }
+            guard children.isEmpty || !visibleChildren.isEmpty else { return nil }
+            return Property(name: name, value: value, path: path, children: visibleChildren)
+        }
+        var displayName: String {
+            let names = ["CFBundleIdentifier": "Bundle Identifier", "CFBundleDisplayName": "Display Name", "CFBundleName": "Name",
+                         "CFBundleShortVersionString": "Version", "CFBundleVersion": "Build", "IsDeveloperApp": "Developer Application",
+                         "IsRemovable": "Removable", "udid": "UDID", "uuid": "UUID", "osVersion": "OS Version", "osBuild": "OS Build",
+                         "hardware": "Hardware Properties", "software": "Software Properties", "connection": "Connection Properties",
+                         "state": children.isEmpty ? "State" : "Device Properties", "ecid": "ECID", "cpuType": "CPU Type",
+                         "osVersionNumber": "OS Version", "osBuildVersions": "OS Builds", "ddiServicesAvailable": "DDI Services",
+                         "tunnelIPAddressString": "Tunnel IP Address", "rootFileSystemIsWritable": "Writable Root File System"]
+            return names[name] ?? name.replacingOccurrences(of: "([a-z])([A-Z])", with: "$1 $2", options: .regularExpression).capitalized
+        }
+        var displayValue: String {
+            switch value {
+            case .object(let values): "\(values.count) properties"
+            case .array(let values): "\(values.count) items"
+            case .string(let string): string
+            case .integer(let number): String(number)
+            case .number(let number): String(number)
+            case .boolean(let enabled): enabled ? "Yes" : "No"
+            case .date(let date): date.formatted()
+            case .data(let data): "\(data.count) bytes"
+            case .null: "—"
+            }
+        }
+    }
+    private let table = NSOutlineView()
+    private let visibleFields = NSPopUpButton(frame: .zero, pullsDown: true)
+    private let hiddenNotice = NSTextField(wrappingLabelWithString: "All fields are hidden. Choose Visible Fields to show them.")
+    private let visibilityPreferenceKey: String?
+    private let defaults: UserDefaults
+    private var hiddenPaths: Set<[String]>
+    private var allProperties: [Property] = []
+    private var properties: [Property] = []
+
+    init(visibilityPreferenceKey: String? = nil, defaults: UserDefaults = .standard) {
+        self.visibilityPreferenceKey = visibilityPreferenceKey
+        self.defaults = defaults
+        hiddenPaths = Set(visibilityPreferenceKey.flatMap { defaults.array(forKey: $0) as? [[String]] } ?? [])
+        super.init(nibName: nil, bundle: nil)
+    }
+    required init?(coder: NSCoder) { nil }
+
+    override func loadView() {
+        let scroll = NSScrollView()
+        scroll.hasVerticalScroller = true
+        scroll.hasHorizontalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.drawsBackground = false
+        let name = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("Property"))
+        name.title = "Property"
+        name.width = 130
+        name.minWidth = 80
+        let value = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("Value"))
+        value.title = "Value"
+        value.width = 150
+        value.minWidth = 80
+        table.addTableColumn(name)
+        table.addTableColumn(value)
+        table.outlineTableColumn = name
+        table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
+        table.style = .inset
+        table.rowHeight = 24
+        table.dataSource = self
+        table.delegate = self
+        table.setAccessibilityLabel("Properties")
+        scroll.documentView = table
+        if visibilityPreferenceKey != nil {
+            visibleFields.addItem(withTitle: "Visible Fields")
+            visibleFields.menu?.delegate = self
+            visibleFields.setAccessibilityLabel("Visible Info Fields")
+            hiddenNotice.font = .systemFont(ofSize: 11)
+            hiddenNotice.textColor = .secondaryLabelColor
+            let stack = NSStackView(views: [visibleFields, hiddenNotice, scroll])
+            stack.orientation = .vertical
+            stack.alignment = .leading
+            stack.spacing = 8
+            scroll.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+            hiddenNotice.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+            view = stack
+        } else { view = scroll }
+        updateVisibleProperties()
+    }
+    func setProperties(_ fields: [String: DeviceInspectorValue]) {
+        _ = view
+        allProperties = Property.properties(fields)
+        updateVisibleProperties()
+    }
+    private func updateVisibleProperties() {
+        properties = allProperties.compactMap { $0.visible(hiding: hiddenPaths) }
+        table.reloadData()
+        for property in properties where !property.children.isEmpty { table.expandItem(property) }
+        visibleFields.isEnabled = !allProperties.isEmpty
+        hiddenNotice.isHidden = allProperties.isEmpty || !properties.isEmpty
+    }
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+        menu.autoenablesItems = false
+        menu.addItem(NSMenuItem(title: "Visible Fields", action: nil, keyEquivalent: ""))
+        let showAll = NSMenuItem(title: "Show All Fields", action: #selector(showAllFields(_:)), keyEquivalent: "")
+        showAll.target = self
+        menu.addItem(showAll)
+        menu.addItem(.separator())
+        addFieldItems(allProperties, to: menu)
+    }
+    private func addFieldItems(_ fields: [Property], to menu: NSMenu) {
+        menu.autoenablesItems = false
+        for field in fields {
+            let item = NSMenuItem(title: field.displayName, action: #selector(toggleField(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = field.path
+            let hiddenByAncestor = hiddenPaths.contains { field.path.starts(with: $0) }
+            if hiddenByAncestor || field.visible(hiding: hiddenPaths) == nil { item.state = .off }
+            else if hiddenPaths.contains(where: { $0.starts(with: field.path) }) { item.state = .mixed }
+            else { item.state = .on }
+            if !field.children.isEmpty {
+                let submenu = NSMenu(title: field.displayName)
+                let showGroup = NSMenuItem(title: "Show \(field.displayName)", action: #selector(toggleField(_:)), keyEquivalent: "")
+                showGroup.target = self
+                showGroup.representedObject = field.path
+                showGroup.state = item.state
+                submenu.addItem(showGroup)
+                submenu.addItem(.separator())
+                addFieldItems(field.children, to: submenu)
+                item.action = nil
+                item.submenu = submenu
+            }
+            menu.addItem(item)
+        }
+    }
+    @objc private func toggleField(_ sender: NSMenuItem) {
+        guard let path = sender.representedObject as? [String] else { return }
+        if sender.state == .off {
+            hiddenPaths = hiddenPaths.filter { !$0.starts(with: path) && !path.starts(with: $0) }
+        } else { hiddenPaths.insert(path) }
+        saveVisibility()
+    }
+    @objc private func showAllFields(_ sender: Any?) {
+        hiddenPaths = []
+        saveVisibility()
+    }
+    private func saveVisibility() {
+        if let visibilityPreferenceKey {
+            defaults.set(hiddenPaths.sorted { $0.lexicographicallyPrecedes($1) }, forKey: visibilityPreferenceKey)
+        }
+        updateVisibleProperties()
+    }
+    func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int { (item as? Property)?.children.count ?? properties.count }
+    func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any { ((item as? Property)?.children ?? properties)[index] }
+    func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool { !(item as! Property).children.isEmpty }
+    func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
+        let property = item as! Property
+        let id = tableColumn!.identifier
+        let label = outlineView.makeView(withIdentifier: id, owner: self) as? NSTextField ?? NSTextField(labelWithString: "")
+        label.identifier = id
+        label.font = .systemFont(ofSize: 11)
+        label.isSelectable = true
+        label.lineBreakMode = .byTruncatingMiddle
+        label.stringValue = id.rawValue == "Property" ? property.displayName : property.displayValue
+        label.toolTip = label.stringValue
+        return label
     }
 }

@@ -22,6 +22,11 @@ its simulator window. You can also choose **Device** in the Dock menu or
 **File → Open Simulator** to start a device or bring its window forward. The
 menus group devices by OS version.
 
+Use the main window's right inspector to view device information, manage
+installed apps and profiles, or export and replace app data. Choose **Settings**,
+**Content**, or **Info** in its toolbar. Available actions depend on the selected
+device; see the [user guide](Documentation/NeoSimulator.docc/UsingNeoSimulator.md).
+
 NeoSimulator uses private Apple frameworks and undocumented Xcode preferences.
 Compatibility is checked before switching. Choose **Restore Original Settings…**
 in Settings before uninstalling to restore the saved preference values.
