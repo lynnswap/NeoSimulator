@@ -33,6 +33,7 @@ final class SimulatorManagerModel {
     var onError: ((any Error) -> Void)?
     var onOpenRemoteDevice: ((CoreDeviceDevice) -> Void)?
     var beforeStoppingScreens: (() async throws -> Void)?
+    var beforeManagingRemoteDevices: ((Set<DeviceInventoryID>) async throws -> Void)?
     private var refreshing = false
     private var refreshWaiters: [CheckedContinuation<Void, Never>] = []
     private var statusRefreshTask: Task<Void, Never>?
@@ -71,15 +72,19 @@ final class SimulatorManagerModel {
     }
 
     func openScreen(for device: InventoryDevice) {
+        guard !managingDeviceIDs.contains(device.id) else { return }
         switch device {
         case .simulator(let simulator): openDevice(simulator.inventoryID)
-        case .remote(let remote):
+        case .remote:
             perform("Opening device screen…") {
+                guard !self.managingDeviceIDs.contains(device.id) else { return }
                 if self.status?.host != .neo {
                     try await self.controller.selectHost(.neo)
                     self.status = try await self.controller.status()
                 }
-                self.onOpenRemoteDevice?(remote)
+                guard !self.managingDeviceIDs.contains(device.id),
+                      case .remote(let current)? = self.inventory.first(where: { $0.id == device.id }) else { return }
+                self.onOpenRemoteDevice?(current)
             }
         }
     }
@@ -116,13 +121,25 @@ final class SimulatorManagerModel {
                 self.managementTasks.removeValue(forKey: request)
                 self.onChange?()
             }
-            let report = await self.controller.manage(action, devices: targets)
-            if !self.stopping { await self.refreshCatalog() }
-            if report.results.contains(where: { $0.error != nil }) {
-                self.onError?(DeviceManagementFailure(devices: targets, report: report))
-            }
+            do {
+                let remoteIDs = Set(targets.filter { self.managementDisconnectsScreen(action, for: $0) }.map(\.id))
+                if !remoteIDs.isEmpty { try await self.beforeManagingRemoteDevices?(remoteIDs) }
+                let report = await self.controller.manage(action, devices: targets)
+                if !self.stopping { await self.refreshCatalog() }
+                if report.results.contains(where: { $0.error != nil }) {
+                    self.onError?(DeviceManagementFailure(devices: targets, report: report))
+                }
+            } catch { self.onError?(error) }
         }
         onChange?()
+    }
+
+    private func managementDisconnectsScreen(_ action: DeviceManagementAction, for device: InventoryDevice) -> Bool {
+        guard case .remote = device, device.supports(action) else { return false }
+        switch action {
+        case .shutdown, .restart, .erase, .remove, .unpair, .pause: return true
+        case .rename, .clone, .start, .resume, .pair: return false
+        }
     }
 
     func inspector(for device: InventoryDevice) async throws -> DeviceInspector {
@@ -504,6 +521,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         model.onOpenRemoteDevice = { [weak self] device in self?.openRemoteScreen(device) }
         model.beforeStoppingScreens = { [weak self] in try await self?.stopRemoteScreens() }
+        model.beforeManagingRemoteDevices = { [weak self] identifiers in
+            try await self?.stopRemoteScreens(for: identifiers)
+        }
         model.onError = { [weak self] error in
             if !(error is CancellationError) { self?.present(error) }
         }
@@ -634,8 +654,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func openRemoteScreen(_ device: CoreDeviceDevice) {
-        guard !quitting else { return }
         let id = DeviceInventoryID.coreDevice(device.identifier)
+        guard !quitting, !model.managingDeviceIDs.contains(id) else { return }
         if let controller = remoteWindows[id] {
             controller.showWindow(nil)
             controller.window?.makeKeyAndOrderFront(nil)
@@ -674,9 +694,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func stopRemoteScreens() async throws {
+    private func stopRemoteScreens(for identifiers: Set<DeviceInventoryID>? = nil) async throws {
         var failures: [String] = []
-        for controller in Array(remoteWindows.values) {
+        let targets = remoteWindows.filter { identifiers?.contains($0.key) ?? true }.map(\.value)
+        for controller in targets {
             do { try await controller.stopAndClose() }
             catch is CancellationError {
                 if !failures.isEmpty { throw RemoteDeviceWindowError.cleanup(failures) }
