@@ -3617,6 +3617,8 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
         let acceptedRecording = recordingTask
         update()
         let task = Task { [self] in
+            await inputTask?.value
+            try await session.releaseInputs()
             var failure: (any Error)?
             do { try await acceptedCapture?.value }
             catch { failure = error }
@@ -3628,7 +3630,6 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
                 if let failure { throw RemoteDeviceWindowError.cleanup([failure.localizedDescription, error.localizedDescription]) }
                 throw error
             }
-            await inputTask?.value
             do { try await session.stop() }
             catch {
                 failure = failure.map { RemoteDeviceWindowError.cleanup([$0.localizedDescription, error.localizedDescription]) } ?? error
