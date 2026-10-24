@@ -1089,8 +1089,10 @@ struct HostModeControllerTests {
             {"identifier":"tv-type","productFamily":"Apple TV"}
           ],
           "runtimes": [
+            {"identifier":"com.apple.CoreSimulator.SimRuntime.iOS-27-0","name":"Unavailable iOS 27.0","isAvailable":false},
             {"identifier":"com.apple.CoreSimulator.SimRuntime.iOS-27-0","name":"iOS 27.0","isAvailable":true},
-            {"identifier":"com.apple.CoreSimulator.SimRuntime.tvOS-27-0","name":"tvOS 27.0","isAvailable":true}
+            {"identifier":"com.apple.CoreSimulator.SimRuntime.tvOS-27-0","name":"tvOS 27.0","isAvailable":true},
+            {"identifier":"com.apple.CoreSimulator.SimRuntime.tvOS-27-0","name":"Another tvOS 27.0 build","isAvailable":true}
           ],
           "devices": {
             "com.apple.CoreSimulator.SimRuntime.iOS-27-0": [
@@ -1115,6 +1117,7 @@ struct HostModeControllerTests {
         #expect(reportedFailure)
         #expect(Set(devices.map(\.identifier)) == ["phone", "tv"])
         #expect(devices.first(where: { $0.identifier == "phone" })?.state == "Booted")
+        #expect(devices.first(where: { $0.identifier == "phone" })?.runtimeName == "iOS 27.0")
         #expect(devices.first(where: { $0.identifier == "phone" })?.modelIdentifier == "iPhone19,2")
         #expect(devices.first(where: { $0.identifier == "tv" })?.modelIdentifier == nil)
         #expect(devices.first(where: { $0.identifier == "tv" })?.runtimeName == "tvOS 27.0")
