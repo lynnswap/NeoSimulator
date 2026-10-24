@@ -23,6 +23,16 @@ A lock serializes operations. Writes are journaled before mutation and verified
 afterward. Recovery handles interrupted writes, preserves conflicting external
 changes, and keeps the original tri-state values for restore.
 
+Ordinary startup, status, connection synchronization, and screen opening read
+the saved display choice rather than another app's preferences. A settled
+receipt supplies the managed intent; without a receipt, `display-host.txt` in
+the same state directory supplies the last selected host, initially Device Hub.
+An interrupted transaction disables automatic attachment until an explicit
+host change or restore resolves it. This local metadata does not establish the
+current Xcode preferences. Only explicit host changes and restoration validate
+those values and check for external conflicts. A restore relinquishes automatic
+Neo hosting even when the original preferences used the CoreSimulator route.
+
 ## Host switching
 
 Display Host is an app-wide setting in Settings. Before changing the route,

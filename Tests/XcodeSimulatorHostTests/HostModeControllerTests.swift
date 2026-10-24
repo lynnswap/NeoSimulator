@@ -172,15 +172,11 @@ struct HostModeControllerTests {
         let restored = try fixture.controller.routeStatus()
         #expect(restored.preferences == original)
         #expect(restored.receiptStatus == .unmanaged)
-        #expect(!SimulatorHostController.allowsAutomaticHosting(restored, explicitlySelectedNeo: false))
-        // A previous session's opt-in cannot authorize partial Neo settings after restoration.
-        if suppression != .trueValue {
-            #expect(!SimulatorHostController.allowsAutomaticHosting(restored, explicitlySelectedNeo: true))
-        }
+        #expect(try fixture.controller.selectionStatus().host == .deviceHub)
+        #expect(try !fixture.controller.selectionStatus().allowsAutomaticHosting)
         _ = try await fixture.controller.use(.neo)
-        let selected = try fixture.controller.routeStatus()
-        #expect(SimulatorHostController.allowsAutomaticHosting(selected, explicitlySelectedNeo: true))
-        #expect(SimulatorHostController.allowsAutomaticHosting(selected, explicitlySelectedNeo: false) == (suppression != .trueValue))
+        #expect(try fixture.controller.selectionStatus().host == .neo)
+        #expect(try fixture.controller.selectionStatus().allowsAutomaticHosting)
     }
 
     @Test func restorePreservesExplicitFalseAndTrueValues() async throws {
@@ -1000,9 +996,13 @@ struct HostModeControllerTests {
                 bundleURL: URL(fileURLWithPath: "/Applications/Xcode_27.app")
             ),
         ]
-        let status = try fixture.controller.routeStatus()
+        fixture.runner.failPreferenceReads = true
+        let status = try fixture.controller.selectionStatus()
 
-        #expect(status.preferences == .deviceHub)
+        #expect(status.host == .deviceHub)
+        #expect(!status.allowsAutomaticHosting)
+        #expect(!status.restorationAvailable)
+        #expect(fixture.runner.calls.isEmpty)
         #expect(fixture.runner.mutationCount == 0)
         #expect(try fixture.receiptStore.load() == nil)
         #expect(
@@ -1010,6 +1010,42 @@ struct HostModeControllerTests {
                 atPath: fixture.receiptStore.directoryURL.path
             )
         )
+    }
+
+    @Test func savedNeoSelectionAndRendererLaunchDoNotAccessOtherAppsPreferences() async throws {
+        let fixture = try ControllerFixture(initialState: .coreSimulator)
+        _ = try await fixture.controller.use(.neo)
+        #expect(try fixture.receiptStore.load() == nil)
+        fixture.runner.failPreferenceReads = true
+        let preferenceCalls = fixture.runner.calls.filter { $0.executable.path == "/usr/bin/defaults" }
+
+        let selection = try fixture.controller.selectionStatus()
+        #expect(selection.host == .neo && selection.allowsAutomaticHosting)
+        try await fixture.controller.launch(selection.host, xcodeURL: nil)
+        #expect(Array(fixture.workspace.events.suffix(1)) == ["open-neo-host"])
+        #expect(fixture.runner.calls.filter { $0.executable.path == "/usr/bin/defaults" } == preferenceCalls)
+
+        // An explicit host change still reads the actual values and preserves failures.
+        await #expect(throws: CLIError.self) { try await fixture.controller.use(.deviceHub) }
+        #expect(try fixture.controller.selectionStatus().host == .neo)
+    }
+
+    @Test func legacyReceiptsSelectNeoWithoutReadingLivePreferencesAndPendingWritesDoNotAutoAttach() throws {
+        let fixture = try ControllerFixture()
+        let xcode = try InstallationInspector(runner: fixture.runner,
+            environment: ["DEVELOPER_DIR": fixture.installations.developerDirectoryURL.path],
+            signatureValidator: .acceptingTestFixtures).validatedTargetXcode()
+        var receipt = RestorationReceipt(capturedAt: Date(), xcode: xcode, original: .deviceHub)
+        receipt.expectedCurrent = .coreSimulator
+        try fixture.receiptStore.withExclusiveLock { try fixture.receiptStore.save(receipt) }
+        fixture.runner.failPreferenceReads = true
+        #expect(try fixture.controller.selectionStatus() == SimulatorHostSelectionStatus(host: .neo,
+            restorationAvailable: true, allowsAutomaticHosting: true))
+        receipt.pending = PendingMutation(before: .coreSimulator, target: .deviceHub)
+        try fixture.receiptStore.save(receipt)
+        #expect(try fixture.controller.selectionStatus() == SimulatorHostSelectionStatus(host: .neo,
+            restorationAvailable: true, allowsAutomaticHosting: false))
+        #expect(!fixture.runner.calls.contains { $0.executable.path == "/usr/bin/defaults" })
     }
 
     @Test func routeStatusRetriesWhenStateAppearsDuringTheOptimisticSnapshot() throws {
