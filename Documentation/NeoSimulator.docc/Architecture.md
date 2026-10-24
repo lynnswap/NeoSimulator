@@ -52,13 +52,12 @@ failure does not require repeating successful operations. Operations on a live
 simulator wait for the renderer's recording and display cleanup before running
 commands that remove its session.
 
-Nearby pairing owns a dedicated CoreDevice manager and a RemotePairing
-advertisement session. `DevicePairingSession` owns PIN requests, retry delays,
-and cancellation; closing its window drains those tasks and ends the
-advertisement. VM power and removal operations resolve CoreDevice capability
-implementations for the current target. These private interfaces run in the
-manager process through ABIBridge, so availability and ABI failures affect that
-process. Simulator display and clipboard ownership remain in their renderers.
+The manager observes CoreDevice's device-change stream and refreshes inventory
+when a device connects or disconnects. The observation does not advertise the
+Mac or request pairing. VM power and removal operations resolve CoreDevice
+capability implementations for the current target. These private interfaces run
+in the manager process through ABIBridge, so availability and ABI failures affect
+that process. Simulator display and clipboard ownership remain in their renderers.
 
 Each Xcode installation has its own renderer process. The renderer has a
 distinct bundle identity and runs separately because its loaded Objective-C

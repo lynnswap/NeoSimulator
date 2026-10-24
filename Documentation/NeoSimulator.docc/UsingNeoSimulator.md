@@ -12,8 +12,7 @@ by OS version.
 The browser lists simulators, physical devices, and virtual machines in
 Available and Unavailable groups. Search by name, model, or operating system.
 Use the filter button beside **+** to choose a device kind, availability, or
-family, change the sort order, or turn grouping off. **+** offers New Simulator
-and Pair Device.
+family, change the sort order, or turn grouping off. **+** opens New Simulator.
 Open Simulator groups devices by runtime; a
 checkmark means a device has a window, and a dash means it is running without
 one. Hold Option to show its runtime and device type.
@@ -25,10 +24,7 @@ an iPhone and an Apple Watch from the same simulator set to pair them. Erase and
 Remove ask for confirmation. If an operation fails for part of a selection,
 the error identifies those devices and any completed steps.
 
-Choose **File → Pair Device…** to find nearby devices and make this Mac
-discoverable. Select a device and enter its pairing PIN when requested. A
-rejected PIN can be entered again after any delay required by the device.
-Closing the pairing window cancels discovery and any pending PIN request.
+Physical devices appear automatically when CoreDevice detects their connection.
 Virtual machines offer Start, Shut Down, Pause, Resume, and Remove when their
 current CoreDevice capabilities support those operations.
 

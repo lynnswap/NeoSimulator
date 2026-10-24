@@ -36,7 +36,7 @@ extension InventoryDevice {
             switch action {
             case .rename: return device.capabilities.contains("com.apple.coredevice.feature.renamedevice")
             case .restart: return device.capabilities.contains("com.apple.coredevice.feature.rebootdevice")
-            case .pair: return device.isAvailable && device.pairingState == "unpaired"
+            case .pair: return false
             case .unpair: return device.capabilities.contains("com.apple.coredevice.feature.unpairdevice")
             default: return false
             }
@@ -237,7 +237,6 @@ struct DeviceManagementBackend: Sendable {
                 switch action {
                 case .rename(let name): arguments = ["device", "rename", "--device", device.identifier, "--name", name]
                 case .restart: arguments = ["device", "reboot", "--device", device.identifier]
-                case .pair: arguments = ["manage", "pair", "--device", device.identifier]
                 case .unpair: arguments = ["manage", "unpair", "--device", device.identifier]
                 default: throw unavailable(action, target: target)
                 }
@@ -245,7 +244,6 @@ struct DeviceManagementBackend: Sendable {
                 let step = switch action {
                 case .rename: "Renamed"
                 case .restart: "Restart requested"
-                case .pair: "Paired"
                 case .unpair: "Unpaired"
                 default: "Completed"
                 }

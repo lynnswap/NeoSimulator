@@ -30,6 +30,7 @@ final class SimulatorManagerModel {
     private var refreshing = false
     private var refreshWaiters: [CheckedContinuation<Void, Never>] = []
     private var synchronizing = false
+    private var inventoryRefreshRequested = false
     private var stopping = false
     private var operationTask: Task<Void, Never>?
     private var managementTasks: [UUID: Task<Void, Never>] = [:]
@@ -40,7 +41,7 @@ final class SimulatorManagerModel {
     }
 
     func start() {
-        perform("Starting simulators…") {
+        perform("Loading devices…") {
             let status = try await self.controller.status()
             self.status = status
             if status.restorationAvailable { try await self.controller.selectHost(status.host) }
@@ -114,15 +115,31 @@ final class SimulatorManagerModel {
             if refreshWaiters.isEmpty { refreshing = false }
             else { refreshWaiters.removeFirst().resume() }
         }
-        var statusError: (any Error)?
-        do { status = try await controller.status() }
-        catch { statusError = error }
-        let snapshot = await controller.inventory()
-        inventory = snapshot.devices
-        if snapshot.issues.isEmpty, statusError == nil { backgroundIssue = nil }
-        else {
-            reportBackgroundError(InventoryReadError(issues: snapshot.issues, statusError: statusError))
-        }
+        repeat {
+            inventoryRefreshRequested = false
+            var statusError: (any Error)?
+            do { status = try await controller.status() }
+            catch { statusError = error }
+            let snapshot = await controller.inventory()
+            inventory = snapshot.devices
+            if snapshot.issues.isEmpty, statusError == nil { backgroundIssue = nil }
+            else {
+                reportBackgroundError(InventoryReadError(issues: snapshot.issues, statusError: statusError))
+            }
+        } while inventoryRefreshRequested && !stopping
+    }
+
+    func inventoryDidChange() async {
+        guard !stopping else { return }
+        inventoryRefreshRequested = true
+        await refresh()
+    }
+
+    func inventoryObservationFailed(_ error: any Error) {
+        guard !stopping else { return }
+        NSLog("NeoSimulator automatic device updates: %@", String(describing: error))
+        backgroundIssue = "Automatic device updates are unavailable. Use Refresh to update the device list."
+        onChange?()
     }
 
     func synchronizeConnections() async {
@@ -263,7 +280,7 @@ final class SimulatorManagerModel {
                 var failure: (any Error)?
                 do { try await next.run() }
                 catch { failure = error }
-                if next.refreshCatalog, !self.stopping { await self.refreshCatalog() }
+                if (next.refreshCatalog || self.inventoryRefreshRequested), !self.stopping { await self.refreshCatalog() }
                 if let failure { self.onError?(failure) }
             }
         }
@@ -379,11 +396,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var settingsWindow: SettingsWindowController?
     private var newSimulatorWindow: NewSimulatorWindowController?
     private var preparingNewSimulator: Task<Void, Never>?
-    private var pairingWindow: DevicePairingWindowController?
     private var quitting = false
     private var rendererDevicesObserver: NSObjectProtocol?
     private var workspaceObserver: NSObjectProtocol?
     private var connectionTimer: Timer?
+    private var inventoryObservation: DeviceInventoryObservation?
+    private var inventoryObservationTask: Task<Void, Never>?
     private var quitKeepingDevicesRunning: Bool?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -408,10 +426,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         showDevices(nil)
         model.start()
+        startInventoryObservation()
         connectionTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self, !self.quitting else { return }
                 await self.model.synchronizeConnections()
+            }
+        }
+    }
+
+    private func startInventoryObservation() {
+        guard inventoryObservationTask == nil, inventoryObservation == nil else { return }
+        inventoryObservationTask = Task { [weak self] in
+            guard let self else { return }
+            defer { self.inventoryObservationTask = nil }
+            do {
+                let observation = try DeviceInventoryObservation()
+                self.inventoryObservation = observation
+                observation.onChange = { [weak self] in
+                    Task { await self?.model.inventoryDidChange() }
+                }
+                observation.onError = { [weak self] error in
+                    self?.model.inventoryObservationFailed(error)
+                }
+                try await observation.start()
+            } catch is CancellationError {
+                await self.inventoryObservation?.stop()
+            } catch {
+                self.inventoryObservation = nil
+                self.model.inventoryObservationFailed(error)
             }
         }
     }
@@ -436,11 +479,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         quitting = true
         Task {
             do {
-                await pairingWindow?.stop()
+                inventoryObservationTask?.cancel()
+                await inventoryObservation?.stop()
+                await inventoryObservationTask?.value
+                inventoryObservation = nil
                 try await model.quitRenderer(keepingDevicesRunning: quitKeepingDevicesRunning)
                 sender.reply(toApplicationShouldTerminate: true)
             } catch {
                 quitting = false
+                startInventoryObservation()
                 present(error)
                 sender.reply(toApplicationShouldTerminate: false)
             }
@@ -493,23 +540,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsWindow?.showWindow(nil)
         settingsWindow?.window?.makeKeyAndOrderFront(nil)
         NSApp.activate()
-    }
-
-    @objc func showPairDevice(_ sender: Any?) {
-        guard !quitting else { return }
-        do {
-            if pairingWindow == nil {
-                let session = try DevicePairingSession()
-                pairingWindow = DevicePairingWindowController(session: session, onClose: { [weak self] in
-                    guard let self else { return }
-                    self.pairingWindow = nil
-                    if !self.quitting { Task { await self.model.refresh() } }
-                })
-            }
-            pairingWindow?.showWindow(nil)
-            pairingWindow?.window?.makeKeyAndOrderFront(nil)
-            NSApp.activate()
-        } catch { present(error) }
     }
 
     @objc func showNewSimulator(_ sender: Any?) {
@@ -617,7 +647,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         quitWithChoice.isAlternate = true
         let file = addSubmenu("File", to: main)
         addItem("New Simulator…", action: #selector(showNewSimulator(_:)), key: "n", to: file)
-        addItem("Pair Device…", action: #selector(showPairDevice(_:)), to: file)
         addDevicesMenu("Open Simulator", to: file)
         addItem("Close Window", action: #selector(NSWindow.performClose(_:)), key: "w", to: file).target = nil
         let edit = addSubmenu("Edit", to: main)
@@ -1302,19 +1331,12 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
                  willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
         if itemIdentifier == newSimulatorIdentifier {
-            let item = NSMenuToolbarItem(itemIdentifier: itemIdentifier)
-            item.label = "Add Device"
-            item.toolTip = "Add Device"
-            item.image = NSImage(systemSymbolName: "plus", accessibilityDescription: "Add Device")
-            item.showsIndicator = false
-            let menu = NSMenu(title: "Add Device")
-            let simulator = NSMenuItem(title: "New Simulator…", action: #selector(AppDelegate.showNewSimulator(_:)), keyEquivalent: "")
-            simulator.target = NSApp.delegate
-            menu.addItem(simulator)
-            let pairing = NSMenuItem(title: "Pair Device…", action: NSSelectorFromString("showPairDevice:"), keyEquivalent: "")
-            pairing.target = NSApp.delegate
-            menu.addItem(pairing)
-            item.menu = menu
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            item.label = "New Simulator"
+            item.toolTip = "New Simulator"
+            item.image = NSImage(systemSymbolName: "plus", accessibilityDescription: "New Simulator")
+            item.target = NSApp.delegate
+            item.action = #selector(AppDelegate.showNewSimulator(_:))
             item.visibilityPriority = .high
             return item
         }
@@ -1390,7 +1412,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             ("Rename…", .rename(name)), ("Clone…", .clone("\(name) Copy")),
             ("Start", .start), ("Shut Down", .shutdown), ("Restart", .restart),
             ("Pause", .pause), ("Resume", .resume),
-            (devices.count == 2 ? "Pair Devices" : "Pair Device", .pair), ("Unpair", .unpair),
+            ("Pair Simulators", .pair), ("Unpair", .unpair),
             ("Erase Content and Settings…", .erase), ("Remove…", .remove),
         ]
         for (title, action) in operations where supports(action, devices: devices) {
@@ -1414,7 +1436,6 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         switch action {
         case .rename, .clone: return devices.count == 1
         case .pair:
-            if devices.count == 1 { return devices[0].kind != .simulator }
             guard devices.count == 2,
                   case .simulator(let first) = devices[0], case .simulator(let second) = devices[1] else { return false }
             return Set([first.productFamily, second.productFamily]) == Set(["iPhone", "Apple Watch"])
@@ -2088,400 +2109,5 @@ private struct ManagerSettingSlider: NSViewRepresentable {
         var changed: (Double) -> Void
         init(changed: @escaping (Double) -> Void) { self.changed = changed }
         @objc func change(_ sender: NSSlider) { changed(sender.doubleValue) }
-    }
-}
-
-
-@MainActor
-final class DevicePairingWindowController: NSWindowController, NSWindowDelegate,
-                                           NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate {
-    private let session: DevicePairingSession
-    private let onClose: () -> Void
-    private let table = NSTableView()
-    private let advertisement = NSTextField(wrappingLabelWithString: "Preparing pairing on this Mac…")
-    private let advertisementDetail = NSTextField(wrappingLabelWithString: "")
-    private let status = NSTextField(wrappingLabelWithString: "")
-    private let failure = NSTextField(wrappingLabelWithString: "")
-    private let progress = NSProgressIndicator()
-    private let pairButton = NSButton(title: "Pair", target: nil, action: nil)
-    private let retryButton = NSButton(title: "Retry", target: nil, action: nil)
-    private let closeButton = NSButton(title: "Close", target: nil, action: nil)
-    private let challengeBox = NSBox()
-    private let challengeDescription = NSTextField(wrappingLabelWithString: "Enter the pairing code shown on the other device.")
-    private let challengeStatus = NSTextField(wrappingLabelWithString: "")
-    private let pin = NSSecureTextField(string: "")
-    private let submitPIN = NSButton(title: "Continue", target: nil, action: nil)
-    private let cancelPIN = NSButton(title: "Cancel Pairing", target: nil, action: nil)
-    private var displayedIdentifiers: [String] = []
-    private var selectedIdentifier: String?
-    private var restoringSelection = false
-    private var operationIssue: String?
-    private var lastPairedIdentifier: String?
-    private var started = false
-    private var closing = false
-    private var closed = false
-    private var startTask: Task<Void, Never>?
-    private var pairTask: Task<Void, Never>?
-    private var stopTask: Task<Void, Never>?
-
-    init(session: DevicePairingSession, onClose: @escaping () -> Void) {
-        self.session = session
-        self.onClose = onClose
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 560),
-                              styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        window.title = "Pair a Device"
-        window.minSize = NSSize(width: 520, height: 500)
-        window.isReleasedWhenClosed = false
-        super.init(window: window)
-        window.delegate = self
-        buildContent()
-        session.onChange = { [weak self] in self?.update() }
-        update()
-        window.center()
-    }
-
-    required init?(coder: NSCoder) { nil }
-
-    override func showWindow(_ sender: Any?) {
-        super.showWindow(sender)
-        startIfNeeded()
-    }
-
-    private func buildContent() {
-        guard let window else { return }
-        let controller = NSViewController()
-        let view = NSView()
-        controller.view = view
-        window.contentViewController = controller
-        let heading = NSTextField(labelWithString: "Start pairing on this Mac")
-        heading.font = .systemFont(ofSize: 17, weight: .semibold)
-        let explanation = NSTextField(wrappingLabelWithString:
-            "Keep the other device nearby and open its pairing screen. Select the device below to begin.")
-        explanation.textColor = .secondaryLabelColor
-        advertisement.font = .systemFont(ofSize: 12)
-        advertisement.textColor = .secondaryLabelColor
-        advertisement.isSelectable = true
-        advertisementDetail.font = .systemFont(ofSize: 12)
-        advertisementDetail.textColor = .secondaryLabelColor
-        advertisementDetail.isSelectable = true
-        let nameColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("Device"))
-        nameColumn.title = "Nearby Devices"
-        nameColumn.width = 310
-        let osColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("OS"))
-        osColumn.title = "Operating System"
-        osColumn.width = 150
-        table.addTableColumn(nameColumn)
-        table.addTableColumn(osColumn)
-        table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
-        table.style = .inset
-        table.rowHeight = 44
-        table.allowsMultipleSelection = false
-        table.allowsEmptySelection = true
-        table.dataSource = self
-        table.delegate = self
-        table.target = self
-        table.doubleAction = #selector(pairSelectedDevice(_:))
-        table.setAccessibilityLabel("Nearby Devices")
-        let scroll = NSScrollView()
-        scroll.hasVerticalScroller = true
-        scroll.autohidesScrollers = true
-        scroll.borderType = .bezelBorder
-        scroll.documentView = table
-        scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 140).isActive = true
-        buildChallenge()
-        progress.style = .spinning
-        progress.controlSize = .small
-        progress.isDisplayedWhenStopped = false
-        status.font = .systemFont(ofSize: 12)
-        status.textColor = .secondaryLabelColor
-        let activity = NSStackView(views: [progress, status])
-        activity.orientation = .horizontal
-        activity.alignment = .centerY
-        activity.spacing = 8
-        failure.font = .systemFont(ofSize: 12)
-        failure.textColor = .secondaryLabelColor
-        for button in [pairButton, retryButton, closeButton] { button.bezelStyle = .rounded; button.target = self }
-        pairButton.action = #selector(pairSelectedDevice(_:))
-        retryButton.action = #selector(retry(_:))
-        closeButton.action = #selector(closePairing(_:))
-        pairButton.keyEquivalent = "\r"
-        closeButton.keyEquivalent = "\u{1b}"
-        let spacer = NSView()
-        let buttons = NSStackView(views: [retryButton, spacer, closeButton, pairButton])
-        buttons.orientation = .horizontal
-        buttons.spacing = 8
-        let stack = NSStackView(views: [heading, explanation, advertisement, advertisementDetail, scroll, challengeBox, activity, failure, buttons])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 12
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
-            stack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
-            stack.topAnchor.constraint(equalTo: view.topAnchor, constant: 20),
-            stack.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -20),
-            explanation.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            advertisement.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            advertisementDetail.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            scroll.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            challengeBox.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            failure.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            buttons.widthAnchor.constraint(equalTo: stack.widthAnchor),
-        ])
-    }
-
-    private func buildChallenge() {
-        challengeBox.title = "Pairing Code"
-        challengeBox.boxType = .primary
-        challengeDescription.font = .systemFont(ofSize: 12)
-        challengeStatus.font = .systemFont(ofSize: 12)
-        challengeStatus.textColor = .secondaryLabelColor
-        pin.placeholderString = "Code"
-        pin.font = .monospacedDigitSystemFont(ofSize: 14, weight: .regular)
-        pin.delegate = self
-        pin.target = self
-        pin.action = #selector(answerChallenge(_:))
-        pin.setAccessibilityLabel("Pairing Code")
-        pin.widthAnchor.constraint(equalToConstant: 140).isActive = true
-        submitPIN.target = self
-        submitPIN.action = #selector(answerChallenge(_:))
-        submitPIN.bezelStyle = .rounded
-        cancelPIN.target = self
-        cancelPIN.action = #selector(cancelChallenge(_:))
-        cancelPIN.bezelStyle = .rounded
-        let row = NSStackView(views: [pin, submitPIN, cancelPIN])
-        row.orientation = .horizontal
-        row.spacing = 8
-        let stack = NSStackView(views: [challengeDescription, row, challengeStatus])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 8
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        guard let content = challengeBox.contentView else { return }
-        content.addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 10),
-            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -10),
-            stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 8),
-            stack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -10),
-            challengeDescription.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            challengeStatus.widthAnchor.constraint(equalTo: stack.widthAnchor),
-        ])
-    }
-
-    private func startIfNeeded() {
-        guard !started, startTask == nil, !closing else { return }
-        clearFailure()
-        startTask = Task { [weak self] in
-            guard let self else { return }
-            defer { self.startTask = nil; self.update() }
-            do {
-                try await self.session.start()
-                guard !self.closing, !Task.isCancelled else { return }
-                self.started = true
-            } catch {
-                guard !self.closing, !(error is CancellationError) else { return }
-                self.showFailure(error, operation: "Nearby devices could not be found")
-            }
-        }
-        update()
-    }
-
-    private func update() {
-        let previous = selectedIdentifier
-        displayedIdentifiers = session.devices.map(\.identifier)
-        restoringSelection = true
-        table.reloadData()
-        if let previous, let row = displayedIdentifiers.firstIndex(of: previous) {
-            table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
-        } else {
-            selectedIdentifier = nil
-            table.deselectAll(nil)
-        }
-        restoringSelection = false
-        if let name = session.advertisedName {
-            advertisement.stringValue = "This Mac is visible as “\(name)”."
-        } else {
-            advertisement.stringValue = startTask != nil ? "Preparing pairing on this Mac…"
-                : started ? "Looking for nearby devices…" : "This Mac is not currently advertising for pairing."
-        }
-        advertisementDetail.stringValue = session.advertisementDetail ?? ""
-        advertisementDetail.isHidden = advertisementDetail.stringValue.isEmpty
-        let showingChallenge = session.challenge != nil
-        let newChallenge = challengeBox.isHidden && showingChallenge
-        challengeBox.isHidden = !showingChallenge
-        if let challenge = session.challenge {
-            challengeDescription.stringValue = challenge.deviceName.map {
-                "Enter the pairing code shown on “\($0)”."
-            } ?? "Enter the pairing code shown on the other device."
-            if let seconds = challenge.throttledBy, seconds > 0 {
-                let wait = seconds.rounded(.up).formatted(.number.precision(.fractionLength(0)))
-                challengeStatus.stringValue = "Try again in about \(wait) seconds."
-            } else if challenge.lastAttemptFailed {
-                challengeStatus.stringValue = "That code was not accepted. Enter the pairing code again."
-            } else { challengeStatus.stringValue = "Use the digits shown on the other device." }
-        }
-        if newChallenge {
-            pin.stringValue = ""
-            window?.makeFirstResponder(pin)
-        }
-        updatePINControls()
-        let busy = startTask != nil || pairTask != nil || session.isPairing || closing
-        pairButton.isEnabled = started && !busy && !showingChallenge && selectedIdentifier != nil
-            && selectedIdentifier != lastPairedIdentifier
-        retryButton.isHidden = started || startTask != nil || closing
-        table.isEnabled = !closing && pairTask == nil && !session.isPairing && !showingChallenge
-        closeButton.isEnabled = !closing
-        if closing { status.stringValue = "Stopping pairing…" }
-        else if showingChallenge { status.stringValue = "Waiting for the pairing code…" }
-        else if pairTask != nil || session.isPairing { status.stringValue = "Pairing with a device…" }
-        else if lastPairedIdentifier != nil, selectedIdentifier == nil || selectedIdentifier == lastPairedIdentifier {
-            status.stringValue = "Pairing completed. The device is ready to use."
-        }
-        else if startTask != nil { status.stringValue = "Starting pairing…" }
-        else if !started { status.stringValue = "Pairing is not running. Choose Retry to start again." }
-        else if displayedIdentifiers.isEmpty { status.stringValue = "No nearby devices found. Keep the pairing screen open on the other device." }
-        else { status.stringValue = "Select a device to pair." }
-        if let issue = operationIssue ?? session.lastIssue {
-            failure.stringValue = issue
-            failure.isHidden = false
-        } else { failure.isHidden = true }
-        progress.isHidden = !busy
-        if busy { progress.startAnimation(nil) } else { progress.stopAnimation(nil) }
-        pairButton.keyEquivalent = showingChallenge ? "" : "\r"
-        submitPIN.keyEquivalent = showingChallenge ? "\r" : ""
-    }
-
-    private func updatePINControls() {
-        let numeric = !pin.stringValue.isEmpty && pin.stringValue.utf8.allSatisfy { (48...57).contains($0) }
-        let throttled = (session.challenge?.throttledBy ?? 0) > 0
-        pin.isEnabled = session.challenge != nil && !throttled && !closing
-        submitPIN.isEnabled = numeric && !throttled && session.challenge != nil && !closing
-        cancelPIN.isEnabled = session.challenge != nil && !closing
-    }
-
-    func numberOfRows(in tableView: NSTableView) -> Int { displayedIdentifiers.count }
-
-    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        guard displayedIdentifiers.indices.contains(row),
-              let device = session.devices.first(where: { $0.identifier == displayedIdentifiers[row] }) else { return nil }
-        if tableColumn?.identifier.rawValue == "OS" {
-            let label = NSTextField(labelWithString: device.operatingSystem ?? "")
-            label.lineBreakMode = .byTruncatingTail
-            return label
-        }
-        let name = NSTextField(labelWithString: device.name)
-        name.font = .systemFont(ofSize: 13, weight: .medium)
-        name.lineBreakMode = .byTruncatingTail
-        let model = NSTextField(labelWithString: device.modelName ?? "")
-        model.font = .systemFont(ofSize: 11)
-        model.textColor = .secondaryLabelColor
-        model.lineBreakMode = .byTruncatingTail
-        let stack = NSStackView(views: [name, model])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 3
-        name.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        model.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        return stack
-    }
-
-    func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool {
-        !closing && pairTask == nil && !session.isPairing && session.challenge == nil
-    }
-
-    func tableViewSelectionDidChange(_ notification: Notification) {
-        guard !restoringSelection else { return }
-        selectedIdentifier = displayedIdentifiers.indices.contains(table.selectedRow) ? displayedIdentifiers[table.selectedRow] : nil
-        update()
-    }
-
-    func controlTextDidChange(_ notification: Notification) { updatePINControls() }
-
-    @objc private func pairSelectedDevice(_ sender: Any?) {
-        guard started, !closing, pairTask == nil, !session.isPairing, session.challenge == nil,
-              let identifier = selectedIdentifier, identifier != lastPairedIdentifier,
-              session.devices.contains(where: { $0.identifier == identifier }) else { return }
-        clearFailure()
-        pairTask = Task { [weak self] in
-            guard let self else { return }
-            defer { self.pairTask = nil; self.update() }
-            do {
-                try await self.session.pair(deviceIdentifier: identifier)
-                self.lastPairedIdentifier = identifier
-            }
-            catch {
-                guard !self.closing, !(error is CancellationError) else { return }
-                self.showFailure(error, operation: "The device could not be paired")
-            }
-        }
-        update()
-    }
-
-    @objc private func answerChallenge(_ sender: Any?) {
-        guard submitPIN.isEnabled else { return }
-        do {
-            try session.answerPIN(pin.stringValue)
-            pin.stringValue = ""
-            clearFailure()
-        } catch { showFailure(error, operation: "The pairing code could not be submitted") }
-        update()
-    }
-
-    @objc private func cancelChallenge(_ sender: Any?) {
-        session.cancelChallenge()
-        pin.stringValue = ""
-        clearFailure()
-        update()
-    }
-
-    @objc private func retry(_ sender: Any?) { startIfNeeded() }
-    @objc private func closePairing(_ sender: Any?) { window?.performClose(sender) }
-
-    private func clearFailure() { operationIssue = nil; failure.stringValue = ""; failure.toolTip = nil; failure.isHidden = true }
-    private func showFailure(_ error: any Error, operation: String) {
-        operationIssue = "\(operation). \(error.localizedDescription)"
-        failure.stringValue = operationIssue ?? ""
-        failure.toolTip = String(describing: error)
-        failure.isHidden = false
-    }
-
-    func windowShouldClose(_ sender: NSWindow) -> Bool {
-        if closed { return true }
-        Task { [weak self] in
-            guard let self else { return }
-            await self.stop()
-        }
-        return false
-    }
-
-    /// Shared by the close action and AppDelegate's asynchronous termination path.
-    func stop() async {
-        if let stopTask { await stopTask.value; return }
-        guard !closed else { return }
-        closing = true
-        session.onChange = nil
-        startTask?.cancel()
-        pairTask?.cancel()
-        update()
-        let task = Task { [self] in
-            var cleanupFailure: (any Error)?
-            do { try await session.stop() }
-            catch {
-                if !(error is CancellationError) { cleanupFailure = error }
-            }
-            await startTask?.value
-            await pairTask?.value
-            if let cleanupFailure {
-                let alert = NSAlert(error: cleanupFailure)
-                alert.runModal()
-            }
-            closed = true
-            window?.close()
-            onClose()
-        }
-        stopTask = task
-        await task.value
     }
 }
