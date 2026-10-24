@@ -531,6 +531,10 @@ final class RendererDeviceRequestWaiter {
         try await request("open-device", acknowledgement: "RendererOpened", identifier: identifier, renderer: renderer, timeoutSeconds: 450)
     }
 
+    func attach(_ identifier: String, in renderer: RendererRegistration) async throws {
+        try await request("attach-device", acknowledgement: "RendererOpened", identifier: identifier, renderer: renderer, timeoutSeconds: 450)
+    }
+
     private func request(_ action: String, acknowledgement: String, identifier: String, renderer: RendererRegistration, timeoutSeconds: Int) async throws {
         try Task.checkCancellation()
         let requestIdentifier = UUID().uuidString

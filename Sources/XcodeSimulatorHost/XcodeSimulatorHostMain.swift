@@ -238,13 +238,14 @@ public actor SimulatorHostController {
         }
     }
 
-    private func openDeviceBody(identifier: String, xcodeURL: URL?) async throws {
+    private func openDeviceBody(identifier: String, xcodeURL: URL?, bootIfNeeded: Bool = true) async throws {
         let core = try await self.makeCore()
         let route = try core.routeStatus()
         let renderers = try await self.registeredRenderers()
         if route.preferences.effectiveRoute == .coreSimulator,
            let owner = renderers.first(where: { $0.deviceIdentifiers.contains(identifier) }) {
-            try await RendererDeviceRequestWaiter().open(identifier, in: owner)
+            if bootIfNeeded { try await RendererDeviceRequestWaiter().open(identifier, in: owner) }
+            else { try await RendererDeviceRequestWaiter().attach(identifier, in: owner) }
             return
         }
         let xcode = try self.resolveDeviceXcode(identifier: identifier, preferredURL: xcodeURL)
@@ -252,21 +253,23 @@ public actor SimulatorHostController {
             throw CLIError.unavailable("simulator-device", "The selected simulator is no longer available.")
         }
         if route.preferences.effectiveRoute == .coreSimulator {
-            try await self.openRendererDevice(identifier, xcode: xcode, core: core)
+            try await self.openRendererDevice(identifier, xcode: xcode, core: core, bootIfNeeded: bootIfNeeded)
         } else {
-            if device.state == "Shutdown" { _ = try self.runSimctl(xcode: xcode, arguments: ["boot", identifier], deviceSetPath: device.deviceSetPath) }
+            if bootIfNeeded && device.state == "Shutdown" { _ = try self.runSimctl(xcode: xcode, arguments: ["boot", identifier], deviceSetPath: device.deviceSetPath) }
             _ = try await core.use(.deviceHub, xcodeURL: xcode.applicationURL)
         }
     }
 
-    private func openRendererDevice(_ identifier: String, xcode: XcodeInstallation, core: HostModeController) async throws {
+    private func openRendererDevice(_ identifier: String, xcode: XcodeInstallation, core: HostModeController, bootIfNeeded: Bool = true) async throws {
         let launchesRenderer = try await !registeredRenderers().contains(where: { sameURL(URL(fileURLWithPath: $0.xcodePath), xcode.applicationURL) })
         if launchesRenderer { _ = try await core.use(.neo, xcodeURL: xcode.applicationURL) }
         guard let target = try await registeredRenderers().first(where: { sameURL(URL(fileURLWithPath: $0.xcodePath), xcode.applicationURL) }) else {
             throw CLIError.temporary("renderer-startup", "The simulator display exited before opening the device.")
         }
-        do { try await RendererDeviceRequestWaiter().open(identifier, in: target) }
-        catch {
+        do {
+            if bootIfNeeded { try await RendererDeviceRequestWaiter().open(identifier, in: target) }
+            else { try await RendererDeviceRequestWaiter().attach(identifier, in: target) }
+        } catch {
             throw CLIError.temporary(launchesRenderer ? "neo-host-launch-partial-success" : "renderer-device-launch", error.localizedDescription)
         }
     }
@@ -304,7 +307,7 @@ public actor SimulatorHostController {
                         if self.sameURL(URL(fileURLWithPath: owner.xcodePath), xcode.applicationURL) { return }
                         try await RendererDeviceRequestWaiter().release(connection.deviceIdentifier, from: owner)
                     }
-                    try await self.openRendererDevice(connection.deviceIdentifier, xcode: xcode, core: core)
+                    try await self.openRendererDevice(connection.deviceIdentifier, xcode: xcode, core: core, bootIfNeeded: false)
                 }
             } catch { firstFailure = error }
             let observation = self.bootTracker.observe(catalog, attachInitially: attachInitially)
@@ -314,7 +317,7 @@ public actor SimulatorHostController {
             for identifier in candidates {
                 if self.connectionTracker.hasPendingConnection(forDevice: identifier) { continue }
                 do {
-                    if !ownedIdentifiers.contains(identifier) { try await self.openDeviceBody(identifier: identifier, xcodeURL: nil) }
+                    if !ownedIdentifiers.contains(identifier) { try await self.openDeviceBody(identifier: identifier, xcodeURL: nil, bootIfNeeded: false) }
                     self.bootTracker.didAttach(identifier)
                     changed = true
                 } catch { if firstFailure == nil { firstFailure = error } }

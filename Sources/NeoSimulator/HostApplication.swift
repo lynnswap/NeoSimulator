@@ -181,7 +181,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         }
     }
 
-    private func openRequestedSimulator(_ identifier: String, requestIdentifier: String? = nil) {
+    private func openRequestedSimulator(_ identifier: String, requestIdentifier: String? = nil, bootIfNeeded: Bool = true) {
         Task {
             var result = ["udid": identifier]
             defer {
@@ -191,7 +191,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                         userInfo: result, deliverImmediately: true)
                 }
             }
-            do { try await openSimulatorLocally(withIdentifier: identifier) }
+            do { try await openSimulatorLocally(withIdentifier: identifier, bootIfNeeded: bootIfNeeded) }
             catch {
                 result["error"] = error.localizedDescription
                 if sessions[identifier] == nil && connections[identifier] == nil {
@@ -225,6 +225,10 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         switch action {
         case "open-device":
             if let identifier { openRequestedSimulator(identifier, requestIdentifier: requestIdentifier) }
+        case "attach-device":
+            if let identifier {
+                openRequestedSimulator(identifier, requestIdentifier: requestIdentifier, bootIfNeeded: false)
+            }
         case "release-device":
             guard let identifier, let requestIdentifier else { return }
             Task {
@@ -516,7 +520,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         try await openSimulatorLocally(withIdentifier: identifier)
     }
 
-    private func openSimulatorLocally(withIdentifier identifier: String) async throws {
+    private func openSimulatorLocally(withIdentifier identifier: String, bootIfNeeded: Bool = true) async throws {
         guard !releasingDevices.contains(identifier) else { throw CancellationError() }
         openingDevices.insert(identifier)
         defer { openingDevices.remove(identifier) }
@@ -531,6 +535,9 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         guard let device = devices.first(where: { $0.identifier == identifier }) else {
             throw HostError.operation("The selected simulator is no longer available")
         }
+        guard bootIfNeeded || device.state == 3 else {
+            throw HostError.operation("The simulator is no longer running, so its display was not attached.")
+        }
         ownedDeviceIdentifiers.insert(identifier)
         if isManaged { try writeRegistration() }
         suppressed.remove(identifier)
@@ -538,7 +545,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         // Launching starts this device next time.
         UserDefaults.standard.set(identifier, forKey: HostPreferences.currentDeviceUDID)
         // Attach an already booting device when it finishes; avoid a second boot.
-        if device.state != 2, device.state != 3, bootOperations[identifier] == nil {
+        if bootIfNeeded, device.state != 2, device.state != 3, bootOperations[identifier] == nil {
             let tools = try DeviceTools(identifier: identifier, xcodeURL: runtime.xcodeURL,
                                         deviceSetPath: device.deviceSetPath)
             bootOperations[identifier] = tools
