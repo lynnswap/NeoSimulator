@@ -242,7 +242,7 @@ final class SimulatorManagerModel {
     func inventoryObservationFailed(_ error: any Error) {
         guard !stopping else { return }
         NSLog("NeoSimulator automatic device updates: %@", String(describing: error))
-        observationIssue = "Automatic device updates are unavailable. Use Refresh to update the device list."
+        observationIssue = "Live device updates are unavailable. The list will update when you return to NeoSimulator."
         updateInventoryIssue()
         onChange?()
     }
@@ -929,8 +929,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     private var loadedRows = false
     private var groupByAvailability = true
     private let deviceMenu = NSMenu(title: "Device Actions")
-    private var refreshItem: NSToolbarItem?
-    private let refreshIdentifier = NSToolbarItem.Identifier("RefreshSimulators")
+    private var sidebarObservation: NSKeyValueObservation?
     private let newSimulatorIdentifier = NSToolbarItem.Identifier("NewSimulator")
     private let filterIdentifier = NSToolbarItem.Identifier("FilterSimulators")
     private var filterItem: NSMenuToolbarItem?
@@ -1026,6 +1025,9 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         toolbar.displayMode = .iconOnly
         toolbar.allowsUserCustomization = false
         window.toolbar = toolbar
+        sidebarObservation = splitController.splitViewItems[0].observe(\.isCollapsed, options: [.initial, .new]) { [weak self] _, _ in
+            MainActor.assumeIsolated { self?.updateSidebarToolbarItems() }
+        }
         window.center()
         window.setFrameAutosaveName("NeoSimulatorDevices")
         update()
@@ -1052,7 +1054,6 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         loadedRows = true
         updateSelection()
         updateFilterItem()
-        refreshItem?.isEnabled = !model.isBusy
         activity.stringValue = model.isBusy ? model.activity : (model.backgroundIssue ?? "")
         activity.toolTip = activity.stringValue
         activity.isHidden = activity.stringValue.isEmpty
@@ -1539,11 +1540,16 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         model.openScreen(for: device)
     }
 
-    @objc private func refresh(_ sender: Any?) { Task { await model.refresh() } }
+    private func updateSidebarToolbarItems() {
+        let hidden = splitController.splitViewItems[0].isCollapsed
+        for item in window?.toolbar?.items ?? [] where item.itemIdentifier == newSimulatorIdentifier || item.itemIdentifier == filterIdentifier {
+            item.isHidden = hidden
+        }
+    }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [.toggleSidebar, .flexibleSpace, newSimulatorIdentifier, filterIdentifier, .sidebarTrackingSeparator,
-         .flexibleSpace, refreshIdentifier, .inspectorTrackingSeparator, inspectorIdentifier]
+         .flexibleSpace, .inspectorTrackingSeparator, inspectorIdentifier]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { toolbarDefaultItemIdentifiers(toolbar) }
@@ -1583,17 +1589,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             updateFilterItem()
             return item
         }
-        guard itemIdentifier == refreshIdentifier else { return nil }
-        let item = NSToolbarItem(itemIdentifier: itemIdentifier)
-        item.label = "Refresh"
-        item.toolTip = "Refresh Devices"
-        item.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "Refresh")
-        item.target = self
-        item.action = #selector(refresh(_:))
-        item.autovalidates = false
-        item.isEnabled = !model.isBusy
-        refreshItem = item
-        return item
+        return nil
     }
 
     private struct ManagementRequest {
@@ -1865,6 +1861,7 @@ private final class SimulatorSidebarCellView: NSTableCellView {
         progress.isDisplayedWhenStopped = false
         progress.isHidden = true
         let trailing = NSStackView(views: [progress, version])
+        trailing.distribution = .fill
         trailing.spacing = 6
         trailing.translatesAutoresizingMaskIntoConstraints = false
         let labels = NSStackView(views: [name, subtitle])
@@ -2493,6 +2490,7 @@ private final class ManagerDeviceInspectorController: NSViewController, NSTableV
         headerImage.heightAnchor.constraint(equalToConstant: 32).isActive = true
         let detailStack = NSStackView(views: [header, detail.view])
         detailStack.orientation = .vertical
+        detailStack.distribution = .fill
         detailStack.alignment = .leading
         detailStack.spacing = 8
         header.translatesAutoresizingMaskIntoConstraints = false
@@ -2520,6 +2518,7 @@ private final class ManagerDeviceInspectorController: NSViewController, NSTableV
         reportFilter.setAccessibilityLabel("Report Type")
         let contentStack = NSStackView(views: [contentPicker, search, reportFilter, contentSplit.view])
         contentStack.orientation = .vertical
+        contentStack.distribution = .fill
         contentStack.alignment = .leading
         contentStack.spacing = 8
         pin(contentStack, in: contentView)
@@ -2559,9 +2558,17 @@ private final class ManagerDeviceInspectorController: NSViewController, NSTableV
         status.setAccessibilityLabel("Inspector Status")
         let stack = NSStackView(views: [contentView, infoView, buttons, footer])
         stack.orientation = .vertical
+        stack.distribution = .fill
         stack.alignment = .leading
         stack.spacing = 10
-        pin(stack, in: view, inset: 12)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 12),
+            stack.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -12),
+            stack.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
+            stack.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -12),
+        ])
         for child in stack.views { child.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
         contentView.heightAnchor.constraint(greaterThanOrEqualToConstant: 260).isActive = true
         updateVisibility()
@@ -3277,6 +3284,7 @@ private final class ManagerInspectorPropertiesController: NSViewController, NSOu
             hiddenNotice.textColor = .secondaryLabelColor
             let stack = NSStackView(views: [visibleFields, hiddenNotice, scroll])
             stack.orientation = .vertical
+            stack.distribution = .fill
             stack.alignment = .leading
             stack.spacing = 8
             scroll.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
