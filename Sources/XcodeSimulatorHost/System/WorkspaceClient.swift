@@ -22,12 +22,12 @@ enum HostTerminationRequest: Sendable {
     case rendererHandoff
     case deviceHubHandoff
 
-    func perform(processIdentifier: pid_t, normalQuit: () -> Bool, forceQuit: () -> Bool) -> Bool {
+    func perform(processIdentifier: pid_t, normalQuit: () -> Bool) -> Bool {
         switch self {
         case .normalQuit: normalQuit()
         case .rendererHandoff: kill(processIdentifier, SIGTERM) == 0
-        // Device Hub's normal quit shuts down guests. It has no preserve-device handoff contract.
-        case .deviceHubHandoff: forceQuit()
+        // Device Hub can acknowledge forceTerminate without exiting. SIGKILL bypasses its guest-shutdown handlers.
+        case .deviceHubHandoff: kill(processIdentifier, SIGKILL) == 0
         }
     }
 }
@@ -119,8 +119,7 @@ private final class ApplicationTerminationWaiter {
                 do {
                     requested = try request?() ?? identity.terminationRequest.perform(
                         processIdentifier: application.processIdentifier,
-                        normalQuit: { application.terminate() },
-                        forceQuit: { application.forceTerminate() }
+                        normalQuit: { application.terminate() }
                     )
                 } catch {
                     finish(.failure(error))

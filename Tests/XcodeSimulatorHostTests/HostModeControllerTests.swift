@@ -995,8 +995,7 @@ struct HostHandoffTerminationTests {
                 requestedNormalQuit = true
                 process.terminate()
                 return true
-            },
-            forceQuit: { kill(process.processIdentifier, SIGKILL) == 0 }
+            }
         ))
         process.waitUntilExit()
         #expect(!requestedNormalQuit)
