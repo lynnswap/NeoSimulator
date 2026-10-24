@@ -3570,8 +3570,8 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
             toolbarItems[name]?.isEnabled = connected && session.inputCapabilities.contains(.button)
         }
         toolbarItems["capture"]?.isEnabled = canSaveScreenshot
-        toolbarItems["capture"]?.toolTip = completedScreenshot != nil || session.canCaptureScreenshot ? "Save Screenshot…"
-            : "Screenshot capture is not available for this display yet."
+        toolbarItems["capture"]?.toolTip = completedScreenshot != nil ? "Save the captured screenshot…"
+            : session.canCaptureScreenshot ? "Save Screenshot…" : "Screenshot capture is not available for this display yet."
         let recordingLabel: String
         let recordingSymbol: String
         if session.hasUnfinishedRecording {
