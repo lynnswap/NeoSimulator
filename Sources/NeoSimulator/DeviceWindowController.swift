@@ -2,7 +2,7 @@ import AppKit
 import UniformTypeIdentifiers
 
 @MainActor
-final class DeviceWindowController: NSWindowController, NSWindowDelegate, DisplayScaling {
+final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenuItemValidation, DisplayScaling {
     /// The device's current connection. A restart replaces it after the
     /// device boots again, keeping this window.
     private(set) var session: DeviceSession
@@ -37,6 +37,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
     private var bezelResize: (drag: BezelResize, maximumScale: CGFloat)?
     /// Injectable window-server drag operation.
     private let performWindowDrag: (NSWindow, NSEvent) -> Void
+    private let presentCompactWindow: (NSWindow) -> Void
     private var screenParametersObserver: (any NSObjectProtocol)?
     /// Set while the window takes the size of a chosen display scale, which
     /// the resize must not change.
@@ -54,6 +55,21 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
     private var audioRouteObserver: (any NSObjectProtocol)?
     /// Only the key window receives host keyboard input and input-source changes.
     private var isKey = false
+    private weak var embeddedContainer: NSView?
+    private weak var embeddedParent: NSViewController?
+    private(set) lazy var presentationViewController: NSViewController = {
+        let controller = SimulatorPresentationViewController(owner: self)
+        controller.view = content
+        return controller
+    }()
+    private var presentationObservers: [NSObjectProtocol] = []
+    private static weak var embeddedController: DeviceWindowController?
+    var isEmbedded: Bool { embeddedContainer != nil }
+    var presentationWindow: NSWindow? { isEmbedded ? content.window : window }
+    var onShowInMainWindow: (() -> Void)? {
+        didSet { deviceToolbar?.setShowsMainWindowAction(onShowInMainWindow != nil) }
+    }
+    @objc func showInMainWindow(_ sender: Any?) { onShowInMainWindow?() }
     /// The window of the device's external display while the display is on.
     private(set) var externalDisplayWindow: ExternalDisplayWindowController?
     /// How often and how long the window looks for its display's
@@ -67,16 +83,20 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
 
     /// Finds the owning device window, including for an external display window.
     static func deviceWindow(for window: NSWindow?) -> DeviceWindowController? {
-        switch window?.windowController {
+        if let embeddedController, let window, embeddedController.presentationWindow === window {
+            return embeddedController
+        }
+        return switch window?.windowController {
         case let controller as DeviceWindowController: controller
         case let controller as ExternalDisplayWindowController: controller.deviceWindow
         default: nil
         }
     }
 
-    init(session: DeviceSession, preferences: any PreferenceStore = UserDefaults.standard,
+    init(session: DeviceSession, preferences: any PreferenceStore = HostPreferences.defaults,
          touchPressure: TouchPressure, tvRemote: TVRemoteController,
          performWindowDrag: @escaping (NSWindow, NSEvent) -> Void = { $0.performDrag(with: $1) },
+         presentCompactWindow: @escaping (NSWindow) -> Void = { $0.makeKeyAndOrderFront(nil) },
          userInterfacePluginLookUp: (attempts: Int, interval: Duration) = (40, .milliseconds(250)),
          onClose: @escaping (DeviceWindowController, DeviceLifetimeChoice?) -> Void,
          onRestart: @escaping (DeviceWindowController, _ erasing: Bool) -> Void = { _, _ in }) throws {
@@ -86,6 +106,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
         self.touchPressure = touchPressure
         self.tvRemote = tvRemote
         self.performWindowDrag = performWindowDrag
+        self.presentCompactWindow = presentCompactWindow
         // Read geometry once per connection for the current screen arrangement.
         let saved = preferences.windowGeometry(forDevice: session.device.identity.preferenceIdentifier, screens: Self.screenFrames)
         savedCenter = saved.center
@@ -202,17 +223,120 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
 
     required init?(coder: NSCoder) { nil }
 
+    /// Changes only the presentation; the owner retains the session and its operations.
+    func embed(in parent: NSViewController) {
+        guard !closed else { return }
+        let container = parent.view
+        saveWindowGeometry()
+        releasePresentationFocus()
+        window?.orderOut(nil)
+        content.removeFromSuperview()
+        window?.contentView = nil
+        presentationViewController.removeFromParent()
+        parent.addChild(presentationViewController)
+        embeddedParent = parent
+        embeddedContainer = container
+        Self.embeddedController = self
+        content.isEmbedded = true
+        content.displayGap = 0
+        content.frame = container.bounds
+        content.autoresizingMask = [.width, .height]
+        container.addSubview(content)
+        keyboard.attach(to: content.window)
+        observePresentationWindow()
+        fitting.fit()
+        if content.window?.isKeyWindow == true { activateDisplay() }
+    }
+
+    /// Presents the same native display in its standalone window.
+    func showCompactWindow() {
+        guard !closed else { return }
+        releasePresentationFocus()
+        content.removeFromSuperview()
+        presentationViewController.removeFromParent()
+        embeddedParent = nil
+        embeddedContainer = nil
+        if Self.embeddedController === self { Self.embeddedController = nil }
+        content.isEmbedded = false
+        content.autoresizingMask = []
+        window?.contentView = content
+        keyboard.attach(to: window)
+        observePresentationWindow()
+        bezelChanged()
+        showDisplay(fitting: { self.initialScale })
+        if let window { presentCompactWindow(window) }
+        readInitialOrientation()
+    }
+
+    /// Removes a scene without ending its device connection.
+    func detachPresentation() {
+        releasePresentationFocus()
+        window?.orderOut(nil)
+        content.removeFromSuperview()
+        presentationViewController.removeFromParent()
+        embeddedParent = nil
+        embeddedContainer = nil
+        if Self.embeddedController === self { Self.embeddedController = nil }
+        keyboard.attach(to: nil)
+        observePresentationWindow()
+    }
+
+    private func releasePresentationFocus() {
+        if let view = presentationWindow?.firstResponder as? NSView, view.isDescendant(of: content) {
+            presentationWindow?.makeFirstResponder(nil)
+        }
+        isKey = false
+        keyboard.setEnabled(false)
+        session.display.setActive(false)
+    }
+
+    private func observePresentationWindow() {
+        for observer in presentationObservers { NotificationCenter.default.removeObserver(observer) }
+        presentationObservers.removeAll()
+        guard isEmbedded, let presented = content.window else { return }
+        for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification] {
+            presentationObservers.append(NotificationCenter.default.addObserver(
+                forName: name, object: presented, queue: .main) { [weak self] notification in
+                    let becameKey = notification.name == NSWindow.didBecomeKeyNotification
+                    MainActor.assumeIsolated {
+                        guard let self else { return }
+                        if becameKey { self.activateDisplay() }
+                        else { self.windowDidResignKey(Notification(name: NSWindow.didResignKeyNotification)) }
+                    }
+                })
+        }
+    }
+
     /// Connects the window's toolbar, content, and display events to `session`.
     private func attachSession() {
         guard let window else { return }
         let toolbar = DeviceToolbar(controller: self)
         deviceToolbar = toolbar
         toolbar.attach(to: window)
+        toolbar.setShowsMainWindowAction(onShowInMainWindow != nil)
         session.display.onPropertiesChange = { [weak self] in self?.displayPropertiesChanged() }
         session.onExternalScreenChange = { [weak self] in self?.syncExternalDisplayWindow() }
         content.canImport = { [weak self] in self?.session.canPerformToolOperation == true }
         content.importFiles = { [weak self] in self?.importFiles($0) }
-        window.contentView = content
+        content.onDisplaySizeChange = { [weak self] in
+            guard let self, self.isEmbedded else { return }
+            self.fitting.fit()
+        }
+        presentationViewController.view = content
+        content.onWindowChange = { [weak self] in
+            guard let self else { return }
+            self.keyboard.attach(to: self.presentationWindow)
+            self.observePresentationWindow()
+            if self.presentationWindow?.isKeyWindow == true { self.activateDisplay() }
+        }
+        if let embeddedContainer {
+            content.isEmbedded = true
+            content.frame = embeddedContainer.bounds
+            content.autoresizingMask = [.width, .height]
+            embeddedContainer.addSubview(content)
+        } else { window.contentView = content }
+        keyboard.attach(to: presentationWindow)
+        observePresentationWindow()
         showResizeCursors()
         connectTouchPressure()
         showTouchIndicators()
@@ -301,6 +425,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
         let scale = WindowScale.usable(self.session.display.renderScale) ?? 1
         isRestarting = false
         self.session = session
+        content.removeFromSuperview()
         content = DeviceContentView(display: session.display.view)
         fitting.attach(session.display, content: content)
         keyboard.display = session.display
@@ -320,8 +445,8 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
     }
 
     func showAndActivate() {
-        showWindow(nil)
-        window?.makeKeyAndOrderFront(nil)
+        if !isEmbedded { showWindow(nil) }
+        presentationWindow?.makeKeyAndOrderFront(nil)
         readInitialOrientation()
     }
 
@@ -351,6 +476,26 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
     }
 
     // MARK: Commands
+
+    @objc func saveScreenshot(_ sender: Any?) { perform(.saveScreen) }
+    @objc func recordScreen(_ sender: Any?) { perform(.recordScreen) }
+    @objc func recordScreenTo(_ sender: Any?) { perform(.recordScreenAs) }
+    @objc func stopScreenRecording(_ sender: Any?) { perform(.stopRecording) }
+
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        let command: DeviceCommand.ID?
+        switch item.action {
+        case #selector(saveScreenshot(_:)): command = .saveScreen
+        case #selector(recordScreen(_:)): command = .recordScreen
+        case #selector(recordScreenTo(_:)): command = .recordScreenAs
+        case #selector(stopScreenRecording(_:)): command = .stopRecording
+        case #selector(showInMainWindow(_:)): return !closed && onShowInMainWindow != nil
+        default: return !closed && session.canPerformCommands
+        }
+        guard let command, !closed else { return false }
+        let description = DeviceCommand.command(command)
+        return description.isSupported(session.capabilities) && description.isEnabled(self)
+    }
 
     func perform(_ id: DeviceCommand.ID) {
         let command = DeviceCommand.command(id)
@@ -401,7 +546,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
     func restart() { onRestart(self, false) }
 
     func eraseAllContentAndSettings() {
-        guard let window, session.reserve() else { return }
+        guard let window = presentationWindow, session.reserve() else { return }
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "Erase all content and settings on \(session.device.name)?"
@@ -420,7 +565,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
     func setDeviceBezelVisible(_ visible: Bool) {
         session.display.setChromeVisible(visible)
         bezelChanged()
-        updateWindowSize()
+        if isEmbedded { fitting.fit() } else { updateWindowSize() }
     }
 
     /// Applies bezel padding, background, header shape, and resize behavior.
@@ -432,7 +577,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
         session.display.setSupportsScrolling(padding == nil || session.capabilities.hasCrownOrDial)
         // With a bezel, guest edge gestures must start on it.
         session.display.setWantsEdgeSwipes(padding != nil)
-        content.displayGap = WindowScale.displayGap(bezelPadding: padding)
+        content.displayGap = isEmbedded ? 0 : WindowScale.displayGap(bezelPadding: padding)
         window.chromeTopPadding = padding?.height ?? 0
         updateHeaderShape()
         if padding != nil { window.backgroundColor = .clear } else if !isFullScreen { window.backgroundColor = .black }
@@ -528,7 +673,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
         // The window takes its device window's level, also when Stay on Top
         // changes, so that the device window cannot hide it.
         customLocation.window?.level = window?.level ?? .normal
-        let defaults = UserDefaults.standard
+        let defaults = HostPreferences.defaults
         do {
             let coordinate = try DeviceLocationPreset.load(for: session.device.identity.preferenceIdentifier, among: session.locationScenarios)?.coordinate
             customLocation.show(latitude: coordinate?.latitude ?? defaults.double(forKey: HostPreferences.locationLatitude),
@@ -561,7 +706,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
     /// Whether captures apply the device's mask by default: the device has
     /// one and `ScreenShotUseMask` is on.
     private var usesDeviceMask: Bool {
-        session.capabilities.hasFramebufferMask && UserDefaults.standard.bool(forKey: HostPreferences.screenShotUseMask)
+        session.capabilities.hasFramebufferMask && HostPreferences.defaults.bool(forKey: HostPreferences.screenShotUseMask)
     }
 
     /// File ▸ Save Screen: captures the screen without asking and shows its
@@ -584,7 +729,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
     /// Shows a capture's thumbnail beside this window, or saves the capture
     /// when the window has closed.
     private func showThumbnail(of capture: CapturedContent, image: NSImage?) throws {
-        guard !closed, let window, window.isVisible, !CaptureThumbnail.savesImmediately else {
+        guard !closed, let window = presentationWindow, window.isVisible, !CaptureThumbnail.savesImmediately else {
             try capture.saveToDefaultLocation()
             return
         }
@@ -610,7 +755,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
     /// File ▸ Save Screen…: asks where to save, starting in the screenshot
     /// folder, and whether to apply the device's mask. Saving remembers both.
     func chooseScreenshotDestination() {
-        guard let window, session.reserve() else { return }
+        guard let window = presentationWindow, session.reserve() else { return }
         let hasMask = session.capabilities.hasFramebufferMask
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.png]
@@ -619,16 +764,16 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
         panel.nameFieldStringValue = CaptureFile.screenshotName(device: session.device.name, date: Date())
         let applyMask = NSButton(checkboxWithTitle: "Apply device mask to screenshot", target: nil, action: nil)
         applyMask.toolTip = "Apply device mask to non-rectangular screens when taking screenshots."
-        applyMask.state = UserDefaults.standard.bool(forKey: HostPreferences.screenShotUseMask) ? .on : .off
+        applyMask.state = HostPreferences.defaults.bool(forKey: HostPreferences.screenShotUseMask) ? .on : .off
         if hasMask { panel.accessoryView = Self.accessory(applyMask) }
         panel.beginSheetModal(for: window) { [weak self] response in
             guard let self else { return }
             self.session.release()
             guard response == .OK, let destination = panel.url, !self.closed else { return }
             let useMask = hasMask && applyMask.state == .on
-            UserDefaults.standard.set(destination.deletingLastPathComponent().path,
+            HostPreferences.defaults.set(destination.deletingLastPathComponent().path,
                                       forKey: HostPreferences.screenShotSaveLocation)
-            if hasMask { UserDefaults.standard.set(useMask, forKey: HostPreferences.screenShotUseMask) }
+            if hasMask { HostPreferences.defaults.set(useMask, forKey: HostPreferences.screenShotUseMask) }
             self.session.run({ [session] in try await session.saveScreenshot(to: destination, mask: useMask ? .alpha : .ignored) },
                              failure: { [weak self] in self?.present($0) })
         }
@@ -670,7 +815,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
     /// File ▸ Record Screen…: asks where to save the movie and whether to
     /// apply the device's mask, then starts recording.
     func chooseRecordingDestination() {
-        guard let window, session.reserve() else { return }
+        guard let window = presentationWindow, session.reserve() else { return }
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.quickTimeMovie]
         panel.canCreateDirectories = true
@@ -701,7 +846,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
     }
 
     func chooseFilesToImport() {
-        guard let window, session.reserve() else { return }
+        guard let window = presentationWindow, session.reserve() else { return }
         let panel = NSOpenPanel()
         panel.title = "Install App or Import Media"
         panel.prompt = "Import"
@@ -720,7 +865,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
     }
 
     func chooseURLToOpen() {
-        guard let window, session.reserve() else { return }
+        guard let window = presentationWindow, session.reserve() else { return }
         let alert = NSAlert()
         alert.messageText = "Open URL in Simulator"
         alert.informativeText = "Enter a web address or an app's URL scheme."
@@ -796,7 +941,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
     private func displayPropertiesChanged() {
         guard !closed else { return }
         session.followBacklight()
-        let enabled = UserDefaults.standard.bool(forKey: HostPreferences.rotateWindowWhenSignaledByGuest)
+        let enabled = HostPreferences.defaults.bool(forKey: HostPreferences.rotateWindowWhenSignaledByGuest)
         guard session.followGuestInterfaceOrientation(enabled: enabled) else { return }
         // A guest rotation before the first orientation reading does not
         // count as a change to the new window's placement.
@@ -807,6 +952,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
 
     /// Preserves display scale and the window's top edge during rotation, then keeps it on screen.
     private func didRotate(placing place: ((NSWindow) -> Void)? = nil) {
+        if isEmbedded { resizeDisplay(); return }
         guard !closed, let window, !fitting.fitsWindow else {
             resizeDisplay()
             return
@@ -1025,12 +1171,12 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
     }
 
     func focusInput() {
-        guard session.canPerformCommands, window != nil else { return }
+        guard session.canPerformCommands, presentationWindow != nil else { return }
         if !keyboard.focus() { hostLog("Could not focus simulator input for \(session.device.id)") }
     }
 
     func present(_ error: Error) {
-        guard !closed, let window else { return }
+        guard !closed, let window = presentationWindow else { return }
         let alert = NSAlert(error: error)
         alert.beginSheetModal(for: window)
     }
@@ -1098,7 +1244,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
     func closeAsking() {
         guard let window, window.attachedSheet == nil, !closed else { return }
         let alert = DeviceLifetimeChoice.alert(
-            quitting: false, keepsRunningByDefault: UserDefaults.standard.bool(forKey: HostPreferences.detachOnWindowClose))
+            quitting: false, keepsRunningByDefault: HostPreferences.defaults.bool(forKey: HostPreferences.detachOnWindowClose))
         alert.beginSheetModal(for: window) { [weak self] response in
             guard let self, let choice = DeviceLifetimeChoice.choice(
                 for: response, of: alert, rememberingAs: HostPreferences.detachOnWindowClose) else { return }
@@ -1139,6 +1285,13 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
         pluginLookUp?.cancel()
         pluginLookUp = nil
         keyboard.invalidate()
+        for observer in presentationObservers { NotificationCenter.default.removeObserver(observer) }
+        presentationObservers.removeAll()
+        content.removeFromSuperview()
+        embeddedContainer = nil
+        presentationViewController.removeFromParent()
+        embeddedParent = nil
+        if Self.embeddedController === self { Self.embeddedController = nil }
         fitting.invalidate()
         for observer in [screenParametersObserver, touchPressureObserver, touchIndicatorObserver,
                          keyboardSelectionObserver, audioRouteObserver].compactMap(\.self) {
@@ -1158,6 +1311,20 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, Displa
     }
     /// An unshown controller discarded during a host conflict disconnects without saving geometry.
     isolated deinit { disconnect() }
+}
+
+@MainActor
+private final class SimulatorPresentationViewController: NSViewController {
+    private weak var owner: DeviceWindowController?
+    init(owner: DeviceWindowController) {
+        self.owner = owner
+        super.init(nibName: nil, bundle: nil)
+    }
+    required init?(coder: NSCoder) { nil }
+    override func supplementalTarget(forAction action: Selector, sender: Any?) -> Any? {
+        if let owner, owner.responds(to: action) { return owner }
+        return super.supplementalTarget(forAction: action, sender: sender)
+    }
 }
 
 /// Allows bezel padding beyond the screen and handles unconsumed bezel drags.
@@ -1232,6 +1399,10 @@ private final class DeviceContentView: NSView, DisplayContentView {
     let display: NSView
     var canImport: () -> Bool = { false }
     var importFiles: ([URL]) -> Void = { _ in }
+    var isEmbedded = false
+    var onDisplaySizeChange: () -> Void = {}
+    var onWindowChange: () -> Void = {}
+    private var previousDisplaySize: NSSize?
     /// The space between the header and the display, which follows the bezel.
     var displayGap = WindowScale.displayGap(bezelPadding: nil) {
         didSet { needsLayout = true }
@@ -1244,6 +1415,7 @@ private final class DeviceContentView: NSView, DisplayContentView {
     /// The title bar's height, which follows the toolbar's style: 52 points
     /// unified, 76 expanded, and 40 compact on macOS 26.
     var headerHeight: CGFloat {
+        if isEmbedded { return 0 }
         guard let window else { return 52 }
         return max(0, bounds.height - window.contentLayoutRect.height)
     }
@@ -1255,6 +1427,10 @@ private final class DeviceContentView: NSView, DisplayContentView {
         wantsLayer = true
         addSubview(display)
         registerForDraggedTypes([.fileURL])
+    }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        onWindowChange()
     }
     override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
         canImport() ? .copy : []
@@ -1273,6 +1449,10 @@ private final class DeviceContentView: NSView, DisplayContentView {
 
     override func layout() {
         super.layout()
+        if previousDisplaySize != availableDisplaySize {
+            previousDisplaySize = availableDisplaySize
+            onDisplaySizeChange()
+        }
         let available = NSRect(origin: .zero, size: availableDisplaySize)
         if isSizedToDisplay {
             display.frame = available
@@ -1310,7 +1490,7 @@ enum CaptureFile {
 
     /// Uses an existing ScreenShotSaveLocation, then Desktop, then /private/tmp.
     static func screenshotFolder() -> URL {
-        if let location = UserDefaults.standard.string(forKey: HostPreferences.screenShotSaveLocation) {
+        if let location = HostPreferences.defaults.string(forKey: HostPreferences.screenShotSaveLocation) {
             let path = NSString(string: location).expandingTildeInPath
             var isDirectory: ObjCBool = false
             if !path.isEmpty, FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
@@ -1416,7 +1596,7 @@ enum DeviceLifetimeChoice: Equatable {
         case .alertSecondButtonReturn: choice = .keepRunning
         default: return nil
         }
-        if alert.suppressionButton?.state == .on { UserDefaults.standard.set(choice == .keepRunning, forKey: key) }
+        if alert.suppressionButton?.state == .on { HostPreferences.defaults.set(choice == .keepRunning, forKey: key) }
         return choice
     }
 }

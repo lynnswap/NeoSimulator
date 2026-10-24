@@ -5,6 +5,50 @@ import Synchronization
 
 @Suite(.serialized) @MainActor
 struct InputFocusTests {
+    @Test func embeddedAndCompactPresentationsKeepOneSessionAndInputOwner() throws {
+        _ = NSApplication.shared
+        let display = TestDisplay()
+        var closes = 0
+        var compactPresentations = 0
+        let controller = try makeController(display, features: [DeviceCapabilities.keyboard],
+            presentCompactWindow: { _ in compactPresentations += 1 }, onClose: { _, _ in closes += 1 })
+        defer { controller.invalidate() }
+        let session = controller.session
+        let parent = NSViewController()
+        parent.view = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 600))
+        let window = NSWindow(contentRect: parent.view.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentViewController = parent
+        defer { window.close() }
+        controller.embed(in: parent)
+        parent.view.layoutSubtreeIfNeeded()
+        #expect(controller.presentationViewController.parent === parent)
+        #expect(controller.presentationWindow === window)
+        #expect(DeviceWindowController.deviceWindow(for: window) === controller)
+        let screenshot = NSMenuItem(title: "Save Screenshot", action: #selector(DeviceWindowController.saveScreenshot(_:)), keyEquivalent: "")
+        #expect(controller.presentationViewController.supplementalTarget(forAction: screenshot.action!, sender: screenshot)
+            as AnyObject? === controller)
+        #expect(controller.validateMenuItem(screenshot))
+        #expect(display.view.superview === controller.presentationViewController.view)
+        controller.focusInput()
+        #expect(window.firstResponder === display.inputView)
+        #expect(controller.session === session && display.disconnectCount == 0)
+        parent.view.setFrameSize(NSSize(width: 300, height: 480))
+        parent.view.layoutSubtreeIfNeeded()
+        let content = controller.presentationViewController.view
+        #expect(content.bounds.contains(display.view.frame))
+        controller.detachPresentation()
+        #expect(controller.presentationViewController.parent == nil && content.superview == nil)
+        #expect(display.disconnectCount == 0 && closes == 0)
+        controller.showCompactWindow()
+        #expect(!controller.isEmbedded && compactPresentations == 1)
+        #expect(controller.window?.contentView === content)
+        controller.embed(in: parent)
+        #expect(controller.session === session && display.disconnectCount == 0 && closes == 0)
+        controller.invalidate()
+        #expect(display.disconnectCount == 1 && closes == 0)
+    }
+
     @Test func commandsAndActivationRestoreTheNativeInputOwner() throws {
         _ = NSApplication.shared
         let display = TestDisplay()
@@ -5956,6 +6000,7 @@ struct InputFocusTests {
                                 enhancedMultitasking: Bool = false,
                                 userInterfacePluginLookUp: (attempts: Int, interval: Duration) = (5, .milliseconds(20)),
                                 performWindowDrag: @escaping (NSWindow, NSEvent) -> Void = { _, _ in },
+                                presentCompactWindow: @escaping (NSWindow) -> Void = { $0.makeKeyAndOrderFront(nil) },
                                 onClose: @escaping (DeviceWindowController, DeviceLifetimeChoice?) -> Void = { _, _ in },
                                 onRestart: @escaping (DeviceWindowController, Bool) -> Void = { _, _ in })
         throws -> DeviceWindowController {
@@ -5971,7 +6016,8 @@ struct InputFocusTests {
             session: session, preferences: preferences,
             touchPressure: touchPressure ?? TouchPressure(preferences: preferences, forceTouchTrackpad: { false }),
             tvRemote: tvRemote ?? TVRemoteController(target: { nil }),
-            performWindowDrag: performWindowDrag, userInterfacePluginLookUp: userInterfacePluginLookUp,
+            performWindowDrag: performWindowDrag, presentCompactWindow: presentCompactWindow,
+            userInterfacePluginLookUp: userInterfacePluginLookUp,
             onClose: onClose, onRestart: onRestart)
     }
 
@@ -7254,9 +7300,9 @@ struct HostBehaviorTests {
 
     @Test func managerRequestsOpenTheExplicitDeviceAndKeepQuitChoices() throws {
         let identifier = UUID().uuidString
-        let options = try HostLaunchOptions(arguments: ["--managed", "--owner-pid", "123", "--owner-launch-date", "1234.5", "--xcode", "/Xcode.app", "--device", identifier, "--device-set", "/custom/XCTestDevices"])
+        let options = try HostLaunchOptions(arguments: ["--managed", "--headless", "--owner-pid", "123", "--owner-launch-date", "1234.5", "--xcode", "/Xcode.app", "--device", identifier, "--device-set", "/custom/XCTestDevices"])
         #expect(options.deviceIdentifier == identifier)
-        #expect(options.isManaged)
+        #expect(options.isManaged && options.isHeadless)
         #expect(options.owner == RendererOwnerIdentity(processIdentifier: 123, launchDate: Date(timeIntervalSinceReferenceDate: 1234.5)))
         #expect(throws: (any Error).self) {
             try HostLaunchOptions(arguments: ["--managed", "--xcode", "/Xcode.app"])

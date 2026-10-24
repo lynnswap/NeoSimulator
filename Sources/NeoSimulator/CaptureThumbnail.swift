@@ -472,7 +472,7 @@ final class CaptureThumbnail: NSObject {
 
     /// The screenshot folder when it is not the Desktop, which has its own item.
     private static func customFolder() -> URL? {
-        guard UserDefaults.standard.string(forKey: HostPreferences.screenShotSaveLocation) != nil else { return nil }
+        guard HostPreferences.defaults.string(forKey: HostPreferences.screenShotSaveLocation) != nil else { return nil }
         let folder = CaptureFile.screenshotFolder()
         let desktop = CaptureFile.desktop?.lastPathComponent
         return folder.lastPathComponent.caseInsensitiveCompare(desktop ?? "") == .orderedSame ? nil : folder
@@ -833,7 +833,7 @@ enum AnimatedGIF {
         /// The `GifMaxFramerate`, `GifMaxFrameSize`, `GifUseDither`, and
         /// `GifDitherDepth` preferences.
         static var preferred: Options {
-            let defaults = UserDefaults.standard
+            let defaults = HostPreferences.defaults
             let rate = defaults.double(forKey: HostPreferences.gifMaxFramerate)
             return Options(maximumFrameRate: rate > 0 ? min(rate, 100) : 30,
                            maximumFrameSize: min(max(defaults.double(forKey: HostPreferences.gifMaxFrameSize), 100), 2000),

@@ -16,7 +16,7 @@ final class PasteboardSync {
 
     /// Reads the choice saved in `preferences`, which is off unless it was
     /// turned on.
-    init(preferences: any PreferenceStore = UserDefaults.standard,
+    init(preferences: any PreferenceStore = HostPreferences.defaults,
          sessions: @escaping () -> [DeviceSession]) {
         self.preferences = preferences
         self.sessions = sessions

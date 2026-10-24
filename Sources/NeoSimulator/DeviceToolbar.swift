@@ -4,6 +4,7 @@ import Observation
 /// The device window's toolbar, built from the command catalog.
 @MainActor
 final class DeviceToolbar: NSObject, NSToolbarDelegate {
+    private static let mainWindowItem = NSToolbarItem.Identifier("ShowInMainWindow")
     let toolbar = NSToolbar(identifier: "DeviceToolbar")
     private weak var controller: DeviceWindowController?
     private let commands: [DeviceCommand.ID]
@@ -112,11 +113,26 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        toolbarDefaultItemIdentifiers(toolbar)
+        [Self.mainWindowItem] + toolbarDefaultItemIdentifiers(toolbar)
+    }
+
+    func setShowsMainWindowAction(_ visible: Bool) {
+        if let index = toolbar.items.firstIndex(where: { $0.itemIdentifier == Self.mainWindowItem }) {
+            if !visible { toolbar.removeItem(at: index) }
+        } else if visible { toolbar.insertItem(withItemIdentifier: Self.mainWindowItem, at: 0) }
     }
 
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
                  willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
+        if itemIdentifier == Self.mainWindowItem {
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            item.label = "Show in Main Window"
+            item.toolTip = "Show this device in the main window"
+            item.image = NSImage(systemSymbolName: "rectangle.inset.filled", accessibilityDescription: item.label)
+            item.target = controller
+            item.action = #selector(DeviceWindowController.showInMainWindow(_:))
+            return item
+        }
         guard let id = DeviceCommand.ID(rawValue: itemIdentifier.rawValue),
               let presentation = DeviceCommand.command(id).toolbar else { return nil }
         let item = NSToolbarItem(itemIdentifier: itemIdentifier)

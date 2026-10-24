@@ -90,6 +90,15 @@ struct DeviceCapabilities {
 
 /// Simulator-compatible standard-defaults keys.
 enum HostPreferences {
+    // UserDefaults provides thread-safe access; the suite itself is fixed for the process.
+    nonisolated(unsafe) static let defaults: UserDefaults = {
+#if NEOSIMULATOR_MANAGER
+        UserDefaults(suiteName: "dev.lynnswap.NeoSimulator.Renderer") ?? .standard
+#else
+        .standard
+#endif
+    }()
+
     /// Moving the renderer into the app changes its defaults domain.
     /// Existing renderer settings remain editable in the new domain after this one-time copy.
     static func migrateStandalonePreferences(defaults: UserDefaults = .standard,
@@ -177,7 +186,7 @@ enum HostPreferences {
     /// Registers shared defaults. Pasteboard synchronization is opt-in.
     /// Show Pinch Gestures follows Simulator.app's registered default, not its Settings.bundle fallback.
     static func registerDefaults() {
-        UserDefaults.standard.register(defaults: [
+        HostPreferences.defaults.register(defaults: [
             showTestingDevices: true, showChrome: true, useMonobar: true, useCompactTitleBar: false,
             detachOnWindowClose: false, detachOnAppQuit: false,
             attachBootedOnStart: true, sessionOnLaunch: true, startLastDeviceOnLaunch: true,
@@ -215,7 +224,7 @@ enum LocationSelection: Equatable {
 
     /// Unknown modes or scenarios unavailable to this device restore as None.
     static func saved(among scenarios: [LocationScenario]) -> Self {
-        let defaults = UserDefaults.standard
+        let defaults = HostPreferences.defaults
         let mode = defaults.integer(forKey: HostPreferences.locationMode)
         guard mode > customMode else { return mode == customMode ? .custom : .none }
         guard let name = defaults.string(forKey: HostPreferences.locationScenario),
@@ -225,7 +234,7 @@ enum LocationSelection: Equatable {
 
     /// Persists for the next connection. None retains the previous scenario name.
     func save() {
-        let defaults = UserDefaults.standard
+        let defaults = HostPreferences.defaults
         switch self {
         case .none: defaults.set(Self.noneMode, forKey: HostPreferences.locationMode)
         case .custom: defaults.set(Self.customMode, forKey: HostPreferences.locationMode)
@@ -434,7 +443,7 @@ final class DeviceSession {
          tools: DeviceTools, recordings: RecordingStore = RecordingStore(),
          recordingProcess: ((URL, DeviceTools.ScreenMask) -> Process)? = nil,
          openLog: @escaping (URL) async throws -> Void = DeviceSession.openInConsole,
-         preferences: any PreferenceStore = UserDefaults.standard,
+         preferences: any PreferenceStore = HostPreferences.defaults,
          hostKeyboardLanguage: @escaping @MainActor () -> String? = HostKeyboard.language,
          pasteboard: NSPasteboard? = nil, pasteboardSync: PasteboardSync? = nil,
          externalDisplayChanges: ExternalDisplayChanges = ExternalDisplayChanges(),
@@ -826,26 +835,26 @@ final class DeviceSession {
     var keepsSlowAnimations: Bool { capabilities.supportsFeature(DeviceCapabilities.slowMotionStateful) }
 
     /// The app preference, independent of guest state.
-    var slowAnimations: Bool { UserDefaults.standard.bool(forKey: HostPreferences.slowMotionAnimation) }
+    var slowAnimations: Bool { HostPreferences.defaults.bool(forKey: HostPreferences.slowMotionAnimation) }
 
     /// Toggles the preference and sends it to the guest.
     func toggleSlowAnimations() throws {
         guard canPerformCommands else { return }
         let enabled = !slowAnimations
         try send(enabled ? 1 : 0, to: Self.slowMotionAnimation) {
-            UserDefaults.standard.set(enabled, forKey: HostPreferences.slowMotionAnimation)
+            HostPreferences.defaults.set(enabled, forKey: HostPreferences.slowMotionAnimation)
         }
     }
 
     var graphicsQuality: GraphicsQuality? {
-        GraphicsQuality(rawValue: UserDefaults.standard.integer(forKey: HostPreferences.graphicsQualityOverride))
+        GraphicsQuality(rawValue: HostPreferences.defaults.integer(forKey: HostPreferences.graphicsQualityOverride))
     }
 
     /// Sends the quality to the guest and saves it as `GraphicsQualityOverride`.
     func setGraphicsQuality(_ quality: GraphicsQuality) throws {
         guard canPerformCommands else { return }
         try send(UInt64(quality.rawValue), to: Self.forceGraphicsQuality) {
-            UserDefaults.standard.set(quality.rawValue, forKey: HostPreferences.graphicsQualityOverride)
+            HostPreferences.defaults.set(quality.rawValue, forKey: HostPreferences.graphicsQualityOverride)
         }
     }
 
@@ -935,8 +944,8 @@ final class DeviceSession {
     /// Custom Location…'s OK: saves the coordinate and selects it.
     func setCustomLocation(latitude: Double, longitude: Double) async throws {
         guard canPerformCommands else { return }
-        UserDefaults.standard.set(latitude, forKey: HostPreferences.locationLatitude)
-        UserDefaults.standard.set(longitude, forKey: HostPreferences.locationLongitude)
+        HostPreferences.defaults.set(latitude, forKey: HostPreferences.locationLatitude)
+        HostPreferences.defaults.set(longitude, forKey: HostPreferences.locationLongitude)
         try await use(.custom, coordinate: (latitude, longitude))
     }
 
@@ -949,8 +958,8 @@ final class DeviceSession {
         if savedCoordinate == nil, selection == .custom {
             savedCoordinate = try DeviceLocationPreset.load(for: device.identity.preferenceIdentifier, among: locationScenarios)?.coordinate
         }
-        let coordinate = savedCoordinate ?? (UserDefaults.standard.double(forKey: HostPreferences.locationLatitude),
-                                              UserDefaults.standard.double(forKey: HostPreferences.locationLongitude))
+        let coordinate = savedCoordinate ?? (HostPreferences.defaults.double(forKey: HostPreferences.locationLatitude),
+                                              HostPreferences.defaults.double(forKey: HostPreferences.locationLongitude))
         if savesDevicePreset {
             try DeviceLocationPreset(selection: selection, coordinate: selection == .custom ? coordinate : nil).save(for: device.identity.preferenceIdentifier)
         }
@@ -1436,7 +1445,7 @@ final class DeviceSession {
         try Task.checkCancellation()
         orientation = reading.physical
         guestAngle = display.guestInterfaceAngle
-        let followsGuest = UserDefaults.standard.bool(forKey: HostPreferences.rotateWindowWhenSignaledByGuest)
+        let followsGuest = HostPreferences.defaults.bool(forKey: HostPreferences.rotateWindowWhenSignaledByGuest)
         rotateDisplay(followsGuest ? guestAngle ?? reading.displayAngle : reading.displayAngle)
     }
 

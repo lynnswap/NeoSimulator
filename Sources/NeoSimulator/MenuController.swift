@@ -290,7 +290,7 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
         }
         // App-wide checkmarks remain valid without a device window.
         if item.action == #selector(toggleShowDeviceBezels(_:)) {
-            item.state = UserDefaults.standard.showsDeviceBezels ? .on : .off
+            item.state = HostPreferences.defaults.showsDeviceBezels ? .on : .off
             return application != nil
         }
         if item.action == #selector(togglePasteboardSync(_:)) {
