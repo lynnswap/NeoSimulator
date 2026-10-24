@@ -4234,10 +4234,7 @@ private final class RemoteDeviceInputView: NSView {
 
     override func mouseDragged(with event: NSEvent) {
         guard isInputEnabled, let gesture = mouseGestures[event.buttonNumber] else { return }
-        guard let locations = session.inputLocations(atWindowPoint: event.locationInWindow, clampingToDisplay: true) else {
-            releaseFocus()
-            return
-        }
+        guard let locations = session.inputLocations(atWindowPoint: event.locationInWindow, clampingToDisplay: true) else { return }
         let button = event.buttonNumber
         enqueueMouseInput(kind: gesture.kind) { [session] in
             switch gesture.kind {
