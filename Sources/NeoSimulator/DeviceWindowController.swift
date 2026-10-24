@@ -416,7 +416,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     }
 
     /// Shows the device again after a restart, through its new connection.
-    func reconnect(_ session: DeviceSession) {
+    func reconnect(_ session: DeviceSession, present: Bool = true) {
         guard !closed else {
             session.disconnect()
             return
@@ -439,7 +439,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         didReadOrientation = false
         session.display.setRenderScale(scale)
         didRotate()
-        showAndActivate()
+        if present { showAndActivate() } else { readInitialOrientation() }
         // A window that stayed key gets no new key notification.
         if window?.isKeyWindow == true { activateDisplay() }
     }

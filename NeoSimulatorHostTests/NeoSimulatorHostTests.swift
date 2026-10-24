@@ -5,7 +5,7 @@ import Synchronization
 
 @Suite(.serialized) @MainActor
 struct InputFocusTests {
-    @Test func embeddedAndCompactPresentationsKeepOneSessionAndInputOwner() throws {
+    @Test func embeddedAndCompactPresentationsKeepOneSessionAndInputOwner() async throws {
         _ = NSApplication.shared
         let display = TestDisplay()
         var closes = 0
@@ -45,8 +45,15 @@ struct InputFocusTests {
         #expect(controller.window?.contentView === content)
         controller.embed(in: parent)
         #expect(controller.session === session && display.disconnectCount == 0 && closes == 0)
+        await controller.prepareForRestart()
+        let replacement = TestDisplay()
+        let replacementSession = try makeSession(replacement, features: [DeviceCapabilities.keyboard])
+        controller.reconnect(replacementSession, present: false)
+        #expect(controller.isEmbedded && controller.presentationViewController.parent === parent)
+        #expect(controller.session === replacementSession && compactPresentations == 1)
+        #expect(replacement.disconnectCount == 0 && display.disconnectCount == 1 && closes == 0)
         controller.invalidate()
-        #expect(display.disconnectCount == 1 && closes == 0)
+        #expect(replacement.disconnectCount == 1 && display.disconnectCount == 1 && closes == 0)
     }
 
     @Test func commandsAndActivationRestoreTheNativeInputOwner() throws {
