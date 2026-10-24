@@ -23,6 +23,13 @@ struct SimulatorRouteStatus: Equatable {
 
 }
 
+/// The app's saved display choice, without inspecting another app's preferences.
+struct SimulatorHostSelectionStatus: Equatable {
+    let host: SimulatorHost
+    let restorationAvailable: Bool
+    let allowsAutomaticHosting: Bool
+}
+
 struct ModeChangeReport: Equatable {
     let host: ResolvedHost
     let didChangePreferences: Bool

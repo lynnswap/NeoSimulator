@@ -8,6 +8,29 @@ struct ReceiptStore {
 
     private let fileManager: FileManager
 
+    private var hostSelectionURL: URL { directoryURL.appendingPathComponent("display-host.txt") }
+
+    func loadHostSelection() throws -> SimulatorHost? {
+        let data: Data
+        do { data = try Data(contentsOf: hostSelectionURL) }
+        catch CocoaError.fileReadNoSuchFile { return nil }
+        catch { throw CLIError.io("host-selection-read", "Could not read the saved display host: \(error.localizedDescription)") }
+        guard let value = String(data: data, encoding: .utf8), let host = SimulatorHost(rawValue: value) else {
+            throw CLIError.configuration("host-selection-decode", "The saved display host at \(hostSelectionURL.path) is invalid.")
+        }
+        return host
+    }
+
+    func saveHostSelection(_ host: SimulatorHost) throws {
+        try createDirectoryIfNeeded()
+        do {
+            try Data(host.rawValue.utf8).write(to: hostSelectionURL, options: .atomic)
+            try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: hostSelectionURL.path)
+        } catch {
+            throw CLIError.io("host-selection-write", "Could not save the display host: \(error.localizedDescription)")
+        }
+    }
+
     init(directoryURL: URL? = nil, fileManager: FileManager = .default) throws {
         self.fileManager = fileManager
 

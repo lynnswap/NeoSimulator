@@ -8,6 +8,11 @@ Choose **NeoSimulator** or **Device Hub** under **Display Host** in Settings.
 This is an app-wide choice; changing hosts leaves devices running. Routing
 preferences apply across Xcode installations.
 
+Startup, catalog updates, and opening device screens use the saved display
+choice. Selecting a host in Settings or restoring original settings checks
+Xcode's current preferences, including changes made by other tools. macOS may
+request access to other apps' data for those explicit operations.
+
 Continue using Xcode for Build & Run. The main window's inspector contains
 settings for the selected simulator, separate from the app-wide display host.
 

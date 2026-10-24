@@ -21,6 +21,7 @@ public struct SimulatorPresentationContext: Sendable {
 }
 
 public struct SimulatorHostStatus: Sendable {
+    /// The app's saved display choice. Reading status does not validate Xcode's live preferences.
     public let host: SimulatorHost
     public let restorationAvailable: Bool
     public let rendererRunning: Bool
@@ -135,7 +136,6 @@ public actor SimulatorHostController {
     private let startedAt = Date().timeIntervalSince1970
     private let connectionTracker = XcodeConnectionTracker()
     private let bootTracker = SimulatorBootTracker()
-    private var explicitlySelectedNeo = false
     private var startupHandled = false
     private var startupDeviceIdentifier: DeviceInventoryID?
     private var operationInProgress = false
@@ -150,10 +150,10 @@ public actor SimulatorHostController {
     public func status() async throws -> SimulatorHostStatus {
         try await operation {
             let core = try await self.makeCore()
-            let route = try core.routeStatus()
+            let selection = try core.selectionStatus()
             return SimulatorHostStatus(
-                host: route.preferences.effectiveRoute == .coreSimulator ? .neo : .deviceHub,
-                restorationAvailable: try ReceiptStore().load() != nil,
+                host: selection.host,
+                restorationAvailable: selection.restorationAvailable,
                 rendererRunning: try await !self.registeredRenderers().isEmpty
             )
         }
@@ -215,7 +215,7 @@ public actor SimulatorHostController {
     public func activate(xcodeURL: URL? = nil) async throws {
         try await operation {
             let core = try await self.makeCore()
-            if try core.routeStatus().preferences.effectiveRoute == .deviceHub {
+            if try core.selectionStatus().host == .deviceHub {
                 let xcode = try self.resolveXcode(xcodeURL)
                 let workspace = await WorkspaceClient.live
                 _ = try await workspace.openDeviceHub(xcode.deviceHubApplicationURL)
@@ -225,7 +225,7 @@ public actor SimulatorHostController {
             if let renderer = try await self.registeredRenderers().first(where: { self.sameURL(URL(fileURLWithPath: $0.xcodePath), xcode.applicationURL) }) {
                 self.send("activate", to: renderer)
             } else {
-                try await self.select(.neo, xcodeURL: xcode.applicationURL)
+                try await core.launch(.neo, xcodeURL: xcode.applicationURL)
                 if let renderer = try await self.registeredRenderers().first(where: { self.sameURL(URL(fileURLWithPath: $0.xcodePath), xcode.applicationURL) }) {
                     self.send("show-browser", to: renderer)
                 }
@@ -237,7 +237,6 @@ public actor SimulatorHostController {
         try await operation {
             let core = try await self.makeCore()
             _ = try await core.restore(force: force)
-            self.explicitlySelectedNeo = false
             self.startupHandled = true
             self.startupDeviceIdentifier = nil
         }
@@ -264,17 +263,6 @@ public actor SimulatorHostController {
     public func openDevice(_ deviceID: DeviceInventoryID, xcodeURL: URL? = nil) async throws {
         _ = try deviceID.simulatorAddress
         try await operation {
-            let core = try await self.makeCore()
-            let route = try core.routeStatus()
-            if route.preferences.effectiveRoute == .coreSimulator {
-                if !Self.allowsAutomaticHosting(route, explicitlySelectedNeo: true) {
-                    let owner = try await self.registeredRenderers().first { $0.deviceIdentifiers.contains(deviceID) }
-                    let xcode = try owner.map { try self.resolveXcode(URL(fileURLWithPath: $0.xcodePath)) }
-                        ?? self.resolveDeviceXcode(deviceID: deviceID, preferredURL: xcodeURL)
-                    _ = try await core.use(.neo, xcodeURL: xcode.applicationURL, launchNeoHost: false)
-                }
-                self.explicitlySelectedNeo = true
-            }
             try await self.openDeviceBody(deviceID: deviceID, xcodeURL: xcodeURL)
         }
     }
@@ -282,9 +270,9 @@ public actor SimulatorHostController {
     private func openDeviceBody(deviceID: DeviceInventoryID, xcodeURL: URL?, bootIfNeeded: Bool = true) async throws {
         let (identifier, _) = try deviceID.simulatorAddress
         let core = try await self.makeCore()
-        let route = try core.routeStatus()
+        let selection = try core.selectionStatus()
         let renderers = try await self.registeredRenderers()
-        if route.preferences.effectiveRoute == .coreSimulator,
+        if selection.host == .neo,
            let owner = renderers.first(where: { $0.deviceIdentifiers.contains(deviceID) }) {
             if bootIfNeeded { try await RendererDeviceRequestWaiter().open(deviceID, in: owner) }
             else { try await RendererDeviceRequestWaiter().attach(deviceID, in: owner) }
@@ -295,17 +283,17 @@ public actor SimulatorHostController {
         guard let device = try self.deviceCatalog(xcode: xcode).first(where: { $0.inventoryID == deviceID }) else {
             throw CLIError.unavailable("simulator-device", "The selected simulator is no longer available.")
         }
-        if route.preferences.effectiveRoute == .coreSimulator {
+        if selection.host == .neo {
             try await self.openRendererDevice(deviceID, xcode: xcode, core: core, bootIfNeeded: bootIfNeeded)
         } else {
             if bootIfNeeded && device.state == "Shutdown" { _ = try self.runSimctl(xcode: xcode, arguments: ["boot", identifier], deviceSetPath: device.deviceSetPath) }
-            _ = try await core.use(.deviceHub, xcodeURL: xcode.applicationURL)
+            try await core.launch(.deviceHub, xcodeURL: xcode.applicationURL)
         }
     }
 
     private func openRendererDevice(_ deviceID: DeviceInventoryID, xcode: XcodeInstallation, core: HostModeController, bootIfNeeded: Bool = true) async throws {
         let launchesRenderer = try await !registeredRenderers().contains(where: { sameURL(URL(fileURLWithPath: $0.xcodePath), xcode.applicationURL) })
-        if launchesRenderer { _ = try await core.use(.neo, xcodeURL: xcode.applicationURL) }
+        if launchesRenderer { try await core.launch(.neo, xcodeURL: xcode.applicationURL) }
         guard let target = try await registeredRenderers().first(where: { sameURL(URL(fileURLWithPath: $0.xcodePath), xcode.applicationURL) }) else {
             throw CLIError.temporary("renderer-startup", "The simulator display exited before opening the device.")
         }
@@ -339,8 +327,8 @@ public actor SimulatorHostController {
         try await operation {
             let core = try await self.makeCore()
             let catalog = try self.availableCatalogs().flatMap(\.devices)
-            let route = try core.routeStatus()
-            guard Self.allowsAutomaticHosting(route, explicitlySelectedNeo: self.explicitlySelectedNeo) else {
+            let selection = try core.selectionStatus()
+            guard selection.allowsAutomaticHosting else {
                 let observation = self.bootTracker.observe(catalog, attachInitially: false, allowsAttachments: false)
                 self.startupHandled = true
                 self.startupDeviceIdentifier = nil
@@ -424,23 +412,13 @@ public actor SimulatorHostController {
         let core = try await makeCore()
         let xcode = try resolveXcode(xcodeURL)
         let renderers = try await registeredRenderers()
-        let previousRoute = try core.routeStatus().preferences.effectiveRoute
-        if host == .deviceHub || previousRoute == .deviceHub { bootTracker.reset() }
+        let previousHost = try core.selectionStatus().host
+        if host == .deviceHub || previousHost == .deviceHub { bootTracker.reset() }
         let existing = xcodeURL == nil ? renderers.first : renderers.first { sameURL(URL(fileURLWithPath: $0.xcodePath), xcode.applicationURL) }
         _ = try await core.use(host, xcodeURL: xcode.applicationURL, launchNeoHost: existing == nil)
-        explicitlySelectedNeo = host == .neo
         if host == .neo {
             if let existing { send("activate", to: existing) }
             else if let launched = try await registeredRenderers().first(where: { sameURL(URL(fileURLWithPath: $0.xcodePath), xcode.applicationURL) }) { send("show-browser", to: launched) }
-        }
-    }
-
-    nonisolated static func allowsAutomaticHosting(_ route: SimulatorRouteStatus, explicitlySelectedNeo: Bool) -> Bool {
-        guard route.preferences == .coreSimulator else { return false }
-        switch route.receiptStatus {
-        case .managed: return true
-        case .unmanaged: return explicitlySelectedNeo
-        default: return false
         }
     }
 
