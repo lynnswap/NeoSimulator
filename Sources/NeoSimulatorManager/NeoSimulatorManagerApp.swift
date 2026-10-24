@@ -1,5 +1,7 @@
 import AppKit
 import Quartz
+import Carbon
+import IOKit.hid
 import SwiftUI
 import UniformTypeIdentifiers
 import XcodeSimulatorHost
@@ -34,6 +36,8 @@ final class SimulatorManagerModel {
     private var inspectionTask: Task<Void, Never>?
     var onChange: (() -> Void)?
     var onError: ((any Error) -> Void)?
+    var onOpenRemoteDevice: ((CoreDeviceDevice) -> Void)?
+    var beforeStoppingScreens: (() async throws -> Void)?
     private var refreshing = false
     private var refreshWaiters: [CheckedContinuation<Void, Never>] = []
     private var statusRefreshTask: Task<Void, Never>?
@@ -60,11 +64,28 @@ final class SimulatorManagerModel {
     }
 
     func select(_ host: SimulatorHost) {
-        perform("Switching simulator app…") { try await self.controller.selectHost(host) }
+        perform("Switching simulator app…") {
+            if host == .deviceHub { try await self.beforeStoppingScreens?() }
+            try await self.controller.selectHost(host)
+        }
     }
 
     func openDevice(_ identifier: String) {
         perform("Opening simulator…") { try await self.controller.openDevice(identifier: identifier) }
+    }
+
+    func openScreen(for device: InventoryDevice) {
+        switch device {
+        case .simulator(let simulator): openDevice(simulator.identifier)
+        case .remote(let remote):
+            perform("Opening device screen…") {
+                if self.status?.host != .neo {
+                    try await self.controller.selectHost(.neo)
+                    self.status = try await self.controller.status()
+                }
+                self.onOpenRemoteDevice?(remote)
+            }
+        }
     }
 
     func creationCatalog() async throws -> SimulatorCreationContext {
@@ -136,7 +157,10 @@ final class SimulatorManagerModel {
     }
 
     func restoreDefaults(force: Bool = false) {
-        perform("Restoring original settings…") { try await self.controller.restore(force: force) }
+        perform("Restoring original settings…") {
+            try await self.beforeStoppingScreens?()
+            try await self.controller.restore(force: force)
+        }
     }
 
     func refresh() async {
@@ -473,11 +497,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var inventoryObservation: DeviceInventoryObservation?
     private var inventoryObservationTask: Task<Void, Never>?
     private var quitKeepingDevicesRunning: Bool?
+    private var remoteWindows: [DeviceInventoryID: RemoteDeviceWindowController] = [:]
+    private var remoteHostCleanup: Task<Void, Never>?
+    private var lastRemoteHost: SimulatorHost?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         SimulatorPreferences.migrateStandalonePreferences()
         installMenu()
-        model.onChange = { [weak self] in self?.mainWindow?.update(); self?.settingsWindow?.update() }
+        model.onChange = { [weak self] in
+            self?.mainWindow?.update()
+            self?.settingsWindow?.update()
+            self?.updateRemoteWindows()
+        }
+        model.onOpenRemoteDevice = { [weak self] device in self?.openRemoteScreen(device) }
+        model.beforeStoppingScreens = { [weak self] in try await self?.stopRemoteScreens() }
         model.onError = { [weak self] error in self?.present(error) }
         rendererDevicesObserver = DistributedNotificationCenter.default().addObserver(
             forName: Notification.Name("dev.lynnswap.NeoSimulator.RendererDevicesDidChange"), object: nil, queue: .main
@@ -557,6 +590,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 await inventoryObservation?.stop()
                 await inventoryObservationTask?.value
                 inventoryObservation = nil
+                await remoteHostCleanup?.value
+                try await stopRemoteScreens()
                 try await model.quitRenderer(keepingDevicesRunning: quitKeepingDevicesRunning)
                 sender.reply(toApplicationShouldTerminate: true)
             } catch {
@@ -601,6 +636,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         addItem("Settings…", action: #selector(showSettings(_:)), to: menu)
         Task { await model.refresh() }
         return menu
+    }
+
+    private func openRemoteScreen(_ device: CoreDeviceDevice) {
+        guard !quitting else { return }
+        let id = DeviceInventoryID.coreDevice(device.identifier)
+        if let controller = remoteWindows[id] {
+            controller.showWindow(nil)
+            controller.window?.makeKeyAndOrderFront(nil)
+            controller.connectIfNeeded()
+            return
+        }
+        let controller = RemoteDeviceWindowController(device: device)
+        controller.onClose = { [weak self, weak controller] in
+            guard self?.remoteWindows[id] === controller else { return }
+            self?.remoteWindows.removeValue(forKey: id)
+        }
+        remoteWindows[id] = controller
+        controller.showWindow(nil)
+        controller.window?.makeKeyAndOrderFront(nil)
+        controller.connectIfNeeded()
+    }
+
+    private func updateRemoteWindows() {
+        for (id, controller) in remoteWindows {
+            let current = model.inventory.first { $0.id == id }
+            controller.updateInventory(current)
+        }
+        let host = model.status?.host
+        let changedToDeviceHub = host == .deviceHub && lastRemoteHost != .deviceHub
+        if let host { lastRemoteHost = host }
+        if changedToDeviceHub, !remoteWindows.isEmpty, remoteHostCleanup == nil {
+            remoteHostCleanup = Task { [weak self] in
+                guard let self else { return }
+                defer { self.remoteHostCleanup = nil }
+                do { try await self.stopRemoteScreens() }
+                catch { self.present(error) }
+            }
+        }
+    }
+
+    private func stopRemoteScreens() async throws {
+        var failures: [String] = []
+        for controller in Array(remoteWindows.values) {
+            do { try await controller.stopAndClose() }
+            catch { failures.append("\(controller.device.name): \(error.localizedDescription)") }
+        }
+        if !failures.isEmpty { throw RemoteDeviceWindowError.cleanup(failures) }
     }
 
     @objc private func showDevices(_ sender: Any?) {
@@ -740,6 +822,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         addItem("Show Devices", action: #selector(showDevices(_:)), to: view)
         let window = addSubmenu("Window", to: main)
         addItem("Minimize", action: #selector(NSWindow.performMiniaturize(_:)), key: "m", to: window).target = nil
+        addItem("Show Tab Bar", action: #selector(NSWindow.toggleTabBar(_:)), to: window).target = nil
+        addItem("Move Tab to New Window", action: #selector(NSWindow.moveTabToNewWindow(_:)), to: window).target = nil
+        addItem("Merge All Windows", action: #selector(NSWindow.mergeAllWindows(_:)), to: window).target = nil
+        window.addItem(.separator())
         addItem("Bring All to Front", action: #selector(NSApplication.arrangeInFront(_:)), to: window, target: NSApp)
         NSApp.windowsMenu = window
         NSApp.mainMenu = main
@@ -1276,13 +1362,9 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             deviceImage.image = NSImage(systemSymbolName: "square.stack.3d.up", accessibilityDescription: nil)
         }
         deviceImage.contentTintColor = nil
-        let simulator = selectedSimulator
-        viewScreen.isHidden = simulator == nil
-        viewScreen.isEnabled = !model.isBusy && simulator.map {
-            $0.isAvailable && !isSimulatorRouteAmbiguous($0) && ["Booted", "Shutdown"].contains($0.state)
-                && !model.managingDeviceIDs.contains(.simulator(udid: $0.identifier, deviceSetPath: $0.deviceSetPath))
-        } == true
-        viewScreen.toolTip = simulator.map { isSimulatorRouteAmbiguous($0) } == true
+        viewScreen.isHidden = selections.count != 1
+        viewScreen.isEnabled = selections.count == 1 && selections.first.map(canViewScreen) == true
+        viewScreen.toolTip = selectedSimulator.map { isSimulatorRouteAmbiguous($0) } == true
             ? "Screen access cannot distinguish simulators with the same identifier in different sets." : nil
         updateDeviceSettings()
         Task { [weak self] in
@@ -1428,11 +1510,19 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         return Set(paths).count > 1
     }
 
+    private func canViewScreen(_ device: InventoryDevice) -> Bool {
+        guard !model.isBusy, !model.managingDeviceIDs.contains(device.id) else { return false }
+        switch device {
+        case .simulator(let simulator):
+            return simulator.isAvailable && !isSimulatorRouteAmbiguous(simulator) && ["Booted", "Shutdown"].contains(simulator.state)
+        case .remote(let remote):
+            return remote.isAvailable && (remote.kind == .virtualMachine || remote.capabilities.contains("com.apple.coredevice.feature.viewdevicescreen"))
+        }
+    }
+
     @objc private func openSelectedDevice(_ sender: Any?) {
-        guard let device = selectedSimulator, device.isAvailable, !isSimulatorRouteAmbiguous(device), !model.isBusy,
-              !model.managingDeviceIDs.contains(.simulator(udid: device.identifier, deviceSetPath: device.deviceSetPath)),
-              ["Booted", "Shutdown"].contains(device.state) else { return }
-        model.openDevice(device.identifier)
+        guard selectedDevices.count == 1, let device = selectedDevices.first, canViewScreen(device) else { return }
+        model.openScreen(for: device)
     }
 
     @objc private func refresh(_ sender: Any?) { Task { await model.refresh() } }
@@ -1525,9 +1615,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         menu.removeAllItems()
         let identifiers = Set(devices.map(\.id))
         let idle = !model.isBusy && identifiers.isDisjoint(with: model.managingDeviceIDs)
-        if devices.count == 1, case .simulator(let simulator) = devices[0], simulator.isAvailable,
-           !isSimulatorRouteAmbiguous(simulator),
-           ["Booted", "Shutdown"].contains(simulator.state) {
+        if devices.count == 1, canViewScreen(devices[0]) {
             let item = NSMenuItem(title: "View Screen", action: #selector(openDeviceFromMenu(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = devices[0].id
@@ -1573,10 +1661,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
 
     @objc private func openDeviceFromMenu(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? DeviceInventoryID,
-              let item = model.inventory.first(where: { $0.id == id }),
-              case .simulator(let device) = item, device.isAvailable, !isSimulatorRouteAmbiguous(device),
-              !model.isBusy, !model.managingDeviceIDs.contains(id), ["Booted", "Shutdown"].contains(device.state) else { return }
-        model.openDevice(device.identifier)
+              let device = model.inventory.first(where: { $0.id == id }), canViewScreen(device) else { return }
+        model.openScreen(for: device)
     }
 
     @objc private func performManagement(_ sender: NSMenuItem) {
@@ -3288,4 +3374,383 @@ private final class ManagerReportPreviewWindowController: NSWindowController, NS
 @concurrent private func removeFailedReportPreviewDirectory(_ directory: URL) async throws {
     do { try FileManager.default.removeItem(at: directory) }
     catch let error as CocoaError where error.code == .fileNoSuchFile {}
+}
+
+private enum RemoteDeviceWindowError: LocalizedError {
+    case cleanup([String])
+    case unavailable(String)
+    var errorDescription: String? {
+        switch self {
+        case .cleanup(let failures): failures.joined(separator: "\n")
+        case .unavailable(let message): message
+        }
+    }
+}
+
+@MainActor
+private final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, NSToolbarDelegate {
+    let device: CoreDeviceDevice
+    let session: RemoteDeviceScreenSession
+    var onClose: (() -> Void)?
+    private let viewport = NSView()
+    private let statusLabel = NSTextField(wrappingLabelWithString: "")
+    private let progress = NSProgressIndicator()
+    private let retryButton = NSButton(title: "Reconnect", target: nil, action: nil)
+    private let inputView: RemoteDeviceInputView
+    private var connectionTask: Task<Void, Never>?
+    private var stoppingTask: Task<Void, any Error>?
+    private var inputTask: Task<Void, Never>?
+    private var closing = false
+    private var mayClose = false
+    private var compact = false
+    private var regularFrame: NSRect?
+    private var inventoryAvailable = true
+    private var issue: String?
+    private var toolbarItems: [String: NSToolbarItem] = [:]
+
+    init(device: CoreDeviceDevice, session: RemoteDeviceScreenSession? = nil) {
+        self.device = device
+        let session = session ?? RemoteDeviceScreenSession(device: device)
+        self.session = session
+        inputView = RemoteDeviceInputView(session: session)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 460, height: 780),
+                              styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+        window.title = device.name
+        window.subtitle = [device.platform, device.osVersion].compactMap { $0 }.joined(separator: " ")
+        window.minSize = NSSize(width: 240, height: 280)
+        window.isReleasedWhenClosed = false
+        window.tabbingIdentifier = "NeoSimulatorRemoteDevice"
+        window.tabbingMode = .automatic
+        window.collectionBehavior.insert(.fullScreenPrimary)
+        window.acceptsMouseMovedEvents = true
+        window.toolbarStyle = .unifiedCompact
+        super.init(window: window)
+        window.delegate = self
+        let root = NSView()
+        viewport.wantsLayer = true
+        viewport.layer?.backgroundColor = NSColor.black.cgColor
+        viewport.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(viewport)
+        session.contentView.translatesAutoresizingMaskIntoConstraints = false
+        viewport.addSubview(session.contentView)
+        inputView.translatesAutoresizingMaskIntoConstraints = false
+        viewport.addSubview(inputView)
+        let footer = NSStackView(views: [progress, statusLabel, retryButton])
+        footer.orientation = .horizontal
+        footer.alignment = .centerY
+        footer.spacing = 8
+        footer.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
+        footer.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(footer)
+        progress.style = .spinning
+        progress.controlSize = .small
+        statusLabel.font = .systemFont(ofSize: 11)
+        statusLabel.textColor = .secondaryLabelColor
+        retryButton.target = self
+        retryButton.action = #selector(reconnect(_:))
+        retryButton.controlSize = .small
+        NSLayoutConstraint.activate([
+            viewport.leadingAnchor.constraint(equalTo: root.leadingAnchor), viewport.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            viewport.topAnchor.constraint(equalTo: root.topAnchor), viewport.bottomAnchor.constraint(equalTo: footer.topAnchor),
+            footer.leadingAnchor.constraint(equalTo: root.leadingAnchor), footer.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            footer.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+            progress.widthAnchor.constraint(equalToConstant: 16), progress.heightAnchor.constraint(equalToConstant: 16),
+            session.contentView.leadingAnchor.constraint(equalTo: viewport.leadingAnchor), session.contentView.trailingAnchor.constraint(equalTo: viewport.trailingAnchor),
+            session.contentView.topAnchor.constraint(equalTo: viewport.topAnchor), session.contentView.bottomAnchor.constraint(equalTo: viewport.bottomAnchor),
+            inputView.leadingAnchor.constraint(equalTo: viewport.leadingAnchor), inputView.trailingAnchor.constraint(equalTo: viewport.trailingAnchor),
+            inputView.topAnchor.constraint(equalTo: viewport.topAnchor), inputView.bottomAnchor.constraint(equalTo: viewport.bottomAnchor),
+        ])
+        window.contentView = root
+        let toolbar = NSToolbar(identifier: "NeoSimulatorRemoteScreen")
+        toolbar.delegate = self
+        toolbar.displayMode = .iconOnly
+        toolbar.allowsUserCustomization = true
+        window.toolbar = toolbar
+        window.center()
+        inputView.enqueue = { [weak self] operation in self?.enqueueInput(operation) }
+        inputView.onPointerUnavailable = { [weak self] in
+            self?.showIssue(RemoteDeviceWindowError.unavailable("Touch and pointer control are not available for this display yet."))
+        }
+        session.onStateChange = { [weak self] in self?.update() }
+        update()
+    }
+    required init?(coder: NSCoder) { nil }
+
+    func connectIfNeeded() {
+        guard !closing, connectionTask == nil, session.state != .connected else { return }
+        issue = nil
+        connectionTask = Task { [weak self] in
+            guard let self else { return }
+            defer { self.connectionTask = nil; self.update() }
+            do { try await self.session.start() }
+            catch is CancellationError {}
+            catch { if !self.closing { self.showIssue(error) } }
+        }
+    }
+
+    func updateInventory(_ snapshot: InventoryDevice?) {
+        if case .remote(let current) = snapshot {
+            window?.title = current.name
+            inventoryAvailable = current.isAvailable
+        } else { inventoryAvailable = false }
+        if !closing, !inventoryAvailable, session.state == .connected || session.state == .connecting {
+            Task { [weak self] in
+                do { try await self?.stop() }
+                catch { self?.showIssue(error) }
+            }
+        }
+        update()
+    }
+
+    private func update() {
+        let connected = session.state == .connected && !closing
+        let busy = session.state == .connecting || session.state == .stopping
+        let native = session.nativeInputView
+        inputView.isHidden = native != nil
+        native?.isHidden = closing
+        if let native, !closing, window?.isKeyWindow == true { window?.makeFirstResponder(native) }
+        inputView.isInputEnabled = connected
+        for name in ["home", "lock", "volumeDown", "volumeUp"] {
+            toolbarItems[name]?.isEnabled = connected && session.inputCapabilities.contains(.button)
+        }
+        toolbarItems["capture"]?.isEnabled = false
+        toolbarItems["capture"]?.toolTip = "Screenshot capture is not available for this display yet."
+        toolbarItems["reconnect"]?.isEnabled = !busy && !closing && inventoryAvailable
+        retryButton.isHidden = session.state != .failed && session.state != .stopped
+        retryButton.isEnabled = !closing && inventoryAvailable
+        progress.isHidden = !busy
+        if busy { progress.startAnimation(nil) } else { progress.stopAnimation(nil) }
+        if let issue { statusLabel.stringValue = issue }
+        else if let error = session.lastError { statusLabel.stringValue = error.localizedDescription }
+        else if !inventoryAvailable { statusLabel.stringValue = "The device is unavailable." }
+        else {
+            statusLabel.stringValue = switch session.state {
+            case .idle: "Ready to connect."
+            case .connecting: "Connecting…"
+            case .connected: session.hasReceivedFrame || native != nil ? "Connected" : "Connected. Waiting for the first frame…"
+            case .stopping: "Disconnecting…"
+            case .stopped: "Disconnected"
+            case .failed: "The screen connection failed."
+            }
+        }
+        statusLabel.toolTip = statusLabel.stringValue
+        for item in toolbarItems.values { item.menuFormRepresentation?.isEnabled = item.isEnabled }
+    }
+
+    private func showIssue(_ error: any Error) { issue = error.localizedDescription; update() }
+
+    private func enqueueInput(_ operation: @escaping @MainActor () async throws -> Void) {
+        guard !closing else { return }
+        let preceding = inputTask
+        inputTask = Task { [weak self] in
+            await preceding?.value
+            do { try await operation() }
+            catch { self?.showIssue(error) }
+        }
+    }
+
+    private func stop() async throws {
+        if let stoppingTask { try await stoppingTask.value; return }
+        closing = true
+        window?.makeFirstResponder(nil)
+        connectionTask?.cancel()
+        update()
+        let task = Task { [self] in
+            await inputTask?.value
+            try await session.stop()
+            await connectionTask?.value
+        }
+        stoppingTask = task
+        defer { stoppingTask = nil; closing = false; update() }
+        do { try await task.value }
+        catch { showIssue(error); throw error }
+    }
+
+    func stopAndClose() async throws {
+        try await stop()
+        mayClose = true
+        window?.close()
+    }
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        if mayClose { return true }
+        Task { [weak self] in
+            do { try await self?.stopAndClose() }
+            catch { self?.showIssue(error) }
+        }
+        return false
+    }
+    func windowWillClose(_ notification: Notification) { onClose?(); onClose = nil }
+    func windowDidBecomeKey(_ notification: Notification) {
+        window?.makeFirstResponder(session.nativeInputView ?? inputView)
+    }
+    func windowDidResignKey(_ notification: Notification) {
+        window?.makeFirstResponder(nil)
+        inputView.releaseFocus()
+    }
+
+    @objc private func reconnect(_ sender: Any?) {
+        guard !closing, stoppingTask == nil else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            do { try await self.stop(); self.connectIfNeeded() }
+            catch { self.showIssue(error) }
+        }
+    }
+
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        ["home", "lock", "volumeDown", "volumeUp", NSToolbarItem.Identifier.flexibleSpace.rawValue, "capture", "compact", "reconnect"].map { NSToolbarItem.Identifier($0) }
+    }
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { toolbarDefaultItemIdentifiers(toolbar) }
+    func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
+                 willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
+        let labels: [String: (String, String)] = [
+            "home": ("Home", "house"), "lock": ("Lock", "lock"),
+            "volumeDown": ("Volume Down", "speaker.minus"), "volumeUp": ("Volume Up", "speaker.plus"),
+            "capture": ("Save Screenshot…", "camera"), "compact": ("Compact Window", "arrow.down.right.and.arrow.up.left"),
+            "reconnect": ("Reconnect", "arrow.clockwise"),
+        ]
+        guard let (label, symbol) = labels[itemIdentifier.rawValue] else { return nil }
+        let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+        item.label = label
+        item.toolTip = label
+        item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
+        item.target = self
+        item.action = #selector(toolbarAction(_:))
+        item.autovalidates = false
+        let menuItem = NSMenuItem(title: label, action: #selector(toolbarAction(_:)), keyEquivalent: "")
+        menuItem.target = self
+        menuItem.representedObject = itemIdentifier.rawValue
+        item.menuFormRepresentation = menuItem
+        toolbarItems[itemIdentifier.rawValue] = item
+        return item
+    }
+    @objc private func toolbarAction(_ sender: Any) {
+        guard let identifier = (sender as? NSToolbarItem)?.itemIdentifier.rawValue ?? (sender as? NSMenuItem)?.representedObject as? String else { return }
+        switch identifier {
+        case "compact": toggleCompact()
+        case "reconnect": reconnect(sender)
+        case "capture": saveScreenshot()
+        default:
+            let usage: Int? = switch identifier {
+            case "home": 0x40
+            case "lock": 0x30
+            case "volumeDown": 0xea
+            case "volumeUp": 0xe9
+            default: nil
+            }
+            guard let usage, session.state == .connected, session.inputCapabilities.contains(.button) else { return }
+            enqueueInput { [session] in
+                try await session.sendButton(usagePage: 0x0c, usage: usage, state: .down)
+                try await session.sendButton(usagePage: 0x0c, usage: usage, state: .up)
+            }
+        }
+    }
+
+    private func toggleCompact() {
+        guard let window else { return }
+        compact.toggle()
+        if compact {
+            regularFrame = window.frame
+            let size = NSSize(width: max(240, window.frame.width * 0.6), height: max(280, window.frame.height * 0.6))
+            window.setFrame(NSRect(origin: window.frame.origin, size: size), display: true, animate: true)
+            window.toolbarStyle = .unifiedCompact
+        } else if let regularFrame { window.setFrame(regularFrame, display: true, animate: true) }
+        toolbarItems["compact"]?.label = compact ? "Standard Window" : "Compact Window"
+        toolbarItems["compact"]?.toolTip = toolbarItems["compact"]?.label
+        window.makeFirstResponder(session.nativeInputView ?? inputView)
+    }
+
+    private func saveScreenshot() {
+        showIssue(RemoteDeviceWindowError.unavailable("Screenshot capture is not available for this display yet."))
+    }
+}
+
+@MainActor
+private final class RemoteDeviceInputView: NSView {
+    let session: RemoteDeviceScreenSession
+    var enqueue: ((@escaping @MainActor () async throws -> Void) -> Void)?
+    var isInputEnabled = false
+    var onPointerUnavailable: (() -> Void)?
+    override var acceptsFirstResponder: Bool { true }
+    override var isFlipped: Bool { true }
+
+    init(session: RemoteDeviceScreenSession) {
+        self.session = session
+        super.init(frame: .zero)
+        setAccessibilityLabel("Remote Device Screen")
+        setAccessibilityRole(.group)
+    }
+    required init?(coder: NSCoder) { nil }
+    override func hitTest(_ point: NSPoint) -> NSView? { isInputEnabled ? super.hitTest(point) : nil }
+    func releaseFocus() {
+        enqueue? { [session] in try await session.releaseInputs() }
+    }
+    override func resignFirstResponder() -> Bool { releaseFocus(); return super.resignFirstResponder() }
+
+    override func keyDown(with event: NSEvent) {
+        guard isInputEnabled, session.inputCapabilities.contains(.keyboard), !event.isARepeat,
+              let usage = Self.keyUsage[event.keyCode] else { return }
+        enqueue? { [session] in try await session.sendKey(usage, state: .down) }
+    }
+    override func keyUp(with event: NSEvent) {
+        guard isInputEnabled, session.inputCapabilities.contains(.keyboard), let usage = Self.keyUsage[event.keyCode] else { return }
+        enqueue? { [session] in try await session.sendKey(usage, state: .up) }
+    }
+    override func flagsChanged(with event: NSEvent) {
+        guard isInputEnabled, session.inputCapabilities.contains(.keyboard), let usage = Self.keyUsage[event.keyCode] else { return }
+        if event.keyCode == UInt16(kVK_CapsLock) {
+            enqueue? { [session] in
+                try await session.sendKey(usage, state: .down)
+                try await session.sendKey(usage, state: .up)
+            }
+        } else {
+            let state: RemoteDeviceButtonState = CGEventSource.keyState(.combinedSessionState, key: event.keyCode) ? .down : .up
+            enqueue? { [session] in try await session.sendKey(usage, state: state) }
+        }
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard isInputEnabled else { return }
+        window?.makeFirstResponder(self)
+        if !session.inputCapabilities.isDisjoint(with: [.pointer, .digitizer]) { onPointerUnavailable?() }
+    }
+    override func rightMouseDown(with event: NSEvent) { mouseDown(with: event) }
+    override func otherMouseDown(with event: NSEvent) { mouseDown(with: event) }
+
+    private static let keyUsage: [UInt16: UInt16] = {
+        let pairs: [(Int, Int)] = [
+            (kVK_ANSI_A, kHIDUsage_KeyboardA), (kVK_ANSI_B, kHIDUsage_KeyboardB), (kVK_ANSI_C, kHIDUsage_KeyboardC),
+            (kVK_ANSI_D, kHIDUsage_KeyboardD), (kVK_ANSI_E, kHIDUsage_KeyboardE), (kVK_ANSI_F, kHIDUsage_KeyboardF),
+            (kVK_ANSI_G, kHIDUsage_KeyboardG), (kVK_ANSI_H, kHIDUsage_KeyboardH), (kVK_ANSI_I, kHIDUsage_KeyboardI),
+            (kVK_ANSI_J, kHIDUsage_KeyboardJ), (kVK_ANSI_K, kHIDUsage_KeyboardK), (kVK_ANSI_L, kHIDUsage_KeyboardL),
+            (kVK_ANSI_M, kHIDUsage_KeyboardM), (kVK_ANSI_N, kHIDUsage_KeyboardN), (kVK_ANSI_O, kHIDUsage_KeyboardO),
+            (kVK_ANSI_P, kHIDUsage_KeyboardP), (kVK_ANSI_Q, kHIDUsage_KeyboardQ), (kVK_ANSI_R, kHIDUsage_KeyboardR),
+            (kVK_ANSI_S, kHIDUsage_KeyboardS), (kVK_ANSI_T, kHIDUsage_KeyboardT), (kVK_ANSI_U, kHIDUsage_KeyboardU),
+            (kVK_ANSI_V, kHIDUsage_KeyboardV), (kVK_ANSI_W, kHIDUsage_KeyboardW), (kVK_ANSI_X, kHIDUsage_KeyboardX),
+            (kVK_ANSI_Y, kHIDUsage_KeyboardY), (kVK_ANSI_Z, kHIDUsage_KeyboardZ),
+            (kVK_ANSI_1, kHIDUsage_Keyboard1), (kVK_ANSI_2, kHIDUsage_Keyboard2), (kVK_ANSI_3, kHIDUsage_Keyboard3),
+            (kVK_ANSI_4, kHIDUsage_Keyboard4), (kVK_ANSI_5, kHIDUsage_Keyboard5), (kVK_ANSI_6, kHIDUsage_Keyboard6),
+            (kVK_ANSI_7, kHIDUsage_Keyboard7), (kVK_ANSI_8, kHIDUsage_Keyboard8), (kVK_ANSI_9, kHIDUsage_Keyboard9), (kVK_ANSI_0, kHIDUsage_Keyboard0),
+            (kVK_Return, kHIDUsage_KeyboardReturnOrEnter), (kVK_Escape, kHIDUsage_KeyboardEscape), (kVK_Delete, kHIDUsage_KeyboardDeleteOrBackspace),
+            (kVK_Tab, kHIDUsage_KeyboardTab), (kVK_Space, kHIDUsage_KeyboardSpacebar), (kVK_ANSI_Minus, kHIDUsage_KeyboardHyphen),
+            (kVK_ANSI_Equal, kHIDUsage_KeyboardEqualSign), (kVK_ANSI_LeftBracket, kHIDUsage_KeyboardOpenBracket),
+            (kVK_ANSI_RightBracket, kHIDUsage_KeyboardCloseBracket), (kVK_ANSI_Backslash, kHIDUsage_KeyboardBackslash),
+            (kVK_ANSI_Semicolon, kHIDUsage_KeyboardSemicolon), (kVK_ANSI_Quote, kHIDUsage_KeyboardQuote),
+            (kVK_ANSI_Grave, kHIDUsage_KeyboardGraveAccentAndTilde), (kVK_ANSI_Comma, kHIDUsage_KeyboardComma),
+            (kVK_ANSI_Period, kHIDUsage_KeyboardPeriod), (kVK_ANSI_Slash, kHIDUsage_KeyboardSlash), (kVK_CapsLock, kHIDUsage_KeyboardCapsLock),
+            (kVK_F1, kHIDUsage_KeyboardF1), (kVK_F2, kHIDUsage_KeyboardF2), (kVK_F3, kHIDUsage_KeyboardF3), (kVK_F4, kHIDUsage_KeyboardF4),
+            (kVK_F5, kHIDUsage_KeyboardF5), (kVK_F6, kHIDUsage_KeyboardF6), (kVK_F7, kHIDUsage_KeyboardF7), (kVK_F8, kHIDUsage_KeyboardF8),
+            (kVK_F9, kHIDUsage_KeyboardF9), (kVK_F10, kHIDUsage_KeyboardF10), (kVK_F11, kHIDUsage_KeyboardF11), (kVK_F12, kHIDUsage_KeyboardF12),
+            (kVK_Home, kHIDUsage_KeyboardHome), (kVK_End, kHIDUsage_KeyboardEnd), (kVK_PageUp, kHIDUsage_KeyboardPageUp),
+            (kVK_PageDown, kHIDUsage_KeyboardPageDown), (kVK_ForwardDelete, kHIDUsage_KeyboardDeleteForward),
+            (kVK_RightArrow, kHIDUsage_KeyboardRightArrow), (kVK_LeftArrow, kHIDUsage_KeyboardLeftArrow),
+            (kVK_DownArrow, kHIDUsage_KeyboardDownArrow), (kVK_UpArrow, kHIDUsage_KeyboardUpArrow),
+            (kVK_Control, kHIDUsage_KeyboardLeftControl), (kVK_Shift, kHIDUsage_KeyboardLeftShift),
+            (kVK_Option, kHIDUsage_KeyboardLeftAlt), (kVK_Command, kHIDUsage_KeyboardLeftGUI),
+            (kVK_RightControl, kHIDUsage_KeyboardRightControl), (kVK_RightShift, kHIDUsage_KeyboardRightShift),
+            (kVK_RightOption, kHIDUsage_KeyboardRightAlt), (kVK_RightCommand, kHIDUsage_KeyboardRightGUI),
+        ]
+        return Dictionary(uniqueKeysWithValues: pairs.map { (UInt16($0.0), UInt16($0.1)) })
+    }()
 }
