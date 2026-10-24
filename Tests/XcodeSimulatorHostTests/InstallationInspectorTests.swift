@@ -499,7 +499,7 @@ struct XcodeConnectionsTests {
 
     @Test func customSetSettingsNeverAddressADefaultSetDeviceThroughDevicectl() throws {
         var commands: [[String]] = []
-        let backend = SimulatorSettingsBackend(deviceSetPath: "/custom/XCTestDevices", run: { tool, arguments in
+        let backend = SimulatorSettingsBackend(run: { tool, arguments in
             if case .devicectl = tool { throw CLIError.io("wrong-device", "devicectl cannot distinguish this device set") }
             commands.append(arguments)
             let output = switch arguments.last {
@@ -510,13 +510,15 @@ struct XcodeConnectionsTests {
             }
             return Data(output.utf8)
         }, audioDevices: { Issue.record("Unsupported custom-set audio must not be queried"); return ([], []) })
-        let settings = backend.read(identifier: "same-udid")
+        let device = InventoryDevice.simulator(SimulatorHostDevice(identifier: "same-udid", name: "Clone", descriptiveName: "Clone",
+            runtimeIdentifier: "runtime", runtimeName: "iOS", productFamily: "iPhone", state: "Booted", deviceSetPath: "/custom/XCTestDevices"))
+        let settings = backend.read(device: device)
         #expect(settings.appearance == "light" && settings.contentSize == "medium" && settings.increaseContrast == false)
         #expect(settings.reduceMotion == nil && settings.audioOutputDevice == nil && settings.issues.isEmpty)
-        try backend.set(.appearance("dark"), identifier: "same-udid")
-        try backend.set(.location(latitude: 1, longitude: 2), identifier: "same-udid")
+        try backend.set(.appearance("dark"), device: device)
+        try backend.set(.location(latitude: 1, longitude: 2), device: device)
         let count = commands.count
-        #expect(throws: CLIError.self) { try backend.set(.reduceMotion(true), identifier: "same-udid") }
+        #expect(throws: CLIError.self) { try backend.set(.reduceMotion(true), device: device) }
         #expect(commands.count == count)
     }
 
@@ -717,7 +719,21 @@ struct XcodeConnectionsTests {
 @Suite
 struct SimulatorSettingsBackendTests {
     private func envelope(_ value: String) -> Data { Data(("{\"result\":" + value + "}").utf8) }
+    private func simulator(_ identifier: String, deviceSetPath: String? = nil) -> InventoryDevice {
+        .simulator(SimulatorHostDevice(identifier: identifier, name: "Fixture", descriptiveName: "Fixture",
+            runtimeIdentifier: "runtime", runtimeName: "iOS", productFamily: "iPhone", state: "Booted", deviceSetPath: deviceSetPath))
+    }
     private let defaultRoute = "{\"systemDefault\":{}}"
+
+    private func remote(_ reality: String, features: [String], connection: String = "connected") throws -> InventoryDevice {
+        let data = try JSONSerialization.data(withJSONObject: ["result": ["devices": [[
+            "identifier": "core-device", "properties": [
+                "hardware": ["reality": reality, "udid": "hardware-udid"],
+                "state": ["name": "Fixture Device"], "connection": ["state": connection]],
+            "capabilities": features.map { ["featureIdentifier": "com.apple.coredevice.feature." + $0] }
+        ]]]])
+        return .remote(try #require(CoreDeviceInventoryDecoder.decode(data).first))
+    }
 
     @Test func extendedQueriesReturnSupportedValuesAndHostAudioChoices() {
         let microphone = SimulatorAudioDevice(identifier: "mic-uid", name: "Microphone")
@@ -739,7 +755,7 @@ struct SimulatorSettingsBackendTests {
             }
             return envelope("{\"availableScenarios\":[{\"name\":\"City Run\",\"localizedName\":\"City Run localized\"}]}")
         }, audioDevices: { ([microphone], [speaker]) })
-        let value = backend.read(identifier: "device-A")
+        let value = backend.read(device: simulator("device-A"))
         #expect(value.appearance == "dark" && value.contentSize == "large" && value.increaseContrast == true)
         #expect(value.supportedLooksAndFeels == [.clear, .tinted])
         #expect(value.lookAndFeel == "Tinted Liquid Glass" && value.liquidGlassOpacity == 0.6)
@@ -762,12 +778,17 @@ struct SimulatorSettingsBackendTests {
             if arguments.first == "location" { return Data("Name                 Description\n========================================================\nCity Run             City Run\n".utf8) }
             return Data((arguments.last == "appearance" ? "light" : arguments.last == "content_size" ? "small" : "disabled").utf8)
         }, audioDevices: { ([], []) })
-        let value = backend.read(identifier: "custom-set-device")
+        let value = backend.read(device: simulator("custom-set-device"))
         #expect(value.appearance == "light" && value.contentSize == "small" && value.increaseContrast == false)
         #expect(value.reduceMotion == nil && value.voiceOver == nil && value.volume == nil && value.colorFilter == nil)
         #expect(value.locationAvailable && value.locationScenarios.map(\.name) == ["City Run"])
         #expect(value.issues.count == 4)
         #expect(queried.count == 4 && queried.allSatisfy { $0.contains("custom-set-device") })
+        let custom = simulator("custom-set-device", deviceSetPath: "/tmp/FixtureDeviceSet")
+        let customValue = backend.read(device: custom)
+        #expect(customValue.appearance == "light" && customValue.locationAvailable)
+        #expect(queried.count == 4 && customValue.issues.isEmpty)
+        #expect(throws: CLIError.self) { try backend.set(.liquidGlassOpacity(0.75), device: custom) }
     }
 
     @Test func writesUseTheTargetDeviceAndPreserveCommandFailures() throws {
@@ -778,11 +799,11 @@ struct SimulatorSettingsBackendTests {
             if fail { throw CLIError.io("device-setting", "The device rejected this setting.") }
             return Data()
         }, audioDevices: { ([], []) })
-        try backend.set(.colorFilter(.deuteranopia, intensity: 0.75), identifier: "device-B")
-        try backend.set(.voiceOver(true), identifier: "device-B")
-        try backend.set(.audioOutputDevice("speaker-uid"), identifier: "device-B")
-        try backend.set(.contentSize("accessibility-large"), identifier: "device-B")
-        try backend.set(.locationScenario("City Run"), identifier: "device-B")
+        try backend.set(.colorFilter(.deuteranopia, intensity: 0.75), device: simulator("device-B"))
+        try backend.set(.voiceOver(true), device: simulator("device-B"))
+        try backend.set(.audioOutputDevice("speaker-uid"), device: simulator("device-B"))
+        try backend.set(.contentSize("accessibility-large"), device: simulator("device-B"))
+        try backend.set(.locationScenario("City Run"), device: simulator("device-B"))
         let suffix = ["--device", "device-B", "--quiet", "--timeout", "10", "--json-output", "-"]
         #expect(commands[0].1 == ["device", "settings", "appearance", "--color-filter", "on", "--color-filter-type", "deuteranopia", "--color-filter-intensity", "0.75"] + suffix)
         #expect(commands[1].1 == ["device", "settings", "voiceover", "--enable"] + suffix)
@@ -791,6 +812,74 @@ struct SimulatorSettingsBackendTests {
         #expect(commands[3].0 == .simctl && commands[3].1 == ["ui", "device-B", "content_size", "accessibility-large"])
         #expect(commands[4].0 == .simctl && commands[4].1 == ["location", "device-B", "run", "City Run"])
         fail = true
-        #expect(throws: CLIError.self) { try backend.set(.liquidGlassOpacity(0.75), identifier: "device-B") }
+        #expect(throws: CLIError.self) { try backend.set(.liquidGlassOpacity(0.75), device: simulator("device-B")) }
+    }
+
+    @Test func remoteQueriesKeepAvailableValuesWhenAnotherQueryFails() throws {
+        let physical = try remote("physical", features: ["customizeuistyle", "customizeappearancesettings",
+            "customizeliquidglass", "voiceover", "simulatelocation"])
+        var queries: [[String]] = []
+        let backend = SimulatorSettingsBackend(run: { tool, arguments in
+            #expect(tool == .devicectl)
+            #expect(arguments.contains("core-device") && !arguments.contains("hardware-udid"))
+            queries.append(arguments)
+            if arguments.contains("appearance") {
+                return envelope("""
+                {"userInterfaceStyle":"dark","textSize":"Accessibility Large","increaseContrast":true,
+                 "liquidGlassOpacity":0.5,"reduceMotion":{"enabled":false},"showBorders":{"enabled":true},
+                 "colorFilter":{"enabled":false}}
+                """)
+            }
+            if arguments.contains("voiceover") { return envelope("{\"enabled\":true}") }
+            throw CLIError.io("fixture-location", "Location query failed.")
+        }, audioDevices: { Issue.record("Physical device did not advertise host audio routing"); return ([], []) })
+        let settings = backend.read(device: physical)
+        #expect(settings.appearance == "dark" && settings.contentSize == "accessibility-large")
+        #expect(settings.increaseContrast == true && settings.liquidGlassOpacity == 0.5)
+        #expect(settings.reduceMotion == false && settings.showBorders == true && settings.colorFilter == SimulatorColorFilter.none)
+        #expect(settings.voiceOver == true && settings.volume == nil && settings.audioOutputDevice == nil)
+        #expect(settings.locationAvailable && settings.locationScenarios.isEmpty && settings.issues.count == 1)
+        #expect(settings.issues.first?.contains("Location query failed.") == true)
+        #expect(queries.count == 3 && !queries.contains { $0.contains("audio") })
+    }
+
+    @Test func virtualSettingsUsePublicCommandsAndRetainNativeCommandFailures() throws {
+        let virtual = try remote("virtual", features: ["customizeuistyle", "customizeappearancesettings", "audiooutput", "simulatelocation"])
+        var commands: [[String]] = []
+        var fail = false
+        let backend = SimulatorSettingsBackend(run: { tool, arguments in
+            #expect(tool == .devicectl)
+            commands.append(arguments)
+            if fail { throw CLIError.io("fixture-settings", "The device rejected the write.") }
+            return Data()
+        }, audioDevices: { ([], []) })
+        try backend.set(.appearance("dark"), device: virtual)
+        try backend.set(.contentSize("accessibility-large"), device: virtual)
+        try backend.set(.audioOutputDevice("speaker-uid"), device: virtual)
+        try backend.set(.location(latitude: 35, longitude: -120), device: virtual)
+        try backend.set(.locationScenario("City Run"), device: virtual)
+        try backend.set(.clearLocation, device: virtual)
+        let target = ["--device", "core-device", "--quiet", "--timeout", "10", "--json-output", "-"]
+        #expect(commands[0] == ["device", "settings", "appearance", "--mode", "dark"] + target)
+        #expect(commands[1] == ["device", "settings", "appearance", "--text-size", "accessibility-large", "--larger-accessibility-sizes", "on"] + target)
+        #expect(commands[2] == ["device", "settings", "audio", "--output-device", "speaker-uid"] + target)
+        #expect(commands[3] == ["device", "simulate", "location", "coordinate", "--latitude", "35.0", "--longitude", "-120.0"] + target)
+        #expect(commands[4] == ["device", "simulate", "location", "scenario", "City Run"] + target)
+        #expect(commands[5] == ["device", "simulate", "location", "clear"] + target)
+        fail = true
+        do { try backend.set(.appearance("light"), device: virtual); Issue.record("The write failure was lost") }
+        catch { #expect((error as? CLIError)?.identifier == "fixture-settings") }
+    }
+
+    @Test func unavailableOrUnsupportedRemoteSettingsDoNotRunCommands() throws {
+        var ran = false
+        let backend = SimulatorSettingsBackend(run: { _, _ in ran = true; return Data() }, audioDevices: { ([], []) })
+        let unsupported = try remote("physical", features: ["startaudiooutput"])
+        #expect(backend.read(device: unsupported).volume == nil)
+        #expect(throws: CLIError.self) { try backend.set(.audioOutputDevice("systemDefault"), device: unsupported) }
+        let unavailable = try remote("virtual", features: ["customizeuistyle"], connection: "unavailable")
+        #expect(backend.read(device: unavailable).appearance == nil)
+        #expect(throws: CLIError.self) { try backend.set(.appearance("dark"), device: unavailable) }
+        #expect(!ran)
     }
 }

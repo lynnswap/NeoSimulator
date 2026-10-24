@@ -105,7 +105,104 @@ public enum SimulatorDeviceSetting: Sendable {
     case clearLocation
 }
 
+private enum DeviceSettingsQuery { case appearance, voiceOver, audio, location }
+
+private extension InventoryDevice {
+    var settingsIdentifier: String {
+        switch self {
+        case .simulator(let device): device.identifier
+        case .remote(let device): device.identifier
+        }
+    }
+
+    var settingsPreferenceIdentifier: String {
+        switch self {
+        case .simulator(let device):
+            if let path = device.deviceSetPath { return "set:\(path.utf8.count):\(path):\(device.identifier)" }
+            return device.identifier
+        case .remote(let device): return "coredevice:\(device.identifier)"
+        }
+    }
+
+    var settingsAvailable: Bool {
+        switch self {
+        case .simulator(let device): device.state == "Booted"
+        case .remote(let device): device.isAvailable
+        }
+    }
+
+    func supportsSettingsFeature(_ feature: String) -> Bool {
+        switch self {
+        case .simulator(let device): device.deviceSetPath == nil
+        case .remote(let device): device.capabilities.contains("com.apple.coredevice.feature." + feature)
+        }
+    }
+
+    func supportsSettingsQuery(_ query: DeviceSettingsQuery) -> Bool {
+        switch query {
+        case .appearance:
+            supportsSettingsFeature("customizeuistyle") || supportsSettingsFeature("customizeappearancesettings") || supportsSettingsFeature("customizeliquidglass")
+        case .voiceOver: supportsSettingsFeature("voiceover")
+        case .audio: supportsSettingsFeature("audioinput") || supportsSettingsFeature("audiooutput")
+        case .location: supportsSettingsFeature("simulatelocation")
+        }
+    }
+
+    func checkSettingsWrite(_ setting: SimulatorDeviceSetting) throws {
+        if case .simulator(let device) = self {
+            switch setting {
+            case .appearance, .contentSize, .increaseContrast, .location, .locationScenario, .clearLocation: return
+            default:
+                guard device.deviceSetPath == nil else {
+                    throw CLIError.unavailable("custom-set-setting", "This setting is not available for simulators in a custom device set.")
+                }
+                return
+            }
+        }
+        guard settingsAvailable else {
+            throw CLIError.unavailable("device-setting-unavailable", "The selected device is not currently available.")
+        }
+        let feature: String = switch setting {
+        case .appearance: "customizeuistyle"
+        case .liquidGlassOpacity: "customizeliquidglass"
+        case .contentSize, .increaseContrast, .lookAndFeel, .colorFilter, .reduceMotion, .showBorders, .reduceTransparency: "customizeappearancesettings"
+        case .voiceOver: "voiceover"
+        case .volume, .audioOutputDevice: "audiooutput"
+        case .audioInputDevice: "audioinput"
+        case .location, .locationScenario, .clearLocation: "simulatelocation"
+        }
+        guard supportsSettingsFeature(feature) else {
+            throw CLIError.unavailable("device-setting-capability", "The selected device does not currently expose this setting.")
+        }
+    }
+}
+
 extension SimulatorHostController {
+    /// Reads the supported settings for the selected inventory destination.
+    public func deviceSettings(for device: InventoryDevice) async throws -> SimulatorDeviceSettings {
+        if case .simulator(let simulator) = device, simulator.deviceSetPath == nil {
+            return try await deviceSettings(identifier: simulator.identifier)
+        }
+        do {
+            let inspector = try await inspector(for: device)
+            return await readDeviceSettings(device: device, xcodeURL: inspector.simulatorXcodeURL)
+        } catch let error as SimulatorHostFailure { throw error }
+        catch { throw SimulatorHostFailure(error) }
+    }
+
+    /// Writes one setting to the selected inventory destination; command failures are preserved.
+    public func setDeviceSetting(_ setting: SimulatorDeviceSetting, for device: InventoryDevice) async throws {
+        if case .simulator(let simulator) = device, simulator.deviceSetPath == nil {
+            try await setDeviceSetting(setting, identifier: simulator.identifier)
+            return
+        }
+        do {
+            let inspector = try await inspector(for: device)
+            try await applyDeviceSetting(setting, device: device, xcodeURL: inspector.simulatorXcodeURL)
+        } catch let error as SimulatorHostFailure { throw error }
+        catch { throw SimulatorHostFailure(error) }
+    }
+
     public func deviceSettings(identifier: String) async throws -> SimulatorDeviceSettings {
         try await deviceSettings(for: .simulator(udid: identifier, deviceSetPath: nil))
     }
@@ -113,19 +210,7 @@ extension SimulatorHostController {
     public func deviceSettings(for deviceID: DeviceInventoryID) async throws -> SimulatorDeviceSettings {
         do {
             let (device, xcodeURL) = try await settingsDevice(deviceID)
-            let identifier = deviceID.preferenceIdentifier
-            guard device.state == "Booted" else { return SimulatorDeviceSettings() }
-            var settings = await Self.readSettings(device: device, xcodeURL: xcodeURL)
-            if let defaults = ToolConstants.managerDefaults {
-                if defaults.synchronize() {
-                    let record = defaults.dictionary(forKey: "DeviceLocationPreset.\(identifier)")
-                    if let mode = record?["mode"] as? String, ["none", "custom", "scenario"].contains(mode) {
-                        settings.locationMode = mode
-                        if mode == "scenario" { settings.locationScenario = record?["scenario"] as? String }
-                    }
-                } else { settings.issues.append("location: Could not read the saved simulator location.") }
-            } else { settings.issues.append("location: The saved simulator location is unavailable.") }
-            return settings
+            return await readDeviceSettings(device: .simulator(device), xcodeURL: xcodeURL)
         } catch let error as SimulatorHostFailure { throw error }
         catch { throw SimulatorHostFailure(error) }
     }
@@ -137,62 +222,104 @@ extension SimulatorHostController {
     public func setDeviceSetting(_ setting: SimulatorDeviceSetting, for deviceID: DeviceInventoryID) async throws {
         do {
             let (device, xcodeURL) = try await settingsDevice(deviceID)
-            let identifier = deviceID.preferenceIdentifier
-            try await Self.writeSetting(setting, device: device, xcodeURL: xcodeURL)
-            let audioRoute: (scope: String, route: String)?
-            switch setting {
-            case .audioInputDevice(let route): audioRoute = ("input", route)
-            case .audioOutputDevice(let route): audioRoute = ("output", route)
-            default: audioRoute = nil
-            }
-            if let audioRoute {
-                guard let defaults = ToolConstants.managerDefaults else {
-                    throw CLIError.io("device-audio-save", "The audio route was applied, but could not be saved for the next connection.")
-                }
-                defaults.set(audioRoute.route, forKey: "DeviceAudioRoute.\(identifier).\(audioRoute.scope)")
-                guard defaults.synchronize() else {
-                    throw CLIError.io("device-audio-save", "The audio route was applied, but could not be saved for the next connection.")
-                }
-            }
-            let preset: [String: Any]?
-            switch setting {
-            case .location(let latitude, let longitude): preset = ["mode": "custom", "latitude": latitude, "longitude": longitude]
-            case .locationScenario(let name): preset = ["mode": "scenario", "scenario": name]
-            case .clearLocation: preset = ["mode": "none"]
-            default: preset = nil
-            }
-            if let preset {
-                guard let defaults = ToolConstants.managerDefaults else {
-                    throw CLIError.io("device-location-save", "The location was applied, but could not be saved for the next connection.")
-                }
-                defaults.set(preset, forKey: "DeviceLocationPreset.\(identifier)")
-                guard defaults.synchronize() else {
-                    throw CLIError.io("device-location-save", "The location was applied, but could not be saved for the next connection.")
-                }
-                DistributedNotificationCenter.default().postNotificationName(
-                    Notification.Name("dev.lynnswap.NeoSimulator.DeviceLocationChanged"),
-                    object: device.identifier, userInfo: device.deviceSetPath.map { ["deviceSetPath": $0] }, deliverImmediately: true)
-            }
+            try await applyDeviceSetting(setting, device: .simulator(device), xcodeURL: xcodeURL)
         } catch let error as SimulatorHostFailure { throw error }
         catch { throw SimulatorHostFailure(error) }
     }
 
-    @concurrent
-    private static func readSettings(device: SimulatorHostDevice, xcodeURL: URL) async -> SimulatorDeviceSettings {
-        settingsBackend(device: device, xcodeURL: xcodeURL).read(identifier: device.identifier)
+    private func readDeviceSettings(device: InventoryDevice, xcodeURL: URL?) async -> SimulatorDeviceSettings {
+        guard device.settingsAvailable else { return SimulatorDeviceSettings() }
+        var settings = await Self.readSettings(device: device, xcodeURL: xcodeURL)
+        readSavedLocation(for: device, settings: &settings)
+        return settings
+    }
+
+    private func applyDeviceSetting(_ setting: SimulatorDeviceSetting, device: InventoryDevice, xcodeURL: URL?) async throws {
+        try await Self.writeSetting(setting, device: device, xcodeURL: xcodeURL)
+        try rememberSetting(setting, for: device)
+    }
+
+    private func readSavedLocation(for device: InventoryDevice, settings: inout SimulatorDeviceSettings) {
+        guard let defaults = ToolConstants.managerDefaults else {
+            settings.issues.append("location: The saved desired location is unavailable.")
+            return
+        }
+        guard defaults.synchronize() else {
+            settings.issues.append("location: Could not read the saved desired location.")
+            return
+        }
+        let record = defaults.dictionary(forKey: "DeviceLocationPreset.\(device.settingsPreferenceIdentifier)")
+        if let mode = record?["mode"] as? String, ["none", "custom", "scenario"].contains(mode) {
+            settings.locationMode = mode
+            if mode == "scenario" { settings.locationScenario = record?["scenario"] as? String }
+        }
+    }
+
+    private func rememberSetting(_ setting: SimulatorDeviceSetting, for device: InventoryDevice) throws {
+        let identifier = device.settingsPreferenceIdentifier
+        let audioRoute: (scope: String, route: String)?
+        switch setting {
+        case .audioInputDevice(let route): audioRoute = ("input", route)
+        case .audioOutputDevice(let route): audioRoute = ("output", route)
+        default: audioRoute = nil
+        }
+        if case .simulator = device, let audioRoute {
+            guard let defaults = ToolConstants.managerDefaults else {
+                throw CLIError.io("device-audio-save", "The audio route was applied, but could not be saved for the next connection.")
+            }
+            defaults.set(audioRoute.route, forKey: "DeviceAudioRoute.\(identifier).\(audioRoute.scope)")
+            guard defaults.synchronize() else {
+                throw CLIError.io("device-audio-save", "The audio route was applied, but could not be saved for the next connection.")
+            }
+        }
+        let preset: [String: Any]?
+        switch setting {
+        case .location(let latitude, let longitude): preset = ["mode": "custom", "latitude": latitude, "longitude": longitude]
+        case .locationScenario(let name): preset = ["mode": "scenario", "scenario": name]
+        case .clearLocation: preset = ["mode": "none"]
+        default: preset = nil
+        }
+        if let preset {
+            guard let defaults = ToolConstants.managerDefaults else {
+                throw CLIError.io("device-location-save", "The location was applied, but its saved selection could not be updated.")
+            }
+            defaults.set(preset, forKey: "DeviceLocationPreset.\(identifier)")
+            guard defaults.synchronize() else {
+                throw CLIError.io("device-location-save", "The location was applied, but its saved selection could not be updated.")
+            }
+            if case .simulator(let simulator) = device {
+                DistributedNotificationCenter.default().postNotificationName(
+                    Notification.Name("dev.lynnswap.NeoSimulator.DeviceLocationChanged"),
+                    object: simulator.identifier,
+                    userInfo: simulator.deviceSetPath.map { ["deviceSetPath": $0] }, deliverImmediately: true)
+            }
+        }
     }
 
     @concurrent
-    private static func writeSetting(_ setting: SimulatorDeviceSetting, device: SimulatorHostDevice, xcodeURL: URL) async throws {
-        try settingsBackend(device: device, xcodeURL: xcodeURL).set(setting, identifier: device.identifier)
+    private static func readSettings(device: InventoryDevice, xcodeURL: URL?) async -> SimulatorDeviceSettings {
+        settingsBackend(device: device, xcodeURL: xcodeURL).read(device: device)
     }
 
-    private static func settingsBackend(device: SimulatorHostDevice, xcodeURL: URL) -> SimulatorSettingsBackend {
-        SimulatorSettingsBackend(deviceSetPath: device.deviceSetPath, run: { tool, arguments in
+    @concurrent
+    private static func writeSetting(_ setting: SimulatorDeviceSetting, device: InventoryDevice, xcodeURL: URL?) async throws {
+        try settingsBackend(device: device, xcodeURL: xcodeURL).set(setting, device: device)
+    }
+
+    private static func settingsBackend(device: InventoryDevice, xcodeURL: URL?) -> SimulatorSettingsBackend {
+        SimulatorSettingsBackend(run: { tool, arguments in
             let runner = SystemCommandRunner()
-            let result = try tool == .simctl
-                ? runner.runSimctl(xcodeURL: xcodeURL, arguments: arguments, deviceSetPath: device.deviceSetPath)
-                : runner.runDevicectl(xcodeURL: xcodeURL, arguments: arguments)
+            let result: CommandOutput
+            if tool == .simctl {
+                guard case .simulator(let simulator) = device, let xcodeURL else {
+                    throw CLIError.configuration("device-setting-source", "simctl requires a simulator destination and its developer tools.")
+                }
+                result = try runner.runSimctl(xcodeURL: xcodeURL, arguments: arguments, deviceSetPath: simulator.deviceSetPath)
+            } else if let xcodeURL {
+                result = try runner.runDevicectl(xcodeURL: xcodeURL, arguments: arguments)
+            } else {
+                result = try runner.run(executable: URL(fileURLWithPath: "/Library/Developer/PrivateFrameworks/CoreDevice.framework/Versions/A/Resources/bin/devicectl"), arguments: arguments)
+            }
             guard result.terminationStatus == 0 else {
                 throw CLIError.io("device-setting", result.stderrText.isEmpty ? result.stdoutText : result.stderrText)
             }
@@ -204,12 +331,14 @@ extension SimulatorHostController {
 /// Keeps the command transport replaceable while tests exercise the same partial-result and write paths.
 struct SimulatorSettingsBackend {
     enum Tool { case simctl, devicectl }
-    var deviceSetPath: String? = nil
     var run: (Tool, [String]) throws -> Data
     var audioDevices: () throws -> (input: [SimulatorAudioDevice], output: [SimulatorAudioDevice])
 
-    func read(identifier: String) -> SimulatorDeviceSettings {
+    func read(device: InventoryDevice) -> SimulatorDeviceSettings {
         var settings = SimulatorDeviceSettings()
+        guard device.settingsAvailable else { return settings }
+        let identifier = device.settingsIdentifier
+        if case .remote = device { settings.locationAvailable = device.supportsSettingsFeature("simulatelocation") }
         func capture<T>(_ name: String, _ operation: () throws -> T) -> T? {
             do { return try operation() }
             catch { settings.issues.append("\(name): \(error.localizedDescription)"); return nil }
@@ -217,55 +346,81 @@ struct SimulatorSettingsBackend {
         func ui(_ name: String) -> String? {
             capture(name) { String(decoding: try run(.simctl, ["ui", identifier, name]), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) }
         }
-        let appearance = ui("appearance")
-        settings.appearance = appearance.flatMap { ["light", "dark"].contains($0) ? $0 : nil }
-        let size = ui("content_size")
-        settings.contentSize = size.flatMap { SimulatorDeviceSettings.contentSizes.contains($0) ? $0 : nil }
-        let contrast = ui("increase_contrast")
-        settings.increaseContrast = contrast == "enabled" ? true : contrast == "disabled" ? false : nil
+        if case .simulator = device {
+            let appearance = ui("appearance")
+            settings.appearance = appearance.flatMap { ["light", "dark"].contains($0) ? $0 : nil }
+            let size = ui("content_size")
+            settings.contentSize = size.flatMap { SimulatorDeviceSettings.contentSizes.contains($0) ? $0 : nil }
+            let contrast = ui("increase_contrast")
+            settings.increaseContrast = contrast == "enabled" ? true : contrast == "disabled" ? false : nil
+        }
 
-        if deviceSetPath == nil {
-            if let appearance = capture("appearance settings", { try query(Appearance.self, ["device", "info", "appearance"], identifier) }) {
-                settings.lookAndFeel = appearance.lookAndFeel
-                settings.supportedLooksAndFeels = (appearance.supportedLooksAndFeels ?? []).compactMap(Self.lookAndFeel)
-                settings.liquidGlassOpacity = appearance.liquidGlassOpacity
-                settings.reduceMotion = appearance.reduceMotion?.enabled
-                settings.reduceTransparency = appearance.reduceTransparency?.enabled
-                settings.showBorders = appearance.showBorders?.enabled
-                if settings.appearance == nil { settings.appearance = appearance.userInterfaceStyle.flatMap { ["light", "dark"].contains($0) ? $0 : nil } }
-                if settings.contentSize == nil { settings.contentSize = appearance.textSize.flatMap(Self.contentSize) }
-                if settings.increaseContrast == nil { settings.increaseContrast = appearance.increaseContrast }
-                if let filter = appearance.colorFilter {
-                    if !filter.enabled { settings.colorFilter = SimulatorColorFilter.none }
-                    else if let type = filter.filterType.flatMap({ Self.colorFilter($0.name) }) { settings.colorFilter = type }
-                    else { settings.issues.append("color filter: The device returned an unrecognized enabled color filter.") }
-                    settings.colorFilterIntensity = filter.intensity
-                }
-            }
-            if let voice = capture("VoiceOver", { try query(VoiceOver.self, ["device", "info", "voiceover"], identifier) }) {
-                settings.voiceOver = voice.enabled
-            }
-            if let audio = capture("audio", { try query(Audio.self, ["device", "info", "audio"], identifier) }) {
-                settings.volume = audio.volume
-                settings.audioInputDevice = audio.audioInputDevice?.identifier
-                settings.audioOutputDevice = audio.audioOutputDevice?.identifier
-                if let devices = capture("audio devices", audioDevices) {
-                    settings.audioInputDevices = devices.input
-                    settings.audioOutputDevices = devices.output
-                }
+        if device.supportsSettingsQuery(.appearance), let appearance = capture("appearance settings", { try query(Appearance.self, ["device", "info", "appearance"], identifier) }) {
+            settings.lookAndFeel = appearance.lookAndFeel
+            settings.supportedLooksAndFeels = (appearance.supportedLooksAndFeels ?? []).compactMap(Self.lookAndFeel)
+            settings.liquidGlassOpacity = appearance.liquidGlassOpacity
+            settings.reduceMotion = appearance.reduceMotion?.enabled
+            settings.reduceTransparency = appearance.reduceTransparency?.enabled
+            settings.showBorders = appearance.showBorders?.enabled
+            if settings.appearance == nil { settings.appearance = appearance.userInterfaceStyle.flatMap { ["light", "dark"].contains($0) ? $0 : nil } }
+            if settings.contentSize == nil { settings.contentSize = appearance.textSize.flatMap(Self.contentSize) }
+            if settings.increaseContrast == nil { settings.increaseContrast = appearance.increaseContrast }
+            if let filter = appearance.colorFilter {
+                if !filter.enabled { settings.colorFilter = SimulatorColorFilter.none }
+                else if let type = filter.filterType.flatMap({ Self.colorFilter($0.name) }) { settings.colorFilter = type }
+                else { settings.issues.append("color filter: The device returned an unrecognized enabled color filter.") }
+                settings.colorFilterIntensity = filter.intensity
             }
         }
-        if deviceSetPath == nil, let scenarios = capture("location scenarios", { try query(Scenarios.self, ["device", "simulate", "location", "list"], identifier) }) {
+        if device.supportsSettingsQuery(.voiceOver), let voice = capture("VoiceOver", { try query(VoiceOver.self, ["device", "info", "voiceover"], identifier) }) {
+            settings.voiceOver = voice.enabled
+        }
+        if device.supportsSettingsQuery(.audio), let audio = capture("audio", { try query(Audio.self, ["device", "info", "audio"], identifier) }) {
+            settings.volume = audio.volume
+            settings.audioInputDevice = audio.audioInputDevice?.identifier
+            settings.audioOutputDevice = audio.audioOutputDevice?.identifier
+            if let devices = capture("audio devices", audioDevices) {
+                settings.audioInputDevices = devices.input
+                settings.audioOutputDevices = devices.output
+            }
+        }
+        if device.supportsSettingsQuery(.location), let scenarios = capture("location scenarios", { try query(Scenarios.self, ["device", "simulate", "location", "list"], identifier) }) {
             settings.locationAvailable = true
             settings.locationScenarios = scenarios.availableScenarios.map { SimulatorLocationScenario(name: $0.name, displayName: $0.localizedName ?? $0.name) }
-        } else if let text = capture("location", { String(decoding: try run(.simctl, ["location", identifier, "list"]), as: UTF8.self) }) {
+        } else if case .simulator = device, let text = capture("location", { String(decoding: try run(.simctl, ["location", identifier, "list"]), as: UTF8.self) }) {
             settings.locationAvailable = true
             settings.locationScenarios = Self.locationScenarios(text)
+        }
+        if case .remote = device {
+            if !device.supportsSettingsFeature("customizeuistyle") { settings.appearance = nil }
+            if !device.supportsSettingsFeature("customizeappearancesettings") {
+                settings.contentSize = nil
+                settings.increaseContrast = nil
+                settings.lookAndFeel = nil
+                settings.supportedLooksAndFeels = []
+                settings.colorFilter = nil
+                settings.colorFilterIntensity = nil
+                settings.reduceMotion = nil
+                settings.showBorders = nil
+                settings.reduceTransparency = nil
+            }
+            if !device.supportsSettingsFeature("customizeliquidglass") { settings.liquidGlassOpacity = nil }
+            if !device.supportsSettingsFeature("audioinput") {
+                settings.audioInputDevice = nil
+                settings.audioInputDevices = []
+            }
+            if !device.supportsSettingsFeature("audiooutput") {
+                settings.volume = nil
+                settings.audioOutputDevice = nil
+                settings.audioOutputDevices = []
+            }
         }
         return settings
     }
 
-    func set(_ setting: SimulatorDeviceSetting, identifier: String) throws {
+    func set(_ setting: SimulatorDeviceSetting, device: InventoryDevice) throws {
+        try device.checkSettingsWrite(setting)
+        let identifier = device.settingsIdentifier
         func ui(_ name: String, _ value: String) throws { _ = try run(.simctl, ["ui", identifier, name, value]) }
         func appearance(_ option: String, _ value: String) throws {
             _ = try run(.devicectl, command(["device", "settings", "appearance", option, value], identifier))
@@ -274,9 +429,19 @@ struct SimulatorSettingsBackend {
             _ = try run(.devicectl, command(["device", "settings", "audio", option, value], identifier))
         }
         switch setting {
-        case .appearance(let value): try ui("appearance", value)
-        case .contentSize(let value): try ui("content_size", value)
-        case .increaseContrast(let enabled): try ui("increase_contrast", enabled ? "enabled" : "disabled")
+        case .appearance(let value):
+            if case .simulator = device { try ui("appearance", value) }
+            else { try appearance("--mode", value) }
+        case .contentSize(let value):
+            if case .simulator = device { try ui("content_size", value) }
+            else {
+                var options = ["--text-size", value]
+                if value.hasPrefix("accessibility-") { options += ["--larger-accessibility-sizes", "on"] }
+                _ = try run(.devicectl, command(["device", "settings", "appearance"] + options, identifier))
+            }
+        case .increaseContrast(let enabled):
+            if case .simulator = device { try ui("increase_contrast", enabled ? "enabled" : "disabled") }
+            else { try appearance("--increase-contrast", enabled ? "on" : "off") }
         case .lookAndFeel(let value): try appearance("--look-and-feel", value.rawValue)
         case .liquidGlassOpacity(let value): try appearance("--liquid-glass-opacity", String(value))
         case .colorFilter(let value, let intensity):
@@ -290,17 +455,23 @@ struct SimulatorSettingsBackend {
         case .volume(let value): try audio("--volume", String(value))
         case .audioInputDevice(let value): try audio("--input-device", value)
         case .audioOutputDevice(let value): try audio("--output-device", value)
-        case .location(let latitude, let longitude): _ = try run(.simctl, ["location", identifier, "set", "\(latitude),\(longitude)"])
-        case .locationScenario(let name): _ = try run(.simctl, ["location", identifier, "run", name])
-        case .clearLocation: _ = try run(.simctl, ["location", identifier, "clear"])
+        case .location(let latitude, let longitude):
+            if case .simulator = device { _ = try run(.simctl, ["location", identifier, "set", "\(latitude),\(longitude)"]) }
+            else {
+                _ = try run(.devicectl, command(["device", "simulate", "location", "coordinate",
+                    "--latitude", String(latitude), "--longitude", String(longitude)], identifier))
+            }
+        case .locationScenario(let name):
+            if case .simulator = device { _ = try run(.simctl, ["location", identifier, "run", name]) }
+            else { _ = try run(.devicectl, command(["device", "simulate", "location", "scenario", name], identifier)) }
+        case .clearLocation:
+            if case .simulator = device { _ = try run(.simctl, ["location", identifier, "clear"]) }
+            else { _ = try run(.devicectl, command(["device", "simulate", "location", "clear"], identifier)) }
         }
     }
 
-    private func command(_ arguments: [String], _ identifier: String) throws -> [String] {
-        guard deviceSetPath == nil else {
-            throw CLIError.unavailable("custom-set-setting", "This setting is not available for simulators in a custom device set.")
-        }
-        return arguments + ["--device", identifier, "--quiet", "--timeout", "10", "--json-output", "-"]
+    private func command(_ arguments: [String], _ identifier: String) -> [String] {
+        arguments + ["--device", identifier, "--quiet", "--timeout", "10", "--json-output", "-"]
     }
 
     private func query<T: Decodable>(_ type: T.Type, _ arguments: [String], _ identifier: String) throws -> T {
