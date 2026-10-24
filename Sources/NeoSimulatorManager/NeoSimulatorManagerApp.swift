@@ -544,6 +544,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
+        func validatePresentationMove() throws {
+            let canMove: Bool
+            switch self {
+            case .simulator(let controller): canMove = controller.canMovePresentation
+            case .remote(let controller): canMove = controller.canMovePresentation
+            }
+            guard canMove else {
+                throw HostError.operation("Close the device's dialog or leave full screen before moving its screen.")
+            }
+        }
+
+        func preparePresentationMove() async throws {
+            switch self {
+            case .simulator: try validatePresentationMove()
+            case .remote(let controller): try await controller.preparePresentationMove()
+            }
+        }
+
         private func simulatorCommand(_ identifier: String, for controller: DeviceWindowController) -> DeviceCommand.ID? {
             switch identifier {
             case "home": .home
@@ -642,11 +660,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard !quitting, let screen = screen(for: identifier) else { return }
             prepareMainWindow()
             guard let mainWindow else { return }
-            let previousResponder = selectDevice ? nil : mainWindow.window?.firstResponder
-            if let current = mainWindow.liveDeviceIdentifier, current != identifier {
-                try await self.screen(for: current)?.detach()
+            if mainWindow.liveDeviceIdentifier == identifier {
+                if selectDevice { mainWindow.selectDevice(identifier) }
+                mainWindow.showWindow(nil)
+                mainWindow.window?.makeKeyAndOrderFront(nil)
+                return
             }
-            try await screen.embed(in: mainWindow.liveScreenContainer)
+            try await screen.preparePresentationMove()
+            let previousResponder = selectDevice ? nil : mainWindow.window?.firstResponder
+            let previous = mainWindow.liveDeviceIdentifier.flatMap { self.screen(for: $0) }
+            try await previous?.preparePresentationMove()
+            try screen.validatePresentationMove()
+            try previous?.validatePresentationMove()
+            try await previous?.detach()
+            do { try await screen.embed(in: mainWindow.liveScreenContainer) }
+            catch {
+                if let previous {
+                    do { try await previous.embed(in: mainWindow.liveScreenContainer) }
+                    catch let restorationError {
+                        throw HostError.operation([error.localizedDescription,
+                            "Could not restore the previous device screen: \(restorationError.localizedDescription)"].joined(separator: "\n"))
+                    }
+                }
+                if let previousResponder { mainWindow.window?.makeFirstResponder(previousResponder) }
+                throw error
+            }
             if selectDevice { mainWindow.selectDevice(identifier) }
             mainWindow.activeScreenCommandTarget = screen.commandTarget
             mainWindow.showLiveScreen(for: identifier)
@@ -663,6 +701,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             do {
                 try await self.transitionPresentation {
                     guard !self.quitting, let screen = self.screen(for: identifier) else { return }
+                    try await screen.preparePresentationMove()
                     try await screen.showCompactWindow()
                     self.mainWindow?.showDevicePreview(ifDisplaying: identifier)
                     self.mainWindow?.window?.orderOut(nil)
@@ -681,7 +720,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 } else {
                     try await self.transitionPresentation {
                         if let current = self.mainWindow?.liveDeviceIdentifier {
-                            try await self.screen(for: current)?.detach()
+                            if let screen = self.screen(for: current) {
+                                try await screen.preparePresentationMove()
+                                try await screen.detach()
+                            }
                             self.mainWindow?.showDevicePreview(ifDisplaying: current)
                         }
                     }
@@ -3954,6 +3996,11 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
     let presentationViewController = RemoteDevicePresentationViewController()
     var isEmbedded: Bool { presentationViewController.parent != nil }
     private var presentationWindow: NSWindow? { presentationViewController.view.window }
+    var canMovePresentation: Bool {
+        guard !closing, !mayClose, stoppingTask == nil else { return false }
+        guard let window = presentationWindow else { return true }
+        return window.attachedSheet == nil && !window.styleMask.contains(.fullScreen)
+    }
     private var presentationConstraints: [NSLayoutConstraint] = []
     private var changingPresentation = false
     private let viewport = NSView()
@@ -4112,7 +4159,7 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
         }
     }
 
-    private func changePresentation(_ change: @MainActor () -> Void) async throws {
+    func preparePresentationMove() async throws {
         guard !closing, !mayClose, stoppingTask == nil else { throw CancellationError() }
         if capturePanel != nil {
             do { try await captureTask?.value }
@@ -4125,6 +4172,13 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
             catch { showIssue(error) }
         }
         guard !closing, !mayClose, stoppingTask == nil else { throw CancellationError() }
+        guard canMovePresentation else {
+            throw RemoteDeviceWindowError.unavailable("Close the device's dialog or leave full screen before moving its screen.")
+        }
+    }
+
+    private func changePresentation(_ change: @MainActor () -> Void) async throws {
+        try await preparePresentationMove()
         changingPresentation = true
         relinquishScreenFocus()
         update()
@@ -4137,6 +4191,9 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
         try await session.releaseInputs()
         try Task.checkCancellation()
         guard !closing, !mayClose, stoppingTask == nil else { throw CancellationError() }
+        guard canMovePresentation else {
+            throw RemoteDeviceWindowError.unavailable("Close the device's dialog or leave full screen before moving its screen.")
+        }
         change()
     }
 
