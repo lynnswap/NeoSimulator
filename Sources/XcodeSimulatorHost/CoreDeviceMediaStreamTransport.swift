@@ -18,9 +18,9 @@ final class CoreDeviceMediaStreamTransport: RemoteScreenTransport {
     private var stopped = false
     private var observationFinished = false
     private var observationFailure: (any Error)?
-    private var hardwareInputCapabilities: Set<RemoteDeviceInputKind> = []
+    private let capabilityObservation: RemoteScreenInputCapabilityObservation
     var inputCapabilities: Set<RemoteDeviceInputKind> {
-        framebuffer.isReady ? hardwareInputCapabilities : hardwareInputCapabilities.subtracting([.pointer, .digitizer])
+        framebuffer.isReady ? capabilityObservation.capabilities : capabilityObservation.capabilities.subtracting([.pointer, .digitizer])
     }
     var canCaptureScreenshot: Bool { !stopped && stream != nil }
     private(set) var canRecordScreen = false
@@ -28,7 +28,10 @@ final class CoreDeviceMediaStreamTransport: RemoteScreenTransport {
     init(remote: CoreDeviceRemoteScreenDevice, contentView: NSView) throws {
         self.remote = remote
         self.contentView = contentView
-        input = CoreDeviceScreenInput(remote: remote)
+        let input = CoreDeviceScreenInput(remote: remote)
+        self.input = input
+        capabilityObservation = RemoteScreenInputCapabilityObservation(source: try CoreDeviceInputCapabilitySource(remote: remote),
+            read: { try input.capabilities() }, invalidateInputs: { input.discardInputs(for: $0) })
         bindings = try MediaStreamBindings(runtime: remote.runtime)
         displayGeometry = try CoreDeviceDisplayGeometry(remote: remote)
         framebuffer.autoresizingMask = [.width, .height]
@@ -37,7 +40,11 @@ final class CoreDeviceMediaStreamTransport: RemoteScreenTransport {
     func start(events: @escaping @MainActor (RemoteScreenTransportEvent) -> Void) async throws {
         try checkConnection()
         self.events = events
-        hardwareInputCapabilities = try input.capabilities()
+        try capabilityObservation.start(update: { [weak self] in
+            self?.events?(.inputGeometryChanged)
+        }, failure: { [weak self] error in
+            Task { @MainActor [weak self] in await self?.finishObservation(error: error) }
+        })
         canRecordScreen = try remote.supports("com.apple.coredevice.feature.screenrecording")
         framebuffer.frame = contentView.bounds
         contentView.addSubview(framebuffer)
@@ -110,7 +117,7 @@ final class CoreDeviceMediaStreamTransport: RemoteScreenTransport {
         displayGeometry.stop()
         events = nil
         capture.fail(CancellationError())
-        hardwareInputCapabilities = []
+        await capabilityObservation.stop()
         canRecordScreen = false
         observation?.cancel()
         defer { framebuffer.removeFromSuperview() }
@@ -127,7 +134,7 @@ final class CoreDeviceMediaStreamTransport: RemoteScreenTransport {
         observationFinished = true
         observationFailure = error
         observation?.cancel()
-        hardwareInputCapabilities = []
+        await capabilityObservation.stop()
         displayGeometry.stop()
         var failure = error
         do { try await disconnectNative() }
