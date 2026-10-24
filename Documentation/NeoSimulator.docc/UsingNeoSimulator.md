@@ -237,7 +237,7 @@ Sound includes volume and the Mac's input and output devices. Select **System
 Default** to follow the Mac's current audio route. Start a simulator or connect
 a physical device or virtual machine to read and change its available settings.
 Unsupported controls show **Unavailable**. If part of a query fails, the remaining
-settings stay available; use Refresh to try the failed query again.
+settings stay available. Return to NeoSimulator from another app to retry the query.
 
 Device and Features menus include Home, Lock, Shake, orientation, appearance,
 biometric enrollment and matches, Apple Pay authorization, preferred text size,
