@@ -7,6 +7,7 @@ final class CoreDeviceMediaStreamTransport: RemoteScreenTransport {
     private let input: CoreDeviceScreenInput
     private let bindings: MediaStreamBindings
     private let layer = CALayer()
+    private let capture = RemoteScreenFrameCapture()
     private let contentView: NSView
     private var session: NativeSwiftValue?
     private var stream: NativeSwiftValue?
@@ -15,6 +16,7 @@ final class CoreDeviceMediaStreamTransport: RemoteScreenTransport {
     private var events: (@MainActor (RemoteScreenTransportEvent) -> Void)?
     private var stopped = false
     private(set) var inputCapabilities: Set<RemoteDeviceInputKind> = []
+    var canCaptureScreenshot: Bool { !stopped && stream != nil }
 
     init(remote: CoreDeviceRemoteScreenDevice, contentView: NSView) throws {
         self.remote = remote
@@ -47,16 +49,10 @@ final class CoreDeviceMediaStreamTransport: RemoteScreenTransport {
             guard let self else { return }
             do {
                 try await self.observe(sequence)
-                if !self.stopped {
-                    try await self.disconnectNative()
-                    self.events?(.disconnected)
-                }
+                if !self.stopped { await self.finishObservation(error: nil) }
             } catch {
                 guard !self.stopped else { return }
-                var failure = error
-                do { try await self.disconnectNative() }
-                catch { failure = RemoteDeviceScreenSession.combining(failure, cleanup: error) }
-                self.events?(.failure(failure))
+                await self.finishObservation(error: error)
             }
         }
         // Activation establishes the transport; a decoded-frame event separately proves pixels arrived.
@@ -66,12 +62,24 @@ final class CoreDeviceMediaStreamTransport: RemoteScreenTransport {
         try await unsafe requestFrame.unsafeInvoke(on: created)
     }
 
+    func captureScreenshot() async throws -> CGImage {
+        guard !stopped, let stream else {
+            throw CLIError.unavailable("remote-screen-connection", "Connect the device screen before capturing it.")
+        }
+        let request = try stream.type.resolveAndWait(.method("CoreDeviceMediaStreamSupport.VideoStream.requestLastDecodedFrame()",
+            as: (() async -> Void).self))
+        return try await capture.capture {
+            try await unsafe request.unsafeInvoke(on: stream)
+        }
+    }
+
     func send(_ input: RemoteScreenInput) async throws { try await self.input.send(input) }
     func releaseInputs() async throws { try await input.releaseInputs() }
 
     func stop() async throws {
         stopped = true
         events = nil
+        capture.fail(CancellationError())
         inputCapabilities = []
         observation?.cancel()
         defer { layer.removeFromSuperlayer() }
@@ -81,6 +89,15 @@ final class CoreDeviceMediaStreamTransport: RemoteScreenTransport {
         observation = nil
         await task?.value
         if let failure { throw failure }
+    }
+
+    private func finishObservation(error: (any Error)?) async {
+        var failure = error
+        do { try await disconnectNative() }
+        catch { failure = failure.map { RemoteDeviceScreenSession.combining($0, cleanup: error) } ?? error }
+        capture.fail(failure ?? CLIError.unavailable("remote-screen-disconnected", "The remote screen connection ended before its screenshot arrived."))
+        if let failure { events?(.failure(failure)) }
+        else { events?(.disconnected) }
     }
 
     private func disconnectNative() async throws {
@@ -117,9 +134,12 @@ final class CoreDeviceMediaStreamTransport: RemoteScreenTransport {
             guard !stopped else { return }
             if let attributes = try event.resolveEnumPayloadAndWait(forCase: "remoteVideoAttributesChanged") {
                 events?(.attributes(try bindings.attributes(attributes)))
-            } else if let frame = try event.resolveEnumPayloadAndWait(forCase: "receivedLastDecodedFrame"),
-                      try frame.withCopy({ ($0 as? Data)?.isEmpty == false }) {
-                events?(.frameReceived)
+            } else if let frame = try event.resolveEnumPayloadAndWait(forCase: "receivedLastDecodedFrame") {
+                guard let data = try frame.withCopy({ $0 as? Data }) else {
+                    throw CLIError.io("remote-screen-frame", "The remote screen supplied an unexpected frame payload.")
+                }
+                capture.receive(data)
+                if !data.isEmpty { events?(.frameReceived) }
             }
         }
     }
