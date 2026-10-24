@@ -36,6 +36,30 @@ struct HostModeController {
         }
     }
 
+    /// Local metadata records intent only. External changes are checked by use/restore,
+    /// so ordinary startup and catalog polling do not open protected app containers.
+    func selectionStatus() throws -> SimulatorHostSelectionStatus {
+        try readStatusSnapshot {
+            let receipt = try receiptStore.load()
+            let host = try receipt.map { $0.expectedCurrent == .coreSimulator ? SimulatorHost.neo : .deviceHub }
+                ?? receiptStore.loadHostSelection() ?? .deviceHub
+            return SimulatorHostSelectionStatus(host: host, restorationAvailable: receipt != nil,
+                allowsAutomaticHosting: host == .neo && receipt?.pending == nil)
+        }
+    }
+
+    /// Opens the chosen host without reapplying or inspecting Xcode's preferences.
+    nonisolated(nonsending) func launch(_ host: SimulatorHost, xcodeURL: URL?, initialDeviceIdentifier: String? = nil) async throws {
+        let xcode = try installationInspector.validatedTargetXcode(at: xcodeURL)
+        switch host {
+        case .neo:
+            let renderer = try installationInspector.validatedNeoHost(for: xcode)
+            _ = try await workspace.openNeoHost(renderer.applicationURL, xcode.applicationURL, initialDeviceIdentifier)
+        case .deviceHub:
+            _ = try await workspace.openDeviceHub(xcode.deviceHubApplicationURL)
+        }
+    }
+
     private func readStatusSnapshot<T>(_ makeSnapshot: () throws -> T) throws -> T {
         if try !receiptStore.stateDirectoryExists() {
             let snapshot = try makeSnapshot()
@@ -62,6 +86,11 @@ struct HostModeController {
                 ? try await workspace.terminateNeoHosts(installationInspector.neoHostApplicationURL()) : 0
             let didChange = try transition(to: host.mode.targetState, capturingWith: xcode)
             let receiptURL = try receiptStore.load() == nil ? nil : receiptStore.receiptURL
+            do { try receiptStore.saveHostSelection(request) }
+            catch {
+                throw hostPartialSuccessError(receiptURL: receiptURL, identifier: "host-selection-partial-success", error: error,
+                    message: "The route is configured, but the display choice could not be saved and its UI host was not opened")
+            }
             var terminatedDeviceHub = 0
             if case .neo = host {
                 do {
@@ -96,8 +125,12 @@ struct HostModeController {
         }
         return try await receiptStore.withExistingExclusiveLock {
             guard let originalReceipt = try receiptStore.load() else {
+                try receiptStore.saveHostSelection(.deviceHub)
                 return RestoreReport(didRestore: false, restoredState: nil, receiptURL: receiptStore.receiptURL, terminatedNeoHostCount: 0)
             }
+            // The receipt remains authoritative until recovery succeeds. Persist the
+            // post-restore choice before recovery can remove that receipt.
+            try receiptStore.saveHostSelection(.deviceHub)
             if force { _ = try defaultsStore.readState() } else { _ = try recoverManagedContext() }
             let terminatedNeo = originalReceipt.original.effectiveRoute == .deviceHub
                 ? try await workspace.terminateNeoHosts(installationInspector.neoHostApplicationURL()) : 0

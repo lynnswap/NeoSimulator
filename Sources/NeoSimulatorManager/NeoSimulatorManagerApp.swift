@@ -57,7 +57,6 @@ final class SimulatorManagerModel {
         perform("Loading devices…") {
             let status = try await self.controller.status()
             self.status = status
-            if status.restorationAvailable { try await self.controller.selectHost(status.host) }
         }
     }
 
@@ -79,10 +78,6 @@ final class SimulatorManagerModel {
         case .remote:
             perform("Opening device screen…") {
                 guard !self.managingDeviceIDs.contains(device.id) else { return }
-                if self.status?.host != .neo {
-                    try await self.controller.selectHost(.neo)
-                    self.status = try await self.controller.status()
-                }
                 guard !self.managingDeviceIDs.contains(device.id),
                       case .remote(let current)? = self.inventory.first(where: { $0.id == device.id }) else { return }
                 self.onOpenRemoteDevice?(current)
