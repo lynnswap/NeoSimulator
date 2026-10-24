@@ -52,6 +52,9 @@ right side of the toolbar:
 | Content | Installed applications, configuration profiles, and provisioning profiles. |
 | Info | Available device properties, with expandable groups for details. |
 
+In **Info**, open **Visible Fields** to choose the properties or groups to show.
+NeoSimulator remembers these choices. Choose **Show All Fields** to reset them.
+
 Start a simulator before inspecting its apps or profiles. For physical devices
 and virtual machines, actions depend on the connected device's capabilities.
 If a query fails, read the message in the inspector, reconnect or unlock the
