@@ -30,8 +30,11 @@ public struct SimulatorHostDevice: Sendable, Equatable {
     public let ownerXcodeURL: URL?
     public let deviceSetPath: String?
     public let modelIdentifier: String?
+    public let isAvailable: Bool
+    public let lastUsedAt: Date?
+    public let capabilities: Set<String>
 
-    public init(identifier: String, name: String, descriptiveName: String, runtimeIdentifier: String, runtimeName: String, productFamily: String, state: String, ownerXcodeURL: URL? = nil, deviceSetPath: String? = nil, modelIdentifier: String? = nil) {
+    public init(identifier: String, name: String, descriptiveName: String, runtimeIdentifier: String, runtimeName: String, productFamily: String, state: String, ownerXcodeURL: URL? = nil, deviceSetPath: String? = nil, modelIdentifier: String? = nil, isAvailable: Bool = true, lastUsedAt: Date? = nil, capabilities: Set<String> = []) {
         self.identifier = identifier
         self.name = name
         self.descriptiveName = descriptiveName
@@ -42,6 +45,9 @@ public struct SimulatorHostDevice: Sendable, Equatable {
         self.ownerXcodeURL = ownerXcodeURL
         self.deviceSetPath = deviceSetPath
         self.modelIdentifier = modelIdentifier
+        self.isAvailable = isAvailable
+        self.lastUsedAt = lastUsedAt
+        self.capabilities = capabilities
     }
 }
 
@@ -95,7 +101,7 @@ struct RendererRegistration: Codable, Sendable {
 
 /// Serializes preference transactions while each Xcode owns a separate renderer process.
 public actor SimulatorHostController {
-    private let rendererApplicationURL: URL
+    let rendererApplicationURL: URL
     private let runner = SystemCommandRunner()
     private let catalogLogger = Logger(subsystem: "dev.lynnswap.NeoSimulator", category: "Catalog")
     private var lastTestingCatalogDiagnostic: String?
@@ -216,10 +222,7 @@ public actor SimulatorHostController {
             let renderers = try await self.registeredRenderers()
             return catalog.map { device in
                 let owner = renderers.first { $0.deviceIdentifiers.contains(device.identifier) }
-                return SimulatorHostDevice(identifier: device.identifier, name: device.name, descriptiveName: device.descriptiveName,
-                    runtimeIdentifier: device.runtimeIdentifier, runtimeName: device.runtimeName, productFamily: device.productFamily,
-                    state: device.state, ownerXcodeURL: owner.map { URL(fileURLWithPath: $0.xcodePath, isDirectory: true) },
-                    deviceSetPath: device.deviceSetPath, modelIdentifier: device.modelIdentifier)
+                return device.inventoryCopy(ownerXcodeURL: owner.map { URL(fileURLWithPath: $0.xcodePath, isDirectory: true) })
             }
         }
     }
@@ -385,7 +388,8 @@ public actor SimulatorHostController {
         }
     }
 
-    private func registeredRenderers() async throws -> [RendererRegistration] {
+    @concurrent
+    func registeredRenderers() async throws -> [RendererRegistration] {
         let workspace = await WorkspaceClient.live
         let applications = await workspace.runningNeoHosts()
         let directory = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/NeoSimulator/renderers", isDirectory: true)
@@ -414,10 +418,14 @@ public actor SimulatorHostController {
         )
     }
 
-    private func sameURL(_ lhs: URL, _ rhs: URL) -> Bool { lhs.resolvingSymlinksInPath().standardizedFileURL.path == rhs.resolvingSymlinksInPath().standardizedFileURL.path }
+    nonisolated private func sameURL(_ lhs: URL, _ rhs: URL) -> Bool { lhs.resolvingSymlinksInPath().standardizedFileURL.path == rhs.resolvingSymlinksInPath().standardizedFileURL.path }
     private func makeInspector() -> InstallationInspector { InstallationInspector(runner: runner, rendererApplicationURL: rendererApplicationURL) }
     private func availableXcodes() throws -> [XcodeInstallation] {
-        let inspector = makeInspector()
+        try Self.discoverXcodes(rendererApplicationURL: rendererApplicationURL)
+    }
+
+    nonisolated static func discoverXcodes(rendererApplicationURL: URL) throws -> [XcodeInstallation] {
+        let inspector = InstallationInspector(runner: SystemCommandRunner(), rendererApplicationURL: rendererApplicationURL)
         var urls = Set<URL>()
         if let selected = try? inspector.selectedXcode() { urls.insert(selected.applicationURL) }
         for root in [URL(fileURLWithPath: "/Applications"), FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Applications")] {
@@ -543,6 +551,7 @@ enum SimulatorDeviceCatalog {
             let name: String
             let state: String
             let isAvailable: Bool
+            let lastUsedAt: String?
         }
         struct DeviceType: Decodable {
             let identifier: String
@@ -561,22 +570,34 @@ enum SimulatorDeviceCatalog {
         catch { onFailure(error); return devices }
     }
 
-    static func decode(_ data: Data, deviceSetPath: String? = nil) throws -> [SimulatorHostDevice] {
+    static func decode(_ data: Data, deviceSetPath: String? = nil, includeUnavailable: Bool = false) throws -> [SimulatorHostDevice] {
         let catalog = try JSONDecoder().decode(Catalog.self, from: data)
         let supportedFamilies: Set<String> = ["iPhone", "iPad", "Apple TV", "Apple Watch", "Apple Vision"]
         let supportedTypes = Dictionary(uniqueKeysWithValues: catalog.devicetypes.filter { supportedFamilies.contains($0.productFamily) }.map { ($0.identifier, $0) })
-        return catalog.runtimes.filter(\.isAvailable).flatMap { runtime in
-            (catalog.devices[runtime.identifier] ?? []).filter { $0.isAvailable && supportedTypes[$0.deviceTypeIdentifier] != nil }.map { device in
-                SimulatorHostDevice(
+        let runtimes = Dictionary(uniqueKeysWithValues: catalog.runtimes.map { ($0.identifier, $0) })
+        return catalog.devices.flatMap { runtimeIdentifier, devices in
+            let runtime = runtimes[runtimeIdentifier]
+            return devices.compactMap { device -> SimulatorHostDevice? in
+                let available = device.isAvailable && runtime?.isAvailable == true
+                let type = supportedTypes[device.deviceTypeIdentifier]
+                guard includeUnavailable || (available && type != nil) else { return nil }
+                let runtimeName = runtime?.name ?? runtimeIdentifier
+                let lastUsedAt = device.lastUsedAt.flatMap { value in
+                    (try? Date.ISO8601FormatStyle(includingFractionalSeconds: true).parse(value))
+                        ?? (try? Date.ISO8601FormatStyle().parse(value))
+                }
+                return SimulatorHostDevice(
                     identifier: device.udid,
                     name: device.name,
-                    descriptiveName: "\(device.name) — \(runtime.name)",
-                    runtimeIdentifier: runtime.identifier,
-                    runtimeName: runtime.name,
-                    productFamily: supportedTypes[device.deviceTypeIdentifier]?.productFamily ?? "iPhone",
+                    descriptiveName: "\(device.name) — \(runtimeName)",
+                    runtimeIdentifier: runtimeIdentifier,
+                    runtimeName: runtimeName,
+                    productFamily: type?.productFamily ?? "",
                     state: device.state,
                     deviceSetPath: deviceSetPath,
-                    modelIdentifier: supportedTypes[device.deviceTypeIdentifier]?.modelIdentifier
+                    modelIdentifier: type?.modelIdentifier,
+                    isAvailable: available,
+                    lastUsedAt: lastUsedAt
                 )
             }
         }.sorted {
