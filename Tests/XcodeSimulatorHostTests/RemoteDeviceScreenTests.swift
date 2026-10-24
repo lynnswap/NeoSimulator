@@ -63,18 +63,21 @@ struct RemoteDeviceScreenTests {
         session.onStateChange = { visible = session.inputCapabilities }
         try await session.start()
         #expect(visible.isEmpty)
-        await source.change(to: [.keyboard, .digitizer, .pointer])
-        #expect(visible == [.keyboard, .digitizer, .pointer])
+        await source.change(to: [.keyboard, .digitizer, .pointer, .button])
+        #expect(session.nativeInputView != nil && visible == [.keyboard, .digitizer, .pointer, .button])
         try await session.sendKey(4, state: .down)
+        try await session.sendButton(usagePage: 12, usage: 48, state: .down)
+        #expect(transport.pressed.buttons.count == 1)
         try await session.sendTouch(at: CGPoint(x: 0.5, y: 0.5), phase: .began)
         try await session.sendPointerButton(0, phase: .down, at: CGPoint(x: 0.2, y: 0.3))
         #expect(transport.pressed.touch != nil && transport.pressed.pointerButtons.count == 1)
         await source.change(to: [.keyboard, .pointer])
-        #expect(visible == [.keyboard, .pointer] && transport.pressed.touch == nil)
-        #expect(lostServices == [[.digitizer]])
+        #expect(visible == [.keyboard, .pointer] && transport.pressed.touch == nil && transport.pressed.buttons.isEmpty)
+        #expect(lostServices == [[.digitizer, .button]])
         #expect(transport.downKeys == [4] && transport.pressed.pointerButtons.count == 1)
-        await source.change(to: [.keyboard, .digitizer, .pointer])
-        #expect(visible.contains(.digitizer) && transport.pressed.touch == nil && lostServices == [[.digitizer]])
+        await source.change(to: [.keyboard, .digitizer, .pointer, .button])
+        #expect(visible.contains(.digitizer) && visible.contains(.button))
+        #expect(transport.pressed.touch == nil && transport.pressed.buttons.isEmpty && lostServices == [[.digitizer, .button]])
         try await session.stop()
         #expect(source.finished && transport.downKeys.isEmpty && transport.pressed.pointerButtons.isEmpty)
         let reads = source.reads
@@ -101,14 +104,18 @@ struct RemoteDeviceScreenTests {
     }
 
     @Test func cancellationDisconnectsAStartThatCompletesAfterTheWindowStops() async throws {
-        let transport = ScreenFixtureTransport(suspendStart: true)
+        let source = ScreenCapabilityFixtureSource()
+        let transport = ScreenFixtureTransport(suspendStart: true, capabilitySource: source)
         let session = RemoteDeviceScreenSession(device: try device()) { _, _ in transport }
         let start = Task { try await session.start() }
         await transport.waitUntilStarting()
         try await session.stop()
         do { try await start.value; Issue.record("A stopped start completed successfully") }
         catch { #expect(error is CancellationError) }
-        #expect(transport.closed && session.state == .stopped)
+        #expect(transport.closed && session.state == .stopped && source.finished)
+        let reads = source.reads
+        try source.lateChange()
+        #expect(source.reads == reads)
         transport.emit(.connected)
         #expect(session.state == .stopped)
     }
