@@ -78,14 +78,21 @@ struct RemoteDeviceScreenTests {
         await source.change(to: [.keyboard, .digitizer, .pointer, .button])
         #expect(visible.contains(.digitizer) && visible.contains(.button))
         #expect(transport.pressed.touch == nil && transport.pressed.buttons.isEmpty && lostServices == [[.digitizer, .button]])
+        let restored: Set<RemoteDeviceInputKind> = [.keyboard, .digitizer, .pointer, .button]
+        await source.change(to: restored)
+        #expect(lostServices == [[.digitizer, .button]] && transport.downKeys == [4])
+        await source.buffer(snapshots: [[], restored])
+        #expect(try source.read() == restored && visible == restored)
+        #expect(lostServices == [[.digitizer, .button], restored])
+        #expect(transport.downKeys.isEmpty && transport.pressed.pointerButtons.isEmpty)
         try await session.stop()
         #expect(source.finished && transport.downKeys.isEmpty && transport.pressed.pointerButtons.isEmpty)
         let reads = source.reads
-        try source.lateChange()
+        source.lateChange()
         #expect(source.reads == reads && session.state == .stopped && session.inputCapabilities.isEmpty)
     }
 
-    @Test func capabilityReadFailureReachesTheSessionAndStoppingDrainsTheObserver() async throws {
+    @Test func capabilitySnapshotFailureReachesTheSessionAndStoppingDrainsTheObserver() async throws {
         let source = ScreenCapabilityFixtureSource()
         let transport = ScreenFixtureTransport(capabilitySource: source)
         let session = RemoteDeviceScreenSession(device: try device()) { _, _ in transport }
@@ -94,10 +101,10 @@ struct RemoteDeviceScreenTests {
             session.onStateChange = {
                 if let error = session.lastError { received.resume(returning: error) }
             }
-            source.failRead = true
+            source.malformedSnapshot = true
             source.events.yield([.keyboard])
         }
-        #expect(error as? ScreenFixtureError == .stream && session.state == .failed)
+        #expect((error as? CLIError)?.identifier == "remote-input-snapshot" && session.state == .failed)
         session.onStateChange = nil
         try await session.stop()
         #expect(source.finished)
@@ -114,7 +121,7 @@ struct RemoteDeviceScreenTests {
         catch { #expect(error is CancellationError) }
         #expect(transport.closed && session.state == .stopped && source.finished)
         let reads = source.reads
-        try source.lateChange()
+        source.lateChange()
         #expect(source.reads == reads)
         transport.emit(.connected)
         #expect(session.state == .stopped)
@@ -386,35 +393,53 @@ private final class ScreenFixtureTransport: RemoteScreenTransport {
     func emit(_ event: RemoteScreenTransportEvent) { events?(event) }
 }
 
+private enum ScreenCapabilityFixture: Hashable {
+    case hid(RemoteDeviceInputKind), unrelated
+}
+
 @MainActor
 private final class ScreenCapabilityFixtureSource: RemoteScreenInputCapabilitySource {
     private let stream: AsyncThrowingStream<Set<RemoteDeviceInputKind>, any Error>
     let events: AsyncThrowingStream<Set<RemoteDeviceInputKind>, any Error>.Continuation
     private var values: Set<RemoteDeviceInputKind> = []
     private var changed: CheckedContinuation<Void, Never>?
-    private var onChange: (@MainActor () throws -> Void)?
-    var failRead = false
+    private var pendingChanges = 0
+    private var onChange: (@MainActor (Set<RemoteDeviceInputKind>) -> Void)?
+    var malformedSnapshot = false
     private(set) var reads = 0
     private(set) var finished = false
 
     init() { (stream, events) = AsyncThrowingStream.makeStream() }
     func read() throws -> Set<RemoteDeviceInputKind> {
         reads += 1
-        if failRead { throw ScreenFixtureError.stream }
         return values
     }
-    func follow(onChange: @escaping @MainActor () throws -> Void) async throws {
+    func follow(onSubscribed: @escaping @MainActor () throws -> Void,
+                onChange: @escaping @MainActor (Set<RemoteDeviceInputKind>) -> Void) async throws {
         self.onChange = onChange
         defer { finished = true }
-        try onChange()
-        for try await value in stream {
-            values = value
-            defer { changed?.resume(); changed = nil }
-            try onChange()
+        try onSubscribed()
+        for try await snapshot in stream {
+            defer {
+                if pendingChanges > 0 {
+                    pendingChanges -= 1
+                    if pendingChanges == 0 { changed?.resume(); changed = nil }
+                }
+            }
+            let raw: Any = malformedSnapshot ? [0] : Set(snapshot.map(ScreenCapabilityFixture.hid)).union([.unrelated])
+            let values = try CoreDeviceInputCapabilitySource.hashableCapabilities(in: raw)
+            let kinds = Set(CoreDeviceScreenInput.features.keys.filter { values.contains(AnyHashable(ScreenCapabilityFixture.hid($0))) })
+            onChange(kinds)
         }
     }
-    func change(to value: Set<RemoteDeviceInputKind>) async {
-        await withCheckedContinuation { changed = $0; events.yield(value) }
+    func change(to value: Set<RemoteDeviceInputKind>) async { await buffer(snapshots: [value]) }
+    func buffer(snapshots: [Set<RemoteDeviceInputKind>]) async {
+        values = snapshots.last ?? values
+        await withCheckedContinuation { continuation in
+            changed = continuation
+            pendingChanges = snapshots.count
+            for snapshot in snapshots { events.yield(snapshot) }
+        }
     }
-    func lateChange() throws { try onChange?() }
+    func lateChange() { onChange?([]) }
 }
