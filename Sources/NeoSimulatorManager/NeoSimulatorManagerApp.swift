@@ -3525,6 +3525,7 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
         window.toolbar = toolbar
         window.center()
         inputView.enqueue = { [weak self] operation in self?.enqueueInput(operation) }
+        session.onInputCapabilitiesLost = { [weak self] kinds in self?.inputView.invalidateInputs(for: kinds) }
         session.onStateChange = { [weak self] in self?.update() }
         update()
     }
@@ -3565,7 +3566,6 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
         inputView.isHidden = native != nil
         native?.isHidden = closing
         if let native, !closing, window?.isKeyWindow == true { window?.makeFirstResponder(native) }
-        inputView.updateInputCapabilities(session.inputCapabilities)
         inputView.isInputEnabled = connected
         for name in ["home", "lock", "volumeDown", "volumeUp"] {
             toolbarItems[name]?.isEnabled = connected && session.inputCapabilities.contains(.button)
@@ -4152,11 +4152,9 @@ private final class RemoteDeviceInputView: NSView {
         }
     }
 
-    func updateInputCapabilities(_ capabilities: Set<RemoteDeviceInputKind>) {
-        let lost = inputCapabilities.subtracting(capabilities)
-        inputCapabilities = capabilities
-        for kind in lost { capabilityGenerations[kind, default: 0] += 1 }
-        mouseGestures = mouseGestures.filter { !lost.contains($0.value.kind.capability) }
+    func invalidateInputs(for kinds: Set<RemoteDeviceInputKind>) {
+        for kind in kinds { capabilityGenerations[kind, default: 0] += 1 }
+        mouseGestures = mouseGestures.filter { !kinds.contains($0.value.kind.capability) }
     }
 
     func enqueueInput(for kind: RemoteDeviceInputKind, _ operation: @escaping @MainActor () async throws -> Void) {
@@ -4179,7 +4177,6 @@ private final class RemoteDeviceInputView: NSView {
     }
     private var mouseGestures: [Int: MouseGesture] = [:]
     private var inputGeneration = 0
-    private var inputCapabilities: Set<RemoteDeviceInputKind> = []
     private var capabilityGenerations: [RemoteDeviceInputKind: Int] = [:]
     private var pointerTracking: NSTrackingArea?
 
@@ -4198,10 +4195,12 @@ private final class RemoteDeviceInputView: NSView {
 
     private func enqueueMouseInput(kind: MouseInputKind, _ operation: @escaping @MainActor () async throws -> Void) {
         let generation = inputGeneration
+        let capabilityGeneration = capabilityGenerations[kind.capability, default: 0]
         enqueueInput(for: kind.capability) { [weak self, session] in
             guard self?.inputGeneration == generation else { return }
             do { try await operation() }
             catch {
+                guard self?.capabilityGenerations[kind.capability, default: 0] == capabilityGeneration else { throw error }
                 if self?.inputGeneration == generation { self?.resetMouseGestures() }
                 do { try await session.releaseInputs() }
                 catch let cleanup {

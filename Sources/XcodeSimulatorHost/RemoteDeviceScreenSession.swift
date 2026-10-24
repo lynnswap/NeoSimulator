@@ -43,6 +43,8 @@ public final class RemoteDeviceScreenSession {
         state == .connected ? transport?.inputCapabilities ?? [] : []
     }
     public var onStateChange: (() -> Void)?
+    /// Called when native HID services disappear. Geometry readiness changes do not invoke this callback.
+    public var onInputCapabilitiesLost: ((Set<RemoteDeviceInputKind>) -> Void)?
 
     private let makeTransport: @MainActor (CoreDeviceDevice, NSView) async throws -> any RemoteScreenTransport
     private var transport: (any RemoteScreenTransport)?
@@ -233,6 +235,7 @@ public final class RemoteDeviceScreenSession {
         case .failure(let error): lastError = error; state = .failed
         case .disconnected: state = .stopped
         case .inputGeometryChanged: break
+        case .inputCapabilitiesLost(let kinds): onInputCapabilitiesLost?(kinds)
         }
         onStateChange?()
     }
@@ -253,6 +256,7 @@ enum RemoteScreenInput: Sendable {
 enum RemoteScreenTransportEvent {
     case connected, disconnected, frameReceived
     case inputGeometryChanged
+    case inputCapabilitiesLost(Set<RemoteDeviceInputKind>)
     case attributes(RemoteDeviceVideoAttributes)
     case failure(any Error)
 }

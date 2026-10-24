@@ -40,8 +40,8 @@ final class CoreDeviceMediaStreamTransport: RemoteScreenTransport {
     func start(events: @escaping @MainActor (RemoteScreenTransportEvent) -> Void) async throws {
         try checkConnection()
         self.events = events
-        try capabilityObservation.start(update: { [weak self] in
-            self?.events?(.inputGeometryChanged)
+        try capabilityObservation.start(update: { [weak self] removed in
+            self?.events?(removed.isEmpty ? .inputGeometryChanged : .inputCapabilitiesLost(removed))
         }, failure: { [weak self] error in
             Task { @MainActor [weak self] in await self?.finishObservation(error: error) }
         })

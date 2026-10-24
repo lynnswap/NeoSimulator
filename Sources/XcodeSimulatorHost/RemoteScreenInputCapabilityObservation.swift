@@ -14,7 +14,7 @@ final class RemoteScreenInputCapabilityObservation {
     private var task: Task<Void, Never>?
     private var stopped = false
     private(set) var capabilities: Set<RemoteDeviceInputKind> = []
-    private var update: (@MainActor () -> Void)?
+    private var update: (@MainActor (Set<RemoteDeviceInputKind>) -> Void)?
 
     init(source: any RemoteScreenInputCapabilitySource,
          read: @escaping @MainActor () throws -> Set<RemoteDeviceInputKind>,
@@ -26,7 +26,7 @@ final class RemoteScreenInputCapabilityObservation {
 
     deinit { task?.cancel() }
 
-    func start(update: @escaping @MainActor () -> Void,
+    func start(update: @escaping @MainActor (Set<RemoteDeviceInputKind>) -> Void,
                failure: @escaping @MainActor (any Error) -> Void) throws {
         try Task.checkCancellation()
         guard !stopped else { throw CancellationError() }
@@ -64,7 +64,7 @@ final class RemoteScreenInputCapabilityObservation {
         let removed = capabilities.subtracting(current)
         if !removed.isEmpty { invalidateInputs(removed) }
         capabilities = current
-        update?()
+        update?(removed)
     }
 }
 

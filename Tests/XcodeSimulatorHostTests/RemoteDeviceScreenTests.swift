@@ -17,6 +17,8 @@ struct RemoteDeviceScreenTests {
         }
         var exposedInputWhileConnecting = false
         var observedCapabilities: Set<RemoteDeviceInputKind> = []
+        var lostServices: [Set<RemoteDeviceInputKind>] = []
+        session.onInputCapabilitiesLost = { lostServices.append($0) }
         session.onStateChange = {
             if session.state == .connecting && session.nativeInputView != nil { exposedInputWhileConnecting = true }
             observedCapabilities = session.inputCapabilities
@@ -36,7 +38,7 @@ struct RemoteDeviceScreenTests {
         #expect(observedCapabilities == [.keyboard, .pointer, .digitizer])
         transport.inputCapabilities = [.keyboard]
         transport.emit(.inputGeometryChanged)
-        #expect(observedCapabilities == [.keyboard])
+        #expect(observedCapabilities == [.keyboard] && lostServices.isEmpty)
         transport.emit(.frameReceived)
         #expect(session.hasReceivedFrame)
         try await session.sendKey(4, state: .down)
@@ -56,6 +58,8 @@ struct RemoteDeviceScreenTests {
         let transport = ScreenFixtureTransport(capabilitySource: source)
         let session = RemoteDeviceScreenSession(device: try device()) { _, _ in transport }
         var visible: Set<RemoteDeviceInputKind> = []
+        var lostServices: [Set<RemoteDeviceInputKind>] = []
+        session.onInputCapabilitiesLost = { lostServices.append($0) }
         session.onStateChange = { visible = session.inputCapabilities }
         try await session.start()
         #expect(visible.isEmpty)
@@ -67,9 +71,10 @@ struct RemoteDeviceScreenTests {
         #expect(transport.pressed.touch != nil && transport.pressed.pointerButtons.count == 1)
         await source.change(to: [.keyboard, .pointer])
         #expect(visible == [.keyboard, .pointer] && transport.pressed.touch == nil)
+        #expect(lostServices == [[.digitizer]])
         #expect(transport.downKeys == [4] && transport.pressed.pointerButtons.count == 1)
         await source.change(to: [.keyboard, .digitizer, .pointer])
-        #expect(visible.contains(.digitizer) && transport.pressed.touch == nil)
+        #expect(visible.contains(.digitizer) && transport.pressed.touch == nil && lostServices == [[.digitizer]])
         try await session.stop()
         #expect(source.finished && transport.downKeys.isEmpty && transport.pressed.pointerButtons.isEmpty)
         let reads = source.reads
@@ -325,10 +330,10 @@ private final class ScreenFixtureTransport: RemoteScreenTransport {
             let observation = RemoteScreenInputCapabilityObservation(source: source, read: { try source.read() },
                 invalidateInputs: { [weak self] in self?.pressed.discard(for: $0) })
             capabilityObservation = observation
-            try observation.start(update: { [weak self] in
+            try observation.start(update: { [weak self] removed in
                 guard let self else { return }
                 self.inputCapabilities = self.capabilityObservation?.capabilities ?? []
-                self.events?(.inputGeometryChanged)
+                self.events?(removed.isEmpty ? .inputGeometryChanged : .inputCapabilitiesLost(removed))
             }, failure: { [weak self] in self?.events?(.failure($0)) })
         }
         didStart = true
