@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import Testing
 
 @testable import XcodeSimulatorHost
@@ -254,7 +255,7 @@ struct HostModeControllerTests {
             Issue.record("expected launch failure")
         } catch let error as CLIError {
             #expect(error.identifier == "device-hub-host-launch-partial-success")
-            #expect(error.message.contains("Restore Xcode Defaults"))
+            #expect(error.message.contains("Restore Original Settings"))
         }
         #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .absent)
         #expect(try fixture.receiptStore.load()?.original == .coreSimulator)
@@ -970,5 +971,45 @@ struct HostModeControllerTests {
         #expect(Set(devices.map(\.identifier)) == ["phone", "tv"])
         #expect(devices.first(where: { $0.identifier == "phone" })?.state == "Booted")
         #expect(devices.first(where: { $0.identifier == "tv" })?.runtimeName == "tvOS 27.0")
+    }
+}
+
+@Suite
+struct HostHandoffTerminationTests {
+    @Test(arguments: [HostTerminationRequest.deviceHubHandoff, .rendererHandoff])
+    func handoffsAvoidUserQuit(_ request: HostTerminationRequest) throws {
+        let directory = try TemporaryTestDirectory()
+        let cleanup = directory.url.appendingPathComponent("signal-cleanup")
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+        process.arguments = ["-c", "import signal,sys,pathlib\ndef shutdown(*args):\n pathlib.Path(sys.argv[1]).write_text('shutdown')\n sys.exit(0)\nsignal.signal(signal.SIGTERM, shutdown)\nprint('ready', flush=True)\nsignal.pause()", cleanup.path]
+        let output = Pipe()
+        process.standardOutput = output
+        try process.run()
+        defer { if process.isRunning { kill(process.processIdentifier, SIGKILL); process.waitUntilExit() } }
+        #expect(try output.fileHandleForReading.read(upToCount: 6) == Data("ready\n".utf8))
+        var requestedNormalQuit = false
+        #expect(request.perform(
+            processIdentifier: process.processIdentifier,
+            normalQuit: {
+                requestedNormalQuit = true
+                process.terminate()
+                return true
+            },
+            forceQuit: { kill(process.processIdentifier, SIGKILL) == 0 }
+        ))
+        process.waitUntilExit()
+        #expect(!requestedNormalQuit)
+        switch request {
+        case .deviceHubHandoff:
+            #expect(process.terminationReason == .uncaughtSignal)
+            #expect(process.terminationStatus == SIGKILL)
+            #expect(!FileManager.default.fileExists(atPath: cleanup.path))
+        case .rendererHandoff:
+            #expect(process.terminationReason == .exit)
+            #expect(process.terminationStatus == 0)
+            #expect(FileManager.default.fileExists(atPath: cleanup.path))
+        case .normalQuit: Issue.record("A handoff must not request a normal user quit.")
+        }
     }
 }

@@ -380,7 +380,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         addDevicesMenu("Open Simulator", to: file)
         addItem("Close Window", action: #selector(NSWindow.performClose(_:)), key: "w", to: file).target = nil
         let edit = addSubmenu("Edit", to: main)
-        for (title, selector, key) in [("Undo", "undo:", "z"), ("Cut", "cut:", "x"), ("Copy", "copy:", "c"), ("Paste", "paste:", "v"), ("Select All", "selectAll:", "a")] {
+        addItem("Undo", action: Selector("undo:"), key: "z", to: edit).target = nil
+        let redo = addItem("Redo", action: Selector("redo:"), key: "z", to: edit)
+        redo.target = nil
+        redo.keyEquivalentModifierMask = [.command, .shift]
+        edit.addItem(.separator())
+        for (title, selector, key) in [("Cut", "cut:", "x"), ("Copy", "copy:", "c"), ("Paste", "paste:", "v"), ("Select All", "selectAll:", "a")] {
             addItem(title, action: Selector(selector), key: key, to: edit).target = nil
         }
         let view = addSubmenu("View", to: main)

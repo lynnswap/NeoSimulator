@@ -17,13 +17,27 @@ struct RunningApplication: Equatable, Sendable {
     }
 }
 
+enum HostTerminationRequest: Sendable {
+    case normalQuit
+    case rendererHandoff
+    case deviceHubHandoff
+
+    func perform(processIdentifier: pid_t, normalQuit: () -> Bool, forceQuit: () -> Bool) -> Bool {
+        switch self {
+        case .normalQuit: normalQuit()
+        case .rendererHandoff: kill(processIdentifier, SIGTERM) == 0
+        // Device Hub's normal quit shuts down guests. It has no preserve-device handoff contract.
+        case .deviceHubHandoff: forceQuit()
+        }
+    }
+}
+
 private struct ManagedApplicationIdentity {
     let displayName: String
     let bundleIdentifier: String
     let expectedURLs: [URL]
     let errorIdentifier: String
-    /// SIGTERM hands off NeoSimulator's devices; normal quit can shut them down.
-    var terminatesWithSignal = false
+    var terminationRequest: HostTerminationRequest = .normalQuit
 }
 
 private let neoHostStartupPayload = Data("ready\n".utf8)
@@ -103,8 +117,11 @@ private final class ApplicationTerminationWaiter {
 
                 let requested: Bool
                 do {
-                    requested = try request?() ?? (identity.terminatesWithSignal
-                        ? kill(application.processIdentifier, SIGTERM) == 0 : application.terminate())
+                    requested = try request?() ?? identity.terminationRequest.perform(
+                        processIdentifier: application.processIdentifier,
+                        normalQuit: { application.terminate() },
+                        forceQuit: { application.forceTerminate() }
+                    )
                 } catch {
                     finish(.failure(error))
                     return
@@ -120,7 +137,7 @@ private final class ApplicationTerminationWaiter {
                                     .failure(
                                         CLIError.temporary(
                                             "\(self.identity.errorIdentifier)-termination",
-                                            "\(self.identity.displayName) pid \(self.application.processIdentifier) did not accept a normal termination request"
+                                            "\(self.identity.displayName) pid \(self.application.processIdentifier) did not accept the termination request"
                                         )
                                     )
                                 )
@@ -190,7 +207,7 @@ struct WorkspaceClient: Sendable {
             }
             return try await terminateApplications(
                 ManagedApplicationIdentity(displayName: "Device Hub", bundleIdentifier: ToolConstants.deviceHubBundleIdentifier,
-                    expectedURLs: expectedURLs, errorIdentifier: "device-hub")
+                    expectedURLs: expectedURLs, errorIdentifier: "device-hub", terminationRequest: .deviceHubHandoff)
             )
         },
         terminateNeoHosts: { expectedApplicationURL in
@@ -200,7 +217,7 @@ struct WorkspaceClient: Sendable {
                     bundleIdentifier: ToolConstants.neoHostBundleIdentifier,
                     expectedURLs: [expectedApplicationURL],
                     errorIdentifier: "neo-host",
-                    terminatesWithSignal: true
+                    terminationRequest: .rendererHandoff
                 )
             )
         },
@@ -245,7 +262,8 @@ struct WorkspaceClient: Sendable {
                 displayName: "NeoSimulator",
                 bundleIdentifier: ToolConstants.neoHostBundleIdentifier,
                 expectedURLs: [applicationURL],
-                errorIdentifier: "neo-host"
+                errorIdentifier: "neo-host",
+                terminationRequest: .rendererHandoff
             )
             do {
                 guard application.bundleIdentifier
@@ -277,9 +295,8 @@ struct WorkspaceClient: Sendable {
                 )
                 return observed
             } catch let launchError {
-                if !application.isTerminated {
-                    _ = application.terminate()
-                }
+                guard application.bundleIdentifier == ToolConstants.neoHostBundleIdentifier,
+                      application.bundleURL.map(normalized) == normalized(applicationURL) else { throw launchError }
                 let waiter = ApplicationTerminationWaiter(
                     application: application,
                     identity: identity,

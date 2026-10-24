@@ -238,7 +238,7 @@ struct HostModeController {
             ) {
                 throw CLIError.configuration(
                     "ambiguous-intermediate",
-                    "the live preferences match a possible interrupted write, but the tool cannot distinguish that from an external change. Nothing was overwritten. Inspect \(receiptStore.receiptURL.path), then choose Restore Xcode Defaults…, then Restore Saved Values… only if the saved original should win."
+                    "the live preferences match a possible interrupted write, but the tool cannot distinguish that from an external change. Nothing was overwritten. Inspect \(receiptStore.receiptURL.path), then choose Restore Original Settings…, then Restore Saved Values… only if the saved original should win."
                 )
             }
             throw conflictError(
@@ -398,7 +398,7 @@ struct HostModeController {
         message: String
     ) -> CLIError {
         let recoveryGuidance = if receiptURL != nil {
-            "The preferences remain managed; use Restore Xcode Defaults… to undo them."
+            "The preferences remain managed; use Restore Original Settings… to undo them."
         } else {
             "No restoration receipt exists because these are the original preferences."
         }

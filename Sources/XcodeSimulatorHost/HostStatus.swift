@@ -124,12 +124,10 @@ extension SimulatorHostController {
     }
 
     private func settingsDevice(_ identifier: String) async throws -> (SimulatorHostDevice, URL) {
-        guard let device = try await devices().first(where: { $0.identifier == identifier }) else {
+        let xcodeURL = try await self.xcodeURL(forDevice: identifier)
+        guard let device = try await devices(xcodeURL: xcodeURL).first(where: { $0.identifier == identifier }) else {
             throw CLIError.unavailable("simulator-device", "The selected simulator is no longer available.")
         }
-        let xcodeURL: URL
-        if let owner = device.ownerXcodeURL { xcodeURL = owner }
-        else { xcodeURL = try await self.xcodeURL(forDevice: identifier) }
         return (device, xcodeURL)
     }
 
