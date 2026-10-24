@@ -473,11 +473,11 @@ struct XcodeConnectionsTests {
         let newer = connection(pid: 2, start: 20, xcode: "Xcode27.2")
         let otherDevice = connection(pid: 3, start: 15, device: "B")
         var transfers: [XcodeSimulatorConnection] = []
-        #expect(try await tracker.synchronize(observations: [newer, older, otherDevice]) { transfers.append($0) })
+        #expect(try await tracker.synchronize(observations: [newer, older, otherDevice], runningDeviceIdentifiers: ["A", "B"]) { transfers.append($0) })
         #expect(transfers == [otherDevice, newer])
-        #expect(try await !tracker.synchronize(observations: [older]) { transfers.append($0) })
+        #expect(try await !tracker.synchronize(observations: [older], runningDeviceIdentifiers: ["A", "B"]) { transfers.append($0) })
         let reused = connection(pid: 2, start: 30)
-        #expect(try await tracker.synchronize(observations: [reused]) { transfers.append($0) })
+        #expect(try await tracker.synchronize(observations: [reused], runningDeviceIdentifiers: ["A", "B"]) { transfers.append($0) })
         #expect(transfers == [otherDevice, newer, reused])
     }
 
@@ -487,20 +487,39 @@ struct XcodeConnectionsTests {
         let otherDevice = connection(pid: 4, start: 15, device: "B")
         var transfers: [XcodeSimulatorConnection] = []
         await #expect(throws: CLIError.self) {
-            _ = try await tracker.synchronize(observations: [original, otherDevice]) {
+            _ = try await tracker.synchronize(observations: [original, otherDevice], runningDeviceIdentifiers: ["A", "B"]) {
                 if $0.deviceIdentifier == "A" { throw CLIError.io("test", "release failed") }
                 transfers.append($0)
             }
         }
-        #expect(try await tracker.synchronize(observations: []) { transfers.append($0) })
+        #expect(try await tracker.synchronize(observations: [], runningDeviceIdentifiers: ["A", "B"]) { transfers.append($0) })
         #expect(transfers == [otherDevice, original])
         let pending = connection(pid: 2, start: 20)
         await #expect(throws: CLIError.self) {
-            _ = try await tracker.synchronize(observations: [pending]) { _ in throw CLIError.io("test", "launch failed after release") }
+            _ = try await tracker.synchronize(observations: [pending], runningDeviceIdentifiers: ["A", "B"]) { _ in throw CLIError.io("test", "launch failed after release") }
         }
         let latest = connection(pid: 3, start: 30, xcode: "Xcode27.2")
-        #expect(try await tracker.synchronize(observations: [latest]) { transfers.append($0) })
+        #expect(try await tracker.synchronize(observations: [latest], runningDeviceIdentifiers: ["A", "B"]) { transfers.append($0) })
         #expect(transfers == [otherDevice, original, latest])
+    }
+
+    @Test func shutdownCancelsFailedTransferWithoutReplayingItAfterReboot() async throws {
+        let tracker = XcodeConnectionTracker()
+        let pending = connection(pid: 1, start: 10)
+        await #expect(throws: CLIError.self) {
+            _ = try await tracker.synchronize(observations: [pending], runningDeviceIdentifiers: ["A"]) { _ in
+                throw CLIError.io("test", "launch failed after release")
+            }
+        }
+        #expect(tracker.hasPendingConnection(forDevice: "A"))
+        var transfers: [XcodeSimulatorConnection] = []
+        #expect(try await !tracker.synchronize(observations: [], runningDeviceIdentifiers: []) { transfers.append($0) })
+        #expect(!tracker.hasPendingConnection(forDevice: "A"))
+        #expect(tracker.xcodeURL(forDevice: "A") == pending.xcodeURL)
+        #expect(try await !tracker.synchronize(observations: [pending], runningDeviceIdentifiers: ["A"]) { transfers.append($0) })
+        let nextRun = connection(pid: 2, start: 20)
+        #expect(try await tracker.synchronize(observations: [nextRun], runningDeviceIdentifiers: ["A"]) { transfers.append($0) })
+        #expect(transfers == [nextRun])
     }
 
     @Test func bootTransitionsRestoreOnceAndDoNotReopenClosedBootedWindows() {
@@ -579,9 +598,9 @@ struct XcodeConnectionsTests {
         let clone = XcodeSimulatorConnection(event: .init(processIdentifier: 1, startSeconds: 10, startMicroseconds: 0),
             deviceIdentifier: "clone", xcodeURL: URL(fileURLWithPath: "/Applications/Xcode.app"), deviceSetPath: "/custom/XCTestDevices")
         await #expect(throws: CLIError.self) {
-            _ = try await tracker.synchronize(observations: [clone], testingDeviceSetPath: clone.deviceSetPath) { _ in throw CLIError.io("test", "retry") }
+            _ = try await tracker.synchronize(observations: [clone], runningDeviceIdentifiers: ["clone"], testingDeviceSetPath: clone.deviceSetPath) { _ in throw CLIError.io("test", "retry") }
         }
-        #expect(try await !tracker.synchronize(observations: []) { _ in Issue.record("A hidden testing device must not be attached.") })
+        #expect(try await !tracker.synchronize(observations: [], runningDeviceIdentifiers: ["clone"]) { _ in Issue.record("A hidden testing device must not be attached.") })
         #expect(!tracker.hasPendingConnection(forDevice: "clone"))
     }
 

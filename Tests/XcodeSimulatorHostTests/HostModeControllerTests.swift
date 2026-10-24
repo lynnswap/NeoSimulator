@@ -84,6 +84,26 @@ struct HostModeControllerTests {
         #expect(try fixture.receiptStore.load() == nil)
     }
 
+    @Test(arguments: [StoredBoolean.absent, .falseValue, .trueValue])
+    func restoredCoreSimulatorRouteRequiresExplicitNeoSelection(suppression: StoredBoolean) async throws {
+        let original = ManagedPreferenceState(xcodeSession: .trueValue, deviceHubAutoStartSuppression: suppression)
+        let fixture = try ControllerFixture(initialState: original)
+        _ = try await fixture.controller.use(suppression == .trueValue ? .deviceHub : .neo)
+        _ = try await fixture.controller.restore()
+        let restored = try fixture.controller.routeStatus()
+        #expect(restored.preferences == original)
+        #expect(restored.receiptStatus == .unmanaged)
+        #expect(!SimulatorHostController.allowsAutomaticHosting(restored, explicitlySelectedNeo: false))
+        // A previous session's opt-in cannot authorize partial Neo settings after restoration.
+        if suppression != .trueValue {
+            #expect(!SimulatorHostController.allowsAutomaticHosting(restored, explicitlySelectedNeo: true))
+        }
+        _ = try await fixture.controller.use(.neo)
+        let selected = try fixture.controller.routeStatus()
+        #expect(SimulatorHostController.allowsAutomaticHosting(selected, explicitlySelectedNeo: true))
+        #expect(SimulatorHostController.allowsAutomaticHosting(selected, explicitlySelectedNeo: false) == (suppression != .trueValue))
+    }
+
     @Test func restorePreservesExplicitFalseAndTrueValues() async throws {
         let original = ManagedPreferenceState(
             xcodeSession: .falseValue,

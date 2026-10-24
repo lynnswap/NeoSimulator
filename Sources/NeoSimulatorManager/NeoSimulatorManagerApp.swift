@@ -29,7 +29,7 @@ final class SimulatorManagerModel {
         perform("Starting simulators…") {
             let status = try await self.controller.status()
             self.status = status
-            try await self.controller.selectHost(status.host)
+            if status.restorationAvailable { try await self.controller.selectHost(status.host) }
         }
     }
 

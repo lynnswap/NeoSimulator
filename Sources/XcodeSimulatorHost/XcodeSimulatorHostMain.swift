@@ -100,6 +100,7 @@ public actor SimulatorHostController {
     private let startedAt = Date().timeIntervalSince1970
     private let connectionTracker = XcodeConnectionTracker()
     private let bootTracker = SimulatorBootTracker()
+    private var explicitlySelectedNeo = false
     private var startupHandled = false
     private var startupDeviceIdentifier: String?
     private var operationInProgress = false
@@ -199,6 +200,9 @@ public actor SimulatorHostController {
         try await operation {
             let core = try await self.makeCore()
             _ = try await core.restore(force: force)
+            self.explicitlySelectedNeo = false
+            self.startupHandled = true
+            self.startupDeviceIdentifier = nil
         }
     }
 
@@ -218,7 +222,20 @@ public actor SimulatorHostController {
     }
 
     public func openDevice(identifier: String, xcodeURL: URL? = nil) async throws {
-        try await operation { try await self.openDeviceBody(identifier: identifier, xcodeURL: xcodeURL) }
+        try await operation {
+            let core = try await self.makeCore()
+            let route = try core.routeStatus()
+            if route.preferences.effectiveRoute == .coreSimulator {
+                if !Self.allowsAutomaticHosting(route, explicitlySelectedNeo: true) {
+                    let owner = try await self.registeredRenderers().first { $0.deviceIdentifiers.contains(identifier) }
+                    let xcode = try owner.map { try self.resolveXcode(URL(fileURLWithPath: $0.xcodePath)) }
+                        ?? self.resolveDeviceXcode(identifier: identifier, preferredURL: xcodeURL)
+                    _ = try await core.use(.neo, xcodeURL: xcode.applicationURL, launchNeoHost: false)
+                }
+                self.explicitlySelectedNeo = true
+            }
+            try await self.openDeviceBody(identifier: identifier, xcodeURL: xcodeURL)
+        }
     }
 
     private func openDeviceBody(identifier: String, xcodeURL: URL?) async throws {
@@ -260,7 +277,8 @@ public actor SimulatorHostController {
         try await operation {
             let core = try await self.makeCore()
             let catalog = try self.availableCatalogs().flatMap(\.devices)
-            guard try core.routeStatus().preferences.effectiveRoute == .coreSimulator else {
+            let route = try core.routeStatus()
+            guard Self.allowsAutomaticHosting(route, explicitlySelectedNeo: self.explicitlySelectedNeo) else {
                 let observation = self.bootTracker.observe(catalog, attachInitially: false, allowsAttachments: false)
                 self.startupHandled = true
                 self.startupDeviceIdentifier = nil
@@ -273,12 +291,14 @@ public actor SimulatorHostController {
             var changed = false
             var firstFailure: (any Error)?
             do {
-                changed = try await self.connectionTracker.synchronize(observations: SimulatorProcessConnections.read(), testingDeviceSetPath: SimulatorDeviceSets.testingPath()) { connection in
+                changed = try await self.connectionTracker.synchronize(
+                    observations: SimulatorProcessConnections.read(),
+                    runningDeviceIdentifiers: Set(catalog.filter { $0.state == "Booted" }.map(\.identifier)),
+                    testingDeviceSetPath: SimulatorDeviceSets.testingPath()
+                ) { connection in
                     if !attachInitially && connection.event.startTime < self.startedAt { return }
                     let xcode = try self.makeInspector().xcode(at: connection.xcodeURL)
-                    guard try self.deviceCatalog(xcode: xcode).contains(where: { $0.identifier == connection.deviceIdentifier }) else {
-                        throw CLIError.unavailable("simulator-device", "The simulator used by Xcode is no longer available.")
-                    }
+                    guard try self.deviceCatalog(xcode: xcode).contains(where: { $0.identifier == connection.deviceIdentifier && $0.state == "Booted" }) else { return }
                     let renderers = try await self.registeredRenderers()
                     if let owner = renderers.first(where: { $0.deviceIdentifiers.contains(connection.deviceIdentifier) }) {
                         if self.sameURL(URL(fileURLWithPath: owner.xcodePath), xcode.applicationURL) { return }
@@ -343,9 +363,19 @@ public actor SimulatorHostController {
         if host == .deviceHub || previousRoute == .deviceHub { bootTracker.reset() }
         let existing = xcodeURL == nil ? renderers.first : renderers.first { sameURL(URL(fileURLWithPath: $0.xcodePath), xcode.applicationURL) }
         _ = try await core.use(host, xcodeURL: xcode.applicationURL, launchNeoHost: existing == nil)
+        explicitlySelectedNeo = host == .neo
         if host == .neo {
             if let existing { send("activate", to: existing) }
             else if let launched = try await registeredRenderers().first(where: { sameURL(URL(fileURLWithPath: $0.xcodePath), xcode.applicationURL) }) { send("show-browser", to: launched) }
+        }
+    }
+
+    nonisolated static func allowsAutomaticHosting(_ route: SimulatorRouteStatus, explicitlySelectedNeo: Bool) -> Bool {
+        guard route.preferences == .coreSimulator else { return false }
+        switch route.receiptStatus {
+        case .managed: return true
+        case .unmanaged: return explicitlySelectedNeo
+        default: return false
         }
     }
 
@@ -565,35 +595,41 @@ struct XcodeSimulatorConnection: Sendable, Equatable {
 }
 
 final class XcodeConnectionTracker {
-    private var latestApplied: [String: XcodeSimulatorConnection.Event] = [:]
+    private var latestHandled: [String: XcodeSimulatorConnection.Event] = [:]
     private var latestObserved: [String: XcodeSimulatorConnection] = [:]
 
     func xcodeURL(forDevice identifier: String) -> URL? { latestObserved[identifier]?.xcodeURL }
     func hasPendingConnection(forDevice identifier: String) -> Bool {
         guard let observed = latestObserved[identifier] else { return false }
-        return latestApplied[identifier].map { $0 < observed.event } ?? true
+        return latestHandled[identifier].map { $0 < observed.event } ?? true
     }
 
     nonisolated(nonsending) func synchronize(
         observations: [XcodeSimulatorConnection],
+        runningDeviceIdentifiers: Set<String>,
         testingDeviceSetPath: String? = nil,
         transfer: (XcodeSimulatorConnection) async throws -> Void
     ) async throws -> Bool {
         for (identifier, connection) in latestObserved where connection.deviceSetPath != nil && connection.deviceSetPath != testingDeviceSetPath {
             latestObserved.removeValue(forKey: identifier)
-            latestApplied.removeValue(forKey: identifier)
+            latestHandled.removeValue(forKey: identifier)
         }
-        for connection in observations where connection.deviceSetPath == nil || connection.deviceSetPath == testingDeviceSetPath {
+        // A stopped device cancels a failed handoff, even if its originating app already exited.
+        for (identifier, connection) in latestObserved where !runningDeviceIdentifiers.contains(identifier) {
+            latestHandled[identifier] = connection.event
+        }
+        for connection in observations where runningDeviceIdentifiers.contains(connection.deviceIdentifier)
+            && (connection.deviceSetPath == nil || connection.deviceSetPath == testingDeviceSetPath) {
             if let previous = latestObserved[connection.deviceIdentifier], previous.event >= connection.event { continue }
             latestObserved[connection.deviceIdentifier] = connection
         }
         var changed = false
         var firstFailure: (any Error)?
         for connection in latestObserved.values.sorted(by: { $0.event < $1.event }) {
-            if let latest = latestApplied[connection.deviceIdentifier], latest >= connection.event { continue }
+            if let latest = latestHandled[connection.deviceIdentifier], latest >= connection.event { continue }
             do {
                 try await transfer(connection)
-                latestApplied[connection.deviceIdentifier] = connection.event
+                latestHandled[connection.deviceIdentifier] = connection.event
                 changed = true
             } catch {
                 if firstFailure == nil { firstFailure = error }
