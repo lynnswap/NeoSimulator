@@ -27,6 +27,7 @@ public final class RemoteDeviceScreenSession {
     public let contentView: NSView
     /// ScreenSharing handles AppKit events in this view; media streams use the explicit HID methods below.
     public var nativeInputView: NSView? { transport?.nativeInputView }
+    public var canCaptureScreenshot: Bool { state == .connected && transport?.canCaptureScreenshot == true }
     public private(set) var state = State.idle
     public private(set) var lastError: (any Error)?
     public private(set) var videoAttributes: RemoteDeviceVideoAttributes?
@@ -144,6 +145,14 @@ public final class RemoteDeviceScreenSession {
         }
     }
 
+    /// Returns pixels copied from the remote screen, without rendering the local view hierarchy.
+    public func captureScreenshot() async throws -> CGImage {
+        guard state == .connected, let transport else {
+            throw CLIError.unavailable("remote-screen-connection", "Connect the device screen before capturing it.")
+        }
+        return try await transport.captureScreenshot()
+    }
+
     /// Releases inputs owned by this connection without disconnecting its screen.
     public func releaseInputs() async throws {
         try await transport?.releaseInputs()
@@ -210,6 +219,8 @@ enum RemoteScreenTransportEvent {
 protocol RemoteScreenTransport: AnyObject {
     var inputCapabilities: Set<RemoteDeviceInputKind> { get }
     var nativeInputView: NSView? { get }
+    var canCaptureScreenshot: Bool { get }
+    func captureScreenshot() async throws -> CGImage
     func start(events: @escaping @MainActor (RemoteScreenTransportEvent) -> Void) async throws
     func send(_ input: RemoteScreenInput) async throws
     func releaseInputs() async throws
@@ -218,4 +229,8 @@ protocol RemoteScreenTransport: AnyObject {
 
 extension RemoteScreenTransport {
     var nativeInputView: NSView? { nil }
+    var canCaptureScreenshot: Bool { false }
+    func captureScreenshot() async throws -> CGImage {
+        throw CLIError.unavailable("remote-screen-capture", "This screen connection does not provide screenshot capture.")
+    }
 }

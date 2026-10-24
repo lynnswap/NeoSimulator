@@ -22,6 +22,9 @@ struct RemoteDeviceScreenTests {
         #expect(receivedID == "command-identifier")
         #expect(session.deviceID == .coreDevice("command-identifier"))
         #expect(session.state == .connected && !session.hasReceivedFrame)
+        #expect(session.canCaptureScreenshot)
+        let screenshot = try await session.captureScreenshot()
+        #expect(screenshot.width == 1 && screenshot.height == 1)
         transport.emit(.attributes(RemoteDeviceVideoAttributes(aspectRatio: CGSize(width: 2, height: 1),
             contentsRect: CGRect(x: 0, y: 0, width: 1, height: 1), scaleFactor: 2, orientation: .landscapeRight)))
         #expect(session.videoAttributes?.orientation == .landscapeRight)
@@ -34,7 +37,7 @@ struct RemoteDeviceScreenTests {
         try await session.sendKey(4, state: .down)
         try await session.stop()
         #expect(transport.downKeys.isEmpty && transport.closed)
-        #expect(session.state == .stopped && session.inputCapabilities.isEmpty)
+        #expect(session.state == .stopped && session.inputCapabilities.isEmpty && !session.canCaptureScreenshot)
         transport.emit(.failure(ScreenFixtureError.stream))
         #expect(session.state == .stopped && session.lastError == nil)
     }
@@ -102,6 +105,12 @@ private enum ScreenFixtureError: LocalizedError {
 private final class ScreenFixtureTransport: RemoteScreenTransport {
     let inputCapabilities: Set<RemoteDeviceInputKind> = [.keyboard]
     let nativeInputView: NSView? = NSView()
+    var canCaptureScreenshot: Bool { !closed }
+    func captureScreenshot() async throws -> CGImage {
+        let context = try #require(CGContext(data: nil, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        return try #require(context.makeImage())
+    }
     private let suspendStart: Bool
     var failCleanup: Bool
     private(set) var closed = false

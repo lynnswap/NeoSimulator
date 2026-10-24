@@ -11,6 +11,7 @@ final class ScreenSharingDeviceTransport: NSObject, RemoteScreenTransport {
     private let close: NativeObjCMethod<Void>
     private let connected: NativeObjCMethod<Bool>
     private let disconnected: NativeObjCMethod<Bool>
+    private let copyImage: NativeObjCMethod<Unmanaged<CGImage>?>
     private var pendingStart: CheckedContinuation<Void, any Error>?
     private var events: (@MainActor (RemoteScreenTransportEvent) -> Void)?
     private var observing = false
@@ -18,6 +19,7 @@ final class ScreenSharingDeviceTransport: NSObject, RemoteScreenTransport {
     private var requested = false
     private(set) var inputCapabilities: Set<RemoteDeviceInputKind> = []
     var nativeInputView: NSView? { view }
+    var canCaptureScreenshot: Bool { !stopped }
 
     init(remote: CoreDeviceRemoteScreenDevice, url: URL, contentView: NSView) throws {
         try CoreDeviceRemoteScreenDevice.load("/System/Library/PrivateFrameworks/ScreenSharing.framework/ScreenSharing")
@@ -43,6 +45,7 @@ final class ScreenSharingDeviceTransport: NSObject, RemoteScreenTransport {
         close = try runtime.resolveAndWait(.message("closeSession", as: (() -> Void).self), on: viewClass)
         connected = try runtime.resolveAndWait(.message("isConnected", as: (() -> Bool).self), on: viewClass)
         disconnected = try runtime.resolveAndWait(.message("isDisconnected", as: (() -> Bool).self), on: viewClass)
+        copyImage = try runtime.resolveAndWait(.message("copyCGImageFromRemoteScreen", as: (() -> Unmanaged<CGImage>?).self), on: viewClass)
         super.init()
         contentView.addSubview(view)
     }
@@ -72,6 +75,14 @@ final class ScreenSharingDeviceTransport: NSObject, RemoteScreenTransport {
         } onCancel: {
             Task { @MainActor [weak self] in self?.finishStart(throwing: CancellationError()) }
         }
+    }
+
+    func captureScreenshot() async throws -> CGImage {
+        try Task.checkCancellation()
+        guard !stopped, let image = try unsafe copyImage.unsafeInvoke(on: view) else {
+            throw CLIError.unavailable("remote-screen-image", "The remote screen has not supplied an image to capture.")
+        }
+        return image.takeRetainedValue()
     }
 
     func send(_ input: RemoteScreenInput) async throws { try await self.input.send(input) }
