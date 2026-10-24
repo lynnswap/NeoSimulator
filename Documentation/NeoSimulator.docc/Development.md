@@ -13,6 +13,17 @@ scripts/build-local.sh
 open .build/local/arm64/NeoSimulator.app
 ```
 
+For a local app you keep using, sign each update with the same identity to keep
+its signing requirement stable across builds. Pass a certificate name or SHA-1
+hash from your keychain:
+
+```bash
+scripts/build-local.sh --signing-identity 'Developer ID Application: Your Name (TEAMID)'
+```
+
+You can also set `CODE_SIGN_IDENTITY` explicitly. Without either option, local
+and validation builds continue to use an ad-hoc signature.
+
 The staging layout matches releases:
 
 ```text
@@ -83,8 +94,9 @@ repository's Pages source must be **GitHub Actions**.
 
 ## DMG distribution
 
-`build-release.sh` builds and ad-hoc signs the complete app, signing the renderer
-before its manager. `package-release.sh` creates a drag-to-Applications DMG and
+`build-release.sh` builds the complete app and signs the renderer before its
+manager. Its default signature is ad hoc; `--signing-identity` or
+`CODE_SIGN_IDENTITY` selects a certificate and enables secure timestamping. `package-release.sh` creates a drag-to-Applications DMG and
 checks that the app's files, signature, architectures, and Finder layout survive
 packaging. DMG tooling requires Python 3.10 or later; CI uses Python 3.13.
 Local and validation DMGs are not public releases.

@@ -3,9 +3,11 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/build-release.sh --version <tag> [--build-number <positive-integer>] [--dist-root <dir>]
+Usage: scripts/build-release.sh --version <tag> [--build-number <positive-integer>] [--dist-root <dir>] [--signing-identity <identity>]
 
-Builds and ad-hoc signs the arm64 NeoSimulator.app, including its renderer.
+Builds the arm64 NeoSimulator.app, including its renderer.
+Signing defaults to ad hoc (-). Use --signing-identity or CODE_SIGN_IDENTITY
+to sign both bundles with a certificate name or SHA-1 hash.
 Public Developer ID signing and notarization run separately in release.yml.
 USAGE
 }
@@ -13,9 +15,10 @@ USAGE
 version=""
 build_number="1"
 dist_root="dist"
+signing_identity="${CODE_SIGN_IDENTITY:--}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --version|--build-number|--dist-root)
+    --version|--build-number|--dist-root|--signing-identity)
       if [[ $# -lt 2 || -z "$2" || "$2" == --* ]]; then
         echo "Missing value for $1." >&2
         exit 1
@@ -24,6 +27,7 @@ while [[ $# -gt 0 ]]; do
         --version) version="$2" ;;
         --build-number) build_number="$2" ;;
         --dist-root) dist_root="$2" ;;
+        --signing-identity) signing_identity="$2" ;;
       esac
       shift 2
       ;;
@@ -67,13 +71,15 @@ xcodebuild \
 app="$staging/NeoSimulator.app"
 ditto "$derived_data/Build/Products/Release/NeoSimulator.app" "$app"
 renderer="$app/Contents/Applications/NeoSimulatorRenderer.app"
+timestamp_option="--timestamp=none"
+if [[ "$signing_identity" != - ]]; then timestamp_option="--timestamp"; fi
 for bundle in "$renderer" "$app"; do
   executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$bundle/Contents/Info.plist")"
   if [[ "$(lipo -archs "$bundle/Contents/MacOS/$executable")" != arm64 ]]; then
     echo "Expected an arm64 executable in $bundle." >&2
     exit 1
   fi
-  codesign --force --options runtime --sign - --timestamp=none "$bundle"
+  codesign --force --options runtime --sign "$signing_identity" "$timestamp_option" "$bundle"
 done
 codesign --verify --deep --strict "$app"
 rm -rf "$dist_root/arm64"

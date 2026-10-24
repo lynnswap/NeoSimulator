@@ -67,6 +67,17 @@ scripts/build-local.sh
 open .build/local/arm64/NeoSimulator.app
 ```
 
+For a local app you keep using, sign each update with the same identity to keep
+its signing requirement stable across builds. Pass a certificate name or SHA-1
+hash from your keychain:
+
+```bash
+scripts/build-local.sh --signing-identity 'Developer ID Application: Your Name (TEAMID)'
+```
+
+You can also set `CODE_SIGN_IDENTITY` explicitly. Without either option, local
+and validation builds continue to use an ad-hoc signature.
+
 Open `NeoSimulator.xcworkspace` to work on the app, renderer, and host-switching
 library. See [Development](Documentation/NeoSimulator.docc/Development.md) for
 tests, documentation builds, and DMG release tooling.
