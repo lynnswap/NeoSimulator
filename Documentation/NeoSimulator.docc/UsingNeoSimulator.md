@@ -28,9 +28,9 @@ Physical devices appear automatically when CoreDevice detects their connection.
 Virtual machines offer Start, Shut Down, Pause, Resume, and Remove when their
 current CoreDevice capabilities support those operations.
 
-Screen viewing and the settings inspector currently use simulator sessions.
-Physical devices and virtual machines remain available for their supported
-management actions.
+Choose **View Screen** for a connected physical device or virtual machine to
+open its screen when the device supports it. The settings inspector currently
+provides simulator settings.
 
 **File → New Simulator…** creates a device from the installed runtimes. For an
 iPhone, **Paired Apple Watch** adds a second page for a compatible watch.
@@ -100,6 +100,9 @@ Control-click the close button or choose **File → Close Window…**
 (Control-Command-W), then **Keep Running**. The sheet can remember that choice.
 Reopen a detached device through Open Simulator or the device browser.
 
+Closing a physical-device or VM screen disconnects the screen and leaves the
+device running. Use **Device → Shut Down** to shut down a supported VM.
+
 Quitting normally shuts down devices with open windows. **Quit NeoSimulator…**
 (Option-Command-Q) asks whether to keep them running. Settings can change both
 defaults. Switching the display host leaves devices running so the next host can attach.
@@ -134,7 +137,12 @@ Option with the pointer over the toolbar to change the camera to Record Screen
 and rotation to Rotate Left. Watches and Apple TV omit rotation; supported
 watches also have an Always On control.
 
-## Save screens and recordings
+Physical-device and VM screen windows support standard macOS tabs. Use the
+toolbar's **Compact Window** button to reduce a window, and click it again to
+restore its previous size. Home, Lock, and volume controls appear when the
+device supports them. **Reconnect** retries a disconnected screen.
+
+## Save simulator screens and recordings
 
 | Operation | Shortcut | Result |
 | --- | --- | --- |
@@ -159,6 +167,24 @@ also export an animated GIF.
 A new capture saves the preceding thumbnail's file. Quitting saves remaining
 captures and finalizes recordings. Existing names receive a ` #2` suffix and
 so on. If saving fails, the error includes the file's location for recovery.
+
+### Physical-device and VM captures
+
+With a physical-device or VM screen active, **File → Save Screenshot…**
+(Command-S) saves its remote pixels as PNG. Capture actions are disabled when
+the connection cannot supply them.
+
+Choose **Record Screen** in the toolbar or File menu (Command-R) to start a
+recording. **Stop Recording** finishes it and saves an MP4 movie in the chosen
+capture folder, initially Desktop. Hold Option and choose **File → Record
+Screen…** to choose a destination before starting.
+
+If saving fails or you cancel the save panel, the completed recording remains
+in memory. Choose **Save Recording…** to try another destination. Closing the
+window, quitting, reconnecting, or switching Display Host finishes a pending
+recording before disconnecting. An unsaved recording offers Save, Cancel, and
+Don't Save; Cancel keeps the connection open. **Discard Recording…** explicitly
+removes a retained recording after confirmation.
 
 ## Install apps and import media
 
