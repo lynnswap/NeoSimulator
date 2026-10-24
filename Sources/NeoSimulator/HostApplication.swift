@@ -217,7 +217,9 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         for url in urls {
             do {
                 switch try RendererRequest(url: url) {
-                case .openDevice(let identifier): openRequestedSimulator(identifier)
+                case .openDevice(let identifier):
+                    if isManaged { openManager(command: "open-device", queryItems: identifier.queryItems) }
+                    else { openRequestedSimulator(identifier) }
                 case .quit(let asks):
                     if asks { quitAsking() }
                     else { Self.requestTermination() }
@@ -545,8 +547,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
 
     func openSimulator(withIdentifier identifier: SimulatorDeviceIdentifier) async throws {
         if isManaged {
-            openManager(command: "open-device", queryItems: [URLQueryItem(name: "udid", value: identifier.identifier)]
-                + (identifier.deviceSetPath.map { [URLQueryItem(name: "deviceSetPath", value: $0)] } ?? []))
+            openManager(command: "open-device", queryItems: identifier.queryItems)
             return
         }
         try await openSimulatorLocally(withIdentifier: identifier)

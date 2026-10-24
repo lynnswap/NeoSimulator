@@ -497,6 +497,29 @@ struct XcodeConnectionsTests {
         #expect(try JSONDecoder().decode([RendererRegistration].self, from: JSONEncoder().encode(registrations)).flatMap(\.deviceIdentifiers) == [normal.deviceID, clone.deviceID])
     }
 
+    @Test func customSetSettingsNeverAddressADefaultSetDeviceThroughDevicectl() throws {
+        var commands: [[String]] = []
+        let backend = SimulatorSettingsBackend(deviceSetPath: "/custom/XCTestDevices", run: { tool, arguments in
+            if case .devicectl = tool { throw CLIError.io("wrong-device", "devicectl cannot distinguish this device set") }
+            commands.append(arguments)
+            let output = switch arguments.last {
+            case "appearance": "light"
+            case "content_size": "medium"
+            case "increase_contrast": "disabled"
+            default: ""
+            }
+            return Data(output.utf8)
+        }, audioDevices: { Issue.record("Unsupported custom-set audio must not be queried"); return ([], []) })
+        let settings = backend.read(identifier: "same-udid")
+        #expect(settings.appearance == "light" && settings.contentSize == "medium" && settings.increaseContrast == false)
+        #expect(settings.reduceMotion == nil && settings.audioOutputDevice == nil && settings.issues.isEmpty)
+        try backend.set(.appearance("dark"), identifier: "same-udid")
+        try backend.set(.location(latitude: 1, longitude: 2), identifier: "same-udid")
+        let count = commands.count
+        #expect(throws: CLIError.self) { try backend.set(.reduceMotion(true), identifier: "same-udid") }
+        #expect(commands.count == count)
+    }
+
     @Test @MainActor func rendererRequestsDoNotAcceptAnAcknowledgementFromTheOtherDeviceSet() async throws {
         let center = NotificationCenter()
         let path = "/custom/XCTestDevices"

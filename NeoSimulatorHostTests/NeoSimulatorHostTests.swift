@@ -7198,8 +7198,12 @@ struct HostBehaviorTests {
         #expect(options.isManaged)
         #expect(try RendererRequest(url: #require(URL(string: "neosimulator-renderer://open-device?udid=\(identifier)")))
             == .openDevice(SimulatorDeviceIdentifier(identifier)))
-        #expect(try RendererRequest(url: #require(URL(string: "neosimulator-renderer://open-device?udid=\(identifier)&deviceSetPath=/custom/XCTestDevices")))
-            == .openDevice(SimulatorDeviceIdentifier(identifier, deviceSetPath: "/custom/XCTestDevices")))
+        let selected = SimulatorDeviceIdentifier(identifier, deviceSetPath: "/custom/Parallel Testing Devices")
+        var components = URLComponents()
+        components.scheme = "neosimulator-renderer"
+        components.host = "open-device"
+        components.queryItems = selected.queryItems
+        #expect(try RendererRequest(url: #require(components.url)) == .openDevice(selected))
         #expect(try RendererRequest(url: #require(URL(string: "neosimulator-renderer://quit"))) == .quit(asks: false))
         #expect(try RendererRequest(url: #require(URL(string: "neosimulator-renderer://quit?ask=true"))) == .quit(asks: true))
         #expect(try RendererRequest(url: #require(URL(string: "neosimulator-renderer://activate"))) == .activate)

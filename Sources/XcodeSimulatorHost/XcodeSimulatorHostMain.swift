@@ -344,7 +344,7 @@ public actor SimulatorHostController {
                 }
                 let current = rendererDefaults?.string(forKey: "CurrentDeviceUDID") ?? managerDefaults?.string(forKey: "CurrentDeviceUDID")
                 self.startupDeviceIdentifier = SimulatorStartupSelection.device(
-                    in: catalog.filter { $0.deviceSetPath == (rendererDefaults?.string(forKey: "CurrentDeviceSetPath") ?? managerDefaults?.string(forKey: "CurrentDeviceSetPath")) }, attachInitially: attachInitially,
+                    in: catalog.filter { $0.deviceSetPath == rendererDefaults?.string(forKey: "CurrentDeviceSetPath") }, attachInitially: attachInitially,
                     startsSession: savedBoolean("SessionOnLaunch"), startsLastDevice: savedBoolean("StartLastDeviceOnLaunch"),
                     current: current, hasOwnedDevices: !ownedIdentifiers.isEmpty
                 )?.inventoryID

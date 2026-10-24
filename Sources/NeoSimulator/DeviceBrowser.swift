@@ -10,6 +10,10 @@ struct SimulatorDeviceIdentifier: Hashable, Codable, Sendable, Comparable {
         self.identifier = identifier
         self.deviceSetPath = deviceSetPath.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().standardizedFileURL.path }
     }
+    var queryItems: [URLQueryItem] {
+        [URLQueryItem(name: "udid", value: identifier)]
+            + (deviceSetPath.map { [URLQueryItem(name: "deviceSetPath", value: $0)] } ?? [])
+    }
     var preferenceIdentifier: String {
         guard let path = deviceSetPath else { return identifier }
         return "set:\(path.utf8.count):\(path):\(identifier)"

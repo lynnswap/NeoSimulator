@@ -188,7 +188,7 @@ extension SimulatorHostController {
     }
 
     private static func settingsBackend(device: SimulatorHostDevice, xcodeURL: URL) -> SimulatorSettingsBackend {
-        SimulatorSettingsBackend(run: { tool, arguments in
+        SimulatorSettingsBackend(deviceSetPath: device.deviceSetPath, run: { tool, arguments in
             let runner = SystemCommandRunner()
             let result = try tool == .simctl
                 ? runner.runSimctl(xcodeURL: xcodeURL, arguments: arguments, deviceSetPath: device.deviceSetPath)
@@ -204,6 +204,7 @@ extension SimulatorHostController {
 /// Keeps the command transport replaceable while tests exercise the same partial-result and write paths.
 struct SimulatorSettingsBackend {
     enum Tool { case simctl, devicectl }
+    var deviceSetPath: String? = nil
     var run: (Tool, [String]) throws -> Data
     var audioDevices: () throws -> (input: [SimulatorAudioDevice], output: [SimulatorAudioDevice])
 
@@ -223,36 +224,38 @@ struct SimulatorSettingsBackend {
         let contrast = ui("increase_contrast")
         settings.increaseContrast = contrast == "enabled" ? true : contrast == "disabled" ? false : nil
 
-        if let appearance = capture("appearance settings", { try query(Appearance.self, ["device", "info", "appearance"], identifier) }) {
-            settings.lookAndFeel = appearance.lookAndFeel
-            settings.supportedLooksAndFeels = (appearance.supportedLooksAndFeels ?? []).compactMap(Self.lookAndFeel)
-            settings.liquidGlassOpacity = appearance.liquidGlassOpacity
-            settings.reduceMotion = appearance.reduceMotion?.enabled
-            settings.reduceTransparency = appearance.reduceTransparency?.enabled
-            settings.showBorders = appearance.showBorders?.enabled
-            if settings.appearance == nil { settings.appearance = appearance.userInterfaceStyle.flatMap { ["light", "dark"].contains($0) ? $0 : nil } }
-            if settings.contentSize == nil { settings.contentSize = appearance.textSize.flatMap(Self.contentSize) }
-            if settings.increaseContrast == nil { settings.increaseContrast = appearance.increaseContrast }
-            if let filter = appearance.colorFilter {
-                if !filter.enabled { settings.colorFilter = SimulatorColorFilter.none }
-                else if let type = filter.filterType.flatMap({ Self.colorFilter($0.name) }) { settings.colorFilter = type }
-                else { settings.issues.append("color filter: The device returned an unrecognized enabled color filter.") }
-                settings.colorFilterIntensity = filter.intensity
+        if deviceSetPath == nil {
+            if let appearance = capture("appearance settings", { try query(Appearance.self, ["device", "info", "appearance"], identifier) }) {
+                settings.lookAndFeel = appearance.lookAndFeel
+                settings.supportedLooksAndFeels = (appearance.supportedLooksAndFeels ?? []).compactMap(Self.lookAndFeel)
+                settings.liquidGlassOpacity = appearance.liquidGlassOpacity
+                settings.reduceMotion = appearance.reduceMotion?.enabled
+                settings.reduceTransparency = appearance.reduceTransparency?.enabled
+                settings.showBorders = appearance.showBorders?.enabled
+                if settings.appearance == nil { settings.appearance = appearance.userInterfaceStyle.flatMap { ["light", "dark"].contains($0) ? $0 : nil } }
+                if settings.contentSize == nil { settings.contentSize = appearance.textSize.flatMap(Self.contentSize) }
+                if settings.increaseContrast == nil { settings.increaseContrast = appearance.increaseContrast }
+                if let filter = appearance.colorFilter {
+                    if !filter.enabled { settings.colorFilter = SimulatorColorFilter.none }
+                    else if let type = filter.filterType.flatMap({ Self.colorFilter($0.name) }) { settings.colorFilter = type }
+                    else { settings.issues.append("color filter: The device returned an unrecognized enabled color filter.") }
+                    settings.colorFilterIntensity = filter.intensity
+                }
+            }
+            if let voice = capture("VoiceOver", { try query(VoiceOver.self, ["device", "info", "voiceover"], identifier) }) {
+                settings.voiceOver = voice.enabled
+            }
+            if let audio = capture("audio", { try query(Audio.self, ["device", "info", "audio"], identifier) }) {
+                settings.volume = audio.volume
+                settings.audioInputDevice = audio.audioInputDevice?.identifier
+                settings.audioOutputDevice = audio.audioOutputDevice?.identifier
+                if let devices = capture("audio devices", audioDevices) {
+                    settings.audioInputDevices = devices.input
+                    settings.audioOutputDevices = devices.output
+                }
             }
         }
-        if let voice = capture("VoiceOver", { try query(VoiceOver.self, ["device", "info", "voiceover"], identifier) }) {
-            settings.voiceOver = voice.enabled
-        }
-        if let audio = capture("audio", { try query(Audio.self, ["device", "info", "audio"], identifier) }) {
-            settings.volume = audio.volume
-            settings.audioInputDevice = audio.audioInputDevice?.identifier
-            settings.audioOutputDevice = audio.audioOutputDevice?.identifier
-            if let devices = capture("audio devices", audioDevices) {
-                settings.audioInputDevices = devices.input
-                settings.audioOutputDevices = devices.output
-            }
-        }
-        if let scenarios = capture("location scenarios", { try query(Scenarios.self, ["device", "simulate", "location", "list"], identifier) }) {
+        if deviceSetPath == nil, let scenarios = capture("location scenarios", { try query(Scenarios.self, ["device", "simulate", "location", "list"], identifier) }) {
             settings.locationAvailable = true
             settings.locationScenarios = scenarios.availableScenarios.map { SimulatorLocationScenario(name: $0.name, displayName: $0.localizedName ?? $0.name) }
         } else if let text = capture("location", { String(decoding: try run(.simctl, ["location", identifier, "list"]), as: UTF8.self) }) {
@@ -293,8 +296,11 @@ struct SimulatorSettingsBackend {
         }
     }
 
-    private func command(_ arguments: [String], _ identifier: String) -> [String] {
-        arguments + ["--device", identifier, "--quiet", "--timeout", "10", "--json-output", "-"]
+    private func command(_ arguments: [String], _ identifier: String) throws -> [String] {
+        guard deviceSetPath == nil else {
+            throw CLIError.unavailable("custom-set-setting", "This setting is not available for simulators in a custom device set.")
+        }
+        return arguments + ["--device", identifier, "--quiet", "--timeout", "10", "--json-output", "-"]
     }
 
     private func query<T: Decodable>(_ type: T.Type, _ arguments: [String], _ identifier: String) throws -> T {
