@@ -142,7 +142,9 @@ toolbar's **Compact Window** button to reduce a window, and click it again to
 restore its previous size. Home, Lock, and volume controls appear when the
 device supports them. **Reconnect** retries a disconnected screen.
 
-## Save simulator screens and recordings
+## Save screens and recordings
+
+### Simulator captures
 
 | Operation | Shortcut | Result |
 | --- | --- | --- |
@@ -178,6 +180,8 @@ Choose **Record Screen** in the toolbar or File menu (Command-R) to start a
 recording. **Stop Recording** finishes it and saves an MP4 movie in the chosen
 capture folder, initially Desktop. Hold Option and choose **File → Record
 Screen…** to choose a destination before starting.
+Automatic saves number existing names with ` #2`, ` #3`, and so on. Choosing a
+file in the save panel permits replacing it after the panel's confirmation.
 
 If saving fails or you cancel the save panel, the completed recording remains
 in memory. Choose **Save Recording…** to try another destination. Closing the
