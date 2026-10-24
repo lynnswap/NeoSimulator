@@ -7,6 +7,85 @@ import Testing
 @MainActor
 @Suite
 struct HostModeControllerTests {
+    @Test func managedRendererLaunchIncludesTheManagersExactIdentity() throws {
+        let owner = RendererOwnerIdentity(processIdentifier: 321, launchDate: Date(timeIntervalSinceReferenceDate: 123456.125))
+        let arguments = WorkspaceClient.rendererLaunchArguments(owner: owner,
+            startupResultURL: URL(fileURLWithPath: "/Startup/result"), xcodeURL: URL(fileURLWithPath: "/Xcode.app"),
+            deviceIdentifier: "device-id")
+        #expect(arguments == ["--managed", "--owner-pid", "321", "--owner-launch-date", "123456.125",
+                              "--startup-result", "/Startup/result", "--xcode", "/Xcode.app", "--device", "device-id"])
+    }
+
+    @Test func rendererRegistrationNeverAdoptsAnotherManagerOrAReusedManagerPID() throws {
+        let owner = RendererOwnerIdentity(processIdentifier: 321, launchDate: Date(timeIntervalSinceReferenceDate: 123456.125))
+        let identities: [(Int32?, Date?)] = [(321, owner.launchDate), (nil, nil), (123, owner.launchDate),
+                                           (321, owner.launchDate.addingTimeInterval(1))]
+        let registrations = try identities.enumerated().map { index, identity in
+            let registration = RendererRegistration(processIdentifier: Int32(index + 1), applicationPath: "/Renderer.app",
+                xcodePath: "/Xcode.app", sessionIdentifier: "session-\(index)", deviceIdentifiers: [],
+                ownerProcessIdentifier: identity.0, ownerLaunchDate: identity.1)
+            return try JSONDecoder().decode(RendererRegistration.self, from: JSONEncoder().encode(registration))
+        }
+        #expect(registrations.filter { $0.isOwned(by: owner) }.map(\.sessionIdentifier) == ["session-0"])
+    }
+
+    @Test func aNewRendererWaitsForAnAbsentOwnersCleanupWithoutTouchingLiveOrUnknownOwners() async throws {
+        let rendererURL = URL(fileURLWithPath: "/Renderer.app")
+        let launchDate = Date(timeIntervalSinceReferenceDate: 123456.125)
+        let applications = (1...5).map {
+            RunningApplication(processIdentifier: Int32($0), bundleURL: $0 == 5 ? URL(fileURLWithPath: "/Other.app") : rendererURL,
+                               bundleIdentifier: ToolConstants.neoHostBundleIdentifier)
+        }
+        var waiting: CheckedContinuation<Void, Never>?
+        var cleanup: CheckedContinuation<Void, Never>?
+        var launched = false
+        var waited: [Int32] = []
+        let operation = Task {
+            try await WorkspaceClient.waitForPreviousRendererOwners(at: rendererURL, applications: applications,
+                registration: { application in
+                    #expect(application.processIdentifier != 5)
+                    let pid = application.processIdentifier
+                    return RendererRegistration(processIdentifier: pid, applicationPath: rendererURL.path, xcodePath: "/Xcode.app",
+                        sessionIdentifier: "session-\(pid)", deviceIdentifiers: [],
+                        ownerProcessIdentifier: pid == 3 ? nil : pid + 100,
+                        ownerLaunchDate: pid == 3 ? nil : launchDate)
+                }, ownerIsAbsent: { owner in
+                    let owners = [Int32(102): launchDate, Int32(104): launchDate.addingTimeInterval(1)]
+                    return owners[owner.processIdentifier] != owner.launchDate
+                },
+                waitForTermination: { application in
+                    waited.append(application.processIdentifier)
+                    if application.processIdentifier == 1 {
+                        await withCheckedContinuation { cleanup = $0; waiting?.resume(); waiting = nil }
+                    }
+                })
+            launched = true
+        }
+        await withCheckedContinuation { waiting = $0 }
+        #expect(!launched && waited == [1])
+        cleanup?.resume()
+        try await operation.value
+        #expect(launched && waited == [1, 4])
+    }
+
+    @Test func failedPreviousRendererCleanupDoesNotLaunchAReplacement() async throws {
+        let rendererURL = URL(fileURLWithPath: "/Renderer.app")
+        let application = RunningApplication(processIdentifier: 1, bundleURL: rendererURL,
+            bundleIdentifier: ToolConstants.neoHostBundleIdentifier)
+        let failure = CLIError.temporary("previous-renderer-termination-timeout", "fixture cleanup did not finish")
+        var launched = false
+        do {
+            try await WorkspaceClient.waitForPreviousRendererOwners(at: rendererURL, applications: [application],
+                registration: { _ in RendererRegistration(processIdentifier: 1, applicationPath: rendererURL.path,
+                    xcodePath: "/Xcode.app", sessionIdentifier: "session", deviceIdentifiers: [], ownerProcessIdentifier: 101,
+                    ownerLaunchDate: Date(timeIntervalSinceReferenceDate: 123456.125)) },
+                ownerIsAbsent: { _ in true }, waitForTermination: { _ in throw failure })
+            launched = true
+            Issue.record("A replacement launched before the previous renderer finished cleanup")
+        } catch { #expect((error as? CLIError)?.identifier == failure.identifier) }
+        #expect(!launched)
+    }
+
     @Test func neoAndDeviceHubModesRoundTripTheOriginalAbsentState() async throws {
         let fixture = try ControllerFixture()
         fixture.workspace.deviceHubCount = 1

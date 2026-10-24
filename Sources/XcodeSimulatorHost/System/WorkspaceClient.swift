@@ -17,6 +17,19 @@ struct RunningApplication: Equatable, Sendable {
     }
 }
 
+struct RendererOwnerIdentity: Equatable, Sendable {
+    let processIdentifier: pid_t
+    let launchDate: Date
+
+    @MainActor static func current() throws -> Self {
+        let application = NSRunningApplication.current
+        guard let launchDate = application.launchDate else {
+            throw CLIError.unavailable("renderer-owner", "The manager's launch identity could not be read.")
+        }
+        return Self(processIdentifier: application.processIdentifier, launchDate: launchDate)
+    }
+}
+
 enum HostTerminationRequest: Sendable {
     case normalQuit
     case rendererHandoff
@@ -229,6 +242,8 @@ struct WorkspaceClient: Sendable {
                 )
             }
 
+            try await waitForPreviousRendererOwners(at: applicationURL)
+            try Task.checkCancellation()
             let startupDirectory = try makeNeoHostStartupDirectory()
             defer {
                 try? FileManager.default.removeItem(at: startupDirectory)
@@ -242,15 +257,8 @@ struct WorkspaceClient: Sendable {
             configuration.activates = true
             configuration.createsNewApplicationInstance = true
             configuration.allowsRunningApplicationSubstitution = false
-            configuration.arguments = [
-                "--managed",
-                "--startup-result",
-                startupResultURL.path,
-                "--xcode",
-                xcodeURL.path,
-            ]
-
-            if let deviceIdentifier { configuration.arguments += ["--device", deviceIdentifier] }
+            configuration.arguments = rendererLaunchArguments(owner: try RendererOwnerIdentity.current(),
+                startupResultURL: startupResultURL, xcodeURL: xcodeURL, deviceIdentifier: deviceIdentifier)
 
             let application = try await NSWorkspace.shared.openApplication(
                 at: applicationURL,
@@ -327,7 +335,7 @@ struct WorkspaceClient: Sendable {
             try await terminateApplications(ManagedApplicationIdentity(
                 displayName: "NeoSimulator", bundleIdentifier: ToolConstants.neoHostBundleIdentifier,
                 expectedURLs: [applicationURL], errorIdentifier: "neo-host"
-            ), timeoutInterval: nil, requestTermination: { application in
+            ), timeoutInterval: nil, processIdentifiers: Set(registrations.map(\.processIdentifier)), requestTermination: { application in
                 guard let registration = registrations.first(where: { $0.processIdentifier == application.processIdentifier }) else {
                     throw CLIError.temporary("renderer-registration", "A renderer is still starting. Try quitting again when it is ready.")
                 }
@@ -342,6 +350,66 @@ struct WorkspaceClient: Sendable {
         }
 
     )
+
+    @MainActor private static func waitForPreviousRendererOwners(at applicationURL: URL) async throws {
+        let applications = NSRunningApplication.runningApplications(withBundleIdentifier: ToolConstants.neoHostBundleIdentifier)
+            .filter { !$0.isTerminated }
+        let snapshots = applications.map {
+            RunningApplication(processIdentifier: $0.processIdentifier, bundleURL: $0.bundleURL, bundleIdentifier: $0.bundleIdentifier)
+        }
+        let directory = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/NeoSimulator/renderers")
+        try await waitForPreviousRendererOwners(at: applicationURL, applications: snapshots, registration: { application in
+            let data: Data
+            do { data = try Data(contentsOf: directory.appendingPathComponent("\(application.processIdentifier).json")) }
+            catch CocoaError.fileReadNoSuchFile { return nil }
+            return try JSONDecoder().decode(RendererRegistration.self, from: data)
+        }, ownerIsAbsent: { owner in
+            if let application = NSRunningApplication(processIdentifier: owner.processIdentifier) {
+                if application.isTerminated { return true }
+                guard let launchDate = application.launchDate else { return false }
+                return launchDate != owner.launchDate
+            }
+            // An unregistered app can still be alive during AppKit teardown. Only ESRCH
+            // establishes process death when LaunchServices has no identity to compare.
+            return kill(owner.processIdentifier, 0) == -1 && errno == ESRCH
+        }, waitForTermination: { snapshot in
+            guard let application = applications.first(where: { $0.processIdentifier == snapshot.processIdentifier }) else { return }
+            let waiter = ApplicationTerminationWaiter(application: application,
+                identity: ManagedApplicationIdentity(displayName: "The previous NeoSimulator renderer",
+                    bundleIdentifier: ToolConstants.neoHostBundleIdentifier, expectedURLs: [applicationURL],
+                    errorIdentifier: "previous-renderer"), timeoutInterval: 70)
+            // Observe only. Its existing owner-loss monitor owns cleanup and the 60s fallback.
+            try await waiter.terminate(request: { true })
+        })
+    }
+
+    @MainActor static func waitForPreviousRendererOwners(at applicationURL: URL, applications: [RunningApplication],
+        registration: (RunningApplication) throws -> RendererRegistration?,
+        ownerIsAbsent: (RendererOwnerIdentity) -> Bool,
+        waitForTermination: (RunningApplication) async throws -> Void) async throws {
+        for application in applications where application.bundleIdentifier == ToolConstants.neoHostBundleIdentifier
+            && application.bundleURL.map(normalized) == normalized(applicationURL) {
+            try Task.checkCancellation()
+            guard let record = try registration(application) else { continue }
+            guard record.processIdentifier == application.processIdentifier,
+                  normalized(URL(fileURLWithPath: record.applicationPath)) == normalized(applicationURL) else {
+                throw CLIError.configuration("renderer-registration", "The renderer registration does not match its running application.")
+            }
+            guard let pid = record.ownerProcessIdentifier, let launchDate = record.ownerLaunchDate,
+                  ownerIsAbsent(RendererOwnerIdentity(processIdentifier: pid, launchDate: launchDate)) else { continue }
+            try await waitForTermination(application)
+        }
+    }
+
+    static func rendererLaunchArguments(owner: RendererOwnerIdentity, startupResultURL: URL,
+                                        xcodeURL: URL, deviceIdentifier: String?) -> [String] {
+        var arguments = ["--managed", "--owner-pid", String(owner.processIdentifier),
+                         "--owner-launch-date", String(owner.launchDate.timeIntervalSinceReferenceDate),
+                         "--startup-result", startupResultURL.path, "--xcode", xcodeURL.path]
+        if let deviceIdentifier { arguments += ["--device", deviceIdentifier] }
+        return arguments
+    }
 
     @MainActor private static func runningApplications(
         withBundleIdentifier bundleIdentifier: String
@@ -360,6 +428,7 @@ struct WorkspaceClient: Sendable {
     @MainActor private static func terminateApplications(
         _ identity: ManagedApplicationIdentity,
         timeoutInterval: TimeInterval? = 10,
+        processIdentifiers: Set<pid_t>? = nil,
         requestTermination: ((NSRunningApplication) throws -> Bool)? = nil
     ) async throws -> Int {
         let expected = Set(identity.expectedURLs.map(normalized))
@@ -370,7 +439,7 @@ struct WorkspaceClient: Sendable {
         while true {
             let applications = NSRunningApplication.runningApplications(
                 withBundleIdentifier: identity.bundleIdentifier
-            ).filter { !$0.isTerminated }
+            ).filter { !$0.isTerminated && (processIdentifiers?.contains($0.processIdentifier) ?? true) }
             guard !applications.isEmpty else {
                 return terminatedCount
             }

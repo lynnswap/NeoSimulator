@@ -99,6 +99,23 @@ struct RendererRegistration: Codable, Sendable {
     let xcodePath: String
     let sessionIdentifier: String
     let deviceIdentifiers: [DeviceInventoryID]
+    let ownerProcessIdentifier: Int32?
+    let ownerLaunchDate: Date?
+
+    init(processIdentifier: Int32, applicationPath: String, xcodePath: String, sessionIdentifier: String,
+         deviceIdentifiers: [DeviceInventoryID], ownerProcessIdentifier: Int32? = nil, ownerLaunchDate: Date? = nil) {
+        self.processIdentifier = processIdentifier
+        self.applicationPath = applicationPath
+        self.xcodePath = xcodePath
+        self.sessionIdentifier = sessionIdentifier
+        self.deviceIdentifiers = deviceIdentifiers
+        self.ownerProcessIdentifier = ownerProcessIdentifier
+        self.ownerLaunchDate = ownerLaunchDate
+    }
+
+    func isOwned(by owner: RendererOwnerIdentity) -> Bool {
+        ownerProcessIdentifier == owner.processIdentifier && ownerLaunchDate == owner.launchDate
+    }
 }
 
 /// Serializes preference transactions while each Xcode owns a separate renderer process.
@@ -403,10 +420,14 @@ public actor SimulatorHostController {
     @concurrent
     func registeredRenderers() async throws -> [RendererRegistration] {
         let workspace = await WorkspaceClient.live
-        let applications = await workspace.runningNeoHosts()
+        let applications = (await workspace.runningNeoHosts()).filter {
+            $0.bundleURL.map({ sameURL($0, rendererApplicationURL) }) == true
+        }
+        guard !applications.isEmpty else { return [] }
+        let owner = try await RendererOwnerIdentity.current()
         let directory = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/NeoSimulator/renderers", isDirectory: true)
         var registrations: [RendererRegistration] = []
-        for application in applications where application.bundleURL.map({ sameURL($0, rendererApplicationURL) }) == true {
+        for application in applications {
             let url = directory.appendingPathComponent("\(application.processIdentifier).json")
             let data: Data
             do { data = try Data(contentsOf: url) }
@@ -416,7 +437,7 @@ public actor SimulatorHostController {
                   sameURL(URL(fileURLWithPath: registration.applicationPath), rendererApplicationURL) else {
                 throw CLIError.configuration("renderer-registration", "The renderer registration does not match its running application.")
             }
-            registrations.append(registration)
+            if registration.isOwned(by: owner) { registrations.append(registration) }
         }
         return registrations
     }
