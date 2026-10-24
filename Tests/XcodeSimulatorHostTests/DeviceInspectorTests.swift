@@ -147,20 +147,51 @@ import Testing
         #expect(await calls.commands.isEmpty)
     }
 
-    @Test func failedDownloadRetainsDestinationAndReportsItsPartialCompletion() async throws {
+    @Test func approvedExportReplacesExistingPackageAfterCompleteCopy() async throws {
         let directory = try TemporaryTestDirectory()
-        let calls = InspectorCalls { _ in throw CLIError.io("copy-fixture", "Device disconnected during transfer") }
+        let source = directory.url.appendingPathComponent("Container")
+        let destination = directory.url.appendingPathComponent("App.xcappdata")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: false)
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: false)
+        try Data("new data".utf8).write(to: source.appendingPathComponent("document"))
+        try Data("old export".utf8).write(to: destination.appendingPathComponent("old"))
+        let calls = InspectorCalls { _ in Self.output(source.path) }
+        let inspector = Self.simulator(transport: .init(run: { try await calls.run($0) }))
+        try await inspector.downloadApplicationData(bundleIdentifier: "dev.example.app", to: destination, replacingExistingFile: true)
+        #expect(try String(contentsOf: destination.appendingPathComponent("AppData/document"), encoding: .utf8) == "new data")
+        #expect(!FileManager.default.fileExists(atPath: destination.appendingPathComponent("old").path))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: directory.url.path).sorted() == ["App.xcappdata", "Container"])
+    }
+
+    @Test func failedApprovedExportPreservesOriginalAndRetainsStagingForRecovery() async throws {
+        let directory = try TemporaryTestDirectory()
+        let calls = InspectorCalls { command in
+            let index = try #require(command.arguments.firstIndex(of: "--destination"))
+            let data = URL(fileURLWithPath: command.arguments[index + 1])
+            try FileManager.default.createDirectory(at: data, withIntermediateDirectories: false)
+            try Data("partial".utf8).write(to: data.appendingPathComponent("partial"))
+            throw CLIError.io("copy-fixture", "Device disconnected during transfer")
+        }
         let inspector = try Self.remote(transport: .init(run: { try await calls.run($0) }))
-        let destination = directory.url.appendingPathComponent("Partial.xcappdata")
+        let destination = directory.url.appendingPathComponent("App.xcappdata")
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: false)
+        let original = destination.appendingPathComponent("keep")
+        try Data("original export".utf8).write(to: original)
         do {
-            try await inspector.downloadApplicationData(bundleIdentifier: "dev.example.app", to: destination)
+            try await inspector.downloadApplicationData(bundleIdentifier: "dev.example.app", to: destination, replacingExistingFile: true)
             Issue.record("Transfer failure was ignored")
         } catch let failure as DeviceInspectorFailure {
-            #expect(failure.partialCompletion == .applicationDataDownload(destination: destination))
+            guard case .applicationDataDownload(let remaining) = failure.partialCompletion else {
+                Issue.record("The partial download URL was lost")
+                return
+            }
+            #expect(remaining != destination)
+            #expect(try String(contentsOf: remaining.appendingPathComponent("AppData/partial"), encoding: .utf8) == "partial")
+            #expect(failure.deviceID == .coreDevice("core-command-id"))
             #expect(failure.source == .coreDevice)
             #expect((failure.error as? CLIError)?.identifier == "copy-fixture")
         }
-        #expect(FileManager.default.fileExists(atPath: destination.path))
+        #expect(try String(contentsOf: original, encoding: .utf8) == "original export")
     }
 
     @Test func deviceGeneratedIconIsReturnedAndVoidMutationsDoNotRequireAResultObject() async throws {

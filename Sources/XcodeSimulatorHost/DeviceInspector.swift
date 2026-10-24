@@ -46,7 +46,7 @@ public indirect enum DeviceInspectorValue: Equatable, Sendable, Decodable {
 }
 
 public enum DeviceInspectorPartialCompletion: Equatable, Sendable {
-    /// The new destination exists and may contain an incomplete download.
+    /// The incomplete download is retained at this URL for recovery.
     case applicationDataDownload(destination: URL)
     case applicationDataReplacement(bundleIdentifier: String, applicationMayBeStopped: Bool, dataMayBeModified: Bool)
 }
@@ -229,17 +229,22 @@ public struct DeviceInspector: Sendable {
         } catch { throw failure(error, operation: "Read Application Icon") }
     }
 
-    /// Writes a new package with AppData/{Documents,Library,tmp}, the structure documented
-    /// by Apple's Xcode 27 release notes for Run scheme application data. Destination must
-    /// not already exist; failures retain a partial package and report its URL.
-    @concurrent public func downloadApplicationData(bundleIdentifier: String, to destination: URL) async throws {
+    /// Writes AppData/{Documents,Library,tmp}, as documented by Apple's Xcode 27 release
+    /// notes. An approved replacement is published only after the download completes.
+    /// Download failure preserves the original destination; partialCompletion identifies
+    /// the retained staging package.
+    @concurrent public func downloadApplicationData(bundleIdentifier: String, to destination: URL,
+                                                    replacingExistingFile: Bool = false) async throws {
         let manager = FileManager.default
-        var createdDestination = false
+        var staging: URL?
         do {
-            guard !manager.fileExists(atPath: destination.path) else { throw CocoaError(.fileWriteFileExists) }
-            try manager.createDirectory(at: destination, withIntermediateDirectories: false)
-            createdDestination = true
-            let data = destination.appendingPathComponent("AppData", isDirectory: true)
+            if !replacingExistingFile, manager.fileExists(atPath: destination.path) {
+                throw CocoaError(.fileWriteFileExists)
+            }
+            let package = destination.deletingLastPathComponent().appendingPathComponent(".NeoSimulator-export-\(UUID().uuidString).xcappdata", isDirectory: true)
+            try manager.createDirectory(at: package, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+            staging = package
+            let data = package.appendingPathComponent("AppData", isDirectory: true)
             switch device {
             case .simulator:
                 let container = try await applicationContainerURL(bundleIdentifier: bundleIdentifier)
@@ -250,9 +255,15 @@ public struct DeviceInspector: Sendable {
                 _ = try await coreDevice(["device", "copy", "from", "--source", ".", "--destination", data.path,
                     "--domain-type", "appDataContainer", "--domain-identifier", bundleIdentifier], operation: "Download Application Data")
             }
+            try Task.checkCancellation()
+            if replacingExistingFile, manager.fileExists(atPath: destination.path) {
+                _ = try manager.replaceItemAt(destination, withItemAt: package)
+            } else {
+                try manager.moveItem(at: package, to: destination)
+            }
         } catch {
             throw failure(error, operation: "Download Application Data", source: .file(destination),
-                partialCompletion: createdDestination ? .applicationDataDownload(destination: destination) : nil)
+                partialCompletion: staging.map { .applicationDataDownload(destination: $0) })
         }
     }
 
