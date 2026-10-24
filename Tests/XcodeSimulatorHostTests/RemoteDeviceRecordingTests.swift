@@ -29,12 +29,14 @@ import Testing
         let session = try session(transport)
         try await session.start()
         let stopping = RecordingFixtureSignal()
+        var startOwnershipWasReported = false
         session.onStateChange = { [weak session] in
+            if session?.recordingState == .starting { startOwnershipWasReported = session?.hasUnfinishedRecording == true }
             if session?.recordingState == .stopping { stopping.signal() }
         }
         let start = Task { try await session.startRecording() }
         await gate.waitUntilEntered()
-        #expect(session.hasUnfinishedRecording)
+        #expect(session.hasUnfinishedRecording && startOwnershipWasReported)
         let shutdown = Task { try await session.stop() }
         await stopping.wait()
         #expect(session.hasUnfinishedRecording)

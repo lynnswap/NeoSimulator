@@ -37,7 +37,6 @@ final class RemoteScreenRecording {
         }
         state = .starting
         lastError = nil
-        onChange?()
         // Cancellation of the caller cannot abandon a handle returned by a late native start.
         let task = Task { [self] in
             do {
@@ -52,6 +51,7 @@ final class RemoteScreenRecording {
             }
         }
         starting = task
+        onChange?()
         defer { starting = nil; onChange?() }
         do {
             try await task.value
