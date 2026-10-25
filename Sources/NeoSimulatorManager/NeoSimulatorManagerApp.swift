@@ -9,463 +9,6 @@ import Observation
 import XcodeSimulatorHost
 
 @MainActor
-final class SimulatorManagerModel {
-    private let controller: SimulatorHostController
-    private(set) var status: SimulatorHostStatus?
-    private(set) var inventory: [InventoryDevice] = []
-    var devices: [SimulatorHostDevice] {
-        inventory.compactMap { item in
-            guard case .simulator(let device) = item, device.isAvailable else { return nil }
-            return device
-        }
-    }
-    private(set) var managingDeviceIDs: Set<DeviceInventoryID> = []
-    private(set) var isBusy = false
-    private(set) var activity = ""
-    private(set) var backgroundIssue: String?
-    private(set) var deviceSettings: SimulatorDeviceSettings?
-    private(set) var settingsIssue: String?
-    private(set) var inspectedDeviceIdentifier: DeviceInventoryID?
-    // Query context also invalidates pending results when connection or capabilities change.
-    private var inspectedDevice: InventoryDevice?
-    private var settingsRefreshRequested = false
-    private var inspectionGeneration = 0
-    private var inspectionTask: Task<Void, Never>?
-    var onChange: (() -> Void)?
-    var onSettingsChange: (() -> Void)?
-    var onError: ((any Error) -> Void)?
-    var onOpenRemoteDevice: ((CoreDeviceDevice) -> Void)?
-    var beforeStoppingScreens: (() async throws -> Void)?
-    var beforeManagingRemoteDevices: ((Set<DeviceInventoryID>) async throws -> Void)?
-    var beforeManagingSimulators: ((DeviceManagementAction, [InventoryDevice]) async throws -> Void)?
-    var afterManagingSimulators: ((DeviceManagementAction, [InventoryDevice]) async throws -> Void)?
-    private var refreshing = false
-    private var refreshWaiters: [CheckedContinuation<Void, Never>] = []
-    private var statusRefreshTask: Task<Void, Never>?
-    private var statusIssue: (any Error)?
-    private var observationIssue: String?
-    private var inventoryIssues: [DeviceInventoryIssue] = []
-    var isRemoteInventoryComplete: Bool { !inventoryIssues.contains { $0.source == .coreDevice } }
-    private var synchronizing = false
-    private var inventoryRefreshRequested = false
-    private var stopping = false
-    private var operationTask: Task<Void, Never>?
-    private var managementTasks: [UUID: Task<Void, Never>] = [:]
-    private var pendingOperations: [(activity: String, refreshCatalog: Bool, run: @MainActor () async throws -> Void)] = []
-
-    init(rendererApplicationURL: URL,
-         presentSimulator: (@MainActor @Sendable (SimulatorPresentationContext) async throws -> Void)? = nil) {
-        controller = SimulatorHostController(rendererApplicationURL: rendererApplicationURL, presentSimulator: presentSimulator)
-    }
-
-    func start() {
-        perform("Loading devices…") {
-            let status = try await self.controller.status()
-            self.status = status
-        }
-    }
-
-    func select(_ host: SimulatorHost) {
-        perform("Switching simulator app…") {
-            if host == .deviceHub { try await self.beforeStoppingScreens?() }
-            try await self.controller.selectHost(host)
-        }
-    }
-
-    func openDevice(_ identifier: DeviceInventoryID) {
-        perform("Opening simulator…") { try await self.controller.openDevice(identifier) }
-    }
-
-    func closeDevice(_ identifier: DeviceInventoryID, keepingDeviceRunning: Bool, after finishing: Task<Void, Never>) {
-        // Accept the close before waiting, so a later open cannot overtake it.
-        perform("Closing simulator…") {
-            await finishing.value
-            try await self.controller.closeDevice(identifier, keepingDeviceRunning: keepingDeviceRunning)
-        }
-    }
-
-    func openScreen(for device: InventoryDevice) {
-        guard !managingDeviceIDs.contains(device.id) else { return }
-        switch device {
-        case .simulator(let simulator): openDevice(simulator.inventoryID)
-        case .remote:
-            perform("Opening device screen…") {
-                guard !self.managingDeviceIDs.contains(device.id) else { return }
-                guard !self.managingDeviceIDs.contains(device.id),
-                      case .remote(let current)? = self.inventory.first(where: { $0.id == device.id }) else { return }
-                self.onOpenRemoteDevice?(current)
-            }
-        }
-    }
-
-    func creationCatalog() async throws -> SimulatorCreationContext {
-        try await controller.creationCatalog()
-    }
-
-    func createSimulator(named name: String, deviceType: String, runtime: String,
-                         context: SimulatorCreationContext) async throws -> String {
-        guard !stopping else { throw CancellationError() }
-        let identifier = try await controller.createSimulator(named: name, deviceType: deviceType, runtime: runtime,
-                                                               context: context)
-        await refresh()
-        return identifier
-    }
-
-    func pairSimulators(watch: String, phone: String, context: SimulatorCreationContext) async throws {
-        guard !stopping else { throw CancellationError() }
-        try await controller.pairSimulators(watch: watch, phone: phone, context: context)
-        await refresh()
-    }
-
-    func manage(_ action: DeviceManagementAction, devices: [InventoryDevice]) {
-        guard !stopping else { return }
-        var identifiers = Set<DeviceInventoryID>()
-        let targets = devices.filter { identifiers.insert($0.id).inserted }
-        guard !targets.isEmpty, managingDeviceIDs.isDisjoint(with: identifiers) else { return }
-        managingDeviceIDs.formUnion(identifiers)
-        let request = UUID()
-        managementTasks[request] = Task {
-            defer {
-                self.managingDeviceIDs.subtract(identifiers)
-                self.managementTasks.removeValue(forKey: request)
-                self.onChange?()
-            }
-            do {
-                let remoteIDs = Set(targets.filter { self.managementDisconnectsScreen(action, for: $0) }.map(\.id))
-                if !remoteIDs.isEmpty { try await self.beforeManagingRemoteDevices?(remoteIDs) }
-                try await self.beforeManagingSimulators?(action, targets)
-                let report = await self.controller.manage(action, devices: targets)
-                var presentationError: (any Error)?
-                do { try await self.afterManagingSimulators?(action, targets) }
-                catch { presentationError = error }
-                if !self.stopping { await self.refreshCatalog() }
-                if report.results.contains(where: { $0.error != nil }) || presentationError != nil {
-                    self.onError?(DeviceManagementFailure(devices: targets, report: report, presentationError: presentationError))
-                }
-            } catch { self.onError?(error) }
-        }
-        onChange?()
-    }
-
-    private func managementDisconnectsScreen(_ action: DeviceManagementAction, for device: InventoryDevice) -> Bool {
-        guard case .remote = device, device.supports(action) else { return false }
-        switch action {
-        case .shutdown, .restart, .erase, .remove, .unpair, .pause: return true
-        case .rename, .clone, .start, .resume, .pair: return false
-        }
-    }
-
-    func inspector(for device: InventoryDevice) async throws -> DeviceInspector {
-        guard !stopping else { throw CancellationError() }
-        return try await controller.inspector(for: device)
-    }
-
-    func performInspectorOperation(for device: InventoryDevice,
-                                   operation: @escaping @MainActor () async throws -> Void,
-                                   completion: @escaping @MainActor () -> Void) {
-        guard !stopping, !managingDeviceIDs.contains(device.id) else { return }
-        managingDeviceIDs.insert(device.id)
-        let request = UUID()
-        managementTasks[request] = Task {
-            defer {
-                self.managingDeviceIDs.remove(device.id)
-                self.managementTasks.removeValue(forKey: request)
-                self.onChange?()
-            }
-            do { try await operation() }
-            catch { self.onError?(InspectorOperationFailure(deviceName: device.name, error: error)) }
-            if !self.stopping {
-                await self.refreshCatalog()
-                completion()
-            }
-        }
-        onChange?()
-    }
-
-    func restoreDefaults(force: Bool = false) {
-        perform("Restoring original settings…") {
-            try await self.beforeStoppingScreens?()
-            try await self.controller.restore(force: force)
-        }
-    }
-
-    func refresh() async {
-        guard !stopping, !isBusy, !refreshing else { return }
-        await refreshCatalog()
-    }
-
-    private func refreshCatalog() async {
-        if refreshing { await withCheckedContinuation { refreshWaiters.append($0) } }
-        else { refreshing = true }
-        defer {
-            settingsRefreshRequested = true
-            onChange?()
-            if refreshWaiters.isEmpty { refreshing = false }
-            else { refreshWaiters.removeFirst().resume() }
-        }
-        repeat {
-            inventoryRefreshRequested = false
-            refreshHostStatus()
-            let snapshot = await controller.inventory()
-            inventory = snapshot.devices
-            inventoryIssues = snapshot.issues
-            updateInventoryIssue()
-        } while inventoryRefreshRequested && !stopping
-    }
-
-    private func refreshHostStatus() {
-        guard statusRefreshTask == nil else { return }
-        statusRefreshTask = Task {
-            defer { self.statusRefreshTask = nil }
-            do {
-                let status = try await self.controller.status()
-                guard !self.stopping, !Task.isCancelled else { return }
-                self.status = status
-                self.statusIssue = nil
-            } catch {
-                guard !self.stopping, !Task.isCancelled else { return }
-                self.statusIssue = error
-            }
-            self.updateInventoryIssue()
-            self.onChange?()
-        }
-    }
-
-    private func updateInventoryIssue() {
-        if inventoryIssues.isEmpty, statusIssue == nil, observationIssue == nil { backgroundIssue = nil }
-        else {
-            reportBackgroundError(InventoryReadError(issues: inventoryIssues, statusError: statusIssue,
-                                                     observationIssue: observationIssue))
-        }
-    }
-
-    func inventoryDidChange() async {
-        guard !stopping else { return }
-        inventoryRefreshRequested = true
-        await refresh()
-    }
-
-    func inventoryObservationRecovered() {
-        guard !stopping else { return }
-        observationIssue = nil
-        updateInventoryIssue()
-    }
-
-    func inventoryObservationFailed(_ error: any Error) {
-        guard !stopping else { return }
-        NSLog("NeoSimulator automatic device updates: %@", String(describing: error))
-        observationIssue = "Live device updates are unavailable. The list will update when you return to NeoSimulator."
-        updateInventoryIssue()
-        onChange?()
-    }
-
-    func synchronizeConnections() async {
-        guard !stopping, !synchronizing, !refreshing, !isBusy else { return }
-        synchronizing = true
-        defer { synchronizing = false }
-        do {
-            if try await controller.synchronizeXcodeConnections() { await refresh() }
-        } catch {
-            await refresh()
-            reportBackgroundError(error)
-            onChange?()
-        }
-    }
-
-    func rendererDevicesDidChange(testingVisibilityChanged: Bool) async {
-        guard !stopping else { return }
-        if testingVisibilityChanged {
-            do { try await controller.testingDeviceVisibilityDidChange() }
-            catch {
-                reportBackgroundError(error)
-                onChange?()
-            }
-        }
-        await refresh()
-    }
-
-    func inspectDevice(_ identifier: DeviceInventoryID?) async {
-        guard !stopping else { return }
-        let device = inventory.first { $0.id == identifier }
-        if inspectedDeviceIdentifier != identifier || inspectedDevice != device {
-            inspectedDeviceIdentifier = identifier
-            inspectedDevice = device
-            inspectionGeneration += 1
-            settingsRefreshRequested = true
-            deviceSettings = nil
-            settingsIssue = nil
-            onSettingsChange?()
-        }
-        guard device?.canInspectSettings == true else { settingsRefreshRequested = false; return }
-        guard operationTask == nil else { return }
-        if let inspectionTask { await inspectionTask.value; return }
-        guard settingsRefreshRequested else { return }
-        inspectionTask = Task {
-            defer { self.inspectionTask = nil }
-            while !self.stopping, !Task.isCancelled, self.operationTask == nil, self.settingsRefreshRequested,
-                  let device = self.inspectedDevice, device.canInspectSettings {
-                self.settingsRefreshRequested = false
-                let generation = self.inspectionGeneration
-                do {
-                    let settings = try await self.controller.deviceSettings(for: device)
-                    guard !self.stopping, !Task.isCancelled, self.inspectionGeneration == generation else { continue }
-                    self.deviceSettings = settings
-                    self.settingsIssue = nil
-                    if !settings.issues.isEmpty {
-                        NSLog("NeoSimulator settings: %@", settings.issues.joined(separator: "\n"))
-                    }
-                } catch {
-                    guard !self.stopping, !Task.isCancelled, self.inspectionGeneration == generation else { continue }
-                    self.settingsIssue = error.localizedDescription
-                    NSLog("NeoSimulator settings: %@", (error as? SimulatorHostFailure)?.technicalDetails ?? String(describing: error))
-                }
-                self.onSettingsChange?()
-            }
-        }
-        await inspectionTask?.value
-    }
-
-    private func refreshInspectedSettings(for identifier: DeviceInventoryID) async {
-        guard !stopping, inspectedDeviceIdentifier == identifier else { return }
-        inspectionGeneration += 1
-        settingsRefreshRequested = true
-        await inspectDevice(identifier)
-    }
-
-    func setAppearance(_ value: String, for identifier: DeviceInventoryID) { set(.appearance(value), identifier: identifier) }
-    func setContentSize(_ value: String, for identifier: DeviceInventoryID) { set(.contentSize(value), identifier: identifier) }
-    func setIncreaseContrast(_ enabled: Bool, for identifier: DeviceInventoryID) { set(.increaseContrast(enabled), identifier: identifier) }
-    func setLocation(latitude: Double, longitude: Double, for identifier: DeviceInventoryID) {
-        set(.location(latitude: latitude, longitude: longitude), identifier: identifier)
-    }
-    func clearLocation(for identifier: DeviceInventoryID) { set(.clearLocation, identifier: identifier) }
-
-    func setDeviceSetting(_ setting: SimulatorDeviceSetting, for identifier: DeviceInventoryID) {
-        set(setting, identifier: identifier)
-    }
-
-    private func set(_ setting: SimulatorDeviceSetting, identifier: DeviceInventoryID) {
-        guard !managingDeviceIDs.contains(identifier), let device = inventory.first(where: { $0.id == identifier }) else { return }
-        perform("Updating device settings…", refreshCatalog: false) {
-            // Finish a read already in flight; later full reads wait for the operation queue.
-            await self.inspectionTask?.value
-            self.inspectionGeneration += 1
-            let generation = self.inspectionGeneration
-            do {
-                if self.inspectedDevice == device, let settings = self.deviceSettings {
-                    let updated = try await self.controller.setDeviceSetting(setting, for: device, updating: settings)
-                    guard self.inspectionGeneration == generation, self.inspectedDevice == device else { return }
-                    self.deviceSettings = updated
-                    self.settingsIssue = nil
-                    if !updated.issues.isEmpty {
-                        NSLog("NeoSimulator settings: %@", updated.issues.joined(separator: "\n"))
-                    }
-                    self.onSettingsChange?()
-                } else {
-                    try await self.controller.setDeviceSetting(setting, for: device)
-                    await self.refreshInspectedSettings(for: identifier)
-                }
-            } catch {
-                await self.refreshInspectedSettings(for: identifier)
-                throw error
-            }
-        }
-    }
-
-    func quitRenderer(keepingDevicesRunning: Bool?) async throws {
-        stopping = true
-        pendingOperations.removeAll { $0.refreshCatalog }
-        inspectionTask?.cancel()
-        statusRefreshTask?.cancel()
-        await operationTask?.value
-        for task in Array(managementTasks.values) { await task.value }
-        await statusRefreshTask?.value
-        do { try await controller.quitRenderer(keepingDevicesRunning: keepingDevicesRunning) }
-        catch { stopping = false; throw error }
-    }
-
-    private func reportBackgroundError(_ error: any Error) {
-        let message = error.localizedDescription
-        if backgroundIssue != message {
-            NSLog("NeoSimulator: %@", (error as? SimulatorHostFailure)?.technicalDetails ?? String(describing: error))
-        }
-        backgroundIssue = message
-    }
-
-    private func perform(_ activity: String, refreshCatalog: Bool = true,
-                         operation: @escaping @MainActor () async throws -> Void) {
-        guard !stopping else { return }
-        pendingOperations.append((activity, refreshCatalog, operation))
-        if refreshCatalog { isBusy = true }
-        guard operationTask == nil else {
-            if refreshCatalog { onChange?() }
-            return
-        }
-        operationTask = Task {
-            defer {
-                let wasBusy = self.isBusy
-                self.operationTask = nil
-                self.isBusy = false
-                self.activity = ""
-                if wasBusy { self.onChange?() }
-                if self.settingsRefreshRequested {
-                    Task { await self.inspectDevice(self.inspectedDeviceIdentifier) }
-                }
-            }
-            while !self.pendingOperations.isEmpty {
-                let next = self.pendingOperations.removeFirst()
-                let wasBusy = self.isBusy
-                self.isBusy = next.refreshCatalog || self.pendingOperations.contains { $0.refreshCatalog }
-                self.activity = next.activity
-                if wasBusy || self.isBusy { self.onChange?() }
-                var failure: (any Error)?
-                do { try await next.run() }
-                catch { failure = error }
-                if (next.refreshCatalog || self.inventoryRefreshRequested), !self.stopping { await self.refreshCatalog() }
-                if let failure { self.onError?(failure) }
-            }
-        }
-    }
-
-}
-
-private struct InventoryReadError: LocalizedError {
-    let issues: [DeviceInventoryIssue]
-    let statusError: (any Error)?
-    let observationIssue: String?
-
-    var errorDescription: String? {
-        let messages = issues.map { issue in
-            let source: String = switch issue.source {
-            case .coreDevice: "Devices"
-            case .rendererOwnership: "Open Screens"
-            case .simulators(let xcode, _): xcode?.deletingPathExtension().lastPathComponent ?? "Simulators"
-            }
-            return "\(source): \(issue.error.localizedDescription)"
-        }
-        return (messages + [statusError?.localizedDescription, observationIssue].compactMap { $0 }).joined(separator: "\n")
-    }
-}
-
-private struct DeviceManagementFailure: LocalizedError {
-    let devices: [InventoryDevice]
-    let report: DeviceManagementReport
-    var presentationError: (any Error)? = nil
-
-    var errorDescription: String? { "Some device operations could not be completed." }
-
-    var recoverySuggestion: String? {
-        let failures = report.results.compactMap { result -> String? in
-            guard let error = result.error else { return nil }
-            let name = devices.first { $0.id == result.deviceID }?.name ?? "Device"
-            let completed = result.completedSteps.isEmpty ? "" : "\nCompleted: \(result.completedSteps.joined(separator: ", "))."
-            return "\(name): \(error.localizedDescription)\(completed)"
-        }
-        return (failures + [presentationError?.localizedDescription].compactMap { $0 }).joined(separator: "\n\n")
-    }
-}
-
-@MainActor
 private final class SimulatorDevicesMenu: NSMenu, NSMenuDelegate {
     private let model: SimulatorManagerModel
 
@@ -912,6 +455,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func observeRemoteDevices() {
+        withObservationTracking {
+            _ = model.inventory
+            _ = model.status?.host
+            _ = model.isRemoteInventoryComplete
+        } onChange: { [weak self] in
+            Task { @MainActor in
+                self?.updateRemoteWindows()
+                self?.observeRemoteDevices()
+            }
+        }
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         SimulatorPreferences.migrateStandalonePreferences()
         CaptureThumbnail.reportDetached = { [weak self] error in self?.present(error) }
@@ -926,13 +482,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.simulatorWindows.values.forEach { $0.setDeviceBezelVisible(shows) }
         }
         installMenu()
-        model.onChange = { [weak self] in
-            self?.mainWindow?.update()
-            self?.settingsWindow?.update()
-            self?.updateRemoteWindows()
-            self?.updateScreenToolbar()
-        }
-        model.onSettingsChange = { [weak self] in self?.mainWindow?.updateDeviceSettings() }
+        observeRemoteDevices()
         model.onOpenRemoteDevice = { [weak self] device in self?.openRemoteScreen(device) }
         model.beforeStoppingScreens = { [weak self] in
             try await self?.stopSimulatorPresentations()
@@ -1353,18 +903,25 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     private let screenActionIdentifiers = ["home", "lock", "rotate", "capture", "record"]
     private let activity = NSTextField(labelWithString: "")
     private let progress = NSProgressIndicator()
-    private var inspectorHost: NSHostingController<AnyView>?
+    private var inspectorHost: NSHostingController<ManagerDeviceSettingsView>?
     private let inspectorContainer = NSViewController()
     private lazy var deviceInspector = ManagerDeviceInspectorController(model: model)
     private var inspectorMode = 0
     private let inspectorIdentifier = NSToolbarItem.Identifier("DeviceInspector")
     private var updatingSelection = false
     private var rows: [DeviceRow] = []
+    private var rowsByID: [DeviceInventoryID: DeviceRow] = [:]
+    private var devicesByID: [DeviceInventoryID: InventoryDevice] = [:]
+    private var availableRows: [DeviceRow] = []
+    private var unavailableRows: [DeviceRow] = []
+    private var displayedManagingIDs: Set<DeviceInventoryID> = []
     private var selectedIdentifiers = Set<DeviceInventoryID>()
     private let availableGroup = AvailabilityGroup(available: true)
     private let unavailableGroup = AvailabilityGroup(available: false)
     private var expandedGroups: Set<Bool> = [true, false]
     private var loadedRows = false
+    private var displayedGrouping = false
+    private var displayedGroups: [Bool] = []
     private var groupByAvailability = true
     private let deviceMenu = NSMenu(title: "Device Actions")
     private var sidebarObservation: NSKeyValueObservation?
@@ -1470,6 +1027,9 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         window.center()
         window.setFrameAutosaveName("NeoSimulatorDevices")
         update()
+        observeInventory()
+        observeActivity()
+        observeManagement()
     }
 
     required init?(coder: NSCoder) { nil }
@@ -1482,9 +1042,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
                 else { expandedGroups.remove(group.available) }
             }
         }
-        rows = filteredDevices.map { DeviceRow(id: $0.id) }
         updatingSelection = true
-        table.reloadData()
+        reloadRows()
         if groupByAvailability {
             for group in availabilityGroups where expandedGroups.contains(group.available) { table.expandItem(group) }
         }
@@ -1493,6 +1052,46 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         loadedRows = true
         updateSelection()
         updateFilterItem()
+        updateActivity()
+    }
+
+    private func observeInventory() {
+        withObservationTracking { _ = model.inventory } onChange: { [weak self] in
+            Task { @MainActor in
+                self?.update()
+                self?.observeInventory()
+            }
+        }
+    }
+
+    private func observeActivity() {
+        withObservationTracking { updateActivity() } onChange: { [weak self] in
+            Task { @MainActor in self?.observeActivity() }
+        }
+    }
+
+    private func observeManagement() {
+        displayedManagingIDs = model.managingDeviceIDs
+        withObservationTracking {
+            _ = model.managingDeviceIDs
+            _ = model.isBusy
+        } onChange: { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                let changed = self.displayedManagingIDs.symmetricDifference(self.model.managingDeviceIDs)
+                self.displayedManagingIDs = self.model.managingDeviceIDs
+                for identifier in changed {
+                    if let row = self.rowsByID[identifier] { self.table.reloadItem(row) }
+                }
+                let selection = self.selectedDevices
+                self.viewScreen.isEnabled = selection.count == 1 && selection.first.map(self.canViewScreen) == true
+                self.updateDeviceSettings()
+                self.observeManagement()
+            }
+        }
+    }
+
+    private func updateActivity() {
         activity.stringValue = model.isBusy ? model.activity : (model.backgroundIssue ?? "")
         activity.toolTip = activity.stringValue
         activity.isHidden = activity.stringValue.isEmpty
@@ -1546,10 +1145,42 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         }
     }
 
-    private func device(for row: DeviceRow) -> InventoryDevice? { model.inventory.first { $0.id == row.id } }
+    private func device(for row: DeviceRow) -> InventoryDevice? { devicesByID[row.id] }
 
     private func children(of group: AvailabilityGroup) -> [DeviceRow] {
-        rows.filter { device(for: $0)?.isAvailable == group.available }
+        group.available ? availableRows : unavailableRows
+    }
+
+    private func reloadRows() {
+        let previousDevices = devicesByID
+        let previousRows = rows.map(\.id)
+        let previousAvailable = availableRows.map(\.id)
+        let previousUnavailable = unavailableRows.map(\.id)
+        rebuildRows()
+        let groups = availabilityGroups.map(\.available)
+        let sameStructure = loadedRows && displayedGrouping == groupByAvailability
+            && previousRows == rows.map(\.id)
+            && (!groupByAvailability || (displayedGroups == groups
+                && previousAvailable == availableRows.map(\.id)
+                && previousUnavailable == unavailableRows.map(\.id)))
+        if sameStructure {
+            for row in rows where previousDevices[row.id] != devicesByID[row.id] { table.reloadItem(row) }
+        } else { table.reloadData() }
+        displayedGrouping = groupByAvailability
+        displayedGroups = groups
+    }
+
+    private func rebuildRows() {
+        devicesByID = Dictionary(model.inventory.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        rowsByID = rowsByID.filter { devicesByID[$0.key] != nil }
+        rows = filteredDevices.map { device in
+            if let row = rowsByID[device.id] { return row }
+            let row = DeviceRow(id: device.id)
+            rowsByID[device.id] = row
+            return row
+        }
+        availableRows = rows.filter { devicesByID[$0.id]?.isAvailable == true }
+        unavailableRows = rows.filter { devicesByID[$0.id]?.isAvailable == false }
     }
 
     private func restoreVisibleSelection() {
@@ -1726,24 +1357,11 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     func finishInspectorPreviews() async throws { try await deviceInspector.finishPreviews() }
     func resumeInspectorAfterCancelledQuit() { deviceInspector.resumeAfterCancelledQuit() }
 
-    private func makeDeviceSettingsView() -> AnyView {
-        guard selectedDevices.count == 1, let selection = selectedDevices.first else {
-            return inspectorMessage(selectedDevices.isEmpty ? "Select a Device" : "Multiple Devices Selected",
-                                    description: "Select one device to adjust its settings.")
-        }
-        let inspectingSelection = model.inspectedDeviceIdentifier == selection.id
-        return AnyView(ManagerDeviceSettingsView(device: selection,
-            settings: inspectingSelection ? model.deviceSettings : nil,
-            isBusy: model.isBusy || model.managingDeviceIDs.contains(selection.id),
-            issue: inspectingSelection ? model.settingsIssue : nil, apply: { [weak self] setting in
-                self?.model.setDeviceSetting(setting, for: selection.id)
-            }, customLocation: { [weak self] in
-                self?.presentLocationEditor(for: selection.id)
-            }))
-    }
-
-    private func inspectorMessage(_ title: String, description: String) -> AnyView {
-        AnyView(ContentUnavailableView(title, systemImage: "slider.horizontal.3", description: Text(description)))
+    private func makeDeviceSettingsView() -> ManagerDeviceSettingsView {
+        ManagerDeviceSettingsView(manager: model, model: model.settings, customLocation: { [weak self] in
+            guard let self, let identifier = self.model.settings.device?.id else { return }
+            self.presentLocationEditor(for: identifier)
+        })
     }
 
     func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
@@ -1849,11 +1467,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         viewScreen.isEnabled = selections.count == 1 && selections.first.map(canViewScreen) == true
         viewScreen.toolTip = nil
         updateDeviceSettings()
-        Task { [weak self] in
-            guard let self else { return }
-            let identifier = self.selectedDevices.count == 1 ? self.selectedDevices.first?.id : nil
-            await self.model.inspectDevice(identifier)
-        }
+        model.settings.inspect(selections.count == 1 ? selections.first : nil, selectionCount: selections.count)
     }
 
     func selectDevice(_ identifier: DeviceInventoryID) {
@@ -1865,9 +1479,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             familyFilter = nil
             updateFilterItem()
         }
-        rows = filteredDevices.map { DeviceRow(id: $0.id) }
         updatingSelection = true
-        table.reloadData()
+        reloadRows()
         if groupByAvailability {
             for group in availabilityGroups { table.expandItem(group) }
         }
@@ -1943,7 +1556,6 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     }
 
     func updateDeviceSettings() {
-        inspectorHost?.rootView = makeDeviceSettingsView()
         let selection = selectedDevices.count == 1 ? selectedDevices.first : nil
         deviceInspector.update(device: selection, isManaging: selection.map { model.managingDeviceIDs.contains($0.id) } == true,
                                isVisible: inspectorMode != 0)
@@ -2514,10 +2126,16 @@ final class SettingsWindowController: NSWindowController {
             restore.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -18),
         ])
         window.center()
-        update()
+        observeModel()
     }
 
     required init?(coder: NSCoder) { nil }
+
+    private func observeModel() {
+        withObservationTracking { update() } onChange: { [weak self] in
+            Task { @MainActor in self?.observeModel() }
+        }
+    }
 
     func update() {
         hostPopup.selectItem(at: model.status?.host == .deviceHub ? 1 : 0)
@@ -2670,23 +2288,19 @@ final class SettingsWindowController: NSWindowController {
     }
 }
 
-private extension InventoryDevice {
-    var canInspectSettings: Bool {
-        switch self {
-        case .simulator(let device): device.isAvailable && device.state == "Booted"
-        case .remote(let device): device.isAvailable
-        }
-    }
-}
-
 @MainActor
 private struct ManagerDeviceSettingsView: View {
-    let device: InventoryDevice?
-    let settings: SimulatorDeviceSettings?
-    let isBusy: Bool
-    let issue: String?
-    let apply: (SimulatorDeviceSetting) -> Void
+    let manager: SimulatorManagerModel
+    let model: DeviceSettingsModel
     let customLocation: () -> Void
+    private var device: InventoryDevice? { model.device }
+    private var settings: SimulatorDeviceSettings? { model.settings }
+    private var issue: String? { model.issue }
+    private var isBusy: Bool { manager.isBusy || device.map { manager.managingDeviceIDs.contains($0.id) } == true }
+    private func apply(_ setting: SimulatorDeviceSetting) {
+        guard let identifier = device?.id else { return }
+        manager.setDeviceSetting(setting, for: identifier)
+    }
 
     private struct Choice: Identifiable {
         let id: String
@@ -2694,6 +2308,14 @@ private struct ManagerDeviceSettingsView: View {
     }
 
     var body: some View {
+        if model.selectionCount != 1 {
+            ContentUnavailableView(model.selectionCount == 0 ? "Select a Device" : "Multiple Devices Selected",
+                                   systemImage: "slider.horizontal.3",
+                                   description: Text("Select one device to adjust its settings."))
+        } else { settingsForm }
+    }
+
+    private var settingsForm: some View {
         Form {
             if device?.canInspectSettings == true, settings == nil, issue == nil {
                 ProgressView("Loading settings…")
@@ -2923,55 +2545,25 @@ private struct ManagerSettingSlider: NSViewRepresentable {
     }
 }
 
-private struct InspectorOperationFailure: LocalizedError {
-    let deviceName: String
-    let error: any Error
-    var errorDescription: String? { "\(deviceName): \(error.localizedDescription)" }
-    var recoverySuggestion: String? {
-        guard let failure = error as? DeviceInspectorFailure else { return nil }
-        switch failure.partialCompletion {
-        case .applicationDataDownload(let destination):
-            return "The incomplete export is retained at \(destination.path)."
-        case .applicationDataReplacement(_, let stopped, let modified):
-            return [stopped ? "The application may have been stopped." : nil,
-                    modified ? "Its data may have been partially replaced. Inspect the application before retrying." : nil]
-                .compactMap { $0 }.joined(separator: " ")
-        case .reportDownload(let destination, let remaining, let updated):
-            return "\(updated ? "The report was saved to \(destination.path). " : "")The remaining transfer data is at \(remaining.path)."
-        case nil: return nil
-        }
-    }
-}
-
 @MainActor
 private final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataSource, NSTableViewDelegate,
                                                        NSSearchFieldDelegate, NSMenuDelegate {
-    enum Page { case content, info }
-    private enum Content: Int, CaseIterable {
-        case applications, configuration, provisioning, reports
-        var title: String {
-            switch self {
-            case .applications: "Applications"
-            case .configuration: "Configuration Profiles"
-            case .provisioning: "Provisioning Profiles"
-            case .reports: "Reports"
-            }
-        }
-        var profileKind: DeviceProfileKind { self == .provisioning ? .provisioning : .configuration }
-    }
+    typealias Page = DeviceInspectorModel.Page
+    private typealias Content = DeviceInspectorModel.Content
+    private let inspection = DeviceInspectorModel()
     private let model: SimulatorManagerModel
-    private var device: InventoryDevice?
-    private var inspector: DeviceInspector?
-    private var page = Page.content
-    private var content = Content.applications
-    private var isManaging = false
-    private var isVisible = false
-    private var generation = 0
-    private var readTask: Task<Void, Never>?
+    private var device: InventoryDevice? { get { inspection.device } set { inspection.device = newValue } }
+    private var inspector: DeviceInspector? { get { inspection.inspector } set { inspection.inspector = newValue } }
+    private var page: Page { get { inspection.page } set { inspection.page = newValue } }
+    private var content: Content { get { inspection.content } set { inspection.content = newValue } }
+    private var isManaging: Bool { get { inspection.isManaging } set { inspection.isManaging = newValue } }
+    private var isVisible: Bool { get { inspection.isVisible } set { inspection.isVisible = newValue } }
+    private var generation: Int { inspection.generation }
+    private var revealTask: Task<Void, Never>?
     private var iconTask: Task<Void, Never>?
-    private var applications: [DeviceApplication] = []
-    private var profiles: [DeviceProfile] = []
-    private var reports: [DeviceReport] = []
+    private var applications: [DeviceApplication] { inspection.applications }
+    private var profiles: [DeviceProfile] { get { inspection.profiles } set { inspection.profiles = newValue } }
+    private var reports: [DeviceReport] { inspection.reports }
     private var reportRows: [DeviceReport] = []
     private let reportFilter = NSPopUpButton()
     private var reportTypeFilter: String?
@@ -3008,8 +2600,8 @@ private final class ManagerDeviceInspectorController: NSViewController, NSTableV
     private let reloadButton = NSButton(image: NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "Refresh Inspector")!, target: nil, action: nil)
     private let contentView = NSView()
     private let infoView = NSView()
-    private var lastIssue: String?
-    private var reading = false
+    private var lastIssue: String? { get { inspection.lastIssue } set { inspection.lastIssue = newValue } }
+    private var reading: Bool { inspection.reading }
 
     init(model: SimulatorManagerModel) {
         self.model = model
@@ -3145,6 +2737,8 @@ private final class ManagerDeviceInspectorController: NSViewController, NSTableV
         contentView.heightAnchor.constraint(greaterThanOrEqualToConstant: 260).isActive = true
         updateVisibility()
         updateControls()
+        observeRecords()
+        observeInfo()
     }
 
     private func pin(_ child: NSView, in parent: NSView, inset: CGFloat = 0) {
@@ -3176,10 +2770,7 @@ private final class ManagerDeviceInspectorController: NSViewController, NSTableV
         if changed {
             dismissReportPreview()
             stopReading()
-            inspector = nil
-            applications = []
-            profiles = []
-            reports = []
+            inspection.reset()
             reportTypeFilter = nil
             rebuildReportFilter()
             selectedRecordID = nil
@@ -3193,12 +2784,40 @@ private final class ManagerDeviceInspectorController: NSViewController, NSTableV
     }
 
     func stopReading() {
-        generation += 1
-        readTask?.cancel()
-        readTask = nil
+        inspection.stopReading()
+        revealTask?.cancel()
+        revealTask = nil
         iconTask?.cancel()
         iconTask = nil
-        reading = false
+    }
+
+    override func viewWillLayout() {
+        super.viewWillLayout()
+        updateControls()
+    }
+
+    private func observeRecords() {
+        withObservationTracking {
+            _ = inspection.applications
+            _ = inspection.profiles
+            _ = inspection.reports
+        } onChange: { [weak self] in
+            Task { @MainActor in
+                self?.rebuildReportFilter()
+                self?.updateRows()
+                self?.observeRecords()
+            }
+        }
+    }
+
+    private func observeInfo() {
+        withObservationTracking { _ = inspection.infoProperties } onChange: { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                self.info.setProperties(self.inspection.infoProperties)
+                self.observeInfo()
+            }
+        }
     }
 
     private func updateVisibility() {
@@ -3215,16 +2834,10 @@ private final class ManagerDeviceInspectorController: NSViewController, NSTableV
     private var selectedApp: DeviceApplication? { appRows.first { $0.id == selectedRecordID } }
     private var selectedProfile: DeviceProfile? { profileRows.first { $0.id == selectedRecordID } }
     private var selectedReport: DeviceReport? { reportRows.first { $0.relativePath == selectedRecordID } }
-    private var simulatorIsRunning: Bool {
-        guard case .simulator(let simulator) = device else { return false }
-        return simulator.isAvailable && simulator.state == "Booted"
-    }
-    private func supports(_ feature: String) -> Bool { device?.capabilities.contains("com.apple.coredevice.feature." + feature) == true }
-    private var canReadApplications: Bool { simulatorIsRunning || supports("streamapplist") }
-    private var canReadProfiles: Bool {
-        if case .simulator(let simulator) = device, simulator.deviceSetPath != nil { return false }
-        return supports(content == .provisioning ? "provisioningprofiles" : "configurationprofiles")
-    }
+    private var simulatorIsRunning: Bool { inspection.simulatorIsRunning }
+    private func supports(_ feature: String) -> Bool { inspection.supports(feature) }
+    private var canReadApplications: Bool { inspection.canReadApplications }
+    private var canReadProfiles: Bool { inspection.canReadProfiles }
     private var canTransferData: Bool { selectedApp?.isContainerAccessible == true && (simulatorIsRunning || supports("transferFiles")) }
     private var canReplaceData: Bool {
         canTransferData && (simulatorIsRunning || (supports("processcontrol") && supports("streamprocesslist") && canReadApplications))
@@ -3247,97 +2860,20 @@ private final class ManagerDeviceInspectorController: NSViewController, NSTableV
         reloadButton.isEnabled = device != nil && !reading && !isManaging
         progress.isHidden = !reading && !isManaging && activePreviewTask == nil
         if progress.isHidden { progress.stopAnimation(nil) } else { progress.startAnimation(nil) }
-        if device == nil { status.stringValue = "Select one device to inspect it." }
-        else if isManaging { status.stringValue = "An operation is in progress on this device…" }
-        else if reading { status.stringValue = "Loading…" }
-        else if activePreviewTask != nil { status.stringValue = "Preparing preview…" }
-        else { status.stringValue = lastIssue ?? "" }
+        let message: String
+        if device == nil { message = "Select one device to inspect it." }
+        else if isManaging { message = "An operation is in progress on this device…" }
+        else if reading { message = "Loading…" }
+        else if activePreviewTask != nil { message = "Preparing preview…" }
+        else { message = lastIssue ?? "" }
+        if status.stringValue != message { status.stringValue = message }
         status.isHidden = status.stringValue.isEmpty
     }
 
     func reload() {
+        guard !preparingToQuit else { return }
         stopReading()
-        guard isVisible, !preparingToQuit, let device else { updateControls(); return }
-        let request = generation
-        let page = self.page
-        let content = self.content
-        reading = true
-        lastIssue = nil
-        updateControls()
-        readTask = Task { [weak self] in
-            guard let self else { return }
-            do {
-                let inspector = try await model.inspector(for: device)
-                guard generation == request, !Task.isCancelled else { return }
-                self.inspector = inspector
-                if page == .info {
-                    let snapshot = await inspector.info()
-                    guard generation == request, !Task.isCancelled else { return }
-                    var properties = snapshot.fields
-                    if properties.isEmpty {
-                        properties["name"] = .string(device.name)
-                        if let os = device.operatingSystem { properties["operatingSystem"] = .string(os) }
-                        if let model = device.modelIdentifier { properties["modelIdentifier"] = .string(model) }
-                        switch device {
-                        case .simulator(let simulator):
-                            properties["udid"] = .string(simulator.identifier)
-                            properties["state"] = .string(simulator.state)
-                        case .remote(let remote):
-                            properties["identifier"] = .string(remote.identifier)
-                            if let udid = remote.udid { properties["udid"] = .string(udid) }
-                            if let connection = remote.connectionState { properties["connectionState"] = .string(connection) }
-                        }
-                    }
-                    info.setProperties(properties)
-                    lastIssue = snapshot.issues.map(\.localizedDescription).joined(separator: "\n")
-                } else if content == .applications {
-                    guard canReadApplications else {
-                        throw DeviceInspectorError.unsupported(device.kind == .simulator ? "Start this simulator to inspect its applications." : "This device does not currently support application inspection. Connect and unlock it, then refresh.")
-                    }
-                    let apps = try await inspector.applications()
-                    guard generation == request, !Task.isCancelled else { return }
-                    applications = apps
-                    updateRows()
-                    lastIssue = apps.isEmpty ? "No applications installed." : nil
-                } else if content == .reports {
-                    guard inspector.supportsReportListing || device.kind == .simulator else {
-                        throw DeviceInspectorError.unsupported("This device does not currently support reports. Connect and unlock it, then refresh.")
-                    }
-                    let snapshot = try await inspector.reports()
-                    guard generation == request, !Task.isCancelled else { return }
-                    reports = snapshot.reports.sorted {
-                        if $0.modificationDate != $1.modificationDate { return ($0.modificationDate ?? .distantPast) > ($1.modificationDate ?? .distantPast) }
-                        return $0.relativePath.localizedStandardCompare($1.relativePath) == .orderedAscending
-                    }
-                    rebuildReportFilter()
-                    updateRows()
-                    lastIssue = snapshot.issues.isEmpty ? (reports.isEmpty ? "No reports available." : nil)
-                        : "\(snapshot.issues.count) reports returned incomplete metadata. Available reports are shown."
-                } else {
-                    guard canReadProfiles else {
-                        let message: String
-                        if case .simulator(let simulator) = device, simulator.deviceSetPath != nil {
-                            message = "Profiles are unavailable for simulators in custom device sets."
-                        } else { message = "This device does not currently support \(content.title.lowercased())." }
-                        throw DeviceInspectorError.unsupported(message)
-                    }
-                    let snapshot = try await inspector.profiles(kind: content.profileKind)
-                    guard generation == request, !Task.isCancelled else { return }
-                    profiles = snapshot.profiles
-                    updateRows()
-                    let partial = content == .configuration ? snapshot.partialConfigurationProfiles : snapshot.partialProvisioningProfiles
-                    lastIssue = partial.isEmpty ? (profileRows.isEmpty ? "No profiles installed." : nil)
-                        : "\(partial.count) profiles returned incomplete records. Available profiles are shown."
-                }
-            } catch {
-                guard generation == request, !Task.isCancelled else { return }
-                lastIssue = error.localizedDescription
-            }
-            guard generation == request, !Task.isCancelled else { return }
-            reading = false
-            readTask = nil
-            updateControls()
-        }
+        inspection.reload { [model] in try await model.inspector(for: $0) }
     }
 
     @objc private func changeContent(_ sender: NSPopUpButton) {
@@ -3666,7 +3202,7 @@ private final class ManagerDeviceInspectorController: NSViewController, NSTableV
     @objc private func revealContainer(_ sender: Any?) {
         guard available, simulatorIsRunning, let app = selectedApp, let inspector else { return }
         let request = generation
-        readTask = Task { [weak self] in
+        revealTask = Task { [weak self] in
             do {
                 let url = try await inspector.applicationContainerURL(bundleIdentifier: app.bundleIdentifier)
                 guard let self, generation == request, !Task.isCancelled else { return }
