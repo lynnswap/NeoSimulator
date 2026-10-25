@@ -1228,6 +1228,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         simulatorMenus.addCloseWindowCommands(to: file)
         file.addItem(.separator())
         addItem("Save Screenshot…", action: #selector(RemoteDeviceWindowController.saveScreenshot(_:)), key: "s", to: file).target = nil
+        simulatorMenus.addScreenshotDestinationCommand(to: file)
         addItem("Discard Screenshot…", action: #selector(RemoteDeviceWindowController.discardScreenshot(_:)), to: file).target = nil
         addItem("Record Screen", action: #selector(RemoteDeviceWindowController.recordScreen(_:)), key: "r", to: file).target = nil
         let recordTo = addItem("Record Screen…", action: #selector(RemoteDeviceWindowController.recordScreenTo(_:)), key: "r", to: file)

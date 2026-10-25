@@ -319,6 +319,15 @@ struct InputFocusTests {
     }
 
     @Test func quickSaveScreenUsesTheScreenshotFolderAndMaskPreference() async throws {
+        let menus = MenuController(application: nil)
+        let file = NSMenu(title: "File")
+        menus.addScreenshotDestinationCommand(to: file)
+        let destination = try #require(file.items.first)
+        #expect(destination.representedObject as? String == DeviceCommand.ID.saveScreenAs.rawValue)
+        #expect(destination.keyEquivalent == "s" && destination.keyEquivalentModifierMask == [.command, .option])
+        #expect(destination.isAlternate && destination.target === menus && destination.action != nil)
+        let chooseDestination = DeviceCommand.command(.saveScreenAs)
+        #expect(!chooseDestination.validate(destination, for: nil))
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -344,8 +353,16 @@ struct InputFocusTests {
         for framebufferMask in [true, false] {
             let controller = try makeController(TestDisplay(), framebufferMask: framebufferMask, simctl: simctl)
             defer { controller.invalidate() }
+            #expect(chooseDestination.validate(destination, for: controller))
+            #expect(controller.session.reserve())
+            #expect(!chooseDestination.validate(destination, for: controller))
+            controller.session.release()
             controller.perform(.saveScreen)
-            for _ in 0..<200 where controller.session.isBusy { try await Task.sleep(for: .milliseconds(10)) }
+            while controller.session.isBusy {
+                await withCheckedContinuation { continuation in
+                    withObservationTracking { _ = controller.session.isBusy } onChange: { continuation.resume() }
+                }
+            }
             #expect(try lastScreenshot()?.contains("--mask=\(framebufferMask ? "alpha" : "ignored")") == true)
             _ = try await controller.session.screenPNG()
             #expect(try lastScreenshot()?.contains("--mask=ignored") == true)

@@ -205,6 +205,10 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
              in: file).isAlternate = true
     }
 
+    func addScreenshotDestinationCommand(to file: NSMenu) {
+        commands([.saveScreenAs], in: file)
+    }
+
     private func addGPUSelection(to file: NSMenu) {
         let gpu = menu("GPU Selection", in: file)
         for (title, preference) in [("Automatic", GPUPolicy.Preference.automatic),
