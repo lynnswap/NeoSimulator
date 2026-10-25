@@ -165,10 +165,10 @@ struct DeviceCommand {
                       isSupported: { $0.supportsFeature(DeviceCapabilities.displayRotation) },
                       isEnabled: { _ in true },
                       state: { _ in
-                          UserDefaults.standard.bool(forKey: HostPreferences.rotateWindowWhenSignaledByGuest) ? .on : .off
+                          HostPreferences.defaults.bool(forKey: HostPreferences.rotateWindowWhenSignaledByGuest) ? .on : .off
                       }) { _ in
             let key = HostPreferences.rotateWindowWhenSignaledByGuest
-            UserDefaults.standard.set(!UserDefaults.standard.bool(forKey: key), forKey: key)
+            HostPreferences.defaults.set(!HostPreferences.defaults.bool(forKey: key), forKey: key)
         },
         DeviceCommand(id: .home, title: "Home", key: "h", modifiers: [.command, .shift],
                       toolbar: Toolbar(label: "Home", symbol: "house", buttonWidth: 31)) { $0.send(.press(.button(.home))) },
@@ -299,6 +299,7 @@ struct DeviceCommand {
             $0.tvRemote.toggle()
         },
         DeviceCommand(id: .stayOnTop, title: "Stay On Top",
+                      isEnabled: { !$0.isEmbedded && $0.session.canPerformCommands },
                       state: { $0.staysOnTop ? .on : .off }) { $0.toggleStayOnTop() },
         scale(.physicalSize, title: "Physical Size", key: "1"),
         scale(.pointAccurate, title: "Point Accurate", key: "2"),

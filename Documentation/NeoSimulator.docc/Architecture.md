@@ -1,7 +1,8 @@
 # Architecture
 
-The manager app owns host selection, preference recovery, and physical-device
-and VM screens. Its embedded renderer owns simulator sessions.
+The manager app owns host selection, preference recovery, and device screen
+presentation. Its embedded renderer processes retain simulator guest ownership
+and monitor manager termination independently of the presentation windows.
 
 ## Hosts and preferences
 
@@ -67,12 +68,20 @@ when a device connects or disconnects. The observation does not advertise the
 Mac or request pairing. VM power and removal operations resolve CoreDevice
 capability implementations for the current target. These private interfaces run
 in the manager process through ABIBridge, so availability and ABI failures affect
-that process. Simulator display and clipboard ownership remain in their renderers.
+that process. Simulator display and clipboard sessions also run in the manager;
+headless renderer processes own guest boot, restart, and shutdown.
 
-Each Xcode installation has its own renderer process. The renderer has a
-distinct bundle identity and runs separately because its loaded Objective-C
-framework classes cannot be unloaded. This allows device windows to use
-different framework versions at the same time.
+Each Xcode installation has its own headless renderer process with a distinct
+bundle identity. The manager loads one compatible SimulatorKit UI toolkit for
+its process lifetime and opens device service contexts for each owning Xcode.
+Loaded Objective-C framework classes cannot be unloaded, so UI toolkit selection
+stays fixed while device operations retain their own developer context.
+
+The same presentation owner retains the connection, input queue, recording, and
+captures when its view controller moves between the center pane and a compact
+window. Moving a presentation does not invoke device-close policy. Restart
+finishes recording and disconnects presentation before the headless backend
+mutates the guest, then reconnects the retained presentation controller.
 
 Termination checks the running app's bundle identifier and normalized bundle
 URL. The renderer's startup acknowledgement follows runtime creation,
@@ -81,8 +90,9 @@ LaunchServices result alone does not establish successful startup.
 
 `HostConflictMonitor` rejects a competing host at startup and observes later
 launches. If Device Hub or Simulator.app appears, Neo cancels operations,
-disconnects sessions, and exits, leaving devices running for handover. It does
-not terminate the competing application.
+disconnects sessions, and retires the affected host, leaving devices running
+for handover. An in-process presentation host leaves the manager running. It
+does not terminate the competing application.
 
 ## Device-to-Xcode association
 

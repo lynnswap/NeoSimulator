@@ -17,8 +17,9 @@ To update, quit NeoSimulator, replace the app in Applications, and reopen it.
 
 NeoSimulator supports iPhone, iPad, Apple Watch, Apple TV, and Apple Vision Pro,
 with device windows, input, screen capture, pasteboard exchange, and simulator
-controls. Select a device in the main window and choose **View Screen** to open
-its simulator window. You can also choose **Device** in the Dock menu or
+controls. Select a device in the main window and choose **View Screen** to display
+it in the center pane. **Switch to Compact Window** moves the same screen into
+a separate window; **Show in Main Window** returns it to the browser. You can also choose **Device** in the Dock menu or
 **File → Open Simulator** to start a device or bring its window forward. The
 menus group devices by OS version.
 

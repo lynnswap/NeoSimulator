@@ -1,10 +1,133 @@
 import ABIBridge
 import AppKit
+import Darwin
+import Observation
 import Testing
 import Synchronization
 
 @Suite(.serialized) @MainActor
 struct InputFocusTests {
+    @Test func embeddedAndCompactPresentationsKeepOneSessionAndInputOwner() async throws {
+        _ = NSApplication.shared
+        let display = TestDisplay()
+        let preferences = MemoryPreferences()
+        let screens = NSScreen.screens.map(\.frame)
+        let visible = try #require(NSScreen.main?.visibleFrame)
+        let savedCenter = NSPoint(x: visible.midX, y: visible.midY)
+        preferences.setWindowGeometry(center: savedCenter, scale: 0.5, forDevice: "test-device", screens: screens)
+        var closes = 0
+        var compactPresentations = 0
+        var shutdownRequests = 0
+        let controller = try makeController(display, features: [DeviceCapabilities.keyboard], preferences: preferences,
+            presentCompactWindow: { _ in compactPresentations += 1 }, onClose: { _, _ in closes += 1 },
+            onShutDown: { _ in shutdownRequests += 1 })
+        defer { controller.invalidate() }
+        let session = controller.session
+        let parent = NSViewController()
+        parent.view = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 600))
+        let window = KeyPresentationWindow(contentRect: parent.view.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentViewController = parent
+        defer { window.close() }
+        controller.embed(in: parent)
+        let untouched = preferences.windowGeometry(forDevice: "test-device", screens: screens)
+        #expect(untouched.center == savedCenter && untouched.scale == 0.5)
+        parent.view.layoutSubtreeIfNeeded()
+        #expect(controller.presentationViewController.parent === parent)
+        #expect(controller.presentationWindow === window)
+        #expect(DeviceWindowController.deviceWindow(for: window) === controller)
+        let screenshot = NSMenuItem(title: "Save Screenshot", action: #selector(DeviceWindowController.saveScreenshot(_:)), keyEquivalent: "")
+        #expect(controller.presentationViewController.supplementalTarget(forAction: screenshot.action!, sender: screenshot)
+            as AnyObject? === controller)
+        #expect(controller.validateMenuItem(screenshot))
+        #expect(display.view.superview === controller.presentationViewController.view)
+        controller.focusInput()
+        #expect(window.firstResponder === display.inputView)
+        #expect(controller.session === session && display.disconnectCount == 0)
+        #expect(!DeviceCommand.command(.fitScreen).isEnabled(controller))
+        #expect(!DeviceCommand.command(.stayOnTop).isEnabled(controller))
+        controller.perform(.stayOnTop)
+        #expect(controller.window?.level == .normal)
+        controller.perform(.shutDown)
+        #expect(shutdownRequests == 1 && display.isBooted && session.isConnected)
+        parent.view.setFrameSize(NSSize(width: 300, height: 480))
+        parent.view.layoutSubtreeIfNeeded()
+        let content = controller.presentationViewController.view
+        #expect(content.bounds.contains(display.view.frame))
+        controller.detachPresentation()
+        #expect(controller.presentationViewController.parent == nil && content.superview == nil)
+        #expect(display.disconnectCount == 0 && closes == 0)
+        controller.showCompactWindow()
+        #expect(!controller.isEmbedded && compactPresentations == 1)
+        let compactWindow = try #require(controller.window)
+        #expect(abs(compactWindow.frame.midX - savedCenter.x) < 1 && abs(compactWindow.frame.midY - savedCenter.y) < 1)
+        #expect(DeviceCommand.command(.fitScreen).isEnabled(controller))
+        #expect(DeviceCommand.command(.stayOnTop).isEnabled(controller))
+        controller.perform(.stayOnTop)
+        #expect(controller.window?.level == .floating)
+        controller.perform(.stayOnTop)
+        #expect(controller.window?.level == .normal)
+        #expect(controller.window?.contentView === content)
+        controller.setScale(.physicalSize)
+        let compactScale = display.renderScale
+        compactWindow.setFrameOrigin(NSPoint(x: visible.minX + 20, y: visible.minY + 20))
+        let movedCenter = NSPoint(x: compactWindow.frame.midX, y: compactWindow.frame.midY)
+        controller.embed(in: parent)
+        parent.view.layoutSubtreeIfNeeded()
+        controller.detachPresentation()
+        controller.embed(in: parent)
+        controller.showCompactWindow()
+        #expect(WindowScale.matches(display.renderScale, compactScale))
+        #expect(abs(compactWindow.frame.midX - movedCenter.x) < 1 && abs(compactWindow.frame.midY - movedCenter.y) < 1)
+        controller.embed(in: parent)
+        #expect(controller.session === session && display.disconnectCount == 0 && closes == 0)
+        let search = NSSearchField(frame: NSRect(x: 0, y: 0, width: 200, height: 24))
+        parent.view.addSubview(search)
+        #expect(window.makeFirstResponder(search))
+        let editor = window.firstResponder
+        #expect(editor !== display.inputView)
+        NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: window)
+        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
+        #expect(window.firstResponder === editor)
+        controller.focusInput()
+        await controller.prepareForRestart()
+        let replacement = TestDisplay()
+        let replacementSession = try makeSession(replacement, features: [DeviceCapabilities.keyboard])
+        controller.reconnect(replacementSession, present: false)
+        #expect(controller.isEmbedded && controller.presentationViewController.parent === parent)
+        #expect(controller.session === replacementSession && compactPresentations == 2)
+        #expect(replacement.disconnectCount == 0 && display.disconnectCount == 1 && closes == 0)
+        #expect(window.firstResponder === replacement.inputView && replacement.keyboard.last == true)
+        let sheet = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 100),
+                             styleMask: .titled, backing: .buffered, defer: false)
+        sheet.isReleasedWhenClosed = false
+        let originalAnimation = window.animationBehavior
+        window.animationBehavior = .none
+        sheet.animationBehavior = .none
+        let (endedSheets, sheetEnded) = AsyncStream<NSApplication.ModalResponse>.makeStream()
+        defer {
+            if window.attachedSheet === sheet { window.endSheet(sheet, returnCode: .cancel) }
+            sheet.orderOut(nil)
+            sheet.close()
+            window.animationBehavior = originalAnimation
+        }
+        window.beginSheet(sheet) { response in
+            sheetEnded.yield(response)
+            sheetEnded.finish()
+        }
+        #expect(window.attachedSheet === sheet)
+        replacement.onDisconnect = { #expect(window.attachedSheet == nil) }
+        controller.invalidate()
+        #expect(window.attachedSheet == nil)
+        if window.attachedSheet === sheet { window.endSheet(sheet, returnCode: .cancel) }
+        var ended = endedSheets.makeAsyncIterator()
+        #expect(await ended.next() == .cancel)
+        #expect(replacement.disconnectCount == 1 && display.disconnectCount == 1 && closes == 0)
+        let saved = preferences.windowGeometry(forDevice: session.device.identity.preferenceIdentifier, screens: NSScreen.screens.map(\.frame))
+        #expect(saved.scale.map { WindowScale.matches($0, compactScale) } == true)
+        #expect(saved.center == movedCenter)
+    }
+
     @Test func commandsAndActivationRestoreTheNativeInputOwner() throws {
         _ = NSApplication.shared
         let display = TestDisplay()
@@ -219,6 +342,15 @@ struct InputFocusTests {
     }
 
     @Test func quickSaveScreenUsesTheScreenshotFolderAndMaskPreference() async throws {
+        let menus = MenuController(application: nil)
+        let file = NSMenu(title: "File")
+        menus.addScreenshotDestinationCommand(to: file)
+        let destination = try #require(file.items.first)
+        #expect(destination.representedObject as? String == DeviceCommand.ID.saveScreenAs.rawValue)
+        #expect(destination.keyEquivalent == "s" && destination.keyEquivalentModifierMask == [.command, .option])
+        #expect(destination.isAlternate && destination.target === menus && destination.action != nil)
+        let chooseDestination = DeviceCommand.command(.saveScreenAs)
+        #expect(!chooseDestination.validate(destination, for: nil))
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -244,8 +376,16 @@ struct InputFocusTests {
         for framebufferMask in [true, false] {
             let controller = try makeController(TestDisplay(), framebufferMask: framebufferMask, simctl: simctl)
             defer { controller.invalidate() }
+            #expect(chooseDestination.validate(destination, for: controller))
+            #expect(controller.session.reserve())
+            #expect(!chooseDestination.validate(destination, for: controller))
+            controller.session.release()
             controller.perform(.saveScreen)
-            for _ in 0..<200 where controller.session.isBusy { try await Task.sleep(for: .milliseconds(10)) }
+            while controller.session.isBusy {
+                await withCheckedContinuation { continuation in
+                    withObservationTracking { _ = controller.session.isBusy } onChange: { continuation.resume() }
+                }
+            }
             #expect(try lastScreenshot()?.contains("--mask=\(framebufferMask ? "alpha" : "ignored")") == true)
             _ = try await controller.session.screenPNG()
             #expect(try lastScreenshot()?.contains("--mask=ignored") == true)
@@ -389,6 +529,26 @@ struct InputFocusTests {
         #expect(display.input.keyDowns.map(\.keyCode) == [6, 7, 8, 9])
         window.makeFirstResponder(window)
         #expect(NSApp.mainMenu?.performKeyEquivalent(with: editing[3]) == true)
+        let externalDisplay = TestDisplay()
+        let external = try ExternalDisplayWindowController(session: controller.session, display: externalDisplay,
+            state: ExternalScreenState(isPoweredOn: true, pixelSize: CGSize(width: 720, height: 480), scale: 1),
+            deviceWindow: controller, preferences: MemoryPreferences(), onClose: {})
+        defer { external.invalidate() }
+        let externalWindow = try #require(external.window)
+        #expect(externalWindow.makeFirstResponder(externalDisplay.inputView))
+        #expect(externalWindow.firstResponder === externalDisplay.inputView)
+        #expect(DeviceWindowController.deviceWindow(for: externalWindow) === controller)
+        let editMenu = try #require(NSApp.mainMenu?.items.first { $0.title == "Edit" }?.submenu as? EditMenu)
+        for event in editing {
+            let characters = try #require(event.characters)
+            let charactersIgnoringModifiers = try #require(event.charactersIgnoringModifiers)
+            let externalEvent = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: externalWindow.windowNumber, context: nil,
+                characters: characters, charactersIgnoringModifiers: charactersIgnoringModifiers,
+                isARepeat: false, keyCode: event.keyCode))
+            #expect(externalEvent.window === externalWindow)
+            #expect(!editMenu.performKeyEquivalent(with: externalEvent))
+        }
     }
 
     @Test func editMenuEndsWithSimulatorAppsPasteboardCommands() throws {
@@ -801,12 +961,33 @@ struct InputFocusTests {
         let overlay = InputView()
         display.view.addSubview(overlay)
         let toolbar = NSToolbar(identifier: "PluginToolbar")
+        let pluginDelegate = TestPluginToolbarDelegate()
+        toolbar.delegate = pluginDelegate
+        toolbar.insertItem(withItemIdentifier: TestPluginToolbarDelegate.itemIdentifier, at: 0)
         // SimulatorKit loads the Apple Vision Pro plugin before opening its window.
         display.plugin = SimulatorUserInterfacePlugin(overlayView: overlay, toolbar: toolbar)
         let controller = try makeController(display, family: .vision, features: [], userInterfacePlugin: true)
         defer { controller.invalidate() }
         let window = try #require(controller.window)
         #expect(window.toolbar === toolbar)
+        var mainWindowRequests = 0
+        controller.onShowInMainWindow = { mainWindowRequests += 1 }
+        let mainWindowItem = try #require(toolbar.items.first { $0.itemIdentifier.rawValue == "ShowInMainWindow" })
+        #expect(toolbar.items.contains { $0.itemIdentifier == TestPluginToolbarDelegate.itemIdentifier })
+        #expect(toolbar.delegate?.toolbarSelectableItemIdentifiers?(toolbar) == [TestPluginToolbarDelegate.itemIdentifier])
+        #expect(NSApp.sendAction(try #require(mainWindowItem.action), to: mainWindowItem.target, from: mainWindowItem))
+        #expect(mainWindowRequests == 1)
+        controller.windowWillEnterFullScreen(Notification(name: NSWindow.willEnterFullScreenNotification, object: window))
+        mainWindowItem.validate()
+        #expect(!mainWindowItem.isEnabled)
+        controller.showInMainWindow(nil)
+        #expect(mainWindowRequests == 1)
+        controller.windowDidFailToEnterFullScreen(window)
+        mainWindowItem.validate()
+        #expect(mainWindowItem.isEnabled)
+        controller.onShowInMainWindow = nil
+        #expect(!toolbar.items.contains { $0.itemIdentifier.rawValue == "ShowInMainWindow" })
+        #expect(toolbar.items.contains { $0.itemIdentifier == TestPluginToolbarDelegate.itemIdentifier })
         controller.focusInput()
         #expect(window.firstResponder === overlay)
         #expect(!overlay.modifiers.isEmpty && display.input.modifiers.isEmpty)
@@ -1047,17 +1228,25 @@ struct InputFocusTests {
 
     // MARK: Apple TV Remote
 
-    @Test func theAppleTVRemoteItemShowsAndHidesTheRemoteAsInSimulatorApp() throws {
+    @Test(arguments: [false, true]) func theAppleTVRemoteItemShowsAndHidesTheRemoteAsInSimulatorApp(integrated: Bool) throws {
         _ = NSApplication.shared
         let menus = MenuController(application: nil)
-        menus.install()
+        let windowMenu: NSMenu
+        if integrated {
+            windowMenu = NSMenu(title: "View")
+            menus.addScreenCommands(file: NSMenu(), edit: NSMenu(), view: windowMenu)
+        } else {
+            menus.install()
+            windowMenu = try #require(NSApp.mainMenu?.items.first { $0.title == "Window" }?.submenu)
+        }
         defer { NSApp.mainMenu = nil }
-        let windowMenu = try #require(NSApp.mainMenu?.items.first { $0.title == "Window" }?.submenu)
         let item = try #require(windowMenu.items.first { $0.title == "Show Apple TV Remote" })
         // Matches Simulator.app's MainMenu.nib placement and shortcut.
         let index = windowMenu.index(of: item)
         #expect(windowMenu.items[index - 1].title == "Show Device Bezels")
         #expect(windowMenu.items[index + 1].title == "Stay On Top")
+        let fullScreen = try #require(windowMenu.items.first { $0.title == "Enter Full Screen" })
+        #expect(fullScreen.keyEquivalent == "f" && fullScreen.keyEquivalentModifierMask == [.command, .control])
         #expect(item.keyEquivalent == "r" && item.keyEquivalentModifierMask == [.command, .shift])
         for family in [DeviceCapabilities.Family.iPhone, .iPad, .tv, .watch, .vision] {
             menus.updateVisibility(in: windowMenu, for: DeviceCapabilities(family: family, runtimeVersion: 0x1B_00_00,
@@ -1553,7 +1742,7 @@ struct InputFocusTests {
         #expect(gaze.action == Selector(("toggleShowGazeTarget:")) && gaze.target == nil)
     }
 
-    @Test func onlyADeviceThatRotatesReadsItsOrientation() async throws {
+    @Test(arguments: [false, true]) func onlyADeviceThatRotatesReadsItsOrientation(embedded: Bool) async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -1569,15 +1758,29 @@ struct InputFocusTests {
                                        devicectl: devicectl)
         defer { watch.invalidate() }
         var position = NSPoint.zero
-        watch.showNewWindow(cascadingFrom: &position)
+        let parent = NSViewController()
+        parent.view = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 600))
+        if embedded { watch.embed(in: parent) }
+        else { watch.showNewWindow(cascadingFrom: &position) }
         #expect(!watch.session.isBusy)
         #expect(!FileManager.default.fileExists(atPath: log.path))
         let phone = try makeController(TestDisplay(), devicectl: devicectl, device: "phone")
         defer { phone.invalidate() }
-        phone.showNewWindow(cascadingFrom: &position)
+        if embedded { phone.embed(in: parent) }
+        else { phone.showNewWindow(cascadingFrom: &position) }
         #expect(phone.session.isBusy)
-        try await wait { !phone.session.isBusy }
+        while phone.session.isBusy {
+            await withCheckedContinuation { continuation in
+                withObservationTracking { _ = phone.session.isBusy } onChange: { continuation.resume() }
+            }
+        }
         #expect(try String(contentsOf: log, encoding: .utf8).contains("orientation get"))
+        if embedded {
+            phone.showCompactWindow()
+            phone.embed(in: parent)
+            #expect(!phone.session.isBusy)
+            #expect(try String(contentsOf: log, encoding: .utf8).split(separator: "\n").count == 1)
+        }
     }
 
     @Test func orientationReadingsKeepTheUprightAngleWhileFlat() throws {
@@ -2140,8 +2343,12 @@ struct InputFocusTests {
             display.onRotation = { [unowned display] in display.naturalSize = $0 == 0 ? portrait : landscape }
             return (try makeController(display, devicectl: devicectl, device: device, preferences: preferences), display)
         }
-        func readOrientation(_ controller: DeviceWindowController) async throws {
-            for _ in 0..<300 where controller.session.isBusy { try await Task.sleep(for: .milliseconds(10)) }
+        func readOrientation(_ controller: DeviceWindowController) async {
+            while controller.session.isBusy {
+                await withCheckedContinuation { continuation in
+                    withObservationTracking { _ = controller.session.isBusy } onChange: { continuation.resume() }
+                }
+            }
         }
         let visible = try #require(NSScreen.screens.first?.visibleFrame)
         let center = NSPoint(x: visible.midX, y: visible.midY)
@@ -2152,7 +2359,7 @@ struct InputFocusTests {
         let (reopened, display) = try open("A")
         defer { reopened.invalidate() }
         reopened.showNewWindow(cascadingFrom: &cascade)
-        try await readOrientation(reopened)
+        await readOrientation(reopened)
         #expect(display.rotations == [90])
         let window = try #require(reopened.window)
         #expect(window.contentLayoutRect.width == landscape.width)
@@ -2164,14 +2371,14 @@ struct InputFocusTests {
         let movedWindow = try #require(moved.window)
         movedWindow.setFrameOrigin(NSPoint(x: movedWindow.frame.minX - 20, y: movedWindow.frame.minY - 20))
         let topLeft = NSPoint(x: movedWindow.frame.minX, y: movedWindow.frame.maxY)
-        try await readOrientation(moved)
+        await readOrientation(moved)
         #expect(movedWindow.contentLayoutRect.width == landscape.width)
         #expect(abs(movedWindow.frame.minX - topLeft.x) < 1 && abs(movedWindow.frame.maxY - topLeft.y) < 1)
         let (centered, _) = try open("C")
         defer { centered.invalidate() }
         var first = NSPoint.zero
         centered.showNewWindow(cascadingFrom: &first)
-        try await readOrientation(centered)
+        await readOrientation(centered)
         let centeredWindow = try #require(centered.window)
         #expect(centeredWindow.contentLayoutRect.width == landscape.width)
         let placed = centeredWindow.frame
@@ -2187,7 +2394,7 @@ struct InputFocusTests {
         defer { rescaled.invalidate() }
         #expect(tallDisplay.renderScale < 0.5)
         rescaled.showNewWindow(cascadingFrom: &cascade)
-        try await readOrientation(rescaled)
+        await readOrientation(rescaled)
         #expect(tallDisplay.renderScale == 0.5)
         let rescaledWindow = try #require(rescaled.window)
         #expect(rescaledWindow.contentLayoutRect.width == landscape.width * 0.5)
@@ -2206,7 +2413,7 @@ struct InputFocusTests {
         guestDisplay.guestInterfaceAngle = 90
         guestDisplay.onPropertiesChange?()
         #expect(guestDisplay.rotations == [90] && guestRotated.session.isBusy)
-        try await readOrientation(guestRotated)
+        await readOrientation(guestRotated)
         #expect(guestDisplay.renderScale == 0.5)
         let guestWindow = try #require(guestRotated.window)
         #expect(abs(guestWindow.frame.midX - center.x) < 1 && abs(guestWindow.frame.midY - center.y) < 1)
@@ -2218,7 +2425,7 @@ struct InputFocusTests {
         defer { reshown.invalidate() }
         reshown.showNewWindow(cascadingFrom: &cascade)
         reshown.showAndActivate()
-        try await readOrientation(reshown)
+        await readOrientation(reshown)
         #expect(reshownDisplay.renderScale == 0.5)
         let reshownWindow = try #require(reshown.window)
         #expect(abs(reshownWindow.frame.midX - center.x) < 1 && abs(reshownWindow.frame.midY - center.y) < 1)
@@ -2312,7 +2519,7 @@ struct InputFocusTests {
         #expect(controller.canSetScale(.fitScreen))
     }
 
-    @Test func showDeviceBezelsIsAnAppWidePreference() throws {
+    @Test(arguments: [false, true]) func showDeviceBezelsIsAnAppWidePreference(integrated: Bool) throws {
         _ = NSApplication.shared
         let preferences = MemoryPreferences()
         preferences.set(false, forKey: HostPreferences.showChrome)
@@ -2326,16 +2533,35 @@ struct InputFocusTests {
         #expect(controller.window?.styleMask.contains(.resizable) == true)
         #expect(display.view.frame.size == NSSize(width: 200, height: 300))
         let menus = MenuController(application: nil)
-        menus.install()
-        defer { NSApp.mainMenu = nil }
-        let item = try #require(NSApp.mainMenu?.items.first { $0.title == "Window" }?.submenu?.items
-            .first { $0.title == "Show Device Bezels" })
+        var updates: [Bool] = []
+        menus.toggleDeviceBezels = {
+            let shows = !HostPreferences.defaults.showsDeviceBezels
+            HostPreferences.defaults.set(shows, forKey: HostPreferences.showChrome)
+            updates.append(shows)
+            controller.setDeviceBezelVisible(shows)
+        }
+        let windowMenu: NSMenu
+        if integrated {
+            windowMenu = NSMenu(title: "View")
+            menus.addScreenCommands(file: NSMenu(), edit: NSMenu(), view: windowMenu)
+        } else {
+            menus.install()
+            windowMenu = try #require(NSApp.mainMenu?.items.first { $0.title == "Window" }?.submenu)
+        }
+        defer {
+            NSApp.mainMenu = nil
+            withExtendedLifetime(menus) {}
+        }
+        let item = try #require(windowMenu.items.first { $0.title == "Show Device Bezels" })
         let saved = UserDefaults.standard.persistentDomain(forName: Bundle.main.bundleIdentifier ?? "")?[HostPreferences.showChrome]
         defer { UserDefaults.standard.set(saved, forKey: HostPreferences.showChrome) }
         for shows in [false, true] {
             UserDefaults.standard.set(shows, forKey: HostPreferences.showChrome)
-            _ = menus.validateMenuItem(item)
+            #expect(menus.validateMenuItem(item))
             #expect(item.state == (shows ? .on : .off))
+            #expect(NSApp.sendAction(try #require(item.action), to: item.target, from: item))
+            #expect(updates.last == !shows && HostPreferences.defaults.showsDeviceBezels == !shows)
+            #expect((display.chromePadding != nil) == !shows)
         }
     }
 
@@ -2983,29 +3209,59 @@ struct InputFocusTests {
     }
 
     @Test func aRestartFinishesTheRecordingBeforeDisconnecting() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let stopping = directory.appendingPathComponent("stopping"), finish = directory.appendingPathComponent("finish")
+        try #require(mkfifo(stopping.path, 0o600) == 0 && mkfifo(finish.path, 0o600) == 0)
+        let stoppingDescriptor = open(stopping.path, O_RDWR)
+        try #require(stoppingDescriptor >= 0)
+        let stoppingHandle = FileHandle(fileDescriptor: stoppingDescriptor, closeOnDealloc: true)
+        let finishDescriptor = open(finish.path, O_RDWR)
+        try #require(finishDescriptor >= 0)
+        let finishHandle = FileHandle(fileDescriptor: finishDescriptor, closeOnDealloc: true)
+        let (acknowledgements, acknowledgement) = AsyncStream<Void>.makeStream()
+        stoppingHandle.readabilityHandler = { handle in
+            if !handle.availableData.isEmpty { acknowledgement.yield(()) }
+        }
+        defer {
+            stoppingHandle.readabilityHandler = nil
+            acknowledgement.finish()
+            try? stoppingHandle.close()
+            try? finishHandle.close()
+        }
         let display = TestDisplay()
         var recorder: Process?
         let controller = try makeController(display, recordingProcess: { _, _ in
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/bin/sh")
             process.arguments = ["-c", """
-                trap 'sleep 0.2; exit 0' INT
+                exec 3<> "\(finish.path)"
+                exec 4<> "\(stopping.path)"
+                trap 'printf stopping >&4; IFS= read -r token <&3; exit 0' INT
                 echo 'Recording started' >&2
-                while :; do sleep 0.05; done
+                while :; do IFS= read -r token <&3; done
                 """]
             recorder = process
             return process
         })
         defer { controller.invalidate() }
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
         try controller.session.startRecording(to: .file(directory.appendingPathComponent("Recording.mov")), mask: .ignored)
         // SIGINT is safe only after the first-frame acknowledgement.
-        try await Task.sleep(for: .milliseconds(300))
+        let recording = try #require(controller.session.recording)
+        while !recording.hasStarted {
+            await withCheckedContinuation { continuation in
+                withObservationTracking { _ = recording.hasStarted } onChange: { continuation.resume() }
+            }
+        }
         var recordingAtDisconnect: Bool?
         display.onDisconnect = { recordingAtDisconnect = recorder?.isRunning }
-        await controller.prepareForRestart()
+        let restart = Task { await controller.prepareForRestart() }
+        var iterator = acknowledgements.makeAsyncIterator()
+        try #require(await iterator.next() != nil)
+        #expect(recordingAtDisconnect == nil && display.disconnectCount == 0)
+        try finishHandle.write(contentsOf: Data("finish\n".utf8))
+        await restart.value
         #expect(recordingAtDisconnect == false)
     }
 
@@ -3329,16 +3585,24 @@ struct InputFocusTests {
         #expect(opened == [log])
     }
 
-    @Test func gpuSelectionRewritesCoreSimulatorsPolicyAsSimulatorAppDoes() throws {
+    @Test(arguments: [false, true]) func gpuSelectionRewritesCoreSimulatorsPolicyAsSimulatorAppDoes(integrated: Bool) throws {
         _ = NSApplication.shared
         let defaults = try #require(MemoryDefaults(suiteName: nil))
         let menus = MenuController(application: nil, gpuPolicy: GPUPolicy(defaults: defaults))
-        menus.install()
+        let file: NSMenu
+        if integrated {
+            file = NSMenu(title: "File")
+            menus.addScreenCommands(file: file, edit: NSMenu(), view: NSMenu())
+        } else {
+            menus.install()
+            file = try #require(NSApp.mainMenu?.items.first { $0.title == "File" }?.submenu)
+        }
         defer { NSApp.mainMenu = nil }
-        let file = try #require(NSApp.mainMenu?.items.first { $0.title == "File" }?.submenu)
         let titles = file.items.map { $0.isSeparatorItem ? "-" : $0.title }
         let index = try #require(titles.firstIndex(of: "GPU Selection"))
-        #expect(titles[(index - 2)...(index + 2)] == ["Stop Recording", "-", "GPU Selection", "-", "Install App or Import Media…"])
+        if !integrated {
+            #expect(titles[(index - 2)...(index + 2)] == ["Stop Recording", "-", "GPU Selection", "-", "Install App or Import Media…"])
+        }
         let gpu = try #require(file.items[index].submenu)
         #expect(gpu.items.map { $0.isSeparatorItem ? "-" : $0.title } == [
             "Automatic", "Prefer Integrated GPU", "Prefer Discrete GPU", "-", "Use External GPU When Available",
@@ -5158,8 +5422,24 @@ struct InputFocusTests {
         #expect(!UserDefaults.standard.bool(forKey: key))
     }
 
-    @Test func closeWindowAsksBeforeClosing() throws {
+    @Test(arguments: [false, true]) func closeWindowAsksBeforeClosing(integrated: Bool) throws {
         _ = NSApplication.shared
+        let menus = MenuController(application: nil)
+        let file: NSMenu
+        if integrated {
+            file = NSMenu(title: "File")
+            menus.addCloseWindowCommands(to: file)
+        } else {
+            menus.install()
+            file = try #require(NSApp.mainMenu?.items.first { $0.title == "File" }?.submenu)
+        }
+        defer {
+            NSApp.mainMenu = nil
+            withExtendedLifetime(menus) {}
+        }
+        let item = try #require(file.items.first { $0.title == "Close Window…" })
+        #expect(item.keyEquivalent == "w" && item.keyEquivalentModifierMask == [.command, .control] && item.isAlternate)
+        #expect(item.target === menus && item.action == NSSelectorFromString("closeAsking:"))
         var closes: [DeviceLifetimeChoice?] = []
         let controller = try makeController(TestDisplay(), onClose: { _, choice in closes.append(choice) })
         defer { controller.invalidate() }
@@ -5956,8 +6236,10 @@ struct InputFocusTests {
                                 enhancedMultitasking: Bool = false,
                                 userInterfacePluginLookUp: (attempts: Int, interval: Duration) = (5, .milliseconds(20)),
                                 performWindowDrag: @escaping (NSWindow, NSEvent) -> Void = { _, _ in },
+                                presentCompactWindow: @escaping (NSWindow) -> Void = { $0.makeKeyAndOrderFront(nil) },
                                 onClose: @escaping (DeviceWindowController, DeviceLifetimeChoice?) -> Void = { _, _ in },
-                                onRestart: @escaping (DeviceWindowController, Bool) -> Void = { _, _ in })
+                                onRestart: @escaping (DeviceWindowController, Bool) -> Void = { _, _ in },
+                                onShutDown: ((DeviceWindowController) -> Void)? = nil)
         throws -> DeviceWindowController {
         let session = try makeSession(display, family: family, features: features, framebufferMask: framebufferMask,
                                       simctl: simctl, devicectl: devicectl, recordingProcess: recordingProcess,
@@ -5971,8 +6253,9 @@ struct InputFocusTests {
             session: session, preferences: preferences,
             touchPressure: touchPressure ?? TouchPressure(preferences: preferences, forceTouchTrackpad: { false }),
             tvRemote: tvRemote ?? TVRemoteController(target: { nil }),
-            performWindowDrag: performWindowDrag, userInterfacePluginLookUp: userInterfacePluginLookUp,
-            onClose: onClose, onRestart: onRestart)
+            performWindowDrag: performWindowDrag, presentCompactWindow: presentCompactWindow,
+            userInterfacePluginLookUp: userInterfacePluginLookUp,
+            onClose: onClose, onRestart: onRestart, onShutDown: onShutDown)
     }
 
     /// Yields between checks so image rendering cannot starve other main-actor tests.
@@ -6228,6 +6511,24 @@ private final class InputView: NSView {
         presses.append(event)
         if passesOnPresses { super.mouseDown(with: event) }
     }
+}
+
+/// Models key-window state without showing or activating a window on the WindowServer.
+@MainActor
+private final class KeyPresentationWindow: NSWindow {
+    override var isKeyWindow: Bool { true }
+}
+
+@MainActor
+private final class TestPluginToolbarDelegate: NSObject, NSToolbarDelegate {
+    static let itemIdentifier = NSToolbarItem.Identifier("PluginControl")
+    func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier identifier: NSToolbarItem.Identifier,
+                 willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
+        NSToolbarItem(itemIdentifier: identifier)
+    }
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [Self.itemIdentifier] }
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [Self.itemIdentifier] }
+    func toolbarSelectableItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [Self.itemIdentifier] }
 }
 /// Models menu handling by Apple Vision Pro's XROS.VirtualHMDInputView overlay.
 @MainActor
@@ -7254,9 +7555,9 @@ struct HostBehaviorTests {
 
     @Test func managerRequestsOpenTheExplicitDeviceAndKeepQuitChoices() throws {
         let identifier = UUID().uuidString
-        let options = try HostLaunchOptions(arguments: ["--managed", "--owner-pid", "123", "--owner-launch-date", "1234.5", "--xcode", "/Xcode.app", "--device", identifier, "--device-set", "/custom/XCTestDevices"])
+        let options = try HostLaunchOptions(arguments: ["--managed", "--headless", "--owner-pid", "123", "--owner-launch-date", "1234.5", "--xcode", "/Xcode.app", "--device", identifier, "--device-set", "/custom/XCTestDevices"])
         #expect(options.deviceIdentifier == identifier)
-        #expect(options.isManaged)
+        #expect(options.isManaged && options.isHeadless)
         #expect(options.owner == RendererOwnerIdentity(processIdentifier: 123, launchDate: Date(timeIntervalSinceReferenceDate: 1234.5)))
         #expect(throws: (any Error).self) {
             try HostLaunchOptions(arguments: ["--managed", "--xcode", "/Xcode.app"])

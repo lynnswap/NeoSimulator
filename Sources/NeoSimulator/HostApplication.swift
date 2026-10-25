@@ -7,6 +7,17 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     private let deviceSet: SimulatorDeviceSet
     private let recordings = RecordingStore()
     private let isManaged: Bool
+    private let isHeadless: Bool
+    private let isInProcess: Bool
+    private let suppliedPasteboardSync: PasteboardSync?
+    var onPresent: ((DeviceWindowController) -> Void)?
+    var onClose: ((SimulatorDeviceIdentifier, DeviceLifetimeChoice?, Task<Void, Never>) -> Void)?
+    var onError: ((Error) -> Void)?
+    var onChange: (() -> Void)?
+    var onRestart: ((SimulatorDeviceIdentifier, Bool) -> Void)?
+    var onShutDown: ((SimulatorDeviceIdentifier) -> Void)?
+    var isStopped: Bool { stopped }
+    var openedDeviceIdentifiers: Set<SimulatorDeviceIdentifier> { Set(sessions.keys) }
     private let owner: RendererOwnerIdentity?
     private let sessionIdentifier = UUID().uuidString
     private var ownedDeviceIdentifiers: Set<SimulatorDeviceIdentifier> = []
@@ -30,6 +41,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     private var restarting: [SimulatorDeviceIdentifier: Task<Void, Never>] = [:]
     /// Windows that reconnect when their restarted device boots.
     private var awaitingReconnect: [SimulatorDeviceIdentifier: DeviceWindowController] = [:]
+    /// Backend mutations keep their presentation while the guest is temporarily down.
+    private var presentationRestarts: Set<SimulatorDeviceIdentifier> = []
     private var suppressed: Set<SimulatorDeviceIdentifier> = []
     /// Shutdowns of devices whose windows closed, which quitting waits for.
     private var closingShutdowns: [SimulatorDeviceIdentifier: Task<Void, Never>] = [:]
@@ -56,6 +69,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     private var newSimulator: NewSimulatorWindowController?
     private var menu: MenuController?
     private var stopped = false
+    private var stoppingTask: Task<Void, Error>?
     /// Shared cascade position; zero until the first window cascades.
     private var nextWindowPosition = NSPoint.zero
     /// I/O ▸ Touch Pressure's settings, which every device window shares.
@@ -63,7 +77,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     /// Window ▸ Show Apple TV Remote's panel, which every device window shares.
     private let tvRemote = TVRemoteController()
     /// Edit ▸ Automatically Sync Pasteboard, for the devices that have windows.
-    private lazy var pasteboardSync = PasteboardSync { [weak self] in
+    private lazy var pasteboardSync: PasteboardSync = suppliedPasteboardSync ?? PasteboardSync { [weak self] in
         self?.sessions.values.map(\.session) ?? []
     }
     /// Reports changes to the touch indicator preferences, from Settings or
@@ -71,11 +85,16 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     private var touchIndicatorObservation: DefaultsObservation?
     private var testingDevicesObservation: DefaultsObservation?
 
-    init(runtime: SimulatorRuntime, conflicts: HostConflictMonitor, isManaged: Bool = false, owner: RendererOwnerIdentity? = nil) throws {
+    init(runtime: SimulatorRuntime, conflicts: HostConflictMonitor, isManaged: Bool = false,
+         owner: RendererOwnerIdentity? = nil, headless: Bool = false, inProcess: Bool = false,
+         pasteboardSync: PasteboardSync? = nil) throws {
         try conflicts.check()
         self.runtime = runtime
         self.conflicts = conflicts
         self.isManaged = isManaged
+        isHeadless = headless
+        isInProcess = inProcess
+        suppliedPasteboardSync = pasteboardSync
         self.owner = owner
         deviceSet = try runtime.openDeviceSet()
         HostPreferences.registerDefaults()
@@ -85,10 +104,12 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             if self.isTerminating || self.stopped { self.recordingTerminationErrors.append(error) }
             else { self.report(error) }
         }
-        CaptureThumbnail.reportDetached = { [weak self] error in
-            guard let self else { return }
-            if self.isTerminating || self.stopped { self.recordingTerminationErrors.append(error) }
-            else { self.report(error) }
+        if !inProcess {
+            CaptureThumbnail.reportDetached = { [weak self] error in
+                guard let self else { return }
+                if self.isTerminating || self.stopped { self.recordingTerminationErrors.append(error) }
+                else { self.report(error) }
+            }
         }
         conflicts.onConflict = { [weak self] in self?.handleHostConflict() }
     }
@@ -108,22 +129,25 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                 let deviceSetPath = notification.userInfo?["deviceSetPath"] as? String
                 let identifier = udid.map { SimulatorDeviceIdentifier($0, deviceSetPath: deviceSetPath) }
                 let requestIdentifier = notification.userInfo?["requestIdentifier"] as? String
-                let keepRunning = notification.userInfo?["keepRunning"] as? Bool
+                let keepRunning = (notification.userInfo?["keepRunning"] as? Bool)
+                    ?? (notification.userInfo?["keepRunning"] as? String).flatMap(Bool.init)
                 MainActor.assumeIsolated {
                     self?.receiveManagerRequest(action: action, identifier: identifier, requestIdentifier: requestIdentifier,
                                                 keepRunning: keepRunning)
                 }
             }
         }
-        menu = MenuController(application: self,
+        if !isInProcess && !isHeadless {
+            menu = MenuController(application: self,
                               gpuPolicy: UserDefaults(suiteName: GPUPolicy.suiteName).map(GPUPolicy.init),
                               pasteboardSync: pasteboardSync)
-        menu?.install()
-        touchIndicatorObservation = DefaultsObservation(
-            .standard, keys: TouchIndicator.allCases.map(\.preferenceKey)) {
-            NotificationCenter.default.post(name: TouchIndicator.didChangeNotification, object: UserDefaults.standard)
+            menu?.install()
         }
-        testingDevicesObservation = DefaultsObservation(.standard, keys: [HostPreferences.showTestingDevices]) { [weak self] in
+        touchIndicatorObservation = DefaultsObservation(
+            HostPreferences.defaults, keys: TouchIndicator.allCases.map(\.preferenceKey)) {
+            NotificationCenter.default.post(name: TouchIndicator.didChangeNotification, object: HostPreferences.defaults)
+        }
+        testingDevicesObservation = DefaultsObservation(HostPreferences.defaults, keys: [HostPreferences.showTestingDevices]) { [weak self] in
             self?.applyTestingDeviceVisibility()
         }
         notificationToken = try deviceSet.observe { [weak self] in self?.rescan() }
@@ -140,31 +164,34 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                 catch { self?.report(error) }
             }
         }
-        signal(SIGTERM, SIG_IGN)
-        Self.handoverTarget = self
-        let handover = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .global())
-        handover.setEventHandler {
-            // An alert shown from a main-queue block keeps the main queue busy,
-            // but its modal loop still runs main run-loop blocks.
-            CFRunLoopPerformBlock(CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue) {
-                MainActor.assumeIsolated {
-                    Self.handoverTarget?.handoverRequested = true
-                    Self.handoverTarget?.yieldToAnotherHost()
-                    Self.requestTermination()
+        if !isInProcess {
+            signal(SIGTERM, SIG_IGN)
+            Self.handoverTarget = self
+            let handover = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .global())
+            handover.setEventHandler {
+                // An alert shown from a main-queue block keeps the main queue busy,
+                // but its modal loop still runs main run-loop blocks.
+                CFRunLoopPerformBlock(CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue) {
+                    MainActor.assumeIsolated {
+                        Self.handoverTarget?.handoverRequested = true
+                        Self.handoverTarget?.yieldToAnotherHost()
+                        Self.requestTermination()
+                    }
                 }
+                CFRunLoopWakeUp(CFRunLoopGetMain())
             }
-            CFRunLoopWakeUp(CFRunLoopGetMain())
+            handover.resume()
+            handoverSignal = handover
         }
-        handover.resume()
-        handoverSignal = handover
         openTestingSet()
+        if isInProcess { return }
         if isManaged {
             if let initialDevice { openRequestedSimulator(initialDevice) }
             return
         }
         // Existing booted devices require AttachBootedOnStart; later boots always attach.
         // Testing devices follow Show Parallel Testing Devices independently.
-        let defaults = UserDefaults.standard
+        let defaults = HostPreferences.defaults
         let attachesBooted = defaults.bool(forKey: HostPreferences.attachBootedOnStart)
         if !attachesBooted { suppressed.formUnion(try readDevices().filter { $0.state == 3 }.map(\.identity)) }
         try conflicts.check()
@@ -249,6 +276,24 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                     Notification.Name("dev.lynnswap.NeoSimulator.RendererReleased"), object: requestIdentifier,
                     userInfo: result, deliverImmediately: true)
             }
+        case "close-device":
+            guard let identifier, let requestIdentifier else { return }
+            Task {
+                var result = ["udid": identifier.identifier]
+                if let path = identifier.deviceSetPath { result["deviceSetPath"] = path }
+                do {
+                    let keepsRunning = keepRunning ?? HostPreferences.defaults.bool(forKey: HostPreferences.detachOnWindowClose)
+                    if !keepsRunning {
+                        let tools = try DeviceTools(identifier: identifier.identifier, xcodeURL: runtime.xcodeURL,
+                                                    deviceSetPath: identifier.deviceSetPath)
+                        try await tools.shutdown()
+                    }
+                    try await releaseDevice(identifier)
+                } catch { result["error"] = error.localizedDescription }
+                DistributedNotificationCenter.default().postNotificationName(
+                    Notification.Name("dev.lynnswap.NeoSimulator.RendererClosed"), object: requestIdentifier,
+                    userInfo: result, deliverImmediately: true)
+            }
         case "restart-device", "erase-device":
             guard let identifier, let requestIdentifier else { return }
             Task {
@@ -264,6 +309,10 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                             }
                         }
                     } catch { result["error"] = error.localizedDescription }
+                } else if isHeadless, ownedDeviceIdentifiers.contains(identifier) {
+                    result["handled"] = true
+                    do { try await restartHeadlessDevice(identifier, erasing: action == "erase-device") }
+                    catch { result["error"] = error.localizedDescription }
                 }
                 DistributedNotificationCenter.default().postNotificationName(
                     Notification.Name("dev.lynnswap.NeoSimulator.RendererManaged"), object: requestIdentifier,
@@ -308,7 +357,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         }
         awaitingReconnect.removeValue(forKey: identifier)
         if let changes = externalDisplayQueues[identifier]?.changes {
-            let deadline = ContinuousClock.now + .seconds(UserDefaults.standard.double(forKey: HostPreferences.terminationTimeout))
+            let deadline = ContinuousClock.now + .seconds(HostPreferences.defaults.double(forKey: HostPreferences.terminationTimeout))
             guard await changes.idle(before: deadline) else {
                 throw HostError.operation("The simulator's external displays did not finish disconnecting.")
             }
@@ -316,7 +365,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         }
         ownedDeviceIdentifiers.remove(identifier)
         releasingDevices.remove(identifier)
-        do { try writeRegistration() }
+        do { if isManaged { try writeRegistration() } }
         catch {
             ownedDeviceIdentifiers.insert(identifier)
             throw HostError.operation("The simulator disconnected, but its ownership could not be updated: \(error.localizedDescription)")
@@ -324,6 +373,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     }
 
     private func activateWindows() {
+        guard !isHeadless else { return }
         if sessions.isEmpty { showDeviceBrowser() }
         else { for controller in sessions.values { controller.showAndActivate() } }
     }
@@ -364,6 +414,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     }
 
     private func updateRegistration(testingVisibilityChanged: Bool = false) {
+        if isInProcess { onChange?(); return }
         guard isManaged, !stopped else { return }
         do { try writeRegistration(testingVisibilityChanged: testingVisibilityChanged) }
         catch {
@@ -382,7 +433,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         components.host = command
         components.queryItems = queryItems.isEmpty ? nil : queryItems
         guard let url = components.url else { return }
-        let managerURL = Bundle.main.bundleURL.deletingLastPathComponent()
+        let managerURL = isInProcess ? Bundle.main.bundleURL : Bundle.main.bundleURL.deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
         Task {
             do {
@@ -424,19 +475,19 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
 
     /// Updates the preference and every open window, including restarting devices.
     func toggleShowDeviceBezels() {
-        let shows = !UserDefaults.standard.showsDeviceBezels
-        UserDefaults.standard.set(shows, forKey: HostPreferences.showChrome)
+        let shows = !HostPreferences.defaults.showsDeviceBezels
+        HostPreferences.defaults.set(shows, forKey: HostPreferences.showChrome)
         for controller in sessions.values { controller.setDeviceBezelVisible(shows) }
     }
 
     // MARK: Parallel testing devices
 
-    var showsTestingDevices: Bool { UserDefaults.standard.bool(forKey: HostPreferences.showTestingDevices) }
+    var showsTestingDevices: Bool { HostPreferences.defaults.bool(forKey: HostPreferences.showTestingDevices) }
 
     /// Debug ▸ Show Parallel Testing Devices. Hiding closes the testing
     /// devices' windows without shutting the devices down.
     func toggleShowTestingDevices() {
-        UserDefaults.standard.set(!showsTestingDevices, forKey: HostPreferences.showTestingDevices)
+        HostPreferences.defaults.set(!showsTestingDevices, forKey: HostPreferences.showTestingDevices)
     }
 
     private func applyTestingDeviceVisibility() {
@@ -468,7 +519,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     /// Waits for Xcode to create a missing set.
     private func openTestingSet() {
         guard !stopped, testingSet == nil else { return }
-        let path = UserDefaults.standard.string(forKey: HostPreferences.testingDeviceSetPath)
+        let path = HostPreferences.defaults.string(forKey: HostPreferences.testingDeviceSetPath)
             .map { NSString(string: $0).expandingTildeInPath }
             ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Developer/XCTestDevices").path
         let url = URL(fileURLWithPath: path).standardizedFileURL
@@ -556,7 +607,62 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         try await openSimulatorLocally(withIdentifier: identifier)
     }
 
-    private func openSimulatorLocally(withIdentifier identifier: SimulatorDeviceIdentifier, bootIfNeeded: Bool = true) async throws {
+    func openPresentation(for identifier: SimulatorDeviceIdentifier, bootIfNeeded: Bool = false) async throws -> DeviceWindowController {
+        try await openSimulatorLocally(withIdentifier: identifier, bootIfNeeded: bootIfNeeded, presents: false)
+        guard let controller = sessions[identifier] else { throw CancellationError() }
+        return controller
+    }
+
+    func releasePresentation(for identifier: SimulatorDeviceIdentifier) async throws {
+        try await releaseDevice(identifier)
+        onChange?()
+    }
+
+    func preparePresentationForRestart(for identifier: SimulatorDeviceIdentifier) async throws {
+        guard !stopped, !isTerminating else { throw CancellationError() }
+        guard let controller = sessions[identifier] else { return }
+        guard !presentationRestarts.contains(identifier), controller.session.reserve() else {
+            throw HostError.operation("This simulator already has an operation in progress.")
+        }
+        presentationRestarts.insert(identifier)
+        do {
+            if let recording = controller.session.recording {
+                recording.stop()
+                try await recording.waitUntilFinished()
+            }
+            awaitingReconnect[identifier] = controller
+            await controller.prepareForRestart()
+        } catch {
+            presentationRestarts.remove(identifier)
+            controller.session.release()
+            throw error
+        }
+    }
+
+    func finishPresentationRestart(for identifier: SimulatorDeviceIdentifier) async throws {
+        guard presentationRestarts.contains(identifier) else { return }
+        defer { presentationRestarts.remove(identifier) }
+        let deadline = ContinuousClock.now + .seconds(120)
+        while true {
+            try Task.checkCancellation()
+            guard !stopped, !isTerminating else { throw CancellationError() }
+            var devices = try readDevices()
+            if showsTestingDevices, let testingSet { devices += try readDevices(in: testingSet) }
+            let state = devices.first(where: { $0.identity == identifier })?.state
+            if state == 3 { break }
+            guard state == 2, ContinuousClock.now < deadline else {
+                presentationRestarts.remove(identifier)
+                try scanDevices()
+                throw HostError.operation("The simulator is not running, so its display could not reconnect.")
+            }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        presentationRestarts.remove(identifier)
+        try await openSimulatorLocally(withIdentifier: identifier, bootIfNeeded: false, presents: false)
+    }
+
+    private func openSimulatorLocally(withIdentifier identifier: SimulatorDeviceIdentifier, bootIfNeeded: Bool = true,
+                                     presents: Bool = true) async throws {
         guard !releasingDevices.contains(identifier) else { throw CancellationError() }
         openingDevices.insert(identifier)
         defer { openingDevices.remove(identifier) }
@@ -579,8 +685,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         suppressed.remove(identifier)
         connectionFailures.removeValue(forKey: identifier)
         // Launching starts this device next time.
-        UserDefaults.standard.set(identifier.identifier, forKey: HostPreferences.currentDeviceUDID)
-        UserDefaults.standard.set(identifier.deviceSetPath, forKey: "CurrentDeviceSetPath")
+        HostPreferences.defaults.set(identifier.identifier, forKey: HostPreferences.currentDeviceUDID)
+        HostPreferences.defaults.set(identifier.deviceSetPath, forKey: "CurrentDeviceSetPath")
         // Attach an already booting device when it finishes; avoid a second boot.
         if bootIfNeeded, device.state != 2, device.state != 3, bootOperations[identifier] == nil {
             let tools = try DeviceTools(identifier: identifier.identifier, xcodeURL: runtime.xcodeURL,
@@ -590,21 +696,40 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             try await tools.boot()
         }
         let deadline = ContinuousClock.now + .seconds(120)
-        while sessions[identifier] == nil {
+        if isHeadless {
+            while true {
+                try Task.checkCancellation()
+                guard !stopped, !isTerminating, !releasingDevices.contains(identifier) else { throw CancellationError() }
+                var current = try readDevices()
+                if showsTestingDevices, let testingSet { current += try readDevices(in: testingSet) }
+                guard let device = current.first(where: { $0.identity == identifier }) else {
+                    throw HostError.operation("The selected simulator is no longer available")
+                }
+                if device.state == 3 { return }
+                guard device.state == 2, ContinuousClock.now < deadline else {
+                    throw HostError.operation("The simulator did not finish starting.")
+                }
+                try await Task.sleep(for: .milliseconds(100))
+            }
+        }
+        while sessions[identifier] == nil || awaitingReconnect[identifier] != nil {
             try Task.checkCancellation()
             guard !stopped, !isTerminating, !releasingDevices.contains(identifier),
                   !isManaged || ownedDeviceIdentifiers.contains(identifier) else { throw CancellationError() }
             try scanDevices()
             if let pending = connections[identifier] { await pending.value }
             if let failure = connectionFailures[identifier] { throw failure }
-            if sessions[identifier] != nil { break }
+            if sessions[identifier] != nil && awaitingReconnect[identifier] == nil { break }
             guard ContinuousClock.now < deadline else { throw HostError.unavailable("The simulator did not finish opening.") }
             try await Task.sleep(for: .milliseconds(100))
         }
         guard let controller = sessions[identifier] else { throw CancellationError() }
         // Refresh synchronization when a connected device is selected again.
         controller.session.updatePasteboardSync()
-        controller.showAndActivate()
+        if presents {
+            if isInProcess { onPresent?(controller) }
+            else { controller.showAndActivate() }
+        }
     }
 
     private func rescan(testingVisibilityChanged: Bool = false) {
@@ -621,10 +746,11 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         try conflicts.check()
         var devices = try readDevices()
         if showsTestingDevices, let testingSet { devices += try readDevices(in: testingSet) }
-        let booted = devices.filter { $0.state == 3 && (!isManaged || ownedDeviceIdentifiers.contains($0.identity)) }
+        let booted = devices.filter { $0.state == 3 && (!(isManaged || isInProcess) || ownedDeviceIdentifiers.contains($0.identity)) }
         let identifiers = Set(booted.map(\.identity))
         let hadDeviceWindows = !sessions.isEmpty
-        for identifier in sessions.keys where !identifiers.contains(identifier) && restarting[identifier] == nil {
+        for identifier in sessions.keys where !identifiers.contains(identifier) && restarting[identifier] == nil
+            && !presentationRestarts.contains(identifier) {
             sessions.removeValue(forKey: identifier)?.invalidate()
             awaitingReconnect.removeValue(forKey: identifier)
         }
@@ -635,15 +761,17 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         // Only the catalog's stopped/missing devices without an in-flight operation release ownership.
         let running = Set(devices.filter { $0.state != 1 }.map(\.identity))
         let pending = openingDevices.union(bootOperations.keys).union(restarting.keys)
-            .union(connections.keys).union(releasingDevices)
+            .union(connections.keys).union(releasingDevices).union(presentationRestarts)
         ownedDeviceIdentifiers.formIntersection(running.union(pending))
         // A restart's boot is not a new boot, so a window closed during the
         // restart stays closed.
         suppressed.formIntersection(identifiers.union(restarting.keys))
         connectionFailures = connectionFailures.filter { identifiers.contains($0.key) }
+        if isHeadless { return }
         // A restarting device connects only after its restart ends, also when
         // its window was hidden meanwhile.
         for device in booted where restarting[device.identity] == nil
+            && !presentationRestarts.contains(device.identity)
             && (sessions[device.identity] == nil || awaitingReconnect[device.identity] != nil)
             && connections[device.identity] == nil
             && !releasingDevices.contains(device.identity)
@@ -651,7 +779,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             && connectionFailures[device.identity] == nil {
             connect(device)
         }
-        if hadDeviceWindows && sessions.isEmpty { showDeviceBrowser() }
+        if hadDeviceWindows && sessions.isEmpty && !isInProcess { showDeviceBrowser() }
+        if isInProcess { onChange?() }
         browser?.refresh()
     }
 
@@ -685,7 +814,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                         }
                         if let controller = awaitingReconnect.removeValue(forKey: identifier) {
                             try conflicts.check()
-                            controller.reconnect(session)
+                            controller.reconnect(session, present: !isInProcess)
                             applyKeyboardSettings(of: session)
                             restoreLocation(of: session)
                             connectAudioRoutes(of: session)
@@ -693,13 +822,20 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                             connectExternalDisplay(of: session)
                             return
                         }
+                        let shutDown: ((DeviceWindowController) -> Void)? = isInProcess ? { [weak self] controller in
+                            self?.onShutDown?(controller.session.device.identity)
+                        } : nil
                         let controller = try DeviceWindowController(
                             session: session, touchPressure: touchPressure, tvRemote: tvRemote, onClose: { [weak self] in
                                 self?.deviceWindowClosed($0, choice: $1)
-                            }, onRestart: { [weak self] in self?.restartDevice($0, erasing: $1) })
+                            }, onRestart: { [weak self] controller, erasing in
+                                guard let self else { return }
+                                if isInProcess { onRestart?(controller.session.device.identity, erasing) }
+                                else { restartDevice(controller, erasing: erasing) }
+                            }, onShutDown: shutDown)
                         try conflicts.check()
                         sessions[identifier] = controller
-                        controller.showNewWindow(cascadingFrom: &nextWindowPosition)
+                        if !isInProcess { controller.showNewWindow(cascadingFrom: &nextWindowPosition) }
                         applyKeyboardSettings(of: session)
                         restoreLocation(of: session)
                         connectAudioRoutes(of: session)
@@ -768,10 +904,16 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         // A device left running keeps its window closed until it shuts down.
         suppressed.insert(identifier)
         let keepsRunning = choice.map { $0 == .keepRunning }
-            ?? UserDefaults.standard.bool(forKey: HostPreferences.detachOnWindowClose)
-        if !keepsRunning { shutDownClosedDevice(controller.session) }
+            ?? HostPreferences.defaults.bool(forKey: HostPreferences.detachOnWindowClose)
+        if !isInProcess, !keepsRunning { shutDownClosedDevice(controller.session) }
         updateRegistration()
-        if sessions.isEmpty { showDeviceBrowser() }
+        if isInProcess {
+            let session = controller.session
+            let finishing = Task { await session.finishRecording() }
+            onClose?(identifier, choice, finishing)
+            onChange?()
+        }
+        else if sessions.isEmpty { showDeviceBrowser() }
     }
 
     /// Shuts down a device whose window closed once its recording is saved,
@@ -862,7 +1004,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             return
         }
         let alert = DeviceLifetimeChoice.alert(
-            quitting: true, keepsRunningByDefault: UserDefaults.standard.bool(forKey: HostPreferences.detachOnAppQuit))
+            quitting: true, keepsRunningByDefault: HostPreferences.defaults.bool(forKey: HostPreferences.detachOnAppQuit))
         guard let choice = DeviceLifetimeChoice.choice(
             for: alert.runModal(), of: alert, rememberingAs: HostPreferences.detachOnAppQuit) else { return }
         quitChoice = choice
@@ -872,7 +1014,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     /// Waits up to TerminationTimeout for every external-display queue, including closed windows.
     /// Returns unfinished devices and logs power-off failures.
     private func finishExternalDisplayChanges() async -> [String] {
-        let timeout = UserDefaults.standard.double(forKey: HostPreferences.terminationTimeout)
+        let timeout = HostPreferences.defaults.double(forKey: HostPreferences.terminationTimeout)
         let deadline = ContinuousClock.now + .seconds(timeout)
         var failures: [String] = []
         for (name, changes) in externalDisplayQueues.values {
@@ -903,7 +1045,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                 failures.append(error.localizedDescription)
             }
         }
-        let timeout = UserDefaults.standard.double(forKey: HostPreferences.terminationTimeout)
+        let timeout = HostPreferences.defaults.double(forKey: HostPreferences.terminationTimeout)
         let started = shutdowns
         terminationShutdowns = started
         let deadline = Task { () -> Bool in
@@ -921,6 +1063,25 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     }
 
     // MARK: Restart
+
+    private func restartHeadlessDevice(_ identifier: SimulatorDeviceIdentifier, erasing: Bool) async throws {
+        guard restarting[identifier] == nil else {
+            throw HostError.operation("This simulator is already restarting.")
+        }
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            restarting[identifier] = Task {
+                defer { restarting.removeValue(forKey: identifier); rescan() }
+                do {
+                    let tools = try DeviceTools(identifier: identifier.identifier, xcodeURL: runtime.xcodeURL,
+                                                deviceSetPath: identifier.deviceSetPath)
+                    bootOperations[identifier] = tools
+                    defer { bootOperations.removeValue(forKey: identifier) }
+                    try await tools.restart(erasing: erasing)
+                    continuation.resume()
+                } catch { continuation.resume(throwing: error) }
+            }
+        }
+    }
 
     /// Disconnects, shuts down, optionally erases, boots, and reconnects the existing window.
     private func restartDevice(_ controller: DeviceWindowController, erasing: Bool,
@@ -989,7 +1150,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
 
     func showDeviceBrowser() {
         guard !stopped else { return }
-        if isManaged {
+        if isHeadless { return }
+        if isManaged || isInProcess {
             openManager(command: "devices")
             return
         }
@@ -999,6 +1161,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
 
     private func report(_ error: Error) {
         hostLog(error.localizedDescription)
+        if isInProcess { onError?(error); return }
         if isManaged {
             NSAlert(error: error).runModal()
             return
@@ -1009,6 +1172,18 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
 
     private func handleHostConflict() {
         guard !stopped, let name = conflicts.conflictingHostName else { return }
+        if isInProcess {
+            yieldToAnotherHost()
+            guard !isTerminating else { return }
+            isTerminating = true
+            Task {
+                var message = "\(name) is now displaying the simulators."
+                do { try await stop(keepingDevicesRunning: true) }
+                catch { message += "\n\(error.localizedDescription)" }
+                onError?(HostError.conflict(message))
+            }
+            return
+        }
         hostLog("\(name) appeared; disconnecting simulators and exiting")
         CaptureThumbnail.savesImmediately = true
         recordingTerminationErrors += CaptureThumbnail.finishAll()
@@ -1047,7 +1222,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         CaptureThumbnail.savesImmediately = true
         let captureFailures = CaptureThumbnail.finishAll()
         let keepsRunning = quitChoice.map { $0 == .keepRunning }
-            ?? UserDefaults.standard.bool(forKey: HostPreferences.detachOnAppQuit)
+            ?? HostPreferences.defaults.bool(forKey: HostPreferences.detachOnAppQuit)
         let devices = keepsRunning ? [] : ownedDeviceIdentifiers.union(sessions.keys).sorted().map {
             (identifier: $0.identifier, deviceSetPath: $0.deviceSetPath)
         }
@@ -1103,6 +1278,44 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         shutdown()
     }
 
+    /// Finishes presentation resources without terminating the owning application.
+    /// The headless backend remains responsible for guest lifetime in integrated mode.
+    func stop(keepingDevicesRunning: Bool? = nil) async throws {
+        if let stoppingTask { try await stoppingTask.value; return }
+        guard !stopped else { return }
+        isTerminating = true
+        let task = Task { try await finishStopping(keepingDevicesRunning: keepingDevicesRunning) }
+        stoppingTask = task
+        defer { stoppingTask = nil }
+        try await task.value
+    }
+
+    private func finishStopping(keepingDevicesRunning: Bool?) async throws {
+        let keepsRunning = isInProcess || (keepingDevicesRunning
+            ?? HostPreferences.defaults.bool(forKey: HostPreferences.detachOnAppQuit))
+        let devices = keepsRunning ? [] : ownedDeviceIdentifiers.union(sessions.keys).sorted().map {
+            (identifier: $0.identifier, deviceSetPath: $0.deviceSetPath)
+        }
+        let pending = Array(connections.values) + Array(restarting.values)
+        pending.forEach { $0.cancel() }
+        bootOperations.values.forEach { $0.cancel() }
+        for task in pending { await task.value }
+        for controller in sessions.values { controller.invalidate() }
+        await recordings.finishAll()
+        sessions.removeAll()
+        awaitingReconnect.removeAll()
+        presentationRestarts.removeAll()
+        let displayFailures = await finishExternalDisplayChanges()
+        let failures = displayFailures + (await shutDownForTermination(devices))
+        let captureFailures = recordingTerminationErrors + CaptureThumbnail.finishAll()
+        recordingTerminationErrors.removeAll()
+        shutdown()
+        onChange?()
+        if !failures.isEmpty || !captureFailures.isEmpty {
+            throw HostError.operation((failures + captureFailures.map(\.localizedDescription)).joined(separator: "\n"))
+        }
+    }
+
     private static func alert(_ captureFailures: [Error]) {
         let alert = NSAlert()
         alert.messageText = "Some captures could not be saved."
@@ -1143,6 +1356,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         for task in restarting.values { task.cancel() }
         restarting.removeAll()
         awaitingReconnect.removeAll()
+        presentationRestarts.removeAll()
         for session in sessions.values { session.invalidate() }
         sessions.removeAll()
         browser?.close()

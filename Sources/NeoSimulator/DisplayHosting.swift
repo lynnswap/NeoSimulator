@@ -28,6 +28,13 @@ final class DisplayKeyboardInput {
 
     isolated deinit { invalidate() }
 
+    /// Transfers keyboard ownership together with the display's presentation.
+    func attach(to window: NSWindow?) {
+        guard self.window !== window else { return }
+        setEnabled(false)
+        self.window = window
+    }
+
     /// Gives the display the Mac's keyboard with the modifiers held now, or
     /// takes the keyboard away after releasing the guest's modifiers.
     func setEnabled(_ enabled: Bool) {

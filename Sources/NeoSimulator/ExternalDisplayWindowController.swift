@@ -43,7 +43,7 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
 
     /// - Parameter state: The external display's state, which gives its size.
     init(session: DeviceSession, display: any SimulatorDisplay, state: ExternalScreenState,
-         deviceWindow: DeviceWindowController?, preferences: any PreferenceStore = UserDefaults.standard,
+         deviceWindow: DeviceWindowController?, preferences: any PreferenceStore = HostPreferences.defaults,
          onClose: @escaping () -> Void) throws {
         self.session = session
         self.display = display

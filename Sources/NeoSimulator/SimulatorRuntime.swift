@@ -10,21 +10,43 @@ extension Measurement: @retroactive ABIBridgeSwiftValue where UnitType == UnitAn
     public static var swiftABIType: NativeType { try! .opaque(named: "Measurement") }
 }
 
-/// Resolves the selected Xcode's private interfaces before the host changes device state.
+/// Uses one UI toolkit per process and a separate CoreSimulator context for each Xcode.
 @MainActor
 final class SimulatorRuntime {
+    private static var loadedUIXcodeURL: URL?
+    private static var contextXcodeURLs: Set<URL> = []
+    /// The Xcode that owns this device context and its command-line tools.
     let xcodeURL: URL
+    /// The process's fixed SimulatorKit and user-interface factory.
+    let uiXcodeURL: URL
     let coreSimulator: CoreSimulatorInterface
     let display: SimulatorDisplayInterface
     let input: SimulatorInputInterface
     let pasteboard: SimulatorPasteboardInterface
     let audio: SimulatorAudioInterface
 
-    init(xcodeURL: URL) throws {
+    /// The catalog supplies candidates in descending compatible Xcode order.
+    static func selectUIXcode(from candidates: [URL]) throws -> URL {
+        if let loadedUIXcodeURL { return loadedUIXcodeURL }
+        guard let candidate = candidates.first else {
+            throw HostError.unavailable("No compatible Xcode is available for simulator display.")
+        }
+        return candidate.resolvingSymlinksInPath()
+    }
+
+    init(xcodeURL: URL, uiXcodeURL: URL? = nil) throws {
         self.xcodeURL = xcodeURL.resolvingSymlinksInPath()
+        let requestedUI = (uiXcodeURL ?? Self.loadedUIXcodeURL ?? xcodeURL).resolvingSymlinksInPath()
+        if let loaded = Self.loadedUIXcodeURL, loaded != requestedUI {
+            throw HostError.unavailable("SimulatorKit is already loaded from \(loaded.path)")
+        }
+        self.uiXcodeURL = requestedUI
         try Self.load(URL(fileURLWithPath: "/Library/Developer/PrivateFrameworks/CoreSimulator.framework"))
-        try Self.load(self.xcodeURL.appendingPathComponent("Contents/SharedFrameworks/SimulatorKit.framework"))
-        try Self.load(self.xcodeURL.appendingPathComponent("Contents/Frameworks/IDEPlaygroundSimulator.framework"))
+        try Self.load(requestedUI.appendingPathComponent("Contents/SharedFrameworks/SimulatorKit.framework"))
+        // Objective-C registration cannot be undone after a later binding failure.
+        Self.loadedUIXcodeURL = requestedUI
+        try Self.load(requestedUI.appendingPathComponent("Contents/Frameworks/IDEPlaygroundSimulator.framework"))
+        Self.contextXcodeURLs.insert(self.xcodeURL)
         let runtime = ABIRuntime.shared
         coreSimulator = try CoreSimulatorInterface(runtime: runtime)
         display = try SimulatorDisplayInterface(runtime: runtime)
@@ -54,18 +76,28 @@ final class SimulatorRuntime {
         }
     }
 
-    /// Checks loaded images, including late-loaded .simdeviceui plugins, against the selected Xcode.
+    /// Keeps the UI toolkit fixed while allowing plugins belonging to an opened device context.
     func validateLoadedImages() throws {
-        let prefix = xcodeURL.path + "/"
+        let prefix = uiXcodeURL.path + "/"
         for index in 0..<_dyld_image_count() {
             guard let pointer = _dyld_get_image_name(index) else { continue }
             let path = URL(fileURLWithPath: String(cString: pointer)).resolvingSymlinksInPath().path
-            if path.contains("/DeviceKit.framework/") || path.contains("/DeviceHub.app/") {
+            if path.contains("/DeviceHub.app/") {
                 throw HostError.unavailable("Forbidden Device Hub component is loaded: \(path)")
             }
-            if (path.contains("/SimulatorKit.framework/") || path.contains("/IDEPlaygroundSimulator.framework/")
-                || path.contains(".simdeviceui/")), !path.hasPrefix(prefix) {
+#if !NEOSIMULATOR_MANAGER
+            // The manager also hosts DeviceKit-backed physical-device screens.
+            if path.contains("/DeviceKit.framework/") {
+                throw HostError.unavailable("Forbidden Device Hub component is loaded: \(path)")
+            }
+#endif
+            if (path.contains("/SimulatorKit.framework/") || path.contains("/IDEPlaygroundSimulator.framework/")),
+               !path.hasPrefix(prefix) {
                 throw HostError.unavailable("Private simulator code came from a different Xcode: \(path)")
+            }
+            if path.contains(".simdeviceui/"), !path.hasPrefix(prefix),
+               !Self.contextXcodeURLs.contains(where: { path.hasPrefix($0.path + "/") }) {
+                throw HostError.unavailable("The simulator UI plugin does not belong to an opened Xcode context: \(path)")
             }
         }
     }

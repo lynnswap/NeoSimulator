@@ -128,7 +128,7 @@ final class TouchPressure {
     private(set) var mode = SimulatedTouchMode.shallow
 
     /// Rechecks trackpad availability and reapplies settings after hot-plug changes.
-    init(preferences: any PreferenceStore = UserDefaults.standard,
+    init(preferences: any PreferenceStore = HostPreferences.defaults,
          forceTouchTrackpad: @escaping () -> Bool = ForceTouchTrackpad.isAvailable,
          observeTrackpads: (@escaping @MainActor () -> Void) -> AnyObject? = ForceTouchTrackpad.observeChanges) {
         self.preferences = preferences

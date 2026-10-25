@@ -195,7 +195,9 @@ struct WorkspaceClient: Sendable {
     var openDeviceHub: @MainActor @Sendable (URL) async throws -> URL
     var quitNeoHost: @MainActor @Sendable (URL, [RendererRegistration], Bool?) async throws -> Int
 
-    @MainActor static let live = WorkspaceClient(
+    @MainActor static var live: WorkspaceClient { live(headlessRenderers: false) }
+
+    @MainActor static func live(headlessRenderers: Bool) -> WorkspaceClient { WorkspaceClient(
         runningXcodes: {
             runningApplications(
                 withBundleIdentifier: ToolConstants.xcodeBundleIdentifier
@@ -254,11 +256,11 @@ struct WorkspaceClient: Sendable {
             )
 
             let configuration = NSWorkspace.OpenConfiguration()
-            configuration.activates = true
+            configuration.activates = !headlessRenderers
             configuration.createsNewApplicationInstance = true
             configuration.allowsRunningApplicationSubstitution = false
             configuration.arguments = rendererLaunchArguments(owner: try RendererOwnerIdentity.current(),
-                startupResultURL: startupResultURL, xcodeURL: xcodeURL, deviceIdentifier: deviceIdentifier)
+                startupResultURL: startupResultURL, xcodeURL: xcodeURL, deviceIdentifier: deviceIdentifier, headless: headlessRenderers)
 
             let application = try await NSWorkspace.shared.openApplication(
                 at: applicationURL,
@@ -349,7 +351,7 @@ struct WorkspaceClient: Sendable {
             })
         }
 
-    )
+    ) }
 
     @MainActor private static func waitForPreviousRendererOwners(at applicationURL: URL) async throws {
         let applications = NSRunningApplication.runningApplications(withBundleIdentifier: ToolConstants.neoHostBundleIdentifier)
@@ -403,11 +405,12 @@ struct WorkspaceClient: Sendable {
     }
 
     static func rendererLaunchArguments(owner: RendererOwnerIdentity, startupResultURL: URL,
-                                        xcodeURL: URL, deviceIdentifier: String?) -> [String] {
+                                        xcodeURL: URL, deviceIdentifier: String?, headless: Bool = false) -> [String] {
         var arguments = ["--managed", "--owner-pid", String(owner.processIdentifier),
                          "--owner-launch-date", String(owner.launchDate.timeIntervalSinceReferenceDate),
                          "--startup-result", startupResultURL.path, "--xcode", xcodeURL.path]
         if let deviceIdentifier { arguments += ["--device", deviceIdentifier] }
+        if headless { arguments.append("--headless") }
         return arguments
     }
 
@@ -615,7 +618,13 @@ final class RendererDeviceRequestWaiter {
         try await request("attach-device", acknowledgement: "RendererOpened", deviceID: deviceID, renderer: renderer, timeoutSeconds: 450)
     }
 
-    private func request(_ action: String, acknowledgement: String, deviceID: DeviceInventoryID, renderer: RendererRegistration, timeoutSeconds: Int) async throws {
+    func close(_ deviceID: DeviceInventoryID, in renderer: RendererRegistration, keepingDeviceRunning: Bool) async throws {
+        try await request("close-device", acknowledgement: "RendererClosed", deviceID: deviceID, renderer: renderer,
+                          timeoutSeconds: 120, additionalInfo: ["keepRunning": keepingDeviceRunning ? "true" : "false"])
+    }
+
+    private func request(_ action: String, acknowledgement: String, deviceID: DeviceInventoryID, renderer: RendererRegistration, timeoutSeconds: Int,
+                         additionalInfo: [String: String] = [:]) async throws {
         let (identifier, deviceSetPath) = try deviceID.simulatorAddress
         try Task.checkCancellation()
         let requestIdentifier = UUID().uuidString
@@ -644,6 +653,7 @@ final class RendererDeviceRequestWaiter {
                     self?.finish(.failure(CLIError.temporary("renderer-device-timeout", "The simulator display did not finish the device request.")))
                 }
                 var info = ["action": action, "udid": identifier, "requestIdentifier": requestIdentifier]
+                info.merge(additionalInfo) { _, additional in additional }
                 if let deviceSetPath { info["deviceSetPath"] = deviceSetPath }
                 send(info, renderer.sessionIdentifier)
             }

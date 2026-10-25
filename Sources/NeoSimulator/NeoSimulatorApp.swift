@@ -106,6 +106,7 @@ struct HostLaunchOptions {
     let deviceIdentifier: String?
     let deviceSetPath: String?
     let isManaged: Bool
+    let isHeadless: Bool
     let owner: RendererOwnerIdentity?
 
     init(arguments: [String]) throws {
@@ -116,6 +117,7 @@ struct HostLaunchOptions {
         var validate = false
         var creationCatalog = false
         var managed = false
+        var headless = false
         var ownerPID: Int32?
         var ownerLaunchDate: Date?
         var index = 0
@@ -127,6 +129,9 @@ struct HostLaunchOptions {
             case "--managed":
                 guard !managed else { throw invalid() }
                 managed = true
+            case "--headless":
+                guard !headless else { throw invalid() }
+                headless = true
             case "--owner-pid":
                 index += 1
                 guard index < arguments.count, ownerPID == nil,
@@ -167,6 +172,7 @@ struct HostLaunchOptions {
             index += 1
         }
         guard let xcodePath, !(validate && resultPath != nil),
+              !headless || managed,
               managed ? (ownerPID != nil && ownerLaunchDate != nil) : (ownerPID == nil && ownerLaunchDate == nil)
         else { throw invalid() }
         xcodeURL = URL(fileURLWithPath: xcodePath, isDirectory: true).standardizedFileURL.resolvingSymlinksInPath()
@@ -176,6 +182,7 @@ struct HostLaunchOptions {
         deviceIdentifier = device
         deviceSetPath = deviceSet
         isManaged = managed
+        isHeadless = headless
         owner = ownerPID.flatMap { pid in ownerLaunchDate.map { RendererOwnerIdentity(processIdentifier: pid, launchDate: $0) } }
     }
 
@@ -218,7 +225,7 @@ enum RendererRequest: Equatable {
     }
 }
 
-#if !NEOSIMULATOR_TESTS
+#if !NEOSIMULATOR_TESTS && !NEOSIMULATOR_MANAGER
 @main
 enum NeoSimulatorApp {
     @MainActor
@@ -264,7 +271,8 @@ enum NeoSimulatorApp {
             HostPreferences.migrateStandalonePreferences()
             let app = NSApplication.shared
             app.setActivationPolicy(.accessory)
-            let controller = try HostApplication(runtime: runtime, conflicts: conflicts, isManaged: options.isManaged, owner: options.owner)
+            let controller = try HostApplication(runtime: runtime, conflicts: conflicts, isManaged: options.isManaged,
+                                                 owner: options.owner, headless: options.isHeadless)
             app.delegate = controller
             app.finishLaunching()
             try controller.start(initialDeviceIdentifier: options.deviceIdentifier, initialDeviceSetPath: options.deviceSetPath)

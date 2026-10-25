@@ -13,6 +13,13 @@ public struct SimulatorCreationContext: Sendable {
     public let data: Data
 }
 
+/// The simulator address and backend selected before presenting its screen.
+public struct SimulatorPresentationContext: Sendable {
+    public let deviceID: DeviceInventoryID
+    public let xcodeURL: URL
+    public let displayXcodeURLs: [URL]
+}
+
 public struct SimulatorHostStatus: Sendable {
     /// The app's saved display choice. Reading status does not validate Xcode's live preferences.
     public let host: SimulatorHost
@@ -122,6 +129,7 @@ struct RendererRegistration: Codable, Sendable {
 /// Serializes preference transactions while each Xcode owns a separate renderer process.
 public actor SimulatorHostController {
     let rendererApplicationURL: URL
+    private let presentSimulator: (@MainActor @Sendable (SimulatorPresentationContext) async throws -> Void)?
     private let runner = SystemCommandRunner()
     private let catalogLogger = Logger(subsystem: "dev.lynnswap.NeoSimulator", category: "Catalog")
     private var lastTestingCatalogDiagnostic: String?
@@ -133,8 +141,10 @@ public actor SimulatorHostController {
     private var operationInProgress = false
     private var operationWaiters: [CheckedContinuation<Void, Never>] = []
 
-    public init(rendererApplicationURL: URL) {
+    public init(rendererApplicationURL: URL,
+                presentSimulator: (@MainActor @Sendable (SimulatorPresentationContext) async throws -> Void)? = nil) {
         self.rendererApplicationURL = rendererApplicationURL.resolvingSymlinksInPath().standardizedFileURL
+        self.presentSimulator = presentSimulator
     }
 
     public func status() async throws -> SimulatorHostStatus {
@@ -266,6 +276,7 @@ public actor SimulatorHostController {
            let owner = renderers.first(where: { $0.deviceIdentifiers.contains(deviceID) }) {
             if bootIfNeeded { try await RendererDeviceRequestWaiter().open(deviceID, in: owner) }
             else { try await RendererDeviceRequestWaiter().attach(deviceID, in: owner) }
+            try await self.present(deviceID, xcodeURL: URL(fileURLWithPath: owner.xcodePath))
             return
         }
         let xcode = try self.resolveDeviceXcode(deviceID: deviceID, preferredURL: xcodeURL)
@@ -289,8 +300,24 @@ public actor SimulatorHostController {
         do {
             if bootIfNeeded { try await RendererDeviceRequestWaiter().open(deviceID, in: target) }
             else { try await RendererDeviceRequestWaiter().attach(deviceID, in: target) }
+            try await self.present(deviceID, xcodeURL: xcode.applicationURL)
         } catch {
             throw CLIError.temporary(launchesRenderer ? "neo-host-launch-partial-success" : "renderer-device-launch", error.localizedDescription)
+        }
+    }
+
+    private func present(_ deviceID: DeviceInventoryID, xcodeURL: URL) async throws {
+        guard let presentSimulator else { return }
+        try await presentSimulator(SimulatorPresentationContext(deviceID: deviceID, xcodeURL: xcodeURL,
+            displayXcodeURLs: try availableXcodes().map(\.applicationURL)))
+    }
+
+    /// Closes the presentation's backend ownership, optionally leaving the guest running.
+    public func closeDevice(_ deviceID: DeviceInventoryID, keepingDeviceRunning: Bool) async throws {
+        _ = try deviceID.simulatorAddress
+        try await operation {
+            guard let owner = try await self.registeredRenderers().first(where: { $0.deviceIdentifiers.contains(deviceID) }) else { return }
+            try await RendererDeviceRequestWaiter().close(deviceID, in: owner, keepingDeviceRunning: keepingDeviceRunning)
         }
     }
 
@@ -554,7 +581,8 @@ public actor SimulatorHostController {
     }
 
     private func makeCore() async throws -> HostModeController {
-        HostModeController(defaultsStore: DefaultsStore(), receiptStore: try ReceiptStore(), installationInspector: makeInspector(), workspace: await .live)
+        HostModeController(defaultsStore: DefaultsStore(), receiptStore: try ReceiptStore(), installationInspector: makeInspector(),
+                           workspace: await .live(headlessRenderers: presentSimulator != nil))
     }
     func operation<T>(_ body: () async throws -> T) async throws -> T {
         if operationInProgress { await withCheckedContinuation { operationWaiters.append($0) } }
