@@ -773,6 +773,22 @@ struct SimulatorSettingsBackendTests {
         return .remote(try #require(CoreDeviceInventoryDecoder.decode(data).first))
     }
 
+    @Test func cancellingAReadStopsLaterQueriesWithoutReportingCancellationAsAnIssue() async {
+        let device = simulator("device-A")
+        let result = await Task {
+            var queries = 0
+            let backend = SimulatorSettingsBackend(run: { _, _ in
+                queries += 1
+                withUnsafeCurrentTask { $0?.cancel() }
+                throw CancellationError()
+            }, audioDevices: { ([], []) })
+            let settings = backend.read(device: device)
+            return (queries, settings)
+        }.value
+        #expect(result.0 == 1)
+        #expect(result.1.issues.isEmpty)
+    }
+
     @Test func extendedQueriesReturnSupportedValuesAndHostAudioChoices() {
         let microphone = SimulatorAudioDevice(identifier: "mic-uid", name: "Microphone")
         let speaker = SimulatorAudioDevice(identifier: "speaker-uid", name: "Speaker")

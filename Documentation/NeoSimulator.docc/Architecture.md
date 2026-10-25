@@ -124,7 +124,9 @@ Hub mode.
 | Owner | Responsibility |
 | --- | --- |
 | `SimulatorHostController` | Serialize route changes, track renderer ownership, and resolve the Xcode for each device. |
-| `SimulatorManagerModel` | Publish catalogs, device settings, loading state, and operation results to AppKit. |
+| `SimulatorManagerModel` | Own observable inventory, loading state, and the accepted operation queue. |
+| `DeviceSettingsModel` | Own the selected settings snapshot, cancellable reads, and readback after queued edits. |
+| `DeviceInspectorModel` | Own inspector records and reject results from an earlier selection or page. |
 | `ManagerWindowController` | Present the sidebar, device canvas, and settings inspector in `NSSplitViewController`. |
 | `SimulatorRuntime` | Load and validate private framework interfaces through ABIBridge. |
 | `CoreSimulator` | Device-set access and simulator model data. |
@@ -140,6 +142,18 @@ Hub mode.
 | `ExternalDisplayChanges` | Serialize display and CarPlay changes across sessions for one device. |
 | `DisplayKeyboardInput`, `DisplayFitting` | Shared input-focus and geometry behavior for both window types. |
 | `TVRemoteController` | Present the remote; sessions retain held inputs until release. |
+
+The manager's observable models stay on MainActor. SwiftUI observes their
+properties directly; AppKit tracks the properties used by layout and targeted
+list or toolbar updates. The manager drains accepted edits before quitting.
+Cancelled reads cannot replace the current selection's snapshot, and a refresh
+interrupted by an edit resumes after the operation queue finishes.
+
+`SimulatorHostController` retains shared ownership state and operation ordering.
+Synchronous discovery, catalog decoding, process scans, and host preference I/O
+run in `@concurrent` helpers. Initial native bindings resolve asynchronously
+while UI receivers and framework loading stay on MainActor. Concurrent loads of
+the same context join its preparation without changing the fixed UI toolkit.
 
 Within a renderer, the active device comes from `NSApp.keyWindow`; an
 external-display window refers to its owning device. The manager's sidebar

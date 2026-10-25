@@ -437,8 +437,12 @@ struct SimulatorSettingsBackend {
         }
         let identifier = device.settingsIdentifier
         func capture<T>(_ name: String, _ operation: () throws -> T) -> T? {
+            guard !Task.isCancelled else { return nil }
             do { return try operation() }
-            catch { settings.issues.append("\(name): \(error.localizedDescription)"); return nil }
+            catch {
+                if !Task.isCancelled { settings.issues.append("\(name): \(error.localizedDescription)") }
+                return nil
+            }
         }
         func ui(_ name: String) -> String? {
             capture(name) { String(decoding: try run(.simctl, ["ui", identifier, name]), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) }

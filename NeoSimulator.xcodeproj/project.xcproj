@@ -253,6 +253,27 @@
             "NeoSimulator/resources",
             "NeoSimulatorRenderer/resources"
           ]
+        },
+        {
+          "path": "SimulatorManagerModel.swift",
+          "target-membership": [
+            "NeoSimulator/compile-sources",
+            "NeoSimulatorHostTests/compile-sources"
+          ]
+        },
+        {
+          "path": "DeviceSettingsModel.swift",
+          "target-membership": [
+            "NeoSimulator/compile-sources",
+            "NeoSimulatorHostTests/compile-sources"
+          ]
+        },
+        {
+          "path": "DeviceInspectorModel.swift",
+          "target-membership": [
+            "NeoSimulator/compile-sources",
+            "NeoSimulatorHostTests/compile-sources"
+          ]
         }
       ]
     },
@@ -436,6 +457,12 @@
         "resources"
       ],
       "package-product-members": [
+        {
+          "product-name": "XcodeSimulatorHost",
+          "build-phase": {
+            "build-phase": "frameworks"
+          }
+        },
         {
           "package": "ABIBridge",
           "product-name": "ABIBridge",
