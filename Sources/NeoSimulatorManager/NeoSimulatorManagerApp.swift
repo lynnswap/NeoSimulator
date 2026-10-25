@@ -4219,9 +4219,11 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
     }
 
     private func attachToCompactWindow() {
+        let frame = window?.frame
         removePresentation()
         presentationViewController.view.translatesAutoresizingMaskIntoConstraints = true
         window?.contentViewController = presentationViewController
+        if let frame { window?.setFrame(frame, display: false) }
     }
 
     private var screenOwnsFocus: Bool {
