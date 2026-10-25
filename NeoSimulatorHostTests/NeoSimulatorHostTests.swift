@@ -9,6 +9,10 @@ struct InputFocusTests {
         _ = NSApplication.shared
         let display = TestDisplay()
         let preferences = MemoryPreferences()
+        let screens = NSScreen.screens.map(\.frame)
+        let visible = try #require(NSScreen.main?.visibleFrame)
+        let savedCenter = NSPoint(x: visible.midX, y: visible.midY)
+        preferences.setWindowGeometry(center: savedCenter, scale: 0.5, forDevice: "test-device", screens: screens)
         var closes = 0
         var compactPresentations = 0
         var shutdownRequests = 0
@@ -24,6 +28,8 @@ struct InputFocusTests {
         window.contentViewController = parent
         defer { window.close() }
         controller.embed(in: parent)
+        let untouched = preferences.windowGeometry(forDevice: "test-device", screens: screens)
+        #expect(untouched.center == savedCenter && untouched.scale == 0.5)
         parent.view.layoutSubtreeIfNeeded()
         #expect(controller.presentationViewController.parent === parent)
         #expect(controller.presentationWindow === window)
@@ -51,6 +57,8 @@ struct InputFocusTests {
         #expect(display.disconnectCount == 0 && closes == 0)
         controller.showCompactWindow()
         #expect(!controller.isEmbedded && compactPresentations == 1)
+        let compactWindow = try #require(controller.window)
+        #expect(abs(compactWindow.frame.midX - savedCenter.x) < 1 && abs(compactWindow.frame.midY - savedCenter.y) < 1)
         #expect(DeviceCommand.command(.fitScreen).isEnabled(controller))
         #expect(DeviceCommand.command(.stayOnTop).isEnabled(controller))
         controller.perform(.stayOnTop)
@@ -60,12 +68,15 @@ struct InputFocusTests {
         #expect(controller.window?.contentView === content)
         controller.setScale(.physicalSize)
         let compactScale = display.renderScale
+        compactWindow.setFrameOrigin(NSPoint(x: visible.minX + 20, y: visible.minY + 20))
+        let movedCenter = NSPoint(x: compactWindow.frame.midX, y: compactWindow.frame.midY)
         controller.embed(in: parent)
         parent.view.layoutSubtreeIfNeeded()
         controller.detachPresentation()
         controller.embed(in: parent)
         controller.showCompactWindow()
         #expect(WindowScale.matches(display.renderScale, compactScale))
+        #expect(abs(compactWindow.frame.midX - movedCenter.x) < 1 && abs(compactWindow.frame.midY - movedCenter.y) < 1)
         controller.embed(in: parent)
         #expect(controller.session === session && display.disconnectCount == 0 && closes == 0)
         let search = NSSearchField(frame: NSRect(x: 0, y: 0, width: 200, height: 24))
@@ -89,6 +100,7 @@ struct InputFocusTests {
         #expect(replacement.disconnectCount == 1 && display.disconnectCount == 1 && closes == 0)
         let saved = preferences.windowGeometry(forDevice: session.device.identity.preferenceIdentifier, screens: NSScreen.screens.map(\.frame))
         #expect(saved.scale.map { WindowScale.matches($0, compactScale) } == true)
+        #expect(saved.center == movedCenter)
     }
 
     @Test func commandsAndActivationRestoreTheNativeInputOwner() throws {
@@ -1688,7 +1700,7 @@ struct InputFocusTests {
         #expect(gaze.action == Selector(("toggleShowGazeTarget:")) && gaze.target == nil)
     }
 
-    @Test func onlyADeviceThatRotatesReadsItsOrientation() async throws {
+    @Test(arguments: [false, true]) func onlyADeviceThatRotatesReadsItsOrientation(embedded: Bool) async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -1704,15 +1716,25 @@ struct InputFocusTests {
                                        devicectl: devicectl)
         defer { watch.invalidate() }
         var position = NSPoint.zero
-        watch.showNewWindow(cascadingFrom: &position)
+        let parent = NSViewController()
+        parent.view = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 600))
+        if embedded { watch.embed(in: parent) }
+        else { watch.showNewWindow(cascadingFrom: &position) }
         #expect(!watch.session.isBusy)
         #expect(!FileManager.default.fileExists(atPath: log.path))
         let phone = try makeController(TestDisplay(), devicectl: devicectl, device: "phone")
         defer { phone.invalidate() }
-        phone.showNewWindow(cascadingFrom: &position)
+        if embedded { phone.embed(in: parent) }
+        else { phone.showNewWindow(cascadingFrom: &position) }
         #expect(phone.session.isBusy)
         try await wait { !phone.session.isBusy }
         #expect(try String(contentsOf: log, encoding: .utf8).contains("orientation get"))
+        if embedded {
+            phone.showCompactWindow()
+            phone.embed(in: parent)
+            #expect(!phone.session.isBusy)
+            #expect(try String(contentsOf: log, encoding: .utf8).split(separator: "\n").count == 1)
+        }
     }
 
     @Test func orientationReadingsKeepTheUprightAngleWhileFlat() throws {

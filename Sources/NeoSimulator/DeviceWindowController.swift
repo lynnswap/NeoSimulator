@@ -9,7 +9,10 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     private var closed = false
     /// Suppresses geometry saving from restart until the next device connection.
     private var isRestarting = false
-    private var didReadOrientation = false
+    private enum OrientationRead { case notStarted, pending, finished }
+    private var orientationRead = OrientationRead.notStarted
+    /// Distinguishes a previously presented compact frame from its unplaced initial frame.
+    private var hasPresentedCompactWindow = false
     private let onClose: (DeviceWindowController, DeviceLifetimeChoice?) -> Void
     /// The choice File ▸ Close Window… made for this close, which takes
     /// precedence over the default close action.
@@ -230,17 +233,22 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         // The window opened at the scale for the main screen; it takes the
         // scale for the screen it is placed on.
         placeAtInitialScale(place)
-        initialPlacement = (place, window.frame)
+        initialPlacement = orientationRead == .finished ? nil : (place, window.frame)
         readInitialOrientation()
     }
 
     required init?(coder: NSCoder) { nil }
 
+    override func showWindow(_ sender: Any?) {
+        super.showWindow(sender)
+        hasPresentedCompactWindow = true
+    }
+
     /// Changes only the presentation; the owner retains the session and its operations.
     func embed(in parent: NSViewController) {
         guard !closed else { return }
         let container = parent.view
-        saveWindowGeometry()
+        if hasPresentedCompactWindow { saveWindowGeometry() }
         releasePresentationFocus()
         window?.orderOut(nil)
         content.removeFromSuperview()
@@ -260,11 +268,13 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         observePresentationWindow()
         fitting.fit()
         if content.window?.isKeyWindow == true { activateDisplay() }
+        readInitialOrientation()
     }
 
     /// Presents the same native display in its standalone window.
     func showCompactWindow() {
         guard !closed else { return }
+        let needsInitialPlacement = !hasPresentedCompactWindow
         releasePresentationFocus()
         content.removeFromSuperview()
         presentationViewController.removeFromParent()
@@ -278,7 +288,21 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         observePresentationWindow()
         bezelChanged()
         showDisplay(fitting: { self.initialScale })
-        if let window { presentCompactWindow(window) }
+        if let window {
+            let place: ((NSWindow) -> Void)?
+            if needsInitialPlacement {
+                if let center = savedCenter {
+                    place = { $0.setFrameOrigin(NSPoint(x: center.x - $0.frame.width * 0.5, y: center.y - $0.frame.height * 0.5)) }
+                } else { place = { $0.center() } }
+                place?(window)
+            } else { place = nil }
+            presentCompactWindow(window)
+            hasPresentedCompactWindow = true
+            if needsInitialPlacement {
+                placeAtInitialScale(place)
+                initialPlacement = orientationRead == .finished ? nil : (place, window.frame)
+            }
+        }
         readInitialOrientation()
     }
 
@@ -456,7 +480,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         }
         session.display.setChromeVisible(preferences.showsDeviceBezels)
         bezelChanged()
-        didReadOrientation = false
+        orientationRead = .notStarted
         session.display.setRenderScale(scale)
         didRotate()
         if present { showAndActivate() } else { readInitialOrientation() }
@@ -478,19 +502,28 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
             return
         }
         // A reading in progress keeps the placement for its result.
-        guard !didReadOrientation else { return }
-        didReadOrientation = true
+        guard orientationRead == .notStarted else { return }
+        let session = self.session
+        guard session.canPerformToolOperation else { return }
+        orientationRead = .pending
         session.run({ [weak self] in
-            guard let self else { return }
-            defer { self.initialPlacement = nil }
-            try await self.session.readOrientation()
-            if let placement = self.initialPlacement, self.window?.frame == placement.frame {
+            guard let self, self.session === session else { return }
+            defer {
+                if self.session === session {
+                    self.orientationRead = .finished
+                    self.initialPlacement = nil
+                }
+            }
+            try await session.readOrientation()
+            guard self.session === session else { return }
+            if !self.isEmbedded, let placement = self.initialPlacement, self.window?.frame == placement.frame {
                 self.placeAtInitialScale(placement.place)
             } else {
                 self.didRotate()
             }
         }, failure: { [weak self] in
-            self?.initialPlacement = nil
+            guard let self, self.session === session else { return }
+            self.initialPlacement = nil
             hostLog($0.localizedDescription)
         })
     }
