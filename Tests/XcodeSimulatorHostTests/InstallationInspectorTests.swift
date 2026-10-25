@@ -829,6 +829,76 @@ struct SimulatorSettingsBackendTests {
         #expect(throws: CLIError.self) { try backend.set(.liquidGlassOpacity(0.75), device: custom) }
     }
 
+    @Test func refreshingSimulatorAppearanceReadsOnlyItsActualValue() {
+        var original = SimulatorDeviceSettings()
+        original.appearance = "light"
+        original.volume = 60
+        original.reduceMotion = true
+        original.locationScenarios = [.init(name: "City Run", displayName: "City Run")]
+        original.issues = ["appearance: Previous query failed.", "VoiceOver: Unavailable."]
+        let backend = SimulatorSettingsBackend(run: { tool, arguments in
+            guard tool == .simctl, arguments == ["ui", "device-A", "appearance"] else {
+                Issue.record("An unrelated settings query ran.")
+                throw CLIError.io("unrelated-query", "Unavailable.")
+            }
+            return Data("dark".utf8)
+        }, audioDevices: { Issue.record("Audio choices were queried."); return ([], []) })
+        let updated = backend.refresh(original, after: .appearance("light"), device: simulator("device-A"))
+        #expect(updated.appearance == "dark")
+        #expect(updated.volume == 60 && updated.reduceMotion == true)
+        #expect(updated.locationScenarios == original.locationScenarios)
+        #expect(updated.issues == ["VoiceOver: Unavailable."])
+    }
+
+    @Test func refreshingAudioKeepsHostChoicesAndUnrelatedIssues() {
+        let microphone = SimulatorAudioDevice(identifier: "mic-uid", name: "Microphone")
+        let speaker = SimulatorAudioDevice(identifier: "speaker-uid", name: "Speaker")
+        var original = SimulatorDeviceSettings()
+        original.volume = 60
+        original.appearance = "dark"
+        original.audioInputDevices = [microphone]
+        original.audioOutputDevices = [speaker]
+        original.issues = ["audio: Previous query failed.", "audio devices: Device enumeration failed.", "location: Unavailable."]
+        let backend = SimulatorSettingsBackend(run: { tool, arguments in
+            guard tool == .devicectl, arguments.starts(with: ["device", "info", "audio"]) else {
+                Issue.record("An unrelated settings query ran.")
+                throw CLIError.io("unrelated-query", "Unavailable.")
+            }
+            return envelope("{\"volume\":45,\"audioInputDevice\":\(defaultRoute),\"audioOutputDevice\":{\"device\":{\"_0\":\"speaker-uid\"}}}")
+        }, audioDevices: { Issue.record("Existing host choices were queried again."); return ([], []) })
+        let updated = backend.refresh(original, after: .volume(50), device: simulator("device-A"))
+        #expect(updated.volume == 45 && updated.appearance == "dark")
+        #expect(updated.audioInputDevice == "systemDefault" && updated.audioOutputDevice == "speaker-uid")
+        #expect(updated.audioInputDevices == [microphone] && updated.audioOutputDevices == [speaker])
+        #expect(updated.issues == ["audio devices: Device enumeration failed.", "location: Unavailable."])
+    }
+
+    @Test func failedAppearanceRefreshClearsOnlyItsValuesAndReplacesItsIssue() {
+        var original = SimulatorDeviceSettings()
+        original.appearance = "light"
+        original.reduceMotion = false
+        original.colorFilter = .grayscale
+        original.volume = 60
+        original.issues = ["appearance settings: Previous failure.", "color filter: Previous failure.", "audio: Unavailable."]
+        var fails = true
+        let backend = SimulatorSettingsBackend(run: { tool, arguments in
+            guard tool == .devicectl, arguments.starts(with: ["device", "info", "appearance"]) else {
+                Issue.record("An unrelated settings query ran.")
+                throw CLIError.io("unrelated-query", "Unavailable.")
+            }
+            if fails { throw CLIError.io("appearance-query", "Current failure.") }
+            return envelope("{\"reduceMotion\":{\"enabled\":true},\"colorFilter\":{\"enabled\":false}}")
+        }, audioDevices: { ([], []) })
+        let failed = backend.refresh(original, after: .reduceMotion(true), device: simulator("device-A"))
+        #expect(failed.appearance == "light" && failed.volume == 60)
+        #expect(failed.reduceMotion == nil && failed.colorFilter == nil)
+        #expect(failed.issues == ["audio: Unavailable.", "appearance settings: Current failure."])
+        fails = false
+        let recovered = backend.refresh(failed, after: .reduceMotion(true), device: simulator("device-A"))
+        #expect(recovered.reduceMotion == true && recovered.colorFilter == SimulatorColorFilter.none)
+        #expect(recovered.issues == ["audio: Unavailable."])
+    }
+
     @Test func writesUseTheTargetDeviceAndPreserveCommandFailures() throws {
         var commands: [(SimulatorSettingsBackend.Tool, [String])] = []
         var fail = false

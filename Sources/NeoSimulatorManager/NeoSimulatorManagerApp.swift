@@ -32,6 +32,7 @@ final class SimulatorManagerModel {
     private var inspectionGeneration = 0
     private var inspectionTask: Task<Void, Never>?
     var onChange: (() -> Void)?
+    var onSettingsChange: (() -> Void)?
     var onError: ((any Error) -> Void)?
     var onOpenRemoteDevice: ((CoreDeviceDevice) -> Void)?
     var beforeStoppingScreens: (() async throws -> Void)?
@@ -293,14 +294,15 @@ final class SimulatorManagerModel {
             settingsRefreshRequested = true
             deviceSettings = nil
             settingsIssue = nil
-            onChange?()
+            onSettingsChange?()
         }
         guard device?.canInspectSettings == true else { settingsRefreshRequested = false; return }
+        guard operationTask == nil else { return }
         if let inspectionTask { await inspectionTask.value; return }
         guard settingsRefreshRequested else { return }
         inspectionTask = Task {
             defer { self.inspectionTask = nil }
-            while !self.stopping, !Task.isCancelled, self.settingsRefreshRequested,
+            while !self.stopping, !Task.isCancelled, self.operationTask == nil, self.settingsRefreshRequested,
                   let device = self.inspectedDevice, device.canInspectSettings {
                 self.settingsRefreshRequested = false
                 let generation = self.inspectionGeneration
@@ -317,7 +319,7 @@ final class SimulatorManagerModel {
                     self.settingsIssue = error.localizedDescription
                     NSLog("NeoSimulator settings: %@", (error as? SimulatorHostFailure)?.technicalDetails ?? String(describing: error))
                 }
-                self.onChange?()
+                self.onSettingsChange?()
             }
         }
         await inspectionTask?.value
@@ -345,12 +347,28 @@ final class SimulatorManagerModel {
     private func set(_ setting: SimulatorDeviceSetting, identifier: DeviceInventoryID) {
         guard !managingDeviceIDs.contains(identifier), let device = inventory.first(where: { $0.id == identifier }) else { return }
         perform("Updating device settings…", refreshCatalog: false) {
-            do { try await self.controller.setDeviceSetting(setting, for: device) }
-            catch {
+            // Finish a read already in flight; later full reads wait for the operation queue.
+            await self.inspectionTask?.value
+            self.inspectionGeneration += 1
+            let generation = self.inspectionGeneration
+            do {
+                if self.inspectedDevice == device, let settings = self.deviceSettings {
+                    let updated = try await self.controller.setDeviceSetting(setting, for: device, updating: settings)
+                    guard self.inspectionGeneration == generation, self.inspectedDevice == device else { return }
+                    self.deviceSettings = updated
+                    self.settingsIssue = nil
+                    if !updated.issues.isEmpty {
+                        NSLog("NeoSimulator settings: %@", updated.issues.joined(separator: "\n"))
+                    }
+                    self.onSettingsChange?()
+                } else {
+                    try await self.controller.setDeviceSetting(setting, for: device)
+                    await self.refreshInspectedSettings(for: identifier)
+                }
+            } catch {
                 await self.refreshInspectedSettings(for: identifier)
                 throw error
             }
-            await self.refreshInspectedSettings(for: identifier)
         }
     }
 
@@ -379,19 +397,27 @@ final class SimulatorManagerModel {
         guard !stopping else { return }
         pendingOperations.append((activity, refreshCatalog, operation))
         if refreshCatalog { isBusy = true }
-        guard operationTask == nil else { onChange?(); return }
+        guard operationTask == nil else {
+            if refreshCatalog { onChange?() }
+            return
+        }
         operationTask = Task {
             defer {
+                let wasBusy = self.isBusy
                 self.operationTask = nil
                 self.isBusy = false
                 self.activity = ""
-                self.onChange?()
+                if wasBusy { self.onChange?() }
+                if self.settingsRefreshRequested {
+                    Task { await self.inspectDevice(self.inspectedDeviceIdentifier) }
+                }
             }
             while !self.pendingOperations.isEmpty {
                 let next = self.pendingOperations.removeFirst()
+                let wasBusy = self.isBusy
                 self.isBusy = next.refreshCatalog || self.pendingOperations.contains { $0.refreshCatalog }
                 self.activity = next.activity
-                self.onChange?()
+                if wasBusy || self.isBusy { self.onChange?() }
                 var failure: (any Error)?
                 do { try await next.run() }
                 catch { failure = error }
@@ -906,6 +932,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.updateRemoteWindows()
             self?.updateScreenToolbar()
         }
+        model.onSettingsChange = { [weak self] in self?.mainWindow?.updateDeviceSettings() }
         model.onOpenRemoteDevice = { [weak self] device in self?.openRemoteScreen(device) }
         model.beforeStoppingScreens = { [weak self] in
             try await self?.stopSimulatorPresentations()
@@ -1915,7 +1942,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         return true
     }
 
-    private func updateDeviceSettings() {
+    func updateDeviceSettings() {
         inspectorHost?.rootView = makeDeviceSettingsView()
         let selection = selectedDevices.count == 1 ? selectedDevices.first : nil
         deviceInspector.update(device: selection, isManaging: selection.map { model.managingDeviceIDs.contains($0.id) } == true,
