@@ -448,9 +448,11 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     /// it can shut down. The window stays open for `reconnect(_:)`.
     func prepareForRestart() async {
         isRestarting = true
+        if let window = presentationWindow, let sheet = window.attachedSheet {
+            window.endSheet(sheet, returnCode: .cancel)
+        }
         await session.finishRecording()
         guard !closed else { return }
-        if let window, let sheet = window.attachedSheet { window.endSheet(sheet, returnCode: .cancel) }
         customLocation?.close()
         closeExternalDisplayWindow()
         session.disconnect()
@@ -1340,6 +1342,9 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     private func disconnect() {
         guard !closed else { return }
         closed = true
+        if let window = presentationWindow, let sheet = window.attachedSheet {
+            window.endSheet(sheet, returnCode: .cancel)
+        }
         pluginLookUp?.cancel()
         pluginLookUp = nil
         keyboard.invalidate()
@@ -1360,9 +1365,6 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         touchIndicatorObserver = nil
         keyboardSelectionObserver = nil
         audioRouteObserver = nil
-        if let window, let sheet = window.attachedSheet {
-            window.endSheet(sheet, returnCode: .cancel)
-        }
         customLocation?.close()
         closeExternalDisplayWindow()
         session.disconnect()
