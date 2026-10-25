@@ -248,7 +248,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     func embed(in parent: NSViewController) {
         guard !closed else { return }
         let container = parent.view
-        if hasPresentedCompactWindow { saveWindowGeometry() }
+        saveWindowGeometry()
         releasePresentationFocus()
         window?.orderOut(nil)
         content.removeFromSuperview()
@@ -1329,7 +1329,8 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     }
     /// Saves center and scale per screen arrangement, except during restart.
     private func saveWindowGeometry() {
-        guard !closed, !isRestarting, !isEmbedded, let window, window.contentView === content else { return }
+        guard !closed, !isRestarting, !isEmbedded, hasPresentedCompactWindow,
+              let window, window.contentView === content else { return }
         savedScale = WindowScale.usable(session.display.renderScale)
         preferences.setWindowGeometry(center: NSPoint(x: window.frame.midX, y: window.frame.midY),
                                       scale: savedScale,
