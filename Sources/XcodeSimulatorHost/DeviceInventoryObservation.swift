@@ -15,7 +15,7 @@ public final class DeviceInventoryObservation {
     private var stopping = false
 
     public convenience init() throws {
-        try self.init(source: CoreDeviceInventoryChangeSource())
+        self.init(source: CoreDeviceInventoryChangeSource())
     }
 
     init(source: any DeviceInventoryChangeSource) { self.source = source }
@@ -78,38 +78,48 @@ protocol DeviceInventoryChangeSource {
 
 @MainActor
 private final class CoreDeviceInventoryChangeSource: DeviceInventoryChangeSource {
-    private let manager: NativeSwiftValue
-    private let initializeManager: NativeSwiftMethod<() async -> Void>
-    private let changes: NativeSwiftMethod<() -> NativeSwiftValue>
+    @MainActor
+    private struct Bindings {
+        let manager: NativeSwiftValue
+        let initializeManager: NativeSwiftMethod<() async -> Void>
+        let changes: NativeSwiftMethod<() -> NativeSwiftValue>
 
-    init() throws {
-        let binary = "/Library/Developer/PrivateFrameworks/CoreDevice.framework/CoreDevice"
-        guard dlopen(binary, RTLD_NOW | RTLD_LOCAL) != nil else {
-            let detail = dlerror().map { String(cString: $0) } ?? "Unknown loader error"
-            throw CLIError.unavailable("coredevice-runtime", "Could not load CoreDevice: \(detail)")
+        init() async throws {
+            let binary = "/Library/Developer/PrivateFrameworks/CoreDevice.framework/CoreDevice"
+            guard dlopen(binary, RTLD_NOW | RTLD_LOCAL) != nil else {
+                let detail = dlerror().map { String(cString: $0) } ?? "Unknown loader error"
+                throw CLIError.unavailable("coredevice-runtime", "Could not load CoreDevice: \(detail)")
+            }
+            let runtime = ABIRuntime.shared
+            let managerType = try await runtime.resolve(.swift(.type("CoreDevice.DeviceManager")))
+            let shared = try await managerType.resolve(.swift(.staticGetter("shared", as: (() -> NativeSwiftValue).self)))
+            manager = try unsafe shared.unsafeInvoke()
+            initializeManager = try await managerType.resolve(.swift(.method("awaitFullInitialization()", as: (() async -> Void).self)))
+            let remote = try await runtime.resolve(.swift(.type("CoreDevice.RemoteDevice")))
+            let dictionary = try await runtime.resolve(.swift(.type("Swift.Dictionary",
+                genericArguments: [.type(UUID.self), .type(remote)])))
+            let stream = try await runtime.resolve(.swift(.type("Swift.AsyncThrowingStream",
+                genericArguments: [.type(dictionary), .type((any Error).self)])))
+            // AsyncThrowingStream is not @frozen in the SDK; its getter returns the closed value indirectly.
+            changes = try await managerType.resolve(.swift(.getter("deviceChanges", as: (() -> NativeSwiftValue).self,
+                valueABIs: [stream: try .opaque(named: stream.name)])))
         }
-        let runtime = ABIRuntime.shared
-        let managerType = try runtime.resolveAndWait(.swift(.type("CoreDevice.DeviceManager")))
-        let shared = try managerType.resolveAndWait(.swift(.staticGetter("shared", as: (() -> NativeSwiftValue).self)))
-        manager = try unsafe shared.unsafeInvoke()
-        initializeManager = try managerType.resolveAndWait(.swift(.method("awaitFullInitialization()", as: (() async -> Void).self)))
-        let remote = try runtime.resolveAndWait(.swift(.type("CoreDevice.RemoteDevice")))
-        let dictionary = try runtime.resolveAndWait(.swift(.type("Swift.Dictionary",
-            genericArguments: [.type(UUID.self), .type(remote)])))
-        let stream = try runtime.resolveAndWait(.swift(.type("Swift.AsyncThrowingStream",
-            genericArguments: [.type(dictionary), .type((any Error).self)])))
-        // AsyncThrowingStream is not @frozen in the SDK; its getter returns the closed value indirectly.
-        changes = try managerType.resolveAndWait(.swift(.getter("deviceChanges", as: (() -> NativeSwiftValue).self,
-            valueABIs: [stream: try .opaque(named: stream.name)])))
     }
 
+    private var bindings: Bindings?
     func initialize() async throws {
-        try await unsafe initializeManager.unsafeInvoke(on: manager)
+        let bindings = try await Bindings()
         try Task.checkCancellation()
+        try await unsafe bindings.initializeManager.unsafeInvoke(on: bindings.manager)
+        try Task.checkCancellation()
+        self.bindings = bindings
     }
 
     func follow(onChange: @escaping @MainActor () -> Void) async throws {
-        let owner = try unsafe changes.unsafeInvoke(on: manager)
+        guard let bindings else {
+            throw CLIError.unavailable("device-inventory-observation", "Device observation has not been initialized.")
+        }
+        let owner = try unsafe bindings.changes.unsafeInvoke(on: bindings.manager)
         defer { withExtendedLifetime(owner) {} }
         guard let sequence = try owner.withCopy({ $0 as? any AsyncSequence }) else {
             throw CLIError.unavailable("device-inventory-observation", "Connected-device changes could not be observed.")
