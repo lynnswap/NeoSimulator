@@ -98,7 +98,18 @@ struct InputFocusTests {
         #expect(controller.session === replacementSession && compactPresentations == 2)
         #expect(replacement.disconnectCount == 0 && display.disconnectCount == 1 && closes == 0)
         #expect(window.firstResponder === replacement.inputView && replacement.keyboard.last == true)
+        let sheet = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 100),
+                             styleMask: .titled, backing: .buffered, defer: false)
+        sheet.isReleasedWhenClosed = false
+        defer {
+            if window.attachedSheet === sheet { window.endSheet(sheet, returnCode: .cancel) }
+            sheet.close()
+        }
+        window.beginSheet(sheet)
+        #expect(window.attachedSheet === sheet)
+        replacement.onDisconnect = { #expect(window.attachedSheet == nil) }
         controller.invalidate()
+        #expect(window.attachedSheet == nil)
         #expect(replacement.disconnectCount == 1 && display.disconnectCount == 1 && closes == 0)
         let saved = preferences.windowGeometry(forDevice: session.device.identity.preferenceIdentifier, screens: NSScreen.screens.map(\.frame))
         #expect(saved.scale.map { WindowScale.matches($0, compactScale) } == true)
