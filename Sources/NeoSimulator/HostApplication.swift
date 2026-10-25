@@ -69,6 +69,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     private var newSimulator: NewSimulatorWindowController?
     private var menu: MenuController?
     private var stopped = false
+    private var stoppingTask: Task<Void, Error>?
     /// Shared cascade position; zero until the first window cascades.
     private var nextWindowPosition = NSPoint.zero
     /// I/O ▸ Touch Pressure's settings, which every device window shares.
@@ -1172,9 +1173,15 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     private func handleHostConflict() {
         guard !stopped, let name = conflicts.conflictingHostName else { return }
         if isInProcess {
-            onError?(HostError.conflict("\(name) is now displaying the simulators."))
-            shutdown()
-            onChange?()
+            yieldToAnotherHost()
+            guard !isTerminating else { return }
+            isTerminating = true
+            Task {
+                var message = "\(name) is now displaying the simulators."
+                do { try await stop(keepingDevicesRunning: true) }
+                catch { message += "\n\(error.localizedDescription)" }
+                onError?(HostError.conflict(message))
+            }
             return
         }
         hostLog("\(name) appeared; disconnecting simulators and exiting")
@@ -1274,8 +1281,16 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     /// Finishes presentation resources without terminating the owning application.
     /// The headless backend remains responsible for guest lifetime in integrated mode.
     func stop(keepingDevicesRunning: Bool? = nil) async throws {
+        if let stoppingTask { try await stoppingTask.value; return }
         guard !stopped else { return }
         isTerminating = true
+        let task = Task { try await finishStopping(keepingDevicesRunning: keepingDevicesRunning) }
+        stoppingTask = task
+        defer { stoppingTask = nil }
+        try await task.value
+    }
+
+    private func finishStopping(keepingDevicesRunning: Bool?) async throws {
         let keepsRunning = isInProcess || (keepingDevicesRunning
             ?? HostPreferences.defaults.bool(forKey: HostPreferences.detachOnAppQuit))
         let devices = keepsRunning ? [] : ownedDeviceIdentifiers.union(sessions.keys).sorted().map {
