@@ -37,6 +37,9 @@ struct InputFocusTests {
         #expect(window.firstResponder === display.inputView)
         #expect(controller.session === session && display.disconnectCount == 0)
         #expect(!DeviceCommand.command(.fitScreen).isEnabled(controller))
+        #expect(!DeviceCommand.command(.stayOnTop).isEnabled(controller))
+        controller.perform(.stayOnTop)
+        #expect(controller.window?.level == .normal)
         controller.perform(.shutDown)
         #expect(shutdownRequests == 1 && display.isBooted && session.isConnected)
         parent.view.setFrameSize(NSSize(width: 300, height: 480))
@@ -49,6 +52,11 @@ struct InputFocusTests {
         controller.showCompactWindow()
         #expect(!controller.isEmbedded && compactPresentations == 1)
         #expect(DeviceCommand.command(.fitScreen).isEnabled(controller))
+        #expect(DeviceCommand.command(.stayOnTop).isEnabled(controller))
+        controller.perform(.stayOnTop)
+        #expect(controller.window?.level == .floating)
+        controller.perform(.stayOnTop)
+        #expect(controller.window?.level == .normal)
         #expect(controller.window?.contentView === content)
         controller.setScale(.physicalSize)
         let compactScale = display.renderScale
@@ -467,6 +475,24 @@ struct InputFocusTests {
         #expect(display.input.keyDowns.map(\.keyCode) == [6, 7, 8, 9])
         window.makeFirstResponder(window)
         #expect(NSApp.mainMenu?.performKeyEquivalent(with: editing[3]) == true)
+        let externalDisplay = TestDisplay()
+        let external = try ExternalDisplayWindowController(session: controller.session, display: externalDisplay,
+            state: ExternalScreenState(isPoweredOn: true, pixelSize: CGSize(width: 720, height: 480), scale: 1),
+            deviceWindow: controller, preferences: MemoryPreferences(), onClose: {})
+        defer { external.invalidate() }
+        let externalWindow = try #require(external.window)
+        #expect(externalWindow.makeFirstResponder(externalDisplay.inputView))
+        #expect(externalWindow.firstResponder === externalDisplay.inputView)
+        #expect(DeviceWindowController.deviceWindow(for: externalWindow) === controller)
+        let editMenu = try #require(NSApp.mainMenu?.items.first { $0.title == "Edit" }?.submenu as? EditMenu)
+        for event in editing {
+            let externalEvent = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: externalWindow.windowNumber, context: nil,
+                characters: event.characters, charactersIgnoringModifiers: event.charactersIgnoringModifiers,
+                isARepeat: false, keyCode: event.keyCode))
+            #expect(externalEvent.window === externalWindow)
+            #expect(!editMenu.performKeyEquivalent(with: externalEvent))
+        }
     }
 
     @Test func editMenuEndsWithSimulatorAppsPasteboardCommands() throws {
@@ -1146,17 +1172,25 @@ struct InputFocusTests {
 
     // MARK: Apple TV Remote
 
-    @Test func theAppleTVRemoteItemShowsAndHidesTheRemoteAsInSimulatorApp() throws {
+    @Test(arguments: [false, true]) func theAppleTVRemoteItemShowsAndHidesTheRemoteAsInSimulatorApp(integrated: Bool) throws {
         _ = NSApplication.shared
         let menus = MenuController(application: nil)
-        menus.install()
+        let windowMenu: NSMenu
+        if integrated {
+            windowMenu = NSMenu(title: "View")
+            menus.addScreenCommands(file: NSMenu(), edit: NSMenu(), view: windowMenu)
+        } else {
+            menus.install()
+            windowMenu = try #require(NSApp.mainMenu?.items.first { $0.title == "Window" }?.submenu)
+        }
         defer { NSApp.mainMenu = nil }
-        let windowMenu = try #require(NSApp.mainMenu?.items.first { $0.title == "Window" }?.submenu)
         let item = try #require(windowMenu.items.first { $0.title == "Show Apple TV Remote" })
         // Matches Simulator.app's MainMenu.nib placement and shortcut.
         let index = windowMenu.index(of: item)
         #expect(windowMenu.items[index - 1].title == "Show Device Bezels")
         #expect(windowMenu.items[index + 1].title == "Stay On Top")
+        let fullScreen = try #require(windowMenu.items.first { $0.title == "Enter Full Screen" })
+        #expect(fullScreen.keyEquivalent == "f" && fullScreen.keyEquivalentModifierMask == [.command, .control])
         #expect(item.keyEquivalent == "r" && item.keyEquivalentModifierMask == [.command, .shift])
         for family in [DeviceCapabilities.Family.iPhone, .iPad, .tv, .watch, .vision] {
             menus.updateVisibility(in: windowMenu, for: DeviceCapabilities(family: family, runtimeVersion: 0x1B_00_00,
@@ -2411,7 +2445,7 @@ struct InputFocusTests {
         #expect(controller.canSetScale(.fitScreen))
     }
 
-    @Test func showDeviceBezelsIsAnAppWidePreference() throws {
+    @Test(arguments: [false, true]) func showDeviceBezelsIsAnAppWidePreference(integrated: Bool) throws {
         _ = NSApplication.shared
         let preferences = MemoryPreferences()
         preferences.set(false, forKey: HostPreferences.showChrome)
@@ -2425,16 +2459,35 @@ struct InputFocusTests {
         #expect(controller.window?.styleMask.contains(.resizable) == true)
         #expect(display.view.frame.size == NSSize(width: 200, height: 300))
         let menus = MenuController(application: nil)
-        menus.install()
-        defer { NSApp.mainMenu = nil }
-        let item = try #require(NSApp.mainMenu?.items.first { $0.title == "Window" }?.submenu?.items
-            .first { $0.title == "Show Device Bezels" })
+        var updates: [Bool] = []
+        menus.toggleDeviceBezels = {
+            let shows = !HostPreferences.defaults.showsDeviceBezels
+            HostPreferences.defaults.set(shows, forKey: HostPreferences.showChrome)
+            updates.append(shows)
+            controller.setDeviceBezelVisible(shows)
+        }
+        let windowMenu: NSMenu
+        if integrated {
+            windowMenu = NSMenu(title: "View")
+            menus.addScreenCommands(file: NSMenu(), edit: NSMenu(), view: windowMenu)
+        } else {
+            menus.install()
+            windowMenu = try #require(NSApp.mainMenu?.items.first { $0.title == "Window" }?.submenu)
+        }
+        defer {
+            NSApp.mainMenu = nil
+            withExtendedLifetime(menus) {}
+        }
+        let item = try #require(windowMenu.items.first { $0.title == "Show Device Bezels" })
         let saved = UserDefaults.standard.persistentDomain(forName: Bundle.main.bundleIdentifier ?? "")?[HostPreferences.showChrome]
         defer { UserDefaults.standard.set(saved, forKey: HostPreferences.showChrome) }
         for shows in [false, true] {
             UserDefaults.standard.set(shows, forKey: HostPreferences.showChrome)
-            _ = menus.validateMenuItem(item)
+            #expect(menus.validateMenuItem(item))
             #expect(item.state == (shows ? .on : .off))
+            #expect(NSApp.sendAction(try #require(item.action), to: item.target, from: item))
+            #expect(updates.last == !shows && HostPreferences.defaults.showsDeviceBezels == !shows)
+            #expect((display.chromePadding != nil) == !shows)
         }
     }
 
@@ -3428,16 +3481,24 @@ struct InputFocusTests {
         #expect(opened == [log])
     }
 
-    @Test func gpuSelectionRewritesCoreSimulatorsPolicyAsSimulatorAppDoes() throws {
+    @Test(arguments: [false, true]) func gpuSelectionRewritesCoreSimulatorsPolicyAsSimulatorAppDoes(integrated: Bool) throws {
         _ = NSApplication.shared
         let defaults = try #require(MemoryDefaults(suiteName: nil))
         let menus = MenuController(application: nil, gpuPolicy: GPUPolicy(defaults: defaults))
-        menus.install()
+        let file: NSMenu
+        if integrated {
+            file = NSMenu(title: "File")
+            menus.addScreenCommands(file: file, edit: NSMenu(), view: NSMenu())
+        } else {
+            menus.install()
+            file = try #require(NSApp.mainMenu?.items.first { $0.title == "File" }?.submenu)
+        }
         defer { NSApp.mainMenu = nil }
-        let file = try #require(NSApp.mainMenu?.items.first { $0.title == "File" }?.submenu)
         let titles = file.items.map { $0.isSeparatorItem ? "-" : $0.title }
         let index = try #require(titles.firstIndex(of: "GPU Selection"))
-        #expect(titles[(index - 2)...(index + 2)] == ["Stop Recording", "-", "GPU Selection", "-", "Install App or Import Media…"])
+        if !integrated {
+            #expect(titles[(index - 2)...(index + 2)] == ["Stop Recording", "-", "GPU Selection", "-", "Install App or Import Media…"])
+        }
         let gpu = try #require(file.items[index].submenu)
         #expect(gpu.items.map { $0.isSeparatorItem ? "-" : $0.title } == [
             "Automatic", "Prefer Integrated GPU", "Prefer Discrete GPU", "-", "Use External GPU When Available",
@@ -5257,17 +5318,34 @@ struct InputFocusTests {
         #expect(!UserDefaults.standard.bool(forKey: key))
     }
 
-    @Test func closeWindowAsksBeforeClosing() throws {
+    @Test(arguments: [false, true]) func closeWindowAsksBeforeClosing(integrated: Bool) throws {
         _ = NSApplication.shared
+        let menus = MenuController(application: nil)
+        let file: NSMenu
+        if integrated {
+            file = NSMenu(title: "File")
+            menus.addCloseWindowCommands(to: file)
+        } else {
+            menus.install()
+            file = try #require(NSApp.mainMenu?.items.first { $0.title == "File" }?.submenu)
+        }
+        defer {
+            NSApp.mainMenu = nil
+            withExtendedLifetime(menus) {}
+        }
+        let item = try #require(file.items.first { $0.title == "Close Window…" })
+        #expect(item.keyEquivalent == "w" && item.keyEquivalentModifierMask == [.command, .control] && item.isAlternate)
         var closes: [DeviceLifetimeChoice?] = []
         let controller = try makeController(TestDisplay(), onClose: { _, choice in closes.append(choice) })
         defer { controller.invalidate() }
         controller.showWindow(nil)
         let window = try #require(controller.window)
-        controller.closeAsking()
+        window.makeKeyAndOrderFront(nil)
+        #expect(menus.validateMenuItem(item))
+        #expect(NSApp.sendAction(try #require(item.action), to: item.target, from: item))
         window.endSheet(try #require(window.attachedSheet), returnCode: .alertThirdButtonReturn)
         #expect(window.isVisible && closes.isEmpty)
-        controller.closeAsking()
+        #expect(NSApp.sendAction(try #require(item.action), to: item.target, from: item))
         window.endSheet(try #require(window.attachedSheet), returnCode: .alertSecondButtonReturn)
         #expect(!window.isVisible && closes == [.keepRunning])
     }

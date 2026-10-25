@@ -299,6 +299,7 @@ struct DeviceCommand {
             $0.tvRemote.toggle()
         },
         DeviceCommand(id: .stayOnTop, title: "Stay On Top",
+                      isEnabled: { !$0.isEmbedded && $0.session.canPerformCommands },
                       state: { $0.staysOnTop ? .on : .off }) { $0.toggleStayOnTop() },
         scale(.physicalSize, title: "Physical Size", key: "1"),
         scale(.pointAccurate, title: "Point Accurate", key: "2"),

@@ -889,6 +889,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let defaults = HostPreferences.defaults
             defaults.set(!defaults.bool(forKey: HostPreferences.showTestingDevices), forKey: HostPreferences.showTestingDevices)
         }
+        simulatorMenus.toggleDeviceBezels = { [weak self] in
+            let defaults = HostPreferences.defaults
+            let shows = !defaults.showsDeviceBezels
+            defaults.set(shows, forKey: HostPreferences.showChrome)
+            self?.simulatorWindows.values.forEach { $0.setDeviceBezelVisible(shows) }
+        }
         installMenu()
         model.onChange = { [weak self] in
             self?.mainWindow?.update()
@@ -1215,7 +1221,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let file = addSubmenu("File", to: main)
         addItem("New Simulator…", action: #selector(showNewSimulator(_:)), key: "n", to: file)
         addDevicesMenu("Open Simulator", to: file)
-        addItem("Close Window", action: #selector(NSWindow.performClose(_:)), key: "w", to: file).target = nil
+        simulatorMenus.addCloseWindowCommands(to: file)
         file.addItem(.separator())
         addItem("Save Screenshot…", action: #selector(RemoteDeviceWindowController.saveScreenshot(_:)), key: "s", to: file).target = nil
         addItem("Discard Screenshot…", action: #selector(RemoteDeviceWindowController.discardScreenshot(_:)), to: file).target = nil

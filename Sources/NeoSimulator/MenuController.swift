@@ -16,6 +16,7 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
     private var keyedItems: [NSMenuItem] = []
     private var keyWindowObserver: (any NSObjectProtocol)?
     var toggleTestingDevices: (() -> Void)?
+    var toggleDeviceBezels: (() -> Void)?
     private var activeWindow: DeviceWindowController? { DeviceWindowController.keyDeviceWindow }
 
     init(application: HostApplication?, gpuPolicy: GPUPolicy? = nil, pasteboardSync: PasteboardSync? = nil) {
@@ -53,19 +54,11 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
         file.addItem(.separator())
         commands([.saveScreen, .saveScreenAs, .recordScreen, .recordScreenAs, .stopRecording], in: file)
         file.addItem(.separator())
-        let gpu = menu("GPU Selection", in: file)
-        for (title, preference) in [("Automatic", GPUPolicy.Preference.automatic),
-                                    ("Prefer Integrated GPU", .integrated), ("Prefer Discrete GPU", .discrete)] {
-            item(title, action: #selector(preferGPU(_:)), in: gpu).representedObject = preference
-        }
-        gpu.addItem(.separator())
-        item("Use External GPU When Available", action: #selector(togglePrefersExternalGPU(_:)), in: gpu)
+        addGPUSelection(to: file)
         file.addItem(.separator())
         commands([.importFiles], in: file)
         file.addItem(.separator())
-        item("Close Window", action: #selector(closeWindow(_:)), key: "w", in: file)
-        item("Close Window…", action: #selector(closeAsking(_:)), key: "w", modifiers: [.command, .control],
-             in: file).isAlternate = true
+        addCloseWindowCommands(to: file)
 
         let edit = EditMenu(title: "Edit")
         main.addItem(withTitle: "Edit", action: nil, keyEquivalent: "").submenu = edit
@@ -90,11 +83,7 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
 
         let window = menu("Window", in: main)
         item("Minimize", action: #selector(minimizeWindow(_:)), key: "m", in: window)
-        item("Enter Full Screen", action: #selector(fullScreen(_:)), key: "f", modifiers: [.command, .control], in: window)
-        item("Show Device Bezels", action: #selector(toggleShowDeviceBezels(_:)), in: window)
-        commands([.appleTVRemote, .stayOnTop], in: window)
-        window.addItem(.separator())
-        commands([.physicalSize, .pointAccurate, .pixelAccurate, .fitScreen], in: window)
+        addPresentationCommands(to: window)
         window.addItem(.separator())
         item("Simulators", action: #selector(showBrowser(_:)), in: window)
         item("Bring All to Front", action: #selector(NSApplication.arrangeInFront(_:)), in: window, target: NSApp)
@@ -198,12 +187,40 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
 
     func addScreenCommands(file: NSMenu, edit: NSMenu, view: NSMenu) {
         file.addItem(.separator())
+        addGPUSelection(to: file)
+        file.addItem(.separator())
         commands([.importFiles], in: file)
         edit.addItem(.separator())
         commands([.copyScreen], in: edit)
         item("Automatically Sync Pasteboard", action: #selector(togglePasteboardSync(_:)), in: edit)
         commands([.getPasteboard, .sendPasteboard], in: edit)
-        commands([.appleTVRemote, .physicalSize, .pointAccurate, .pixelAccurate, .fitScreen], in: view)
+        view.delegate = self
+        view.addItem(.separator())
+        addPresentationCommands(to: view)
+    }
+
+    func addCloseWindowCommands(to file: NSMenu) {
+        item("Close Window", action: #selector(closeWindow(_:)), key: "w", in: file)
+        item("Close Window…", action: #selector(closeAsking(_:)), key: "w", modifiers: [.command, .control],
+             in: file).isAlternate = true
+    }
+
+    private func addGPUSelection(to file: NSMenu) {
+        let gpu = menu("GPU Selection", in: file)
+        for (title, preference) in [("Automatic", GPUPolicy.Preference.automatic),
+                                    ("Prefer Integrated GPU", .integrated), ("Prefer Discrete GPU", .discrete)] {
+            item(title, action: #selector(preferGPU(_:)), in: gpu).representedObject = preference
+        }
+        gpu.addItem(.separator())
+        item("Use External GPU When Available", action: #selector(togglePrefersExternalGPU(_:)), in: gpu)
+    }
+
+    private func addPresentationCommands(to menu: NSMenu) {
+        item("Enter Full Screen", action: #selector(fullScreen(_:)), key: "f", modifiers: [.command, .control], in: menu)
+        item("Show Device Bezels", action: #selector(toggleShowDeviceBezels(_:)), in: menu)
+        commands([.appleTVRemote, .stayOnTop], in: menu)
+        menu.addItem(.separator())
+        commands([.physicalSize, .pointAccurate, .pixelAccurate, .fitScreen], in: menu)
     }
 
     private func observeActiveWindow() {
@@ -319,7 +336,7 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
         // App-wide checkmarks remain valid without a device window.
         if item.action == #selector(toggleShowDeviceBezels(_:)) {
             item.state = HostPreferences.defaults.showsDeviceBezels ? .on : .off
-            return application != nil
+            return application != nil || toggleDeviceBezels != nil
         }
         if item.action == #selector(togglePasteboardSync(_:)) {
             item.state = pasteboardSync?.isOn == true ? .on : .off
@@ -349,7 +366,10 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
         if let toggleTestingDevices { toggleTestingDevices() }
         else { application?.toggleShowTestingDevices() }
     }
-    @objc private func toggleShowDeviceBezels(_ sender: Any?) { application?.toggleShowDeviceBezels() }
+    @objc private func toggleShowDeviceBezels(_ sender: Any?) {
+        if let toggleDeviceBezels { toggleDeviceBezels() }
+        else { application?.toggleShowDeviceBezels() }
+    }
     @objc private func togglePasteboardSync(_ sender: Any?) { pasteboardSync?.toggle() }
     @objc private func preferGPU(_ sender: NSMenuItem) {
         if let preference = sender.representedObject as? GPUPolicy.Preference { gpuPolicy?.prefer(preference) }
@@ -505,13 +525,13 @@ final class EditMenu: NSMenu {
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let window = event.window
         let simulatorHasFocus = MainActor.assumeIsolated {
+            if let controller = window?.windowController as? ExternalDisplayWindowController {
+                return window?.firstResponder === controller.display.inputView
+            }
             if let controller = DeviceWindowController.deviceWindow(for: window) {
                 return window?.firstResponder === controller.session.display.inputView
             }
-            return switch window?.windowController {
-            case let controller as ExternalDisplayWindowController: window?.firstResponder === controller.display.inputView
-            default: false
-            }
+            return false
         }
         // Copy Screen's Control-Command-C is not an editing shortcut.
         return (!simulatorHasFocus || event.modifierFlags.contains(.control)) && super.performKeyEquivalent(with: event)
