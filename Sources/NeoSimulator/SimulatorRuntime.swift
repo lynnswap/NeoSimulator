@@ -82,9 +82,15 @@ final class SimulatorRuntime {
         for index in 0..<_dyld_image_count() {
             guard let pointer = _dyld_get_image_name(index) else { continue }
             let path = URL(fileURLWithPath: String(cString: pointer)).resolvingSymlinksInPath().path
-            if path.contains("/DeviceKit.framework/") || path.contains("/DeviceHub.app/") {
+            if path.contains("/DeviceHub.app/") {
                 throw HostError.unavailable("Forbidden Device Hub component is loaded: \(path)")
             }
+#if !NEOSIMULATOR_MANAGER
+            // The manager also hosts DeviceKit-backed physical-device screens.
+            if path.contains("/DeviceKit.framework/") {
+                throw HostError.unavailable("Forbidden Device Hub component is loaded: \(path)")
+            }
+#endif
             if (path.contains("/SimulatorKit.framework/") || path.contains("/IDEPlaygroundSimulator.framework/")),
                !path.hasPrefix(prefix) {
                 throw HostError.unavailable("Private simulator code came from a different Xcode: \(path)")
