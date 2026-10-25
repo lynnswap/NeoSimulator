@@ -486,9 +486,11 @@ struct InputFocusTests {
         #expect(DeviceWindowController.deviceWindow(for: externalWindow) === controller)
         let editMenu = try #require(NSApp.mainMenu?.items.first { $0.title == "Edit" }?.submenu as? EditMenu)
         for event in editing {
+            let characters = try #require(event.characters)
+            let charactersIgnoringModifiers = try #require(event.charactersIgnoringModifiers)
             let externalEvent = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
                 timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: externalWindow.windowNumber, context: nil,
-                characters: try #require(event.characters), charactersIgnoringModifiers: try #require(event.charactersIgnoringModifiers),
+                characters: characters, charactersIgnoringModifiers: charactersIgnoringModifiers,
                 isARepeat: false, keyCode: event.keyCode))
             #expect(externalEvent.window === externalWindow)
             #expect(!editMenu.performKeyEquivalent(with: externalEvent))
