@@ -347,16 +347,16 @@ public actor SimulatorHostController {
                     testingDeviceSetPath: SimulatorDeviceSets.testingPath()
                 ) { connection in
                     if !attachInitially && connection.event.startTime < self.startedAt { return }
-                    let source: (xcode: XcodeInstallation, devices: [SimulatorHostDevice])
-                    if let known = catalogs.first(where: { self.sameURL($0.xcode.applicationURL, connection.xcodeURL) }) {
-                        source = known
-                    } else {
-                        let xcode = try await self.resolveXcode(connection.xcodeURL)
-                        source = (xcode, try await self.deviceCatalog(xcode: xcode))
-                        catalogs.append(source)
+                    let index = catalogs.firstIndex(where: { self.sameURL($0.xcode.applicationURL, connection.xcodeURL) })
+                    let xcode: XcodeInstallation
+                    if let index { xcode = catalogs[index].xcode }
+                    else { xcode = try await self.resolveXcode(connection.xcodeURL) }
+                    let devices = try await Self.connectionCatalog(for: connection.deviceID, cachedDevices: index.map { catalogs[$0].devices }) {
+                        try await self.deviceCatalog(xcode: xcode)
                     }
-                    let xcode = source.xcode
-                    guard source.devices.contains(where: { $0.inventoryID == connection.deviceID && $0.state == "Booted" }) else { return }
+                    if let index { catalogs[index] = (xcode, devices) }
+                    else { catalogs.append((xcode, devices)) }
+                    guard devices.contains(where: { $0.inventoryID == connection.deviceID && $0.state == "Booted" }) else { return }
                     let renderers = try await self.registeredRenderers()
                     if let owner = renderers.first(where: { $0.deviceIdentifiers.contains(connection.deviceID) }) {
                         if self.sameURL(URL(fileURLWithPath: owner.xcodePath), xcode.applicationURL) { return }
@@ -497,6 +497,15 @@ public actor SimulatorHostController {
         if let url { return try makeInspector().xcode(at: url) }
         if let selected = try? makeInspector().selectedXcode() { return selected }
         return try await availableXcodes()[0]
+    }
+
+    nonisolated(nonsending) static func connectionCatalog(for deviceID: DeviceInventoryID, cachedDevices: [SimulatorHostDevice]?,
+                                  readCatalog: () async throws -> [SimulatorHostDevice]) async throws -> [SimulatorHostDevice] {
+        if let cachedDevices, cachedDevices.contains(where: { $0.inventoryID == deviceID && $0.state == "Booted" }) {
+            return cachedDevices
+        }
+        // Xcodes are polled sequentially, so another catalog may observe a boot that this snapshot predates.
+        return try await readCatalog()
     }
 
     private func availableCatalogs() async throws -> [(xcode: XcodeInstallation, devices: [SimulatorHostDevice])] {
