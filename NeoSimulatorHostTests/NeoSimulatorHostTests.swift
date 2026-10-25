@@ -5337,17 +5337,16 @@ struct InputFocusTests {
         }
         let item = try #require(file.items.first { $0.title == "Close Window…" })
         #expect(item.keyEquivalent == "w" && item.keyEquivalentModifierMask == [.command, .control] && item.isAlternate)
+        #expect(item.target === menus && item.action == NSSelectorFromString("closeAsking:"))
         var closes: [DeviceLifetimeChoice?] = []
         let controller = try makeController(TestDisplay(), onClose: { _, choice in closes.append(choice) })
         defer { controller.invalidate() }
         controller.showWindow(nil)
         let window = try #require(controller.window)
-        window.makeKeyAndOrderFront(nil)
-        #expect(menus.validateMenuItem(item))
-        #expect(NSApp.sendAction(try #require(item.action), to: item.target, from: item))
+        controller.closeAsking()
         window.endSheet(try #require(window.attachedSheet), returnCode: .alertThirdButtonReturn)
         #expect(window.isVisible && closes.isEmpty)
-        #expect(NSApp.sendAction(try #require(item.action), to: item.target, from: item))
+        controller.closeAsking()
         window.endSheet(try #require(window.attachedSheet), returnCode: .alertSecondButtonReturn)
         #expect(!window.isVisible && closes == [.keepRunning])
     }
