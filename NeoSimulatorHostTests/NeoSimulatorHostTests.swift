@@ -1,5 +1,7 @@
 import ABIBridge
 import AppKit
+import Darwin
+import Observation
 import Testing
 import Synchronization
 
@@ -1727,7 +1729,11 @@ struct InputFocusTests {
         if embedded { phone.embed(in: parent) }
         else { phone.showNewWindow(cascadingFrom: &position) }
         #expect(phone.session.isBusy)
-        try await wait { !phone.session.isBusy }
+        while phone.session.isBusy {
+            await withCheckedContinuation { continuation in
+                withObservationTracking { _ = phone.session.isBusy } onChange: { continuation.resume() }
+            }
+        }
         #expect(try String(contentsOf: log, encoding: .utf8).contains("orientation get"))
         if embedded {
             phone.showCompactWindow()
@@ -2297,8 +2303,12 @@ struct InputFocusTests {
             display.onRotation = { [unowned display] in display.naturalSize = $0 == 0 ? portrait : landscape }
             return (try makeController(display, devicectl: devicectl, device: device, preferences: preferences), display)
         }
-        func readOrientation(_ controller: DeviceWindowController) async throws {
-            for _ in 0..<300 where controller.session.isBusy { try await Task.sleep(for: .milliseconds(10)) }
+        func readOrientation(_ controller: DeviceWindowController) async {
+            while controller.session.isBusy {
+                await withCheckedContinuation { continuation in
+                    withObservationTracking { _ = controller.session.isBusy } onChange: { continuation.resume() }
+                }
+            }
         }
         let visible = try #require(NSScreen.screens.first?.visibleFrame)
         let center = NSPoint(x: visible.midX, y: visible.midY)
@@ -2309,7 +2319,7 @@ struct InputFocusTests {
         let (reopened, display) = try open("A")
         defer { reopened.invalidate() }
         reopened.showNewWindow(cascadingFrom: &cascade)
-        try await readOrientation(reopened)
+        await readOrientation(reopened)
         #expect(display.rotations == [90])
         let window = try #require(reopened.window)
         #expect(window.contentLayoutRect.width == landscape.width)
@@ -2321,14 +2331,14 @@ struct InputFocusTests {
         let movedWindow = try #require(moved.window)
         movedWindow.setFrameOrigin(NSPoint(x: movedWindow.frame.minX - 20, y: movedWindow.frame.minY - 20))
         let topLeft = NSPoint(x: movedWindow.frame.minX, y: movedWindow.frame.maxY)
-        try await readOrientation(moved)
+        await readOrientation(moved)
         #expect(movedWindow.contentLayoutRect.width == landscape.width)
         #expect(abs(movedWindow.frame.minX - topLeft.x) < 1 && abs(movedWindow.frame.maxY - topLeft.y) < 1)
         let (centered, _) = try open("C")
         defer { centered.invalidate() }
         var first = NSPoint.zero
         centered.showNewWindow(cascadingFrom: &first)
-        try await readOrientation(centered)
+        await readOrientation(centered)
         let centeredWindow = try #require(centered.window)
         #expect(centeredWindow.contentLayoutRect.width == landscape.width)
         let placed = centeredWindow.frame
@@ -2344,7 +2354,7 @@ struct InputFocusTests {
         defer { rescaled.invalidate() }
         #expect(tallDisplay.renderScale < 0.5)
         rescaled.showNewWindow(cascadingFrom: &cascade)
-        try await readOrientation(rescaled)
+        await readOrientation(rescaled)
         #expect(tallDisplay.renderScale == 0.5)
         let rescaledWindow = try #require(rescaled.window)
         #expect(rescaledWindow.contentLayoutRect.width == landscape.width * 0.5)
@@ -2363,7 +2373,7 @@ struct InputFocusTests {
         guestDisplay.guestInterfaceAngle = 90
         guestDisplay.onPropertiesChange?()
         #expect(guestDisplay.rotations == [90] && guestRotated.session.isBusy)
-        try await readOrientation(guestRotated)
+        await readOrientation(guestRotated)
         #expect(guestDisplay.renderScale == 0.5)
         let guestWindow = try #require(guestRotated.window)
         #expect(abs(guestWindow.frame.midX - center.x) < 1 && abs(guestWindow.frame.midY - center.y) < 1)
@@ -2375,7 +2385,7 @@ struct InputFocusTests {
         defer { reshown.invalidate() }
         reshown.showNewWindow(cascadingFrom: &cascade)
         reshown.showAndActivate()
-        try await readOrientation(reshown)
+        await readOrientation(reshown)
         #expect(reshownDisplay.renderScale == 0.5)
         let reshownWindow = try #require(reshown.window)
         #expect(abs(reshownWindow.frame.midX - center.x) < 1 && abs(reshownWindow.frame.midY - center.y) < 1)
@@ -3159,29 +3169,59 @@ struct InputFocusTests {
     }
 
     @Test func aRestartFinishesTheRecordingBeforeDisconnecting() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let stopping = directory.appendingPathComponent("stopping"), finish = directory.appendingPathComponent("finish")
+        try #require(mkfifo(stopping.path, 0o600) == 0 && mkfifo(finish.path, 0o600) == 0)
+        let stoppingDescriptor = open(stopping.path, O_RDWR)
+        try #require(stoppingDescriptor >= 0)
+        let stoppingHandle = FileHandle(fileDescriptor: stoppingDescriptor, closeOnDealloc: true)
+        let finishDescriptor = open(finish.path, O_RDWR)
+        try #require(finishDescriptor >= 0)
+        let finishHandle = FileHandle(fileDescriptor: finishDescriptor, closeOnDealloc: true)
+        let (acknowledgements, acknowledgement) = AsyncStream<Void>.makeStream()
+        stoppingHandle.readabilityHandler = { handle in
+            if !handle.availableData.isEmpty { acknowledgement.yield(()) }
+        }
+        defer {
+            stoppingHandle.readabilityHandler = nil
+            acknowledgement.finish()
+            try? stoppingHandle.close()
+            try? finishHandle.close()
+        }
         let display = TestDisplay()
         var recorder: Process?
         let controller = try makeController(display, recordingProcess: { _, _ in
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/bin/sh")
             process.arguments = ["-c", """
-                trap 'sleep 0.2; exit 0' INT
+                exec 3<> "\(finish.path)"
+                exec 4<> "\(stopping.path)"
+                trap 'printf stopping >&4; IFS= read -r token <&3; exit 0' INT
                 echo 'Recording started' >&2
-                while :; do sleep 0.05; done
+                while :; do IFS= read -r token <&3; done
                 """]
             recorder = process
             return process
         })
         defer { controller.invalidate() }
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
         try controller.session.startRecording(to: .file(directory.appendingPathComponent("Recording.mov")), mask: .ignored)
         // SIGINT is safe only after the first-frame acknowledgement.
-        try await Task.sleep(for: .milliseconds(300))
+        let recording = try #require(controller.session.recording)
+        while !recording.hasStarted {
+            await withCheckedContinuation { continuation in
+                withObservationTracking { _ = recording.hasStarted } onChange: { continuation.resume() }
+            }
+        }
         var recordingAtDisconnect: Bool?
         display.onDisconnect = { recordingAtDisconnect = recorder?.isRunning }
-        await controller.prepareForRestart()
+        let restart = Task { await controller.prepareForRestart() }
+        var iterator = acknowledgements.makeAsyncIterator()
+        try #require(await iterator.next() != nil)
+        #expect(recordingAtDisconnect == nil && display.disconnectCount == 0)
+        try finishHandle.write(contentsOf: Data("finish\n".utf8))
+        await restart.value
         #expect(recordingAtDisconnect == false)
     }
 
