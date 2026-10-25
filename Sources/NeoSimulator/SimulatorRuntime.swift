@@ -15,6 +15,7 @@ extension Measurement: @retroactive ABIBridgeSwiftValue where UnitType == UnitAn
 final class SimulatorRuntime {
     private static var loadedUIXcodeURL: URL?
     private static var contextXcodeURLs: Set<URL> = []
+    private static var preparations: [URL: Task<SimulatorRuntime, any Error>] = [:]
     /// The Xcode that owns this device context and its command-line tools.
     let xcodeURL: URL
     /// The process's fixed SimulatorKit and user-interface factory.
@@ -34,9 +35,32 @@ final class SimulatorRuntime {
         return candidate.resolvingSymlinksInPath()
     }
 
-    init(xcodeURL: URL, uiXcodeURL: URL? = nil) throws {
+    /// Joins a context's in-flight preparation while its native values stay on the main actor.
+    static func load(xcodeURL: URL, uiXcodeURL: URL? = nil) async throws -> SimulatorRuntime {
+        try Task.checkCancellation()
+        let source = xcodeURL.resolvingSymlinksInPath()
+        if let preparation = preparations[source] {
+            let runtime = try await preparation.value
+            if let requestedUI = uiXcodeURL?.resolvingSymlinksInPath(), runtime.uiXcodeURL != requestedUI {
+                throw HostError.unavailable("SimulatorKit is already loaded from \(runtime.uiXcodeURL.path)")
+            }
+            try Task.checkCancellation()
+            return runtime
+        }
+        let preparation = Task {
+            let requestedUI = (uiXcodeURL ?? loadedUIXcodeURL ?? source).resolvingSymlinksInPath()
+            return try await SimulatorRuntime(xcodeURL: source, uiXcodeURL: requestedUI)
+        }
+        preparations[source] = preparation
+        defer { preparations[source] = nil }
+        let runtime = try await preparation.value
+        try Task.checkCancellation()
+        return runtime
+    }
+
+    private init(xcodeURL: URL, uiXcodeURL: URL) async throws {
         self.xcodeURL = xcodeURL.resolvingSymlinksInPath()
-        let requestedUI = (uiXcodeURL ?? Self.loadedUIXcodeURL ?? xcodeURL).resolvingSymlinksInPath()
+        let requestedUI = uiXcodeURL.resolvingSymlinksInPath()
         if let loaded = Self.loadedUIXcodeURL, loaded != requestedUI {
             throw HostError.unavailable("SimulatorKit is already loaded from \(loaded.path)")
         }
@@ -48,17 +72,17 @@ final class SimulatorRuntime {
         try Self.load(requestedUI.appendingPathComponent("Contents/Frameworks/IDEPlaygroundSimulator.framework"))
         Self.contextXcodeURLs.insert(self.xcodeURL)
         let runtime = ABIRuntime.shared
-        coreSimulator = try CoreSimulatorInterface(runtime: runtime)
-        display = try SimulatorDisplayInterface(runtime: runtime)
-        input = try SimulatorInputInterface(runtime: runtime)
-        pasteboard = try SimulatorPasteboardInterface(runtime: runtime)
-        audio = try SimulatorAudioInterface(runtime: runtime)
+        coreSimulator = try await CoreSimulatorInterface(runtime: runtime)
+        display = try await SimulatorDisplayInterface(runtime: runtime)
+        input = try await SimulatorInputInterface(runtime: runtime)
+        pasteboard = try await SimulatorPasteboardInterface(runtime: runtime)
+        audio = try await SimulatorAudioInterface(runtime: runtime)
         try validateLoadedImages()
     }
 
-    static func creationCatalog(xcodeURL: URL) throws -> SimulatorCatalog {
+    static func creationCatalog(xcodeURL: URL) async throws -> SimulatorCatalog {
         try load(URL(fileURLWithPath: "/Library/Developer/PrivateFrameworks/CoreSimulator.framework"))
-        let interface = try CoreSimulatorInterface(runtime: .shared)
+        let interface = try await CoreSimulatorInterface(runtime: .shared)
         let set = try SimulatorDeviceSet(interface: interface,
                                          developerDirectory: xcodeURL.appendingPathComponent("Contents/Developer").path)
         return try set.readCatalog()
@@ -206,7 +230,7 @@ struct SimulatorDisplayInterface {
     /// `.pinchPivotPoint`, and `.edgeGestures`.
     private let touchIndicatorOptions: (singleTouches: Int, pinches: Int, pinchPivotPoint: Int, edgeGestures: Int)
 
-    init(runtime: ABIRuntime) throws {
+    init(runtime: ABIRuntime) async throws {
         guard let screenClass = NSClassFromString("SimulatorKit.SimDeviceScreen"),
             let factoryClass = NSClassFromString("IDEPlaygroundSimulator.IDESimulatorPlaygroundUntil"),
             let displayViewClass = NSClassFromString("SimulatorKit.SimDisplayView")
@@ -214,41 +238,41 @@ struct SimulatorDisplayInterface {
             throw HostError.unavailable("SimulatorKit display classes are unavailable")
         }
         self.factoryClass = factoryClass
-        screen = try runtime.resolveAndWait(.objc(.method("screen", as: (() -> AnyObject?).self)), on: screenClass)
-        isDefault = try runtime.resolveAndWait(.objc(.method("isDefault", as: (() -> Bool).self)), on: screenClass)
-        isCarPlay = try runtime.resolveAndWait(.objc(.method("isCarPlay", as: (() -> Bool).self)), on: screenClass)
-        let deviceScreen = try runtime.resolveAndWait(.swift(.type("SimulatorKit.SimDeviceScreen")))
+        screen = try await runtime.resolve(.objc(.method("screen", as: (() -> AnyObject?).self)), on: screenClass)
+        isDefault = try await runtime.resolve(.objc(.method("isDefault", as: (() -> Bool).self)), on: screenClass)
+        isCarPlay = try await runtime.resolve(.objc(.method("isCarPlay", as: (() -> Bool).self)), on: screenClass)
+        let deviceScreen = try await runtime.resolve(.swift(.type("SimulatorKit.SimDeviceScreen")))
         // SimulatorKit does not export the descriptors of the imported C types
         // these getters return, so the host integers state their conventions.
-        let uint32 = try runtime.resolveAndWait(.swift(.type("Swift.UInt32")))
-        let uint16 = try runtime.resolveAndWait(.swift(.type("Swift.UInt16")))
-        buttonTarget = try deviceScreen.resolveAndWait(.swift(.getter(
+        let uint32 = try await runtime.resolve(.swift(.type("Swift.UInt32")))
+        let uint16 = try await runtime.resolve(.swift(.type("Swift.UInt16")))
+        buttonTarget = try await deviceScreen.resolve(.swift(.getter(
             "buttonTarget.getter : __C.IndigoHIDTarget", as: (() -> UInt32).self,
             valueABIs: [uint32: .uint32])))
         // The event types and events are resilient, so they are passed indirectly.
-        let eventTypes = try runtime.resolveAndWait(.swift(.type("SimulatorKit.SimDeviceScreen.ScreenEventTypes")))
-        let event = try runtime.resolveAndWait(.swift(.type("SimulatorKit.SimDeviceScreen.ScreenEvent")))
+        let eventTypes = try await runtime.resolve(.swift(.type("SimulatorKit.SimDeviceScreen.ScreenEventTypes")))
+        let event = try await runtime.resolve(.swift(.type("SimulatorKit.SimDeviceScreen.ScreenEvent")))
         let eventABIs: [NativeSwiftType: NativeType] = [
             eventTypes: try .opaque(named: eventTypes.name), event: try .opaque(named: event.name),
         ]
-        screenPropertyEvents = try unsafe eventTypes
-            .resolveAndWait(.swift(.staticGetter("properties", as: (() -> NativeSwiftValue).self, valueABIs: eventABIs)))
+        screenPropertyEvents = try await unsafe eventTypes
+            .resolve(.swift(.staticGetter("properties", as: (() -> NativeSwiftValue).self, valueABIs: eventABIs)))
             .unsafeInvoke()
-        screenProperties = try deviceScreen.resolveAndWait(.swift(.getter(
+        screenProperties = try await deviceScreen.resolve(.swift(.getter(
             "properties.getter : __C.SimScreenProperties", as: (() -> AnyObject).self)))
-        screenScale = try deviceScreen.resolveAndWait(.swift(.getter(
+        screenScale = try await deviceScreen.resolve(.swift(.getter(
             "scale.getter : CoreGraphics.CGFloat", as: (() -> CGFloat).self)))
         // CoreSimulator declares `SimDisplayClass` as an unsigned short.
-        displayClass = try deviceScreen.resolveAndWait(.swift(.getter(
+        displayClass = try await deviceScreen.resolve(.swift(.getter(
             "displayClass.getter : __C.SimDisplayClass", as: (() -> UInt16).self,
             valueABIs: [uint16: .uint16])))
-        registerScreenEvents = try deviceScreen.resolveAndWait(.swift(.method(
+        registerScreenEvents = try await deviceScreen.resolve(.swift(.method(
             "register(types:queue:handler:)",
             as: ((NativeSwiftValue, DispatchQueue, ScreenEventHandler) -> NativeSwiftValue).self,
             valueABIs: eventABIs)))
-        let adapterType = try runtime.resolveAndWait(.swift(.type("SimulatorKit.SimDeviceScreenAdapter")))
-        adapterScreens = try adapterType.resolveAndWait(.swift(.getter("screens", as: (() -> [UInt32: NativeSwiftValue]).self)))
-        registerAdapterEvents = try adapterType.resolveAndWait(.swift(.method("register(screenID:queue:handler:)",
+        let adapterType = try await runtime.resolve(.swift(.type("SimulatorKit.SimDeviceScreenAdapter")))
+        adapterScreens = try await adapterType.resolve(.swift(.getter("screens", as: (() -> [UInt32: NativeSwiftValue]).self)))
+        registerAdapterEvents = try await adapterType.resolve(.swift(.method("register(screenID:queue:handler:)",
             as: ((UInt32?, DispatchQueue, AdapterEventHandler) -> AnyObject).self)))
         // Screen proxies are bound on connection; their protocols must declare these messages.
         for (name, selectors) in SimulatorExternalScreenConnection.selectors + SimulatorConnection.backlightSelectors {
@@ -260,8 +284,8 @@ struct SimulatorDisplayInterface {
                 throw HostError.unavailable("\(name) does not declare \(selector)")
             }
         }
-        func carPlayKey(_ name: String) throws -> String {
-            let symbol = try runtime.resolveAndWait(.c(.symbol(name, kind: .data)))
+        func carPlayKey(_ name: String) async throws -> String {
+            let symbol = try await runtime.resolve(.c(.symbol(name, kind: .data)))
             guard let key = unsafe symbol.withUnsafeAddress({
                 unsafe $0.load(as: Unmanaged<NSString>?.self)?.takeUnretainedValue() as String?
             }) else {
@@ -269,73 +293,73 @@ struct SimulatorDisplayInterface {
             }
             return key
         }
-        carPlayProperties = [try carPlayKey("SimCarPlayPropertyKeyStark"): true,
-                             try carPlayKey("SimCarPlayPropertyKeyHasTouchScreen"): true]
-        createDisplay = try runtime.resolveAndWait(
+        carPlayProperties = [try await carPlayKey("SimCarPlayPropertyKeyStark"): true,
+                             try await carPlayKey("SimCarPlayPropertyKeyHasTouchScreen"): true]
+        createDisplay = try await runtime.resolve(
             .objc(.method("createSimDisplayViewWithDevice:simScreenID:", as: ((AnyObject, UInt32) -> NSView?).self)),
             on: factoryClass, classMethod: true)
 
         // SimDisplayView members are exported only through dispatch thunks.
-        let view = try runtime.resolveAndWait(.swift(.type("SimulatorKit.SimDisplayView")))
-        showChrome = try view.resolveAndWait(.swift(.setter("showDeviceChrome", as: ((Bool) -> Void).self)))
-        chromeView = try view.resolveAndWait(.swift(.getter(
+        let view = try await runtime.resolve(.swift(.type("SimulatorKit.SimDisplayView")))
+        showChrome = try await view.resolve(.swift(.setter("showDeviceChrome", as: ((Bool) -> Void).self)))
+        chromeView = try await view.resolve(.swift(.getter(
             "chromeView.getter : SimulatorKit.SimDisplayChromeView", as: (() -> NSView).self)))
-        digitizerView = try view.resolveAndWait(.swift(.getter(
+        digitizerView = try await view.resolve(.swift(.getter(
             "digitizerView.getter : SimulatorKit.SimDigitizerInputView", as: (() -> NSView).self)))
-        renderScale = try view.resolveAndWait(.swift(.getter("renderScale", as: (() -> CGFloat).self)))
-        setRenderScale = try view.resolveAndWait(.swift(.setter("renderScale", as: ((CGFloat) -> Void).self)))
-        sizeForScale = try view.resolveAndWait(.swift(.method("size(for:)", as: ((CGFloat) -> CGSize).self)))
-        scaleForSize = try view.resolveAndWait(.swift(.method("scale(for:)", as: ((CGSize) -> CGFloat).self)))
-        rotation = try view.resolveAndWait(.swift(.setter("deviceRotation", as: ((Measurement<UnitAngle>) -> Void).self)))
-        disconnect = try view.resolveAndWait(.swift(.method(
+        renderScale = try await view.resolve(.swift(.getter("renderScale", as: (() -> CGFloat).self)))
+        setRenderScale = try await view.resolve(.swift(.setter("renderScale", as: ((CGFloat) -> Void).self)))
+        sizeForScale = try await view.resolve(.swift(.method("size(for:)", as: ((CGFloat) -> CGSize).self)))
+        scaleForSize = try await view.resolve(.swift(.method("scale(for:)", as: ((CGSize) -> CGFloat).self)))
+        rotation = try await view.resolve(.swift(.setter("deviceRotation", as: ((Measurement<UnitAngle>) -> Void).self)))
+        disconnect = try await view.resolve(.swift(.method(
             "disconnect(completion: (() -> ())?) -> ()",
             as: ((NativeSwiftClosure<() -> Void>) -> Void).self)))
-        beginResize = try view.resolveAndWait(.swift(.method("beginResize()", as: (() -> Void).self)))
-        resize = try view.resolveAndWait(.swift(.method("resizeTo(size:)", as: ((CGSize) -> Void).self)))
-        endResize = try view.resolveAndWait(.swift(.method("endResize()", as: (() -> Void).self)))
+        beginResize = try await view.resolve(.swift(.method("beginResize()", as: (() -> Void).self)))
+        resize = try await view.resolve(.swift(.method("resizeTo(size:)", as: ((CGSize) -> Void).self)))
+        endResize = try await view.resolve(.swift(.method("endResize()", as: (() -> Void).self)))
         // The resize corners and their types are resilient, so they are passed
         // indirectly, and the array's own members read its elements.
-        let typedResizeRect = try runtime.resolveAndWait(.swift(.type("SimulatorKit.SimDisplayView.TypedResizeRect")))
-        let typedResizeRects = try runtime.resolveAndWait(.swift(.type("Swift.Array", genericArguments: [.type(typedResizeRect)])))
-        let resizeRectType = try runtime.resolveAndWait(.swift(.type("SimulatorKit.SimDeviceChrome.ResizeRectType")))
-        resizeRects = try view.resolveAndWait(.swift(.getter(
+        let typedResizeRect = try await runtime.resolve(.swift(.type("SimulatorKit.SimDisplayView.TypedResizeRect")))
+        let typedResizeRects = try await runtime.resolve(.swift(.type("Swift.Array", genericArguments: [.type(typedResizeRect)])))
+        let resizeRectType = try await runtime.resolve(.swift(.type("SimulatorKit.SimDeviceChrome.ResizeRectType")))
+        resizeRects = try await view.resolve(.swift(.getter(
             "typedResizeRects.getter : [SimulatorKit.SimDisplayView.TypedResizeRect]",
             as: (() -> NativeSwiftValue).self)))
-        resizeRectCount = try typedResizeRects.resolveAndWait(.swift(.getter("count", as: (() -> Int).self)))
-        resizeRectAtIndex = try typedResizeRects.resolveAndWait(.swift(.getter(
+        resizeRectCount = try await typedResizeRects.resolve(.swift(.getter("count", as: (() -> Int).self)))
+        resizeRectAtIndex = try await typedResizeRects.resolve(.swift(.getter(
             "Swift.Array.subscript.getter : (Swift.Int) -> A", as: ((Int) -> NativeSwiftValue).self)))
-        resizeRectFrame = try typedResizeRect.resolveAndWait(.swift(.getter(
+        resizeRectFrame = try await typedResizeRect.resolve(.swift(.getter(
             "rect.getter : __C.CGRect", as: (() -> CGRect).self, receiverABI: .opaque(named: typedResizeRect.name))))
-        self.resizeRectType = try typedResizeRect.resolveAndWait(.swift(.getter(
+        self.resizeRectType = try await typedResizeRect.resolve(.swift(.getter(
             "type.getter : SimulatorKit.SimDeviceChrome.ResizeRectType", as: (() -> NativeSwiftValue).self,
             valueABIs: [resizeRectType: try .opaque(named: resizeRectType.name)],
             receiverABI: .opaque(named: typedResizeRect.name))))
-        resizeRectTypeName = try resizeRectType.resolveAndWait(.swift(.getter(
+        resizeRectTypeName = try await resizeRectType.resolve(.swift(.getter(
             "rawValue.getter : Swift.String", as: (() -> String).self,
             receiverABI: .opaque(named: resizeRectType.name))))
-        showResizeCursors = try view.resolveAndWait(.swift(.setter("showResizeCursors", as: ((Bool) -> Void).self)))
+        showResizeCursors = try await view.resolve(.swift(.setter("showResizeCursors", as: ((Bool) -> Void).self)))
 
-        chromeState = try runtime.resolveAndWait(.swift(.type("SimulatorKit.SimDisplayChromeView.State")))
-        let chromeViewType = try runtime.resolveAndWait(.swift(.type("SimulatorKit.SimDisplayChromeView")))
-        setChromeState = try chromeViewType.resolveAndWait(.swift(.setter(
+        chromeState = try await runtime.resolve(.swift(.type("SimulatorKit.SimDisplayChromeView.State")))
+        let chromeViewType = try await runtime.resolve(.swift(.type("SimulatorKit.SimDisplayChromeView")))
+        setChromeState = try await chromeViewType.resolve(.swift(.setter(
             "state.setter : SimulatorKit.SimDisplayChromeView.State",
             as: ((NativeSwiftValue) -> Void).self,
             valueABIs: [chromeState: try .opaque(named: chromeState.name)])))
         // The chrome and its images are resilient, so they are passed indirectly.
-        let deviceChrome = try runtime.resolveAndWait(.swift(.type("SimulatorKit.SimDeviceChrome")))
-        let optionalChrome = try runtime.resolveAndWait(.swift(.type("Swift.Optional",
+        let deviceChrome = try await runtime.resolve(.swift(.type("SimulatorKit.SimDeviceChrome")))
+        let optionalChrome = try await runtime.resolve(.swift(.type("Swift.Optional",
                                                                  genericArguments: [.type(deviceChrome)])))
-        let images = try runtime.resolveAndWait(.swift(.type("SimulatorKit.SimDeviceChrome.Images")))
-        chrome = try chromeViewType.resolveAndWait(.swift(.getter(
+        let images = try await runtime.resolve(.swift(.type("SimulatorKit.SimDeviceChrome.Images")))
+        chrome = try await chromeViewType.resolve(.swift(.getter(
             "chrome.getter : SimulatorKit.SimDeviceChrome?", as: (() -> NativeSwiftValue).self,
             valueABIs: [optionalChrome: try .opaque(named: optionalChrome.name)])))
-        chromeImages = try deviceChrome.resolveAndWait(.swift(.getter(
+        chromeImages = try await deviceChrome.resolve(.swift(.getter(
             "images.getter : SimulatorKit.SimDeviceChrome.Images", as: (() -> NativeSwiftValue).self,
             valueABIs: [images: try .opaque(named: images.name)], receiverABI: .opaque(named: deviceChrome.name))))
-        chromeImagesPadding = try images.resolveAndWait(.swift(.getter(
+        chromeImagesPadding = try await images.resolve(.swift(.getter(
             "padding.getter : __C.CGSize", as: (() -> CGSize).self, receiverABI: .opaque(named: images.name))))
-        setKeyboardEnabled = try runtime.resolveAndWait(.swift(.type("SimulatorKit.SimKeyboardInputDefaultDelegate")))
-            .resolveAndWait(.swift(.setter("isEnabled", as: ((Bool) -> Void).self)))
+        setKeyboardEnabled = try await runtime.resolve(.swift(.type("SimulatorKit.SimKeyboardInputDefaultDelegate")))
+            .resolve(.swift(.setter("isEnabled", as: ((Bool) -> Void).self)))
         guard let keyboardDelegate = class_getInstanceVariable(displayViewClass, "_defaultKeyboardDelegate") else {
             throw HostError.unavailable("\(displayViewClass) does not provide _defaultKeyboardDelegate")
         }
@@ -352,36 +376,36 @@ struct SimulatorDisplayInterface {
         where unsafe protocol_getMethodDescription(declared, NSSelectorFromString(selector), true, true).name == nil {
             throw HostError.unavailable("\(pluginProtocol) does not declare \(selector)")
         }
-        let digitizer = try runtime.resolveAndWait(.swift(.type("SimulatorKit.SimDigitizerInputView")))
-        setSupportsScrolling = try digitizer.resolveAndWait(.swift(.setter("supportScrolling", as: ((Bool) -> Void).self)))
-        setSupportsTouchPressure = try digitizer.resolveAndWait(
+        let digitizer = try await runtime.resolve(.swift(.type("SimulatorKit.SimDigitizerInputView")))
+        setSupportsScrolling = try await digitizer.resolve(.swift(.setter("supportScrolling", as: ((Bool) -> Void).self)))
+        setSupportsTouchPressure = try await digitizer.resolve(
             .swift(.setter("supportTouchPressure", as: ((Bool) -> Void).self)))
-        setUsesTrackpadForce = try digitizer.resolveAndWait(
+        setUsesTrackpadForce = try await digitizer.resolve(
             .swift(.setter("useForceTrackpadForPressure", as: ((Bool) -> Void).self)))
         // TouchMode has no field metadata to establish its convention.
-        let touchMode = try runtime.resolveAndWait(.swift(.type("SimulatorKit.SimDigitizerInputView.TouchMode")))
-        setSimulatedTouchMode = try digitizer.resolveAndWait(.swift(.setter(
+        let touchMode = try await runtime.resolve(.swift(.type("SimulatorKit.SimDigitizerInputView.TouchMode")))
+        setSimulatedTouchMode = try await digitizer.resolve(.swift(.setter(
             "simulatedTouchMode.setter : SimulatorKit.SimDigitizerInputView.TouchMode", as: ((Int) -> Void).self,
             valueABIs: [touchMode: .int])))
-        let drawOption = try runtime.resolveAndWait(.swift(.type("SimulatorKit.SimDigitizerInputView.DrawOption")))
+        let drawOption = try await runtime.resolve(.swift(.type("SimulatorKit.SimDigitizerInputView.DrawOption")))
         let drawOptionABIs: [NativeSwiftType: NativeType] = [drawOption: try .opaque(named: drawOption.name)]
-        drawOptions = try digitizer.resolveAndWait(.swift(.getter(
+        drawOptions = try await digitizer.resolve(.swift(.getter(
             "drawOptions.getter : SimulatorKit.SimDigitizerInputView.DrawOption",
             as: (() -> NativeSwiftValue).self, valueABIs: drawOptionABIs)))
-        setDrawOptions = try digitizer.resolveAndWait(.swift(.setter(
+        setDrawOptions = try await digitizer.resolve(.swift(.setter(
             "drawOptions.setter : SimulatorKit.SimDigitizerInputView.DrawOption",
             as: ((NativeSwiftValue) -> Void).self, valueABIs: drawOptionABIs)))
-        let rawValue = try drawOption.resolveAndWait(.swift(.getter(
+        let rawValue = try await drawOption.resolve(.swift(.getter(
             "rawValue.getter : Swift.Int", as: (() -> Int).self, receiverABI: .opaque(named: drawOption.name))))
         drawOptionRawValue = rawValue
-        makeDrawOption = try drawOption.resolveAndWait(.swift(.initializer(
+        makeDrawOption = try await drawOption.resolve(.swift(.initializer(
             "init(rawValue:)", as: ((Int) -> NativeSwiftValue).self, valueABIs: drawOptionABIs)))
-        func option(_ name: String) throws -> Int {
-            try unsafe rawValue.unsafeInvoke(on: drawOption.resolveAndWait(.swift(.staticGetter(
+        func option(_ name: String) async throws -> Int {
+            try await unsafe rawValue.unsafeInvoke(on: drawOption.resolve(.swift(.staticGetter(
                 name, as: (() -> NativeSwiftValue).self, valueABIs: drawOptionABIs))).unsafeInvoke())
         }
-        touchIndicatorOptions = (try option("normalTouch"), try option("pinchTouches"), try option("pinchPivotPoint"),
-                                 try option("edgeGestures"))
+        touchIndicatorOptions = (try await option("normalTouch"), try await option("pinchTouches"), try await option("pinchPivotPoint"),
+                                 try await option("edgeGestures"))
     }
 
     /// The raw value of `indicator`'s `DrawOption`.
@@ -712,26 +736,26 @@ struct SimulatorInputInterface {
     static let tvRemoteButtonTarget: UInt32 = 0x15
     static let tvRemoteTouchTarget: UInt32 = 0x16
 
-    init(runtime: ABIRuntime) throws {
+    init(runtime: ABIRuntime) async throws {
         guard let clientClass = NSClassFromString("SimulatorKit.SimDeviceLegacyHIDClient") else {
             throw HostError.unavailable("Required private class SimulatorKit.SimDeviceLegacyHIDClient is unavailable")
         }
         self.clientClass = clientClass
-        makeClient = try runtime.resolveAndWait(
+        makeClient = try await runtime.resolve(
             .objc(.method("initWithDevice:error:", as: ((AnyObject) throws -> AnyObject).self)),
             on: clientClass)
-        send = try runtime.resolveAndWait(
+        send = try await runtime.resolve(
             .objc(.method("sendWithMessage:freeWhenDone:completionQueue:completion:",
                 as: ((OpaquePointer, Bool, DispatchQueue?, Completion?) -> Void).self)),
             on: clientClass)
-        messageForButton = try runtime.resolveAndWait(.c(.function("IndigoHIDMessageForButton", as: ((UInt32, UInt32, UInt32) -> OpaquePointer?).self)))
-        messageForUsage = try runtime.resolveAndWait(.c(.function("IndigoHIDMessageForHIDArbitrary",
+        messageForButton = try await runtime.resolve(.c(.function("IndigoHIDMessageForButton", as: ((UInt32, UInt32, UInt32) -> OpaquePointer?).self)))
+        messageForUsage = try await runtime.resolve(.c(.function("IndigoHIDMessageForHIDArbitrary",
             as: ((UInt32, UInt32, UInt32, UInt32) -> OpaquePointer?).self)))
-        messageForWatchGesture = try runtime.resolveAndWait(.c(.function("IndigoHIDMessageForWatchGesture", as: ((UInt32) -> OpaquePointer?).self)))
-        keyboardType = try runtime.resolveAndWait(.c(.function("IndigoHIDGetKeyboardType", as: (() -> UInt32).self)))
-        createCarPlayService = try runtime.resolveAndWait(.c(.function("IndigoHIDMessageToCreateCarPlayService", as: ((Bool) -> OpaquePointer?).self)))
-        removeCarPlayService = try runtime.resolveAndWait(.c(.function("IndigoHIDMessageToRemoveCarPlayService", as: (() -> OpaquePointer?).self)))
-        messageForTrackpadMove = try runtime.resolveAndWait(.c(.function("IndigoHIDMessageForTrackpadMoveEvent", as: ((CGPoint, UInt32) -> OpaquePointer?).self)))
+        messageForWatchGesture = try await runtime.resolve(.c(.function("IndigoHIDMessageForWatchGesture", as: ((UInt32) -> OpaquePointer?).self)))
+        keyboardType = try await runtime.resolve(.c(.function("IndigoHIDGetKeyboardType", as: (() -> UInt32).self)))
+        createCarPlayService = try await runtime.resolve(.c(.function("IndigoHIDMessageToCreateCarPlayService", as: ((Bool) -> OpaquePointer?).self)))
+        removeCarPlayService = try await runtime.resolve(.c(.function("IndigoHIDMessageToRemoveCarPlayService", as: (() -> OpaquePointer?).self)))
+        messageForTrackpadMove = try await runtime.resolve(.c(.function("IndigoHIDMessageForTrackpadMoveEvent", as: ((CGPoint, UInt32) -> OpaquePointer?).self)))
         try checkTrackpadMessage()
     }
 
@@ -852,25 +876,25 @@ struct SimulatorPasteboardInterface {
     /// The guest's pasteboard service, `SimPasteboardInterfaceListener.machServiceName`.
     let serviceName: String
 
-    init(runtime: ABIRuntime) throws {
+    init(runtime: ABIRuntime) async throws {
         guard let interfaceClass = NSClassFromString("SimPasteboardPlus.SimPasteboardInterface"),
               let listenerClass = NSClassFromString("SimPasteboardPlus.SimPasteboardInterfaceListener") else {
             throw HostError.unavailable("SimPasteboardPlus pasteboard classes are unavailable")
         }
         self.interfaceClass = interfaceClass
-        makeInterface = try runtime.resolveAndWait(
+        makeInterface = try await runtime.resolve(
             .objc(.method("initWithConnectingToPort:managingPasteboard:delegate:delegateQueue:",
                 as: ((UInt32, NSPasteboard, AnyObject?, DispatchQueue?) -> AnyObject).self)),
             on: interfaceClass)
-        push = try runtime.resolveAndWait(.objc(.method("push", as: (() -> Void).self)), on: interfaceClass)
-        pull = try runtime.resolveAndWait(.objc(.method("pull", as: (() -> Void).self)), on: interfaceClass)
-        enableAutomaticSync = try runtime.resolveAndWait(
+        push = try await runtime.resolve(.objc(.method("push", as: (() -> Void).self)), on: interfaceClass)
+        pull = try await runtime.resolve(.objc(.method("pull", as: (() -> Void).self)), on: interfaceClass)
+        enableAutomaticSync = try await runtime.resolve(
             .objc(.method("enableRemoteAutosync", as: (() -> Void).self)),
             on: interfaceClass)
-        disableAutomaticSync = try runtime.resolveAndWait(
+        disableAutomaticSync = try await runtime.resolve(
             .objc(.method("disableRemoteAutosync", as: (() -> Void).self)),
             on: interfaceClass)
-        serviceName = try unsafe runtime.resolveAndWait(
+        serviceName = try await unsafe runtime.resolve(
             .objc(.method("machServiceName", as: (() -> String).self)),
             on: listenerClass, classMethod: true)
             .unsafeInvoke(on: listenerClass as AnyObject)
@@ -980,12 +1004,12 @@ struct SimulatorAudioInterface {
     typealias RouteChanged = @convention(block) (UInt64, NSString?) -> Void
     typealias RouteCompletion = @convention(block) (NSError?) -> Void
 
-    init(runtime: ABIRuntime) throws {
+    init(runtime: ABIRuntime) async throws {
         guard let device = NSClassFromString("SimDevice"), let client = NSClassFromString("SimDeviceIOClient") else {
             throw HostError.unavailable("CoreSimulator's device I/O classes are unavailable")
         }
-        deviceIO = try runtime.resolveAndWait(.objc(.method("io", as: (() -> AnyObject?).self)), on: device)
-        ioPorts = try runtime.resolveAndWait(.objc(.method("ioPorts", as: (() -> [AnyObject]).self)), on: client)
+        deviceIO = try await runtime.resolve(.objc(.method("io", as: (() -> AnyObject?).self)), on: device)
+        ioPorts = try await runtime.resolve(.objc(.method("ioPorts", as: (() -> [AnyObject]).self)), on: client)
         // Port and device objects are remote proxies, bound on connection through their protocols.
         let protocols = [("SimAudioHostRoutable", SimulatorAudioConnection.portSelectors),
                          ("SimAudioHostDevice", HostAudioDeviceMembers.selectors)]
@@ -1003,7 +1027,7 @@ struct SimulatorAudioInterface {
         }
         self.routable = routable
         // Recent routes are saved with this value, so it must not change.
-        let symbol = try runtime.resolveAndWait(.c(.symbol("SimAudioHostUseSystemDefaultDeviceUID", kind: .data)))
+        let symbol = try await runtime.resolve(.c(.symbol("SimAudioHostUseSystemDefaultDeviceUID", kind: .data)))
         let systemDefault = unsafe symbol.withUnsafeAddress {
             unsafe $0.load(as: Unmanaged<NSString>?.self)?.takeUnretainedValue() as String?
         }

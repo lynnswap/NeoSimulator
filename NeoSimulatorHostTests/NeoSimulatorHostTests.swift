@@ -681,8 +681,23 @@ struct InputFocusTests {
         #expect(display.pasteboards.count == 3)
     }
 
-    @Test func pasteboardDelegateAnswersSimPasteboardPlus() throws {
-        let runtime = try makeRuntime()
+    @Test func nativeRuntimeJoinsPreparationAndRecoversAfterToolkitMismatch() async throws {
+        async let first = makeRuntime()
+        async let second = makeRuntime()
+        let (runtime, joined) = try await (first, second)
+        #expect(runtime === joined)
+
+        let otherToolkit = runtime.uiXcodeURL.appendingPathComponent("DifferentXcode.app")
+        await #expect(throws: HostError.self) {
+            try await SimulatorRuntime.load(xcodeURL: runtime.xcodeURL, uiXcodeURL: otherToolkit)
+        }
+        let retried = try await SimulatorRuntime.load(xcodeURL: runtime.xcodeURL, uiXcodeURL: runtime.uiXcodeURL)
+        #expect(try SimulatorRuntime.selectUIXcode(from: [otherToolkit]) == runtime.uiXcodeURL)
+        #expect(retried.pasteboard.serviceName == "com.apple.CoreSimulator.SimPasteboardInterface")
+    }
+
+    @Test func pasteboardDelegateAnswersSimPasteboardPlus() async throws {
+        let runtime = try await makeRuntime()
         #expect(runtime.pasteboard.serviceName == "com.apple.CoreSimulator.SimPasteboardInterface")
         // Optional protocol callbacks must match the private Objective-C declarations.
         let delegateProtocol = try #require(objc_getProtocol("_TtP17SimPasteboardPlus21SimPasteboardDelegate_"))
@@ -928,9 +943,9 @@ struct InputFocusTests {
         #expect(display.input.keyUps.count == 1)
     }
 
-    @Test func nativeDisplayKeepsInputIdentityAndChromeActivation() throws {
+    @Test func nativeDisplayKeepsInputIdentityAndChromeActivation() async throws {
         _ = NSApplication.shared
-        let runtime = try makeRuntime()
+        let runtime = try await makeRuntime()
         let display = runtime.display
         let type = try #require(NSClassFromString("SimulatorKit.SimDisplayView") as? NSView.Type)
         let view = type.init(frame: .zero)
@@ -1642,8 +1657,8 @@ struct InputFocusTests {
         #expect(item.title == "Show Apple TV Remote")
     }
 
-    @Test func theRemotesMessagesAreSimulatorAppsForThisSimulatorKit() throws {
-        let input = try makeRuntime().input
+    @Test func theRemotesMessagesAreSimulatorAppsForThisSimulatorKit() async throws {
+        let input = try await makeRuntime().input
         func fields(_ message: OpaquePointer, _ offsets: [Int]) -> [UInt32] {
             offsets.map { UnsafeRawPointer(message).load(fromByteOffset: $0, as: UInt32.self) }
         }
@@ -6199,7 +6214,7 @@ struct InputFocusTests {
     }
 
     /// Loads the selected Xcode's private runtime.
-    private func makeRuntime() throws -> SimulatorRuntime {
+    private func makeRuntime() async throws -> SimulatorRuntime {
         let selection = Process()
         let output = Pipe()
         selection.executableURL = URL(fileURLWithPath: "/usr/bin/xcode-select")
@@ -6211,7 +6226,7 @@ struct InputFocusTests {
         let developerPath = ProcessInfo.processInfo.environment["DEVELOPER_DIR"]
             ?? String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
         let xcode = URL(fileURLWithPath: developerPath).deletingLastPathComponent().deletingLastPathComponent()
-        return try SimulatorRuntime(xcodeURL: xcode)
+        return try await SimulatorRuntime.load(xcodeURL: xcode)
     }
 
     private func makeController(_ display: TestDisplay,

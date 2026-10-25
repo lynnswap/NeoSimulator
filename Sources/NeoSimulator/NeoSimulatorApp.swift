@@ -228,6 +228,38 @@ enum RendererRequest: Equatable {
 #if !NEOSIMULATOR_TESTS && !NEOSIMULATOR_MANAGER
 @main
 enum NeoSimulatorApp {
+    @MainActor private static var controller: HostApplication?
+    @MainActor private static var ownerMonitor: RendererOwnerMonitor?
+
+    /// LaunchServices can deliver requests while native bindings are being prepared.
+    @MainActor
+    private final class StartupDelegate: NSObject, NSApplicationDelegate {
+        private enum Event {
+            case open([URL])
+            case reopen
+        }
+        private var events: [Event] = []
+
+        func application(_ application: NSApplication, open urls: [URL]) {
+            events.append(.open(urls))
+        }
+
+        func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+            events.append(.reopen)
+            return true
+        }
+
+        func replay(to controller: HostApplication, application: NSApplication) {
+            for event in events {
+                switch event {
+                case .open(let urls): controller.application(application, open: urls)
+                case .reopen: _ = controller.applicationShouldHandleReopen(application, hasVisibleWindows: false)
+                }
+            }
+            events.removeAll()
+        }
+    }
+
     @MainActor
     static func main() {
 #if DEBUG
@@ -241,40 +273,59 @@ enum NeoSimulatorApp {
             print("usage: NeoSimulatorRenderer [--managed --owner-pid PID --owner-launch-date SECONDS] [--validate-runtime] [--startup-result /absolute/path] [--device UDID] [--device-set /absolute/path] --xcode /absolute/path/to/Xcode.app")
             return
         }
+        let options: HostLaunchOptions
         do {
-            let options = try HostLaunchOptions(arguments: arguments)
+            options = try HostLaunchOptions(arguments: arguments)
             try options.validateInstallation()
+        } catch { fail(error) }
+        if options.readsCreationCatalog || options.validatesRuntime {
+            Task { await runHelper(options: options) }
+            dispatchMain()
+        }
+        let application = NSApplication.shared
+        application.setActivationPolicy(.accessory)
+        let startup = StartupDelegate()
+        application.delegate = startup
+        Task { await start(options: options, application: application, startup: startup) }
+        application.run()
+        ownerMonitor?.stop()
+        controller = nil
+    }
+
+    @MainActor
+    private static func runHelper(options: HostLaunchOptions) async -> Never {
+        do {
             if options.readsCreationCatalog {
-                let catalog = try SimulatorRuntime.creationCatalog(xcodeURL: options.xcodeURL)
+                let catalog = try await SimulatorRuntime.creationCatalog(xcodeURL: options.xcodeURL)
                 let data = try JSONEncoder().encode(SimulatorCatalog.Snapshot(catalog: catalog))
                 try FileHandle.standardOutput.write(contentsOf: data)
-                return
+            } else {
+                _ = try await SimulatorRuntime.load(xcodeURL: options.xcodeURL)
             }
-            if options.validatesRuntime {
-                _ = try SimulatorRuntime(xcodeURL: options.xcodeURL)
-                return
-            }
+            exit(EX_OK)
+        } catch { fail(error) }
+    }
+
+    @MainActor
+    private static func start(options: HostLaunchOptions, application: NSApplication, startup: StartupDelegate) async {
+        do {
             // LaunchServices owns the Unix parent. The explicit manager identity owns this renderer.
-            let ownerMonitor: RendererOwnerMonitor?
             if let owner = options.owner {
                 let managerURL = Bundle.main.bundleURL.deletingLastPathComponent()
                     .deletingLastPathComponent().deletingLastPathComponent()
-                guard owner.isRunning(applicationURL: managerURL) else { return }
+                guard owner.isRunning(applicationURL: managerURL) else { exit(EX_OK) }
                 ownerMonitor = RendererOwnerMonitor(processIdentifier: owner.processIdentifier,
                                                      cleanup: HostApplication.requestTerminationAfterOwnerExit)
-                guard owner.isRunning(applicationURL: managerURL) else { ownerMonitor?.stop(); return }
+                guard owner.isRunning(applicationURL: managerURL) else { ownerMonitor?.stop(); exit(EX_OK) }
             } else { ownerMonitor = nil }
-            defer { ownerMonitor?.stop() }
             let conflicts = HostConflictMonitor()
             try conflicts.check()
-            let runtime = try SimulatorRuntime(xcodeURL: options.xcodeURL)
+            let runtime = try await SimulatorRuntime.load(xcodeURL: options.xcodeURL)
             HostPreferences.migrateStandalonePreferences()
-            let app = NSApplication.shared
-            app.setActivationPolicy(.accessory)
             let controller = try HostApplication(runtime: runtime, conflicts: conflicts, isManaged: options.isManaged,
                                                  owner: options.owner, headless: options.isHeadless)
-            app.delegate = controller
-            app.finishLaunching()
+            Self.controller = controller
+            application.delegate = controller
             try controller.start(initialDeviceIdentifier: options.deviceIdentifier, initialDeviceSetPath: options.deviceSetPath)
             do { try conflicts.check() }
             catch {
@@ -289,14 +340,16 @@ enum NeoSimulatorApp {
                     exit(EX_CANTCREAT)
                 }
             }
-            app.activate()
-            withExtendedLifetime(controller) { app.run() }
-        } catch {
-            hostLog(error.localizedDescription)
-            if case HostError.invalidArguments = error { exit(EX_USAGE) }
-            if case HostError.conflict = error { exit(EX_TEMPFAIL) }
-            exit(EX_UNAVAILABLE)
-        }
+            application.activate()
+            startup.replay(to: controller, application: application)
+        } catch { fail(error) }
+    }
+
+    private static func fail(_ error: any Error) -> Never {
+        hostLog(error.localizedDescription)
+        if case HostError.invalidArguments = error { exit(EX_USAGE) }
+        if case HostError.conflict = error { exit(EX_TEMPFAIL) }
+        exit(EX_UNAVAILABLE)
     }
 }
 #endif

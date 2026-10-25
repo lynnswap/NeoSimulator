@@ -774,7 +774,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let host: HostApplication
         if let existing = simulatorHosts[sourceURL] { host = existing }
         else {
-            let runtime = try SimulatorRuntime(xcodeURL: sourceURL, uiXcodeURL: displayURL)
+            let runtime = try await SimulatorRuntime.load(xcodeURL: sourceURL, uiXcodeURL: displayURL)
             host = try HostApplication(runtime: runtime, conflicts: HostConflictMonitor(), inProcess: true, pasteboardSync: pasteboardSync)
             host.onError = { [weak self] error in self?.present(error) }
             host.onChange = { [weak self] in self?.simulatorPresentationsChanged() }

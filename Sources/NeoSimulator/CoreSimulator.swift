@@ -73,7 +73,7 @@ struct CoreSimulatorInterface {
     typealias NotificationHandler = @convention(block) (NSDictionary) -> Void
     typealias CloudSyncCompletion = @convention(block) (NSError?) -> Void
 
-    init(runtime: ABIRuntime) throws {
+    init(runtime: ABIRuntime) async throws {
         func requireClass(_ name: String) throws -> AnyClass {
             guard let type = NSClassFromString(name) else {
                 throw HostError.unavailable("Required private class \(name) is unavailable")
@@ -85,162 +85,162 @@ struct CoreSimulatorInterface {
         let device: AnyClass = try requireClass("SimDevice")
         let simRuntime: AnyClass = try requireClass("SimRuntime")
         let simDeviceType: AnyClass = try requireClass("SimDeviceType")
-        sharedContext = try runtime.resolveAndWait(
+        sharedContext = try await runtime.resolve(
             .objc(.method("sharedServiceContextForDeveloperDir:error:", as: ((String) throws -> AnyObject).self)),
             on: serviceClass, classMethod: true)
-        defaultDeviceSet = try runtime.resolveAndWait(
+        defaultDeviceSet = try await runtime.resolve(
             .objc(.method("defaultDeviceSetWithError:", as: (() throws -> AnyObject).self)),
             on: serviceClass)
-        deviceSetWithPath = try runtime.resolveAndWait(
+        deviceSetWithPath = try await runtime.resolve(
             .objc(.method("deviceSetWithPath:error:", as: ((String) throws -> AnyObject).self)),
             on: serviceClass)
-        setPath = try runtime.resolveAndWait(.objc(.method("setPath", as: (() -> String?).self)), on: deviceSet)
-        supportedDeviceTypes = try runtime.resolveAndWait(
+        setPath = try await runtime.resolve(.objc(.method("setPath", as: (() -> String?).self)), on: deviceSet)
+        supportedDeviceTypes = try await runtime.resolve(
             .objc(.method("supportedDeviceTypes", as: (() -> [AnyObject]).self)),
             on: serviceClass)
-        supportedRuntimes = try runtime.resolveAndWait(
+        supportedRuntimes = try await runtime.resolve(
             .objc(.method("supportedRuntimes", as: (() -> [AnyObject]).self)),
             on: serviceClass)
-        subscribe = try runtime.resolveAndWait(
+        subscribe = try await runtime.resolve(
             .objc(.method("subscribeToNotificationsWithError:", as: (() throws -> Void).self)),
             on: deviceSet)
-        availableDevices = try runtime.resolveAndWait(
+        availableDevices = try await runtime.resolve(
             .objc(.method("availableDevices", as: (() -> [AnyObject]).self)),
             on: deviceSet)
-        registerHandler = try runtime.resolveAndWait(
+        registerHandler = try await runtime.resolve(
             .objc(.method("registerNotificationHandlerOnQueue:handler:",
                 as: ((DispatchQueue, @escaping NotificationHandler) -> UInt64).self)),
             on: deviceSet)
-        unregisterHandler = try runtime.resolveAndWait(
+        unregisterHandler = try await runtime.resolve(
             .objc(.method("unregisterNotificationHandler:error:", as: ((UInt64) throws -> Void).self)),
             on: deviceSet)
-        state = try runtime.resolveAndWait(.objc(.method("state", as: (() -> UInt).self)), on: device)
-        name = try runtime.resolveAndWait(.objc(.method("name", as: (() -> String?).self)), on: device)
-        descriptiveName = try runtime.resolveAndWait(
+        state = try await runtime.resolve(.objc(.method("state", as: (() -> UInt).self)), on: device)
+        name = try await runtime.resolve(.objc(.method("name", as: (() -> String?).self)), on: device)
+        descriptiveName = try await runtime.resolve(
             .objc(.method("descriptiveName", as: (() -> String?).self)),
             on: device)
-        identifier = try runtime.resolveAndWait(.objc(.method("UDID", as: (() -> NSUUID?).self)), on: device)
-        lastBootedAt = try runtime.resolveAndWait(.objc(.method("lastBootedAt", as: (() -> NSDate?).self)), on: device)
-        deviceRuntimeIdentifier = try runtime.resolveAndWait(
+        identifier = try await runtime.resolve(.objc(.method("UDID", as: (() -> NSUUID?).self)), on: device)
+        lastBootedAt = try await runtime.resolve(.objc(.method("lastBootedAt", as: (() -> NSDate?).self)), on: device)
+        deviceRuntimeIdentifier = try await runtime.resolve(
             .objc(.method("runtimeIdentifier", as: (() -> String?).self)),
             on: device)
-        deviceRuntime = try runtime.resolveAndWait(
+        deviceRuntime = try await runtime.resolve(
             .objc(.method("runtime", as: (() -> AnyObject?).self)),
             on: device)
-        deviceType = try runtime.resolveAndWait(
+        deviceType = try await runtime.resolve(
             .objc(.method("deviceType", as: (() -> AnyObject?).self)),
             on: device)
-        supportsFeature = try runtime.resolveAndWait(
+        supportsFeature = try await runtime.resolve(
             .objc(.method("supportsFeature:", as: ((String) -> Bool).self)),
             on: device)
-        interfaceStyle = try runtime.resolveAndWait(
+        interfaceStyle = try await runtime.resolve(
             .objc(.method("currentUIInterfaceStyle", as: (() -> Int).self)),
             on: device)
-        setInterfaceStyle = try runtime.resolveAndWait(
+        setInterfaceStyle = try await runtime.resolve(
             .objc(.method("setUIInterfaceStyle:error:", as: ((Int) throws -> Void).self)),
             on: device)
-        postDarwinNotification = try runtime.resolveAndWait(
+        postDarwinNotification = try await runtime.resolve(
             .objc(.method("postDarwinNotification:error:", as: ((String) throws -> Void).self)),
             on: device)
-        darwinNotificationState = try runtime.resolveAndWait(
+        darwinNotificationState = try await runtime.resolve(
             .objc(.method("darwinNotificationGetState:name:error:",
                 as: ((UnsafeMutablePointer<UInt64>, String) throws -> Void).self)),
             on: device)
-        setDarwinNotificationState = try runtime.resolveAndWait(
+        setDarwinNotificationState = try await runtime.resolve(
             .objc(.method("darwinNotificationSetState:name:error:", as: ((UInt64, String) throws -> Void).self)),
             on: device)
-        contentSizeCategory = try runtime.resolveAndWait(
+        contentSizeCategory = try await runtime.resolve(
             .objc(.method("currentContentSizeCategory", as: (() -> Int).self)),
             on: device)
-        setContentSizeCategory = try runtime.resolveAndWait(
+        setContentSizeCategory = try await runtime.resolve(
             .objc(.method("setContentSizeCategory:error:", as: ((Int) throws -> Void).self)),
             on: device)
-        increaseContrastMode = try runtime.resolveAndWait(
+        increaseContrastMode = try await runtime.resolve(
             .objc(.method("currentIncreaseContrastMode", as: (() -> Int).self)),
             on: device)
-        setIncreaseContrast = try runtime.resolveAndWait(
+        setIncreaseContrast = try await runtime.resolve(
             .objc(.method("setIncreaseContrastEnabled:error:", as: ((Bool) throws -> Void).self)),
             on: device)
-        triggerCloudSync = try runtime.resolveAndWait(
+        triggerCloudSync = try await runtime.resolve(
             .objc(.method("triggerCloudSyncWithCompletionQueue:completionHandler:",
                 as: ((DispatchQueue, @escaping CloudSyncCompletion) -> Void).self)),
             on: device)
-        logPath = try runtime.resolveAndWait(.objc(.method("logPath", as: (() -> String?).self)), on: device)
-        memoryWarningFilePath = try runtime.resolveAndWait(
+        logPath = try await runtime.resolve(.objc(.method("logPath", as: (() -> String?).self)), on: device)
+        memoryWarningFilePath = try await runtime.resolve(
             .objc(.method("memoryWarningFilePath", as: (() -> String?).self)),
             on: device)
-        caDebugOption = try runtime.resolveAndWait(
+        caDebugOption = try await runtime.resolve(
             .objc(.method("getCADebugOption:", as: ((UInt32) -> Bool).self)),
             on: device)
-        setCADebugOption = try runtime.resolveAndWait(
+        setCADebugOption = try await runtime.resolve(
             .objc(.method("setCADebugOption:enabled:", as: ((UInt32, Bool) -> Void).self)),
             on: device)
-        dataPath = try runtime.resolveAndWait(.objc(.method("dataPath", as: (() -> String?).self)), on: device)
-        enableCarPlay = try runtime.resolveAndWait(
+        dataPath = try await runtime.resolve(.objc(.method("dataPath", as: (() -> String?).self)), on: device)
+        enableCarPlay = try await runtime.resolve(
             .objc(.method("enableCarPlay:error:", as: ((Bool) throws -> Void).self)),
             on: device)
-        availableLocationScenarios = try runtime.resolveAndWait(
+        availableLocationScenarios = try await runtime.resolve(
             .objc(.method("availableLocationScenarios", as: (() -> [NSDictionary]?).self)),
             on: device)
-        clearSimulatedLocation = try runtime.resolveAndWait(
+        clearSimulatedLocation = try await runtime.resolve(
             .objc(.method("clearSimulatedLocationWithError:", as: (() throws -> Void).self)),
             on: device)
-        setLocation = try runtime.resolveAndWait(
+        setLocation = try await runtime.resolve(
             .objc(.method("setLocationWithLatitude:andLongitude:error:", as: ((Double, Double) throws -> Void).self)),
             on: device)
-        setLocationScenario = try runtime.resolveAndWait(
+        setLocationScenario = try await runtime.resolve(
             .objc(.method("setLocationScenario:error:", as: ((String) throws -> Void).self)),
             on: device)
-        setHardwareKeyboard = try runtime.resolveAndWait(
+        setHardwareKeyboard = try await runtime.resolve(
             .objc(.method("setHardwareKeyboardEnabled:keyboardType:error:", as: ((Bool, UInt8) throws -> Void).self)),
             on: device)
-        setKeyboardLanguage = try runtime.resolveAndWait(
+        setKeyboardLanguage = try await runtime.resolve(
             .objc(.method("setKeyboardLanguage:error:", as: ((String) throws -> Void).self)),
             on: device)
-        lookup = try runtime.resolveAndWait(
+        lookup = try await runtime.resolve(
             .objc(.method("lookup:error:", as: ((String, AutoreleasingUnsafeMutablePointer<NSError?>?) -> UInt32).self)),
             on: device)
-        runtimeName = try runtime.resolveAndWait(
+        runtimeName = try await runtime.resolve(
             .objc(.method("name", as: (() -> String?).self)),
             on: simRuntime)
-        runtimeIdentifier = try runtime.resolveAndWait(
+        runtimeIdentifier = try await runtime.resolve(
             .objc(.method("identifier", as: (() -> String?).self)),
             on: simRuntime)
-        runtimeAvailable = try runtime.resolveAndWait(
+        runtimeAvailable = try await runtime.resolve(
             .objc(.method("available", as: (() -> Bool).self)),
             on: simRuntime)
-        runtimeSupportsDeviceType = try runtime.resolveAndWait(
+        runtimeSupportsDeviceType = try await runtime.resolve(
             .objc(.method("supportsDeviceType:", as: ((AnyObject) -> Bool).self)),
             on: simRuntime)
-        runtimeVersion = try runtime.resolveAndWait(
+        runtimeVersion = try await runtime.resolve(
             .objc(.method("version", as: (() -> UInt32).self)),
             on: simRuntime)
-        productFamily = try runtime.resolveAndWait(
+        productFamily = try await runtime.resolve(
             .objc(.method("productFamilyID", as: (() -> Int32).self)),
             on: simDeviceType)
-        deviceTypeName = try runtime.resolveAndWait(
+        deviceTypeName = try await runtime.resolve(
             .objc(.method("name", as: (() -> String?).self)),
             on: simDeviceType)
-        framebufferMaskURL = try runtime.resolveAndWait(
+        framebufferMaskURL = try await runtime.resolve(
             .objc(.method("framebufferMaskURL", as: (() -> NSURL?).self)),
             on: simDeviceType)
-        deviceTypeCapabilities = try runtime.resolveAndWait(
+        deviceTypeCapabilities = try await runtime.resolve(
             .objc(.method("capabilities", as: (() -> NSDictionary?).self)),
             on: simDeviceType)
-        deviceTypeIdentifier = try runtime.resolveAndWait(
+        deviceTypeIdentifier = try await runtime.resolve(
             .objc(.method("identifier", as: (() -> String?).self)),
             on: simDeviceType)
-        mainScreenDPI = try runtime.resolveAndWait(
+        mainScreenDPI = try await runtime.resolve(
             .objc(.method("mainScreenDPI", as: (() -> CGSize).self)),
             on: simDeviceType)
-        mainScreenScale = try runtime.resolveAndWait(
+        mainScreenScale = try await runtime.resolve(
             .objc(.method("mainScreenScale", as: (() -> Float).self)),
             on: simDeviceType)
-        userInterfaceIdentifier = try runtime.resolveAndWait(
+        userInterfaceIdentifier = try await runtime.resolve(
             .objc(.method("userInterfaceIdentifier", as: (() -> String?).self)),
             on: simDeviceType)
         devicePairClass = try requireClass("SimDevicePair")
-        testPossiblePairing = try runtime.resolveAndWait(
+        testPossiblePairing = try await runtime.resolve(
             .objc(.method("testPossiblePairingWithDeviceTypeA:RuntimeA:DeviceTypeB:RuntimeB:error:",
                 as: ((AnyObject, AnyObject, AnyObject, AnyObject) throws -> Void).self)),
             on: devicePairClass, classMethod: true)
