@@ -11,7 +11,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     private let isInProcess: Bool
     private let suppliedPasteboardSync: PasteboardSync?
     var onPresent: ((DeviceWindowController) -> Void)?
-    var onClose: ((SimulatorDeviceIdentifier, DeviceLifetimeChoice?) -> Void)?
+    var onClose: ((SimulatorDeviceIdentifier, DeviceLifetimeChoice?, Task<Void, Never>) -> Void)?
     var onError: ((Error) -> Void)?
     var onChange: (() -> Void)?
     var onRestart: ((SimulatorDeviceIdentifier, Bool) -> Void)?
@@ -906,7 +906,12 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             ?? HostPreferences.defaults.bool(forKey: HostPreferences.detachOnWindowClose)
         if !isInProcess, !keepsRunning { shutDownClosedDevice(controller.session) }
         updateRegistration()
-        if isInProcess { onClose?(identifier, choice); onChange?() }
+        if isInProcess {
+            let session = controller.session
+            let finishing = Task { await session.finishRecording() }
+            onClose?(identifier, choice, finishing)
+            onChange?()
+        }
         else if sessions.isEmpty { showDeviceBrowser() }
     }
 

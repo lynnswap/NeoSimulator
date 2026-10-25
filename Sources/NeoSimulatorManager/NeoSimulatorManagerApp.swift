@@ -75,8 +75,12 @@ final class SimulatorManagerModel {
         perform("Opening simulator…") { try await self.controller.openDevice(identifier) }
     }
 
-    func closeDevice(_ identifier: DeviceInventoryID, keepingDeviceRunning: Bool) {
-        perform("Closing simulator…") { try await self.controller.closeDevice(identifier, keepingDeviceRunning: keepingDeviceRunning) }
+    func closeDevice(_ identifier: DeviceInventoryID, keepingDeviceRunning: Bool, after finishing: Task<Void, Never>) {
+        // Accept the close before waiting, so a later open cannot overtake it.
+        perform("Closing simulator…") {
+            await finishing.value
+            try await self.controller.closeDevice(identifier, keepingDeviceRunning: keepingDeviceRunning)
+        }
     }
 
     func openScreen(for device: InventoryDevice) {
@@ -748,13 +752,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             host = try HostApplication(runtime: runtime, conflicts: HostConflictMonitor(), inProcess: true, pasteboardSync: pasteboardSync)
             host.onError = { [weak self] error in self?.present(error) }
             host.onChange = { [weak self] in self?.simulatorPresentationsChanged() }
-            host.onClose = { [weak self] identifier, choice in
+            host.onClose = { [weak self] identifier, choice, finishing in
                 guard let self else { return }
                 let id = DeviceInventoryID.simulator(udid: identifier.identifier, deviceSetPath: identifier.deviceSetPath)
                 self.simulatorWindows.removeValue(forKey: id)
                 self.mainWindow?.showDevicePreview(ifDisplaying: id)
                 let keepRunning = choice == .keepRunning || (choice == nil && HostPreferences.defaults.bool(forKey: HostPreferences.detachOnWindowClose))
-                self.model.closeDevice(id, keepingDeviceRunning: keepRunning)
+                self.model.closeDevice(id, keepingDeviceRunning: keepRunning, after: finishing)
             }
             host.onRestart = { [weak self] identifier, erasing in
                 guard let self, let device = self.model.inventory.first(where: {
@@ -4405,7 +4409,7 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
     }
     @objc private func presentationWindowResignedKey(_ notification: Notification) {
         guard notification.object as? NSWindow === presentationWindow else { return }
-        relinquishScreenFocus()
+        inputView.releaseFocus()
     }
 
     @objc private func reconnect(_ sender: Any?) {
