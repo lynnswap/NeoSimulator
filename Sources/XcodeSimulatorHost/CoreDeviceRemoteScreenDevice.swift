@@ -13,24 +13,24 @@ final class CoreDeviceRemoteScreenDevice {
     init(identifier: String) async throws {
         try Self.load("/Library/Developer/PrivateFrameworks/CoreDevice.framework/CoreDevice")
         let runtime = ABIRuntime.shared
-        let managerType = try runtime.resolveSwiftTypeAndWait(named: "CoreDevice.DeviceManager")
-        let shared = try managerType.resolveAndWait(.staticGetter("shared", as: (() -> NativeSwiftValue).self))
+        let managerType = try runtime.resolveAndWait(.swift(.type("CoreDevice.DeviceManager")))
+        let shared = try managerType.resolveAndWait(.swift(.staticGetter("shared", as: (() -> NativeSwiftValue).self)))
         let manager = try unsafe shared.unsafeInvoke()
-        let initialize = try managerType.resolveAndWait(.method("awaitFullInitialization()", as: (() async -> Void).self))
+        let initialize = try managerType.resolveAndWait(.swift(.method("awaitFullInitialization()", as: (() async -> Void).self)))
         try await unsafe initialize.unsafeInvoke(on: manager)
         try Task.checkCancellation()
         guard let uuid = UUID(uuidString: identifier) else {
             throw CLIError.configuration("coredevice-identifier", "The selected CoreDevice identifier is not a UUID.")
         }
-        let devices = try managerType.resolveAndWait(.getter("devices", as: (() -> [UUID: NativeSwiftValue]).self))
+        let devices = try managerType.resolveAndWait(.swift(.getter("devices", as: (() -> [UUID: NativeSwiftValue]).self)))
         guard let object = try unsafe devices.unsafeInvoke(on: manager)[uuid] else {
             throw CLIError.unavailable("remote-screen-device", "The selected device is no longer available.")
         }
         self.runtime = runtime
         self.manager = manager
         self.object = object
-        type = try runtime.resolveSwiftTypeAndWait(named: "CoreDevice.RemoteDevice")
-        supportsFeature = try type.resolveAndWait(.method("supportsFeature(identifiedBy:)", as: ((String) -> Bool).self))
+        type = try runtime.resolveAndWait(.swift(.type("CoreDevice.RemoteDevice")))
+        supportsFeature = try type.resolveAndWait(.swift(.method("supportsFeature(identifiedBy:)", as: ((String) -> Bool).self)))
     }
 
     func supports(_ feature: String) throws -> Bool {
@@ -38,12 +38,12 @@ final class CoreDeviceRemoteScreenDevice {
     }
 
     func vncURL() throws -> URL? {
-        let readInfo = try type.resolveAndWait(.getter("deviceInfo", as: (() -> NativeSwiftValue).self))
+        let readInfo = try type.resolveAndWait(.swift(.getter("deviceInfo", as: (() -> NativeSwiftValue).self)))
         let info = try unsafe readInfo.unsafeInvoke(on: object)
-        let helper = try runtime.resolveSwiftTypeAndWait(named: "CoreDevice.ScreenViewingURLHelper")
-        let urlType = try runtime.resolveSwiftTypeAndWait(named: "CoreDevice.ScreenViewingURLHelper.ScreenViewingURLType")
-        let url = try helper.resolveAndWait(.staticMethod("url(for:withType:)",
-            as: ((NativeSwiftValue, NativeSwiftValue) -> URL?).self))
+        let helper = try runtime.resolveAndWait(.swift(.type("CoreDevice.ScreenViewingURLHelper")))
+        let urlType = try runtime.resolveAndWait(.swift(.type("CoreDevice.ScreenViewingURLHelper.ScreenViewingURLType")))
+        let url = try helper.resolveAndWait(.swift(.staticMethod("url(for:withType:)",
+            as: ((NativeSwiftValue, NativeSwiftValue) -> URL?).self)))
         return try unsafe url.unsafeInvoke(info, urlType.makeEnumCase(named: "VNC"))
     }
 
@@ -51,14 +51,14 @@ final class CoreDeviceRemoteScreenDevice {
         guard try supports(feature) else {
             throw CLIError.unavailable("remote-input-capability", "The device does not currently expose the requested input operation.")
         }
-        let capability = try runtime.resolveSwiftTypeAndWait(named: "CoreDevice." + name)
-        let markerType = try runtime.resolveSwiftTypeAndWait(named: "CoreDevice.CapabilityStaticMember", genericArguments: [.type(capability)])
+        let capability = try runtime.resolveAndWait(.swift(.type("CoreDevice." + name)))
+        let markerType = try runtime.resolveAndWait(.swift(.type("CoreDevice.CapabilityStaticMember", genericArguments: [.type(capability)])))
         let abis: [NativeSwiftType: NativeType] = [markerType: try .opaque(named: markerType.name)]
-        let make = try markerType.resolveAndWait(.initializer("init()", as: (() -> NativeSwiftValue).self, valueABIs: abis))
+        let make = try markerType.resolveAndWait(.swift(.initializer("init()", as: (() -> NativeSwiftValue).self, valueABIs: abis)))
         let marker = try unsafe make.unsafeInvoke()
-        let get = try type.resolveAndWait(.method("getImplementation(for:)",
+        let get = try type.resolveAndWait(.swift(.method("getImplementation(for:)",
             as: ((NativeSwiftValue) async throws -> NativeSwiftValue).self,
-            genericArguments: [.type(capability)], valueABIs: abis))
+            genericArguments: [.type(capability)], valueABIs: abis)))
         return try await unsafe get.unsafeInvoke(on: object, marker).copyUnderlyingValue()
     }
 

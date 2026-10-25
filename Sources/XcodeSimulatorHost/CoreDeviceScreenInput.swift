@@ -110,37 +110,37 @@ final class CoreDeviceScreenInput {
         switch input {
         case .key(let usage, let state):
             let implementation = try await implementation(.keyboard, named: "KeyboardHIDCapability")
-            let code = try runtime.resolveSwiftTypeAndWait(named: "CoreDevice.HIDKeyboardUsageCode")
-            let buttonState = try runtime.resolveSwiftTypeAndWait(named: "CoreDevice.HIDButtonState")
-            let make = try code.resolveAndWait(.initializer("init(rawValue:)", as: ((UInt16) -> NativeSwiftValue).self))
-            let send = try implementation.type.resolveAndWait(.method("CoreDevice.HIDKeyboard.send(key:state:)",
-                as: ((NativeSwiftValue, NativeSwiftValue) throws -> Void).self))
+            let code = try runtime.resolveAndWait(.swift(.type("CoreDevice.HIDKeyboardUsageCode")))
+            let buttonState = try runtime.resolveAndWait(.swift(.type("CoreDevice.HIDButtonState")))
+            let make = try code.resolveAndWait(.swift(.initializer("init(rawValue:)", as: ((UInt16) -> NativeSwiftValue).self)))
+            let send = try implementation.type.resolveAndWait(.swift(.method("CoreDevice.HIDKeyboard.send(key:state:)",
+                as: ((NativeSwiftValue, NativeSwiftValue) throws -> Void).self)))
             try unsafe send.unsafeInvoke(on: implementation, make.unsafeInvoke(usage), buttonState.makeEnumCase(named: state.rawValue))
         case .button(let page, let usage, let state):
             let implementation = try await implementation(.button, named: "ButtonHIDCapability")
-            let buttonState = try runtime.resolveSwiftTypeAndWait(named: "CoreDevice.HIDButtonState")
-            let send = try implementation.type.resolveAndWait(.method("CoreDevice.HIDButton.sendCustomButton(usagePage:usageCode:state:)",
-                as: ((Int, Int, NativeSwiftValue) throws -> Void).self))
+            let buttonState = try runtime.resolveAndWait(.swift(.type("CoreDevice.HIDButtonState")))
+            let send = try implementation.type.resolveAndWait(.swift(.method("CoreDevice.HIDButton.sendCustomButton(usagePage:usageCode:state:)",
+                as: ((Int, Int, NativeSwiftValue) throws -> Void).self)))
             try unsafe send.unsafeInvoke(on: implementation, page, usage, buttonState.makeEnumCase(named: state.rawValue))
         case .pointer(let point):
             let implementation = try await implementation(.pointer, named: "PointerHIDCapability")
-            let send = try implementation.type.resolveAndWait(.method("CoreDevice.HIDPointer.send(movedTo:)",
-                as: ((CGPoint) async throws -> Void).self))
+            let send = try implementation.type.resolveAndWait(.swift(.method("CoreDevice.HIDPointer.send(movedTo:)",
+                as: ((CGPoint) async throws -> Void).self)))
             try await unsafe send.unsafeInvoke(on: implementation, point)
         case .pointerButton(let button, let phase, let clicks, let point):
             let implementation = try await implementation(.pointer, named: "PointerHIDCapability")
-            let pointerPhase = try runtime.resolveSwiftTypeAndWait(named: "CoreDevice.HIDPointerButtonPhase")
-            let send = try implementation.type.resolveAndWait(.method("CoreDevice.HIDPointer.send(button:phase:clicks:at:)",
-                as: ((Int, NativeSwiftValue, Int, CGPoint) async throws -> Void).self))
+            let pointerPhase = try runtime.resolveAndWait(.swift(.type("CoreDevice.HIDPointerButtonPhase")))
+            let send = try implementation.type.resolveAndWait(.swift(.method("CoreDevice.HIDPointer.send(button:phase:clicks:at:)",
+                as: ((Int, NativeSwiftValue, Int, CGPoint) async throws -> Void).self)))
             try await unsafe send.unsafeInvoke(on: implementation, button, pointerPhase.makeEnumCase(named: phase.rawValue), clicks, point)
         case .touch(let point, let second, let phase, let edge):
             let implementation = try await implementation(.digitizer, named: "DigitizerHIDCapability")
-            let eventType = try runtime.resolveSwiftTypeAndWait(named: "CoreDevice.DigitizerEventType")
-            let nativeEdge = try runtime.resolveSwiftTypeAndWait(named: "CoreDevice.DigitizerEdge")
-            let target = try runtime.resolveSwiftTypeAndWait(named: "CoreDevice.DigitizerTarget")
-            let send = try implementation.type.resolveAndWait(.method(
+            let eventType = try runtime.resolveAndWait(.swift(.type("CoreDevice.DigitizerEventType")))
+            let nativeEdge = try runtime.resolveAndWait(.swift(.type("CoreDevice.DigitizerEdge")))
+            let target = try runtime.resolveAndWait(.swift(.type("CoreDevice.DigitizerTarget")))
+            let send = try implementation.type.resolveAndWait(.swift(.method(
                 "(extension in CoreDevice):CoreDevice.HIDDigitizer.send(pointOne:pointTwo:eventType:edge:target:)",
-                as: ((CGPoint, CGPoint?, NativeSwiftValue, NativeSwiftValue, NativeSwiftValue) throws -> Void).self))
+                as: ((CGPoint, CGPoint?, NativeSwiftValue, NativeSwiftValue, NativeSwiftValue) throws -> Void).self)))
             let event = switch phase { case .began: "start"; case .moved: "position"; case .ended: "end" }
             try unsafe send.unsafeInvoke(on: implementation, point, second, eventType.makeEnumCase(named: event),
                                          nativeEdge.makeEnumCase(named: edge.rawValue), target.makeEnumCase(named: "mainScreen"))

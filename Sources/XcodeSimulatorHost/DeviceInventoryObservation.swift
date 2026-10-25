@@ -89,18 +89,18 @@ private final class CoreDeviceInventoryChangeSource: DeviceInventoryChangeSource
             throw CLIError.unavailable("coredevice-runtime", "Could not load CoreDevice: \(detail)")
         }
         let runtime = ABIRuntime.shared
-        let managerType = try runtime.resolveSwiftTypeAndWait(named: "CoreDevice.DeviceManager")
-        let shared = try managerType.resolveAndWait(.staticGetter("shared", as: (() -> NativeSwiftValue).self))
+        let managerType = try runtime.resolveAndWait(.swift(.type("CoreDevice.DeviceManager")))
+        let shared = try managerType.resolveAndWait(.swift(.staticGetter("shared", as: (() -> NativeSwiftValue).self)))
         manager = try unsafe shared.unsafeInvoke()
-        initializeManager = try managerType.resolveAndWait(.method("awaitFullInitialization()", as: (() async -> Void).self))
-        let remote = try runtime.resolveSwiftTypeAndWait(named: "CoreDevice.RemoteDevice")
-        let dictionary = try runtime.resolveSwiftTypeAndWait(named: "Swift.Dictionary",
-            genericArguments: [.type(UUID.self), .type(remote)])
-        let stream = try runtime.resolveSwiftTypeAndWait(named: "Swift.AsyncThrowingStream",
-            genericArguments: [.type(dictionary), .type((any Error).self)])
+        initializeManager = try managerType.resolveAndWait(.swift(.method("awaitFullInitialization()", as: (() async -> Void).self)))
+        let remote = try runtime.resolveAndWait(.swift(.type("CoreDevice.RemoteDevice")))
+        let dictionary = try runtime.resolveAndWait(.swift(.type("Swift.Dictionary",
+            genericArguments: [.type(UUID.self), .type(remote)])))
+        let stream = try runtime.resolveAndWait(.swift(.type("Swift.AsyncThrowingStream",
+            genericArguments: [.type(dictionary), .type((any Error).self)])))
         // AsyncThrowingStream is not @frozen in the SDK; its getter returns the closed value indirectly.
-        changes = try managerType.resolveAndWait(.getter("deviceChanges", as: (() -> NativeSwiftValue).self,
-            valueABIs: [stream: try .opaque(named: stream.name)]))
+        changes = try managerType.resolveAndWait(.swift(.getter("deviceChanges", as: (() -> NativeSwiftValue).self,
+            valueABIs: [stream: try .opaque(named: stream.name)])))
     }
 
     func initialize() async throws {

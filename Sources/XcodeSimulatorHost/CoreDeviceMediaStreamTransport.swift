@@ -67,8 +67,8 @@ final class CoreDeviceMediaStreamTransport: RemoteScreenTransport {
         stream = created
         try Task.checkCancellation()
         try checkConnection()
-        let activate = try created.type.resolveAndWait(.method("CoreDeviceMediaStreamSupport.MediaStreamProtocol.activate()",
-            as: (() async throws -> NativeSwiftValue).self, valueABIs: bindings.eventABIs))
+        let activate = try created.type.resolveAndWait(.swift(.method("CoreDeviceMediaStreamSupport.MediaStreamProtocol.activate()",
+            as: (() async throws -> NativeSwiftValue).self, valueABIs: bindings.eventABIs)))
         let sequence = try await unsafe activate.unsafeInvoke(on: created)
         try Task.checkCancellation()
         try checkConnection()
@@ -82,8 +82,8 @@ final class CoreDeviceMediaStreamTransport: RemoteScreenTransport {
                 await self.finishObservation(error: error)
             }
         }
-        let requestFrame = try created.type.resolveAndWait(.method("CoreDeviceMediaStreamSupport.VideoStream.requestLastDecodedFrame()",
-            as: (() async -> Void).self))
+        let requestFrame = try created.type.resolveAndWait(.swift(.method("CoreDeviceMediaStreamSupport.VideoStream.requestLastDecodedFrame()",
+            as: (() async -> Void).self)))
         try capture.requestInitialFrame {
             try await unsafe requestFrame.unsafeInvoke(on: created)
         }
@@ -95,8 +95,8 @@ final class CoreDeviceMediaStreamTransport: RemoteScreenTransport {
         guard !stopped, let stream else {
             throw CLIError.unavailable("remote-screen-connection", "Connect the device screen before capturing it.")
         }
-        let request = try stream.type.resolveAndWait(.method("CoreDeviceMediaStreamSupport.VideoStream.requestLastDecodedFrame()",
-            as: (() async -> Void).self))
+        let request = try stream.type.resolveAndWait(.swift(.method("CoreDeviceMediaStreamSupport.VideoStream.requestLastDecodedFrame()",
+            as: (() async -> Void).self)))
         return try await capture.capture {
             try await unsafe request.unsafeInvoke(on: stream)
         }
@@ -159,8 +159,8 @@ final class CoreDeviceMediaStreamTransport: RemoteScreenTransport {
             do { try await input.releaseInputs() } catch { failure = error }
             if let stream {
                 do {
-                    let invalidate = try stream.type.resolveAndWait(.method("CoreDeviceMediaStreamSupport.MediaStreamProtocol.invalidate()",
-                        as: (() async -> Void).self))
+                    let invalidate = try stream.type.resolveAndWait(.swift(.method("CoreDeviceMediaStreamSupport.MediaStreamProtocol.invalidate()",
+                        as: (() async -> Void).self)))
                     try await unsafe invalidate.unsafeInvoke(on: stream)
                     self.stream = nil
                     session = nil
@@ -176,19 +176,19 @@ final class CoreDeviceMediaStreamTransport: RemoteScreenTransport {
     }
 
     private func observe(_ sequence: NativeSwiftValue) async throws {
-        let make = try sequence.type.resolveAndWait(.method("makeAsyncIterator()", as: (() -> NativeSwiftValue).self,
-            valueABIs: bindings.eventABIs, receiverABI: .opaque(named: sequence.type.name)))
+        let make = try sequence.type.resolveAndWait(.swift(.method("makeAsyncIterator()", as: (() -> NativeSwiftValue).self,
+            valueABIs: bindings.eventABIs, receiverABI: .opaque(named: sequence.type.name))))
         let iterator = try unsafe make.unsafeInvoke(on: sequence)
-        let next = try iterator.type.resolveAndWait(.method("next()", as: (() async throws -> NativeSwiftValue?).self,
-            valueABIs: bindings.eventABIs, receiverABI: .opaque(named: iterator.type.name)))
+        let next = try iterator.type.resolveAndWait(.swift(.method("next()", as: (() async throws -> NativeSwiftValue?).self,
+            valueABIs: bindings.eventABIs, receiverABI: .opaque(named: iterator.type.name))))
         while let event = try await unsafe next.unsafeInvoke(on: iterator) {
             try Task.checkCancellation()
             guard !stopped else { return }
-            if let attributes = try event.resolveEnumPayloadAndWait(forCase: "remoteVideoAttributesChanged") {
+            if let attributes = try event.copyEnumPayloadAndWait(forCase: "remoteVideoAttributesChanged") {
                 let value = try bindings.attributes(attributes)
                 framebuffer.update(attributes: value)
                 events?(.attributes(value))
-            } else if let frame = try event.resolveEnumPayloadAndWait(forCase: "receivedLastDecodedFrame") {
+            } else if let frame = try event.copyEnumPayloadAndWait(forCase: "receivedLastDecodedFrame") {
                 guard let data = try frame.withCopy({ $0 as? Data }) else {
                     throw CLIError.io("remote-screen-frame", "The remote screen supplied an unexpected frame payload.")
                 }
@@ -213,27 +213,27 @@ private final class MediaStreamBindings {
 
     init(runtime: ABIRuntime) throws {
         try CoreDeviceRemoteScreenDevice.load("/Library/Developer/PrivateFrameworks/CoreDevice.framework/Versions/A/Frameworks/CoreDeviceMediaStreamSupport.framework/Versions/A/CoreDeviceMediaStreamSupport")
-        let session = try runtime.resolveSwiftTypeAndWait(named: "CoreDeviceMediaStreamSupport.MediaStreamSession")
-        makeSession = try session.resolveAndWait(.initializer("init(clientSessionID:)", as: ((UUID) -> NativeSwiftValue).self))
-        let configuration = try runtime.resolveSwiftTypeAndWait(named: "CoreDeviceMediaStreamSupport.VideoStreamConfiguration")
-        makeConfiguration = try configuration.resolveAndWait(.staticMethod("receiveMirroredPrimary(layer:timeout:)",
-            as: ((CALayer, UInt) -> NativeSwiftValue).self))
-        makeVideoStream = try session.resolveAndWait(.method("makeVideoStream(withConfiguration:fromRemoteDevice:)",
-            as: ((NativeSwiftValue, NativeSwiftValue) async throws -> NativeSwiftValue).self))
-        let event = try runtime.resolveSwiftTypeAndWait(named: "CoreDeviceMediaStreamSupport.VideoStreamEvent")
+        let session = try runtime.resolveAndWait(.swift(.type("CoreDeviceMediaStreamSupport.MediaStreamSession")))
+        makeSession = try session.resolveAndWait(.swift(.initializer("init(clientSessionID:)", as: ((UUID) -> NativeSwiftValue).self)))
+        let configuration = try runtime.resolveAndWait(.swift(.type("CoreDeviceMediaStreamSupport.VideoStreamConfiguration")))
+        makeConfiguration = try configuration.resolveAndWait(.swift(.staticMethod("receiveMirroredPrimary(layer:timeout:)",
+            as: ((CALayer, UInt) -> NativeSwiftValue).self)))
+        makeVideoStream = try session.resolveAndWait(.swift(.method("makeVideoStream(withConfiguration:fromRemoteDevice:)",
+            as: ((NativeSwiftValue, NativeSwiftValue) async throws -> NativeSwiftValue).self)))
+        let event = try runtime.resolveAndWait(.swift(.type("CoreDeviceMediaStreamSupport.VideoStreamEvent")))
         let arguments: [NativeSwiftGenericArgument] = [.type(event), .type((any Error).self)]
-        let sequence = try runtime.resolveSwiftTypeAndWait(named: "Swift.AsyncThrowingStream", genericArguments: arguments)
-        let iterator = try runtime.resolveSwiftTypeAndWait(named: "Swift.AsyncThrowingStream.Iterator", genericArguments: arguments)
+        let sequence = try runtime.resolveAndWait(.swift(.type("Swift.AsyncThrowingStream", genericArguments: arguments)))
+        let iterator = try runtime.resolveAndWait(.swift(.type("Swift.AsyncThrowingStream.Iterator", genericArguments: arguments)))
         // These stream/iterator declarations are non-frozen in the Swift SDK interface.
         eventABIs = try Dictionary(uniqueKeysWithValues: [event, sequence, iterator].map { ($0, try .opaque(named: $0.name)) })
-        let attributes = try runtime.resolveSwiftTypeAndWait(named: "CoreDeviceMediaStreamSupport.VideoStreamAttributes")
+        let attributes = try runtime.resolveAndWait(.swift(.type("CoreDeviceMediaStreamSupport.VideoStreamAttributes")))
         let abi = try NativeType.opaque(named: attributes.name)
-        ratio = try attributes.resolveAndWait(.getter("ratio", as: (() -> CGSize).self, receiverABI: abi))
-        contentsRect = try attributes.resolveAndWait(.getter("contentsRect", as: (() -> CGRect).self, receiverABI: abi))
-        scaleFactor = try attributes.resolveAndWait(.getter("scaleFactor", as: (() -> Float).self, receiverABI: abi))
-        orientation = try attributes.resolveAndWait(.getter("orientation", as: (() -> NativeSwiftValue).self, receiverABI: abi))
-        let direction = try runtime.resolveSwiftTypeAndWait(named: "CoreDevice.DeviceOrientation")
-        orientationRawValue = try direction.resolveAndWait(.getter("rawValue", as: (() -> String).self))
+        ratio = try attributes.resolveAndWait(.swift(.getter("ratio", as: (() -> CGSize).self, receiverABI: abi)))
+        contentsRect = try attributes.resolveAndWait(.swift(.getter("contentsRect", as: (() -> CGRect).self, receiverABI: abi)))
+        scaleFactor = try attributes.resolveAndWait(.swift(.getter("scaleFactor", as: (() -> Float).self, receiverABI: abi)))
+        orientation = try attributes.resolveAndWait(.swift(.getter("orientation", as: (() -> NativeSwiftValue).self, receiverABI: abi)))
+        let direction = try runtime.resolveAndWait(.swift(.type("CoreDevice.DeviceOrientation")))
+        orientationRawValue = try direction.resolveAndWait(.swift(.getter("rawValue", as: (() -> String).self)))
     }
 
     func attributes(_ value: NativeSwiftValue) throws -> RemoteDeviceVideoAttributes {

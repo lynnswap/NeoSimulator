@@ -214,42 +214,42 @@ struct SimulatorDisplayInterface {
             throw HostError.unavailable("SimulatorKit display classes are unavailable")
         }
         self.factoryClass = factoryClass
-        screen = try runtime.resolveAndWait(.message("screen", as: (() -> AnyObject?).self), on: screenClass)
-        isDefault = try runtime.resolveAndWait(.message("isDefault", as: (() -> Bool).self), on: screenClass)
-        isCarPlay = try runtime.resolveAndWait(.message("isCarPlay", as: (() -> Bool).self), on: screenClass)
-        let deviceScreen = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimDeviceScreen")
+        screen = try runtime.resolveAndWait(.objc(.method("screen", as: (() -> AnyObject?).self)), on: screenClass)
+        isDefault = try runtime.resolveAndWait(.objc(.method("isDefault", as: (() -> Bool).self)), on: screenClass)
+        isCarPlay = try runtime.resolveAndWait(.objc(.method("isCarPlay", as: (() -> Bool).self)), on: screenClass)
+        let deviceScreen = try runtime.resolveAndWait(.swift(.type("SimulatorKit.SimDeviceScreen")))
         // SimulatorKit does not export the descriptors of the imported C types
         // these getters return, so the host integers state their conventions.
-        let uint32 = try runtime.resolveSwiftTypeAndWait(named: "Swift.UInt32")
-        let uint16 = try runtime.resolveSwiftTypeAndWait(named: "Swift.UInt16")
-        buttonTarget = try deviceScreen.resolveAndWait(.getter(
+        let uint32 = try runtime.resolveAndWait(.swift(.type("Swift.UInt32")))
+        let uint16 = try runtime.resolveAndWait(.swift(.type("Swift.UInt16")))
+        buttonTarget = try deviceScreen.resolveAndWait(.swift(.getter(
             "buttonTarget.getter : __C.IndigoHIDTarget", as: (() -> UInt32).self,
-            valueABIs: [uint32: .uint32]))
+            valueABIs: [uint32: .uint32])))
         // The event types and events are resilient, so they are passed indirectly.
-        let eventTypes = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimDeviceScreen.ScreenEventTypes")
-        let event = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimDeviceScreen.ScreenEvent")
+        let eventTypes = try runtime.resolveAndWait(.swift(.type("SimulatorKit.SimDeviceScreen.ScreenEventTypes")))
+        let event = try runtime.resolveAndWait(.swift(.type("SimulatorKit.SimDeviceScreen.ScreenEvent")))
         let eventABIs: [NativeSwiftType: NativeType] = [
             eventTypes: try .opaque(named: eventTypes.name), event: try .opaque(named: event.name),
         ]
         screenPropertyEvents = try unsafe eventTypes
-            .resolveAndWait(.staticGetter("properties", as: (() -> NativeSwiftValue).self, valueABIs: eventABIs))
+            .resolveAndWait(.swift(.staticGetter("properties", as: (() -> NativeSwiftValue).self, valueABIs: eventABIs)))
             .unsafeInvoke()
-        screenProperties = try deviceScreen.resolveAndWait(.getter(
-            "properties.getter : __C.SimScreenProperties", as: (() -> AnyObject).self))
-        screenScale = try deviceScreen.resolveAndWait(.getter(
-            "scale.getter : CoreGraphics.CGFloat", as: (() -> CGFloat).self))
+        screenProperties = try deviceScreen.resolveAndWait(.swift(.getter(
+            "properties.getter : __C.SimScreenProperties", as: (() -> AnyObject).self)))
+        screenScale = try deviceScreen.resolveAndWait(.swift(.getter(
+            "scale.getter : CoreGraphics.CGFloat", as: (() -> CGFloat).self)))
         // CoreSimulator declares `SimDisplayClass` as an unsigned short.
-        displayClass = try deviceScreen.resolveAndWait(.getter(
+        displayClass = try deviceScreen.resolveAndWait(.swift(.getter(
             "displayClass.getter : __C.SimDisplayClass", as: (() -> UInt16).self,
-            valueABIs: [uint16: .uint16]))
-        registerScreenEvents = try deviceScreen.resolveAndWait(.method(
+            valueABIs: [uint16: .uint16])))
+        registerScreenEvents = try deviceScreen.resolveAndWait(.swift(.method(
             "register(types:queue:handler:)",
             as: ((NativeSwiftValue, DispatchQueue, ScreenEventHandler) -> NativeSwiftValue).self,
-            valueABIs: eventABIs))
-        let adapterType = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimDeviceScreenAdapter")
-        adapterScreens = try adapterType.resolveAndWait(.getter("screens", as: (() -> [UInt32: NativeSwiftValue]).self))
-        registerAdapterEvents = try adapterType.resolveAndWait(.method("register(screenID:queue:handler:)",
-            as: ((UInt32?, DispatchQueue, AdapterEventHandler) -> AnyObject).self))
+            valueABIs: eventABIs)))
+        let adapterType = try runtime.resolveAndWait(.swift(.type("SimulatorKit.SimDeviceScreenAdapter")))
+        adapterScreens = try adapterType.resolveAndWait(.swift(.getter("screens", as: (() -> [UInt32: NativeSwiftValue]).self)))
+        registerAdapterEvents = try adapterType.resolveAndWait(.swift(.method("register(screenID:queue:handler:)",
+            as: ((UInt32?, DispatchQueue, AdapterEventHandler) -> AnyObject).self)))
         // Screen proxies are bound on connection; their protocols must declare these messages.
         for (name, selectors) in SimulatorExternalScreenConnection.selectors + SimulatorConnection.backlightSelectors {
             guard let declared = objc_getProtocol(name) else {
@@ -261,7 +261,7 @@ struct SimulatorDisplayInterface {
             }
         }
         func carPlayKey(_ name: String) throws -> String {
-            let symbol = try runtime.resolveAndWait(NativeDeclaration(name: name, language: .c, kind: .data))
+            let symbol = try runtime.resolveAndWait(.c(.symbol(name, kind: .data)))
             guard let key = unsafe symbol.withUnsafeAddress({
                 unsafe $0.load(as: Unmanaged<NSString>?.self)?.takeUnretainedValue() as String?
             }) else {
@@ -272,71 +272,70 @@ struct SimulatorDisplayInterface {
         carPlayProperties = [try carPlayKey("SimCarPlayPropertyKeyStark"): true,
                              try carPlayKey("SimCarPlayPropertyKeyHasTouchScreen"): true]
         createDisplay = try runtime.resolveAndWait(
-            .message("createSimDisplayViewWithDevice:simScreenID:", as: ((AnyObject, UInt32) -> NSView?).self),
+            .objc(.method("createSimDisplayViewWithDevice:simScreenID:", as: ((AnyObject, UInt32) -> NSView?).self)),
             on: factoryClass, classMethod: true)
 
         // SimDisplayView members are exported only through dispatch thunks.
-        let view = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimDisplayView")
-        showChrome = try view.resolveAndWait(.setter("showDeviceChrome", as: ((Bool) -> Void).self))
-        chromeView = try view.resolveAndWait(.getter(
-            "chromeView.getter : SimulatorKit.SimDisplayChromeView", as: (() -> NSView).self))
-        digitizerView = try view.resolveAndWait(.getter(
-            "digitizerView.getter : SimulatorKit.SimDigitizerInputView", as: (() -> NSView).self))
-        renderScale = try view.resolveAndWait(.getter("renderScale", as: (() -> CGFloat).self))
-        setRenderScale = try view.resolveAndWait(.setter("renderScale", as: ((CGFloat) -> Void).self))
-        sizeForScale = try view.resolveAndWait(.method("size(for:)", as: ((CGFloat) -> CGSize).self))
-        scaleForSize = try view.resolveAndWait(.method("scale(for:)", as: ((CGSize) -> CGFloat).self))
-        rotation = try view.resolveAndWait(.setter("deviceRotation", as: ((Measurement<UnitAngle>) -> Void).self))
-        disconnect = try view.resolveAndWait(.method(
+        let view = try runtime.resolveAndWait(.swift(.type("SimulatorKit.SimDisplayView")))
+        showChrome = try view.resolveAndWait(.swift(.setter("showDeviceChrome", as: ((Bool) -> Void).self)))
+        chromeView = try view.resolveAndWait(.swift(.getter(
+            "chromeView.getter : SimulatorKit.SimDisplayChromeView", as: (() -> NSView).self)))
+        digitizerView = try view.resolveAndWait(.swift(.getter(
+            "digitizerView.getter : SimulatorKit.SimDigitizerInputView", as: (() -> NSView).self)))
+        renderScale = try view.resolveAndWait(.swift(.getter("renderScale", as: (() -> CGFloat).self)))
+        setRenderScale = try view.resolveAndWait(.swift(.setter("renderScale", as: ((CGFloat) -> Void).self)))
+        sizeForScale = try view.resolveAndWait(.swift(.method("size(for:)", as: ((CGFloat) -> CGSize).self)))
+        scaleForSize = try view.resolveAndWait(.swift(.method("scale(for:)", as: ((CGSize) -> CGFloat).self)))
+        rotation = try view.resolveAndWait(.swift(.setter("deviceRotation", as: ((Measurement<UnitAngle>) -> Void).self)))
+        disconnect = try view.resolveAndWait(.swift(.method(
             "disconnect(completion: (() -> ())?) -> ()",
-            as: ((NativeSwiftClosure<() -> Void>) -> Void).self))
-        beginResize = try view.resolveAndWait(.method("beginResize()", as: (() -> Void).self))
-        resize = try view.resolveAndWait(.method("resizeTo(size:)", as: ((CGSize) -> Void).self))
-        endResize = try view.resolveAndWait(.method("endResize()", as: (() -> Void).self))
+            as: ((NativeSwiftClosure<() -> Void>) -> Void).self)))
+        beginResize = try view.resolveAndWait(.swift(.method("beginResize()", as: (() -> Void).self)))
+        resize = try view.resolveAndWait(.swift(.method("resizeTo(size:)", as: ((CGSize) -> Void).self)))
+        endResize = try view.resolveAndWait(.swift(.method("endResize()", as: (() -> Void).self)))
         // The resize corners and their types are resilient, so they are passed
         // indirectly, and the array's own members read its elements.
-        let typedResizeRect = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimDisplayView.TypedResizeRect")
-        let typedResizeRects = try runtime.resolveSwiftTypeAndWait(
-            named: "Swift.Array", genericArguments: [.type(typedResizeRect)])
-        let resizeRectType = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimDeviceChrome.ResizeRectType")
-        resizeRects = try view.resolveAndWait(.getter(
+        let typedResizeRect = try runtime.resolveAndWait(.swift(.type("SimulatorKit.SimDisplayView.TypedResizeRect")))
+        let typedResizeRects = try runtime.resolveAndWait(.swift(.type("Swift.Array", genericArguments: [.type(typedResizeRect)])))
+        let resizeRectType = try runtime.resolveAndWait(.swift(.type("SimulatorKit.SimDeviceChrome.ResizeRectType")))
+        resizeRects = try view.resolveAndWait(.swift(.getter(
             "typedResizeRects.getter : [SimulatorKit.SimDisplayView.TypedResizeRect]",
-            as: (() -> NativeSwiftValue).self))
-        resizeRectCount = try typedResizeRects.resolveAndWait(.getter("count", as: (() -> Int).self))
-        resizeRectAtIndex = try typedResizeRects.resolveAndWait(.getter(
-            "Swift.Array.subscript.getter : (Swift.Int) -> A", as: ((Int) -> NativeSwiftValue).self))
-        resizeRectFrame = try typedResizeRect.resolveAndWait(.getter(
-            "rect.getter : __C.CGRect", as: (() -> CGRect).self, receiverABI: .opaque(named: typedResizeRect.name)))
-        self.resizeRectType = try typedResizeRect.resolveAndWait(.getter(
+            as: (() -> NativeSwiftValue).self)))
+        resizeRectCount = try typedResizeRects.resolveAndWait(.swift(.getter("count", as: (() -> Int).self)))
+        resizeRectAtIndex = try typedResizeRects.resolveAndWait(.swift(.getter(
+            "Swift.Array.subscript.getter : (Swift.Int) -> A", as: ((Int) -> NativeSwiftValue).self)))
+        resizeRectFrame = try typedResizeRect.resolveAndWait(.swift(.getter(
+            "rect.getter : __C.CGRect", as: (() -> CGRect).self, receiverABI: .opaque(named: typedResizeRect.name))))
+        self.resizeRectType = try typedResizeRect.resolveAndWait(.swift(.getter(
             "type.getter : SimulatorKit.SimDeviceChrome.ResizeRectType", as: (() -> NativeSwiftValue).self,
             valueABIs: [resizeRectType: try .opaque(named: resizeRectType.name)],
-            receiverABI: .opaque(named: typedResizeRect.name)))
-        resizeRectTypeName = try resizeRectType.resolveAndWait(.getter(
+            receiverABI: .opaque(named: typedResizeRect.name))))
+        resizeRectTypeName = try resizeRectType.resolveAndWait(.swift(.getter(
             "rawValue.getter : Swift.String", as: (() -> String).self,
-            receiverABI: .opaque(named: resizeRectType.name)))
-        showResizeCursors = try view.resolveAndWait(.setter("showResizeCursors", as: ((Bool) -> Void).self))
+            receiverABI: .opaque(named: resizeRectType.name))))
+        showResizeCursors = try view.resolveAndWait(.swift(.setter("showResizeCursors", as: ((Bool) -> Void).self)))
 
-        chromeState = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimDisplayChromeView.State")
-        let chromeViewType = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimDisplayChromeView")
-        setChromeState = try chromeViewType.resolveAndWait(.setter(
+        chromeState = try runtime.resolveAndWait(.swift(.type("SimulatorKit.SimDisplayChromeView.State")))
+        let chromeViewType = try runtime.resolveAndWait(.swift(.type("SimulatorKit.SimDisplayChromeView")))
+        setChromeState = try chromeViewType.resolveAndWait(.swift(.setter(
             "state.setter : SimulatorKit.SimDisplayChromeView.State",
             as: ((NativeSwiftValue) -> Void).self,
-            valueABIs: [chromeState: try .opaque(named: chromeState.name)]))
+            valueABIs: [chromeState: try .opaque(named: chromeState.name)])))
         // The chrome and its images are resilient, so they are passed indirectly.
-        let deviceChrome = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimDeviceChrome")
-        let optionalChrome = try runtime.resolveSwiftTypeAndWait(named: "Swift.Optional",
-                                                                 genericArguments: [.type(deviceChrome)])
-        let images = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimDeviceChrome.Images")
-        chrome = try chromeViewType.resolveAndWait(.getter(
+        let deviceChrome = try runtime.resolveAndWait(.swift(.type("SimulatorKit.SimDeviceChrome")))
+        let optionalChrome = try runtime.resolveAndWait(.swift(.type("Swift.Optional",
+                                                                 genericArguments: [.type(deviceChrome)])))
+        let images = try runtime.resolveAndWait(.swift(.type("SimulatorKit.SimDeviceChrome.Images")))
+        chrome = try chromeViewType.resolveAndWait(.swift(.getter(
             "chrome.getter : SimulatorKit.SimDeviceChrome?", as: (() -> NativeSwiftValue).self,
-            valueABIs: [optionalChrome: try .opaque(named: optionalChrome.name)]))
-        chromeImages = try deviceChrome.resolveAndWait(.getter(
+            valueABIs: [optionalChrome: try .opaque(named: optionalChrome.name)])))
+        chromeImages = try deviceChrome.resolveAndWait(.swift(.getter(
             "images.getter : SimulatorKit.SimDeviceChrome.Images", as: (() -> NativeSwiftValue).self,
-            valueABIs: [images: try .opaque(named: images.name)], receiverABI: .opaque(named: deviceChrome.name)))
-        chromeImagesPadding = try images.resolveAndWait(.getter(
-            "padding.getter : __C.CGSize", as: (() -> CGSize).self, receiverABI: .opaque(named: images.name)))
-        setKeyboardEnabled = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimKeyboardInputDefaultDelegate")
-            .resolveAndWait(.setter("isEnabled", as: ((Bool) -> Void).self))
+            valueABIs: [images: try .opaque(named: images.name)], receiverABI: .opaque(named: deviceChrome.name))))
+        chromeImagesPadding = try images.resolveAndWait(.swift(.getter(
+            "padding.getter : __C.CGSize", as: (() -> CGSize).self, receiverABI: .opaque(named: images.name))))
+        setKeyboardEnabled = try runtime.resolveAndWait(.swift(.type("SimulatorKit.SimKeyboardInputDefaultDelegate")))
+            .resolveAndWait(.swift(.setter("isEnabled", as: ((Bool) -> Void).self)))
         guard let keyboardDelegate = class_getInstanceVariable(displayViewClass, "_defaultKeyboardDelegate") else {
             throw HostError.unavailable("\(displayViewClass) does not provide _defaultKeyboardDelegate")
         }
@@ -353,33 +352,33 @@ struct SimulatorDisplayInterface {
         where unsafe protocol_getMethodDescription(declared, NSSelectorFromString(selector), true, true).name == nil {
             throw HostError.unavailable("\(pluginProtocol) does not declare \(selector)")
         }
-        let digitizer = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimDigitizerInputView")
-        setSupportsScrolling = try digitizer.resolveAndWait(.setter("supportScrolling", as: ((Bool) -> Void).self))
+        let digitizer = try runtime.resolveAndWait(.swift(.type("SimulatorKit.SimDigitizerInputView")))
+        setSupportsScrolling = try digitizer.resolveAndWait(.swift(.setter("supportScrolling", as: ((Bool) -> Void).self)))
         setSupportsTouchPressure = try digitizer.resolveAndWait(
-            .setter("supportTouchPressure", as: ((Bool) -> Void).self))
+            .swift(.setter("supportTouchPressure", as: ((Bool) -> Void).self)))
         setUsesTrackpadForce = try digitizer.resolveAndWait(
-            .setter("useForceTrackpadForPressure", as: ((Bool) -> Void).self))
+            .swift(.setter("useForceTrackpadForPressure", as: ((Bool) -> Void).self)))
         // TouchMode has no field metadata to establish its convention.
-        let touchMode = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimDigitizerInputView.TouchMode")
-        setSimulatedTouchMode = try digitizer.resolveAndWait(.setter(
+        let touchMode = try runtime.resolveAndWait(.swift(.type("SimulatorKit.SimDigitizerInputView.TouchMode")))
+        setSimulatedTouchMode = try digitizer.resolveAndWait(.swift(.setter(
             "simulatedTouchMode.setter : SimulatorKit.SimDigitizerInputView.TouchMode", as: ((Int) -> Void).self,
-            valueABIs: [touchMode: .int]))
-        let drawOption = try runtime.resolveSwiftTypeAndWait(named: "SimulatorKit.SimDigitizerInputView.DrawOption")
+            valueABIs: [touchMode: .int])))
+        let drawOption = try runtime.resolveAndWait(.swift(.type("SimulatorKit.SimDigitizerInputView.DrawOption")))
         let drawOptionABIs: [NativeSwiftType: NativeType] = [drawOption: try .opaque(named: drawOption.name)]
-        drawOptions = try digitizer.resolveAndWait(.getter(
+        drawOptions = try digitizer.resolveAndWait(.swift(.getter(
             "drawOptions.getter : SimulatorKit.SimDigitizerInputView.DrawOption",
-            as: (() -> NativeSwiftValue).self, valueABIs: drawOptionABIs))
-        setDrawOptions = try digitizer.resolveAndWait(.setter(
+            as: (() -> NativeSwiftValue).self, valueABIs: drawOptionABIs)))
+        setDrawOptions = try digitizer.resolveAndWait(.swift(.setter(
             "drawOptions.setter : SimulatorKit.SimDigitizerInputView.DrawOption",
-            as: ((NativeSwiftValue) -> Void).self, valueABIs: drawOptionABIs))
-        let rawValue = try drawOption.resolveAndWait(.getter(
-            "rawValue.getter : Swift.Int", as: (() -> Int).self, receiverABI: .opaque(named: drawOption.name)))
+            as: ((NativeSwiftValue) -> Void).self, valueABIs: drawOptionABIs)))
+        let rawValue = try drawOption.resolveAndWait(.swift(.getter(
+            "rawValue.getter : Swift.Int", as: (() -> Int).self, receiverABI: .opaque(named: drawOption.name))))
         drawOptionRawValue = rawValue
-        makeDrawOption = try drawOption.resolveAndWait(.initializer(
-            "init(rawValue:)", as: ((Int) -> NativeSwiftValue).self, valueABIs: drawOptionABIs))
+        makeDrawOption = try drawOption.resolveAndWait(.swift(.initializer(
+            "init(rawValue:)", as: ((Int) -> NativeSwiftValue).self, valueABIs: drawOptionABIs)))
         func option(_ name: String) throws -> Int {
-            try unsafe rawValue.unsafeInvoke(on: drawOption.resolveAndWait(.staticGetter(
-                name, as: (() -> NativeSwiftValue).self, valueABIs: drawOptionABIs)).unsafeInvoke())
+            try unsafe rawValue.unsafeInvoke(on: drawOption.resolveAndWait(.swift(.staticGetter(
+                name, as: (() -> NativeSwiftValue).self, valueABIs: drawOptionABIs))).unsafeInvoke())
         }
         touchIndicatorOptions = (try option("normalTouch"), try option("pinchTouches"), try option("pinchPivotPoint"),
                                  try option("edgeGestures"))
@@ -428,7 +427,7 @@ struct SimulatorDisplayInterface {
             MainActor.assumeIsolated {
                 do {
                     // A disconnection also carries its screen.
-                    guard let screen = try event.resolveEnumPayloadAndWait(forCase: "connected")?
+                    guard let screen = try event.copyEnumPayloadAndWait(forCase: "connected")?
                         .withCopy({ $0 as AnyObject }) else { return }
                     let properties = try unsafe screenProperties.unsafeInvoke(on: screen)
                     guard try screenMessages.send("screenType", to: properties, as: UInt64.self) == Self.externalScreenType
@@ -452,9 +451,9 @@ final class ScreenAdapterGetter {
     /// The device's `SimDeviceScreenAdapter`, which SimulatorKit keeps for
     /// the device's lifetime, or nil when it has none.
     func adapter(of device: AnyObject) throws -> AnyObject? {
-        let getter = try self.getter ?? ABIRuntime.shared.object(device).resolveAndWait(.getter(
+        let getter = try self.getter ?? ABIRuntime.shared.object(device).resolveAndWait(.swift(.getter(
             "(extension in SimulatorKit):__C.SimDevice.screenAdapter.getter : SimulatorKit.SimDeviceScreenAdapter?",
-            as: (() -> AnyObject?).self)).method
+            as: (() -> AnyObject?).self))).method
         self.getter = getter
         return try unsafe getter.unsafeInvoke(on: device)
     }
@@ -468,7 +467,7 @@ final class ProxyMessages {
     func send<Result>(_ selector: String, to object: AnyObject, as type: Result.Type = Result.self) throws -> Result {
         let key = "\(ObjectIdentifier(Swift.type(of: object))) \(selector)"
         let method = try methods[key] as? NativeObjCMethod<Result> ?? ABIRuntime.shared.object(object)
-            .resolveAndWait(.message(selector, as: (() -> Result).self)).method
+            .resolveAndWait(.objc(.method(selector, as: (() -> Result).self))).method
         methods[key] = method
         return try unsafe method.unsafeInvoke(on: object)
     }
@@ -562,12 +561,12 @@ final class SimulatorExternalScreenConnection: SimulatorExternalScreen {
         }
         // Every screen of a device is a proxy of one class.
         let proxy = ABIRuntime.shared.object(simScreen)
-        setCurrentMode = try proxy.resolveAndWait(.message(
+        setCurrentMode = try proxy.resolveAndWait(.objc(.method(
             "setCurrentMode:pixelSize:carPlayProperties:completionQueue:completionHandler:",
-            as: ((AnyObject, CGSize, NSDictionary?, DispatchQueue, @escaping Completion) -> Void).self)).method
-        setPowerState = try proxy.resolveAndWait(.message(
+            as: ((AnyObject, CGSize, NSDictionary?, DispatchQueue, @escaping Completion) -> Void).self))).method
+        setPowerState = try proxy.resolveAndWait(.objc(.method(
             "setPowerState:completionQueue:completionHandler:",
-            as: ((Int32, DispatchQueue, @escaping Completion) -> Void).self)).method
+            as: ((Int32, DispatchQueue, @escaping Completion) -> Void).self))).method
         let handler = try SimulatorDisplayInterface.ScreenEventHandler { _, _ in
             MainActor.assumeIsolated { changed() }
         }
@@ -719,26 +718,20 @@ struct SimulatorInputInterface {
         }
         self.clientClass = clientClass
         makeClient = try runtime.resolveAndWait(
-            .message("initWithDevice:error:", as: ((AnyObject) throws -> AnyObject).self),
+            .objc(.method("initWithDevice:error:", as: ((AnyObject) throws -> AnyObject).self)),
             on: clientClass)
         send = try runtime.resolveAndWait(
-            .message("sendWithMessage:freeWhenDone:completionQueue:completion:",
-                as: ((OpaquePointer, Bool, DispatchQueue?, Completion?) -> Void).self),
+            .objc(.method("sendWithMessage:freeWhenDone:completionQueue:completion:",
+                as: ((OpaquePointer, Bool, DispatchQueue?, Completion?) -> Void).self)),
             on: clientClass)
-        messageForButton = try runtime.resolveCFunctionAndWait(
-            named: "IndigoHIDMessageForButton", as: ((UInt32, UInt32, UInt32) -> OpaquePointer?).self)
-        messageForUsage = try runtime.resolveCFunctionAndWait(
-            named: "IndigoHIDMessageForHIDArbitrary",
-            as: ((UInt32, UInt32, UInt32, UInt32) -> OpaquePointer?).self)
-        messageForWatchGesture = try runtime.resolveCFunctionAndWait(
-            named: "IndigoHIDMessageForWatchGesture", as: ((UInt32) -> OpaquePointer?).self)
-        keyboardType = try runtime.resolveCFunctionAndWait(named: "IndigoHIDGetKeyboardType", as: (() -> UInt32).self)
-        createCarPlayService = try runtime.resolveCFunctionAndWait(
-            named: "IndigoHIDMessageToCreateCarPlayService", as: ((Bool) -> OpaquePointer?).self)
-        removeCarPlayService = try runtime.resolveCFunctionAndWait(
-            named: "IndigoHIDMessageToRemoveCarPlayService", as: (() -> OpaquePointer?).self)
-        messageForTrackpadMove = try runtime.resolveCFunctionAndWait(
-            named: "IndigoHIDMessageForTrackpadMoveEvent", as: ((CGPoint, UInt32) -> OpaquePointer?).self)
+        messageForButton = try runtime.resolveAndWait(.c(.function("IndigoHIDMessageForButton", as: ((UInt32, UInt32, UInt32) -> OpaquePointer?).self)))
+        messageForUsage = try runtime.resolveAndWait(.c(.function("IndigoHIDMessageForHIDArbitrary",
+            as: ((UInt32, UInt32, UInt32, UInt32) -> OpaquePointer?).self)))
+        messageForWatchGesture = try runtime.resolveAndWait(.c(.function("IndigoHIDMessageForWatchGesture", as: ((UInt32) -> OpaquePointer?).self)))
+        keyboardType = try runtime.resolveAndWait(.c(.function("IndigoHIDGetKeyboardType", as: (() -> UInt32).self)))
+        createCarPlayService = try runtime.resolveAndWait(.c(.function("IndigoHIDMessageToCreateCarPlayService", as: ((Bool) -> OpaquePointer?).self)))
+        removeCarPlayService = try runtime.resolveAndWait(.c(.function("IndigoHIDMessageToRemoveCarPlayService", as: (() -> OpaquePointer?).self)))
+        messageForTrackpadMove = try runtime.resolveAndWait(.c(.function("IndigoHIDMessageForTrackpadMoveEvent", as: ((CGPoint, UInt32) -> OpaquePointer?).self)))
         try checkTrackpadMessage()
     }
 
@@ -866,19 +859,19 @@ struct SimulatorPasteboardInterface {
         }
         self.interfaceClass = interfaceClass
         makeInterface = try runtime.resolveAndWait(
-            .message("initWithConnectingToPort:managingPasteboard:delegate:delegateQueue:",
-                as: ((UInt32, NSPasteboard, AnyObject?, DispatchQueue?) -> AnyObject).self),
+            .objc(.method("initWithConnectingToPort:managingPasteboard:delegate:delegateQueue:",
+                as: ((UInt32, NSPasteboard, AnyObject?, DispatchQueue?) -> AnyObject).self)),
             on: interfaceClass)
-        push = try runtime.resolveAndWait(.message("push", as: (() -> Void).self), on: interfaceClass)
-        pull = try runtime.resolveAndWait(.message("pull", as: (() -> Void).self), on: interfaceClass)
+        push = try runtime.resolveAndWait(.objc(.method("push", as: (() -> Void).self)), on: interfaceClass)
+        pull = try runtime.resolveAndWait(.objc(.method("pull", as: (() -> Void).self)), on: interfaceClass)
         enableAutomaticSync = try runtime.resolveAndWait(
-            .message("enableRemoteAutosync", as: (() -> Void).self),
+            .objc(.method("enableRemoteAutosync", as: (() -> Void).self)),
             on: interfaceClass)
         disableAutomaticSync = try runtime.resolveAndWait(
-            .message("disableRemoteAutosync", as: (() -> Void).self),
+            .objc(.method("disableRemoteAutosync", as: (() -> Void).self)),
             on: interfaceClass)
         serviceName = try unsafe runtime.resolveAndWait(
-            .message("machServiceName", as: (() -> String).self),
+            .objc(.method("machServiceName", as: (() -> String).self)),
             on: listenerClass, classMethod: true)
             .unsafeInvoke(on: listenerClass as AnyObject)
     }
@@ -991,8 +984,8 @@ struct SimulatorAudioInterface {
         guard let device = NSClassFromString("SimDevice"), let client = NSClassFromString("SimDeviceIOClient") else {
             throw HostError.unavailable("CoreSimulator's device I/O classes are unavailable")
         }
-        deviceIO = try runtime.resolveAndWait(.message("io", as: (() -> AnyObject?).self), on: device)
-        ioPorts = try runtime.resolveAndWait(.message("ioPorts", as: (() -> [AnyObject]).self), on: client)
+        deviceIO = try runtime.resolveAndWait(.objc(.method("io", as: (() -> AnyObject?).self)), on: device)
+        ioPorts = try runtime.resolveAndWait(.objc(.method("ioPorts", as: (() -> [AnyObject]).self)), on: client)
         // Port and device objects are remote proxies, bound on connection through their protocols.
         let protocols = [("SimAudioHostRoutable", SimulatorAudioConnection.portSelectors),
                          ("SimAudioHostDevice", HostAudioDeviceMembers.selectors)]
@@ -1010,8 +1003,7 @@ struct SimulatorAudioInterface {
         }
         self.routable = routable
         // Recent routes are saved with this value, so it must not change.
-        let symbol = try runtime.resolveAndWait(NativeDeclaration(
-            name: "SimAudioHostUseSystemDefaultDeviceUID", language: .c, kind: .data))
+        let symbol = try runtime.resolveAndWait(.c(.symbol("SimAudioHostUseSystemDefaultDeviceUID", kind: .data)))
         let systemDefault = unsafe symbol.withUnsafeAddress {
             unsafe $0.load(as: Unmanaged<NSString>?.self)?.takeUnretainedValue() as String?
         }
@@ -1031,7 +1023,7 @@ struct SimulatorAudioInterface {
         for port in try unsafe ioPorts.unsafeInvoke(on: io) {
             // Every port is a proxy of one class.
             let method = try descriptor ?? ABIRuntime.shared.object(port)
-                .resolveAndWait(.message("descriptor", as: (() -> AnyObject?).self)).method
+                .resolveAndWait(.objc(.method("descriptor", as: (() -> AnyObject?).self))).method
             descriptor = method
             if let object = try unsafe method.unsafeInvoke(on: port),
                (object as? NSObjectProtocol)?.conforms(to: routable) == true {
@@ -1081,24 +1073,24 @@ final class SimulatorAudioConnection: SimulatorAudioRoutes {
 
     fileprivate init(port: AnyObject, changed: @escaping @MainActor (AudioRouteChange) -> Void) throws {
         let object = ABIRuntime.shared.object(port)
-        availableDevices = try object.resolveAndWait(.message(
-            "availableHostDevices", as: (() -> [AnyObject]?).self))
-        inputRoute = try object.resolveAndWait(.message("guestInputHostDeviceUID", as: (() -> String?).self))
-        outputRoute = try object.resolveAndWait(.message("guestOutputHostDeviceUID", as: (() -> String?).self))
-        defaultInput = try object.resolveAndWait(.message(
-            "effectiveDefaultInputDeviceUID", as: (() -> String?).self))
-        defaultOutput = try object.resolveAndWait(.message(
-            "effectiveDefaultOutputDeviceUID", as: (() -> String?).self))
-        routeGuest = try object.resolveAndWait(.message(
+        availableDevices = try object.resolveAndWait(.objc(.method(
+            "availableHostDevices", as: (() -> [AnyObject]?).self)))
+        inputRoute = try object.resolveAndWait(.objc(.method("guestInputHostDeviceUID", as: (() -> String?).self)))
+        outputRoute = try object.resolveAndWait(.objc(.method("guestOutputHostDeviceUID", as: (() -> String?).self)))
+        defaultInput = try object.resolveAndWait(.objc(.method(
+            "effectiveDefaultInputDeviceUID", as: (() -> String?).self)))
+        defaultOutput = try object.resolveAndWait(.objc(.method(
+            "effectiveDefaultOutputDeviceUID", as: (() -> String?).self)))
+        routeGuest = try object.resolveAndWait(.objc(.method(
             "routeGuestDeviceScope:toHostDeviceUID:completionQueue:completionHandler:",
-            as: ((UInt64, String, DispatchQueue, @escaping SimulatorAudioInterface.RouteCompletion) -> Void).self))
-        unregister = try object.resolveAndWait(.message("unregisterCallbackWithUUID:", as: ((NSUUID) -> Void).self))
-        let registerDevices = try object.resolveAndWait(.message(
+            as: ((UInt64, String, DispatchQueue, @escaping SimulatorAudioInterface.RouteCompletion) -> Void).self)))
+        unregister = try object.resolveAndWait(.objc(.method("unregisterCallbackWithUUID:", as: ((NSUUID) -> Void).self)))
+        let registerDevices = try object.resolveAndWait(.objc(.method(
             "registerCallbackWithUUID:availableDevicesChangedCallback:",
-            as: ((NSUUID, @escaping SimulatorAudioInterface.DevicesChanged) -> Void).self))
-        let registerRoutes = try object.resolveAndWait(.message(
+            as: ((NSUUID, @escaping SimulatorAudioInterface.DevicesChanged) -> Void).self)))
+        let registerRoutes = try object.resolveAndWait(.objc(.method(
             "registerCallbackWithUUID:selectedDeviceUIDChangedCallback:",
-            as: ((NSUUID, @escaping SimulatorAudioInterface.RouteChanged) -> Void).self))
+            as: ((NSUUID, @escaping SimulatorAudioInterface.RouteChanged) -> Void).self)))
         try unsafe registerDevices.unsafeInvoke(token, Self.devicesChanged(changed))
         do {
             try unsafe registerRoutes.unsafeInvoke(token, Self.routeChanged(changed))
@@ -1170,11 +1162,11 @@ private struct HostAudioDeviceMembers {
 
     init(_ device: AnyObject) throws {
         let object = ABIRuntime.shared.object(device)
-        uniqueIdentifier = try object.resolveAndWait(.message("uniqueIdentifier", as: (() -> String?).self)).method
-        displayName = try object.resolveAndWait(.message("displayName", as: (() -> String?).self)).method
-        inputChannels = try object.resolveAndWait(.message("inputChannels", as: (() -> Int).self)).method
-        outputChannels = try object.resolveAndWait(.message("outputChannels", as: (() -> Int).self)).method
-        defaultScopes = try object.resolveAndWait(.message("isDefaultInScopes", as: (() -> UInt64).self)).method
+        uniqueIdentifier = try object.resolveAndWait(.objc(.method("uniqueIdentifier", as: (() -> String?).self))).method
+        displayName = try object.resolveAndWait(.objc(.method("displayName", as: (() -> String?).self))).method
+        inputChannels = try object.resolveAndWait(.objc(.method("inputChannels", as: (() -> Int).self))).method
+        outputChannels = try object.resolveAndWait(.objc(.method("outputChannels", as: (() -> Int).self))).method
+        defaultScopes = try object.resolveAndWait(.objc(.method("isDefaultInScopes", as: (() -> UInt64).self))).method
     }
 
     /// The device, or nil for one without an identifier, which no route can name.
@@ -1583,7 +1575,7 @@ final class SimulatorConnection: SimulatorDisplay {
         let display = runtime.display
         return read("read the device bezel", otherwise: nil) {
             guard let chrome = try unsafe display.chrome.unsafeInvoke(on: chromeView)
-                .resolveEnumPayloadAndWait(forCase: "some") else { return nil }
+                .copyEnumPayloadAndWait(forCase: "some") else { return nil }
             return try unsafe display.chromeImagesPadding.unsafeInvoke(on: display.chromeImages.unsafeInvoke(on: chrome))
         }
     }
@@ -1612,7 +1604,7 @@ final class SimulatorConnection: SimulatorDisplay {
         guard !disconnected,
               let properties = try? unsafe runtime.display.screenProperties.unsafeInvoke(on: screen),
               let orientation = try? unsafe ABIRuntime.shared.object(properties)
-                .resolveAndWait(.message("uiOrientation", as: (() -> UInt32).self)).unsafeInvoke()
+                .resolveAndWait(.objc(.method("uiOrientation", as: (() -> UInt32).self))).unsafeInvoke()
         else { return nil }
         return SimScreenUIOrientation.displayAngle(orientation)
     }

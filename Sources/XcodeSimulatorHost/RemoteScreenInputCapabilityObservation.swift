@@ -83,25 +83,25 @@ final class CoreDeviceInputCapabilitySource: RemoteScreenInputCapabilitySource {
 
     init(remote: CoreDeviceRemoteScreenDevice) throws {
         self.remote = remote
-        let capability = try remote.runtime.resolveSwiftTypeAndWait(named: "CoreDevice.Capability")
+        let capability = try remote.runtime.resolveAndWait(.swift(.type("CoreDevice.Capability")))
         let markerTypes: [RemoteDeviceInputKind: String] = [
             .keyboard: "CoreDevice.KeyboardHIDCapability", .pointer: "CoreDevice.PointerHIDCapability",
             .digitizer: "CoreDevice.DigitizerHIDCapability", .button: "CoreDevice.ButtonHIDCapability",
         ]
         let capabilityABI = try NativeType.opaque(named: capability.name)
         markers = try markerTypes.mapValues { name in
-            let type = try remote.runtime.resolveSwiftTypeAndWait(named: name)
-            let read = try type.resolveAndWait(.staticGetter("capability", as: (() -> NativeSwiftValue).self,
-                valueABIs: [capability: capabilityABI]))
+            let type = try remote.runtime.resolveAndWait(.swift(.type(name)))
+            let read = try type.resolveAndWait(.swift(.staticGetter("capability", as: (() -> NativeSwiftValue).self,
+                valueABIs: [capability: capabilityABI])))
             return try unsafe read.unsafeInvoke()
         }
-        let set = try remote.runtime.resolveSwiftTypeAndWait(named: "Swift.Set", genericArguments: [.type(capability)])
-        let stream = try remote.runtime.resolveSwiftTypeAndWait(named: "Swift.AsyncThrowingStream",
-            genericArguments: [.type(set), .type((any Error).self)])
+        let set = try remote.runtime.resolveAndWait(.swift(.type("Swift.Set", genericArguments: [.type(capability)])))
+        let stream = try remote.runtime.resolveAndWait(.swift(.type("Swift.AsyncThrowingStream",
+            genericArguments: [.type(set), .type((any Error).self)])))
         // RemoteDevice exports AsyncThrowingStream<Set<Capability>, Error>; the resilient
         // stream getter returns indirectly, as in DeviceInventoryObservation.
-        changes = try remote.type.resolveAndWait(.getter("capabilityChanges", as: (() -> NativeSwiftValue).self,
-            valueABIs: [stream: try .opaque(named: stream.name)]))
+        changes = try remote.type.resolveAndWait(.swift(.getter("capabilityChanges", as: (() -> NativeSwiftValue).self,
+            valueABIs: [stream: try .opaque(named: stream.name)])))
     }
 
     func follow(onSubscribed: @escaping @MainActor () throws -> Void,
