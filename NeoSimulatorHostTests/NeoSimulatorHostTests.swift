@@ -101,15 +101,27 @@ struct InputFocusTests {
         let sheet = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 100),
                              styleMask: .titled, backing: .buffered, defer: false)
         sheet.isReleasedWhenClosed = false
+        let originalAnimation = window.animationBehavior
+        window.animationBehavior = .none
+        sheet.animationBehavior = .none
+        let (endedSheets, sheetEnded) = AsyncStream<NSApplication.ModalResponse>.makeStream()
         defer {
             if window.attachedSheet === sheet { window.endSheet(sheet, returnCode: .cancel) }
+            sheet.orderOut(nil)
             sheet.close()
+            window.animationBehavior = originalAnimation
         }
-        window.beginSheet(sheet)
+        window.beginSheet(sheet) { response in
+            sheetEnded.yield(response)
+            sheetEnded.finish()
+        }
         #expect(window.attachedSheet === sheet)
         replacement.onDisconnect = { #expect(window.attachedSheet == nil) }
         controller.invalidate()
         #expect(window.attachedSheet == nil)
+        if window.attachedSheet === sheet { window.endSheet(sheet, returnCode: .cancel) }
+        var ended = endedSheets.makeAsyncIterator()
+        #expect(await ended.next() == .cancel)
         #expect(replacement.disconnectCount == 1 && display.disconnectCount == 1 && closes == 0)
         let saved = preferences.windowGeometry(forDevice: session.device.identity.preferenceIdentifier, screens: NSScreen.screens.map(\.frame))
         #expect(saved.scale.map { WindowScale.matches($0, compactScale) } == true)
