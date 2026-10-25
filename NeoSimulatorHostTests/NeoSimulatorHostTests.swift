@@ -488,7 +488,7 @@ struct InputFocusTests {
         for event in editing {
             let externalEvent = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
                 timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: externalWindow.windowNumber, context: nil,
-                characters: event.characters, charactersIgnoringModifiers: event.charactersIgnoringModifiers,
+                characters: try #require(event.characters), charactersIgnoringModifiers: try #require(event.charactersIgnoringModifiers),
                 isARepeat: false, keyCode: event.keyCode))
             #expect(externalEvent.window === externalWindow)
             #expect(!editMenu.performKeyEquivalent(with: externalEvent))
