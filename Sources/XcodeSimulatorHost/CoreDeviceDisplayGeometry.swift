@@ -39,29 +39,29 @@ final class CoreDeviceDisplayGeometry {
     init(remote: CoreDeviceRemoteScreenDevice) throws {
         self.remote = remote
         let runtime = remote.runtime
-        readDeviceInfo = try remote.type.resolveAndWait(.getter("deviceInfo", as: (() -> NativeSwiftValue).self))
-        let info = try runtime.resolveSwiftTypeAndWait(named: "CoreDeviceProtocols.DeviceInfo")
-        let displayInfo = try runtime.resolveSwiftTypeAndWait(named: "CoreDevice.DisplayInfo")
-        let display = try runtime.resolveSwiftTypeAndWait(named: "CoreDevice.Display")
-        let orientationInfo = try runtime.resolveSwiftTypeAndWait(named: "CoreDevice.OrientationInfo")
-        let normalized = try runtime.resolveSwiftTypeAndWait(named: "DeviceKit.DisplayInfo")
-        let size = try runtime.resolveSwiftTypeAndWait(named: "DeviceKit.DisplaySize")
+        readDeviceInfo = try remote.type.resolveAndWait(.swift(.getter("deviceInfo", as: (() -> NativeSwiftValue).self)))
+        let info = try runtime.resolveAndWait(.swift(.type("CoreDeviceProtocols.DeviceInfo")))
+        let displayInfo = try runtime.resolveAndWait(.swift(.type("CoreDevice.DisplayInfo")))
+        let display = try runtime.resolveAndWait(.swift(.type("CoreDevice.Display")))
+        let orientationInfo = try runtime.resolveAndWait(.swift(.type("CoreDevice.OrientationInfo")))
+        let normalized = try runtime.resolveAndWait(.swift(.type("DeviceKit.DisplayInfo")))
+        let size = try runtime.resolveAndWait(.swift(.type("DeviceKit.DisplaySize")))
         // DeviceKit and CoreDevice's display structs are resilient values; their exported getters
         // and initializer use indirect storage across the framework boundary.
         let abis = try Dictionary(uniqueKeysWithValues: [displayInfo, display, orientationInfo, normalized, size]
             .map { ($0, try NativeType.opaque(named: $0.name)) })
-        readInitialDisplayInfo = try remote.type.resolveAndWait(.getter("displayInfo",
-            as: (() async throws -> NativeSwiftValue).self, valueABIs: abis))
-        readDisplayInfo = try info.resolveAndWait(.getter("displayInfo", as: (() -> NativeSwiftValue?).self, valueABIs: abis))
-        displays = try displayInfo.resolveAndWait(.getter("displays", as: (() -> [NativeSwiftValue]).self, valueABIs: abis))
-        orientation = try displayInfo.resolveAndWait(.getter("orientation", as: (() -> NativeSwiftValue?).self, valueABIs: abis))
-        primary = try display.resolveAndWait(.getter("primary", as: (() -> Bool).self, valueABIs: abis))
-        makeDisplay = try normalized.resolveAndWait(.initializer("init(display:orientation:)",
-            as: ((NativeSwiftValue, NativeSwiftValue?) -> NativeSwiftValue).self, valueABIs: abis))
-        normalizedOrientation = try normalized.resolveAndWait(.getter("normalizedCurrentOrientation",
-            as: (() -> Measurement<UnitAngle>).self, valueABIs: abis))
-        displaySize = try normalized.resolveAndWait(.getter("displaySize", as: (() -> NativeSwiftValue).self, valueABIs: abis))
-        pointSize = try size.resolveAndWait(.getter("pointSize", as: (() -> CGSize).self, valueABIs: abis))
+        readInitialDisplayInfo = try remote.type.resolveAndWait(.swift(.getter("displayInfo",
+            as: (() async throws -> NativeSwiftValue).self, valueABIs: abis)))
+        readDisplayInfo = try info.resolveAndWait(.swift(.getter("displayInfo", as: (() -> NativeSwiftValue?).self, valueABIs: abis)))
+        displays = try displayInfo.resolveAndWait(.swift(.getter("displays", as: (() -> [NativeSwiftValue]).self, valueABIs: abis)))
+        orientation = try displayInfo.resolveAndWait(.swift(.getter("orientation", as: (() -> NativeSwiftValue?).self, valueABIs: abis)))
+        primary = try display.resolveAndWait(.swift(.getter("primary", as: (() -> Bool).self, valueABIs: abis)))
+        makeDisplay = try normalized.resolveAndWait(.swift(.initializer("init(display:orientation:)",
+            as: ((NativeSwiftValue, NativeSwiftValue?) -> NativeSwiftValue).self, valueABIs: abis)))
+        normalizedOrientation = try normalized.resolveAndWait(.swift(.getter("normalizedCurrentOrientation",
+            as: (() -> Measurement<UnitAngle>).self, valueABIs: abis)))
+        displaySize = try normalized.resolveAndWait(.swift(.getter("displaySize", as: (() -> NativeSwiftValue).self, valueABIs: abis)))
+        pointSize = try size.resolveAndWait(.swift(.getter("pointSize", as: (() -> CGSize).self, valueABIs: abis)))
     }
 
     func start(update: @escaping @MainActor (Result<RemoteScreenFramebuffer.Display?, any Error>) -> Void) async throws {

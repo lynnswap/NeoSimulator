@@ -40,20 +40,20 @@ final class ScreenSharingDeviceTransport: NSObject, RemoteScreenTransport {
         view = viewClass.init(frame: contentView.bounds)
         view.autoresizingMask = [.width, .height]
         let runtime = remote.runtime
-        let defaults = try runtime.resolveAndWait(.message("defaultOptions", as: (() -> AnyObject).self), on: optionsClass, classMethod: true)
+        let defaults = try runtime.resolveAndWait(.objc(.method("defaultOptions", as: (() -> AnyObject).self)), on: optionsClass, classMethod: true)
         options = try unsafe defaults.unsafeInvoke(on: optionsClass)
-        let share = try runtime.resolveAndWait(.message("setShouldSharePasteboard:", as: ((Bool) -> Void).self), on: Swift.type(of: options))
+        let share = try runtime.resolveAndWait(.objc(.method("setShouldSharePasteboard:", as: ((Bool) -> Void).self)), on: Swift.type(of: options))
         try unsafe share.unsafeInvoke(on: options, false)
         for selector in ["setShouldSharePasteboard:", "setShouldAllowSendPasteboard:"] {
-            let disable = try runtime.resolveAndWait(.message(selector, as: ((Bool) -> Void).self), on: viewClass)
+            let disable = try runtime.resolveAndWait(.objc(.method(selector, as: ((Bool) -> Void).self)), on: viewClass)
             try unsafe disable.unsafeInvoke(on: view, false)
         }
-        connect = try runtime.resolveAndWait(.message("connectToURLs:withPreferredCredentials:options:",
-            as: ((NSOrderedSet, NSOrderedSet?, AnyObject) -> Void).self), on: viewClass)
-        close = try runtime.resolveAndWait(.message("closeSession", as: (() -> Void).self), on: viewClass)
-        connected = try runtime.resolveAndWait(.message("isConnected", as: (() -> Bool).self), on: viewClass)
-        disconnected = try runtime.resolveAndWait(.message("isDisconnected", as: (() -> Bool).self), on: viewClass)
-        copyImage = try runtime.resolveAndWait(.message("copyCGImageFromRemoteScreen", as: (() -> Unmanaged<CGImage>?).self), on: viewClass)
+        connect = try runtime.resolveAndWait(.objc(.method("connectToURLs:withPreferredCredentials:options:",
+            as: ((NSOrderedSet, NSOrderedSet?, AnyObject) -> Void).self)), on: viewClass)
+        close = try runtime.resolveAndWait(.objc(.method("closeSession", as: (() -> Void).self)), on: viewClass)
+        connected = try runtime.resolveAndWait(.objc(.method("isConnected", as: (() -> Bool).self)), on: viewClass)
+        disconnected = try runtime.resolveAndWait(.objc(.method("isDisconnected", as: (() -> Bool).self)), on: viewClass)
+        copyImage = try runtime.resolveAndWait(.objc(.method("copyCGImageFromRemoteScreen", as: (() -> Unmanaged<CGImage>?).self)), on: viewClass)
         super.init()
         contentView.addSubview(view)
     }

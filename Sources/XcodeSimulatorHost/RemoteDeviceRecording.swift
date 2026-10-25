@@ -106,9 +106,9 @@ extension CoreDeviceRemoteScreenDevice {
     func startRecording(displayUniqueID: String?) async throws -> any RemoteScreenRecordingHandle {
         let implementation = try await implementation(capability: "ScreenRecordingCapability",
             feature: "com.apple.coredevice.feature.screenrecording")
-        let start = try await implementation.type.resolve(.method(
+        let start = try await implementation.type.resolve(.swift(.method(
             "(extension in CoreDevice):CoreDevice.ScreenRecordingProtocol.recordScreen(displayUniqueID:)",
-            as: ((String?) async throws -> NativeSwiftValue).self))
+            as: ((String?) async throws -> NativeSwiftValue).self)))
         let handle = try await unsafe start.unsafeInvoke(on: implementation, displayUniqueID).copyUnderlyingValue()
         return NativeScreenRecordingHandle(remote: self, implementation: implementation, handle: handle)
     }
@@ -131,17 +131,17 @@ private final class NativeScreenRecordingHandle: RemoteScreenRecordingHandle {
         let nativeOutput: NativeSwiftValue
         if let output { nativeOutput = output }
         else {
-            let stop = try await handle.type.resolve(.method("CoreDevice.ScreenRecordingHandle.stopRecording()",
-                as: (() async throws -> NativeSwiftValue).self))
+            let stop = try await handle.type.resolve(.swift(.method("CoreDevice.ScreenRecordingHandle.stopRecording()",
+                as: (() async throws -> NativeSwiftValue).self)))
             nativeOutput = try await unsafe stop.unsafeInvoke(on: handle).copyUnderlyingValue()
             output = nativeOutput
         }
         // Retain the native output if projection fails, so retry never stops the handle twice.
-        let data = try await nativeOutput.type.resolve(.getter("videoData", as: (() -> Data).self))
-        let duration = try await nativeOutput.type.resolve(.getter("duration", as: (() -> Double).self))
-        let codec = try await nativeOutput.type.resolve(.getter("codec", as: (() -> NativeSwiftValue).self))
+        let data = try await nativeOutput.type.resolve(.swift(.getter("videoData", as: (() -> Data).self)))
+        let duration = try await nativeOutput.type.resolve(.swift(.getter("duration", as: (() -> Double).self)))
+        let codec = try await nativeOutput.type.resolve(.swift(.getter("codec", as: (() -> NativeSwiftValue).self)))
         let nativeCodec = try unsafe codec.unsafeInvoke(on: nativeOutput)
-        let codecName = try await nativeCodec.type.resolve(.getter("rawValue", as: (() -> String).self))
+        let codecName = try await nativeCodec.type.resolve(.swift(.getter("rawValue", as: (() -> String).self)))
         return try unsafe RemoteDeviceRecording(data: data.unsafeInvoke(on: nativeOutput),
             duration: duration.unsafeInvoke(on: nativeOutput), codec: codecName.unsafeInvoke(on: nativeCodec))
     }
