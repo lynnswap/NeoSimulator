@@ -8,10 +8,11 @@ struct InputFocusTests {
     @Test func embeddedAndCompactPresentationsKeepOneSessionAndInputOwner() async throws {
         _ = NSApplication.shared
         let display = TestDisplay()
+        let preferences = MemoryPreferences()
         var closes = 0
         var compactPresentations = 0
         var shutdownRequests = 0
-        let controller = try makeController(display, features: [DeviceCapabilities.keyboard],
+        let controller = try makeController(display, features: [DeviceCapabilities.keyboard], preferences: preferences,
             presentCompactWindow: { _ in compactPresentations += 1 }, onClose: { _, _ in closes += 1 },
             onShutDown: { _ in shutdownRequests += 1 })
         defer { controller.invalidate() }
@@ -49,6 +50,14 @@ struct InputFocusTests {
         #expect(!controller.isEmbedded && compactPresentations == 1)
         #expect(DeviceCommand.command(.fitScreen).isEnabled(controller))
         #expect(controller.window?.contentView === content)
+        controller.setScale(.physicalSize)
+        let compactScale = display.renderScale
+        controller.embed(in: parent)
+        parent.view.layoutSubtreeIfNeeded()
+        controller.detachPresentation()
+        controller.embed(in: parent)
+        controller.showCompactWindow()
+        #expect(WindowScale.matches(display.renderScale, compactScale))
         controller.embed(in: parent)
         #expect(controller.session === session && display.disconnectCount == 0 && closes == 0)
         let search = NSSearchField(frame: NSRect(x: 0, y: 0, width: 200, height: 24))
@@ -65,11 +74,13 @@ struct InputFocusTests {
         let replacementSession = try makeSession(replacement, features: [DeviceCapabilities.keyboard])
         controller.reconnect(replacementSession, present: false)
         #expect(controller.isEmbedded && controller.presentationViewController.parent === parent)
-        #expect(controller.session === replacementSession && compactPresentations == 1)
+        #expect(controller.session === replacementSession && compactPresentations == 2)
         #expect(replacement.disconnectCount == 0 && display.disconnectCount == 1 && closes == 0)
         #expect(window.firstResponder === replacement.inputView && replacement.keyboard.last == true)
         controller.invalidate()
         #expect(replacement.disconnectCount == 1 && display.disconnectCount == 1 && closes == 0)
+        let saved = preferences.windowGeometry(forDevice: session.device.identity.preferenceIdentifier, screens: NSScreen.screens.map(\.frame))
+        #expect(saved.scale.map { WindowScale.matches($0, compactScale) } == true)
     }
 
     @Test func commandsAndActivationRestoreTheNativeInputOwner() throws {

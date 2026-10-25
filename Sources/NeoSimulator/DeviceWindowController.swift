@@ -26,9 +26,8 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     /// Where the device's window last closed in the current arrangement of
     /// screens, which a new window is centered at.
     private let savedCenter: NSPoint?
-    /// The display scale the device's window last closed at in the current
-    /// arrangement of screens.
-    private let savedScale: CGFloat?
+    /// The last compact-window scale in the current arrangement of screens.
+    private var savedScale: CGFloat?
     /// Initial placement and the frame it produced, until the first orientation reading.
     private var initialPlacement: (place: ((NSWindow) -> Void)?, frame: NSRect)?
     /// Includes full-screen transitions, when scaling and bezel resizing are unavailable.
@@ -1297,9 +1296,10 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     }
     /// Saves center and scale per screen arrangement, except during restart.
     private func saveWindowGeometry() {
-        guard !closed, !isRestarting, let window else { return }
+        guard !closed, !isRestarting, !isEmbedded, let window, window.contentView === content else { return }
+        savedScale = WindowScale.usable(session.display.renderScale)
         preferences.setWindowGeometry(center: NSPoint(x: window.frame.midX, y: window.frame.midY),
-                                      scale: WindowScale.usable(session.display.renderScale),
+                                      scale: savedScale,
                                       forDevice: session.device.identity.preferenceIdentifier, screens: Self.screenFrames)
     }
     private func disconnect() {
