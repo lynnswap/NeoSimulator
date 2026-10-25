@@ -481,6 +481,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         session.display.setChromeVisible(preferences.showsDeviceBezels)
         bezelChanged()
         orientationRead = .notStarted
+        initialPlacement = nil
         session.display.setRenderScale(scale)
         didRotate()
         if present { showAndActivate() } else { readInitialOrientation() }
