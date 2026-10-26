@@ -10,10 +10,38 @@ public struct DeviceManagementResult: Sendable {
     public let completedSteps: [String]
     public let createdDeviceID: DeviceInventoryID?
     public let error: (any Error)?
+
+    public func recordingDisplayCleanup(_ outcome: Result<Void, any Error>,
+                                        completedStep: String = "Display disconnected") -> Self {
+        switch outcome {
+        case .success:
+            return Self(deviceID: deviceID, completedSteps: completedSteps + [completedStep],
+                        createdDeviceID: createdDeviceID, error: error)
+        case .failure(let cleanup):
+            let previous = error as? DeviceManagementCleanupError
+            let operationError: (any Error)? = if let previous { previous.operationError } else { error }
+            let combined = DeviceManagementCleanupError(operationError: operationError,
+                cleanupErrors: (previous?.cleanupErrors ?? []) + [cleanup])
+            return Self(deviceID: deviceID, completedSteps: completedSteps,
+                        createdDeviceID: createdDeviceID, error: combined)
+        }
+    }
+}
+
+public struct DeviceManagementCleanupError: LocalizedError {
+    public let operationError: (any Error)?
+    public let cleanupErrors: [any Error]
+
+    public var errorDescription: String? {
+        ([operationError?.localizedDescription].compactMap { $0 }
+            + cleanupErrors.map { "Display cleanup failed: \($0.localizedDescription)" }).joined(separator: "\n")
+    }
 }
 
 public struct DeviceManagementReport: Sendable {
     public let results: [DeviceManagementResult]
+
+    public init(results: [DeviceManagementResult]) { self.results = results }
 }
 
 extension InventoryDevice {
@@ -113,6 +141,7 @@ struct DeviceManagementBackend: Sendable {
     func manage(_ action: DeviceManagementAction, devices: [InventoryDevice]) async -> DeviceManagementReport {
         var seen = Set<DeviceInventoryID>()
         let targets = devices.filter { seen.insert($0.id).inserted }
+        if action == .forceShutdown { return await forceShutdown(targets) }
         var paired: [DeviceInventoryID: DeviceManagementResult] = [:]
         if action == .pair {
             let simulators = targets.compactMap { if case .simulator(let device) = $0 { device } else { nil } }
@@ -125,6 +154,38 @@ struct DeviceManagementBackend: Sendable {
         for target in targets {
             if let result = paired[target.id] { results.append(result); continue }
             results.append(await perform(action, on: target))
+        }
+        return DeviceManagementReport(results: results)
+    }
+
+    private func forceShutdown(_ targets: [InventoryDevice]) async -> DeviceManagementReport {
+        var results: [DeviceManagementResult] = []
+        // A renderer may be unresponsive. Send every requested force operation before waiting for cleanup.
+        for target in targets {
+            var completed: [String] = []
+            var failure: (any Error)?
+            do {
+                try Task.checkCancellation()
+                if case .simulator(let device) = target, device.deviceSetPath != nil {
+                    throw unavailable(.forceShutdown, target: target)
+                }
+                try await manageCoreDevice(.forceShutdown, target.id)
+                completed.append("Forcibly shut down")
+            } catch { failure = error }
+            results.append(DeviceManagementResult(deviceID: target.id, completedSteps: completed,
+                                                  createdDeviceID: nil, error: failure))
+        }
+        for (index, target) in targets.enumerated() {
+            guard case .simulator(let device) = target, device.deviceSetPath == nil else { continue }
+            do {
+                let resolved = try await context(device, true)
+                if let renderer = resolved.renderer {
+                    try await release(renderer, device.inventoryID)
+                    results[index] = results[index].recordingDisplayCleanup(.success(()))
+                }
+            } catch {
+                results[index] = results[index].recordingDisplayCleanup(.failure(error))
+            }
         }
         return DeviceManagementReport(results: results)
     }
@@ -155,8 +216,7 @@ struct DeviceManagementBackend: Sendable {
             try Task.checkCancellation()
             switch target {
             case .simulator(let original):
-                if action == .forceShutdown, original.deviceSetPath != nil { throw unavailable(action, target: target) }
-                let needsCleanup: Bool = switch action { case .shutdown, .forceShutdown, .restart, .erase, .remove: true; default: false }
+                let needsCleanup: Bool = switch action { case .shutdown, .restart, .erase, .remove: true; default: false }
                 let resolved = try await context(original, needsCleanup)
                 let device = resolved.device
                 let identifier = device.identifier
@@ -185,9 +245,6 @@ struct DeviceManagementBackend: Sendable {
                         created = .simulator(udid: clone, deviceSetPath: device.deviceSetPath)
                     case .start: _ = try await command(["boot", identifier], step: "Started")
                     case .shutdown: _ = try await command(["shutdown", identifier], step: "Shut down")
-                    case .forceShutdown:
-                        try await manageCoreDevice(action, device.inventoryID)
-                        completed.append("Forcibly shut down")
                     case .restart, .erase, .remove:
                         let wasRunning = ["Booted", "Booting"].contains(device.state)
                         if wasRunning { _ = try await command(["shutdown", identifier], step: "Shut down") }
@@ -224,7 +281,7 @@ struct DeviceManagementBackend: Sendable {
                         for (identifier, pair) in pairs.sorted(by: { $0.key < $1.key }) where pair.watch.udid == device.identifier || pair.phone.udid == device.identifier {
                             _ = try await command(["unpair", identifier], step: "Unpaired")
                         }
-                    case .pair, .pause, .resume: throw unavailable(action, target: target)
+                    case .pair, .pause, .resume, .forceShutdown: throw unavailable(action, target: target)
                     }
                 }
             case .remote(let device):

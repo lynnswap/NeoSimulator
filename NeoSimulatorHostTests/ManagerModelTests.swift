@@ -127,6 +127,72 @@ struct ManagerModelTests {
         #expect(model.issue == nil)
     }
 
+    @Test(arguments: [false, true])
+    func forceShutdownPrecedesPresentationCleanupAndRetainsBothFailures(remote: Bool) async throws {
+        let targets = try ["A", "B"].map { identifier -> InventoryDevice in
+            if !remote {
+                return .simulator(SimulatorHostDevice(identifier: identifier, name: identifier, descriptiveName: identifier,
+                    runtimeIdentifier: "runtime", runtimeName: "iOS", productFamily: "iPhone", state: "Booted",
+                    capabilities: ["com.apple.dt.coredevice.device.shutdown"]))
+            }
+            let data = try JSONSerialization.data(withJSONObject: ["result": ["devices": [[
+                "identifier": identifier, "properties": ["hardware": ["reality": "virtual"],
+                    "state": ["name": identifier], "connection": ["state": "connected", "pairingState": "paired"]],
+                "capabilities": [["featureIdentifier": "com.apple.dt.coredevice.device.shutdown"]]
+            ]]]])
+            return .remote(try #require(CoreDeviceInventoryDecoder.decode(data).first))
+        }
+        let source = ManagerModelSource(devices: targets, managementFailureID: remote ? nil : targets[0].id)
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source)
+        let cleanups = AsyncStream<(DeviceInventoryID, CheckedContinuation<Void, any Error>)>.makeStream()
+        var cleanupEvents = cleanups.stream.makeAsyncIterator()
+        let failures = AsyncStream<any Error>.makeStream()
+        var failureEvents = failures.stream.makeAsyncIterator()
+        let cleanup: @MainActor ([DeviceInventoryID]) async throws -> Void = { identifiers in
+            #expect(identifiers.count == 1)
+            try await withCheckedThrowingContinuation { waiting in
+                cleanups.continuation.yield((identifiers[0], waiting))
+            }
+        }
+        manager.beforeManagingSimulators = { _, devices in try await cleanup(devices.map(\.id)) }
+        manager.beforeManagingRemoteDevices = { try await cleanup(Array($0)) }
+        manager.onError = { failures.continuation.yield($0) }
+        manager.manage(.forceShutdown, devices: targets)
+        #expect(await events.next() == .manage(.forceShutdown, targets.map(\.id)))
+        let first = try #require(await cleanupEvents.next())
+        #expect(first.0 == targets[0].id)
+        #expect(manager.managingDeviceIDs == Set(targets.map(\.id)))
+        first.1.resume(throwing: CLIError.io("cleanup-fixture", "Recording could not be saved"))
+        let second = try #require(await cleanupEvents.next())
+        #expect(second.0 == targets[1].id)
+        second.1.resume()
+        let failure = try #require(await failureEvents.next() as? LocalizedError)
+        let details = try #require(failure.recoverySuggestion)
+        #expect(details.contains("Native shutdown failed") == !remote)
+        #expect(details.contains("Recording could not be saved"))
+        if remote { #expect(details.contains("Completed: Forcibly shut down")) }
+        #expect(await source.managementRequests == 1)
+    }
+
+    @Test func normalShutdownStillAwaitsPresentationCleanupBeforeNativeManagement() async throws {
+        let device = simulator()
+        let source = ManagerModelSource(devices: [device])
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source)
+        let started = AsyncStream<CheckedContinuation<Void, any Error>>.makeStream()
+        var cleanupEvents = started.stream.makeAsyncIterator()
+        manager.beforeManagingSimulators = { _, _ in
+            try await withCheckedThrowingContinuation { started.continuation.yield($0) }
+        }
+        manager.manage(.shutdown, devices: [device])
+        let cleanup = try #require(await cleanupEvents.next())
+        #expect(await source.managementRequests == 0)
+        cleanup.resume()
+        #expect(await events.next() == .manage(.shutdown, [device.id]))
+        try await manager.quitRenderer(keepingDevicesRunning: true)
+    }
+
     private func simulator(deviceSet: String? = nil) -> InventoryDevice {
         .simulator(SimulatorHostDevice(identifier: "same-udid", name: "Test Phone", descriptiveName: "Test Phone",
             runtimeIdentifier: "test-runtime", runtimeName: "iOS", productFamily: "iPhone", state: "Booted",
@@ -139,8 +205,11 @@ struct ManagerModelTests {
 }
 
 private actor ManagerModelSource: SimulatorManagerSource {
-    enum Event: Equatable, Sendable { case read(DeviceInventoryID), write(DeviceInventoryID), quit }
-    enum Failure: Error { case unavailable }
+    enum Event: Equatable, Sendable { case read(DeviceInventoryID), write(DeviceInventoryID), quit, manage(DeviceManagementAction, [DeviceInventoryID]) }
+    enum Failure: LocalizedError {
+        case unavailable, native
+        var errorDescription: String? { self == .native ? "Native shutdown failed" : "Unavailable" }
+    }
     nonisolated let events: AsyncStream<Event>
     private let continuation: AsyncStream<Event>.Continuation
     private let devices: [InventoryDevice]
@@ -150,8 +219,11 @@ private actor ManagerModelSource: SimulatorManagerSource {
     private var pendingWrite: SimulatorDeviceSettings?
     private(set) var writeInputs: [SimulatorDeviceSettings?] = []
     private(set) var readCount = 0
+    private(set) var managementRequests = 0
+    private let managementFailureID: DeviceInventoryID?
 
-    init(devices: [InventoryDevice]) {
+    init(devices: [InventoryDevice], managementFailureID: DeviceInventoryID? = nil) {
+        self.managementFailureID = managementFailureID
         self.devices = devices
         (events, continuation) = AsyncStream.makeStream()
     }
@@ -218,7 +290,16 @@ private actor ManagerModelSource: SimulatorManagerSource {
     func creationCatalog() throws -> SimulatorCreationContext { throw Failure.unavailable }
     func createSimulator(named name: String, deviceType: String, runtime: String, context: SimulatorCreationContext) throws -> String { throw Failure.unavailable }
     func pairSimulators(watch: String, phone: String, context: SimulatorCreationContext) throws { throw Failure.unavailable }
-    func manage(_ action: DeviceManagementAction, devices: [InventoryDevice]) -> DeviceManagementReport { DeviceManagementReport(results: []) }
+    func manage(_ action: DeviceManagementAction, devices: [InventoryDevice]) -> DeviceManagementReport {
+        managementRequests += 1
+        continuation.yield(.manage(action, devices.map(\.id)))
+        return DeviceManagementReport(results: devices.map {
+            let failure = $0.id == managementFailureID
+            return DeviceManagementResult(deviceID: $0.id,
+                completedSteps: failure ? [] : [action == .forceShutdown ? "Forcibly shut down" : "Shut down"],
+                createdDeviceID: nil, error: failure ? Failure.native : nil)
+        })
+    }
     func inspector(for device: InventoryDevice) throws -> DeviceInspector { throw Failure.unavailable }
     func restore(force: Bool) throws { throw Failure.unavailable }
     func synchronizeXcodeConnections() -> Bool { false }

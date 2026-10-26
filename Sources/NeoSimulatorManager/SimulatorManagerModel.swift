@@ -140,10 +140,33 @@ final class SimulatorManagerModel {
                 self.managementTasks.removeValue(forKey: request)
             }
             do {
-                let remoteIDs = Set(targets.filter { self.managementDisconnectsScreen(action, for: $0) }.map(\.id))
-                if !remoteIDs.isEmpty { try await self.beforeManagingRemoteDevices?(remoteIDs) }
-                try await self.beforeManagingSimulators?(action, targets)
-                let report = await self.controller.manage(action, devices: targets)
+                if action != .forceShutdown {
+                    let remoteIDs = Set(targets.filter { self.managementDisconnectsScreen(action, for: $0) }.map(\.id))
+                    if !remoteIDs.isEmpty { try await self.beforeManagingRemoteDevices?(remoteIDs) }
+                    try await self.beforeManagingSimulators?(action, targets)
+                }
+                var report = await self.controller.manage(action, devices: targets)
+                if action == .forceShutdown {
+                    var results: [DeviceManagementResult] = []
+                    for result in report.results {
+                        guard let target = targets.first(where: { $0.id == result.deviceID }), target.supports(action) else {
+                            results.append(result)
+                            continue
+                        }
+                        do {
+                            switch target {
+                            case .simulator:
+                                guard let cleanup = self.beforeManagingSimulators else { results.append(result); continue }
+                                try await cleanup(action, [target])
+                            case .remote:
+                                guard let cleanup = self.beforeManagingRemoteDevices else { results.append(result); continue }
+                                try await cleanup([target.id])
+                            }
+                            results.append(result.recordingDisplayCleanup(.success(()), completedStep: "Display cleanup completed"))
+                        } catch { results.append(result.recordingDisplayCleanup(.failure(error))) }
+                    }
+                    report = DeviceManagementReport(results: results)
+                }
                 var presentationError: (any Error)?
                 do { try await self.afterManagingSimulators?(action, targets) }
                 catch { presentationError = error }
