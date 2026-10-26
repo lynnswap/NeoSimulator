@@ -345,7 +345,6 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         }
         isKey = false
         keyboard.setEnabled(false)
-        session.display.setActive(false)
     }
 
     private func observePresentationWindow() {
@@ -1351,7 +1350,6 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     private func activateDisplay(focusingInput: Bool = true) {
         guard !closed else { return }
         isKey = true
-        session.display.setActive(true)
         updateKeyboardInput()
         if focusingInput { focusInput() }
     }
@@ -1359,7 +1357,6 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         guard !closed else { return }
         isKey = false
         updateKeyboardInput()
-        session.display.setActive(false)
     }
     func windowWillStartLiveResize(_ notification: Notification) { if !closed { fitting.willStartLiveResize() } }
     /// A manual resize updates toolbar style while preserving content height, then fits the display.
