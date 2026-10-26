@@ -6,6 +6,26 @@ import Testing
 
 @Suite(.serialized, .timeLimit(.minutes(1))) @MainActor
 struct ManagerModelTests {
+    @Test func screenRestorationKeepsItsSourceAndPresentation() async throws {
+        let device = SimulatorDeviceIdentifier("test-device", deviceSetPath: "/custom/testing devices")
+        let xcode = URL(fileURLWithPath: "/Applications/Other Xcode.app", isDirectory: true)
+        let restoration = SimulatorScreenRestoration(device: device, xcodeURL: xcode, presentation: .compact)
+        let decoded = try #require(SimulatorScreenRestoration(url: restoration.url))
+        #expect(decoded == restoration)
+        let source = ManagerModelSource(devices: [])
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source)
+        var presented = false
+        manager.restoreScreen(decoded) { presented = true }
+        #expect(await events.next() == .open(decoded.deviceID))
+        #expect(await source.lastOpenXcodeURL == xcode)
+        #expect(!presented)
+        await source.completeOpen()
+        try await manager.quitRenderer(keepingDevicesRunning: true)
+        #expect(presented)
+    }
+
+
     @Test func relaunchWaitsForTheOldProcessToExit() async throws {
         let owner = Process()
         owner.executableURL = URL(fileURLWithPath: "/bin/cat")
@@ -353,6 +373,7 @@ private actor ManagerModelSource: SimulatorManagerSource {
     private var openContinuation: CheckedContinuation<Void, Never>?
     private(set) var writeInputs: [SimulatorDeviceSettings?] = []
     private(set) var readCount = 0
+    private(set) var lastOpenXcodeURL: URL?
     private(set) var artworkXcodeRequests: [DeviceInventoryID] = []
     private(set) var installedXcodeReadCount = 0
     private(set) var managementRequests = 0
@@ -435,6 +456,7 @@ private actor ManagerModelSource: SimulatorManagerSource {
     func quitRenderer(keepingDevicesRunning: Bool?) { continuation.yield(.quit) }
     func selectHost(_ host: SimulatorHost, xcodeURL: URL?) throws { throw Failure.unavailable }
     func openDevice(_ deviceID: DeviceInventoryID, xcodeURL: URL?) async {
+        lastOpenXcodeURL = xcodeURL
         await withCheckedContinuation { waiting in
             openContinuation = waiting
             continuation.yield(.open(deviceID))

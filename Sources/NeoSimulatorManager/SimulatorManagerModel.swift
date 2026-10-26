@@ -2,6 +2,38 @@ import Foundation
 import Observation
 import XcodeSimulatorHost
 
+struct SimulatorScreenRestoration: Equatable {
+    enum Presentation: String { case hidden, compact, main }
+    let device: SimulatorDeviceIdentifier
+    let xcodeURL: URL
+    let presentation: Presentation
+    var deviceID: DeviceInventoryID { .simulator(udid: device.identifier, deviceSetPath: device.deviceSetPath) }
+
+    var url: URL {
+        var items = [URLQueryItem(name: "udid", value: device.identifier),
+                     URLQueryItem(name: "xcode", value: xcodeURL.path),
+                     URLQueryItem(name: "presentation", value: presentation.rawValue)]
+        if let path = device.deviceSetPath { items.append(URLQueryItem(name: "deviceSetPath", value: path)) }
+        return URL(string: "neosimulator://restore-screen")!.appending(queryItems: items)
+    }
+
+    init(device: SimulatorDeviceIdentifier, xcodeURL: URL, presentation: Presentation) {
+        self.device = device
+        self.xcodeURL = xcodeURL
+        self.presentation = presentation
+    }
+
+    init?(url: URL) {
+        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        guard let udid = items.first(where: { $0.name == "udid" })?.value,
+              let xcode = items.first(where: { $0.name == "xcode" })?.value,
+              let name = items.first(where: { $0.name == "presentation" })?.value,
+              let presentation = Presentation(rawValue: name) else { return nil }
+        self.init(device: SimulatorDeviceIdentifier(udid, deviceSetPath: items.first(where: { $0.name == "deviceSetPath" })?.value),
+                  xcodeURL: URL(fileURLWithPath: xcode, isDirectory: true), presentation: presentation)
+    }
+}
+
 @MainActor @Observable
 final class UIFrameworkSettings {
     static let preferenceKey = "UIFrameworkXcodePath"
@@ -157,6 +189,14 @@ final class SimulatorManagerModel {
 
     func openDevice(_ identifier: DeviceInventoryID) {
         perform("Opening simulator…") { try await self.controller.openDevice(identifier, xcodeURL: nil) }
+    }
+
+    func restoreScreen(_ restoration: SimulatorScreenRestoration,
+                       present: @escaping @MainActor () async throws -> Void) {
+        perform("Restoring simulator…") {
+            try await self.controller.openDevice(restoration.deviceID, xcodeURL: restoration.xcodeURL)
+            try await present()
+        }
     }
 
     func closeDevice(_ identifier: DeviceInventoryID, keepingDeviceRunning: Bool, after finishing: Task<Void, Never>) {

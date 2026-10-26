@@ -608,11 +608,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return .terminateCancel
         }
         quitting = true
-        let restoring = restartsAfterQuitting ? simulatorWindows.keys.sorted {
-            if $0 == mainWindow?.liveDeviceIdentifier { return false }
-            if $1 == mainWindow?.liveDeviceIdentifier { return true }
-            return String(describing: $0) < String(describing: $1)
-        } : []
+        let restoring: [SimulatorScreenRestoration] = restartsAfterQuitting ? simulatorHosts.flatMap { xcode, host in
+            host.openedDeviceIdentifiers.compactMap { device in
+                let id = DeviceInventoryID.simulator(udid: device.identifier, deviceSetPath: device.deviceSetPath)
+                guard let controller = simulatorWindows[id] else { return nil as SimulatorScreenRestoration? }
+                let presentation: SimulatorScreenRestoration.Presentation = controller.isEmbedded ? .main
+                    : controller.window?.isVisible == true ? .compact : .hidden
+                return SimulatorScreenRestoration(device: device, xcodeURL: xcode, presentation: presentation)
+            }
+        }.sorted { $0.presentation != .main && $1.presentation == .main } : []
         Task {
             do {
                 mainWindow?.stopInspectorReads()
@@ -626,15 +630,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 try await stopRemoteScreens()
                 try await model.quitRenderer(keepingDevicesRunning: quitKeepingDevicesRunning)
                 if restartsAfterQuitting {
-                    let urls = restoring.compactMap { identifier -> URL? in
-                        guard case .simulator(let udid, let path) = identifier else { return nil }
-                        var components = URLComponents()
-                        components.scheme = "neosimulator"
-                        components.host = "open-device"
-                        components.queryItems = [URLQueryItem(name: "udid", value: udid)]
-                        if let path { components.queryItems?.append(URLQueryItem(name: "deviceSetPath", value: path)) }
-                        return components.url
-                    }
+                    let urls = restoring.map(\.url)
                     let helper = rendererURL.appendingPathComponent("Contents/MacOS/NeoSimulatorRenderer")
                     try await ManagerRelaunch(processIdentifier: ProcessInfo.processInfo.processIdentifier,
                         applicationURL: Bundle.main.bundleURL, deviceURLs: urls).schedule(using: helper)
@@ -663,6 +659,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
                 guard let identifier = query.first(where: { $0.name == "udid" })?.value else { continue }
                 model.openDevice(.simulator(udid: identifier, deviceSetPath: query.first(where: { $0.name == "deviceSetPath" })?.value))
+            case "restore-screen":
+                guard let restoration = SimulatorScreenRestoration(url: url) else { continue }
+                model.restoreScreen(restoration) { [weak self] in
+                    guard let self, let screen = self.screen(for: restoration.deviceID) else { return }
+                    try await self.transitionPresentation {
+                        switch restoration.presentation {
+                        case .main: break // Opening the screen already embeds it in the main window.
+                        case .compact:
+                            try await screen.showCompactWindow()
+                            self.mainWindow?.showDevicePreview(ifDisplaying: restoration.deviceID)
+                            self.mainWindow?.window?.orderOut(nil)
+                        case .hidden:
+                            try await screen.detach()
+                            self.mainWindow?.showDevicePreview(ifDisplaying: restoration.deviceID)
+                        }
+                    }
+                }
             case "quit":
                 if URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
                     .first(where: { $0.name == "ask" })?.value == "true" {
