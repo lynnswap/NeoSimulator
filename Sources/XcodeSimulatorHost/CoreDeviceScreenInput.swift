@@ -384,8 +384,6 @@ private final class NativeDevicePostureTransport: DevicePostureTransport {
     private let config: NativeSwiftValue
     private let monitor: @MainActor (NativeSwiftValue) async throws -> NativeSwiftValue
     private let prepareVendorSend: @MainActor (NativeSwiftValue) async throws -> (@MainActor (Data) throws -> Void)
-    private let makeIterator: NativeSwiftMethod<() -> NativeSwiftValue>
-    private let next: NativeSwiftMethod<() async throws -> [NativeSwiftValue]?>
     private let isValid: NativeSwiftMethod<() -> Bool>
     private let readAngle: NativeSwiftMethod<() -> Measurement<UnitAngle>>
 
@@ -437,9 +435,8 @@ private final class NativeDevicePostureTransport: DevicePostureTransport {
         let array = try await runtime.resolve(.swift(.type("Swift.Array", genericArguments: [.type(snapshot)])))
         let arguments: [NativeSwiftGenericArgument] = [.type(array), .type((any Error).self)]
         let sequence = try await runtime.resolve(.swift(.type("Swift.AsyncThrowingStream", genericArguments: arguments)))
-        let iterator = try await runtime.resolve(.swift(.type("Swift.AsyncThrowingStream.Iterator", genericArguments: arguments)))
         let measurement = try await runtime.resolve(.swift(.type("Foundation.Measurement", genericArguments: [.type(UnitAngle.self)])))
-        let abis = try Dictionary(uniqueKeysWithValues: [snapshot, configuration, sequence, iterator, measurement]
+        let abis = try Dictionary(uniqueKeysWithValues: [snapshot, configuration, sequence, measurement]
             .map { ($0, try NativeType.opaque(named: $0.name)) })
         let makeConfig = try await configuration.resolve(.swift(.initializer("init(changeThreshold:updateInterval:)",
             as: ((Measurement<UnitAngle>, Duration) -> NativeSwiftValue).self, valueABIs: abis)))
@@ -447,24 +444,34 @@ private final class NativeDevicePostureTransport: DevicePostureTransport {
         let monitor = try await motion.type.resolve(.swift(.method("monitorHingeAngle(config:)",
             as: ((NativeSwiftValue) async throws(Failure) -> NativeSwiftValue).self, valueABIs: abis)))
         self.monitor = { config in try await unsafe monitor.unsafeInvoke(on: motion, config) }
+        let data = try await runtime.resolve(.swift(.type("Foundation.Data")))
+        // Data is @frozen; Device Hub passes its two words in integer registers.
+        let dataABI = try NativeType.structure(named: data.name, fields: [.uint64, .uint64])
         prepareVendorSend = { implementation in
             let send = try await implementation.type.resolve(.swift(.method("CoreDevice.HIDVendorDefined.send(usagePage:usage:version:data:)",
-                as: ((UInt16, UInt16, UInt32, Data) throws(Failure) -> Void).self)))
+                as: ((UInt16, UInt16, UInt32, Data) throws(Failure) -> Void).self, valueABIs: [data: dataABI])))
             return { data in try unsafe send.unsafeInvoke(on: implementation, 0xFF61, 0x5B, 0, data) }
         }
         isValid = try await snapshot.resolve(.swift(.getter("isAngleValid", as: (() -> Bool).self, valueABIs: abis)))
         readAngle = try await snapshot.resolve(.swift(.getter("angle", as: (() -> Measurement<UnitAngle>).self, valueABIs: abis)))
-        makeIterator = try await sequence.resolve(.swift(.method("makeAsyncIterator()", as: (() -> NativeSwiftValue).self,
-            valueABIs: abis, receiverABI: .opaque(named: sequence.name))))
-        next = try await iterator.resolve(.swift(.method("next()", as: (() async throws -> [NativeSwiftValue]?).self,
-            valueABIs: abis, receiverABI: .opaque(named: iterator.name))))
     }
 
     func observe(_ update: @escaping @MainActor (Double?) -> Void) async throws {
-        let sequence = try await monitor(config)
-        let iterator = try unsafe makeIterator.unsafeInvoke(on: sequence)
-        while let snapshots = try await unsafe next.unsafeInvoke(on: iterator) {
+        let owner = try await monitor(config)
+        defer { withExtendedLifetime(owner) {} }
+        guard let sequence = try owner.withCopy({ $0 as? any AsyncSequence }) else {
+            throw CLIError.unavailable("device-posture-observation", "The device's hinge-angle changes could not be observed.")
+        }
+        try await observe(sequence, update: update)
+    }
+
+    private func observe<S: AsyncSequence>(_ sequence: S, update: @MainActor (Double?) -> Void) async throws {
+        var iterator = sequence.makeAsyncIterator()
+        while let batch = try await iterator.next(isolation: #isolation) {
             try Task.checkCancellation()
+            guard let snapshots = batch as? [Any] else {
+                throw CLIError.io("device-posture-snapshot", "The device supplied an unexpected hinge-angle snapshot.")
+            }
             guard let snapshot = snapshots.last, try unsafe isValid.unsafeInvoke(on: snapshot) else { update(nil); continue }
             let angle = try unsafe readAngle.unsafeInvoke(on: snapshot).converted(to: .degrees).value
             update(angle.isFinite ? angle : nil)
