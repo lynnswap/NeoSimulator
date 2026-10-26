@@ -421,7 +421,7 @@ private final class NativeDevicePostureTransport: DevicePostureTransport {
                                             failure: Failure) async throws -> (any DevicePostureTransport)? {
         let getMotion = try await implementation.type.resolve(.swift(.method("CoreDevice.MonitorMotionProtocol.motionManager()",
             as: (() async throws(Failure) -> NativeSwiftValue).self)))
-        let motion = try await unsafe getMotion.unsafeInvoke(on: implementation).copyUnderlyingValue()
+        let motion = try await unsafe getMotion.unsafeInvoke(on: implementation)
         let supportsHinge = try await motion.type.resolve(.swift(.getter("supportsHingeAngle", as: (() -> Bool).self)))
         guard try unsafe supportsHinge.unsafeInvoke(on: motion) else { return nil }
         return try await NativeDevicePostureTransport(remote: remote, motion: motion, failure: failure)
