@@ -397,6 +397,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         session.onAppResizeError = { [weak self] in self?.present($0) }
         session.onDisplayWillChange = { [weak self] in
             guard let self else { return }
+            if !self.isFullScreen { self.saveWindowGeometry() }
             self.keyboard.setEnabled(false)
             self.session.display.onPropertiesChange = nil
         }
@@ -1457,6 +1458,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     }
     // AppKit requires resizability to fill the screen during its full-screen transition.
     func windowWillEnterFullScreen(_ notification: Notification) {
+        saveWindowGeometry()
         fitting.willEnterFullScreen()
         showResizeCursors()
         updateHeaderShape()
@@ -1470,12 +1472,15 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     }
     /// Restores scale and origin explicitly; AppKit loses the origin of windows taller than the screen.
     func windowDidExitFullScreen(_ notification: Notification) {
-        let geometry = fitting.didExitFullScreen(defaultScale: initialScale)
+        let geometry = fitting.didExitFullScreen(defaultScale: session.primaryDisplay.renderScale)
         showResizeCursors()
         updateHeaderShape()
         bezelChanged()
         guard let geometry else { return }
-        if session.isResizingApp { resizeDisplay() }
+        if session.isResizingApp {
+            session.primaryDisplay.setRenderScale(geometry.scale)
+            resizeDisplay()
+        }
         else { showDisplay(at: geometry.scale) }
         window?.setFrameOrigin(geometry.origin)
         // The screen the window was on may be gone, and the screen changes

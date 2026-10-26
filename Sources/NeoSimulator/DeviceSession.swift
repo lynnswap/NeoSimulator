@@ -378,7 +378,7 @@ enum FallResolution: UInt64 {
 final class DeviceSession {
     let device: AvailableDevice
     let capabilities: DeviceCapabilities
-    @ObservationIgnored private let primaryDisplay: any SimulatorDisplay
+    @ObservationIgnored let primaryDisplay: any SimulatorDisplay
     @ObservationIgnored private var appDisplay: (any SimulatorDisplay)?
     var display: any SimulatorDisplay { appDisplay ?? primaryDisplay }
     @ObservationIgnored var onDisplayWillChange: (() -> Void)?

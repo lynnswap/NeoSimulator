@@ -41,7 +41,7 @@ struct InputFocusTests {
         #expect(window.firstResponder === (screenFocused ? primary.inputView : returningFocus))
     }
 
-    @Test(arguments: ["compact", "embedded", "fullscreen"])
+    @Test(arguments: ["compact", "embedded", "fullscreen", "fullscreen-before-resize"])
     func stoppingAppResizeRestoresTheManualPrimaryScale(presentation: String) async throws {
         _ = NSApplication.shared
         let primary = TestDisplay(), app = TestDisplay()
@@ -68,10 +68,19 @@ struct InputFocusTests {
             controller.setScale(.pixelAccurate)
             try #require(primary.renderScale == 0.5)
         }
+        if presentation == "fullscreen-before-resize" {
+            controller.windowWillEnterFullScreen(Notification(name: NSWindow.willEnterFullScreenNotification, object: window))
+            window.setContentSize(NSSize(width: 800, height: 900))
+            controller.windowDidResize(Notification(name: NSWindow.didResizeNotification, object: window))
+            try #require(primary.renderScale != 0.5)
+        }
         try await wait { controller.session.canResizeApp }
         controller.toggleAppResize()
         try await wait { controller.session.isResizingApp }
         try #require(app.renderScale == 1)
+        if presentation == "fullscreen-before-resize" {
+            controller.windowDidExitFullScreen(Notification(name: NSWindow.didExitFullScreenNotification, object: window))
+        }
         if presentation == "fullscreen" {
             controller.windowWillEnterFullScreen(Notification(name: NSWindow.willEnterFullScreenNotification, object: window))
         }
@@ -154,7 +163,8 @@ struct InputFocusTests {
         #expect(window.frame.width == (landscape.width * scale).rounded(.up))
     }
 
-    @Test func resizingAnAppKeepsPointScaleAcrossCompactMovesAndPreservesPrimaryGeometry() async throws {
+    @Test(arguments: [false, true])
+    func resizingAnAppKeepsPointScaleAcrossCompactMovesAndPreservesPrimaryGeometry(startInCompact: Bool) async throws {
         _ = NSApplication.shared
         let primary = TestDisplay(), app = TestDisplay()
         app.naturalSize = NSSize(width: 500, height: 600)
@@ -162,15 +172,19 @@ struct InputFocusTests {
         let transport = TestAppResizeTransport()
         let preferences = MemoryPreferences()
         let screens = NSScreen.screens.map(\.frame)
-        preferences.setWindowGeometry(center: NSPoint(x: 300, y: 300), scale: 0.5, forDevice: "test-device", screens: screens)
+        preferences.setWindowGeometry(center: NSPoint(x: 300, y: 300), scale: 0.75, forDevice: "test-device", screens: screens)
         let controller = try makeController(primary, preferences: preferences, appResizeTransport: { transport },
                                             presentCompactWindow: { _ in })
         defer { controller.invalidate() }
         controller.showCompactWindow()
+        let window = try #require(controller.window)
+        primary.screenScale = window.backingScaleFactor / 2
+        controller.setScale(.pixelAccurate)
+        try #require(primary.renderScale == 0.5)
+        let savedCenter = NSPoint(x: window.frame.midX, y: window.frame.midY)
         let parent = NSViewController()
         parent.view = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 600))
-        controller.embed(in: parent)
-        let saved = preferences.windowGeometry(forDevice: "test-device", screens: screens)
+        if !startInCompact { controller.embed(in: parent) }
         try await wait { controller.session.canResizeApp }
         controller.toggleAppResize()
         try await wait { controller.session.isResizingApp }
@@ -180,7 +194,7 @@ struct InputFocusTests {
         controller.window?.setFrameOrigin(NSPoint(x: 500, y: 400))
         controller.embed(in: parent)
         let retained = preferences.windowGeometry(forDevice: "test-device", screens: screens)
-        #expect(retained.scale == saved.scale && retained.center == saved.center)
+        #expect(retained.scale == 0.5 && retained.center == savedCenter)
         controller.session.stopAppResize()
         controller.showCompactWindow()
         #expect(primary.renderScale == 0.5)
