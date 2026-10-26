@@ -92,9 +92,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var inventoryObservation: DeviceInventoryObservation?
     private var inventoryObservationTask: Task<Void, Never>?
     private var quitKeepingDevicesRunning: Bool?
-    private var remoteWindows: [DeviceInventoryID: RemoteDeviceWindowController] = [:]
+    private var remoteWindows: [DeviceInventoryID: RemoteDeviceWindowController] = [:] {
+        didSet { updateDevicePostureScreens() }
+    }
     private var simulatorHosts: [URL: HostApplication] = [:]
-    private var simulatorWindows: [DeviceInventoryID: DeviceWindowController] = [:]
+    private var simulatorWindows: [DeviceInventoryID: DeviceWindowController] = [:] {
+        didSet { updateDevicePostureScreens() }
+    }
+    private func updateDevicePostureScreens() {
+        model.setOpenDeviceScreens(quitting ? [] : Set(simulatorWindows.keys).union(remoteWindows.keys))
+    }
     private var displayXcodeURL: URL?
     private var presentationTask: Task<Void, any Error>?
     private var presentationGeneration = 0
@@ -332,7 +339,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard let self else { return }
                 let id = DeviceInventoryID.simulator(udid: identifier.identifier, deviceSetPath: identifier.deviceSetPath)
                 self.simulatorWindows.removeValue(forKey: id)
-                Task { await self.model.stopDevicePosture(for: id) }
                 self.mainWindow?.showDevicePreview(ifDisplaying: id)
                 let keepRunning = choice == .keepRunning || (choice == nil && HostPreferences.defaults.bool(forKey: HostPreferences.detachOnWindowClose))
                 self.model.closeDevice(id, keepingDeviceRunning: keepRunning, after: finishing)
@@ -362,7 +368,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let controller = try await host.openPresentation(for: identifier, bootIfNeeded: false)
         controller.onShowInMainWindow = { [weak self] in self?.showScreenInMainWindow(context.deviceID) }
         simulatorWindows[context.deviceID] = controller
-        model.observeDevicePosture(for: context.deviceID)
         try await embedScreen(context.deviceID, selectDevice: true)
     }
 
@@ -373,7 +378,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         })
         for identifier in simulatorWindows.keys where !opened.contains(identifier) {
             simulatorWindows.removeValue(forKey: identifier)
-            Task { await model.stopDevicePosture(for: identifier) }
             mainWindow?.showDevicePreview(ifDisplaying: identifier)
         }
         updateScreenToolbar()
@@ -398,7 +402,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard let host = simulatorHosts.values.first(where: { $0.openedDeviceIdentifiers.contains(identifier) }) else { continue }
                 switch action {
                 case .restart, .erase:
-                    await model.stopDevicePosture(for: device.id)
                     if simulator.state == "Booted" {
                         try await host.preparePresentationForRestart(for: identifier)
                         prepared.append(device)
@@ -408,7 +411,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         mainWindow?.showDevicePreview(ifDisplaying: device.id)
                     }
                 case .shutdown, .remove:
-                    await model.stopDevicePosture(for: device.id)
                     try await host.releasePresentation(for: identifier)
                     simulatorWindows.removeValue(forKey: device.id)
                     mainWindow?.showDevicePreview(ifDisplaying: device.id)
@@ -416,9 +418,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         } catch {
-            defer {
-                for device in devices where simulatorWindows[device.id] != nil { model.observeDevicePosture(for: device.id) }
-            }
             do { try await finishSimulatorManagement(action, devices: prepared) }
             catch let cleanupError {
                 throw HostError.operation([error.localizedDescription, cleanupError.localizedDescription].joined(separator: "\n"))
@@ -436,7 +435,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let host = simulatorHosts.values.first(where: { $0.openedDeviceIdentifiers.contains(identifier) }) else { continue }
             do { try await host.finishPresentationRestart(for: identifier) }
             catch { failures.append("\(device.name): \(error.localizedDescription)") }
-            model.observeDevicePosture(for: device.id)
         }
         simulatorPresentationsChanged()
         if !failures.isEmpty { throw HostError.operation(failures.joined(separator: "\n")) }
@@ -682,7 +680,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func updateRemoteWindows() {
-        for identifier in simulatorWindows.keys { model.observeDevicePosture(for: identifier) }
         if model.isRemoteInventoryComplete {
             for (id, controller) in remoteWindows {
                 let current = model.inventory.first { $0.id == id }
