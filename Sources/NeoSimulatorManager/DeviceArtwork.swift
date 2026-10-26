@@ -222,3 +222,24 @@ struct SidebarDeviceArtwork: View {
         .accessibilityHidden(true)
     }
 }
+
+struct SidebarDeviceLabels: View {
+    let name: String
+    let subtitle: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(name)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.primary)
+            if !subtitle.isEmpty {
+                Text(subtitle)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .lineLimit(1)
+        .truncationMode(.tail)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}

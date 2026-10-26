@@ -1498,6 +1498,11 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         item is AvailabilityGroup ? 26 : 52
     }
 
+    func outlineView(_ outlineView: NSOutlineView, typeSelectStringFor tableColumn: NSTableColumn?, item: Any) -> String? {
+        guard let row = item as? DeviceRow else { return nil }
+        return device(for: row)?.name
+    }
+
     func outlineView(_ outlineView: NSOutlineView, rowViewForItem item: Any) -> NSTableRowView? {
         guard item is DeviceRow else { return nil }
         let identifier = NSUserInterfaceItemIdentifier("DeviceSelectionRow")
@@ -1533,9 +1538,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         let cell = outlineView.makeView(withIdentifier: identifier, owner: self) as? SimulatorSidebarCellView
             ?? SimulatorSidebarCellView()
         cell.identifier = identifier
-        cell.textField?.stringValue = device.name
-        cell.subtitle.stringValue = device.kind == .simulator ? "Simulator" : (modelName(of: device) ?? "")
-        cell.subtitle.isHidden = cell.subtitle.stringValue.isEmpty
+        cell.setLabels(name: device.name, subtitle: device.kind == .simulator ? "Simulator" : (modelName(of: device) ?? ""))
         cell.version.stringValue = version(of: device)
         cell.setArtwork(artwork(for: device), isActive: shouldRenderAsActive(device))
         let managing = model.managingDeviceIDs.contains(device.id)
@@ -2324,10 +2327,14 @@ private final class SimulatorSidebarRowView: NSTableRowView {
 
 @MainActor
 private final class SimulatorSidebarCellView: NSTableCellView {
-    let subtitle = NSTextField(labelWithString: "Simulator")
+    private let labels = NSHostingView(rootView: SidebarDeviceLabels(name: "", subtitle: ""))
     let version = NSTextField(labelWithString: "")
     let progress = NSProgressIndicator()
     private var artworkHost: NSHostingView<SidebarDeviceArtwork>?
+
+    func setLabels(name: String, subtitle: String) {
+        labels.rootView = SidebarDeviceLabels(name: name, subtitle: subtitle)
+    }
 
     func setArtwork(_ model: DeviceArtworkModel, isActive: Bool) {
         let content = SidebarDeviceArtwork(model: model, isActive: isActive, isEmphasized: backgroundStyle == .emphasized)
@@ -2358,12 +2365,6 @@ private final class SimulatorSidebarCellView: NSTableCellView {
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        let name = NSTextField(labelWithString: "")
-        name.font = .systemFont(ofSize: 13, weight: .medium)
-        name.lineBreakMode = .byTruncatingTail
-        subtitle.font = .systemFont(ofSize: 11)
-        subtitle.textColor = .secondaryLabelColor
-        subtitle.lineBreakMode = .byTruncatingTail
         version.font = .systemFont(ofSize: 12)
         version.textColor = .secondaryLabelColor
         version.alignment = .right
@@ -2378,20 +2379,13 @@ private final class SimulatorSidebarCellView: NSTableCellView {
         trailing.distribution = .fill
         trailing.spacing = 6
         trailing.translatesAutoresizingMaskIntoConstraints = false
-        let labels = NSStackView(views: [name, subtitle])
-        labels.orientation = .vertical
-        labels.alignment = .leading
-        labels.spacing = 3
         labels.translatesAutoresizingMaskIntoConstraints = false
         addSubview(labels)
         addSubview(trailing)
-        textField = name
         NSLayoutConstraint.activate([
             labels.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 49),
             labels.trailingAnchor.constraint(equalTo: trailing.leadingAnchor, constant: -10),
             labels.centerYAnchor.constraint(equalTo: centerYAnchor),
-            name.widthAnchor.constraint(equalTo: labels.widthAnchor),
-            subtitle.widthAnchor.constraint(equalTo: labels.widthAnchor),
             trailing.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
             trailing.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
