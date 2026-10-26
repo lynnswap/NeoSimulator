@@ -25,7 +25,7 @@ struct DeviceCommand {
         case toggleSlowAnimations, graphicsQualityDefault, graphicsQualityLow, graphicsQualityHigh
         case colorBlendedLayers, colorCopiedImages, colorMisalignedImages, colorOffscreenRendered
         case openSystemLog, simulateMemoryWarning
-        case appleTVRemote, stayOnTop, physicalSize, pointAccurate, pixelAccurate, fitScreen
+        case resizeApp, appleTVRemote, stayOnTop, physicalSize, pointAccurate, pixelAccurate, fitScreen
     }
 
     struct Toolbar {
@@ -108,6 +108,10 @@ struct DeviceCommand {
     }
 
     static let catalog: [ID: DeviceCommand] = Dictionary(uniqueKeysWithValues: ([
+        DeviceCommand(id: .resizeApp, title: "Resize App",
+                      toolbar: Toolbar(label: "Resize App", symbol: "arrow.up.left.and.arrow.down.right", buttonWidth: 32),
+                      isEnabled: { $0.session.canResizeApp },
+                      state: { $0.session.isResizingApp || $0.session.isStartingAppResize ? .on : .off }) { $0.toggleAppResize() },
         // File: Save Screen becomes Record Screen with Option, or Stop Recording while recording.
         DeviceCommand(id: .saveScreen, title: "Save Screen", key: "s",
                       toolbar: Toolbar(label: "Save Screen", symbol: "camera.on.rectangle", buttonWidth: 32,
@@ -120,10 +124,10 @@ struct DeviceCommand {
                       isAlternate: true,
                       isEnabled: { $0.session.canPerformToolOperation }) { $0.chooseScreenshotDestination() },
         DeviceCommand(id: .recordScreen, title: "Record Screen", key: "r",
-                      isEnabled: { $0.session.canPerformToolOperation && $0.session.recording == nil }) { $0.recordScreen() },
+                      isEnabled: { $0.session.canStartRecording }) { $0.recordScreen() },
         DeviceCommand(id: .recordScreenAs, title: "Record Screen…", key: "r", modifiers: [.command, .option],
                       isAlternate: true,
-                      isEnabled: { $0.session.canPerformToolOperation && $0.session.recording == nil }) { $0.chooseRecordingDestination() },
+                      isEnabled: { $0.session.canStartRecording }) { $0.chooseRecordingDestination() },
         DeviceCommand(id: .stopRecording, title: "Stop Recording",
                       isEnabled: { $0.session.recording.map { !$0.isStopping } ?? false }) { $0.session.stopRecording() },
         // NeoSimulator shortcut; Simulator.app assigns it to Trigger iCloud Sync.

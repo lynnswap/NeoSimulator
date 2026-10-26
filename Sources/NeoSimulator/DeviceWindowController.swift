@@ -179,13 +179,18 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         bezelChanged()
         updateToolbarStyle(forWidth: window.frame.width)
         // The smallest size a manual resize leaves the window at.
-        window.contentMinSize = NSSize(width: 320, height: 300)
+        updateContentMinimumSize()
         // Keep the window on screen after display or Dock geometry changes.
         screenParametersObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
-                if self.isEmbedded { self.updateEmbeddedScale() } else { self.moveWindowOntoScreen() }
+                self.updateContentMinimumSize()
+                if self.isEmbedded { self.updateEmbeddedScale() }
+                else {
+                    if !self.fitting.scalesDisplay { self.updateWindowSize() }
+                    self.moveWindowOntoScreen()
+                }
             }
         }
         touchPressureObserver = NotificationCenter.default.addObserver(
@@ -209,8 +214,9 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         showDisplay(fitting: { self.initialScale })
     }
 
-    /// Fits the saved scale, or Point Accurate when unsaved, to the screen.
-    private var initialScale: CGFloat { min(scale(for: .fitScreen) ?? .infinity, savedScale ?? 1) }
+    private var initialScale: CGFloat {
+        min(scale(for: .fitScreen) ?? .infinity, savedScale ?? 1)
+    }
 
     /// Recomputes fit if a narrower window switches to the taller expanded title bar.
     private func showDisplay(fitting scale: () -> CGFloat?) {
@@ -222,11 +228,11 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     /// Recomputes initial placement if scaling changes the title-bar height.
     private func placeAtInitialScale(_ place: ((NSWindow) -> Void)?) {
         let scale = initialScale
-        session.display.setRenderScale(scale)
+        fitting.setScale(scale)
         didRotate(placing: place)
         let refit = initialScale
         guard refit < scale else { return }
-        session.display.setRenderScale(refit)
+        fitting.setScale(refit)
         didRotate(placing: place)
     }
 
@@ -328,6 +334,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
 
     /// Removes a scene without ending its device connection.
     func detachPresentation() {
+        session.stopAppResize()
         releasePresentationFocus()
         window?.orderOut(nil)
         content.removeFromSuperview()
@@ -350,24 +357,31 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     private func observePresentationWindow() {
         for observer in presentationObservers { NotificationCenter.default.removeObserver(observer) }
         presentationObservers.removeAll()
-        guard isEmbedded, let presented = content.window else { return }
-        for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification] {
-            presentationObservers.append(NotificationCenter.default.addObserver(
-                forName: name, object: presented, queue: .main) { [weak self] notification in
-                    let becameKey = notification.name == NSWindow.didBecomeKeyNotification
-                    MainActor.assumeIsolated {
-                        guard let self else { return }
-                        if becameKey {
-                            self.activateDisplay(focusingInput: presented.firstResponder === self.session.display.inputView)
+        guard let presented = presentationWindow else { return }
+        if isEmbedded {
+            for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification] {
+                presentationObservers.append(NotificationCenter.default.addObserver(
+                    forName: name, object: presented, queue: .main) { [weak self] notification in
+                        let becameKey = notification.name == NSWindow.didBecomeKeyNotification
+                        MainActor.assumeIsolated {
+                            guard let self else { return }
+                            if becameKey {
+                                self.activateDisplay(focusingInput: presented.firstResponder === self.session.display.inputView)
+                            }
+                            else { self.windowDidResignKey(Notification(name: NSWindow.didResignKeyNotification)) }
                         }
-                        else { self.windowDidResignKey(Notification(name: NSWindow.didResignKeyNotification)) }
-                    }
-                })
+                    })
+            }
         }
         for name in [NSWindow.didChangeScreenNotification, NSWindow.didChangeBackingPropertiesNotification] {
             presentationObservers.append(NotificationCenter.default.addObserver(
                 forName: name, object: presented, queue: .main) { [weak self] _ in
-                    MainActor.assumeIsolated { self?.updateEmbeddedScale() }
+                    MainActor.assumeIsolated {
+                        guard let self else { return }
+                        self.updateContentMinimumSize()
+                        if self.isEmbedded { self.updateEmbeddedScale() }
+                        else if !self.fitting.scalesDisplay { self.updateWindowSize() }
+                    }
                 })
         }
     }
@@ -380,12 +394,22 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         toolbar.attach(to: window)
         toolbar.setShowsMainWindowAction(onShowInMainWindow != nil)
         session.display.onPropertiesChange = { [weak self] in self?.displayPropertiesChanged() }
+        session.onAppResizeError = { [weak self] in self?.present($0) }
+        session.onDisplayWillChange = { [weak self] in
+            guard let self else { return }
+            if !self.isFullScreen { self.saveWindowGeometry() }
+            self.keyboard.setEnabled(false)
+            self.session.display.onPropertiesChange = nil
+        }
+        session.onDisplayChange = { [weak self] in self?.appDisplayChanged() }
+        session.onAppResizeGeometryChange = { [weak self] in self?.appGeometryChanged() }
         session.onExternalScreenChange = { [weak self] in self?.syncExternalDisplayWindow() }
         content.canImport = { [weak self] in self?.session.canPerformToolOperation == true }
         content.importFiles = { [weak self] in self?.importFiles($0) }
         content.onDisplaySizeChange = { [weak self] in
-            guard let self, self.isEmbedded else { return }
-            self.updateEmbeddedScale(layout: false)
+            guard let self else { return }
+            if self.session.isResizingApp { self.session.resizeApp(to: self.content.availableDisplaySize) }
+            else if self.isEmbedded { self.updateEmbeddedScale(layout: false) }
         }
         fitting.onNaturalSizeChange = { [weak self] in
             guard let self, self.isEmbedded else { return }
@@ -413,6 +437,38 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         showTouchIndicators()
         session.followBacklight()
         attachUserInterfacePlugin()
+    }
+
+    func toggleAppResize() {
+        session.toggleAppResize(size: content.availableDisplaySize)
+    }
+
+    private func appDisplayChanged() {
+        guard !closed else { return }
+        let restoreInputFocus = (presentationWindow?.firstResponder as? NSView)?.isDescendant(of: content.display) == true
+        content.setDisplay(session.display.view)
+        content.scrollsDisplay = session.isResizingApp
+        fitting.scalesDisplay = !session.isResizingApp
+        fitting.attach(session.display, content: content)
+        content.isSizedToDisplay = false
+        keyboard.display = session.display
+        session.display.onPropertiesChange = { [weak self] in self?.displayPropertiesChanged() }
+        if !session.isResizingApp { session.display.setChromeVisible(preferences.showsDeviceBezels) }
+        bezelChanged()
+        connectTouchPressure()
+        showTouchIndicators()
+        updateContentMinimumSize()
+        if isEmbedded { updateEmbeddedScale() }
+        else if session.isResizingApp { resizeDisplay() }
+        else { updateWindowSize() }
+        if presentationWindow?.isKeyWindow == true { activateDisplay(focusingInput: restoreInputFocus) }
+    }
+
+    private func appGeometryChanged() {
+        guard session.isResizingApp else { return }
+        session.display.view.invalidateIntrinsicContentSize()
+        updateContentMinimumSize()
+        content.needsLayout = true
     }
 
     // MARK: User-interface plugin
@@ -504,6 +560,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         content.removeFromSuperview()
         content = DeviceContentView(display: session.display.view)
         fitting.attach(session.display, content: content)
+        fitting.scalesDisplay = !session.isResizingApp
         keyboard.display = session.display
         attachSession()
         if let window {
@@ -514,7 +571,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         bezelChanged()
         orientationRead = .notStarted
         initialPlacement = nil
-        session.display.setRenderScale(scale)
+        fitting.setScale(scale)
         didRotate()
         if present { showAndActivate() } else { readInitialOrientation() }
         // A window that stayed key gets no new key notification.
@@ -668,6 +725,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         window.chromeTopPadding = padding?.height ?? 0
         updateHeaderShape()
         if padding != nil { window.backgroundColor = .clear } else if !isFullScreen { window.backgroundColor = .black }
+        updateContentMinimumSize()
         guard !isFullScreen else { return }
         if padding == nil { window.styleMask.insert(.resizable) } else { window.styleMask.remove(.resizable) }
     }
@@ -680,7 +738,25 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
                                                 preferences: preferences), to: window)
         window.layoutIfNeeded()
         titleBarHeights[window.toolbarStyle] = content.headerHeight
+        updateContentMinimumSize()
         updateHeaderShape()
+    }
+
+    private func updateContentMinimumSize() {
+        guard let window else { return }
+        guard let geometry = session.appResizeGeometry else {
+            window.contentMinSize = NSSize(width: 320, height: 300)
+            return
+        }
+        var minimum = NSSize(width: geometry.minimumSize.width,
+                             height: geometry.minimumSize.height + content.heightAboveDisplay)
+        // Oversized guest minima remain reachable through the canvas viewport.
+        if let visible = (window.screen ?? NSScreen.main)?.visibleFrame {
+            let maximum = window.contentRect(forFrameRect: visible).size
+            minimum.width = min(minimum.width, maximum.width)
+            minimum.height = min(minimum.height, maximum.height)
+        }
+        window.contentMinSize = minimum
     }
 
     /// Rounds the header below a visible bezel outside full screen.
@@ -800,7 +876,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     /// Whether captures apply the device's mask by default: the device has
     /// one and `ScreenShotUseMask` is on.
     private var usesDeviceMask: Bool {
-        session.capabilities.hasFramebufferMask && HostPreferences.defaults.bool(forKey: HostPreferences.screenShotUseMask)
+        !session.isResizingApp && session.capabilities.hasFramebufferMask && HostPreferences.defaults.bool(forKey: HostPreferences.screenShotUseMask)
     }
 
     /// File ▸ Save Screen: captures the screen without asking and shows its
@@ -838,8 +914,8 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         let base: CGFloat = landscape || family == .tv || family == .watch ? 20 : 10
         let horizontal = window.styleMask.contains(.fullScreen) ? displayFrame.maxX - source.maxX + 10 : 10
         let thumbnail = CaptureThumbnail(capture, image: image, parent: window, source: source,
-                                         rotation: session.displayAngle,
-                                         cornerRadius: session.capabilities.screenCornerRadius * scale,
+                                         rotation: session.isResizingApp ? 0 : session.displayAngle,
+                                         cornerRadius: (session.appResizeGeometry?.cornerRadius ?? CGFloat(session.capabilities.screenCornerRadius)) * scale,
                                          spacing: NSSize(width: horizontal, height: ceil(scale * base))) { [weak self] error in
             if let self, !self.closed { self.present(error) } else { CaptureThumbnail.reportDetached(error) }
         }
@@ -1038,6 +1114,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     // Only orientation changes resize the window; other properties preserve its frame.
     private func displayPropertiesChanged() {
         guard !closed else { return }
+        if session.isResizingApp { appGeometryChanged(); return }
         session.followBacklight()
         let enabled = HostPreferences.defaults.bool(forKey: HostPreferences.rotateWindowWhenSignaledByGuest)
         guard session.followGuestInterfaceOrientation(enabled: enabled) else { return }
@@ -1077,7 +1154,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     }
 
     func canPerformCanvasZoom(_ action: CanvasZoom.Action) -> Bool {
-        guard isEmbedded, session.canPerformCommands else { return false }
+        guard isEmbedded, fitting.scalesDisplay, session.canPerformCommands else { return false }
         switch action {
         case .fit: return true
         case .physicalSize: return session.display.displayClass == 0
@@ -1112,10 +1189,10 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         guard isEmbedded, !closed else { return }
         canvasZoom.fitScale = canvasFitScale
         switch canvasZoom.mode {
-        case .fit: session.display.resize(to: content.availableDisplaySize)
+        case .fit: fitting.resize(to: content.availableDisplaySize)
         case .physicalSize:
-            if let scale = scale(for: .physicalSize) { session.display.setRenderScale(scale) }
-        case .fixed(let scale): session.display.setRenderScale(scale)
+            if let scale = scale(for: .physicalSize) { fitting.setScale(scale) }
+        case .fixed(let scale): fitting.setScale(scale)
         }
         canvasZoom.scale = session.display.renderScale
         content.needsLayout = true
@@ -1156,7 +1233,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
 
     /// Checks prerequisites without changing unavailable commands' checkmarks.
     private func validatesScale(_ mode: WindowScaleMode) -> Bool {
-        session.canPerformCommands && (isEmbedded || !isFullScreen)
+        session.canPerformCommands && fitting.scalesDisplay && (isEmbedded || !isFullScreen)
             && (mode != .physicalSize || session.display.displayClass == 0)
     }
 
@@ -1228,7 +1305,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     /// Shows the display at `scale` and sizes the window to it.
     private func showDisplay(at scale: CGFloat) {
         guard !closed else { return }
-        session.display.setRenderScale(scale)
+        fitting.setScale(scale)
         updateWindowSize()
     }
 
@@ -1241,9 +1318,15 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
             return
         }
         let size = session.display.size(for: session.display.renderScale)
-        updateToolbarStyle(forWidth: size.width)
-        let sized = window.frameRect(forContentRect: NSRect(x: 0, y: 0,
+        let visible = (window.screen ?? NSScreen.main)?.visibleFrame
+        let width = fitting.scalesDisplay ? size.width : min(size.width, visible?.width ?? size.width)
+        updateToolbarStyle(forWidth: width)
+        var sized = window.frameRect(forContentRect: NSRect(x: 0, y: 0,
             width: size.width, height: size.height + content.heightAboveDisplay))
+        if !fitting.scalesDisplay, let visible {
+            sized.size.width = min(sized.width, visible.width)
+            sized.size.height = min(sized.height, visible.height)
+        }
         content.isSizedToDisplay = true
         setFrame(around: NSRect(origin: origin ?? window.frame.origin, size: sized.size))
         fitting.layout()
@@ -1284,7 +1367,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
 
     /// Begins a corner drag outside full screen, bounded by the visible screen.
     private func beginBezelResize(with event: NSEvent) -> Bool {
-        guard !closed, !isFullScreen, let window else { return false }
+        guard !closed, !isFullScreen, fitting.scalesDisplay, let window else { return false }
         let display = session.display
         let point = display.view.convert(event.locationInWindow, from: nil)
         guard let corner = display.resizeRects.first(where: { $0.rect.contains(point) })?.corner else { return false }
@@ -1305,7 +1388,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         guard let resize = bezelResize, let window else { return }
         let display = session.display
         let requested = resize.drag.requestedSize(pointerAt: Self.screenLocation(of: event, in: window))
-        display.setRenderScale(min(resize.maximumScale, max(minimumScale, display.scale(for: requested))))
+        fitting.setScale(min(resize.maximumScale, max(minimumScale, display.scale(for: requested))))
         updateWindowSize(origin: resize.drag.origin(for: display.size(for: display.renderScale)))
     }
 
@@ -1331,6 +1414,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
 
     private func resizeDisplay() {
         guard !closed else { return }
+        if session.isResizingApp { session.resizeApp(to: content.availableDisplaySize) }
         fitting.fit()
     }
 
@@ -1374,6 +1458,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     }
     // AppKit requires resizability to fill the screen during its full-screen transition.
     func windowWillEnterFullScreen(_ notification: Notification) {
+        saveWindowGeometry()
         fitting.willEnterFullScreen()
         showResizeCursors()
         updateHeaderShape()
@@ -1387,12 +1472,16 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     }
     /// Restores scale and origin explicitly; AppKit loses the origin of windows taller than the screen.
     func windowDidExitFullScreen(_ notification: Notification) {
-        let geometry = fitting.didExitFullScreen()
+        let geometry = fitting.didExitFullScreen(defaultScale: session.primaryDisplay.renderScale)
         showResizeCursors()
         updateHeaderShape()
         bezelChanged()
         guard let geometry else { return }
-        showDisplay(at: geometry.scale)
+        if session.isResizingApp {
+            session.primaryDisplay.setRenderScale(geometry.scale)
+            resizeDisplay()
+        }
+        else { showDisplay(at: geometry.scale) }
         window?.setFrameOrigin(geometry.origin)
         // The screen the window was on may be gone, and the screen changes
         // that happened meanwhile did not move it.
@@ -1434,9 +1523,9 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         window?.delegate = nil
         window?.close()
     }
-    /// Saves center and scale per screen arrangement, except during restart.
+    /// Saves the primary device's compact geometry per screen arrangement.
     private func saveWindowGeometry() {
-        guard !closed, !isRestarting, !isEmbedded, hasPresentedCompactWindow,
+        guard !closed, !isRestarting, !isEmbedded, !session.isResizingApp, hasPresentedCompactWindow,
               let window, window.contentView === content else { return }
         savedScale = WindowScale.usable(session.display.renderScale)
         preferences.setWindowGeometry(center: NSPoint(x: window.frame.midX, y: window.frame.midY),
@@ -1560,7 +1649,14 @@ final class DeviceWindow: NSWindow {
 
 @MainActor
 private final class DeviceContentView: NSView, DisplayContentView {
-    let display: NSView
+    private(set) var display: NSView
+    func setDisplay(_ display: NSView) {
+        self.display.removeFromSuperview()
+        self.display = display
+        previousDisplaySize = nil
+        if usesViewport { canvasDocumentView.addSubview(display) } else { addSubview(display) }
+        needsLayout = true
+    }
     private let canvasScrollView = NSScrollView()
     private let canvasDocumentView = NSView()
     private var canvasDisplayFrame = NSRect.zero
@@ -1569,16 +1665,19 @@ private final class DeviceContentView: NSView, DisplayContentView {
     private(set) var isLayingOutCanvas = false
     var canImport: () -> Bool = { false }
     var importFiles: ([URL]) -> Void = { _ in }
-    var isEmbedded = false {
-        didSet {
-            guard isEmbedded != oldValue else { return }
-            if !isEmbedded { retainedCanvasCenter = canvasCenter }
+    var isEmbedded = false { didSet { if isEmbedded != oldValue { updateViewport() } } }
+    var scrollsDisplay = false { didSet { if scrollsDisplay != oldValue { updateViewport() } } }
+    private var usesViewport: Bool { isEmbedded || scrollsDisplay }
+    private func updateViewport() {
+        retainedCanvasCenter = canvasCenter
+        let parent = usesViewport ? canvasDocumentView : self
+        if display.superview !== parent {
             display.removeFromSuperview()
-            if isEmbedded { canvasDocumentView.addSubview(display) } else { addSubview(display) }
-            canvasScrollView.isHidden = !isEmbedded
-            updateScrollMonitor()
-            needsLayout = true
+            parent.addSubview(display)
         }
+        canvasScrollView.isHidden = !usesViewport
+        updateScrollMonitor()
+        needsLayout = true
     }
     var onDisplaySizeChange: () -> Void = {}
     var onWindowChange: () -> Void = {}
@@ -1633,7 +1732,7 @@ private final class DeviceContentView: NSView, DisplayContentView {
     private func updateScrollMonitor() {
         if let scrollMonitor { NSEvent.removeMonitor(scrollMonitor) }
         scrollMonitor = nil
-        guard isEmbedded, window != nil else { return }
+        guard usesViewport, window != nil else { return }
         scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
             guard let self, event.modifierFlags.contains(.option), let window = self.window,
                   event.window === window, self.bounds.contains(self.convert(event.locationInWindow, from: nil)) else { return event }
@@ -1678,7 +1777,7 @@ private final class DeviceContentView: NSView, DisplayContentView {
             onDisplaySizeChange()
         }
         let available = NSRect(origin: .zero, size: availableDisplaySize)
-        if isEmbedded {
+        if usesViewport {
             let center = retainedCanvasCenter ?? canvasCenter ?? NSPoint(x: 0.5, y: 0.5)
             retainedCanvasCenter = nil
             canvasScrollView.frame = available

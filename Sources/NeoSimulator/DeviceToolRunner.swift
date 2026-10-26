@@ -147,8 +147,8 @@ final class DeviceTools {
     enum ScreenMask: String { case ignored, alpha, black }
     enum VideoCodec: String { case h264, hevc }
 
-    func screenshot(to url: URL, mask: ScreenMask) async throws {
-        _ = try await simctl(["io", identifier, "screenshot", "--type=png", "--mask=\(mask.rawValue)", url.path])
+    func screenshot(to url: URL, mask: ScreenMask, displayID: UInt32? = nil) async throws {
+        _ = try await simctl(["io", identifier, "screenshot", "--type=png", "--mask=\(mask.rawValue)"] + (displayID.map { ["--display=\($0)"] } ?? []) + [url.path])
     }
     func rotate(left: Bool) async throws -> OrientationReading {
         _ = try await runner.run(devicectlURL,
@@ -208,11 +208,11 @@ final class DeviceTools {
     func stopSystemUI() async throws {
         _ = try await simctl(["spawn", identifier, "launchctl", "stop", "com.apple.PineBoard"])
     }
-    func recordingProcess(to url: URL, mask: ScreenMask, codec: VideoCodec) -> Process {
+    func recordingProcess(to url: URL, mask: ScreenMask, codec: VideoCodec, displayID: UInt32? = nil) -> Process {
         let process = Process()
         process.executableURL = simctlURL
         process.arguments = simctlSet + ["io", identifier, "recordVideo", "--codec=\(codec.rawValue)",
-                                         "--mask=\(mask.rawValue)", "--force", url.path]
+                                         "--mask=\(mask.rawValue)", "--force"] + (displayID.map { ["--display=\($0)"] } ?? []) + [url.path]
         process.environment = ProcessInfo.processInfo.environment.merging(environment) { _, new in new }
         return process
     }

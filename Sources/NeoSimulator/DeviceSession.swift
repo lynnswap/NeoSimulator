@@ -378,7 +378,32 @@ enum FallResolution: UInt64 {
 final class DeviceSession {
     let device: AvailableDevice
     let capabilities: DeviceCapabilities
-    @ObservationIgnored let display: any SimulatorDisplay
+    @ObservationIgnored let primaryDisplay: any SimulatorDisplay
+    @ObservationIgnored private var appDisplay: (any SimulatorDisplay)?
+    var display: any SimulatorDisplay { appDisplay ?? primaryDisplay }
+    @ObservationIgnored var onDisplayWillChange: (() -> Void)?
+    @ObservationIgnored var onDisplayChange: (() -> Void)?
+    @ObservationIgnored var onAppResizeGeometryChange: (() -> Void)?
+    @ObservationIgnored var onAppResizeError: ((any Error) -> Void)?
+    @ObservationIgnored private var resizeTransport: (any SimulatorAppResizeTransport)?
+    @ObservationIgnored private var resizePreparation: Task<Void, Never>?
+    @ObservationIgnored private var resizeObservation: Task<Void, Never>?
+    @ObservationIgnored private var resizeStart: Task<Void, Never>?
+    @ObservationIgnored private var resizeUpdates: Task<Void, Never>?
+    @ObservationIgnored private var resizeInvalidation: Task<Void, Never>?
+    @ObservationIgnored private var resizeAdjustment: Task<Void, Never>?
+    @ObservationIgnored private var resizeLease: (any SimulatorAppResizeLease)?
+    @ObservationIgnored private var resizeGeneration = 0
+    @ObservationIgnored private var pendingAppSize: CGSize?
+    private(set) var supportsAppResize = false
+    private(set) var appResizeEligibility = AppResizeEligibility.unavailable
+    private(set) var isStartingAppResize = false
+    private(set) var appResizeGeometry: AppResizeGeometry?
+    private(set) var isResizingApp = false
+    var canResizeApp: Bool {
+        canPerformToolOperation && recording == nil && supportsAppResize
+            && (isResizingApp || isStartingAppResize || appResizeEligibility == .eligible)
+    }
     @ObservationIgnored let tools: DeviceTools
     /// Keeps the device's keyboard preferences and the app-wide ones.
     @ObservationIgnored private let preferences: any PreferenceStore
@@ -386,7 +411,7 @@ final class DeviceSession {
     /// macOS gives the guest, or nil when it cannot be determined.
     @ObservationIgnored private let hostKeyboardLanguage: @MainActor () -> String?
     @ObservationIgnored private let recordings: RecordingStore
-    @ObservationIgnored private let makeRecordingProcess: (URL, DeviceTools.ScreenMask) -> Process
+    @ObservationIgnored private let makeRecordingProcess: (URL, DeviceTools.ScreenMask, UInt32?) -> Process
     @ObservationIgnored private let openLog: (URL) async throws -> Void
     /// The Mac pasteboard that Get Pasteboard replaces and Send Pasteboard
     /// sends, or nil for the general pasteboard.
@@ -447,12 +472,13 @@ final class DeviceSession {
          hostKeyboardLanguage: @escaping @MainActor () -> String? = HostKeyboard.language,
          pasteboard: NSPasteboard? = nil, pasteboardSync: PasteboardSync? = nil,
          externalDisplayChanges: ExternalDisplayChanges = ExternalDisplayChanges(),
-         externalScreenTimeout: Duration = .seconds(10)) {
+         externalScreenTimeout: Duration = .seconds(10),
+         appResizeTransport: (@MainActor () async throws -> (any SimulatorAppResizeTransport)?)? = nil) {
         self.device = device
         self.externalDisplayChanges = externalDisplayChanges
         self.externalScreenTimeout = externalScreenTimeout
         self.capabilities = capabilities
-        self.display = display
+        self.primaryDisplay = display
         self.tools = tools
         self.preferences = preferences
         self.hostKeyboardLanguage = hostKeyboardLanguage
@@ -460,12 +486,173 @@ final class DeviceSession {
         self.pasteboardSync = pasteboardSync
         self.recordings = recordings
         let codec: DeviceTools.VideoCodec = capabilities.family == .vision ? .hevc : .h264
-        makeRecordingProcess = recordingProcess ?? { tools.recordingProcess(to: $0, mask: $1, codec: codec) }
+        if let recordingProcess { makeRecordingProcess = { url, mask, _ in recordingProcess(url, mask) } }
+        else { makeRecordingProcess = { tools.recordingProcess(to: $0, mask: $1, codec: codec, displayID: $2) } }
         self.openLog = openLog
+        if let appResizeTransport { prepareAppResize(appResizeTransport) }
+    }
+
+    private func prepareAppResize(_ make: @escaping @MainActor () async throws -> (any SimulatorAppResizeTransport)?) {
+        resizePreparation = Task { [weak self] in
+            do {
+                guard let transport = try await make() else { return }
+                try Task.checkCancellation()
+                guard let self, !self.isDisconnected else { return }
+                self.resizeTransport = transport
+                self.supportsAppResize = true
+                self.resizeObservation = Task { [weak self] in
+                    do {
+                        let stream = try await transport.eligibility()
+                        for try await state in stream {
+                            try Task.checkCancellation()
+                            guard let self, !self.isDisconnected else { return }
+                            self.appResizeEligibility = state
+                            if state == .unavailable { self.stopAppResize() }
+                        }
+                        guard let self, !self.isDisconnected, !Task.isCancelled else { return }
+                        self.supportsAppResize = false
+                        self.stopAppResize()
+                        self.onAppResizeError?(HostError.unavailable("App resize observation ended."))
+                    } catch {
+                        guard let self, !self.isDisconnected, !(error is CancellationError) else { return }
+                        self.supportsAppResize = false
+                        self.stopAppResize()
+                        self.onAppResizeError?(error)
+                    }
+                }
+            } catch {
+                guard let self, !self.isDisconnected, !(error is CancellationError) else { return }
+                self.onAppResizeError?(error)
+            }
+        }
+    }
+
+    func toggleAppResize(size: CGSize) {
+        if isResizingApp || isStartingAppResize || resizeLease != nil { stopAppResize(); return }
+        guard canResizeApp, let resizeTransport else { return }
+        resizeGeneration += 1
+        let token = resizeGeneration
+        isStartingAppResize = true
+        resizeStart = Task { [weak self, primaryDisplay] in
+            var lease: (any SimulatorAppResizeLease)?
+            var display: (any SimulatorDisplay)?
+            do {
+                let created = try await resizeTransport.start(size: size, cornerRadius: 0)
+                lease = created
+                try Task.checkCancellation()
+                guard let self, !self.isDisconnected, self.resizeGeneration == token else { throw CancellationError() }
+                self.resizeLease = created
+                // Observe invalidation before waiting for the screen: the guest can end
+                // the session while SimulatorKit is still publishing the display.
+                self.resizeInvalidation = Task { [weak self] in
+                    do { try await created.awaitInvalidation() }
+                    catch { if !(error is CancellationError) { self?.onAppResizeError?(error) } }
+                    guard let self, self.resizeGeneration == token, !Task.isCancelled else { return }
+                    self.stopAppResize()
+                }
+                let connected = try await primaryDisplay.connectAppDisplay(uniqueID: created.displayUniqueID)
+                display = connected
+                try Task.checkCancellation()
+                guard !self.isDisconnected, self.resizeGeneration == token else { throw CancellationError() }
+                self.releaseInputsForDisplayChange()
+                self.onDisplayWillChange?()
+                self.appDisplay = connected
+                self.isResizingApp = true
+                self.isStartingAppResize = false
+                self.appResizeGeometry = created.geometry
+                self.onDisplayChange?()
+                self.resizeUpdates = Task { [weak self] in
+                    do {
+                        for try await geometry in try created.updates() {
+                            try Task.checkCancellation()
+                            guard let self, self.resizeGeneration == token else { return }
+                            self.appResizeGeometry = geometry
+                            self.onAppResizeGeometryChange?()
+                        }
+                    } catch {
+                        guard let self, self.resizeGeneration == token, !(error is CancellationError) else { return }
+                        self.stopAppResize()
+                        self.onAppResizeError?(error)
+                    }
+                }
+            } catch {
+                display?.disconnect()
+                if let lease {
+                    do { try lease.invalidate() }
+                    catch let cleanup { self?.onAppResizeError?(HostError.operation("\(error.localizedDescription)\nResize cleanup failed: \(cleanup.localizedDescription)")) }
+                }
+                guard let self, self.resizeGeneration == token else { return }
+                self.stopAppResize()
+                if !(error is CancellationError) { self.onAppResizeError?(error) }
+            }
+        }
+    }
+
+    /// Requests guest point geometry; native scene feedback remains authoritative.
+    func resizeApp(to size: CGSize) {
+        guard isResizingApp, let geometry = appResizeGeometry,
+              size.width.isFinite, size.height.isFinite, size.width > 0, size.height > 0 else { return }
+        pendingAppSize = CGSize(width: min(max(size.width, geometry.minimumSize.width), geometry.maximumSize.width),
+                                height: min(max(size.height, geometry.minimumSize.height), geometry.maximumSize.height))
+        guard resizeAdjustment == nil, let lease = resizeLease else { return }
+        let token = resizeGeneration
+        resizeAdjustment = Task { [weak self] in
+            defer { if let self, self.resizeGeneration == token { self.resizeAdjustment = nil } }
+            do {
+                while let self, self.resizeGeneration == token, let size = self.pendingAppSize {
+                    self.pendingAppSize = nil
+                    try await lease.adjust(size: size, cornerRadius: 0)
+                    try Task.checkCancellation()
+                }
+            } catch {
+                guard let self, self.resizeGeneration == token, !(error is CancellationError) else { return }
+                self.stopAppResize()
+                self.onAppResizeError?(error)
+            }
+        }
+    }
+
+    func stopAppResize() {
+        resizeGeneration += 1
+        resizeStart?.cancel(); resizeStart = nil
+        resizeUpdates?.cancel(); resizeUpdates = nil
+        resizeInvalidation?.cancel(); resizeInvalidation = nil
+        resizeAdjustment?.cancel(); resizeAdjustment = nil
+        pendingAppSize = nil
+        isStartingAppResize = false
+        if let appDisplay {
+            recording?.stop()
+            releaseInputsForDisplayChange()
+            onDisplayWillChange?()
+            self.appDisplay = nil
+            isResizingApp = false
+            appResizeGeometry = nil
+            primaryDisplay.setRotation(degrees: displayAngle)
+            onDisplayChange?()
+            appDisplay.disconnect()
+        }
+        if let resizeLease {
+            do { try resizeLease.invalidate(); self.resizeLease = nil }
+            catch { onAppResizeError?(error) }
+        }
+    }
+
+    private func releaseInputsForDisplayChange() {
+        for event in downInputs.keys {
+            if let up = try? releaseMessage(for: event) { try? display.send(up, completion: nil) }
+        }
+        pendingHolds.removeAll()
+        downInputs.removeAll()
+        releasesInFlight.removeAll()
+        remoteReports.removeAll()
+        isTouchingRemote = false
+        inputSteps.values.forEach { $0.cancel() }
+        inputSteps.removeAll()
     }
 
     var canPerformCommands: Bool { isConnected && display.isBooted }
     var canPerformToolOperation: Bool { canPerformCommands && !isBusy }
+    var canStartRecording: Bool { canPerformToolOperation && recording == nil && !isStartingAppResize }
 
     // MARK: Immediate device input
 
@@ -1484,7 +1671,7 @@ final class DeviceSession {
     /// Saves the screen to a file chosen in a save panel, replacing it.
     func saveScreenshot(to destination: URL, mask: DeviceTools.ScreenMask) async throws {
         try await CaptureFile.write(to: destination, extension: "png") { temporary in
-            try await tools.screenshot(to: temporary, mask: mask)
+            try await tools.screenshot(to: temporary, mask: mask, displayID: display.captureDisplayID)
             try Self.checkPNG(at: temporary)
         }
     }
@@ -1501,7 +1688,7 @@ final class DeviceSession {
         let temporary = FileManager.default.temporaryDirectory
             .appendingPathComponent("simulator_screenshot_\(UUID().uuidString).png")
         do {
-            try await tools.screenshot(to: temporary, mask: mask)
+            try await tools.screenshot(to: temporary, mask: mask, displayID: display.captureDisplayID)
             try Self.checkPNG(at: temporary)
             return temporary
         } catch {
@@ -1524,8 +1711,11 @@ final class DeviceSession {
     /// Announces recording state changes to the device plugin.
     func startRecording(to destination: RecordingStore.Destination, mask: DeviceTools.ScreenMask) throws {
         guard canPerformCommands, recording == nil else { return }
-        recording = try recordings.start(to: destination, process: { [makeRecordingProcess] in
-            makeRecordingProcess($0, mask)
+        guard !isStartingAppResize else {
+            throw HostError.operation("Wait for the app display to connect before starting a recording.")
+        }
+        recording = try recordings.start(to: destination, process: { [makeRecordingProcess, display] in
+            makeRecordingProcess($0, mask, display.captureDisplayID)
         }) { [weak self] in
             self?.recording = nil
             self?.display.announceRecording(started: false)
@@ -1575,6 +1765,10 @@ final class DeviceSession {
         isTouchingRemote = false
         inputSteps.values.forEach { $0.cancel() }
         inputSteps.removeAll()
+        stopAppResize()
+        resizePreparation?.cancel(); resizePreparation = nil
+        resizeObservation?.cancel(); resizeObservation = nil
+        resizeTransport = nil
         isDisconnected = true
         isConnected = false
         operation?.cancel()
