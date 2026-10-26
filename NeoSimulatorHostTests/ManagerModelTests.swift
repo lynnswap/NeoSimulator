@@ -6,13 +6,22 @@ import Testing
 
 @Suite(.serialized, .timeLimit(.minutes(1))) @MainActor
 struct ManagerModelTests {
-    @Test func launchUsesDefaultFrameworksAndAcceptsAnExplicitOverride() throws {
-        #expect(try ManagerLaunchOptions(arguments: []).xcodeURL == nil)
-        let path = "/Applications/Xcode 27.1.app"
-        #expect(try ManagerLaunchOptions(arguments: ["--xcode", path]).xcodeURL?.path == path)
-        for arguments in [["--xcode"], ["--xcode", "relative.app"], ["--xcode", path, "--xcode", path]] {
-            #expect(throws: HostError.self) { try ManagerLaunchOptions(arguments: arguments) }
-        }
+    @Test func frameworkSettingPersistsOverrideAndRestoresDefault() throws {
+        let suite = "NeoSimulator.UIFrameworkSettingsTests." + UUID().uuidString
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = UIFrameworkSettings(defaults: defaults, discover: { [] })
+        #expect(settings.selectedXcodeURL == nil && !settings.needsRestart)
+        let xcode = URL(fileURLWithPath: "/Applications/Xcode 27.1.app", isDirectory: true)
+        settings.select(xcode)
+        #expect(settings.needsRestart)
+        #expect(UIFrameworkSettings.selection(in: defaults) == xcode)
+        let relaunched = UIFrameworkSettings(defaults: defaults, discover: { [] })
+        #expect(relaunched.selectedXcodeURL == xcode && !relaunched.needsRestart)
+        relaunched.select(nil)
+        #expect(relaunched.needsRestart && UIFrameworkSettings.selection(in: defaults) == nil)
+        settings.select(nil)
+        #expect(!settings.needsRestart)
     }
 
     @Test func forceCanJoinNormalShutdownWithoutTheOriginalRequestUnlockingIt() async throws {
@@ -97,6 +106,12 @@ struct ManagerModelTests {
         #expect(manager.settings.settings?.appearance == "dark")
         #expect(manager.settings.settings?.contentSize == "large")
         #expect(await source.readCount == 1)
+        manager.resumeAfterCancelledQuit()
+        manager.openDevice(device.id)
+        #expect(await events.next() == .open(device.id))
+        await source.completeOpen()
+        try await manager.quitRenderer(keepingDevicesRunning: true)
+        #expect(await events.next() == .quit)
     }
 
     @Test func editingDuringRefreshStillReadsExternalChanges() async throws {

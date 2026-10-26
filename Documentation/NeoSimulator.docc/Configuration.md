@@ -18,20 +18,17 @@ settings for the selected simulator, separate from the app-wide display host.
 
 ## Select the UI framework installation
 
-NeoSimulator loads its display frameworks from the Xcode selected by
-`DEVELOPER_DIR`, or by `xcode-select` when that environment variable is unset.
-To override that choice, quit NeoSimulator and launch it with:
+Choose **UI Frameworks** in **Settings → General**. **Default (xcode-select)**
+uses `DEVELOPER_DIR` when set, or the Xcode selected by `xcode-select` otherwise.
+Select an installed Xcode to save an override, then choose **Restart to Apply**.
+NeoSimulator restarts while keeping simulator devices running and reopening
+their displayed screens.
 
-```bash
-open /Applications/NeoSimulator.app --args --xcode /Applications/Xcode_27.1.app
-```
-
-This selects the app's SimulatorKit and DeviceKit frameworks for that launch.
-It does not limit which simulator runtimes can run or change Xcode's Build & Run
-routing. Devices retain their own runtime and connection owner; a newer request
-for the same device takes precedence over the previous owner. Changing the UI
-framework installation requires restarting NeoSimulator because loaded Apple
-frameworks remain registered for the lifetime of the process.
+The setting selects SimulatorKit and DeviceKit together. Simulator runtimes and
+Xcode's Build & Run routing remain independent: devices retain their own runtime
+and connection owner, and a newer request for the same device takes precedence.
+The app must restart because loaded Apple frameworks remain registered for the
+lifetime of the process. Choose **Default (xcode-select)** to remove the override.
 
 ## Recover original preferences
 
@@ -51,7 +48,7 @@ do not select another host.
 ## App preferences
 
 **NeoSimulator → Settings…** (Command-,) contains General and Capture settings.
-General controls the display host, reopening the last simulator, keeping devices
+General controls the display host, UI framework installation, reopening the last simulator, keeping devices
 running when closing or quitting, and touch indicators. Capture controls the
 device mask, GIF image size, and the file-size versus animation-smoothness choice.
 
