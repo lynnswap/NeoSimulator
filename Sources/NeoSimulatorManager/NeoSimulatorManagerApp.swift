@@ -918,6 +918,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     private var previewStack: NSStackView?
     private let compactIdentifier = NSToolbarItem.Identifier("CompactDeviceWindow")
     private let canvasZoomIdentifier = NSToolbarItem.Identifier("CanvasZoom")
+    private let moreIdentifier = NSToolbarItem.Identifier("CanvasMoreActions")
+    private var moreItem: NSMenuToolbarItem?
     private let screenActionIdentifiers = ["home", "capture", "record", "rotate"]
     private let screenActionBar = NSStackView()
     private let primaryScreenActions = NSGlassEffectView()
@@ -951,6 +953,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     private var groupByAvailability = true
     private let deviceMenu = NSMenu(title: "Device Actions")
     private var sidebarObservation: NSKeyValueObservation?
+    private var toolbarAppearanceObservation: NSKeyValueObservation?
     private let newSimulatorIdentifier = NSToolbarItem.Identifier("NewSimulator")
     private let filterIdentifier = NSToolbarItem.Identifier("FilterSimulators")
     private var filterItem: NSMenuToolbarItem?
@@ -1047,6 +1050,9 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         toolbar.displayMode = .iconOnly
         toolbar.allowsUserCustomization = false
         window.toolbar = toolbar
+        toolbarAppearanceObservation = window.observe(\.effectiveAppearance, options: [.new]) { [weak self] _, _ in
+            MainActor.assumeIsolated { self?.updateToolbarAppearance() }
+        }
         sidebarObservation = splitController.splitViewItems[0].observe(\.isCollapsed, options: [.initial, .new]) { [weak self] _, _ in
             MainActor.assumeIsolated { self?.updateSidebarToolbarItems() }
         }
@@ -1292,6 +1298,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         ])
         canvasBottomToPane?.isActive = true
         deviceImage.imageScaling = .scaleProportionallyUpOrDown
+        deviceImage.symbolConfiguration = NSImage.SymbolConfiguration(paletteColors: [.black, .systemCyan])
         deviceImage.translatesAutoresizingMaskIntoConstraints = false
         deviceImage.setAccessibilityHidden(true)
         deviceName.font = .systemFont(ofSize: 17, weight: .semibold)
@@ -1590,7 +1597,9 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         liveDeviceIdentifier = identifier
         liveScreenContainer.view.isHidden = false
         previewStack?.isHidden = true
-        window?.toolbar?.items.first(where: { $0.itemIdentifier == compactIdentifier })?.isHidden = false
+        for item in window?.toolbar?.items ?? [] where item.itemIdentifier == compactIdentifier || item.itemIdentifier == moreIdentifier {
+            item.isHidden = false
+        }
     }
 
     func showDevicePreview(ifDisplaying identifier: DeviceInventoryID) {
@@ -1599,7 +1608,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         activeScreenCommandTarget = nil
         liveScreenContainer.view.isHidden = true
         previewStack?.isHidden = false
-        for item in window?.toolbar?.items ?? [] where item.itemIdentifier == compactIdentifier || item.itemIdentifier == canvasZoomIdentifier {
+        for item in window?.toolbar?.items ?? [] where item.itemIdentifier == compactIdentifier || item.itemIdentifier == canvasZoomIdentifier || item.itemIdentifier == moreIdentifier {
             item.isHidden = true
         }
         screenActionBar.isHidden = true
@@ -1673,6 +1682,10 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     }
 
     func validateToolbarItem(_ item: NSToolbarItem) -> Bool {
+        if item.itemIdentifier == moreIdentifier {
+            return liveDeviceIdentifier.map { id in model.inventory.contains { $0.id == id } } == true
+                && window?.attachedSheet == nil
+        }
         if item.itemIdentifier == compactIdentifier {
             return liveDeviceIdentifier != nil && window?.attachedSheet == nil && window?.styleMask.contains(.fullScreen) == false
         }
@@ -1726,13 +1739,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     }
 
     private func devicePreview(for device: InventoryDevice) -> NSImage? {
-        if let modelIdentifier = device.modelIdentifier,
-           let type = UTType.types(tag: modelIdentifier,
-                                   tagClass: UTTagClass(rawValue: "com.apple.device-model-code"),
-                                   conformingTo: nil).first(where: \.isDeclared) {
-            return NSWorkspace.shared.icon(for: type)
-        }
-        return NSImage(systemSymbolName: symbolName(for: device), accessibilityDescription: nil)
+        NSImage(systemSymbolName: symbolName(for: device), accessibilityDescription: nil)
     }
 
     private func shouldRenderAsActive(_ device: InventoryDevice) -> Bool {
@@ -1769,7 +1776,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         case "Apple Watch": "applewatch"
         case "Apple Vision", "visionOS": "visionpro"
         case "Mac": "desktopcomputer"
-        case "iPhone": "iphone"
+        case "iPhone": "iphone.gen3"
         default: device.kind == .virtualMachine ? "desktopcomputer" : "externaldrive"
         }
     }
@@ -1829,6 +1836,18 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         model.openScreen(for: device)
     }
 
+    private func updateToolbarAppearance() {
+        guard let window else { return }
+        // Individual toolbar items can retain their prior template tint on macOS 26.
+        window.effectiveAppearance.performAsCurrentDrawingAppearance {
+            for item in window.toolbar?.items ?? [] {
+                if let image = item.image, image.isTemplate, let refreshed = image.copy() as? NSImage {
+                    item.image = refreshed
+                }
+            }
+        }
+    }
+
     private func updateSidebarToolbarItems() {
         let hidden = splitController.splitViewItems[0].isCollapsed
         for item in window?.toolbar?.items ?? [] where item.itemIdentifier == newSimulatorIdentifier || item.itemIdentifier == filterIdentifier {
@@ -1838,7 +1857,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [.toggleSidebar, .flexibleSpace, newSimulatorIdentifier, filterIdentifier, .sidebarTrackingSeparator,
-         .flexibleSpace, canvasZoomIdentifier, compactIdentifier, .inspectorTrackingSeparator, inspectorIdentifier]
+         .flexibleSpace, canvasZoomIdentifier, compactIdentifier, moreIdentifier, .inspectorTrackingSeparator, inspectorIdentifier]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { toolbarDefaultItemIdentifiers(toolbar) }
@@ -1862,6 +1881,19 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             for subitem in item.subitems { subitem.autovalidates = false }
             item.controlRepresentation = .expanded
             item.isHidden = liveDeviceIdentifier == nil
+            return item
+        }
+        if itemIdentifier == moreIdentifier {
+            let item = NSMenuToolbarItem(itemIdentifier: itemIdentifier)
+            item.label = "More Actions"
+            item.toolTip = "More Actions"
+            item.image = NSImage(systemSymbolName: "ellipsis", accessibilityDescription: "More Actions")
+            item.showsIndicator = false
+            item.menu = NSMenu(title: "Device Actions")
+            item.menu.autoenablesItems = false
+            item.menu.delegate = self
+            item.isHidden = liveDeviceIdentifier == nil
+            moreItem = item
             return item
         }
         if itemIdentifier == compactIdentifier {
@@ -1939,11 +1971,11 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         populateDeviceMenu(deviceMenu, devices: selectedDevices)
     }
 
-    private func populateDeviceMenu(_ menu: NSMenu, devices: [InventoryDevice]) {
+    private func populateDeviceMenu(_ menu: NSMenu, devices: [InventoryDevice], includesViewScreen: Bool = true) {
         menu.removeAllItems()
         let identifiers = Set(devices.map(\.id))
         let idle = !model.isBusy && identifiers.isDisjoint(with: model.managingDeviceIDs)
-        if devices.count == 1, canViewScreen(devices[0]) {
+        if includesViewScreen, devices.count == 1, canViewScreen(devices[0]) {
             let item = NSMenuItem(title: "View Screen", action: #selector(openDeviceFromMenu(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = devices[0].id
@@ -1980,6 +2012,50 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             item.isEnabled = false
             menu.addItem(item)
         }
+    }
+
+    private func updateCanvasMenu(_ menu: NSMenu) {
+        let device = model.inventory.first { $0.id == liveDeviceIdentifier }
+        populateDeviceMenu(menu, devices: device.map { [$0] } ?? [], includesViewScreen: false)
+        guard let device else { return }
+        menu.insertItem(.sectionHeader(title: device.name), at: 0)
+        if let controller = activeScreenCommandTarget as? DeviceWindowController {
+            let command = DeviceCommand.command(.externalDisplayCarPlay)
+            if command.isSupported(controller.session.capabilities) {
+                let item = NSMenuItem(title: "CarPlay", action: #selector(showCanvasCarPlay(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = device.id
+                item.isEnabled = command.validate(item, for: controller)
+                menu.addItem(.separator())
+                menu.addItem(item)
+            }
+        }
+        guard case .simulator(let phone) = device, phone.productFamily == "iPhone" else { return }
+        let watches = model.inventory.filter { candidate in
+            guard case .simulator(let watch) = candidate, watch.productFamily == "Apple Watch" else { return false }
+            return supports(.pair, devices: [device, candidate])
+        }.sorted(by: precedes)
+        let pairing = NSMenuItem(title: "Pair Apple Watch", action: nil, keyEquivalent: "")
+        let submenu = NSMenu(title: pairing.title)
+        submenu.autoenablesItems = false
+        for watch in watches {
+            let identifiers = Set([device.id, watch.id])
+            let item = NSMenuItem(title: "\(watch.name) (\(watch.operatingSystem ?? "Apple Watch"))",
+                                 action: #selector(performManagement(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = ManagementRequest(action: .pair, identifiers: identifiers)
+            item.isEnabled = !model.isBusy && identifiers.isDisjoint(with: model.managingDeviceIDs)
+            submenu.addItem(item)
+        }
+        pairing.submenu = submenu
+        pairing.isEnabled = !watches.isEmpty && !model.isBusy && !model.managingDeviceIDs.contains(device.id)
+        menu.addItem(pairing)
+    }
+
+    @objc private func showCanvasCarPlay(_ sender: NSMenuItem) {
+        guard let identifier = sender.representedObject as? DeviceInventoryID, identifier == liveDeviceIdentifier,
+              let controller = activeScreenCommandTarget as? DeviceWindowController else { return }
+        controller.perform(.externalDisplayCarPlay)
     }
 
     private func supports(_ action: DeviceManagementAction, devices: [InventoryDevice]) -> Bool {
@@ -2080,6 +2156,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         if menu === deviceMenu { updateDeviceMenu(); return }
+        if menu === moreItem?.menu { updateCanvasMenu(menu); return }
         guard menu === filterItem?.menu else { return }
         menu.removeAllItems()
         menu.addItem(.sectionHeader(title: "Devices"))
@@ -2173,6 +2250,8 @@ private final class SimulatorSidebarCellView: NSTableCellView {
         didSet { updateIconAppearance() }
     }
 
+    override var allowsVibrancy: Bool { true }
+
     override var backgroundStyle: NSView.BackgroundStyle {
         didSet { needsDisplay = true }
     }
@@ -2182,8 +2261,6 @@ private final class SimulatorSidebarCellView: NSTableCellView {
         let icon = NSImageView()
         icon.translatesAutoresizingMaskIntoConstraints = false
         icon.imageScaling = .scaleProportionallyUpOrDown
-        icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 20, weight: .regular)
-            .applying(NSImage.SymbolConfiguration(paletteColors: [.labelColor, .systemCyan]))
         icon.setAccessibilityHidden(true)
         let name = NSTextField(labelWithString: "")
         name.font = .systemFont(ofSize: 13, weight: .medium)
@@ -2245,7 +2322,11 @@ private final class SimulatorSidebarCellView: NSTableCellView {
     }
 
     private func updateIconAppearance() {
-        imageView?.isEnabled = isDeviceActive
+        let colors = isDeviceActive
+            ? NSImage.SymbolConfiguration(paletteColors: [.black, .systemCyan])
+            : NSImage.SymbolConfiguration(hierarchicalColor: .tertiaryLabelColor)
+        imageView?.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 20, weight: .regular)
+            .applying(colors)
         needsDisplay = true
     }
 }
