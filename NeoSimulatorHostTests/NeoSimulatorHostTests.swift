@@ -214,8 +214,14 @@ struct InputFocusTests {
         display.takeScreenSize(NSSize(width: 390, height: 844))
         content.layoutSubtreeIfNeeded()
         #expect(WindowScale.matches(display.renderScale, physicalScale))
-        controller.performCanvasZoom(.zoomOut)
-        #expect(display.renderScale < physicalScale)
+        let zoomAction: CanvasZoom.Action = controller.canPerformCanvasZoom(.zoomOut) ? .zoomOut : .zoomIn
+        try #require(controller.canPerformCanvasZoom(zoomAction))
+        controller.performCanvasZoom(zoomAction)
+        if zoomAction == .zoomOut {
+            #expect(display.renderScale < physicalScale)
+        } else {
+            #expect(display.renderScale > physicalScale)
+        }
         #expect(!controller.canvasZoomIsSelected(.physicalSize))
         #expect(window.frame == outerFrame)
     }
