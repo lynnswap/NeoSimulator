@@ -2,11 +2,102 @@ import AppKit
 import ImageIO
 import UniformTypeIdentifiers
 import Testing
+import IOKit
 @testable import XcodeSimulatorHost
 
 @MainActor
 @Suite
 struct RemoteDeviceScreenTests {
+    @Test func postureCommandsUseIOKitSerializationAndConfirmedAngleThresholds() throws {
+        for posture in DevicePosture.allCases {
+            let data = try DevicePosturePayload.serialize(posture)
+            let value = try data.withUnsafeBytes { bytes in
+                let base = try #require(bytes.baseAddress)
+                return IOCFUnserializeBinary(base.assumingMemoryBound(to: CChar.self), bytes.count, nil, 0, nil)
+            }
+            let dictionary = try #require(value as? [String: Any])
+            #expect(dictionary["provider"] as? String == "com.apple.Virtualization.VirtualMachines")
+            #expect(dictionary["source"] as? String == "hinge-slider-control")
+            #expect(dictionary["type"] as? String == "range")
+            #expect(dictionary["value"] as? Double == posture.degrees)
+        }
+        #expect(DevicePosture.confirmed(angle: 0) == .closed)
+        #expect(DevicePosture.confirmed(angle: 15) == .partiallyOpen)
+        #expect(DevicePosture.confirmed(angle: 175) == .partiallyOpen)
+        #expect(DevicePosture.confirmed(angle: 180) == .open)
+        #expect(DevicePosture.confirmed(angle: nil) == nil && DevicePosture.confirmed(angle: .nan) == nil)
+        #expect(DevicePosturePayload.supports(hardwareModel: "V68AP", features: DevicePosturePayload.features))
+        #expect(!DevicePosturePayload.supports(hardwareModel: "v68ap", features: DevicePosturePayload.features.subtracting(["com.apple.coredevice.feature.monitormotion"])))
+        #expect(!DevicePosturePayload.supports(hardwareModel: "v99", features: DevicePosturePayload.features))
+    }
+
+    @Test func postureSelectionFollowsFeedbackAndPreservesSendFailures() async throws {
+        let source = PostureFixtureTransport()
+        let id = DeviceInventoryID.coreDevice("command-id-differs-from-udid")
+        var receivedID: DeviceInventoryID?
+        let model = DevicePostureModel(deviceID: id) { identifier in receivedID = identifier; return source }
+        try await model.start()
+        await source.waitForObservation()
+        #expect(receivedID == id && model.confirmedPosture == nil && model.isSupported)
+        await source.emit(0)
+        source.holdsSend = true
+        let sending = Task { try await model.select(.open) }
+        await source.waitForSend()
+        #expect(model.confirmedPosture == .closed && !model.canSelect)
+        await source.emit(130)
+        source.finishSend()
+        try await sending.value
+        #expect(model.confirmedPosture == .partiallyOpen && model.canSelect)
+        await source.emit(180)
+        #expect(model.confirmedPosture == .open)
+        source.holdsSend = false
+        source.sendError = ScreenFixtureError.stream
+        await #expect(throws: ScreenFixtureError.self) { try await model.select(.closed) }
+        #expect(model.lastError is ScreenFixtureError && model.confirmedPosture == .open && model.canSelect)
+        await source.emit(nil)
+        #expect(model.confirmedPosture == nil)
+        source.updates.finish(throwing: ScreenFixtureError.stream)
+        await source.waitForFinish()
+        #expect(model.state == .failed && model.lastError is ScreenFixtureError && !model.canSelect)
+        await model.stop()
+        #expect(source.finished && model.state == .stopped && !model.canSelect)
+        source.updates.yield(0)
+        #expect(model.confirmedPosture == nil)
+    }
+
+    @Test func stoppingPostureControlsDrainsACommandAndItsObservation() async throws {
+        let source = PostureFixtureTransport()
+        let model = DevicePostureModel(deviceID: .simulator(udid: "simulator-udid", deviceSetPath: nil)) { _ in source }
+        try await model.start()
+        await source.waitForObservation()
+        source.holdsSend = true
+        let sending = Task { try await model.select(.open) }
+        await source.waitForSend()
+        let stopping = Task { await model.stop() }
+        await source.waitForFinish()
+        source.finishSend()
+        await #expect(throws: CancellationError.self) { try await sending.value }
+        await stopping.value
+        #expect(model.state == .stopped && !model.isSending && source.sent.isEmpty)
+    }
+
+    @Test func cancellingPostureStartupDoesNotSubscribeToALateTransport() async throws {
+        let source = PostureFixtureTransport()
+        let began = AsyncStream<Void>.makeStream()
+        var resume: CheckedContinuation<(any DevicePostureTransport)?, Never>?
+        let model = DevicePostureModel(deviceID: .coreDevice("command-id")) { _ in
+            await withCheckedContinuation { resume = $0; began.continuation.yield(()) }
+        }
+        let starting = Task { try await model.start() }
+        var events = began.stream.makeAsyncIterator()
+        await events.next()
+        starting.cancel()
+        resume?.resume(returning: source)
+        await #expect(throws: CancellationError.self) { try await starting.value }
+        #expect(model.state == .stopped && !model.canSelect && !source.didBegin)
+        await model.stop()
+    }
+
     @Test func retainsCommandIdentityAndReportsPixelsSeparatelyFromAnActiveTransport() async throws {
         let transport = ScreenFixtureTransport()
         let device = try device()
@@ -302,6 +393,50 @@ struct RemoteDeviceScreenTests {
         let data = Data(#"{"result":{"devices":[{"identifier":"command-identifier","properties":{"hardware":{"reality":"physical","udid":"hardware-identifier"},"state":{"name":"Fixture Device"},"connection":{"state":"connected"}},"capabilities":[]}]}}"#.utf8)
         return try #require(CoreDeviceInventoryDecoder.decode(data).first)
     }
+}
+
+@MainActor
+private final class PostureFixtureTransport: DevicePostureTransport {
+    private let stream: AsyncThrowingStream<Double?, any Error>
+    let updates: AsyncThrowingStream<Double?, any Error>.Continuation
+    private var began: CheckedContinuation<Void, Never>?
+    private(set) var didBegin = false
+    private var sentEvent: CheckedContinuation<Void, Never>?
+    private var didSend = false
+    private var didFinish: CheckedContinuation<Void, Never>?
+    private var processed: CheckedContinuation<Void, Never>?
+    private var pendingSend: CheckedContinuation<Void, Never>?
+    var holdsSend = false
+    var sendError: (any Error)?
+    private(set) var sent: [DevicePosture] = []
+    private(set) var finished = false
+
+    init() { (stream, updates) = AsyncThrowingStream.makeStream() }
+
+    func observe(_ update: @escaping @MainActor (Double?) -> Void) async throws {
+        didBegin = true
+        began?.resume(); began = nil
+        defer { finished = true; didFinish?.resume(); didFinish = nil }
+        for try await angle in stream {
+            update(angle)
+            processed?.resume(); processed = nil
+        }
+    }
+
+    func send(_ posture: DevicePosture) async throws {
+        didSend = true
+        sentEvent?.resume(); sentEvent = nil
+        if holdsSend { await withCheckedContinuation { pendingSend = $0 } }
+        try Task.checkCancellation()
+        if let sendError { throw sendError }
+        sent.append(posture)
+    }
+
+    func emit(_ angle: Double?) async { await withCheckedContinuation { processed = $0; updates.yield(angle) } }
+    func waitForObservation() async { if !didBegin { await withCheckedContinuation { began = $0 } } }
+    func waitForSend() async { if !didSend { await withCheckedContinuation { sentEvent = $0 } } }
+    func waitForFinish() async { if !finished { await withCheckedContinuation { didFinish = $0 } } }
+    func finishSend() { pendingSend?.resume(); pendingSend = nil }
 }
 
 private enum ScreenFixtureError: LocalizedError {

@@ -749,6 +749,68 @@ struct InputFocusTests {
         #expect(saved.center == movedCenter)
     }
 
+    @Test func nativeCanvasMovesBetweenWindowsWithoutLosingItsViewport() async throws {
+        _ = NSApplication.shared
+        let display = TestDisplay()
+        display.usesNativeCanvas = true
+        display.naturalSize = NSSize(width: 20, height: 20)
+        let controller = try makeController(display)
+        defer { controller.invalidate() }
+        let initialFrame = try #require(controller.window?.frame)
+        #expect(initialFrame.width >= 500 && initialFrame.height >= 700)
+        display.naturalSize = NSSize(width: 900, height: 900)
+        display.onPropertiesChange?()
+        #expect(controller.window?.frame == initialFrame)
+        let parent = NSViewController()
+        parent.view = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 400))
+        let window = KeyPresentationWindow(contentRect: parent.view.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentViewController = parent
+        defer { window.close() }
+        controller.embed(in: parent)
+        parent.view.layoutSubtreeIfNeeded()
+        let content = controller.presentationViewController.view
+        let scroll = try #require(content.subviews.compactMap { $0 as? NSScrollView }.first)
+        #expect(scroll.documentVisibleRect.contains(display.view.frame))
+        controller.setScale(.pointAccurate)
+        let before = display.view.convert(NSPoint(x: 120, y: 400), to: content)
+        let origin = scroll.contentView.bounds.origin
+        scroll.contentView.scroll(to: NSPoint(x: 60, y: 240))
+        scroll.reflectScrolledClipView(scroll.contentView)
+        let after = display.view.convert(NSPoint(x: 120, y: 400), to: content)
+        #expect(before != after)
+        #expect(after.y == before.y - (scroll.contentView.bounds.minY - origin.y))
+        controller.showCompactWindow()
+        let compact = try #require(controller.window)
+        #expect(display.view.window === compact && compact.isOpaque)
+        #expect(compact.backgroundColor == .windowBackgroundColor)
+        let beforeFit = compact.frame
+        controller.setScale(.fitScreen)
+        #expect(compact.frame != beforeFit)
+        #expect(controller.scaleState(.fitScreen) == .on)
+        controller.setDeviceBezelVisible(false)
+        controller.setDeviceBezelVisible(true)
+        #expect(compact.backgroundColor == .windowBackgroundColor)
+        controller.embed(in: parent)
+        controller.performCanvasZoom(.fit)
+        parent.view.setFrameSize(NSSize(width: 400, height: 300))
+        parent.view.layoutSubtreeIfNeeded()
+        #expect(scroll.documentVisibleRect.contains(display.view.frame))
+        #expect(display.disconnectCount == 0)
+        controller.showCompactWindow()
+        let beforeRestart = compact.frame
+        await controller.prepareForRestart()
+        let replacement = TestDisplay()
+        replacement.usesNativeCanvas = true
+        replacement.naturalSize = NSSize(width: 20, height: 20)
+        controller.reconnect(try makeSession(replacement), present: false)
+        #expect(compact.frame == beforeRestart)
+        replacement.naturalSize = NSSize(width: 900, height: 900)
+        replacement.onPropertiesChange?()
+        #expect(compact.frame == beforeRestart)
+        #expect(replacement.view.window === compact && display.disconnectCount == 1)
+    }
+
     @Test func embeddedZoomKeepsPanningAndScaleSeparateFromCompactGeometry() throws {
         _ = NSApplication.shared
         let display = TestDisplay()
@@ -7373,6 +7435,7 @@ private final class TestDisplayView: NSView {
 
 @MainActor
 private final class TestDisplay: SimulatorDisplay {
+    var usesNativeCanvas = false
     let view: NSView = TestDisplayView(frame: NSRect(x: 0, y: 0, width: 390, height: 844))
     let input = InputView()
     var captureDisplayID: UInt32?

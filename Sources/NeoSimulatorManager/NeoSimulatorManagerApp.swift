@@ -94,11 +94,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var quitKeepingDevicesRunning: Bool?
     private var restartsAfterQuitting = false
     private var remoteWindows: [DeviceInventoryID: RemoteDeviceWindowController] = [:] {
-        didSet { mainWindow?.reloadDeviceArtwork() }
+        didSet { updateDevicePostureScreens(); mainWindow?.reloadDeviceArtwork() }
     }
     private var simulatorHosts: [URL: HostApplication] = [:]
     private var simulatorWindows: [DeviceInventoryID: DeviceWindowController] = [:] {
-        didSet { mainWindow?.reloadDeviceArtwork() }
+        didSet { updateDevicePostureScreens(); mainWindow?.reloadDeviceArtwork() }
+    }
+    private func updateDevicePostureScreens() {
+        model.setOpenDeviceScreens(quitting ? [] : Set(simulatorWindows.keys).union(remoteWindows.keys))
     }
     private var displayXcodeURL: URL?
     private var presentationTask: Task<Void, any Error>?
@@ -119,6 +122,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             switch self {
             case .simulator(let controller): controller
             case .remote(let controller): controller
+            }
+        }
+
+        var canControlDevice: Bool {
+            switch self {
+            case .simulator(let controller): controller.session.canPerformCommands
+            case .remote(let controller): controller.session.state == .connected
             }
         }
 
@@ -406,6 +416,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func stopSimulatorPresentations() async throws {
         _ = await presentationTask?.result
+        await model.stopDevicePostures()
         for host in simulatorHosts.values { try await host.stop(keepingDevicesRunning: true) }
         simulatorHosts.removeAll()
         simulatorWindows.removeAll()
@@ -469,7 +480,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller.onSelectionChange = { [weak self] identifier in self?.selectedDeviceChanged(identifier) }
         controller.onScreenAction = { [weak self] action in
             guard let self, let identifier = self.mainWindow?.liveDeviceIdentifier,
-                  let screen = self.screen(for: identifier), screen.supports(action), screen.isEnabled(action) else { return }
+                  let screen = self.screen(for: identifier) else { return }
+            if action.hasPrefix("posture."), let posture = DevicePosture(rawValue: String(action.dropFirst("posture.".count))),
+               let source = self.model.devicePostures[identifier], screen.canControlDevice,
+               !self.model.managingDeviceIDs.contains(identifier) {
+                Task {
+                    do { try await source.select(posture) }
+                    catch is CancellationError {}
+                    catch { self.present(error) }
+                }
+                if case .simulator(let controller) = screen { controller.focusInput() }
+                self.updateScreenToolbar()
+                return
+            }
+            guard screen.supports(action), screen.isEnabled(action) else { return }
             screen.perform(action)
             self.updateScreenToolbar()
         }
@@ -479,8 +503,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func updateScreenToolbar() {
         guard let identifier = mainWindow?.liveDeviceIdentifier, let screen = screen(for: identifier) else { return }
         simulatorMenus.updateKeyEquivalents(for: (screen.commandTarget as? DeviceWindowController)?.session.capabilities)
-        mainWindow?.updateScreenToolbar(supports: screen.supports, isEnabled: screen.isEnabled,
+        let posture = model.devicePostures[identifier]
+        mainWindow?.updateScreenToolbar(supports: { action in
+            action == "rotate" && posture?.isSupported == true ? false : screen.supports(action)
+        }, isEnabled: screen.isEnabled,
                                        recordingTitle: screen.recordingTitle, resizingApp: screen.resizingApp, capturesKeyboard: screen.capturesKeyboard)
+        mainWindow?.updateDevicePosture(posture, isEnabled: screen.canControlDevice && !model.managingDeviceIDs.contains(identifier))
         mainWindow?.updateCanvasZoom(supports: screen.supports, isEnabled: screen.isEnabled, isSelected: screen.canvasZoomIsSelected)
     }
 
@@ -523,8 +551,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         observeRemoteDevices()
         model.onOpenRemoteDevice = { [weak self] device in self?.openRemoteScreen(device) }
         model.beforeStoppingScreens = { [weak self] in
-            try await self?.stopSimulatorPresentations()
-            try await self?.stopRemoteScreens()
+            do {
+                try await self?.stopSimulatorPresentations()
+                try await self?.stopRemoteScreens()
+            } catch {
+                self?.updateDevicePostureScreens()
+                throw error
+            }
         }
         model.beforeManagingRemoteDevices = { [weak self] identifiers in
             try await self?.stopRemoteScreens(for: identifiers)
@@ -641,6 +674,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if restartsAfterQuitting { quitKeepingDevicesRunning = nil }
                 restartsAfterQuitting = false
                 model.resumeAfterCancelledQuit()
+                updateDevicePostureScreens()
                 mainWindow?.resumeInspectorAfterCancelledQuit()
                 startInventoryObservation()
                 if !(error is CancellationError) { present(error) }
@@ -713,6 +747,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.mainWindow?.showDevicePreview(ifDisplaying: id)
             }
             controller.onShowInMainWindow = { [weak self] in self?.showScreenInMainWindow(id) }
+            controller.onConnect = { [weak self, weak controller] in
+                guard let self, self.remoteWindows[id] === controller else { return }
+                await self.model.deviceScreenDidConnect(id)
+            }
             controller.onChange = { [weak self] in self?.updateScreenToolbar() }
             remoteWindows[id] = controller
         }
@@ -1005,6 +1043,9 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     private let primaryScreenActions = NSGlassEffectView()
     private let profileScreenActions = NSGlassEffectView()
     private var screenActionButtons: [String: NSButton] = [:]
+    private var postureButtons: [DevicePosture: NSButton] = [:]
+    private var postureArtworkXcodeURL: URL?
+    private var postureArtworkTask: Task<Void, Never>?
     private let deviceFooter = NSStackView()
     private let activityStack = NSStackView()
     private var canvasBottomToPane: NSLayoutConstraint?
@@ -1482,6 +1523,26 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
                 controls.addArrangedSubview(button)
                 screenActionButtons[identifier] = button
             }
+            if glass === profileScreenActions {
+                for posture in DevicePosture.allCases {
+                    let button = NSButton(title: posture.title, target: self, action: #selector(performScreenAction(_:)))
+                    button.imagePosition = .noImage
+                    button.identifier = NSUserInterfaceItemIdentifier("posture." + posture.rawValue)
+                    button.setButtonType(.pushOnPushOff)
+                    button.bezelStyle = .accessoryBarAction
+                    button.isBordered = false
+                    button.isHidden = true
+                    button.toolTip = posture.title
+                    button.setAccessibilityLabel(posture.title)
+                    button.translatesAutoresizingMaskIntoConstraints = false
+                    NSLayoutConstraint.activate([
+                        button.widthAnchor.constraint(greaterThanOrEqualToConstant: 32),
+                        button.heightAnchor.constraint(equalToConstant: 32),
+                    ])
+                    controls.addArrangedSubview(button)
+                    postureButtons[posture] = button
+                }
+            }
             glass.style = .regular
             glass.cornerRadius = 20
             glass.contentView = controls
@@ -1786,6 +1847,23 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         updateDeviceFooter()
     }
 
+    func updateDevicePosture(_ model: DevicePostureModel?, isEnabled: Bool) {
+        let available = liveDeviceIdentifier.flatMap { id in self.model.inventory.first { $0.id == id } }
+            .map { DevicePostureModel.canInspect(capabilities: $0.capabilities) } ?? false
+        let visible = liveDeviceIdentifier != nil && model?.isSupported == true
+        if visible { loadPostureArtworkIfNeeded() }
+        for (posture, button) in postureButtons {
+            button.isHidden = !visible
+            button.isEnabled = isEnabled && available && model?.canSelect == true
+            button.state = model?.confirmedPosture == posture ? .on : .off
+            button.contentTintColor = button.state == .on ? .controlAccentColor : .labelColor
+            button.toolTip = model?.lastError?.localizedDescription ?? posture.title
+        }
+        profileScreenActions.isHidden = screenActionButtons["rotate"]?.isHidden != false && !visible
+        screenActionBar.isHidden = primaryScreenActions.isHidden && profileScreenActions.isHidden
+        updateDeviceFooter()
+    }
+
     @objc private func resizeApp(_ sender: Any?) {
         onScreenAction?("resizeApp")
     }
@@ -1803,6 +1881,36 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     @objc private func performCanvasZoom(_ sender: NSToolbarItemGroup) {
         guard CanvasZoom.Action.allCases.indices.contains(sender.selectedIndex) else { return }
         onScreenAction?(CanvasZoom.Action.allCases[sender.selectedIndex].rawValue)
+    }
+
+    private func loadPostureArtworkIfNeeded() {
+        guard let xcodeURL = preferredArtworkXcodeURL(), xcodeURL != postureArtworkXcodeURL else { return }
+        postureArtworkXcodeURL = xcodeURL
+        postureArtworkTask?.cancel()
+        for button in postureButtons.values {
+            button.image = nil
+            button.imagePosition = .noImage
+        }
+        let catalogURL = xcodeURL.appendingPathComponent(
+            "Contents/SharedFrameworks/DeviceKit.framework/Versions/A/PlugIns/CoreDevicePopDeviceKitExtension.devicekitplugin/Contents/Resources/Assets.car")
+        postureArtworkTask = Task { [weak self] in
+            var images: [DevicePosture: NSImage] = [:]
+            for posture in DevicePosture.allCases {
+                let name = switch posture {
+                case .closed: "v68_Closed"
+                case .partiallyOpen: "v68_HalfOpen_Landscape"
+                case .open: "v68_Open"
+                }
+                let resource = try? await DeviceSymbolResource.load(named: name, from: catalogURL)
+                guard !Task.isCancelled else { return }
+                images[posture] = resource?.image
+            }
+            guard let self else { return }
+            for (posture, button) in self.postureButtons {
+                button.image = images[posture]
+                button.imagePosition = button.image == nil ? .noImage : .imageOnly
+            }
+        }
     }
 
     @objc private func performScreenAction(_ sender: NSButton) {
@@ -4059,6 +4167,7 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
     let session: RemoteDeviceScreenSession
     var onClose: (() -> Void)?
     var onChange: (() -> Void)?
+    var onConnect: (() async -> Void)?
     var onShowInMainWindow: (() -> Void)? { didSet { update() } }
     let presentationViewController = RemoteDevicePresentationViewController()
     var isEmbedded: Bool { presentationViewController.parent != nil }
@@ -4346,12 +4455,16 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
     }
 
     func connectIfNeeded() {
-        guard !closing, !mayClose, connectionTask == nil, session.state != .connected else { return }
+        guard !closing, !mayClose, connectionTask == nil else { return }
         issue = nil
         connectionTask = Task { [weak self] in
             guard let self else { return }
             defer { self.connectionTask = nil; self.update() }
-            do { try await self.session.start() }
+            do {
+                try await self.session.start()
+                try Task.checkCancellation()
+                await self.onConnect?()
+            }
             catch is CancellationError {}
             catch { if !self.closing { self.showIssue(error) } }
         }

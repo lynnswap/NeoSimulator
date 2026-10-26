@@ -6,6 +6,163 @@ import Testing
 
 @Suite(.serialized, .timeLimit(.minutes(1))) @MainActor
 struct ManagerModelTests {
+    @Test func openingASimulatorRetriesItsFailedPostureAfterPresentationSucceeds() async throws {
+        guard case .simulator(let simulator) = simulator(deviceSet: "/custom-device-set") else { return }
+        let device = InventoryDevice.simulator(simulator.inventoryCopy(ownerXcodeURL: nil, capabilities: DevicePosturePayload.features))
+        let source = ManagerModelSource(devices: [device])
+        let postures = ManagerPostureConnections()
+        var events = source.events.makeAsyncIterator()
+        var postureEvents = postures.events.stream.makeAsyncIterator()
+        let failures = AsyncStream<Void>.makeStream()
+        var failureEvents = failures.stream.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source, makeDevicePosture: postures.model)
+        manager.onError = { _ in failures.continuation.yield(()) }
+        await manager.refresh()
+        manager.openDevice(device.id)
+        #expect(await events.next() == .open(device.id))
+        manager.setOpenDeviceScreens([device.id])
+        #expect(manager.isBusy && manager.devicePostures.isEmpty)
+        await source.completeOpen()
+        #expect(await postureEvents.next() == .observing(device.id))
+        #expect(!manager.isBusy)
+        let failed = try #require(manager.devicePostures[device.id])
+        postures.failCurrentObservation()
+        #expect(await postureEvents.next() == .stopped(device.id))
+        try #require(failed.state == .failed)
+
+        manager.openDevice(device.id)
+        #expect(await events.next() == .open(device.id))
+        #expect(manager.devicePostures[device.id] === failed)
+        await source.failOpen()
+        _ = await failureEvents.next()
+        #expect(manager.devicePostures[device.id] === failed && failed.state == .failed)
+
+        manager.openDevice(device.id)
+        #expect(await events.next() == .open(device.id))
+        #expect(manager.devicePostures[device.id] === failed)
+        await source.completeOpen()
+        for _ in 0..<200 where manager.isBusy { try await Task.sleep(for: .milliseconds(10)) }
+        try #require(!manager.isBusy && manager.devicePostures[device.id] !== failed)
+        #expect(await postureEvents.next() == .observing(device.id))
+        #expect(failed.state == .stopped && manager.devicePostures[device.id]?.canSelect == true)
+        #expect(postures.identifiers == [device.id, device.id])
+        await manager.stopDevicePostures()
+        #expect(await postureEvents.next() == .stopped(device.id))
+    }
+
+    @Test func connectingAScreenReplacesItsFailedPostureOwnerAfterDrainingIt() async throws {
+        let features = DevicePosturePayload.features
+        let data = try JSONSerialization.data(withJSONObject: ["result": ["devices": [[
+            "identifier": "remote-command", "properties": ["hardware": ["reality": "physical", "hardwareModel": "V68AP"],
+                "state": ["name": "Duo"], "connection": ["state": "connected"]],
+            "capabilities": features.sorted().map { ["featureIdentifier": $0] }]]]])
+        let device = InventoryDevice.remote(try #require(CoreDeviceInventoryDecoder.decode(data).first))
+        let postures = ManagerPostureConnections()
+        var events = postures.events.stream.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: ManagerModelSource(devices: [device]), makeDevicePosture: postures.model)
+        await manager.refresh()
+        manager.setOpenDeviceScreens([device.id])
+        #expect(await events.next() == .observing(device.id))
+        let failed = try #require(manager.devicePostures[device.id])
+        await manager.deviceScreenDidConnect(device.id)
+        #expect(manager.devicePostures[device.id] === failed)
+        postures.failCurrentObservation()
+        #expect(await events.next() == .stopped(device.id))
+        #expect(failed.state == .failed && !failed.canSelect)
+        await manager.deviceScreenDidConnect(device.id)
+        #expect(await events.next() == .observing(device.id))
+        #expect(failed.state == .stopped)
+        #expect(manager.devicePostures[device.id] !== failed && manager.devicePostures[device.id]?.canSelect == true)
+        #expect(postures.identifiers == [device.id, device.id])
+        await manager.stopDevicePostures()
+        #expect(await events.next() == .stopped(device.id))
+    }
+
+    @Test func restartingAnOpenSimulatorReplacesPostureObservationAfterManagementFinishes() async throws {
+        guard case .simulator(let simulator) = simulator(deviceSet: "/custom-device-set") else { return }
+        let device = InventoryDevice.simulator(simulator.inventoryCopy(ownerXcodeURL: nil, capabilities: DevicePosturePayload.features))
+        let source = ManagerModelSource(devices: [device])
+        let postures = ManagerPostureConnections()
+        var events = source.events.makeAsyncIterator()
+        var postureEvents = postures.events.stream.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source, makeDevicePosture: postures.model)
+        var failures: [any Error] = []
+        manager.onError = { failures.append($0) }
+        await manager.refresh()
+        manager.setOpenDeviceScreens([device.id])
+        #expect(await postureEvents.next() == .observing(device.id))
+        #expect(manager.devicePostures[device.id]?.canSelect == true)
+
+        await source.holdManagement()
+        manager.manage(.restart, devices: [device])
+        #expect(await postureEvents.next() == .stopped(device.id))
+        #expect(await events.next() == .manage(.restart, [device.id]))
+        // Inventory still advertises the old booted simulator during restart.
+        await manager.inventoryDidChange()
+        manager.setOpenDeviceScreens([device.id])
+        #expect(manager.devicePostures[device.id] == nil)
+        #expect(postures.identifiers == [device.id])
+        await source.completeManagement(.restart)
+        #expect(await postureEvents.next() == .observing(device.id))
+        #expect(postures.identifiers == [device.id, device.id])
+        #expect(manager.devicePostures[device.id]?.canSelect == true)
+        #expect(failures.isEmpty)
+
+        // A presentation-preparation failure must restore controls for a screen
+        // that remains open, even though the backend management never started.
+        manager.beforeManagingSimulators = { _, _ in throw ManagerModelSource.Failure.unavailable }
+        manager.manage(.restart, devices: [device])
+        #expect(await postureEvents.next() == .stopped(device.id))
+        #expect(await postureEvents.next() == .observing(device.id))
+        #expect(postures.identifiers.count == 3 && failures.count == 1)
+        manager.setOpenDeviceScreens([])
+        manager.closeDevice(device.id, keepingDeviceRunning: true, after: Task {})
+        await manager.inventoryDidChange()
+        #expect(await postureEvents.next() == .stopped(device.id))
+        #expect(await events.next() == .close(device.id))
+        #expect(manager.devicePostures.isEmpty && postures.identifiers.count == 3)
+        await manager.stopDevicePostures()
+    }
+
+    @Test func aRemoteScreenUsesItsCommandIdentityAndClosingDuringManagementPreventsResubscription() async throws {
+        let features = DevicePosturePayload.features.union(["com.apple.coredevice.feature.rebootdevice"])
+        let data = try JSONSerialization.data(withJSONObject: ["result": ["devices": [[
+            "identifier": "coredevice-command-id", "properties": [
+                "hardware": ["reality": "physical", "udid": "different-hardware-udid", "hardwareModel": "V68AP"],
+                "state": ["name": "Remote Duo"], "connection": ["state": "connected"]],
+            "capabilities": features.sorted().map { ["featureIdentifier": $0] }]]]])
+        let device = InventoryDevice.remote(try #require(CoreDeviceInventoryDecoder.decode(data).first))
+        let source = ManagerModelSource(devices: [device])
+        let postures = ManagerPostureConnections()
+        var events = source.events.makeAsyncIterator()
+        var postureEvents = postures.events.stream.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source, makeDevicePosture: postures.model)
+        await manager.refresh()
+        manager.setOpenDeviceScreens([device.id])
+        #expect(await postureEvents.next() == .observing(.coreDevice("coredevice-command-id")))
+        #expect(manager.devicePostures[device.id]?.confirmedPosture == .closed)
+        manager.beforeManagingRemoteDevices = { identifiers in
+            #expect(identifiers == [device.id])
+            // stopAndClose removes the actual remote session before management.
+            manager.setOpenDeviceScreens([])
+        }
+        await source.holdManagement()
+        manager.manage(.restart, devices: [device])
+        #expect(await postureEvents.next() == .stopped(device.id))
+        #expect(await events.next() == .manage(.restart, [device.id]))
+        await manager.inventoryDidChange()
+        #expect(manager.devicePostures.isEmpty && postures.identifiers == [device.id])
+        await source.completeManagement(.restart)
+        for _ in 0..<200 where !manager.managingDeviceIDs.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(manager.managingDeviceIDs.isEmpty)
+        #expect(manager.devicePostures.isEmpty && postures.identifiers == [device.id])
+        manager.setOpenDeviceScreens([device.id])
+        #expect(await postureEvents.next() == .observing(device.id))
+        #expect(postures.identifiers == [device.id, device.id])
+        await manager.stopDevicePostures()
+        #expect(await postureEvents.next() == .stopped(device.id))
+    }
+
     @Test func screenRestorationKeepsItsSourceAndPresentation() async throws {
         let device = SimulatorDeviceIdentifier("test-device", deviceSetPath: "/custom/testing devices")
         let xcode = URL(fileURLWithPath: "/Applications/Other Xcode.app", isDirectory: true)
@@ -361,7 +518,7 @@ struct ManagerModelTests {
 }
 
 private actor ManagerModelSource: SimulatorManagerSource {
-    enum Event: Equatable, Sendable { case read(DeviceInventoryID), write(DeviceInventoryID), open(DeviceInventoryID), quit, manage(DeviceManagementAction, [DeviceInventoryID]) }
+    enum Event: Equatable, Sendable { case read(DeviceInventoryID), write(DeviceInventoryID), open(DeviceInventoryID), close(DeviceInventoryID), quit, manage(DeviceManagementAction, [DeviceInventoryID]) }
     enum Failure: LocalizedError {
         case unavailable, native
         var errorDescription: String? { self == .native ? "Native shutdown failed" : "Unavailable" }
@@ -369,11 +526,12 @@ private actor ManagerModelSource: SimulatorManagerSource {
     nonisolated let events: AsyncStream<Event>
     private let continuation: AsyncStream<Event>.Continuation
     private let devices: [InventoryDevice]
+    private var holdsManagement = false
     private var immediateRead: SimulatorDeviceSettings?
     private var readContinuation: CheckedContinuation<SimulatorDeviceSettings, any Error>?
+    private var openContinuation: CheckedContinuation<Void, any Error>?
     private var writeContinuation: CheckedContinuation<SimulatorDeviceSettings, any Error>?
     private var pendingWrite: SimulatorDeviceSettings?
-    private var openContinuation: CheckedContinuation<Void, Never>?
     private(set) var writeInputs: [SimulatorDeviceSettings?] = []
     private(set) var readCount = 0
     private(set) var lastOpenXcodeURL: URL?
@@ -382,7 +540,6 @@ private actor ManagerModelSource: SimulatorManagerSource {
     private(set) var managementRequests = 0
     private(set) var preparationRequests = 0
     private let managementFailureID: DeviceInventoryID?
-    private let holdsManagement: Bool
     private var managementWaiters: [(DeviceManagementAction, CheckedContinuation<Void, Never>)] = []
     private var admittedManagement: Set<UUID> = []
 
@@ -458,18 +615,20 @@ private actor ManagerModelSource: SimulatorManagerSource {
     }
     func quitRenderer(keepingDevicesRunning: Bool?) { continuation.yield(.quit) }
     func selectHost(_ host: SimulatorHost, xcodeURL: URL?) throws { throw Failure.unavailable }
-    func openDevice(_ deviceID: DeviceInventoryID, xcodeURL: URL?) async {
+    func openDevice(_ deviceID: DeviceInventoryID, xcodeURL: URL?) async throws {
         lastOpenXcodeURL = xcodeURL
-        await withCheckedContinuation { waiting in
+        try await withCheckedThrowingContinuation { waiting in
             openContinuation = waiting
             continuation.yield(.open(deviceID))
         }
     }
     func completeOpen() { openContinuation?.resume(); openContinuation = nil }
-    func closeDevice(_ deviceID: DeviceInventoryID, keepingDeviceRunning: Bool) throws { throw Failure.unavailable }
+    func failOpen() { openContinuation?.resume(throwing: Failure.unavailable); openContinuation = nil }
+    func closeDevice(_ deviceID: DeviceInventoryID, keepingDeviceRunning: Bool) { continuation.yield(.close(deviceID)) }
     func creationCatalog() throws -> SimulatorCreationContext { throw Failure.unavailable }
     func createSimulator(named name: String, deviceType: String, runtime: String, context: SimulatorCreationContext) throws -> String { throw Failure.unavailable }
     func pairSimulators(watch: String, phone: String, context: SimulatorCreationContext) throws { throw Failure.unavailable }
+    func holdManagement() { holdsManagement = true }
     func manage(_ action: DeviceManagementAction, devices: [InventoryDevice],
                 preparingDisplay: (@isolated(any) @Sendable (InventoryDevice) async throws -> Void)?) async -> DeviceManagementReport {
         let request = UUID()
@@ -510,9 +669,46 @@ private actor ManagerModelSource: SimulatorManagerSource {
     func completeManagement(_ action: DeviceManagementAction) {
         guard let index = managementWaiters.firstIndex(where: { $0.0 == action }) else { return }
         managementWaiters.remove(at: index).1.resume()
+        holdsManagement = false
     }
     func inspector(for device: InventoryDevice) throws -> DeviceInspector { throw Failure.unavailable }
     func restore(force: Bool) throws { throw Failure.unavailable }
     func synchronizeXcodeConnections() -> Bool { false }
     func testingDeviceVisibilityDidChange() {}
+}
+
+@MainActor
+private final class ManagerPostureConnections {
+    enum Event: Equatable { case observing(DeviceInventoryID), stopped(DeviceInventoryID) }
+    let events = AsyncStream<Event>.makeStream()
+    private(set) var identifiers: [DeviceInventoryID] = []
+    private var current: ManagerPostureTransport?
+    func failCurrentObservation() { current?.fail() }
+    func model(_ identifier: DeviceInventoryID) -> DevicePostureModel {
+        DevicePostureModel(deviceID: identifier) { [self] id in
+            identifiers.append(id)
+            let transport = ManagerPostureTransport(identifier: id, events: events.continuation)
+            current = transport
+            return transport
+        }
+    }
+}
+
+@MainActor
+private final class ManagerPostureTransport: DevicePostureTransport {
+    let identifier: DeviceInventoryID
+    let events: AsyncStream<ManagerPostureConnections.Event>.Continuation
+    private let lifetime = AsyncThrowingStream<Void, any Error>.makeStream()
+    init(identifier: DeviceInventoryID, events: AsyncStream<ManagerPostureConnections.Event>.Continuation) {
+        self.identifier = identifier
+        self.events = events
+    }
+    func observe(_ update: @escaping @MainActor (Double?) -> Void) async throws {
+        update(0)
+        events.yield(.observing(identifier))
+        defer { events.yield(.stopped(identifier)) }
+        for try await _ in lifetime.stream { }
+    }
+    func fail() { lifetime.continuation.finish(throwing: ManagerModelSource.Failure.unavailable) }
+    func send(_ posture: DevicePosture) async throws { }
 }

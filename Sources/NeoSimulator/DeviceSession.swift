@@ -11,8 +11,8 @@ struct DeviceCapabilities {
     var runtimeVersion: UInt32
     /// `SimDevice supportsFeature:`, which combines device-type and runtime support.
     var supportsFeature: (String) -> Bool
-    /// Whether `devicectl` can read and set the physical orientation. It
-    /// reaches only devices in the default device set.
+    /// Whether this presentation controls orientation through `devicectl`.
+    /// Native compositions own their rotation; custom device sets are not addressable by this API.
     var controlsOrientation = true
     /// Whether the device type has a framebuffer mask that captures can apply.
     var hasFramebufferMask = false

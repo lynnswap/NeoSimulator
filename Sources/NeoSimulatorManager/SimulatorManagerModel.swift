@@ -135,6 +135,11 @@ final class SimulatorManagerModel {
     private(set) var activity = ""
     private(set) var backgroundIssue: String?
     let settings: DeviceSettingsModel
+    private(set) var devicePostures: [DeviceInventoryID: DevicePostureModel] = [:]
+    @ObservationIgnored private var postureStarts: [DeviceInventoryID: Task<Void, Never>] = [:]
+    @ObservationIgnored private var postureStops: [DeviceInventoryID: Task<Void, Never>] = [:]
+    @ObservationIgnored private var openDeviceScreens: Set<DeviceInventoryID> = []
+    @ObservationIgnored private let makeDevicePosture: @MainActor (DeviceInventoryID) -> DevicePostureModel
     let frameworks: UIFrameworkSettings
     @ObservationIgnored var onError: ((any Error) -> Void)?
     @ObservationIgnored var onOpenRemoteDevice: ((CoreDeviceDevice) -> Void)?
@@ -159,12 +164,15 @@ final class SimulatorManagerModel {
          presentSimulator: (@MainActor @Sendable (SimulatorPresentationContext) async throws -> Void)? = nil) {
         let controller = SimulatorHostController(rendererApplicationURL: rendererApplicationURL, presentSimulator: presentSimulator)
         self.controller = controller
+        makeDevicePosture = { DevicePostureModel(deviceID: $0) }
         frameworks = UIFrameworkSettings { try await controller.installedXcodes() }
         settings = DeviceSettingsModel(source: controller)
     }
 
-    init(source: any SimulatorManagerSource) {
+    init(source: any SimulatorManagerSource,
+         makeDevicePosture: @escaping @MainActor (DeviceInventoryID) -> DevicePostureModel = { DevicePostureModel(deviceID: $0) }) {
         controller = source
+        self.makeDevicePosture = makeDevicePosture
         frameworks = UIFrameworkSettings { try await source.installedXcodes() }
         settings = DeviceSettingsModel(source: source)
     }
@@ -193,7 +201,10 @@ final class SimulatorManagerModel {
     }
 
     func openDevice(_ identifier: DeviceInventoryID) {
-        perform("Opening simulator…") { try await self.controller.openDevice(identifier, xcodeURL: nil) }
+        perform("Opening simulator…") {
+            try await self.controller.openDevice(identifier, xcodeURL: nil)
+            await self.deviceScreenDidConnect(identifier)
+        }
     }
 
     func restoreScreen(_ restoration: SimulatorScreenRestoration,
@@ -201,6 +212,7 @@ final class SimulatorManagerModel {
         perform("Restoring simulator…") {
             await self.refreshCatalog()
             try await self.controller.openDevice(restoration.deviceID, xcodeURL: restoration.xcodeURL)
+            await self.deviceScreenDidConnect(restoration.deviceID)
             try await present()
         }
     }
@@ -208,6 +220,7 @@ final class SimulatorManagerModel {
     func closeDevice(_ identifier: DeviceInventoryID, keepingDeviceRunning: Bool, after finishing: Task<Void, Never>) {
         // Accept the close before waiting, so a later open cannot overtake it.
         perform("Closing simulator…") {
+            await self.stopDevicePosture(for: identifier)
             await finishing.value
             try await self.controller.closeDevice(identifier, keepingDeviceRunning: keepingDeviceRunning)
         }
@@ -224,6 +237,67 @@ final class SimulatorManagerModel {
                 self.onOpenRemoteDevice?(current)
             }
         }
+    }
+
+    func setOpenDeviceScreens(_ identifiers: Set<DeviceInventoryID>) {
+        openDeviceScreens = identifiers
+        reconcileDevicePostures()
+    }
+
+    func deviceScreenDidConnect(_ identifier: DeviceInventoryID) async {
+        guard openDeviceScreens.contains(identifier), devicePostures[identifier]?.state == .failed else { return }
+        await stopDevicePosture(for: identifier)
+        reconcileDevicePostures()
+    }
+
+    private func reconcileDevicePostures() {
+        for identifier in Array(devicePostures.keys) where !openDeviceScreens.contains(identifier) {
+            beginStoppingDevicePosture(for: identifier)
+        }
+        for identifier in openDeviceScreens { observeDevicePosture(for: identifier) }
+    }
+
+    private func observeDevicePosture(for identifier: DeviceInventoryID) {
+        guard !stopping, !isBusy, !managingDeviceIDs.contains(identifier),
+              postureStops[identifier] == nil, devicePostures[identifier] == nil,
+              let device = inventory.first(where: { $0.id == identifier }),
+              DevicePostureModel.canInspect(capabilities: device.capabilities) else { return }
+        let posture = makeDevicePosture(identifier)
+        devicePostures[identifier] = posture
+        postureStarts[identifier] = Task { [weak self, posture] in
+            do { try await posture.start() }
+            catch is CancellationError {}
+            catch {
+                if self?.devicePostures[identifier] === posture { self?.onError?(error) }
+            }
+        }
+    }
+
+    /// Retire the old owner synchronously, then drain its observation and commands
+    /// before allowing another owner for the same screen identity.
+    private func beginStoppingDevicePosture(for identifier: DeviceInventoryID) {
+        guard postureStops[identifier] == nil,
+              let posture = devicePostures.removeValue(forKey: identifier) else { return }
+        let starting = postureStarts.removeValue(forKey: identifier)
+        starting?.cancel()
+        postureStops[identifier] = Task { [weak self, posture] in
+            await posture.stop()
+            await starting?.value
+            guard let self else { return }
+            self.postureStops.removeValue(forKey: identifier)
+            self.reconcileDevicePostures()
+        }
+    }
+
+    private func stopDevicePosture(for identifier: DeviceInventoryID) async {
+        beginStoppingDevicePosture(for: identifier)
+        await postureStops[identifier]?.value
+    }
+
+    func stopDevicePostures() async {
+        openDeviceScreens.removeAll()
+        for identifier in Array(devicePostures.keys) { beginStoppingDevicePosture(for: identifier) }
+        for task in Array(postureStops.values) { await task.value }
     }
 
     func creationCatalog() async throws -> SimulatorCreationContext {
@@ -263,12 +337,18 @@ final class SimulatorManagerModel {
         let task = Task {
             defer {
                 self.managementRequests.removeValue(forKey: request)
+                self.reconcileDevicePostures()
             }
             do {
                 let preparesOwnedShutdown = action == .shutdown && targets.allSatisfy {
                     if case .simulator = $0 { true } else { false }
                 }
                 if action != .forceShutdown && !preparesOwnedShutdown {
+                    switch action {
+                    case .restart, .erase, .shutdown, .remove, .unpair, .pause:
+                        for device in targets where device.supports(action) { await self.stopDevicePosture(for: device.id) }
+                    default: break
+                    }
                     let remoteIDs = Set(targets.filter { self.managementDisconnectsScreen(action, for: $0) }.map(\.id))
                     if !remoteIDs.isEmpty { try await self.beforeManagingRemoteDevices?(remoteIDs) }
                     try await self.beforeManagingSimulators?(action, targets)
@@ -276,6 +356,7 @@ final class SimulatorManagerModel {
                 let preparation: (@isolated(any) @Sendable (InventoryDevice) async throws -> Void)?
                 if preparesOwnedShutdown || action == .forceShutdown {
                     preparation = { @MainActor target in
+                        if target.supports(action) { await self.stopDevicePosture(for: target.id) }
                         switch target {
                         case .simulator: try await self.beforeManagingSimulators?(action, [target])
                         case .remote: try await self.beforeManagingRemoteDevices?([target.id])
@@ -318,6 +399,7 @@ final class SimulatorManagerModel {
         let task = Task {
             defer {
                 self.managementRequests.removeValue(forKey: request)
+                self.reconcileDevicePostures()
             }
             do { try await operation() }
             catch { self.onError?(InspectorOperationFailure(deviceName: device.name, error: error)) }
@@ -355,6 +437,7 @@ final class SimulatorManagerModel {
             refreshHostStatus()
             let snapshot = await controller.inventory()
             inventory = snapshot.devices
+            reconcileDevicePostures()
             inventoryIssues = snapshot.issues
             updateInventoryIssue()
         } while inventoryRefreshRequested && !stopping
@@ -446,6 +529,7 @@ final class SimulatorManagerModel {
         stopping = true
         pendingOperations.removeAll { $0.refreshCatalog }
         settings.stopReading()
+        await stopDevicePostures()
         statusRefreshTask?.cancel()
         await operationTask?.value
         for task in managementRequests.values.compactMap(\.task) { await task.value }
@@ -481,6 +565,7 @@ final class SimulatorManagerModel {
             defer {
                 self.operationTask = nil
                 self.isBusy = false
+                self.reconcileDevicePostures()
                 self.activity = ""
                 self.settings.setReadingSuspended(false)
             }

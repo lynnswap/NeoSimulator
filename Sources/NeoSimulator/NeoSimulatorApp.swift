@@ -351,7 +351,10 @@ enum NeoSimulatorApp {
         do {
             options = try HostLaunchOptions(arguments: arguments)
         } catch { fail(error) }
-        do { try options.validateInstallation() }
+        do {
+            try options.validateInstallation()
+            try CoreDeviceRuntime.configureUIFrameworks(xcodeURL: options.xcodeURL)
+        }
         catch { fail(error, resultURL: options.startupResultURL) }
         if options.readsCreationCatalog || options.validatesRuntime {
             Task { await runHelper(options: options) }
