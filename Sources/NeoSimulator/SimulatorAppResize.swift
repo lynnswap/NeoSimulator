@@ -1,6 +1,6 @@
 import ABIBridge
 import AppKit
-import Darwin
+@_spi(NeoSimulator) import XcodeSimulatorHost
 
 enum AppResizeEligibility: Equatable, Sendable { case eligible, resizing, unavailable }
 
@@ -45,13 +45,9 @@ final class NativeSimulatorAppResizeTransport: SimulatorAppResizeTransport {
     static let feature = "com.apple.coredevice.feature.resizableappmanagement"
 
     static func make(simulatorUDID: String) async throws -> (any SimulatorAppResizeTransport)? {
-        guard dlopen("/Library/Developer/PrivateFrameworks/CoreDevice.framework/CoreDevice", RTLD_NOW | RTLD_LOCAL) != nil else {
-            throw HostError.unavailable("CoreDevice could not be loaded for app resizing.")
-        }
+        let manager = try CoreDeviceRuntime.deviceManagerIncludingSimulators()
         let runtime = ABIRuntime.shared
         let managerType = try runtime.resolveAndWait(.swift(.type("CoreDevice.DeviceManager")))
-        let shared = try managerType.resolveAndWait(.swift(.staticGetter("shared", as: (() -> NativeSwiftValue).self)))
-        let manager = try unsafe shared.unsafeInvoke()
         let initialize = try managerType.resolveAndWait(.swift(.method("awaitFullInitialization()", as: (() async -> Void).self)))
         try await unsafe initialize.unsafeInvoke(on: manager)
         try Task.checkCancellation()
