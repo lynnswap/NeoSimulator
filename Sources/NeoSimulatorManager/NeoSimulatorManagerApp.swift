@@ -1254,6 +1254,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         table.outlineTableColumn = column
         table.headerView = nil
         table.style = .sourceList
+        table.selectionHighlightStyle = .regular
         table.rowHeight = 52
         table.intercellSpacing = NSSize(width: 0, height: 2)
         table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
@@ -1524,10 +1525,6 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         if managing { cell.progress.startAnimation(nil) } else { cell.progress.stopAnimation(nil) }
         cell.setAccessibilityLabel("\(device.name), \(device.operatingSystem ?? kindTitle(device)), \(device.isAvailable ? "Available" : "Unavailable")")
         return cell
-    }
-
-    func outlineView(_ outlineView: NSOutlineView, didAdd rowView: NSTableRowView, forRow row: Int) {
-        rowView.selectionHighlightStyle = .regular
     }
 
     func outlineViewSelectionDidChange(_ notification: Notification) {
