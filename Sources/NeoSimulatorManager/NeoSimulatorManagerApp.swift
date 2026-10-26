@@ -1622,6 +1622,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         if let item = window?.toolbar?.items.first(where: { $0.itemIdentifier == captureKeyboardIdentifier }) {
             item.isHidden = liveDeviceIdentifier == nil || !supports("captureKeyboard")
             item.isEnabled = isEnabled("captureKeyboard")
+            item.menuFormRepresentation?.state = capturesKeyboard ? .on : .off
+            item.menuFormRepresentation?.isEnabled = item.isEnabled
             if let button = item.view as? NSButton {
                 button.state = capturesKeyboard ? .on : .off
                 button.isEnabled = item.isEnabled
@@ -1650,6 +1652,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         screenActionBar.isHidden = primaryScreenActions.isHidden && profileScreenActions.isHidden
         updateDeviceFooter()
     }
+
+    @objc private func captureKeyboard(_ sender: Any?) { onScreenAction?("captureKeyboard") }
 
     @objc private func performScreenAction(_ sender: NSButton) {
         guard let identifier = sender.identifier?.rawValue else { return }
@@ -1852,8 +1856,12 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             item.label = "Capture Keyboard"
             item.toolTip = "Capture Keyboard"
             item.image = NSImage(systemSymbolName: "keyboard", accessibilityDescription: "Capture Keyboard")
-            let button = NSButton(image: item.image ?? NSImage(), target: self, action: #selector(performScreenAction(_:)))
-            button.identifier = NSUserInterfaceItemIdentifier(itemIdentifier.rawValue)
+            item.target = self
+            item.action = #selector(captureKeyboard(_:))
+            let menuItem = NSMenuItem(title: item.label, action: item.action, keyEquivalent: "")
+            menuItem.target = self
+            item.menuFormRepresentation = menuItem
+            let button = NSButton(image: item.image ?? NSImage(), target: self, action: #selector(captureKeyboard(_:)))
             button.setButtonType(.pushOnPushOff)
             button.bezelStyle = .toolbar
             button.toolTip = item.toolTip
@@ -3798,8 +3806,9 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
         guard let self else { return }
         if let native = self.session.nativeInputView {
             for event in releases { native.flagsChanged(with: event) }
+        } else {
+            self.inputView.releaseModifiers(releases)
         }
-        self.inputView.releaseFocus()
     })
     var capturesKeyboard: Bool { keyboardCapture.isCapturing }
     private var connectionTask: Task<Void, Never>?
@@ -4679,6 +4688,13 @@ private final class RemoteDeviceInputView: NSView {
         enqueue? { [session] in try await session.releaseInputs() }
     }
     override func resignFirstResponder() -> Bool { releaseFocus(); return super.resignFirstResponder() }
+
+    func releaseModifiers(_ events: [NSEvent]) {
+        for event in events {
+            guard let usage = Self.keyUsage[event.keyCode] else { continue }
+            enqueueInput(for: .keyboard) { [session] in try await session.sendKey(usage, state: .up) }
+        }
+    }
 
     override func keyDown(with event: NSEvent) {
         guard isInputEnabled, session.inputCapabilities.contains(.keyboard), !event.isARepeat,
