@@ -189,8 +189,10 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         showDisplay(fitting: { self.initialScale })
     }
 
-    /// Fits the saved scale, or Point Accurate when unsaved, to the screen.
-    private var initialScale: CGFloat { min(scale(for: .fitScreen) ?? .infinity, savedScale ?? 1) }
+    /// Resize App changes guest point geometry; its surface stays at point scale.
+    private var initialScale: CGFloat {
+        session.isResizingApp ? 1 : min(scale(for: .fitScreen) ?? .infinity, savedScale ?? 1)
+    }
 
     /// Recomputes fit if a narrower window switches to the taller expanded title bar.
     private func showDisplay(fitting scale: () -> CGFloat?) {
@@ -1373,9 +1375,9 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         window?.delegate = nil
         window?.close()
     }
-    /// Saves center and scale per screen arrangement, except during restart.
+    /// Saves the primary device's compact geometry per screen arrangement.
     private func saveWindowGeometry() {
-        guard !closed, !isRestarting, !isEmbedded, hasPresentedCompactWindow,
+        guard !closed, !isRestarting, !isEmbedded, !session.isResizingApp, hasPresentedCompactWindow,
               let window, window.contentView === content else { return }
         savedScale = WindowScale.usable(session.display.renderScale)
         preferences.setWindowGeometry(center: NSPoint(x: window.frame.midX, y: window.frame.midY),

@@ -124,10 +124,10 @@ struct DeviceCommand {
                       isAlternate: true,
                       isEnabled: { $0.session.canPerformToolOperation }) { $0.chooseScreenshotDestination() },
         DeviceCommand(id: .recordScreen, title: "Record Screen", key: "r",
-                      isEnabled: { $0.session.canPerformToolOperation && $0.session.recording == nil }) { $0.recordScreen() },
+                      isEnabled: { $0.session.canStartRecording }) { $0.recordScreen() },
         DeviceCommand(id: .recordScreenAs, title: "Record Screen…", key: "r", modifiers: [.command, .option],
                       isAlternate: true,
-                      isEnabled: { $0.session.canPerformToolOperation && $0.session.recording == nil }) { $0.chooseRecordingDestination() },
+                      isEnabled: { $0.session.canStartRecording }) { $0.chooseRecordingDestination() },
         DeviceCommand(id: .stopRecording, title: "Stop Recording",
                       isEnabled: { $0.session.recording.map { !$0.isStopping } ?? false }) { $0.session.stopRecording() },
         // NeoSimulator shortcut; Simulator.app assigns it to Trigger iCloud Sync.

@@ -651,6 +651,7 @@ final class DeviceSession {
 
     var canPerformCommands: Bool { isConnected && display.isBooted }
     var canPerformToolOperation: Bool { canPerformCommands && !isBusy }
+    var canStartRecording: Bool { canPerformToolOperation && recording == nil && !isStartingAppResize }
 
     // MARK: Immediate device input
 
@@ -1709,6 +1710,9 @@ final class DeviceSession {
     /// Announces recording state changes to the device plugin.
     func startRecording(to destination: RecordingStore.Destination, mask: DeviceTools.ScreenMask) throws {
         guard canPerformCommands, recording == nil else { return }
+        guard !isStartingAppResize else {
+            throw HostError.operation("Wait for the app display to connect before starting a recording.")
+        }
         recording = try recordings.start(to: destination, process: { [makeRecordingProcess, display] in
             makeRecordingProcess($0, mask, display.captureDisplayID)
         }) { [weak self] in

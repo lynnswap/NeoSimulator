@@ -7,6 +7,85 @@ import Synchronization
 
 @Suite(.serialized) @MainActor
 struct InputFocusTests {
+    @Test func resizingAnAppKeepsPointScaleAcrossCompactMovesAndPreservesPrimaryGeometry() async throws {
+        _ = NSApplication.shared
+        let primary = TestDisplay(), app = TestDisplay()
+        app.naturalSize = NSSize(width: 500, height: 600)
+        primary.appDisplay = app
+        let transport = TestAppResizeTransport()
+        let preferences = MemoryPreferences()
+        let screens = NSScreen.screens.map(\.frame)
+        preferences.setWindowGeometry(center: NSPoint(x: 300, y: 300), scale: 0.5, forDevice: "test-device", screens: screens)
+        let controller = try makeController(primary, preferences: preferences, appResizeTransport: { transport },
+                                            presentCompactWindow: { _ in })
+        defer { controller.invalidate() }
+        controller.showCompactWindow()
+        let parent = NSViewController()
+        parent.view = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 600))
+        controller.embed(in: parent)
+        let saved = preferences.windowGeometry(forDevice: "test-device", screens: screens)
+        try await wait { controller.session.canResizeApp }
+        controller.toggleAppResize()
+        try await wait { controller.session.isResizingApp }
+        #expect(app.renderScale == 1)
+        controller.showCompactWindow()
+        #expect(app.renderScale == 1)
+        controller.window?.setFrameOrigin(NSPoint(x: 500, y: 400))
+        controller.embed(in: parent)
+        let retained = preferences.windowGeometry(forDevice: "test-device", screens: screens)
+        #expect(retained.scale == saved.scale && retained.center == saved.center)
+        controller.session.stopAppResize()
+        controller.showCompactWindow()
+        #expect(primary.renderScale == 0.5)
+    }
+
+    @Test func recordingWaitsForThePendingAppDisplayConnectionAndCapturesTheShownDisplay() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let log = directory.appendingPathComponent("arguments")
+        let simctl = directory.appendingPathComponent("simctl")
+        try """
+        #!/bin/sh
+        printf '%s\n' "$@" > "\(log.path)"
+        for output; do :; done
+        : > "$output"
+        trap 'exit 0' INT
+        echo 'Recording started' >&2
+        while :; do sleep 0.05; done
+        """.write(to: simctl, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: simctl.path)
+        let primary = TestDisplay(), app = TestDisplay()
+        primary.captureDisplayID = 1
+        app.captureDisplayID = 47
+        primary.appDisplay = app
+        primary.holdsAppDisplayConnection = true
+        let transport = TestAppResizeTransport()
+        let controller = try makeController(primary, simctl: simctl, appResizeTransport: { transport })
+        defer { controller.invalidate() }
+        let session = controller.session
+        try await wait { session.canResizeApp }
+        controller.toggleAppResize()
+        try await wait { primary.appDisplayConnection != nil }
+        for id in [DeviceCommand.ID.recordScreen, .recordScreenAs] {
+            #expect(!DeviceCommand.command(id).isEnabled(controller))
+        }
+        #expect(throws: HostError.self) {
+            try session.startRecording(to: .file(directory.appendingPathComponent("pending.mov")), mask: .ignored)
+        }
+        if let unexpected = session.recording { unexpected.stop(); try await unexpected.waitUntilFinished() }
+        #expect(session.recording == nil && !FileManager.default.fileExists(atPath: log.path))
+        primary.completeAppDisplayConnection()
+        try await wait { session.isResizingApp }
+        #expect(DeviceCommand.command(.recordScreen).isEnabled(controller))
+        try session.startRecording(to: .file(directory.appendingPathComponent("app.mov")), mask: .ignored)
+        let recording = try #require(session.recording)
+        try await wait { FileManager.default.fileExists(atPath: log.path) }
+        #expect(try String(contentsOf: log, encoding: .utf8).split(separator: "\n").contains("--display=47"))
+        recording.stop()
+        try await recording.waitUntilFinished()
+    }
+
     @Test func appResizeSwitchesTheCanvasInputAndCaptureAsOneOwnedDisplay() async throws {
         _ = NSApplication.shared
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -6787,8 +6866,12 @@ private final class TestDisplay: SimulatorDisplay {
     var appDisplay: TestDisplay?
     var appDisplayError: (any Error)?
     var requestedDisplayUniqueIDs: [String] = []
+    var holdsAppDisplayConnection = false
+    var appDisplayConnection: CheckedContinuation<Void, Never>?
+    func completeAppDisplayConnection() { appDisplayConnection?.resume(); appDisplayConnection = nil }
     func connectAppDisplay(uniqueID: String) async throws -> any SimulatorDisplay {
         requestedDisplayUniqueIDs.append(uniqueID)
+        if holdsAppDisplayConnection { await withCheckedContinuation { appDisplayConnection = $0 } }
         if let appDisplayError { throw appDisplayError }
         guard let appDisplay else { throw HostError.unavailable("No dedicated display") }
         return appDisplay
