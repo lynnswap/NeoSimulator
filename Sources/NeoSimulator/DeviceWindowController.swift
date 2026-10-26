@@ -234,18 +234,14 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
 
     /// Recomputes initial placement if scaling changes the title-bar height.
     private func placeAtInitialScale(_ place: ((NSWindow) -> Void)?) {
-        if session.display.usesNativeCanvas {
-            resizeDisplay()
-            if let window { place?(window) }
-            return
-        }
+        if session.display.usesNativeCanvas { displayGeometryChanged(placing: place); return }
         let scale = initialScale
         fitting.setScale(scale)
-        didRotate(placing: place)
+        displayGeometryChanged(placing: place)
         let refit = initialScale
         guard refit < scale else { return }
         fitting.setScale(refit)
-        didRotate(placing: place)
+        displayGeometryChanged(placing: place)
     }
 
     /// The frames of the Mac's screens, whose arrangement keys the saved
@@ -471,7 +467,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         showTouchIndicators()
         updateContentMinimumSize()
         if isEmbedded { updateEmbeddedScale() }
-        else if session.isResizingApp { resizeDisplay() }
+        else if session.isResizingApp || session.display.usesNativeCanvas { resizeDisplay() }
         else { updateWindowSize() }
         if presentationWindow?.isKeyWindow == true { activateDisplay(focusingInput: restoreInputFocus) }
     }
@@ -584,7 +580,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         orientationRead = .notStarted
         initialPlacement = nil
         fitting.setScale(scale)
-        didRotate()
+        displayGeometryChanged()
         if present { showAndActivate() } else { readInitialOrientation() }
         // A window that stayed key gets no new key notification.
         if presentationWindow?.isKeyWindow == true { activateDisplay(focusingInput: restoreInputFocus) }
@@ -621,7 +617,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
             if !self.isEmbedded, let placement = self.initialPlacement, self.window?.frame == placement.frame {
                 self.placeAtInitialScale(placement.place)
             } else {
-                self.didRotate()
+                self.displayGeometryChanged()
             }
         }, failure: { [weak self] in
             guard let self, self.session === session else { return }
@@ -682,7 +678,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         session.run({ [weak self] in
             guard let self else { return }
             try await self.session.rotate(left: left)
-            self.didRotate()
+            self.displayGeometryChanged()
         }, failure: { [weak self] in self?.present($0) })
     }
 
@@ -690,7 +686,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         session.run({ [weak self] in
             guard let self else { return }
             try await self.session.setOrientation(orientation)
-            self.didRotate()
+            self.displayGeometryChanged()
         }, failure: { [weak self] in self?.present($0) })
     }
 
@@ -721,7 +717,9 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     func setDeviceBezelVisible(_ visible: Bool) {
         session.display.setChromeVisible(visible)
         bezelChanged()
-        if isEmbedded { updateEmbeddedScale() } else { updateWindowSize() }
+        if isEmbedded { updateEmbeddedScale() }
+        else if session.display.usesNativeCanvas { resizeDisplay() }
+        else { updateWindowSize() }
     }
 
     /// Applies bezel padding, background, header shape, and resize behavior.
@@ -1128,10 +1126,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     // Only orientation changes resize the window; other properties preserve its frame.
     private func displayPropertiesChanged() {
         guard !closed else { return }
-        if session.display.usesNativeCanvas {
-            if isEmbedded { updateEmbeddedScale() } else { resizeDisplay() }
-            return
-        }
+        if session.display.usesNativeCanvas { displayGeometryChanged(); return }
         if session.isResizingApp { appGeometryChanged(); return }
         session.followBacklight()
         let enabled = HostPreferences.defaults.bool(forKey: HostPreferences.rotateWindowWhenSignaledByGuest)
@@ -1139,15 +1134,18 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         // A guest rotation before the first orientation reading does not
         // count as a change to the new window's placement.
         let untouched = initialPlacement.map { window?.frame == $0.frame } ?? false
-        didRotate()
+        displayGeometryChanged()
         if untouched, let frame = window?.frame { initialPlacement?.frame = frame }
     }
 
-    /// Preserves display scale and the window's top edge during rotation, then keeps it on screen.
-    private func didRotate(placing place: ((NSWindow) -> Void)? = nil) {
+    /// Native compositions fit their existing viewport as readiness and posture change.
+    /// Legacy displays preserve scale and the window's top edge during rotation.
+    private func displayGeometryChanged(placing place: ((NSWindow) -> Void)? = nil) {
         if isEmbedded { updateEmbeddedScale(); return }
-        guard !closed, let window, !fitting.fitsWindow else {
+        guard !closed, let window else { return }
+        if session.display.usesNativeCanvas || fitting.fitsWindow {
             resizeDisplay()
+            place?(window)
             return
         }
         let previous = window.frame

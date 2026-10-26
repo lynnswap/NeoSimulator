@@ -749,7 +749,7 @@ struct InputFocusTests {
         #expect(saved.center == movedCenter)
     }
 
-    @Test func nativeCanvasMovesBetweenWindowsWithoutLosingItsViewport() throws {
+    @Test func nativeCanvasMovesBetweenWindowsWithoutLosingItsViewport() async throws {
         _ = NSApplication.shared
         let display = TestDisplay()
         display.usesNativeCanvas = true
@@ -797,6 +797,18 @@ struct InputFocusTests {
         parent.view.layoutSubtreeIfNeeded()
         #expect(scroll.documentVisibleRect.contains(display.view.frame))
         #expect(display.disconnectCount == 0)
+        controller.showCompactWindow()
+        let beforeRestart = compact.frame
+        await controller.prepareForRestart()
+        let replacement = TestDisplay()
+        replacement.usesNativeCanvas = true
+        replacement.naturalSize = NSSize(width: 20, height: 20)
+        controller.reconnect(try makeSession(replacement), present: false)
+        #expect(compact.frame == beforeRestart)
+        replacement.naturalSize = NSSize(width: 900, height: 900)
+        replacement.onPropertiesChange?()
+        #expect(compact.frame == beforeRestart)
+        #expect(replacement.view.window === compact && display.disconnectCount == 1)
     }
 
     @Test func embeddedZoomKeepsPanningAndScaleSeparateFromCompactGeometry() throws {
