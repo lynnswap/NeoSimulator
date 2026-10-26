@@ -1,5 +1,6 @@
 import ABIBridge
 import AppKit
+@_spi(NeoSimulator) import XcodeSimulatorHost
 import Darwin
 import MachO
 import ObjectiveC
@@ -1368,6 +1369,7 @@ protocol SimulatorDisplay: AnyObject {
     var captureDisplayID: UInt32? { get }
     func connectAppDisplay(uniqueID: String) async throws -> any SimulatorDisplay
     var view: NSView { get }
+    var usesNativeCanvas: Bool { get }
     /// The input digitizer, or the loaded plugin's overlay.
     var inputView: NSView { get }
     /// Loaded device-profile plugin, or nil until available. Throws if unusable,
@@ -1487,6 +1489,7 @@ protocol SimulatorDisplay: AnyObject {
 }
 
 extension SimulatorDisplay {
+    var usesNativeCanvas: Bool { false }
     var captureDisplayID: UInt32? { nil }
     func connectAppDisplay(uniqueID: String) async throws -> any SimulatorDisplay {
         throw HostError.unavailable("This display cannot connect to the app resizing screen.")
@@ -1497,11 +1500,14 @@ extension SimulatorDisplay {
 final class SimulatorConnection: SimulatorDisplay {
     let view: NSView
     /// `SimDisplayView.digitizerView`.
-    private let digitizerView: NSView
+    private let digitizerView: NSView?
     /// The display's user-interface plugin, once found.
     private var plugin: SimulatorUserInterfacePlugin?
     private let runtime: SimulatorRuntime
-    private let chromeView: NSView
+    private let chromeView: NSView?
+    private let nativeCanvas: NativeDeviceCanvas?
+    private var nativeScale: CGFloat = 1
+    var usesNativeCanvas: Bool { nativeCanvas != nil }
     private let device: SimulatorDevice
     private let buttonTarget: UInt32
     let captureDisplayID: UInt32?
@@ -1511,7 +1517,9 @@ final class SimulatorConnection: SimulatorDisplay {
     private var screenEvents: NativeSwiftValue?
     private let screen: AnyObject
 
-    init(device: SimulatorDevice, screen: (identifier: UInt32, object: AnyObject), runtime: SimulatorRuntime) throws {
+    init(device: SimulatorDevice, screen: (identifier: UInt32, object: AnyObject), runtime: SimulatorRuntime,
+         nativeCanvas: NativeDeviceCanvas? = nil) throws {
+        self.nativeCanvas = nativeCanvas
         self.device = device
         self.runtime = runtime
         self.screen = screen.object
@@ -1519,6 +1527,14 @@ final class SimulatorConnection: SimulatorDisplay {
         let display = runtime.display
         buttonTarget = try unsafe display.buttonTarget.unsafeInvoke(on: screen.object)
         hidClient = try runtime.input.connect(to: device)
+        if let nativeCanvas {
+            view = nativeCanvas.view
+            view.frame.size = nativeCanvas.naturalSize
+            digitizerView = nil
+            chromeView = nil
+            nativeCanvas.onSizeChange = { [weak self] in self?.onPropertiesChange?() }
+            return
+        }
         guard let view = try unsafe display.createDisplay.unsafeInvoke(
             on: display.factoryClass as AnyObject, device.object, screen.identifier)
         else {
@@ -1561,9 +1577,10 @@ final class SimulatorConnection: SimulatorDisplay {
 
     var isBooted: Bool { !disconnected && device.state == 3 }
 
-    var inputView: NSView { plugin?.overlayView ?? digitizerView }
+    var inputView: NSView { nativeCanvas?.inputView ?? plugin?.overlayView ?? digitizerView ?? view }
 
     func userInterfacePlugin() throws -> SimulatorUserInterfacePlugin? {
+        guard nativeCanvas == nil else { return nil }
         if let plugin { return plugin }
         let display = runtime.display
         guard !disconnected, let object = object_getIvar(view, display.userInterfacePlugin) as AnyObject? else {
@@ -1600,20 +1617,24 @@ final class SimulatorConnection: SimulatorDisplay {
     }
 
     var renderScale: CGFloat {
-        read("read the display scale", otherwise: 0) { try unsafe runtime.display.renderScale.unsafeInvoke(on: view) }
+        if nativeCanvas != nil { return nativeScale }
+        return read("read the display scale", otherwise: 0) { try unsafe runtime.display.renderScale.unsafeInvoke(on: view) }
     }
 
     func setRenderScale(_ scale: CGFloat) {
+        if let nativeCanvas { nativeScale = scale; nativeCanvas.setZoom(scale); return }
         perform("scale the display") { try unsafe runtime.display.setRenderScale.unsafeInvoke(on: view, scale) }
         view.invalidateIntrinsicContentSize()
     }
 
     func size(for scale: CGFloat) -> NSSize {
-        read("measure the display", otherwise: .zero) { try unsafe runtime.display.sizeForScale.unsafeInvoke(on: view, scale) }
+        if let nativeCanvas { return NSSize(width: nativeCanvas.naturalSize.width * scale, height: nativeCanvas.naturalSize.height * scale) }
+        return read("measure the display", otherwise: .zero) { try unsafe runtime.display.sizeForScale.unsafeInvoke(on: view, scale) }
     }
 
     func scale(for size: NSSize) -> CGFloat {
-        read("measure the display", otherwise: 0) { try unsafe runtime.display.scaleForSize.unsafeInvoke(on: view, size) }
+        if let nativeCanvas { return min(size.width / nativeCanvas.naturalSize.width, size.height / nativeCanvas.naturalSize.height) }
+        return read("measure the display", otherwise: 0) { try unsafe runtime.display.scaleForSize.unsafeInvoke(on: view, size) }
     }
 
     var screenScale: CGFloat? {
@@ -1625,6 +1646,7 @@ final class SimulatorConnection: SimulatorDisplay {
     }
 
     var chromePadding: NSSize? {
+        guard let chromeView else { return nil }
         let display = runtime.display
         return read("read the device bezel", otherwise: nil) {
             guard let chrome = try unsafe display.chrome.unsafeInvoke(on: chromeView)
@@ -1634,6 +1656,7 @@ final class SimulatorConnection: SimulatorDisplay {
     }
 
     var resizeRects: [DisplayResizeRect] {
+        guard nativeCanvas == nil else { return [] }
         let display = runtime.display
         return read("read the bezel's resize corners", otherwise: []) {
             let rects = try unsafe display.resizeRects.unsafeInvoke(on: view)
@@ -1650,11 +1673,12 @@ final class SimulatorConnection: SimulatorDisplay {
     }
 
     func setShowsResizeCursors(_ shows: Bool) {
+        guard nativeCanvas == nil else { return }
         perform("show resize cursors") { try unsafe runtime.display.showResizeCursors.unsafeInvoke(on: view, shows) }
     }
 
     var guestInterfaceAngle: Double? {
-        guard !disconnected,
+        guard nativeCanvas == nil, !disconnected,
               let properties = try? unsafe runtime.display.screenProperties.unsafeInvoke(on: screen),
               let orientation = try? unsafe ABIRuntime.shared.object(properties)
                 .resolveAndWait(.objc(.method("uiOrientation", as: (() -> UInt32).self))).unsafeInvoke()
@@ -1667,6 +1691,20 @@ final class SimulatorConnection: SimulatorDisplay {
     }
 
     func send(_ message: HIDMessage, completion: (@MainActor (Error?) -> Void)?) throws {
+        if let nativeCanvas {
+            let usage: (page: Int, usage: Int)? = switch message.input {
+            case .button(.home): (0x0c, 0x40)
+            case .button(.lock): (0x0c, 0x30)
+            case .usage(let page, let code): (Int(page), Int(code))
+            default: nil
+            }
+            if let usage {
+                try nativeCanvas.sendButton(usagePage: usage.page, usage: usage.usage,
+                    state: message.state == .down ? .down : .up)
+                completion?(nil)
+                return
+            }
+        }
         guard let hidClient else { throw HostError.operation("Simulator input is disconnected") }
         try runtime.input.send(message, client: hidClient, completion: completion)
     }
@@ -1725,6 +1763,8 @@ final class SimulatorConnection: SimulatorDisplay {
         }
     }
     func setChromeVisible(_ visible: Bool) {
+        if let nativeCanvas { nativeCanvas.setChromeVisible(visible); return }
+        guard let chromeView else { return }
         let display = runtime.display
         perform("show device chrome") {
             try unsafe display.showChrome.unsafeInvoke(on: view, visible)
@@ -1737,19 +1777,19 @@ final class SimulatorConnection: SimulatorDisplay {
         view.invalidateIntrinsicContentSize()
     }
     func setKeyboardEnabled(_ enabled: Bool) {
-        guard !disconnected, let keyboard = object_getIvar(view, runtime.display.keyboardDelegate) else { return }
+        guard nativeCanvas == nil, !disconnected, let keyboard = object_getIvar(view, runtime.display.keyboardDelegate) else { return }
         perform("enable keyboard input") {
             try unsafe runtime.display.setKeyboardEnabled.unsafeInvoke(on: keyboard as AnyObject, enabled)
         }
     }
     func setSupportsScrolling(_ supports: Bool) {
-        guard !disconnected else { return }
+        guard !disconnected, let digitizerView else { return }
         perform("enable scrolling") {
             try unsafe runtime.display.setSupportsScrolling.unsafeInvoke(on: digitizerView, supports)
         }
     }
     func setWantsEdgeSwipes(_ wants: Bool) {
-        guard !disconnected else { return }
+        guard nativeCanvas == nil, !disconnected else { return }
         perform("tell the device whether edge swipes start on the bezel") {
             let name = "com.apple.UIKit.SimulatorWantsEdgeSwipes"
             try device.setNotificationState(name, to: wants ? 1 : 0)
@@ -1757,25 +1797,25 @@ final class SimulatorConnection: SimulatorDisplay {
         }
     }
     func setSupportsTouchPressure(_ supports: Bool) {
-        guard !disconnected else { return }
+        guard !disconnected, let digitizerView else { return }
         perform("enable touch pressure") {
             try unsafe runtime.display.setSupportsTouchPressure.unsafeInvoke(on: digitizerView, supports)
         }
     }
     func setUsesTrackpadForce(_ uses: Bool) {
-        guard !disconnected else { return }
+        guard !disconnected, let digitizerView else { return }
         perform("use the trackpad's force") {
             try unsafe runtime.display.setUsesTrackpadForce.unsafeInvoke(on: digitizerView, uses)
         }
     }
     func setSimulatedTouchMode(_ mode: SimulatedTouchMode) {
-        guard !disconnected else { return }
+        guard !disconnected, let digitizerView else { return }
         perform("set the touch pressure") {
             try unsafe runtime.display.setSimulatedTouchMode.unsafeInvoke(on: digitizerView, mode.rawValue)
         }
     }
     func setTouchIndicator(_ indicator: TouchIndicator, shown: Bool) {
-        guard !disconnected else { return }
+        guard !disconnected, let digitizerView else { return }
         let display = runtime.display
         perform("show touch indicators") {
             let options = try unsafe display.drawOptionRawValue.unsafeInvoke(on: display.drawOptions.unsafeInvoke(on: digitizerView))
@@ -1785,22 +1825,27 @@ final class SimulatorConnection: SimulatorDisplay {
         }
     }
     func setRotation(degrees: Double) {
+        guard nativeCanvas == nil else { return }
         perform("rotate the display") {
             try unsafe runtime.display.rotation.unsafeInvoke(on: view, Measurement(value: degrees, unit: .degrees))
         }
         view.invalidateIntrinsicContentSize()
     }
-    func beginResize() { perform("begin resizing") { try unsafe runtime.display.beginResize.unsafeInvoke(on: view) } }
+    func beginResize() { guard nativeCanvas == nil else { return }; perform("begin resizing") { try unsafe runtime.display.beginResize.unsafeInvoke(on: view) } }
     func resize(to size: NSSize) {
+        if nativeCanvas != nil { setRenderScale(scale(for: size)); return }
         perform("resize the display") { try unsafe runtime.display.resize.unsafeInvoke(on: view, size) }
         view.invalidateIntrinsicContentSize()
     }
-    func endResize() { perform("end resizing") { try unsafe runtime.display.endResize.unsafeInvoke(on: view) } }
+    func endResize() { guard nativeCanvas == nil else { return }; perform("end resizing") { try unsafe runtime.display.endResize.unsafeInvoke(on: view) } }
     func disconnect() {
         guard !disconnected else { return }
         disconnected = true
-        perform("disconnect the display") {
-            try unsafe runtime.display.disconnect.unsafeInvoke(on: view, NativeSwiftClosure {})
+        if let nativeCanvas { nativeCanvas.onSizeChange = nil; nativeCanvas.disconnect() }
+        else {
+            perform("disconnect the display") {
+                try unsafe runtime.display.disconnect.unsafeInvoke(on: view, NativeSwiftClosure {})
+            }
         }
         // Releasing the registration ends the screen events.
         screenEvents = nil

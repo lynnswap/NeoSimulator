@@ -144,7 +144,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         self.onClose = onClose
         self.onRestart = onRestart
         self.onShutDown = onShutDown
-        content = DeviceContentView(display: session.display.view)
+        content = DeviceContentView(display: session.display.view, usesNativeCanvas: session.display.usesNativeCanvas)
         let natural = session.display.size(for: 1)
         guard natural.width > 0, natural.height > 0 else {
             session.disconnect()
@@ -164,8 +164,8 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         // AppKit draws the opaque title bar; see `updateHeaderShape()`.
         window.titlebarSeparatorStyle = .none
         window.tabbingMode = .disallowed
-        window.backgroundColor = .clear
-        window.isOpaque = false
+        window.backgroundColor = session.display.usesNativeCanvas ? .windowBackgroundColor : .clear
+        window.isOpaque = session.display.usesNativeCanvas
         window.hasShadow = true
         window.isReleasedWhenClosed = false
         // Full screen remains available even when the bezel disables resizing.
@@ -446,7 +446,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     private func appDisplayChanged() {
         guard !closed else { return }
         let restoreInputFocus = (presentationWindow?.firstResponder as? NSView)?.isDescendant(of: content.display) == true
-        content.setDisplay(session.display.view)
+        content.setDisplay(session.display.view, usesNativeCanvas: session.display.usesNativeCanvas)
         content.scrollsDisplay = session.isResizingApp
         fitting.scalesDisplay = !session.isResizingApp
         fitting.attach(session.display, content: content)
@@ -558,7 +558,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         isRestarting = false
         self.session = session
         content.removeFromSuperview()
-        content = DeviceContentView(display: session.display.view)
+        content = DeviceContentView(display: session.display.view, usesNativeCanvas: session.display.usesNativeCanvas)
         fitting.attach(session.display, content: content)
         fitting.scalesDisplay = !session.isResizingApp
         keyboard.display = session.display
@@ -1114,6 +1114,10 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     // Only orientation changes resize the window; other properties preserve its frame.
     private func displayPropertiesChanged() {
         guard !closed else { return }
+        if session.display.usesNativeCanvas {
+            if isEmbedded { updateEmbeddedScale() } else { resizeDisplay() }
+            return
+        }
         if session.isResizingApp { appGeometryChanged(); return }
         session.followBacklight()
         let enabled = HostPreferences.defaults.bool(forKey: HostPreferences.rotateWindowWhenSignaledByGuest)
@@ -1650,7 +1654,9 @@ final class DeviceWindow: NSWindow {
 @MainActor
 private final class DeviceContentView: NSView, DisplayContentView {
     private(set) var display: NSView
-    func setDisplay(_ display: NSView) {
+    private var usesNativeCanvas: Bool
+    func setDisplay(_ display: NSView, usesNativeCanvas: Bool) {
+        self.usesNativeCanvas = usesNativeCanvas
         self.display.removeFromSuperview()
         self.display = display
         previousDisplaySize = nil
@@ -1667,7 +1673,7 @@ private final class DeviceContentView: NSView, DisplayContentView {
     var importFiles: ([URL]) -> Void = { _ in }
     var isEmbedded = false { didSet { if isEmbedded != oldValue { updateViewport() } } }
     var scrollsDisplay = false { didSet { if scrollsDisplay != oldValue { updateViewport() } } }
-    private var usesViewport: Bool { isEmbedded || scrollsDisplay }
+    private var usesViewport: Bool { !usesNativeCanvas && (isEmbedded || scrollsDisplay) }
     private func updateViewport() {
         retainedCanvasCenter = canvasCenter
         let parent = usesViewport ? canvasDocumentView : self
@@ -1700,7 +1706,8 @@ private final class DeviceContentView: NSView, DisplayContentView {
     }
     /// The window's height above the display: the header and the gap below it.
     var heightAboveDisplay: CGFloat { headerHeight + displayGap }
-    init(display: NSView) {
+    init(display: NSView, usesNativeCanvas: Bool) {
+        self.usesNativeCanvas = usesNativeCanvas
         self.display = display
         super.init(frame: .zero)
         wantsLayer = true
@@ -1798,7 +1805,7 @@ private final class DeviceContentView: NSView, DisplayContentView {
             canvasScrollView.reflectScrolledClipView(clip)
             return
         }
-        if isSizedToDisplay {
+        if isSizedToDisplay || usesNativeCanvas {
             display.frame = available
         } else {
             let intrinsic = display.intrinsicContentSize

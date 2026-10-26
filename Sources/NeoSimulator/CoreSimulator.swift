@@ -261,6 +261,7 @@ final class SimulatorDevice {
     /// `SimDeviceType.productFamilyID`: 1 iPhone, 2 iPad, 3 TV, 4 Watch, 7 Vision.
     let productFamily: Int
     let deviceTypeName: String
+    let deviceTypeIdentifier: String
     let hasFramebufferMask: Bool
     /// DeviceCornerRadius in points; zero for a square screen.
     let screenCornerRadius: Double
@@ -292,6 +293,7 @@ final class SimulatorDevice {
         let deviceType = try unsafe interface.deviceType.unsafeInvoke(on: object)
         productFamily = Int(try deviceType.map { try unsafe interface.productFamily.unsafeInvoke(on: $0) } ?? 0)
         deviceTypeName = try deviceType.flatMap { try unsafe interface.deviceTypeName.unsafeInvoke(on: $0) } ?? ""
+        deviceTypeIdentifier = try deviceType.flatMap { try unsafe interface.deviceTypeIdentifier.unsafeInvoke(on: $0) } ?? ""
         hasFramebufferMask = try deviceType.flatMap { try unsafe interface.framebufferMaskURL.unsafeInvoke(on: $0) } != nil
         let capabilities = try deviceType.flatMap { try unsafe interface.deviceTypeCapabilities.unsafeInvoke(on: $0) }
         let deviceCapabilities = capabilities?["capabilities"] as? NSDictionary

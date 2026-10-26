@@ -1,6 +1,7 @@
 import ABIBridge
 import AppKit
 import Observation
+import SwiftUI
 
 /// Reads the same normalized display orientation used by DeviceKit's display and HID owners.
 @MainActor
@@ -106,5 +107,168 @@ final class CoreDeviceDisplayGeometry {
         let size = try unsafe pointSize.unsafeInvoke(on: displaySize.unsafeInvoke(on: value))
         guard size.width > 0, size.height > 0, angle.isFinite else { return nil }
         return RemoteScreenFramebuffer.Display(size: size, angle: angle)
+    }
+}
+
+/// Owns DeviceKit's complete device composition, including the display providers and input view.
+@_spi(NeoSimulator)
+@MainActor
+public final class NativeDeviceCanvas {
+    public let view: NSView
+    private let hosting: NativeCanvasHostingView
+    private let presentation: NativeCanvasPresentation
+    private let values: [NativeSwiftValue]
+    private let sendNativeButton: (Int, Int, RemoteDeviceButtonState) throws -> Void
+    public var naturalSize: CGSize { presentation.naturalSize }
+    public var onSizeChange: (() -> Void)? {
+        get { presentation.onSizeChange }
+        set { presentation.onSizeChange = newValue }
+    }
+
+    public var inputView: NSView {
+        func find(in view: NSView) -> NSView? {
+            if NSStringFromClass(type(of: view)) == "CoreDevicePopDeviceKitExtension.RealityRendererHostView" { return view }
+            return view.subviews.lazy.compactMap { find(in: $0) }.first
+        }
+        return find(in: hosting) ?? hosting
+    }
+
+    public static func connect(simulatorUDID: String) async throws -> NativeDeviceCanvas {
+        try await CoreDeviceDisplayGeometry.loadRuntime()
+        guard let identifier = try await CoreDeviceRemoteScreenDevice.simulatorIdentifier(udid: simulatorUDID),
+              let uuid = UUID(uuidString: identifier) else {
+            throw CLIError.unavailable("native-device-canvas", "The simulator is not available in DeviceKit.")
+        }
+        let remote = try await CoreDeviceRemoteScreenDevice(identifier: identifier)
+        let button = try await remote.implementation(capability: "ButtonHIDCapability",
+            feature: CoreDeviceScreenInput.features[.button]!)
+        let runtime = ABIRuntime.shared
+        let buttonState = try await runtime.resolve(.swift(.type("CoreDevice.HIDButtonState")))
+        let down = try buttonState.makeEnumCase(named: "down")
+        let up = try buttonState.makeEnumCase(named: "up")
+        let send = try await button.type.resolve(.swift(.method("CoreDevice.HIDButton.sendCustomButton(usagePage:usageCode:state:)",
+            as: ((Int, Int, NativeSwiftValue) throws -> Void).self)))
+        let type = try await runtime.resolve(.swift(.type("DeviceKit.DeviceView")))
+        let make = try await type.resolve(.swift(.initializer("init(deviceIdentifier:)",
+            as: ((UUID) -> NativeSwiftValue).self, valueABIs: [type: try .opaque(named: type.name)])))
+        let base = try unsafe make.unsafeInvoke(uuid)
+        let behaviorType = try await runtime.resolve(.swift(.type("DeviceKit.DeviceView.AutoStartBehavior")))
+        let start = try await type.resolve(.swift(.method("liveDeviceAutoStart(_:)",
+            as: ((NativeSwiftValue) -> NativeSwiftValue).self,
+            valueABIs: [behaviorType: try .opaque(named: behaviorType.name), type: try .opaque(named: type.name)])))
+        let activation = try unsafe start.unsafeInvoke(on: base, behaviorType.makeEnumCase(named: "yes"))
+        let visibilityType = try await runtime.resolve(.swift(.type("SwiftUI.Visibility")))
+        let chrome = try await type.resolve(.swift(.method("chromeVisibility(_:)",
+            as: ((NativeSwiftValue) -> NativeSwiftValue).self,
+            valueABIs: [visibilityType: try .opaque(named: visibilityType.name), type: try .opaque(named: type.name)])))
+        let shown = try unsafe chrome.unsafeInvoke(on: base, visibilityType.makeEnumCase(named: "visible"))
+        let hidden = try unsafe chrome.unsafeInvoke(on: base, visibilityType.makeEnumCase(named: "hidden"))
+        func content(_ value: NativeSwiftValue) throws -> AnyView {
+            try value.withCopy { raw in
+                guard let content = raw as? any View else {
+                    throw CLIError.unavailable("native-device-view", "DeviceKit returned a value that is not a SwiftUI view.")
+                }
+                return AnyView(content)
+            }
+        }
+        func activated(_ content: AnyView) throws -> AnyView {
+            try activation.withCopy { raw in
+                guard let modified = raw as? any NativeCanvasModifier else {
+                    throw CLIError.unavailable("native-device-activation", "DeviceKit returned an unsupported activation modifier.")
+                }
+                return modified.apply(to: content)
+            }
+        }
+        let environment = try await runtime.resolve(.swift(.type("SwiftUI.EnvironmentValues")))
+        let bool = try await runtime.resolve(.swift(.type("Swift.Bool")))
+        let canvasKey = try await environment.resolve(.swift(.writableKeyPath(
+            "(extension in DeviceKit):SwiftUI.EnvironmentValues.isInDeviceCanvas", valueType: bool)))
+        let scalar = try await runtime.resolve(.swift(.type("CoreGraphics.CGFloat")))
+        let zoomKey = try await environment.resolve(.swift(.writableKeyPath(
+            "(extension in DeviceKit):SwiftUI.EnvironmentValues.deviceCanvasZoom", valueType: scalar)))
+        guard let canvasPath = try canvasKey.withCopy({ $0 as? WritableKeyPath<EnvironmentValues, Bool> }),
+              let zoomPath = try zoomKey.withCopy({ $0 as? WritableKeyPath<EnvironmentValues, CGFloat> }) else {
+            throw CLIError.unavailable("native-device-environment", "DeviceKit's canvas environment is unavailable.")
+        }
+        try Task.checkCancellation()
+        let presentation = NativeCanvasPresentation()
+        let root = NativeCanvasRoot(presentation: presentation, shown: try activated(content(shown)),
+            hidden: try activated(content(hidden)), canvasPath: canvasPath, zoomPath: zoomPath)
+        return NativeDeviceCanvas(root: AnyView(root), presentation: presentation,
+            values: [base, activation, shown, hidden, canvasKey, zoomKey]) { page, usage, state in
+                try unsafe send.unsafeInvoke(on: button, page, usage, state == .down ? down : up)
+            }
+    }
+
+    private init(root: AnyView, presentation: NativeCanvasPresentation, values: [NativeSwiftValue],
+                 sendButton: @escaping (Int, Int, RemoteDeviceButtonState) throws -> Void) {
+        hosting = NativeCanvasHostingView(rootView: root)
+        hosting.sizingOptions = []
+        self.presentation = presentation
+        self.values = values
+        sendNativeButton = sendButton
+        view = hosting
+    }
+
+    public func setChromeVisible(_ visible: Bool) { presentation.showsChrome = visible }
+    public func setZoom(_ zoom: CGFloat) { presentation.zoom = zoom }
+    public func sendButton(usagePage: Int, usage: Int, state: RemoteDeviceButtonState) throws {
+        try sendNativeButton(usagePage, usage, state)
+    }
+    public func disconnect() { hosting.content = nil; hosting.rootView = AnyView(EmptyView()) }
+}
+
+@MainActor
+private final class NativeCanvasHostingView: NSHostingView<AnyView> {
+    var content: AnyView?
+    required init(rootView: AnyView) { content = rootView; super.init(rootView: rootView) }
+    required init?(coder: NSCoder) { nil }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        // DeviceKit's screen-layer projection belongs to the hosting window.
+        // Recreate that graph while retaining the device/session and posture owner.
+        if let content, let window { rootView = AnyView(content.id(window.windowNumber)) }
+        else { rootView = AnyView(EmptyView()) }
+    }
+}
+
+// DeviceKit returns SwiftUI's public ModifiedContent for these modifiers. Opening
+// its generic conformance preserves the native value without assuming its layout.
+@MainActor
+private protocol NativeCanvasModifier {
+    func apply(to view: AnyView) -> AnyView
+}
+
+extension ModifiedContent: NativeCanvasModifier where Modifier: ViewModifier {
+    @MainActor fileprivate func apply(to view: AnyView) -> AnyView { AnyView(view.modifier(modifier)) }
+}
+
+@MainActor @Observable
+private final class NativeCanvasPresentation {
+    var showsChrome = true
+    var zoom: CGFloat = 1
+    var naturalSize = CGSize(width: 500, height: 700)
+    @ObservationIgnored var onSizeChange: (() -> Void)?
+}
+
+private struct NativeCanvasRoot: View {
+    let presentation: NativeCanvasPresentation
+    let shown: AnyView
+    let hidden: AnyView
+    let canvasPath: WritableKeyPath<EnvironmentValues, Bool>
+    let zoomPath: WritableKeyPath<EnvironmentValues, CGFloat>
+    var body: some View {
+        (presentation.showsChrome ? shown : hidden)
+            .environment(canvasPath, false)
+            .environment(zoomPath, presentation.zoom)
+            .fixedSize()
+            .onGeometryChange(for: CGSize.self) { $0.size } action: { size in
+                guard size.width > 0, size.height > 0, size != presentation.naturalSize else { return }
+                presentation.naturalSize = size
+                presentation.onSizeChange?()
+            }
+            .scaleEffect(presentation.zoom)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .clipped()
     }
 }

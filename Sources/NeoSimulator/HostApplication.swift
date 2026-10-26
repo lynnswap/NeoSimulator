@@ -1,4 +1,5 @@
 import AppKit
+@_spi(NeoSimulator) import XcodeSimulatorHost
 
 @MainActor
 final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSource {
@@ -790,9 +791,16 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                     guard !stopped, !isTerminating, !suppressed.contains(identifier) else { return }
                     try conflicts.check()
                     if let screen = runtime.display.defaultScreen(of: device) {
-                        let connection = try SimulatorConnection(device: device, screen: screen, runtime: runtime)
+                        let nativeCanvas: NativeDeviceCanvas?
+                        if device.deviceTypeIdentifier == "com.apple.CoreSimulator.SimDeviceType.iPhone-Duo", device.deviceSetPath == nil {
+                            nativeCanvas = try await NativeDeviceCanvas.connect(simulatorUDID: device.identifier)
+                        } else { nativeCanvas = nil }
+                        try Task.checkCancellation()
+                        let connection = try SimulatorConnection(device: device, screen: screen, runtime: runtime, nativeCanvas: nativeCanvas)
+                        var capabilities = Self.capabilities(of: device)
+                        if nativeCanvas != nil { capabilities.controlsOrientation = false }
                         let session = DeviceSession(
-                            device: Self.describe(device), capabilities: Self.capabilities(of: device),
+                            device: Self.describe(device), capabilities: capabilities,
                             display: connection,
                             tools: try DeviceTools(identifier: identifier.identifier, xcodeURL: runtime.xcodeURL,
                                                    deviceSetPath: device.deviceSetPath),
