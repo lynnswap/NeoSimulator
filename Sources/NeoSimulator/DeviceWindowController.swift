@@ -428,6 +428,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
 
     private func appDisplayChanged() {
         guard !closed else { return }
+        let restoreInputFocus = (presentationWindow?.firstResponder as? NSView)?.isDescendant(of: content.display) == true
         content.setDisplay(session.display.view)
         content.scrollsDisplay = session.isResizingApp
         fitting.scalesDisplay = !session.isResizingApp
@@ -443,7 +444,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         if isEmbedded { updateEmbeddedScale() }
         else if session.isResizingApp { resizeDisplay() }
         else { updateWindowSize() }
-        if presentationWindow?.isKeyWindow == true { activateDisplay() }
+        if presentationWindow?.isKeyWindow == true { activateDisplay(focusingInput: restoreInputFocus) }
     }
 
     private func appGeometryChanged() {

@@ -7,6 +7,40 @@ import Synchronization
 
 @Suite(.serialized) @MainActor
 struct InputFocusTests {
+    @Test(arguments: [false, true])
+    func appResizePreservesTheEmbeddedInputFocus(screenFocused: Bool) async throws {
+        _ = NSApplication.shared
+        let primary = TestDisplay(), app = TestDisplay()
+        primary.appDisplay = app
+        let transport = TestAppResizeTransport()
+        let controller = try makeController(primary, appResizeTransport: { transport })
+        defer { controller.invalidate() }
+        let parent = NSViewController()
+        parent.view = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 600))
+        let window = KeyPresentationWindow(contentRect: parent.view.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentViewController = parent
+        defer { window.close() }
+        controller.embed(in: parent)
+        let search = NSSearchField(frame: NSRect(x: 0, y: 0, width: 200, height: 24))
+        parent.view.addSubview(search)
+        try #require(window.makeFirstResponder(search))
+        let editor = try #require(window.firstResponder)
+        if screenFocused { controller.focusInput() }
+        try #require(window.firstResponder === (screenFocused ? primary.inputView : editor))
+        try await wait { controller.session.canResizeApp }
+        controller.toggleAppResize()
+        try await wait { controller.session.isResizingApp }
+        try #require(controller.session.display === app)
+        #expect(window.firstResponder === (screenFocused ? app.inputView : editor))
+        if !screenFocused { try #require(window.makeFirstResponder(search)) }
+        let returningFocus = window.firstResponder
+        transport.lease.invalidation.continuation.finish()
+        try await wait { !controller.session.isResizingApp }
+        try #require(controller.session.display === primary)
+        #expect(window.firstResponder === (screenFocused ? primary.inputView : returningFocus))
+    }
+
     @Test(arguments: ["compact", "embedded", "fullscreen"])
     func stoppingAppResizeRestoresTheManualPrimaryScale(presentation: String) async throws {
         _ = NSApplication.shared
