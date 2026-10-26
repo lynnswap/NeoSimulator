@@ -11,7 +11,8 @@ protocol SimulatorManagerSource: DeviceSettingsSource {
     func creationCatalog() async throws -> SimulatorCreationContext
     func createSimulator(named name: String, deviceType: String, runtime: String, context: SimulatorCreationContext) async throws -> String
     func pairSimulators(watch: String, phone: String, context: SimulatorCreationContext) async throws
-    func manage(_ action: DeviceManagementAction, devices: [InventoryDevice]) async -> DeviceManagementReport
+    func manage(_ action: DeviceManagementAction, devices: [InventoryDevice],
+                preparingDisplay: (@isolated(any) @Sendable (InventoryDevice) async throws -> Void)?) async -> DeviceManagementReport
     func inspector(for device: InventoryDevice) async throws -> DeviceInspector
     func restore(force: Bool) async throws
     func synchronizeXcodeConnections() async throws -> Bool
@@ -32,7 +33,15 @@ final class SimulatorManagerModel {
             return device
         }
     }
-    private(set) var managingDeviceIDs: Set<DeviceInventoryID> = []
+    var managingDeviceIDs: Set<DeviceInventoryID> {
+        Set(managementRequests.values.flatMap(\.identifiers))
+    }
+    private struct ManagementRequest {
+        let action: DeviceManagementAction?
+        let identifiers: Set<DeviceInventoryID>
+        var task: Task<Void, Never>?
+    }
+    private var managementRequests: [UUID: ManagementRequest] = [:]
     private(set) var isBusy = false
     private(set) var activity = ""
     private(set) var backgroundIssue: String?
@@ -59,7 +68,6 @@ final class SimulatorManagerModel {
     @ObservationIgnored private var inventoryRefreshRequested = false
     @ObservationIgnored private var stopping = false
     @ObservationIgnored private var operationTask: Task<Void, Never>?
-    @ObservationIgnored private var managementTasks: [UUID: Task<Void, Never>] = [:]
     @ObservationIgnored private var pendingOperations: [(activity: String, refreshCatalog: Bool, run: @MainActor () async throws -> Void)] = []
 
     init(rendererApplicationURL: URL,
@@ -200,29 +208,51 @@ final class SimulatorManagerModel {
         await refresh()
     }
 
+    func canManage(_ action: DeviceManagementAction, deviceIDs: Set<DeviceInventoryID>) -> Bool {
+        guard !stopping, !deviceIDs.isEmpty else { return false }
+        let overlapping = managementRequests.values.filter { !$0.identifiers.isDisjoint(with: deviceIDs) }
+        if overlapping.isEmpty { return !isBusy }
+        guard action == .forceShutdown, overlapping.count == 1, let shutdown = overlapping.first,
+              shutdown.action == DeviceManagementAction.shutdown, deviceIDs.isSubset(of: shutdown.identifiers) else { return false }
+        return shutdown.identifiers.allSatisfy { if case .simulator = $0 { true } else { false } }
+    }
+
     func manage(_ action: DeviceManagementAction, devices: [InventoryDevice]) {
-        guard !stopping else { return }
         var identifiers = Set<DeviceInventoryID>()
         let targets = devices.filter { identifiers.insert($0.id).inserted }
-        guard !targets.isEmpty, managingDeviceIDs.isDisjoint(with: identifiers) else { return }
-        managingDeviceIDs.formUnion(identifiers)
+        guard canManage(action, deviceIDs: identifiers) else { return }
         let request = UUID()
-        managementTasks[request] = Task {
+        managementRequests[request] = ManagementRequest(action: action, identifiers: identifiers)
+        let task = Task {
             defer {
-                self.managingDeviceIDs.subtract(identifiers)
+                self.managementRequests.removeValue(forKey: request)
                 self.reconcileDevicePostures()
-                self.managementTasks.removeValue(forKey: request)
             }
             do {
-                switch action {
-                case .restart, .erase, .shutdown, .remove, .unpair, .pause:
-                    for device in targets where device.supports(action) { await self.stopDevicePosture(for: device.id) }
-                default: break
+                let preparesOwnedShutdown = action == .shutdown && targets.allSatisfy {
+                    if case .simulator = $0 { true } else { false }
                 }
-                let remoteIDs = Set(targets.filter { self.managementDisconnectsScreen(action, for: $0) }.map(\.id))
-                if !remoteIDs.isEmpty { try await self.beforeManagingRemoteDevices?(remoteIDs) }
-                try await self.beforeManagingSimulators?(action, targets)
-                let report = await self.controller.manage(action, devices: targets)
+                if action != .forceShutdown && !preparesOwnedShutdown {
+                    switch action {
+                    case .restart, .erase, .shutdown, .remove, .unpair, .pause:
+                        for device in targets where device.supports(action) { await self.stopDevicePosture(for: device.id) }
+                    default: break
+                    }
+                    let remoteIDs = Set(targets.filter { self.managementDisconnectsScreen(action, for: $0) }.map(\.id))
+                    if !remoteIDs.isEmpty { try await self.beforeManagingRemoteDevices?(remoteIDs) }
+                    try await self.beforeManagingSimulators?(action, targets)
+                }
+                let preparation: (@isolated(any) @Sendable (InventoryDevice) async throws -> Void)?
+                if preparesOwnedShutdown || action == .forceShutdown {
+                    preparation = { @MainActor target in
+                        if target.supports(action) { await self.stopDevicePosture(for: target.id) }
+                        switch target {
+                        case .simulator: try await self.beforeManagingSimulators?(action, [target])
+                        case .remote: try await self.beforeManagingRemoteDevices?([target.id])
+                        }
+                    }
+                } else { preparation = nil }
+                let report = await self.controller.manage(action, devices: targets, preparingDisplay: preparation)
                 var presentationError: (any Error)?
                 do { try await self.afterManagingSimulators?(action, targets) }
                 catch { presentationError = error }
@@ -232,13 +262,14 @@ final class SimulatorManagerModel {
                 }
             } catch { self.onError?(error) }
         }
+        managementRequests[request]?.task = task
 
     }
 
     private func managementDisconnectsScreen(_ action: DeviceManagementAction, for device: InventoryDevice) -> Bool {
         guard case .remote = device, device.supports(action) else { return false }
         switch action {
-        case .shutdown, .restart, .erase, .remove, .unpair, .pause: return true
+        case .shutdown, .forceShutdown, .restart, .erase, .remove, .unpair, .pause: return true
         case .rename, .clone, .start, .resume, .pair: return false
         }
     }
@@ -252,13 +283,12 @@ final class SimulatorManagerModel {
                                    operation: @escaping @MainActor () async throws -> Void,
                                    completion: @escaping @MainActor () -> Void) {
         guard !stopping, !managingDeviceIDs.contains(device.id) else { return }
-        managingDeviceIDs.insert(device.id)
         let request = UUID()
-        managementTasks[request] = Task {
+        managementRequests[request] = ManagementRequest(action: nil, identifiers: [device.id])
+        let task = Task {
             defer {
-                self.managingDeviceIDs.remove(device.id)
+                self.managementRequests.removeValue(forKey: request)
                 self.reconcileDevicePostures()
-                self.managementTasks.removeValue(forKey: request)
             }
             do { try await operation() }
             catch { self.onError?(InspectorOperationFailure(deviceName: device.name, error: error)) }
@@ -267,6 +297,7 @@ final class SimulatorManagerModel {
                 completion()
             }
         }
+        managementRequests[request]?.task = task
 
     }
 
@@ -390,7 +421,7 @@ final class SimulatorManagerModel {
         await stopDevicePostures()
         statusRefreshTask?.cancel()
         await operationTask?.value
-        for task in Array(managementTasks.values) { await task.value }
+        for task in managementRequests.values.compactMap(\.task) { await task.value }
         await statusRefreshTask?.value
         await settings.finishReading()
         do { try await controller.quitRenderer(keepingDevicesRunning: keepingDevicesRunning) }

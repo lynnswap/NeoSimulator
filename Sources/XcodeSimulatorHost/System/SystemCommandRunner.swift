@@ -1,4 +1,6 @@
 import Foundation
+import Darwin
+import Synchronization
 
 struct CommandOutput: Equatable, Sendable {
     let terminationStatus: Int32
@@ -51,7 +53,20 @@ struct SystemCommandRunner: CommandRunning {
         try run(executable: executable, arguments: arguments, environment: nil)
     }
 
-    private func run(executable: URL, arguments: [String], environment: [String: String]?) throws -> CommandOutput {
+    @concurrent
+    static func runCancellable(executable: URL, arguments: [String], environment: [String: String]? = nil) async throws -> CommandOutput {
+        let cancellation = CommandCancellation()
+        return try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            return try SystemCommandRunner().run(executable: executable, arguments: arguments,
+                                                 environment: environment, cancellation: cancellation)
+        } onCancel: {
+            cancellation.cancel()
+        }
+    }
+
+    private func run(executable: URL, arguments: [String], environment: [String: String]?,
+                     cancellation: CommandCancellation? = nil) throws -> CommandOutput {
         let directory = fileManager.temporaryDirectory
             .appendingPathComponent("\(ToolConstants.name)-\(UUID().uuidString)", isDirectory: true)
 
@@ -117,17 +132,21 @@ struct SystemCommandRunner: CommandRunning {
         process.standardError = stderrHandle
 
         do {
-            try process.run()
+            if let cancellation { try cancellation.launch(process) }
+            else { try process.run() }
             process.waitUntilExit()
             try stdoutHandle.close()
             try stderrHandle.close()
             handlesAreOpen = false
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             throw CLIError.io(
                 "command-execution",
                 "could not run \(executable.path): \(error.localizedDescription)"
             )
         }
+        try cancellation?.finish()
 
         do {
             return CommandOutput(
@@ -140,6 +159,42 @@ struct SystemCommandRunner: CommandRunning {
                 "command-output",
                 "could not read output from \(executable.path): \(error.localizedDescription)"
             )
+        }
+    }
+}
+
+private final class CommandCancellation: Sendable {
+    private struct State {
+        var process: Process?
+        var cancelled = false
+        var failure: POSIXError?
+    }
+    private let state = Mutex(State())
+
+    func launch(_ process: Process) throws {
+        try state.withLock {
+            if $0.cancelled { throw CancellationError() }
+            try process.run()
+            $0.process = process
+        }
+    }
+
+    func cancel() {
+        state.withLock {
+            $0.cancelled = true
+            // Only the owned request is killed; its guest may already have been forcibly stopped.
+            if let process = $0.process, process.isRunning,
+               kill(process.processIdentifier, SIGKILL) != 0, errno != ESRCH {
+                $0.failure = POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+        }
+    }
+
+    func finish() throws {
+        try state.withLock {
+            $0.process = nil
+            if let failure = $0.failure { throw failure }
+            if $0.cancelled { throw CancellationError() }
         }
     }
 }

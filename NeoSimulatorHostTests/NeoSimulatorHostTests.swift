@@ -7,6 +7,148 @@ import Synchronization
 
 @Suite(.serialized) @MainActor
 struct InputFocusTests {
+    @Test func exclusiveKeyboardCaptureFollowsTheDisplayedSessionAndReleasesKeys() throws {
+        _ = NSApplication.shared
+        let display = TestDisplay()
+        let tap = TestKeyboardEventTap()
+        let controller = try makeController(display, keyboardCaptureTap: tap, applicationIsActive: { true })
+        let parent = NSViewController()
+        parent.view = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 600))
+        let window = KeyPresentationWindow(contentRect: parent.view.frame, styleMask: .titled, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentViewController = parent
+        defer { controller.invalidate(); window.close() }
+        controller.embed(in: parent)
+        controller.perform(.captureKeyboard)
+        #expect(controller.capturesKeyboard && tap.starts == 1)
+        #expect(DeviceCommand.command(.captureKeyboard).state?(controller) == .on)
+        let digitizerModifiers = display.input.modifiers.count
+        var keyboardModifiers: [NSEvent] = []
+        let monitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { event in
+            keyboardModifiers.append(event)
+            return nil
+        }
+        defer { monitor.map(NSEvent.removeMonitor) }
+        #expect(try tap.key(.flagsChanged, code: 55, flags: .maskCommand))
+        #expect(try tap.key(.keyDown, code: 0, flags: .maskCommand))
+        #expect(display.input.keyDowns.map(\.keyCode) == [0])
+        #expect(keyboardModifiers.map(\.keyCode) == [55])
+        #expect(keyboardModifiers.last?.modifierFlags.contains(.command) == true)
+        #expect(display.input.modifiers.count == digitizerModifiers)
+        controller.detachPresentation()
+        #expect(!controller.capturesKeyboard && tap.stops == 1)
+        #expect(display.input.keyUps.map(\.keyCode) == [0])
+        #expect(display.input.keyUps.last?.modifierFlags.contains(.command) == false)
+        #expect(controller.session.isConnected && display.disconnectCount == 0)
+        #expect(DeviceCommand.command(.captureKeyboard).state?(controller) == .off)
+    }
+
+    @Test func captureTargetsTheKeyExternalDisplayAndReleasesItsKeys() throws {
+        _ = NSApplication.shared
+        let tap = TestKeyboardEventTap()
+        let screen = TestExternalScreen()
+        screen.current.isPoweredOn = true
+        let (controller, primary) = try makeExternalDisplayController(screen, keyboardCaptureTap: tap,
+            applicationIsActive: { true }, makeWindow: {
+                KeyPresentationWindow(contentRect: $0, styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                                      backing: .buffered, defer: false)
+            })
+        defer { controller.invalidate() }
+        let external = try #require(controller.externalDisplayWindow)
+        let window = try #require(external.window)
+        let display = try #require(screen.displays.last)
+        external.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification, object: window))
+        #expect(DeviceWindowController.deviceWindow(for: window) === controller)
+        let command = DeviceCommand.command(.captureKeyboard)
+        #expect(command.isEnabled(controller))
+        controller.perform(.captureKeyboard)
+        try #require(controller.capturesKeyboard && tap.starts == 1)
+        #expect(command.state?(controller) == .on)
+        #expect(try tap.key(.keyDown, code: 0))
+        #expect(display.input.keyDowns.map(\.keyCode) == [0])
+        #expect(primary.input.keyDowns.isEmpty)
+        controller.perform(.captureKeyboard)
+        #expect(!controller.capturesKeyboard && tap.stops == 1)
+        #expect(command.state?(controller) == .off)
+        #expect(display.input.keyUps.map(\.keyCode) == [0])
+        controller.perform(.captureKeyboard)
+        #expect(try tap.key(.keyDown, code: 1))
+        screen.report { $0.isPoweredOn = false }
+        #expect(controller.externalDisplayWindow == nil)
+        #expect(!controller.capturesKeyboard && tap.stops == 2)
+        #expect(display.input.keyUps.map(\.keyCode) == [0, 1])
+        #expect(primary.input.keyUps.isEmpty)
+    }
+
+    @Test func capturePassesHostEventsAfterFocusLossAndReportsTapFailure() throws {
+        let tap = TestKeyboardEventTap()
+        var eligible = true
+        var received: [NSEvent] = []
+        var released: [NSEvent] = []
+        var failures: [String] = []
+        let capture = KeyboardCapture(tap: tap, isEligible: { eligible }, forward: { received.append($0) },
+                                      releaseModifiers: { released += $0 }, initialModifierFlags: { .shift })
+        capture.failure = { failures.append($0.localizedDescription) }
+        try capture.start()
+        #expect(try tap.key(.flagsChanged, code: 55, flags: .maskCommand))
+        #expect(try tap.key(.keyDown, code: 0, flags: .maskCommand))
+        eligible = false
+        #expect(try !tap.key(.keyDown, code: 1))
+        #expect(!capture.isCapturing && received.map(\.type) == [.flagsChanged, .keyDown, .keyUp])
+        #expect(Set(released.map(\.keyCode)) == [55, 56, 60] && released.allSatisfy { $0.modifierFlags.isEmpty })
+        eligible = true
+        try capture.start()
+        #expect(try !tap.key(.tapDisabledByTimeout, code: 0))
+        #expect(!capture.isCapturing && tap.stops == 2 && failures.count == 1)
+        tap.startError = HostError.operation("Permission denied")
+        #expect(throws: HostError.self) { try capture.start() }
+        #expect(!capture.isCapturing)
+        tap.startError = nil
+        try capture.start()
+        NotificationCenter.default.post(name: NSApplication.willResignActiveNotification, object: NSApp)
+        #expect(!capture.isCapturing && tap.stops == 3)
+    }
+
+    @Test func escapeHoldReleasesCaptureAndShortEscapeStillReachesTheGuest() async throws {
+        for hold in [false, true] {
+            let tap = TestKeyboardEventTap()
+            let entered = AsyncStream<Void>.makeStream()
+            let delay = AsyncStream<Void>.makeStream()
+            let returned = AsyncStream<Void>.makeStream()
+            let stopped = AsyncStream<Void>.makeStream()
+            var received: [NSEvent.EventType] = []
+            let capture = KeyboardCapture(tap: tap, isEligible: { true }, forward: { received.append($0.type) },
+                releaseModifiers: { _ in }, waitForEscapeHold: {
+                    entered.continuation.yield(())
+                    defer { returned.continuation.yield(()) }
+                    var iterator = delay.stream.makeAsyncIterator()
+                    _ = await iterator.next()
+                })
+            capture.didStop = { stopped.continuation.yield(()) }
+            defer {
+                capture.stop()
+                entered.continuation.finish(); delay.continuation.finish()
+                returned.continuation.finish(); stopped.continuation.finish()
+            }
+            try capture.start()
+            #expect(try tap.key(.keyDown, code: 53))
+            var starting = entered.stream.makeAsyncIterator()
+            _ = await starting.next()
+            if hold {
+                delay.continuation.yield(())
+                var ending = stopped.stream.makeAsyncIterator()
+                _ = await ending.next()
+                #expect(!capture.isCapturing && tap.stops == 1)
+            } else {
+                #expect(try tap.key(.keyUp, code: 53))
+                var ending = returned.stream.makeAsyncIterator()
+                _ = await ending.next()
+                #expect(capture.isCapturing && tap.stops == 0)
+            }
+            #expect(received == [.keyDown, .keyUp])
+        }
+    }
+
     @Test func sigtermHandsOffOnTheMainActor() async throws {
         let previous = signal(SIGTERM, SIG_IGN)
         let handoffs = AsyncStream<Void>.makeStream()
@@ -61,11 +203,11 @@ struct InputFocusTests {
         #expect(controller.presentationViewController.supplementalTarget(forAction: screenshot.action!, sender: screenshot)
             as AnyObject? === controller)
         #expect(controller.validateMenuItem(screenshot))
-        #expect(display.view.superview === controller.presentationViewController.view)
+        #expect(display.view.isDescendant(of: controller.presentationViewController.view))
         controller.focusInput()
         #expect(window.firstResponder === display.inputView)
         #expect(controller.session === session && display.disconnectCount == 0)
-        #expect(!DeviceCommand.command(.fitScreen).isEnabled(controller))
+        #expect(DeviceCommand.command(.fitScreen).isEnabled(controller))
         #expect(!DeviceCommand.command(.stayOnTop).isEnabled(controller))
         controller.perform(.stayOnTop)
         #expect(controller.window?.level == .normal)
@@ -149,6 +291,83 @@ struct InputFocusTests {
         #expect(saved.center == movedCenter)
     }
 
+    @Test func embeddedZoomKeepsPanningAndScaleSeparateFromCompactGeometry() throws {
+        _ = NSApplication.shared
+        let display = TestDisplay()
+        let controller = try makeController(display)
+        defer { controller.invalidate() }
+        let session = controller.session
+        let compactScale = display.renderScale
+        let compactFrame = try #require(controller.window?.frame)
+        let parent = NSViewController()
+        parent.view = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 400))
+        let window = KeyPresentationWindow(contentRect: parent.view.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentViewController = parent
+        defer { window.close() }
+        let outerFrame = window.frame
+        controller.embed(in: parent)
+        parent.view.layoutSubtreeIfNeeded()
+        let content = controller.presentationViewController.view
+        let scroll = try #require(content.subviews.compactMap { $0 as? NSScrollView }.first)
+        #expect(controller.canvasZoom.mode == .fit)
+        #expect(WindowScale.matches(display.renderScale, display.scale(for: content.bounds.size)))
+        let fitScale = display.renderScale
+        controller.performCanvasZoom(.zoomIn)
+        #expect(display.renderScale > fitScale)
+        controller.setScale(.pointAccurate)
+        #expect(controller.canvasZoom.mode == .fixed(1) && display.renderScale == 1)
+        #expect(window.frame == outerFrame && controller.window?.frame == compactFrame)
+        let clip = scroll.contentView
+        let local = NSPoint(x: 120, y: 400)
+        let before = display.view.convert(local, to: content)
+        let originalOrigin = clip.bounds.origin
+        clip.scroll(to: NSPoint(x: 60, y: 240))
+        scroll.reflectScrolledClipView(clip)
+        let after = display.view.convert(local, to: content)
+        #expect(after.x == before.x - (clip.bounds.minX - originalOrigin.x))
+        #expect(after.y == before.y - (clip.bounds.minY - originalOrigin.y))
+        #expect(display.view.convert(after, from: content) == local)
+        parent.view.setFrameSize(NSSize(width: 250, height: 350))
+        parent.view.layoutSubtreeIfNeeded()
+        #expect(display.renderScale == 1 && controller.canvasZoom.mode == .fixed(1))
+        let pannedCenter = NSPoint(x: clip.bounds.midX, y: clip.bounds.midY)
+        controller.showCompactWindow()
+        #expect(WindowScale.matches(display.renderScale, compactScale))
+        controller.embed(in: parent)
+        parent.view.layoutSubtreeIfNeeded()
+        #expect(display.renderScale == 1 && controller.canvasZoom.mode == .fixed(1))
+        #expect(abs(clip.bounds.midX - pannedCenter.x) < 1 && abs(clip.bounds.midY - pannedCenter.y) < 1)
+        #expect(controller.session === session && display.disconnectCount == 0)
+        controller.focusInput()
+        #expect(window.firstResponder === display.inputView)
+        controller.performCanvasZoom(.fit)
+        #expect(controller.canvasZoomIsSelected(.fit))
+        #expect(scroll.documentVisibleRect.contains(display.view.frame))
+        parent.view.setFrameSize(NSSize(width: 220, height: 300))
+        parent.view.layoutSubtreeIfNeeded()
+        #expect(WindowScale.matches(display.renderScale, display.scale(for: content.bounds.size)))
+        display.takeScreenSize(NSSize(width: 844, height: 390))
+        content.layoutSubtreeIfNeeded()
+        #expect(WindowScale.matches(display.renderScale, display.scale(for: content.bounds.size)))
+        controller.performCanvasZoom(.physicalSize)
+        let physicalScale = try #require(controller.scale(for: .physicalSize))
+        #expect(controller.canvasZoomIsSelected(.physicalSize) && WindowScale.matches(display.renderScale, physicalScale))
+        display.takeScreenSize(NSSize(width: 390, height: 844))
+        content.layoutSubtreeIfNeeded()
+        #expect(WindowScale.matches(display.renderScale, physicalScale))
+        let zoomAction: CanvasZoom.Action = controller.canPerformCanvasZoom(.zoomOut) ? .zoomOut : .zoomIn
+        try #require(controller.canPerformCanvasZoom(zoomAction))
+        controller.performCanvasZoom(zoomAction)
+        if zoomAction == .zoomOut {
+            #expect(display.renderScale < physicalScale)
+        } else {
+            #expect(display.renderScale > physicalScale)
+        }
+        #expect(!controller.canvasZoomIsSelected(.physicalSize))
+        #expect(window.frame == outerFrame)
+    }
+
     @Test func commandsAndActivationRestoreTheNativeInputOwner() throws {
         _ = NSApplication.shared
         let display = TestDisplay()
@@ -156,6 +375,7 @@ struct InputFocusTests {
         let window = try #require(controller.window)
         controller.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification, object: window))
         #expect(window.firstResponder === display.inputView)
+        #expect(display.keyboard.last == true)
         #expect(display.input.modifiers.count == 1)
         #expect(display.input.modifiers.last?.modifierFlags == NSEvent.modifierFlags)
         for command in [DeviceCommand.ID.home, .lock, .toggleSoftwareKeyboard] {
@@ -166,11 +386,11 @@ struct InputFocusTests {
         #expect(display.buttons == [.home, .lock, .softwareKeyboard])
         #expect(display.input.modifiers.count == 4)
         controller.windowDidResignKey(Notification(name: NSWindow.didResignKeyNotification, object: window))
-        #expect(display.activations == [true, false])
+        #expect(display.keyboard.last == false)
         controller.invalidate()
         controller.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification))
         controller.windowDidResignKey(Notification(name: NSWindow.didResignKeyNotification))
-        #expect(display.activations == [true, false])
+        #expect(display.keyboard.last == false)
         #expect(display.input.modifiers.count == 4)
         #expect(display.disconnectCount == 1)
     }
@@ -186,7 +406,7 @@ struct InputFocusTests {
         let toolbar = try #require(window.toolbar)
         let commands = toolbar.items.filter { DeviceCommand.ID(rawValue: $0.itemIdentifier.rawValue) != nil }
         #expect(commands.filter { !$0.isHidden }.map(\.itemIdentifier.rawValue) ==
-            ["home", "saveScreen", "rotateRight"])
+            ["captureKeyboard", "home", "saveScreen", "rotateRight"])
         let home = try #require(commands.first { $0.itemIdentifier.rawValue == "home" })
         #expect(NSApp.sendAction(try #require(home.action), to: home.target, from: home))
         #expect(display.buttons == [.home])
@@ -211,7 +431,7 @@ struct InputFocusTests {
         defer { controller.invalidate() }
         let toolbar = try #require(controller.window?.toolbar)
         let items = toolbar.items.map(\.itemIdentifier.rawValue)
-        #expect(items == ["NSToolbarFlexibleSpaceItem", "home", "saveScreen", "rotateRight", "NSToolbarFlexibleSpaceItem"])
+        #expect(items == ["NSToolbarFlexibleSpaceItem", "captureKeyboard", "home", "saveScreen", "rotateRight", "NSToolbarFlexibleSpaceItem"])
         let item = try #require(toolbar.items.first { $0.itemIdentifier.rawValue == "saveScreen" })
         func shows(_ symbol: String, _ label: String) -> Bool {
             item.toolTip == label && item.image?.accessibilityDescription == label && item.image?.tiffRepresentation
@@ -308,17 +528,17 @@ struct InputFocusTests {
         #expect(pointer.faces == ButtonFace.optionAlternates)
         #expect(try pointer.click(.saveScreen))
         let recording = try #require(controller.session.recording)
-        try await wait { pointer.faces[1] == .stopRecording }
-        #expect(pointer.faces == [.home, .stopRecording, .rotateLeft])
+        try await wait { pointer.faces[2] == .stopRecording }
+        #expect(pointer.faces == [.captureKeyboard, .home, .stopRecording, .rotateLeft])
         pointer.hold([])
-        #expect(pointer.faces == [.home, .stopRecording, .rotate])
+        #expect(pointer.faces == [.captureKeyboard, .home, .stopRecording, .rotate])
         pointer.exit()
         pointer.hold(.option)
         pointer.enter()
-        #expect(pointer.faces == [.home, .stopRecording, .rotateLeft])
+        #expect(pointer.faces == [.captureKeyboard, .home, .stopRecording, .rotateLeft])
         #expect(try pointer.click(.saveScreen))
         #expect(recording.isStopping)
-        try await wait { pointer.faces[1] == .recordScreen }
+        try await wait { pointer.faces[2] == .recordScreen }
         #expect(pointer.faces == ButtonFace.optionAlternates)
         pointer.hold([])
         #expect(pointer.faces == ButtonFace.normal)
@@ -1166,8 +1386,8 @@ struct InputFocusTests {
             }
         }
         // Matches IndigoWatchToolbar, IndigoTVToolbar, and IndigoWatchAODToolbar.
-        #expect(try items(.watch, [DeviceCapabilities.keyboard]) == [.home, .saveScreen])
-        #expect(try items(.tv, [DeviceCapabilities.keyboard]) == [.home, .saveScreen])
+        #expect(try items(.watch, [DeviceCapabilities.keyboard]) == [.captureKeyboard, .home, .saveScreen])
+        #expect(try items(.tv, [DeviceCapabilities.keyboard]) == [.captureKeyboard, .home, .saveScreen])
         #expect(try items(.watch, [DeviceCapabilities.alwaysOnDisplay]) == [.home, .saveScreen, .alwaysOn])
         #expect(try items(.iPhone, [DeviceCapabilities.alwaysOnDisplay, DeviceCapabilities.displayRotation])
             == [.home, .saveScreen, .rotateRight])
@@ -2123,7 +2343,7 @@ struct InputFocusTests {
         func open() throws -> (DeviceWindowController, TestDisplay) {
             let display = TestDisplay()
             // Keep the unified title bar after fitting so its measured height remains valid.
-            display.naturalSize = NSSize(width: 320, height: 160)
+            display.naturalSize = NSSize(width: Self.unifiedWidth(), height: 160)
             return (try makeController(display, preferences: preferences), display)
         }
         let (first, display) = try open()
@@ -2682,7 +2902,7 @@ struct InputFocusTests {
         // The title must truncate before buttons move to the overflow menu.
         window.layoutIfNeeded()
         #expect(toolbar.visibleItems?.compactMap { DeviceCommand.ID(rawValue: $0.itemIdentifier.rawValue) }
-            == [.home, .saveScreen, .rotateRight])
+            == [.captureKeyboard, .home, .saveScreen, .rotateRight])
         let unified = header()
         #expect(window.frame.height == 300 + unified)
         #expect((0..<1).contains(window.frame.width - threshold))
@@ -2718,7 +2938,7 @@ struct InputFocusTests {
         }
         controller.perform(.pointAccurate)
         #expect(window.toolbarStyle == .unified)
-        #expect(buttons() == [.home, .saveScreen, .rotateRight])
+        #expect(buttons() == [.captureKeyboard, .home, .saveScreen, .rotateRight])
 
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -2731,7 +2951,7 @@ struct InputFocusTests {
         // Simulator.app preserves the toolbar measurement while the recording button changes.
         controller.setDeviceBezelVisible(false)
         #expect(window.toolbarStyle == .unified)
-        #expect(buttons() == [.home, .saveScreen, .rotateRight])
+        #expect(buttons() == [.captureKeyboard, .home, .saveScreen, .rotateRight])
         recording.stop()
         try await recording.waitUntilFinished()
     }
@@ -4060,13 +4280,18 @@ struct InputFocusTests {
                                                externalDisplayChanges: ExternalDisplayChanges = ExternalDisplayChanges(),
                                                runtimeVersion: UInt32 = 0x1B_00_00,
                                                enhancedMultitasking: Bool = false,
-                                               failure: @escaping @MainActor (Error) -> Void = { Issue.record($0) })
+                                               keyboardCaptureTap: any KeyboardEventTap = SystemKeyboardEventTap(),
+                                               failure: @escaping @MainActor (Error) -> Void = { Issue.record($0) },
+                                               applicationIsActive: @escaping () -> Bool = { NSApp.isActive },
+                                               makeWindow: @escaping @MainActor (NSRect) -> NSWindow = ExternalDisplayWindowController.makeWindow)
         throws -> (DeviceWindowController, TestDisplay) {
         let display = TestDisplay()
         if let screen { display.connectExternalScreen(screen) }
         let controller = try makeController(display, family: family, features: features, device: device,
                                             preferences: preferences, externalDisplayChanges: externalDisplayChanges,
-                                            runtimeVersion: runtimeVersion, enhancedMultitasking: enhancedMultitasking)
+                                            runtimeVersion: runtimeVersion, enhancedMultitasking: enhancedMultitasking,
+                                            keyboardCaptureTap: keyboardCaptureTap, applicationIsActive: applicationIsActive,
+                                            makeExternalDisplayWindow: makeWindow)
         controller.session.connectExternalDisplay(failure: failure)
         display.deliverScreenReports()
         return (controller, display)
@@ -5929,7 +6154,7 @@ struct InputFocusTests {
         }
         let keyboard = try items("Keyboard"), pressure = try items("Touch Pressure")
         #expect(keyboard.map(\.title) == ["Use the Same Keyboard Language as macOS", "Connect Hardware Keyboard",
-                                          "Toggle Software Keyboard"])
+                                          "Capture Keyboard", "Toggle Software Keyboard"])
         #expect(pressure.map(\.title) == ["Use Trackpad Force", "Shallow Press", "Deep Press"])
         let shortcuts = (keyboard + pressure).filter { !$0.keyEquivalent.isEmpty }
         #expect(shortcuts.map(\.title) == ["Connect Hardware Keyboard", "Toggle Software Keyboard", "Shallow Press",
@@ -6271,6 +6496,9 @@ struct InputFocusTests {
                                 runtimeVersion: UInt32 = 0x1B_00_00,
                                 enhancedMultitasking: Bool = false,
                                 userInterfacePluginLookUp: (attempts: Int, interval: Duration) = (5, .milliseconds(20)),
+                                keyboardCaptureTap: any KeyboardEventTap = SystemKeyboardEventTap(),
+                                applicationIsActive: @escaping () -> Bool = { NSApp.isActive },
+                                makeExternalDisplayWindow: @escaping @MainActor (NSRect) -> NSWindow = ExternalDisplayWindowController.makeWindow,
                                 performWindowDrag: @escaping (NSWindow, NSEvent) -> Void = { _, _ in },
                                 presentCompactWindow: @escaping (NSWindow) -> Void = { $0.makeKeyAndOrderFront(nil) },
                                 onClose: @escaping (DeviceWindowController, DeviceLifetimeChoice?) -> Void = { _, _ in },
@@ -6290,6 +6518,8 @@ struct InputFocusTests {
             touchPressure: touchPressure ?? TouchPressure(preferences: preferences, forceTouchTrackpad: { false }),
             tvRemote: tvRemote ?? TVRemoteController(target: { nil }),
             performWindowDrag: performWindowDrag, presentCompactWindow: presentCompactWindow,
+            makeKeyboardCaptureTap: { keyboardCaptureTap }, applicationIsActive: applicationIsActive,
+            makeExternalDisplayWindow: makeExternalDisplayWindow,
             userInterfacePluginLookUp: userInterfacePluginLookUp,
             onClose: onClose, onRestart: onRestart, onShutDown: onShutDown)
     }
@@ -6318,7 +6548,7 @@ struct InputFocusTests {
             let font = NSFont.preferredFont(forTextStyle: style, options: [:])
             return NSAttributedString(string: text, attributes: [.font: font]).size().width
         }
-        return (31 + 4) + (32 + 4) + (25 + 4) + max(width(title, .headline), width(subtitle, .subheadline)) + 130
+        return (32 + 4) + (31 + 4) + (32 + 4) + (25 + 4) + max(width(title, .headline), width(subtitle, .subheadline)) + 130
     }
 
     /// Uses an iPhone-style bezel with no top padding.
@@ -6441,13 +6671,15 @@ private struct ButtonFace: Equatable {
                                        imageDescription: NSImage(systemSymbolName: "rotate.left", accessibilityDescription: nil)?
                                            .accessibilityDescription,
                                        toolTip: "Rotate", label: "Rotate")
-    static let normal = [home, saveScreen, rotate]
-    static let optionAlternates = [home, recordScreen, rotateLeft]
+    static let captureKeyboard = ButtonFace(symbol: "keyboard", imageDescription: "Capture Keyboard",
+        toolTip: "Capture Keyboard — hold Escape for one second to release.", label: "Capture Keyboard")
+    static let normal = [captureKeyboard, home, saveScreen, rotate]
+    static let optionAlternates = [captureKeyboard, home, recordScreen, rotateLeft]
 
     @MainActor
     init(_ item: NSToolbarItem) {
         let image = item.image?.tiffRepresentation
-        symbol = ["house", "camera.on.rectangle", "record.circle", "stop.circle", "rotate.right", "rotate.left"].first {
+        symbol = ["keyboard", "house", "camera.on.rectangle", "record.circle", "stop.circle", "rotate.right", "rotate.left"].first {
             image != nil && NSImage(systemSymbolName: $0, accessibilityDescription: nil)?.tiffRepresentation == image
         }
         imageDescription = item.image?.accessibilityDescription
@@ -6556,6 +6788,29 @@ private final class KeyPresentationWindow: NSWindow {
 }
 
 @MainActor
+private final class TestKeyboardEventTap: KeyboardEventTap {
+    private var receive: (@MainActor (CGEventType, CGEvent) -> Bool)?
+    var starts = 0
+    var stops = 0
+    var startError: (any Error)?
+
+    func start(receive: @escaping @MainActor (CGEventType, CGEvent) -> Bool) throws {
+        if let startError { throw startError }
+        starts += 1
+        self.receive = receive
+    }
+
+    func stop() { stops += 1; receive = nil }
+
+    func key(_ type: CGEventType, code: UInt16, flags: CGEventFlags = []) throws -> Bool {
+        let event = try #require(CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: type != .keyUp))
+        if type == .flagsChanged { event.type = type }
+        event.flags = flags
+        return receive?(type, event) ?? false
+    }
+}
+
+@MainActor
 private final class TestPluginToolbarDelegate: NSObject, NSToolbarDelegate {
     static let itemIdentifier = NSToolbarItem.Identifier("PluginControl")
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier identifier: NSToolbarItem.Identifier,
@@ -6653,7 +6908,6 @@ private final class TestDisplay: SimulatorDisplay {
     var buttons: [DeviceButton] {
         events.compactMap { if case .button(let button) = $0.input, $0.state == .down { button } else { nil } }
     }
-    var activations: [Bool] = []
     var keyboard: [Bool] = []
     var disconnectCount = 0
     var onDisconnect: () -> Void = {}
@@ -6782,7 +7036,6 @@ private final class TestDisplay: SimulatorDisplay {
     }
     func size(for scale: CGFloat) -> NSSize { NSSize(width: outerSize.width * scale, height: outerSize.height * scale) }
     func scale(for size: NSSize) -> CGFloat { min(size.width / outerSize.width, size.height / outerSize.height) }
-    func setActive(_ active: Bool) { activations.append(active) }
     func setKeyboardEnabled(_ enabled: Bool) { keyboard.append(enabled) }
     var hardwareKeyboard: [Bool] = []
     var keyboardLanguages: [String] = []

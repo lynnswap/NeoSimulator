@@ -1,12 +1,11 @@
 import ABIBridge
-import Darwin
 import Foundation
 
 extension DeviceManagementAction {
-    var virtualMachineFeature: String? {
+    var coreDeviceFeature: String? {
         switch self {
         case .start: "com.apple.dt.coredevice.device.boot"
-        case .shutdown: "com.apple.dt.coredevice.device.shutdown"
+        case .shutdown, .forceShutdown: "com.apple.dt.coredevice.device.shutdown"
         case .pause: "com.apple.dt.coredevice.virtualmachineplugin.pause"
         case .resume: "com.apple.dt.coredevice.virtualmachineplugin.resumeFromPause"
         case .remove: "com.apple.dt.coredevice.plugin.removedevice"
@@ -17,8 +16,8 @@ extension DeviceManagementAction {
 
 /// Native values and their device manager stay on one actor; callers exchange only inventory IDs and actions.
 @MainActor
-final class CoreDeviceVirtualMachineClient {
-    private static var current: CoreDeviceVirtualMachineClient?
+final class CoreDeviceManagementClient {
+    private static var current: CoreDeviceManagementClient?
     private let runtime: ABIRuntime
     private let remoteType: NativeSwiftType
     private let manager: NativeSwiftValue
@@ -26,27 +25,35 @@ final class CoreDeviceVirtualMachineClient {
     private let devices: NativeSwiftMethod<() -> [UUID: NativeSwiftValue]>
     private let supportsFeature: NativeSwiftMethod<(String) -> Bool>
 
-    static func perform(_ action: DeviceManagementAction, identifier: String) async throws {
-        let client: CoreDeviceVirtualMachineClient
+    static func perform(_ action: DeviceManagementAction, deviceID: DeviceInventoryID) async throws {
+        let identifier = try await commandIdentifier(for: deviceID)
+        let client: CoreDeviceManagementClient
         if let current { client = current }
         else {
-            client = try CoreDeviceVirtualMachineClient()
+            client = try CoreDeviceManagementClient()
             current = client
         }
         try await client.perform(action, identifier: identifier)
     }
 
-    private init() throws {
-        let binary = "/Library/Developer/PrivateFrameworks/CoreDevice.framework/CoreDevice"
-        // Apple runtime metadata and registered classes outlive the handle.
-        guard dlopen(binary, RTLD_NOW | RTLD_LOCAL) != nil else {
-            let detail = dlerror().map { String(cString: $0) } ?? "Unknown loader error"
-            throw CLIError.unavailable("coredevice-runtime", "Could not load CoreDevice: \(detail)")
+    static func commandIdentifier(for deviceID: DeviceInventoryID,
+        resolveSimulator: @MainActor (String) async throws -> String? = CoreDeviceRemoteScreenDevice.simulatorIdentifier) async throws -> String {
+        switch deviceID {
+        case .coreDevice(let identifier): return identifier
+        case .simulator(let udid, nil):
+            guard let identifier = try await resolveSimulator(udid) else {
+                throw CLIError.unavailable("coredevice-simulator", "The simulator is not registered with CoreDevice.")
+            }
+            return identifier
+        case .simulator(_, .some):
+            throw CLIError.unavailable("coredevice-simulator", "CoreDevice cannot distinguish this simulator's device-set identity.")
         }
+    }
+
+    private init() throws {
+        manager = try CoreDeviceRuntime.deviceManagerIncludingSimulators()
         runtime = .shared
         let managerType = try runtime.resolveAndWait(.swift(.type("CoreDevice.DeviceManager")))
-        let shared = try managerType.resolveAndWait(.swift(.staticGetter("shared", as: (() -> NativeSwiftValue).self)))
-        manager = try unsafe shared.unsafeInvoke()
         initialize = try managerType.resolveAndWait(.swift(.method("awaitFullInitialization()", as: (() async -> Void).self)))
         devices = try managerType.resolveAndWait(.swift(.getter("devices", as: (() -> [UUID: NativeSwiftValue]).self)))
         remoteType = try runtime.resolveAndWait(.swift(.type("CoreDevice.RemoteDevice")))
@@ -55,7 +62,7 @@ final class CoreDeviceVirtualMachineClient {
 
     private func perform(_ action: DeviceManagementAction, identifier: String) async throws {
         try Task.checkCancellation()
-        guard let feature = action.virtualMachineFeature else {
+        guard let feature = action.coreDeviceFeature else {
             throw CLIError.unavailable("virtual-machine-operation", "This operation is not provided by the virtual machine interface.")
         }
         guard let uuid = UUID(uuidString: identifier) else {
@@ -77,11 +84,15 @@ final class CoreDeviceVirtualMachineClient {
                 "VirtualMachineClientSupport.Bootable.boot()", as: (() async throws -> NativeSwiftValue).self,
                 valueABIs: [snapshot: try .opaque(named: snapshot.name)])))
             _ = try await unsafe boot.unsafeInvoke(on: implementation)
-        case .shutdown:
+        case .shutdown, .forceShutdown:
             let implementation = try await implementation("ShutdownCapability", on: remote)
             let shutdown = try implementation.type.resolveAndWait(.swift(.method(
                 "VirtualMachineClientSupport.ShutdownDeviceProtocol.shutdown(forcefully:)", as: ((Bool) async throws -> Void).self)))
-            try await unsafe shutdown.unsafeInvoke(on: implementation, false)
+            try Task.checkCancellation()
+            guard try unsafe supportsFeature.unsafeInvoke(on: remote, feature) else {
+                throw CLIError.unavailable("virtual-machine-capability", "The device no longer exposes the requested management operation.")
+            }
+            try await unsafe shutdown.unsafeInvoke(on: implementation, action == .forceShutdown)
         case .pause, .resume:
             let pausing = action == .pause
             let implementation = try await implementation(pausing ? "PauseVirtualMachineCapability" : "ResumeVirtualMachineFromPauseCapability", on: remote)

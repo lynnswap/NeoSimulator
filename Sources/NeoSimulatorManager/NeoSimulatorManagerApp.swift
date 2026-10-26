@@ -156,11 +156,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case "rotate": .rotateRight
             case "capture": .saveScreen
             case "record": controller.session.recording == nil ? .recordScreen : .stopRecording
+            case "captureKeyboard": .captureKeyboard
             default: nil
             }
         }
 
         func supports(_ identifier: String) -> Bool {
+            if CanvasZoom.Action(rawValue: identifier) != nil {
+                if case .simulator = self { return true }
+                return false
+            }
             switch self {
             case .simulator(let controller):
                 guard let id = simulatorCommand(identifier, for: controller) else { return false }
@@ -170,6 +175,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         func isEnabled(_ identifier: String) -> Bool {
+            if let action = CanvasZoom.Action(rawValue: identifier), case .simulator(let controller) = self {
+                return controller.canPerformCanvasZoom(action)
+            }
             switch self {
             case .simulator(let controller):
                 guard let id = simulatorCommand(identifier, for: controller) else { return false }
@@ -179,6 +187,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         func perform(_ identifier: String) {
+            if let action = CanvasZoom.Action(rawValue: identifier), case .simulator(let controller) = self {
+                controller.performCanvasZoom(action)
+                return
+            }
             switch self {
             case .simulator(let controller):
                 if let id = simulatorCommand(identifier, for: controller) { controller.perform(id) }
@@ -186,10 +198,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
+        func canvasZoomIsSelected(_ identifier: String) -> Bool {
+            guard let action = CanvasZoom.Action(rawValue: identifier), case .simulator(let controller) = self else { return false }
+            return controller.canvasZoomIsSelected(action)
+        }
+
         var recordingTitle: String {
             switch self {
             case .simulator(let controller): controller.session.recording == nil ? "Record Screen" : "Stop Recording"
             case .remote(let controller): controller.screenActionPresentation("record")?.title ?? "Record Screen"
+            }
+        }
+
+        var capturesKeyboard: Bool {
+            switch self {
+            case .simulator(let controller): controller.capturesKeyboard
+            case .remote(let controller): controller.capturesKeyboard
             }
         }
 
@@ -410,7 +434,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         simulatorWindows.removeValue(forKey: device.id)
                         mainWindow?.showDevicePreview(ifDisplaying: device.id)
                     }
-                case .shutdown, .remove:
+                case .shutdown, .forceShutdown, .remove:
                     try await host.releasePresentation(for: identifier)
                     simulatorWindows.removeValue(forKey: device.id)
                     mainWindow?.showDevicePreview(ifDisplaying: device.id)
@@ -474,8 +498,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         mainWindow?.updateScreenToolbar(supports: { action in
             action == "rotate" && posture?.isSupported == true ? false : screen.supports(action)
         }, isEnabled: screen.isEnabled,
-                                       recordingTitle: screen.recordingTitle)
+                                       recordingTitle: screen.recordingTitle, capturesKeyboard: screen.capturesKeyboard)
         mainWindow?.updateDevicePosture(posture, isEnabled: screen.canControlDevice && !model.managingDeviceIDs.contains(identifier))
+        mainWindow?.updateCanvasZoom(supports: screen.supports, isEnabled: screen.isEnabled, isSelected: screen.canvasZoomIsSelected)
     }
 
     private func observeScreenState(_ identifier: DeviceInventoryID) {
@@ -942,6 +967,10 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     private var selectionIdentifier: DeviceInventoryID?
     private var previewStack: NSStackView?
     private let compactIdentifier = NSToolbarItem.Identifier("CompactDeviceWindow")
+    private let captureKeyboardIdentifier = NSToolbarItem.Identifier("captureKeyboard")
+    private let canvasZoomIdentifier = NSToolbarItem.Identifier("CanvasZoom")
+    private let moreIdentifier = NSToolbarItem.Identifier("CanvasMoreActions")
+    private var moreItem: NSMenuToolbarItem?
     private let screenActionIdentifiers = ["home", "capture", "record", "rotate"]
     private let screenActionBar = NSStackView()
     private let primaryScreenActions = NSGlassEffectView()
@@ -1321,6 +1350,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         ])
         canvasBottomToPane?.isActive = true
         deviceImage.imageScaling = .scaleProportionallyUpOrDown
+        deviceImage.symbolConfiguration = NSImage.SymbolConfiguration(paletteColors: [.black, .systemCyan])
         deviceImage.translatesAutoresizingMaskIntoConstraints = false
         deviceImage.setAccessibilityHidden(true)
         deviceName.font = .systemFont(ofSize: 17, weight: .semibold)
@@ -1586,12 +1616,15 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
 
     private func updateSelection() {
         let selections = selectedDevices
-        let identifier = selections.count == 1 ? selections.first?.id : nil
+        let selectedDevice = selections.count == 1 ? selections.first : nil
+        window?.title = selectedDevice?.name ?? "NeoSimulator"
+        window?.subtitle = selectedDevice?.operatingSystem ?? ""
+        let identifier = selectedDevice?.id
         if identifier != selectionIdentifier {
             selectionIdentifier = identifier
             onSelectionChange?(identifier)
         }
-        if selections.count == 1, let device = selections.first {
+        if let device = selectedDevice {
             deviceName.stringValue = device.name
             if case .simulator(let simulator) = device { deviceRuntime.stringValue = "\(simulator.runtimeName) Simulator" }
             else {
@@ -1613,7 +1646,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         viewScreen.isEnabled = selections.count == 1 && selections.first.map(canViewScreen) == true
         viewScreen.toolTip = nil
         updateDeviceSettings()
-        model.settings.inspect(selections.count == 1 ? selections.first : nil, selectionCount: selections.count)
+        model.settings.inspect(selectedDevice, selectionCount: selections.count)
     }
 
     func selectDevice(_ identifier: DeviceInventoryID) {
@@ -1641,7 +1674,9 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         liveDeviceIdentifier = identifier
         liveScreenContainer.view.isHidden = false
         previewStack?.isHidden = true
-        window?.toolbar?.items.first(where: { $0.itemIdentifier == compactIdentifier })?.isHidden = false
+        for item in window?.toolbar?.items ?? [] where item.itemIdentifier == compactIdentifier || item.itemIdentifier == moreIdentifier {
+            item.isHidden = false
+        }
     }
 
     func showDevicePreview(ifDisplaying identifier: DeviceInventoryID) {
@@ -1650,7 +1685,9 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         activeScreenCommandTarget = nil
         liveScreenContainer.view.isHidden = true
         previewStack?.isHidden = false
-        window?.toolbar?.items.first(where: { $0.itemIdentifier == compactIdentifier })?.isHidden = true
+        for item in window?.toolbar?.items ?? [] where item.itemIdentifier == compactIdentifier || item.itemIdentifier == captureKeyboardIdentifier || item.itemIdentifier == canvasZoomIdentifier || item.itemIdentifier == moreIdentifier {
+            item.isHidden = true
+        }
         screenActionBar.isHidden = true
         updateDeviceFooter()
     }
@@ -1672,7 +1709,19 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         return super.supplementalTarget(forAction: action, sender: sender)
     }
 
-    func updateScreenToolbar(supports: (String) -> Bool, isEnabled: (String) -> Bool, recordingTitle: String) {
+    func updateScreenToolbar(supports: (String) -> Bool, isEnabled: (String) -> Bool, recordingTitle: String,
+                             capturesKeyboard: Bool = false) {
+        if let item = window?.toolbar?.items.first(where: { $0.itemIdentifier == captureKeyboardIdentifier }) {
+            item.isHidden = liveDeviceIdentifier == nil || !supports("captureKeyboard")
+            item.isEnabled = isEnabled("captureKeyboard")
+            item.menuFormRepresentation?.state = capturesKeyboard ? .on : .off
+            item.menuFormRepresentation?.isEnabled = item.isEnabled
+            if let button = item.view as? NSButton {
+                button.state = capturesKeyboard ? .on : .off
+                button.isEnabled = item.isEnabled
+                button.toolTip = capturesKeyboard ? "Release Keyboard — or hold Escape for one second." : "Capture Keyboard"
+            }
+        }
         for identifier in screenActionIdentifiers {
             guard let button = screenActionButtons[identifier] else { continue }
             button.isHidden = liveDeviceIdentifier == nil || !supports(identifier)
@@ -1712,6 +1761,21 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         updateDeviceFooter()
     }
 
+    @objc private func captureKeyboard(_ sender: Any?) { onScreenAction?("captureKeyboard") }
+    func updateCanvasZoom(supports: (String) -> Bool, isEnabled: (String) -> Bool, isSelected: (String) -> Bool) {
+        guard let group = window?.toolbar?.items.first(where: { $0.itemIdentifier == canvasZoomIdentifier }) as? NSToolbarItemGroup else { return }
+        group.isHidden = liveDeviceIdentifier == nil || !supports(CanvasZoom.Action.fit.rawValue)
+        for (index, action) in CanvasZoom.Action.allCases.enumerated() {
+            group.subitems[index].isEnabled = isEnabled(action.rawValue)
+            group.setSelected(isSelected(action.rawValue), at: index)
+        }
+    }
+
+    @objc private func performCanvasZoom(_ sender: NSToolbarItemGroup) {
+        guard CanvasZoom.Action.allCases.indices.contains(sender.selectedIndex) else { return }
+        onScreenAction?(CanvasZoom.Action.allCases[sender.selectedIndex].rawValue)
+    }
+
     @objc private func performScreenAction(_ sender: NSButton) {
         guard let identifier = sender.identifier?.rawValue else { return }
         onScreenAction?(identifier)
@@ -1724,6 +1788,10 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     }
 
     func validateToolbarItem(_ item: NSToolbarItem) -> Bool {
+        if item.itemIdentifier == moreIdentifier {
+            return liveDeviceIdentifier.map { id in model.inventory.contains { $0.id == id } } == true
+                && window?.attachedSheet == nil
+        }
         if item.itemIdentifier == compactIdentifier {
             return liveDeviceIdentifier != nil && window?.attachedSheet == nil && window?.styleMask.contains(.fullScreen) == false
         }
@@ -1777,13 +1845,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     }
 
     private func devicePreview(for device: InventoryDevice) -> NSImage? {
-        if let modelIdentifier = device.modelIdentifier,
-           let type = UTType.types(tag: modelIdentifier,
-                                   tagClass: UTTagClass(rawValue: "com.apple.device-model-code"),
-                                   conformingTo: nil).first(where: \.isDeclared) {
-            return NSWorkspace.shared.icon(for: type)
-        }
-        return NSImage(systemSymbolName: symbolName(for: device), accessibilityDescription: nil)
+        NSImage(systemSymbolName: symbolName(for: device), accessibilityDescription: nil)
     }
 
     private func shouldRenderAsActive(_ device: InventoryDevice) -> Bool {
@@ -1820,7 +1882,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         case "Apple Watch": "applewatch"
         case "Apple Vision", "visionOS": "visionpro"
         case "Mac": "desktopcomputer"
-        case "iPhone": "iphone"
+        case "iPhone": "iphone.gen3"
         default: device.kind == .virtualMachine ? "desktopcomputer" : "externaldrive"
         }
     }
@@ -1901,13 +1963,65 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [.toggleSidebar, .flexibleSpace, newSimulatorIdentifier, filterIdentifier, .sidebarTrackingSeparator,
-         .flexibleSpace, compactIdentifier, .inspectorTrackingSeparator, inspectorIdentifier]
+         .flexibleSpace, captureKeyboardIdentifier, canvasZoomIdentifier, compactIdentifier, moreIdentifier, .inspectorTrackingSeparator, inspectorIdentifier]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { toolbarDefaultItemIdentifiers(toolbar) }
 
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
                  willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
+        if itemIdentifier == captureKeyboardIdentifier {
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            item.label = "Capture Keyboard"
+            item.toolTip = "Capture Keyboard"
+            item.image = NSImage(systemSymbolName: "keyboard", accessibilityDescription: "Capture Keyboard")
+            item.target = self
+            item.action = #selector(captureKeyboard(_:))
+            let menuItem = NSMenuItem(title: item.label, action: item.action, keyEquivalent: "")
+            menuItem.target = self
+            item.menuFormRepresentation = menuItem
+            let button = NSButton(image: item.image ?? NSImage(), target: self, action: #selector(captureKeyboard(_:)))
+            button.setButtonType(.pushOnPushOff)
+            button.bezelStyle = .toolbar
+            button.toolTip = item.toolTip
+            button.setAccessibilityLabel(item.label)
+            item.view = button
+            item.autovalidates = false
+            item.isHidden = liveDeviceIdentifier == nil
+            return item
+        }
+        if itemIdentifier == canvasZoomIdentifier {
+            let labels = ["Zoom Out", "Fit", "Physical Size", "Zoom In"]
+            let symbols = ["minus.magnifyingglass", "arrow.up.left.and.down.right.magnifyingglass", "1.magnifyingglass", "plus.magnifyingglass"]
+            let images = zip(symbols, labels).compactMap { NSImage(systemSymbolName: $0, accessibilityDescription: $1) }
+            let item: NSToolbarItemGroup
+            if images.count == labels.count {
+                item = NSToolbarItemGroup(itemIdentifier: itemIdentifier, images: images, selectionMode: .selectAny,
+                                           labels: labels, target: self, action: #selector(performCanvasZoom(_:)))
+            } else {
+                item = NSToolbarItemGroup(itemIdentifier: itemIdentifier, titles: labels, selectionMode: .selectAny,
+                                           labels: labels, target: self, action: #selector(performCanvasZoom(_:)))
+            }
+            item.label = "Canvas Zoom"
+            item.autovalidates = false
+            for subitem in item.subitems { subitem.autovalidates = false }
+            item.controlRepresentation = .expanded
+            item.isHidden = liveDeviceIdentifier == nil
+            return item
+        }
+        if itemIdentifier == moreIdentifier {
+            let item = NSMenuToolbarItem(itemIdentifier: itemIdentifier)
+            item.label = "More Actions"
+            item.toolTip = "More Actions"
+            item.image = NSImage(systemSymbolName: "ellipsis", accessibilityDescription: "More Actions")
+            item.showsIndicator = false
+            item.menu = NSMenu(title: "Device Actions")
+            item.menu.autoenablesItems = false
+            item.menu.delegate = self
+            item.isHidden = liveDeviceIdentifier == nil
+            moreItem = item
+            return item
+        }
         if itemIdentifier == compactIdentifier {
             let item = NSToolbarItem(itemIdentifier: itemIdentifier)
             item.label = "Switch to Compact Window"
@@ -1983,11 +2097,11 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         populateDeviceMenu(deviceMenu, devices: selectedDevices)
     }
 
-    private func populateDeviceMenu(_ menu: NSMenu, devices: [InventoryDevice]) {
+    private func populateDeviceMenu(_ menu: NSMenu, devices: [InventoryDevice], includesViewScreen: Bool = true) {
         menu.removeAllItems()
         let identifiers = Set(devices.map(\.id))
         let idle = !model.isBusy && identifiers.isDisjoint(with: model.managingDeviceIDs)
-        if devices.count == 1, canViewScreen(devices[0]) {
+        if includesViewScreen, devices.count == 1, canViewScreen(devices[0]) {
             let item = NSMenuItem(title: "View Screen", action: #selector(openDeviceFromMenu(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = devices[0].id
@@ -2005,7 +2119,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         let name = devices.first?.name ?? ""
         let operations: [(String, DeviceManagementAction)] = [
             ("Rename…", .rename(name)), ("Clone…", .clone("\(name) Copy")),
-            ("Start", .start), ("Shut Down", .shutdown), ("Restart", .restart),
+            ("Start", .start), ("Shut Down", .shutdown), ("Force Shut Down", .forceShutdown), ("Restart", .restart),
             ("Pause", .pause), ("Resume", .resume),
             ("Pair Simulators", .pair), ("Unpair", .unpair),
             ("Erase Content and Settings…", .erase), ("Remove…", .remove),
@@ -2016,7 +2130,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             let item = NSMenuItem(title: title, action: #selector(performManagement(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = ManagementRequest(action: action, identifiers: identifiers)
-            item.isEnabled = idle
+            item.isEnabled = model.canManage(action, deviceIDs: identifiers)
             menu.addItem(item)
         }
         if menu.items.isEmpty {
@@ -2024,6 +2138,50 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             item.isEnabled = false
             menu.addItem(item)
         }
+    }
+
+    private func updateCanvasMenu(_ menu: NSMenu) {
+        let device = model.inventory.first { $0.id == liveDeviceIdentifier }
+        populateDeviceMenu(menu, devices: device.map { [$0] } ?? [], includesViewScreen: false)
+        guard let device else { return }
+        menu.insertItem(.sectionHeader(title: device.name), at: 0)
+        if let controller = activeScreenCommandTarget as? DeviceWindowController {
+            let command = DeviceCommand.command(.externalDisplayCarPlay)
+            if command.isSupported(controller.session.capabilities) {
+                let item = NSMenuItem(title: "CarPlay", action: #selector(showCanvasCarPlay(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = device.id
+                item.isEnabled = command.validate(item, for: controller)
+                menu.addItem(.separator())
+                menu.addItem(item)
+            }
+        }
+        guard case .simulator(let phone) = device, phone.productFamily == "iPhone" else { return }
+        let watches = model.inventory.filter { candidate in
+            guard case .simulator(let watch) = candidate, watch.productFamily == "Apple Watch" else { return false }
+            return supports(.pair, devices: [device, candidate])
+        }.sorted(by: precedes)
+        let pairing = NSMenuItem(title: "Pair Apple Watch", action: nil, keyEquivalent: "")
+        let submenu = NSMenu(title: pairing.title)
+        submenu.autoenablesItems = false
+        for watch in watches {
+            let identifiers = Set([device.id, watch.id])
+            let item = NSMenuItem(title: "\(watch.name) (\(watch.operatingSystem ?? "Apple Watch"))",
+                                 action: #selector(performManagement(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = ManagementRequest(action: .pair, identifiers: identifiers)
+            item.isEnabled = !model.isBusy && identifiers.isDisjoint(with: model.managingDeviceIDs)
+            submenu.addItem(item)
+        }
+        pairing.submenu = submenu
+        pairing.isEnabled = !watches.isEmpty && !model.isBusy && !model.managingDeviceIDs.contains(device.id)
+        menu.addItem(pairing)
+    }
+
+    @objc private func showCanvasCarPlay(_ sender: NSMenuItem) {
+        guard let identifier = sender.representedObject as? DeviceInventoryID, identifier == liveDeviceIdentifier,
+              let controller = activeScreenCommandTarget as? DeviceWindowController else { return }
+        controller.perform(.externalDisplayCarPlay)
     }
 
     private func supports(_ action: DeviceManagementAction, devices: [InventoryDevice]) -> Bool {
@@ -2054,8 +2212,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     @objc private func performManagement(_ sender: NSMenuItem) {
         guard let request = sender.representedObject as? ManagementRequest else { return }
         let devices = model.inventory.filter { request.identifiers.contains($0.id) }
-        guard devices.count == request.identifiers.count, supports(request.action, devices: devices), !model.isBusy,
-              request.identifiers.isDisjoint(with: model.managingDeviceIDs) else { return }
+        guard devices.count == request.identifiers.count, supports(request.action, devices: devices),
+              model.canManage(request.action, deviceIDs: request.identifiers) else { return }
         switch request.action {
         case .rename: presentNameEditor(for: devices[0], cloning: false)
         case .clone: presentNameEditor(for: devices[0], cloning: true)
@@ -2124,6 +2282,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         if menu === deviceMenu { updateDeviceMenu(); return }
+        if menu === moreItem?.menu { updateCanvasMenu(menu); return }
         guard menu === filterItem?.menu else { return }
         menu.removeAllItems()
         menu.addItem(.sectionHeader(title: "Devices"))
@@ -2217,6 +2376,8 @@ private final class SimulatorSidebarCellView: NSTableCellView {
         didSet { updateIconAppearance() }
     }
 
+    override var allowsVibrancy: Bool { true }
+
     override var backgroundStyle: NSView.BackgroundStyle {
         didSet { needsDisplay = true }
     }
@@ -2226,8 +2387,6 @@ private final class SimulatorSidebarCellView: NSTableCellView {
         let icon = NSImageView()
         icon.translatesAutoresizingMaskIntoConstraints = false
         icon.imageScaling = .scaleProportionallyUpOrDown
-        icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 20, weight: .regular)
-            .applying(NSImage.SymbolConfiguration(paletteColors: [.labelColor, .systemCyan]))
         icon.setAccessibilityHidden(true)
         let name = NSTextField(labelWithString: "")
         name.font = .systemFont(ofSize: 13, weight: .medium)
@@ -2289,7 +2448,11 @@ private final class SimulatorSidebarCellView: NSTableCellView {
     }
 
     private func updateIconAppearance() {
-        imageView?.isEnabled = isDeviceActive
+        let colors = isDeviceActive
+            ? NSImage.SymbolConfiguration(paletteColors: [.black, .systemCyan])
+            : NSImage.SymbolConfiguration(hierarchicalColor: .tertiaryLabelColor)
+        imageView?.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 20, weight: .regular)
+            .applying(colors)
         needsDisplay = true
     }
 }
@@ -3826,6 +3989,31 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
     private let progress = NSProgressIndicator()
     private let retryButton = NSButton(title: "Reconnect", target: nil, action: nil)
     private let inputView: RemoteDeviceInputView
+    // Keep key and modifier releases on the original responder after focus or native-view changes.
+    private var capturedKeyboardResponder: NSView?
+    private lazy var keyboardCapture = KeyboardCapture(isEligible: { [weak self] in
+        guard let self, !self.closing, !self.changingPresentation, self.session.state == .connected,
+              self.session.inputCapabilities.contains(.keyboard), NSApp.isActive,
+              let window = self.presentationWindow, window.isKeyWindow, window.attachedSheet == nil else { return false }
+        return self.focusedScreenInputResponder === self.capturedKeyboardResponder
+            && self.capturedKeyboardResponder != nil
+    }, forward: { [weak self] event in
+        guard let input = self?.capturedKeyboardResponder else { return }
+        switch event.type {
+        case .keyDown: input.keyDown(with: event)
+        case .keyUp: input.keyUp(with: event)
+        case .flagsChanged: input.flagsChanged(with: event)
+        default: break
+        }
+    }, releaseModifiers: { [weak self] releases in
+        guard let self, let input = self.capturedKeyboardResponder else { return }
+        if input === self.inputView {
+            self.inputView.releaseModifiers(releases)
+        } else {
+            for event in releases { input.flagsChanged(with: event) }
+        }
+    })
+    var capturesKeyboard: Bool { keyboardCapture.isCapturing }
     private var connectionTask: Task<Void, Never>?
     private var stoppingTask: Task<Void, any Error>?
     private var inputTask: Task<Void, Never>?
@@ -3929,6 +4117,11 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
         inputView.enqueue = { [weak self] operation in self?.enqueueInput(operation) }
         session.onInputCapabilitiesLost = { [weak self] kinds in self?.inputView.invalidateInputs(for: kinds) }
         session.onStateChange = { [weak self] in self?.update() }
+        keyboardCapture.failure = { [weak self] in self?.showIssue($0) }
+        keyboardCapture.didStop = { [weak self] in
+            self?.capturedKeyboardResponder = nil
+            self?.update()
+        }
         NotificationCenter.default.addObserver(self, selector: #selector(presentationWindowBecameKey(_:)),
             name: NSWindow.didBecomeKeyNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(presentationWindowResignedKey(_:)),
@@ -4031,9 +4224,18 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
         if let frame { window?.setFrame(frame, display: false) }
     }
 
-    private var screenOwnsFocus: Bool {
-        guard let responder = presentationWindow?.firstResponder as? NSView else { return false }
-        return responder === inputView || session.nativeInputView.map { responder.isDescendant(of: $0) } == true
+    private var focusedScreenInputResponder: NSView? {
+        guard let responder = presentationWindow?.firstResponder as? NSView,
+              responder === inputView || session.nativeInputView.map({ responder.isDescendant(of: $0) }) == true else { return nil }
+        return responder
+    }
+
+    private var screenOwnsFocus: Bool { focusedScreenInputResponder != nil }
+
+    private func startKeyboardCapture() throws {
+        capturedKeyboardResponder = focusedScreenInputResponder
+        do { try keyboardCapture.start() }
+        catch { capturedKeyboardResponder = nil; throw error }
     }
 
     private func focusScreen() {
@@ -4042,6 +4244,7 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
     }
 
     private func relinquishScreenFocus() {
+        keyboardCapture.stop()
         if screenOwnsFocus { presentationWindow?.makeFirstResponder(nil) }
         inputView.releaseFocus()
     }
@@ -4090,6 +4293,7 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
 
     private func update() {
         let connected = session.state == .connected && !closing && !changingPresentation
+        if !connected || !session.inputCapabilities.contains(.keyboard) { keyboardCapture.stop() }
         let busy = session.state == .connecting || session.state == .stopping || captureTask != nil || recordingTask != nil
         let native = session.nativeInputView
         inputView.isHidden = native != nil
@@ -4104,6 +4308,10 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
                 item.toolTip = presentation.title
                 item.image = NSImage(systemSymbolName: presentation.symbolName, accessibilityDescription: presentation.title)
                 item.menuFormRepresentation?.title = presentation.title
+            }
+            if identifier == "captureKeyboard", let button = item.view as? NSButton {
+                button.state = capturesKeyboard ? .on : .off
+                button.isEnabled = item.isEnabled
             }
         }
         toolbarItems["capture"]?.toolTip = completedScreenshot != nil ? "Save the captured screenshot…"
@@ -4122,6 +4330,7 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
         else if session.recordingState == .stopping { statusLabel.stringValue = "Finishing recording…" }
         else if recordingTask != nil { statusLabel.stringValue = "Saving recording…" }
         else if let issue { statusLabel.stringValue = issue }
+        else if capturesKeyboard { statusLabel.stringValue = "Keyboard captured. Hold Escape for one second to release." }
         else if session.hasUnfinishedRecording { statusLabel.stringValue = "Recording" }
         else if completedScreenshot != nil { statusLabel.stringValue = "Screenshot ready to save." }
         else if session.completedRecording != nil { statusLabel.stringValue = "Recording ready to save." }
@@ -4220,6 +4429,7 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
     }
     @objc private func presentationWindowResignedKey(_ notification: Notification) {
         guard notification.object as? NSWindow === presentationWindow else { return }
+        keyboardCapture.stop()
         inputView.releaseFocus()
     }
 
@@ -4234,7 +4444,7 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        ["home", "lock", "volumeDown", "volumeUp", NSToolbarItem.Identifier.flexibleSpace.rawValue, "capture", "record", "compact", "reconnect"].map { NSToolbarItem.Identifier($0) }
+        ["captureKeyboard", "home", "lock", "volumeDown", "volumeUp", NSToolbarItem.Identifier.flexibleSpace.rawValue, "capture", "record", "compact", "reconnect"].map { NSToolbarItem.Identifier($0) }
     }
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { toolbarDefaultItemIdentifiers(toolbar) }
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
@@ -4245,6 +4455,14 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
         item.label = label
         item.toolTip = label
         item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
+        if itemIdentifier.rawValue == "captureKeyboard" {
+            let button = NSButton(image: item.image ?? NSImage(), target: self, action: #selector(toolbarAction(_:)))
+            button.identifier = NSUserInterfaceItemIdentifier(itemIdentifier.rawValue)
+            button.setButtonType(.pushOnPushOff)
+            button.bezelStyle = .toolbar
+            button.setAccessibilityLabel(label)
+            item.view = button
+        }
         item.target = self
         item.action = #selector(toolbarAction(_:))
         item.autovalidates = false
@@ -4257,11 +4475,13 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
         return item
     }
     @objc private func toolbarAction(_ sender: Any) {
-        guard let identifier = (sender as? NSToolbarItem)?.itemIdentifier.rawValue ?? (sender as? NSMenuItem)?.representedObject as? String else { return }
+        guard let identifier = (sender as? NSToolbarItem)?.itemIdentifier.rawValue
+            ?? (sender as? NSButton)?.identifier?.rawValue ?? (sender as? NSMenuItem)?.representedObject as? String else { return }
         performScreenAction(identifier)
     }
 
     func screenActionPresentation(_ identifier: String) -> (title: String, symbolName: String)? {
+        if identifier == "captureKeyboard" { return (capturesKeyboard ? "Release Keyboard" : "Capture Keyboard", "keyboard") }
         if identifier == "record" {
             if session.hasUnfinishedRecording { return ("Stop Recording", "stop.circle") }
             if session.completedRecording != nil { return ("Save Recording…", "square.and.arrow.down") }
@@ -4279,6 +4499,7 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
     func isScreenActionEnabled(_ identifier: String) -> Bool {
         guard !closing, !mayClose, !changingPresentation else { return false }
         switch identifier {
+        case "captureKeyboard": return session.state == .connected && session.inputCapabilities.contains(.keyboard)
         case "home", "lock", "volumeDown", "volumeUp":
             return session.state == .connected && session.inputCapabilities.contains(.button)
         case "capture": return canSaveScreenshot
@@ -4298,6 +4519,12 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
     func performScreenAction(_ identifier: String) {
         guard isScreenActionEnabled(identifier) else { return }
         switch identifier {
+        case "captureKeyboard":
+            if !keyboardCapture.stop() {
+                focusScreen()
+                do { try startKeyboardCapture() } catch { showIssue(error) }
+            }
+            update()
         case "compact": onShowInMainWindow?()
         case "reconnect": reconnect(nil)
         case "capture": saveScreenshot()
@@ -4680,6 +4907,13 @@ private final class RemoteDeviceInputView: NSView {
         enqueue? { [session] in try await session.releaseInputs() }
     }
     override func resignFirstResponder() -> Bool { releaseFocus(); return super.resignFirstResponder() }
+
+    func releaseModifiers(_ events: [NSEvent]) {
+        for event in events {
+            guard let usage = Self.keyUsage[event.keyCode] else { continue }
+            enqueueInput(for: .keyboard) { [session] in try await session.sendKey(usage, state: .up) }
+        }
+    }
 
     override func keyDown(with event: NSEvent) {
         guard isInputEnabled, session.inputCapabilities.contains(.keyboard), !event.isARepeat,

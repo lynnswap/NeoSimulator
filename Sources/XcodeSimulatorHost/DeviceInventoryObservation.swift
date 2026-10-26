@@ -1,5 +1,4 @@
 import ABIBridge
-import Darwin
 import Foundation
 
 /// Reports changes to connected devices so the caller can reload its inventory.
@@ -85,15 +84,9 @@ private final class CoreDeviceInventoryChangeSource: DeviceInventoryChangeSource
         let changes: NativeSwiftMethod<() -> NativeSwiftValue>
 
         init() async throws {
-            let binary = "/Library/Developer/PrivateFrameworks/CoreDevice.framework/CoreDevice"
-            guard dlopen(binary, RTLD_NOW | RTLD_LOCAL) != nil else {
-                let detail = dlerror().map { String(cString: $0) } ?? "Unknown loader error"
-                throw CLIError.unavailable("coredevice-runtime", "Could not load CoreDevice: \(detail)")
-            }
+            manager = try CoreDeviceRuntime.deviceManagerIncludingSimulators()
             let runtime = ABIRuntime.shared
             let managerType = try await runtime.resolve(.swift(.type("CoreDevice.DeviceManager")))
-            let shared = try await managerType.resolve(.swift(.staticGetter("shared", as: (() -> NativeSwiftValue).self)))
-            manager = try unsafe shared.unsafeInvoke()
             initializeManager = try await managerType.resolve(.swift(.method("awaitFullInitialization()", as: (() async -> Void).self)))
             let remote = try await runtime.resolve(.swift(.type("CoreDevice.RemoteDevice")))
             let dictionary = try await runtime.resolve(.swift(.type("Swift.Dictionary",

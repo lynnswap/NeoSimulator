@@ -139,6 +139,7 @@ public actor SimulatorHostController {
     private var startupDeviceIdentifier: DeviceInventoryID?
     private var operationInProgress = false
     private var operationWaiters: [CheckedContinuation<Void, Never>] = []
+    var shutdownTransactions: [SimulatorShutdownTransaction] = []
 
     public init(rendererApplicationURL: URL,
                 presentSimulator: (@MainActor @Sendable (SimulatorPresentationContext) async throws -> Void)? = nil) {
