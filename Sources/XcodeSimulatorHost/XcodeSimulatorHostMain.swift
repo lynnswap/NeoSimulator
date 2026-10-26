@@ -65,6 +65,8 @@ public struct SimulatorHostFailure: Error, LocalizedError, Sendable {
     public enum Kind: Sendable, Equatable { case preferencesChanged, unavailableXcode, launchFailed, partialSuccess, operationFailed }
     public let kind: Kind
     public let technicalDetails: String
+    public let failureReason: String?
+    private let underlyingRecoverySuggestion: String?
 
     public var errorDescription: String? {
         switch kind {
@@ -76,7 +78,8 @@ public struct SimulatorHostFailure: Error, LocalizedError, Sendable {
         }
     }
     public var recoverySuggestion: String? {
-        switch kind {
+        if let underlyingRecoverySuggestion { return underlyingRecoverySuggestion }
+        return switch kind {
         case .preferencesChanged: "Review your Xcode settings. To use the saved values, choose Restore Original Settings…, then Restore Saved Values…."
         case .unavailableXcode: "Open Xcode 27 or later and finish installing its developer tools, then try again."
         case .launchFailed: "Try View Screen again, or select the display app in Settings."
@@ -85,6 +88,8 @@ public struct SimulatorHostFailure: Error, LocalizedError, Sendable {
         }
     }
     init(_ error: any Error) {
+        failureReason = (error as? any LocalizedError)?.failureReason
+        underlyingRecoverySuggestion = (error as? any LocalizedError)?.recoverySuggestion
         let identifier = (error as? CLIError)?.identifier ?? ""
         technicalDetails = identifier.isEmpty ? error.localizedDescription : "\(identifier): \(error.localizedDescription)"
         if ["preference-conflict", "ambiguous-intermediate"].contains(identifier) || identifier.hasSuffix("-host-invalidated") {
@@ -139,6 +144,7 @@ public actor SimulatorHostController {
     private var startupDeviceIdentifier: DeviceInventoryID?
     private var operationInProgress = false
     private var operationWaiters: [CheckedContinuation<Void, Never>] = []
+    var shutdownTransactions: [SimulatorShutdownTransaction] = []
 
     public init(rendererApplicationURL: URL,
                 presentSimulator: (@MainActor @Sendable (SimulatorPresentationContext) async throws -> Void)? = nil) {

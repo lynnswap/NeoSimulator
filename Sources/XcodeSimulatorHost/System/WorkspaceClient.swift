@@ -53,7 +53,12 @@ private struct ManagedApplicationIdentity {
     var terminationRequest: HostTerminationRequest = .normalQuit
 }
 
-private let neoHostStartupPayload = Data("ready\n".utf8)
+/// The startup result exchanged by the manager and its bundled renderer.
+@_spi(NeoSimulator)
+public enum RendererStartupResult: Codable, Sendable {
+    case ready
+    case failed(message: String, recoverySuggestion: String?)
+}
 
 @MainActor
 private final class ApplicationTerminationWaiter {
@@ -297,10 +302,7 @@ struct WorkspaceClient: Sendable {
                         "requested \(expected.path), but LaunchServices opened \(observed.path)"
                     )
                 }
-                try await waitForNeoHostStartup(
-                    application,
-                    resultURL: startupResultURL
-                )
+                try await waitForNeoHostStartup(resultURL: startupResultURL, isTerminated: { application.isTerminated })
                 return observed
             } catch let launchError {
                 guard application.bundleIdentifier == ToolConstants.neoHostBundleIdentifier,
@@ -313,10 +315,11 @@ struct WorkspaceClient: Sendable {
                 do {
                     try await waiter.terminate()
                 } catch let terminationError {
-                    throw CLIError.temporary(
-                        "neo-host-launch-cleanup",
-                        "NeoSimulator launch failed (\(launchError.localizedDescription)), and pid \(application.processIdentifier) could not be terminated (\(terminationError.localizedDescription))"
-                    )
+                    let message = "NeoSimulator launch failed (\(launchError.localizedDescription)), and pid \(application.processIdentifier) could not be terminated (\(terminationError.localizedDescription))"
+                    let failure = launchError as? any LocalizedError
+                    throw CLIError(category: .temporary, identifier: "neo-host-launch-cleanup", message: message,
+                                   failureReason: failure?.failureReason == nil ? nil : message,
+                                   recoverySuggestion: failure?.recoverySuggestion)
                 }
                 throw launchError
             }
@@ -522,47 +525,41 @@ struct WorkspaceClient: Sendable {
         return directory
     }
 
-    @MainActor private static func waitForNeoHostStartup(
-        _ application: NSRunningApplication,
-        resultURL: URL
+    @MainActor static func waitForNeoHostStartup(
+        resultURL: URL,
+        isTerminated: () -> Bool
     ) async throws {
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: .seconds(10))
 
         while clock.now < deadline {
-            guard !application.isTerminated else {
-                throw CLIError.temporary(
-                    "neo-host-startup",
-                    "NeoSimulator exited before startup completed"
-                )
-            }
-
             if FileManager.default.fileExists(atPath: resultURL.path) {
-                let result: Data
-                do {
-                    result = try Data(contentsOf: resultURL)
-                } catch {
-                    throw CLIError.io(
-                        "neo-host-startup-result",
-                        "could not read the NeoSimulator startup result: \(error.localizedDescription)"
-                    )
+                let data: Data
+                do { data = try Data(contentsOf: resultURL) }
+                catch {
+                    throw CLIError.io("neo-host-startup-result",
+                        "could not read the NeoSimulator startup result: \(error.localizedDescription)")
                 }
-                guard result == neoHostStartupPayload else {
-                    throw CLIError.configuration(
-                        "neo-host-startup-result",
-                        "NeoSimulator wrote an invalid startup result"
-                    )
+                let result: RendererStartupResult
+                do { result = try JSONDecoder().decode(RendererStartupResult.self, from: data) }
+                catch {
+                    throw CLIError.configuration("neo-host-startup-result", "NeoSimulator wrote an invalid startup result")
                 }
-                await Task.yield()
-                guard !application.isTerminated else {
-                    throw CLIError.temporary(
-                        "neo-host-startup",
-                        "NeoSimulator exited during startup"
-                    )
+                switch result {
+                case .failed(let message, let recovery):
+                    throw CLIError(category: .temporary, identifier: "neo-host-startup", message: message,
+                                   failureReason: message, recoverySuggestion: recovery)
+                case .ready:
+                    await Task.yield()
+                    guard !isTerminated() else {
+                        throw CLIError.temporary("neo-host-startup", "NeoSimulator exited during startup")
+                    }
+                    return
                 }
-                return
             }
-
+            guard !isTerminated() else {
+                throw CLIError.temporary("neo-host-startup", "NeoSimulator exited before startup completed")
+            }
             try await Task.sleep(for: .milliseconds(50))
         }
 

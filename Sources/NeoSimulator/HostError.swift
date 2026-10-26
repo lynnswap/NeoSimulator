@@ -12,6 +12,12 @@ enum HostError: LocalizedError {
              .conflict(let message), .operation(let message): message
         }
     }
+
+    var recoverySuggestion: String? {
+        if case .conflict = self { "Close the other display app, then choose View Screen again." }
+        else { nil }
+    }
+
 }
 
 func hostLog(_ message: String) {

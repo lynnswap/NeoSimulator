@@ -439,7 +439,9 @@ struct HostModeController {
         return CLIError(
             category: (error as? CLIError)?.category ?? .io,
             identifier: identifier,
-            message: "\(message): \(errorMessage(error)). \(recoveryGuidance)"
+            message: "\(message): \(errorMessage(error)). \(recoveryGuidance)",
+            failureReason: (error as? any LocalizedError)?.failureReason,
+            recoverySuggestion: (error as? any LocalizedError)?.recoverySuggestion.map { "\($0) \(recoveryGuidance)" }
         )
     }
 
