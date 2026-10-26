@@ -41,6 +41,7 @@ final class NativeSimulatorAppResizeTransport: SimulatorAppResizeTransport {
     private let stateType: NativeSwiftType
     private let sceneType: NativeSwiftType
     private let displayType: NativeSwiftType
+    private let failure: any Error
 
     static let feature = "com.apple.coredevice.feature.resizableappmanagement"
 
@@ -73,14 +74,24 @@ final class NativeSimulatorAppResizeTransport: SimulatorAppResizeTransport {
             as: ((NativeSwiftValue) async throws -> NativeSwiftValue).self,
             genericArguments: [.type(capability)], valueABIs: markerABIs)))
         let implementation = try await unsafe get.unsafeInvoke(on: remote, marker.unsafeInvoke()).copyUnderlyingValue()
-        return try NativeSimulatorAppResizeTransport(manager: manager, remote: remote, implementation: implementation, runtime: runtime)
+        let errorType = try runtime.resolveAndWait(.swift(.type("CoreDevice.CoreDeviceError")))
+        let sampleError = try errorType.resolveAndWait(.swift(.staticGetter("ioError", as: (() -> NativeSwiftValue).self,
+            valueABIs: [errorType: try .opaque(named: errorType.name)])))
+        let owner = try unsafe sampleError.unsafeInvoke()
+        // Open the framework's actual Error type to preserve its typed throws convention.
+        guard let failure = try owner.withCopy({ $0 as? any Error }) else {
+            throw HostError.unavailable("The native app resize error type could not be resolved.")
+        }
+        return try NativeSimulatorAppResizeTransport(manager: manager, remote: remote, implementation: implementation,
+                                                     runtime: runtime, failure: failure)
     }
 
-    private init(manager: NativeSwiftValue, remote: NativeSwiftValue, implementation: NativeSwiftValue, runtime: ABIRuntime) throws {
+    private init(manager: NativeSwiftValue, remote: NativeSwiftValue, implementation: NativeSwiftValue, runtime: ABIRuntime, failure: any Error) throws {
         self.manager = manager
         self.remote = remote
         self.implementation = implementation
         self.runtime = runtime
+        self.failure = failure
         stateType = try runtime.resolveAndWait(.swift(.type("CoreDeviceUtilities.ResizabilityState")))
         sceneType = try runtime.resolveAndWait(.swift(.type("CoreDeviceUtilities.ResizableSceneState")))
         displayType = try runtime.resolveAndWait(.swift(.type("CoreDeviceUtilities.ResizableDisplayInfo")))
@@ -88,10 +99,14 @@ final class NativeSimulatorAppResizeTransport: SimulatorAppResizeTransport {
     }
 
     func eligibility() async throws -> AsyncThrowingStream<AppResizeEligibility, any Error> {
+        try await eligibility(failure: failure)
+    }
+
+    private func eligibility<Failure: Error>(failure: Failure) async throws -> AsyncThrowingStream<AppResizeEligibility, any Error> {
         let stream = try NativeResizeStream(runtime: runtime, element: stateType, throwing: true)
         let observe = try implementation.type.resolveAndWait(.swift(.method("CoreDevice.ResizableAppManagementProtocol.observeFrontmostAppResizability()",
-            as: (() async throws -> NativeSwiftValue).self, valueABIs: abis.merging(stream.abis) { a, _ in a })))
-        let value = try await unsafe observe.unsafeInvoke(on: implementation).copyUnderlyingValue()
+            as: (() async throws(Failure) -> NativeSwiftValue).self, valueABIs: abis.merging(stream.abis) { a, _ in a })))
+        let value = try await unsafe observe.unsafeInvoke(on: implementation)
         guard let resizing = try stateType.makeEnumCase(named: "resizing").withCopy({ $0 as? AnyHashable }) else {
             throw HostError.unavailable("CoreDevice resizability state does not support equality.")
         }
@@ -103,16 +118,21 @@ final class NativeSimulatorAppResizeTransport: SimulatorAppResizeTransport {
     }
 
     func start(size: CGSize, cornerRadius: CGFloat) async throws -> any SimulatorAppResizeLease {
+        try await start(size: size, cornerRadius: cornerRadius, failure: failure)
+    }
+
+    private func start<Failure: Error>(size: CGSize, cornerRadius: CGFloat, failure: Failure) async throws -> any SimulatorAppResizeLease {
         let getDisplay = try implementation.type.resolveAndWait(.swift(.method("CoreDevice.ResizableAppManagementProtocol.getDisplayForResizing()",
-            as: (() async throws -> NativeSwiftValue).self, valueABIs: abis)))
-        let display = try await unsafe getDisplay.unsafeInvoke(on: implementation).copyUnderlyingValue()
+            as: (() async throws(Failure) -> NativeSwiftValue).self, valueABIs: abis)))
+        let display = try await unsafe getDisplay.unsafeInvoke(on: implementation)
         try Task.checkCancellation()
-        let identifier = try displayType.resolveAndWait(.swift(.getter("displayUniqueId", as: (() -> String).self, valueABIs: abis)))
+        let identifier = try displayType.resolveAndWait(.swift(.getter("displayUniqueId", as: (() -> String).self,
+            valueABIs: abis, receiverABI: .opaque(named: displayType.name))))
         let start = try implementation.type.resolveAndWait(.swift(.method("CoreDevice.ResizableAppManagementProtocol.startResizableSession(withDisplayId:preferredSize:cornerRadius:)",
-            as: ((String, CGSize, CGFloat) async throws -> NativeSwiftValue).self, valueABIs: abis)))
+            as: ((String, CGSize, CGFloat) async throws(Failure) -> NativeSwiftValue).self, valueABIs: abis)))
         let assertion = try await unsafe start.unsafeInvoke(on: implementation, identifier.unsafeInvoke(on: display), size, cornerRadius).copyUnderlyingValue()
         // Do not check cancellation until the returned assertion has an invalidation owner.
-        return try NativeSimulatorAppResizeLease(assertion: assertion, runtime: runtime, sceneType: sceneType, abis: abis)
+        return try NativeSimulatorAppResizeLease(assertion: assertion, runtime: runtime, sceneType: sceneType, abis: abis, failure: failure)
     }
 }
 
@@ -125,11 +145,11 @@ private final class NativeSimulatorAppResizeLease: SimulatorAppResizeLease {
     private let sceneType: NativeSwiftType
     private let abis: [NativeSwiftType: NativeType]
     private let invalidateNative: NativeSwiftMethod<() -> Void>
-    private let adjustNative: NativeSwiftMethod<(CGSize, CGFloat) async throws -> Void>
+    private let adjustNative: (CGSize, CGFloat) async throws -> Void
     private let wait: NativeSwiftMethod<() async -> Void>
     private var invalidated = false
 
-    init(assertion: NativeSwiftValue, runtime: ABIRuntime, sceneType: NativeSwiftType, abis: [NativeSwiftType: NativeType]) throws {
+    init<Failure: Error>(assertion: NativeSwiftValue, runtime: ABIRuntime, sceneType: NativeSwiftType, abis: [NativeSwiftType: NativeType], failure: Failure) throws {
         self.assertion = assertion
         self.runtime = runtime
         self.sceneType = sceneType
@@ -140,8 +160,9 @@ private final class NativeSimulatorAppResizeLease: SimulatorAppResizeLease {
             displayUniqueID = try unsafe id.unsafeInvoke(on: assertion)
             let scene = try assertion.type.resolveAndWait(.swift(.getter("CoreDevice.ResizableAppSessionAssertion.sceneState", as: (() -> NativeSwiftValue).self, valueABIs: abis)))
             geometry = try Self.geometry(unsafe scene.unsafeInvoke(on: assertion), type: sceneType, abis: abis)
-            adjustNative = try assertion.type.resolveAndWait(.swift(.method("CoreDevice.ResizableAppSessionAssertion.adjustGeometry(preferredSize:cornerRadius:)",
-                as: ((CGSize, CGFloat) async throws -> Void).self)))
+            let adjust = try assertion.type.resolveAndWait(.swift(.method("CoreDevice.ResizableAppSessionAssertion.adjustGeometry(preferredSize:cornerRadius:)",
+                as: ((CGSize, CGFloat) async throws(Failure) -> Void).self)))
+            adjustNative = { size, radius in try await unsafe adjust.unsafeInvoke(on: assertion, size, radius) }
             wait = try assertion.type.resolveAndWait(.swift(.method("CoreDevice.ResizableAppSessionAssertion.awaitInvalidation()", as: (() async -> Void).self)))
         } catch {
             do { try unsafe invalidateNative.unsafeInvoke(on: assertion) }
@@ -159,7 +180,7 @@ private final class NativeSimulatorAppResizeLease: SimulatorAppResizeLease {
     }
 
     func adjust(size: CGSize, cornerRadius: CGFloat) async throws {
-        try await unsafe adjustNative.unsafeInvoke(on: assertion, size, cornerRadius)
+        try await adjustNative(size, cornerRadius)
     }
     func awaitInvalidation() async throws { try await unsafe wait.unsafeInvoke(on: assertion) }
     func invalidate() throws {
