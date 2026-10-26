@@ -753,8 +753,14 @@ struct InputFocusTests {
         _ = NSApplication.shared
         let display = TestDisplay()
         display.usesNativeCanvas = true
+        display.naturalSize = NSSize(width: 20, height: 20)
         let controller = try makeController(display)
         defer { controller.invalidate() }
+        let initialFrame = try #require(controller.window?.frame)
+        #expect(initialFrame.width >= 500 && initialFrame.height >= 700)
+        display.naturalSize = NSSize(width: 900, height: 900)
+        display.onPropertiesChange?()
+        #expect(controller.window?.frame == initialFrame)
         let parent = NSViewController()
         parent.view = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 400))
         let window = KeyPresentationWindow(contentRect: parent.view.frame, styleMask: [.titled], backing: .buffered, defer: false)

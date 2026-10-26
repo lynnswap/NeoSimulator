@@ -220,6 +220,9 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
 
     /// Recomputes fit if a narrower window switches to the taller expanded title bar.
     private func showDisplay(fitting scale: () -> CGFloat?) {
+        // DeviceKit initially lays out its loading indicator. Preserve the
+        // window's viewport while the device composition becomes available.
+        if session.display.usesNativeCanvas { resizeDisplay(); return }
         guard let first = scale() else { return }
         showDisplay(at: first)
         if let second = scale(), second < first { showDisplay(at: second) }
@@ -227,6 +230,11 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
 
     /// Recomputes initial placement if scaling changes the title-bar height.
     private func placeAtInitialScale(_ place: ((NSWindow) -> Void)?) {
+        if session.display.usesNativeCanvas {
+            resizeDisplay()
+            if let window { place?(window) }
+            return
+        }
         let scale = initialScale
         fitting.setScale(scale)
         didRotate(placing: place)
