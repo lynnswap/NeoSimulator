@@ -1457,7 +1457,6 @@ protocol SimulatorDisplay: AnyObject {
         found: @escaping @MainActor (Result<any SimulatorExternalScreen, any Error>) -> Void
     ) throws -> AnyObject?
     func setChromeVisible(_ visible: Bool)
-    func setActive(_ active: Bool)
     func setKeyboardEnabled(_ enabled: Bool)
     /// Controls whether digitizer scrolling reaches the device's crown or dial.
     func setSupportsScrolling(_ supports: Bool)
@@ -1696,16 +1695,16 @@ final class SimulatorConnection: SimulatorDisplay {
         }
     }
     func setChromeVisible(_ visible: Bool) {
-        perform("show device chrome") { try unsafe runtime.display.showChrome.unsafeInvoke(on: view, visible) }
-        view.invalidateIntrinsicContentSize()
-    }
-    func setActive(_ active: Bool) {
-        guard !disconnected else { return }
         let display = runtime.display
-        perform("activate device chrome") {
-            let state = try display.chromeState.makeEnumCase(named: active ? "active" : "inactive")
-            try unsafe display.setChromeState.unsafeInvoke(on: chromeView, state)
+        perform("show device chrome") {
+            try unsafe display.showChrome.unsafeInvoke(on: view, visible)
+            if visible {
+                // Preserve the device artwork when its window loses keyboard focus.
+                let state = try display.chromeState.makeEnumCase(named: "active")
+                try unsafe display.setChromeState.unsafeInvoke(on: chromeView, state)
+            }
         }
+        view.invalidateIntrinsicContentSize()
     }
     func setKeyboardEnabled(_ enabled: Bool) {
         guard !disconnected, let keyboard = object_getIvar(view, runtime.display.keyboardDelegate) else { return }
