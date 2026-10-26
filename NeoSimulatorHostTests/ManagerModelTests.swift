@@ -6,6 +6,29 @@ import Testing
 
 @Suite(.serialized, .timeLimit(.minutes(1))) @MainActor
 struct ManagerModelTests {
+    @Test func relaunchWaitsForTheOldProcessToExit() async throws {
+        let owner = Process()
+        owner.executableURL = URL(fileURLWithPath: "/bin/cat")
+        let input = Pipe()
+        owner.standardInput = input
+        owner.standardOutput = FileHandle.nullDevice
+        try owner.run()
+        defer { if owner.isRunning { owner.terminate() } }
+        let ready = AsyncStream<Void>.makeStream()
+        var events = ready.stream.makeAsyncIterator()
+        var didExit = false
+        let waiting = Task {
+            await ManagerRelaunch.waitForExit(of: owner.processIdentifier) { ready.continuation.yield(()) }
+            didExit = true
+        }
+        await events.next()
+        #expect(owner.isRunning && !didExit)
+        owner.terminate()
+        await waiting.value
+        #expect(didExit)
+    }
+
+
     @Test func frameworkSettingPersistsOverrideAndRestoresDefault() throws {
         let suite = "NeoSimulator.UIFrameworkSettingsTests." + UUID().uuidString
         let defaults = try #require(UserDefaults(suiteName: suite))

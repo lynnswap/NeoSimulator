@@ -626,9 +626,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 try await stopRemoteScreens()
                 try await model.quitRenderer(keepingDevicesRunning: quitKeepingDevicesRunning)
                 if restartsAfterQuitting {
-                    let configuration = NSWorkspace.OpenConfiguration()
-                    configuration.createsNewApplicationInstance = true
-                    configuration.allowsRunningApplicationSubstitution = false
                     let urls = restoring.compactMap { identifier -> URL? in
                         guard case .simulator(let udid, let path) = identifier else { return nil }
                         var components = URLComponents()
@@ -638,11 +635,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         if let path { components.queryItems?.append(URLQueryItem(name: "deviceSetPath", value: path)) }
                         return components.url
                     }
-                    if urls.isEmpty {
-                        _ = try await NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: configuration)
-                    } else {
-                        _ = try await NSWorkspace.shared.open(urls, withApplicationAt: Bundle.main.bundleURL, configuration: configuration)
-                    }
+                    let helper = rendererURL.appendingPathComponent("Contents/MacOS/NeoSimulatorRenderer")
+                    try await ManagerRelaunch(processIdentifier: ProcessInfo.processInfo.processIdentifier,
+                        applicationURL: Bundle.main.bundleURL, deviceURLs: urls).schedule(using: helper)
                 }
                 sender.reply(toApplicationShouldTerminate: true)
             } catch {
@@ -2499,7 +2494,7 @@ final class SettingsWindowController: NSWindowController {
     private let gifRate = NSPopUpButton()
     private var toggles: [String: NSButton] = [:]
 
-    init(model: SimulatorManagerModel, restart: @escaping () -> Void = {}) {
+    init(model: SimulatorManagerModel, restart: @escaping () -> Void) {
         self.model = model
         self.restart = restart
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 620, height: 480),
