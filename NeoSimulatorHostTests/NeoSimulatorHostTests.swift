@@ -432,6 +432,7 @@ struct InputFocusTests {
         let window = try #require(controller.window)
         controller.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification, object: window))
         #expect(window.firstResponder === display.inputView)
+        #expect(display.keyboard.last == true)
         #expect(display.input.modifiers.count == 1)
         #expect(display.input.modifiers.last?.modifierFlags == NSEvent.modifierFlags)
         for command in [DeviceCommand.ID.home, .lock, .toggleSoftwareKeyboard] {
@@ -442,11 +443,11 @@ struct InputFocusTests {
         #expect(display.buttons == [.home, .lock, .softwareKeyboard])
         #expect(display.input.modifiers.count == 4)
         controller.windowDidResignKey(Notification(name: NSWindow.didResignKeyNotification, object: window))
-        #expect(display.activations == [true, false])
+        #expect(display.keyboard.last == false)
         controller.invalidate()
         controller.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification))
         controller.windowDidResignKey(Notification(name: NSWindow.didResignKeyNotification))
-        #expect(display.activations == [true, false])
+        #expect(display.keyboard.last == false)
         #expect(display.input.modifiers.count == 4)
         #expect(display.disconnectCount == 1)
     }
@@ -6987,7 +6988,6 @@ private final class TestDisplay: SimulatorDisplay {
     var buttons: [DeviceButton] {
         events.compactMap { if case .button(let button) = $0.input, $0.state == .down { button } else { nil } }
     }
-    var activations: [Bool] = []
     var keyboard: [Bool] = []
     var disconnectCount = 0
     var onDisconnect: () -> Void = {}
@@ -7116,7 +7116,6 @@ private final class TestDisplay: SimulatorDisplay {
     }
     func size(for scale: CGFloat) -> NSSize { NSSize(width: outerSize.width * scale, height: outerSize.height * scale) }
     func scale(for size: NSSize) -> CGFloat { min(size.width / outerSize.width, size.height / outerSize.height) }
-    func setActive(_ active: Bool) { activations.append(active) }
     func setKeyboardEnabled(_ enabled: Bool) { keyboard.append(enabled) }
     var hardwareKeyboard: [Bool] = []
     var keyboardLanguages: [String] = []
