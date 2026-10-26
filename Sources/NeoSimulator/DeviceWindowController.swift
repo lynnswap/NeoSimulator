@@ -22,6 +22,9 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     private var content: DeviceContentView
     private let fitting: DisplayFitting
     private let keyboard: DisplayKeyboardInput
+    private let makeKeyboardCaptureTap: @MainActor () -> any KeyboardEventTap
+    private let makeExternalDisplayWindow: @MainActor (NSRect) -> NSWindow
+    private let applicationIsActive: () -> Bool
     private var deviceToolbar: DeviceToolbar?
     private var customLocation: CustomLocationWindowController?
     /// Keeps where each device's window closes and its display scale.
@@ -90,7 +93,11 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     /// user-interface plugin.
     private let userInterfacePluginLookUp: (attempts: Int, interval: Duration)
     var staysOnTop: Bool { window?.level == .floating }
-    var capturesKeyboard: Bool { keyboard.capture.isCapturing }
+    private var activeKeyboardInput: DisplayKeyboardInput {
+        if let externalDisplayWindow, externalDisplayWindow.isKey { return externalDisplayWindow.keyboard }
+        return keyboard
+    }
+    var capturesKeyboard: Bool { activeKeyboardInput.capture.isCapturing }
 
     /// The device window of the key window, whose device the menus act on:
     /// see `deviceWindow(for:)`.
@@ -112,8 +119,9 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
          touchPressure: TouchPressure, tvRemote: TVRemoteController,
          performWindowDrag: @escaping (NSWindow, NSEvent) -> Void = { $0.performDrag(with: $1) },
          presentCompactWindow: @escaping (NSWindow) -> Void = { $0.makeKeyAndOrderFront(nil) },
-         keyboardCaptureTap: any KeyboardEventTap = SystemKeyboardEventTap(),
+         makeKeyboardCaptureTap: @escaping @MainActor () -> any KeyboardEventTap = { SystemKeyboardEventTap() },
          applicationIsActive: @escaping () -> Bool = { NSApp.isActive },
+         makeExternalDisplayWindow: @escaping @MainActor (NSRect) -> NSWindow = ExternalDisplayWindowController.makeWindow,
          userInterfacePluginLookUp: (attempts: Int, interval: Duration) = (40, .milliseconds(250)),
          onClose: @escaping (DeviceWindowController, DeviceLifetimeChoice?) -> Void,
          onRestart: @escaping (DeviceWindowController, _ erasing: Bool) -> Void = { _, _ in },
@@ -125,6 +133,9 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         self.tvRemote = tvRemote
         self.performWindowDrag = performWindowDrag
         self.presentCompactWindow = presentCompactWindow
+        self.makeKeyboardCaptureTap = makeKeyboardCaptureTap
+        self.makeExternalDisplayWindow = makeExternalDisplayWindow
+        self.applicationIsActive = applicationIsActive
         // Read geometry once per connection for the current screen arrangement.
         let saved = preferences.windowGeometry(forDevice: session.device.identity.preferenceIdentifier, screens: Self.screenFrames)
         savedCenter = saved.center
@@ -144,7 +155,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
             backing: .buffered, defer: false)
         fitting = DisplayFitting(display: session.display, content: content)
         keyboard = DisplayKeyboardInput(window: window, display: session.display,
-                                        captureTap: keyboardCaptureTap, applicationIsActive: applicationIsActive)
+                                        captureTap: makeKeyboardCaptureTap(), applicationIsActive: applicationIsActive)
         super.init(window: window)
         keyboard.capture.failure = { [weak self] in self?.present($0) }
         (window.title, window.subtitle) = deviceWindowTitles(name: session.device.name, runtimeName: session.device.runtimeName)
@@ -672,8 +683,9 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     // MARK: Keyboard and touch pressure
 
     func toggleKeyboardCapture() {
+        let keyboard = activeKeyboardInput
         if keyboard.capture.stop() { return }
-        focusInput()
+        keyboard.focus()
         do { try keyboard.capture.start() } catch { present(error) }
     }
 
@@ -981,7 +993,11 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         do {
             let controller = try ExternalDisplayWindowController(
                 session: session, display: session.makeExternalDisplay(), state: state, deviceWindow: self,
-                preferences: preferences) { [weak self] in self?.externalDisplayWindowClosed() }
+                preferences: preferences, keyboardCaptureTap: makeKeyboardCaptureTap(),
+                applicationIsActive: applicationIsActive, makeWindow: makeExternalDisplayWindow) { [weak self] in
+                    self?.externalDisplayWindowClosed()
+                }
+            controller.keyboard.capture.failure = { [weak self] in self?.present($0) }
             externalDisplayWindow = controller
             controller.showNewWindow(cascadingFrom: window)
         } catch {

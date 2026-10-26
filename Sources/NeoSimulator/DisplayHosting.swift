@@ -205,7 +205,9 @@ final class DisplayKeyboardInput {
         switch event.type {
         case .keyDown: input.keyDown(with: event)
         case .keyUp: input.keyUp(with: event)
-        case .flagsChanged: input.flagsChanged(with: event)
+        case .flagsChanged:
+            // SimulatorKit processes keyboard modifiers in an application event monitor.
+            NSApp.sendEvent(event)
         default: break
         }
     }, releaseModifiers: { [weak self] _ in self?.releaseModifiers() })

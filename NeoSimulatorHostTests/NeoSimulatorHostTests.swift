@@ -22,16 +22,62 @@ struct InputFocusTests {
         controller.perform(.captureKeyboard)
         #expect(controller.capturesKeyboard && tap.starts == 1)
         #expect(DeviceCommand.command(.captureKeyboard).state?(controller) == .on)
+        let digitizerModifiers = display.input.modifiers.count
+        var keyboardModifiers: [NSEvent] = []
+        let monitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { event in
+            keyboardModifiers.append(event)
+            return nil
+        }
+        defer { monitor.map(NSEvent.removeMonitor) }
         #expect(try tap.key(.flagsChanged, code: 55, flags: .maskCommand))
         #expect(try tap.key(.keyDown, code: 0, flags: .maskCommand))
         #expect(display.input.keyDowns.map(\.keyCode) == [0])
-        #expect(display.input.modifiers.last?.modifierFlags.contains(.command) == true)
+        #expect(keyboardModifiers.map(\.keyCode) == [55])
+        #expect(keyboardModifiers.last?.modifierFlags.contains(.command) == true)
+        #expect(display.input.modifiers.count == digitizerModifiers)
         controller.detachPresentation()
         #expect(!controller.capturesKeyboard && tap.stops == 1)
         #expect(display.input.keyUps.map(\.keyCode) == [0])
         #expect(display.input.keyUps.last?.modifierFlags.contains(.command) == false)
         #expect(controller.session.isConnected && display.disconnectCount == 0)
         #expect(DeviceCommand.command(.captureKeyboard).state?(controller) == .off)
+    }
+
+    @Test func captureTargetsTheKeyExternalDisplayAndReleasesItsKeys() throws {
+        _ = NSApplication.shared
+        let tap = TestKeyboardEventTap()
+        let screen = TestExternalScreen()
+        screen.current.isPoweredOn = true
+        let (controller, primary) = try makeExternalDisplayController(screen, keyboardCaptureTap: tap,
+            applicationIsActive: { true }, makeWindow: {
+                KeyPresentationWindow(contentRect: $0, styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                                      backing: .buffered, defer: false)
+            })
+        defer { controller.invalidate() }
+        let external = try #require(controller.externalDisplayWindow)
+        let window = try #require(external.window)
+        let display = try #require(screen.displays.last)
+        external.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification, object: window))
+        #expect(DeviceWindowController.deviceWindow(for: window) === controller)
+        let command = DeviceCommand.command(.captureKeyboard)
+        #expect(command.isEnabled(controller))
+        controller.perform(.captureKeyboard)
+        try #require(controller.capturesKeyboard && tap.starts == 1)
+        #expect(command.state?(controller) == .on)
+        #expect(try tap.key(.keyDown, code: 0))
+        #expect(display.input.keyDowns.map(\.keyCode) == [0])
+        #expect(primary.input.keyDowns.isEmpty)
+        controller.perform(.captureKeyboard)
+        #expect(!controller.capturesKeyboard && tap.stops == 1)
+        #expect(command.state?(controller) == .off)
+        #expect(display.input.keyUps.map(\.keyCode) == [0])
+        controller.perform(.captureKeyboard)
+        #expect(try tap.key(.keyDown, code: 1))
+        screen.report { $0.isPoweredOn = false }
+        #expect(controller.externalDisplayWindow == nil)
+        #expect(!controller.capturesKeyboard && tap.stops == 2)
+        #expect(display.input.keyUps.map(\.keyCode) == [0, 1])
+        #expect(primary.input.keyUps.isEmpty)
     }
 
     @Test func capturePassesHostEventsAfterFocusLossAndReportsTapFailure() throws {
@@ -4156,13 +4202,18 @@ struct InputFocusTests {
                                                externalDisplayChanges: ExternalDisplayChanges = ExternalDisplayChanges(),
                                                runtimeVersion: UInt32 = 0x1B_00_00,
                                                enhancedMultitasking: Bool = false,
-                                               failure: @escaping @MainActor (Error) -> Void = { Issue.record($0) })
+                                               keyboardCaptureTap: any KeyboardEventTap = SystemKeyboardEventTap(),
+                                               failure: @escaping @MainActor (Error) -> Void = { Issue.record($0) },
+                                               applicationIsActive: @escaping () -> Bool = { NSApp.isActive },
+                                               makeWindow: @escaping @MainActor (NSRect) -> NSWindow = ExternalDisplayWindowController.makeWindow)
         throws -> (DeviceWindowController, TestDisplay) {
         let display = TestDisplay()
         if let screen { display.connectExternalScreen(screen) }
         let controller = try makeController(display, family: family, features: features, device: device,
                                             preferences: preferences, externalDisplayChanges: externalDisplayChanges,
-                                            runtimeVersion: runtimeVersion, enhancedMultitasking: enhancedMultitasking)
+                                            runtimeVersion: runtimeVersion, enhancedMultitasking: enhancedMultitasking,
+                                            keyboardCaptureTap: keyboardCaptureTap, applicationIsActive: applicationIsActive,
+                                            makeExternalDisplayWindow: makeWindow)
         controller.session.connectExternalDisplay(failure: failure)
         display.deliverScreenReports()
         return (controller, display)
@@ -6369,6 +6420,7 @@ struct InputFocusTests {
                                 userInterfacePluginLookUp: (attempts: Int, interval: Duration) = (5, .milliseconds(20)),
                                 keyboardCaptureTap: any KeyboardEventTap = SystemKeyboardEventTap(),
                                 applicationIsActive: @escaping () -> Bool = { NSApp.isActive },
+                                makeExternalDisplayWindow: @escaping @MainActor (NSRect) -> NSWindow = ExternalDisplayWindowController.makeWindow,
                                 performWindowDrag: @escaping (NSWindow, NSEvent) -> Void = { _, _ in },
                                 presentCompactWindow: @escaping (NSWindow) -> Void = { $0.makeKeyAndOrderFront(nil) },
                                 onClose: @escaping (DeviceWindowController, DeviceLifetimeChoice?) -> Void = { _, _ in },
@@ -6388,7 +6440,8 @@ struct InputFocusTests {
             touchPressure: touchPressure ?? TouchPressure(preferences: preferences, forceTouchTrackpad: { false }),
             tvRemote: tvRemote ?? TVRemoteController(target: { nil }),
             performWindowDrag: performWindowDrag, presentCompactWindow: presentCompactWindow,
-            keyboardCaptureTap: keyboardCaptureTap, applicationIsActive: applicationIsActive,
+            makeKeyboardCaptureTap: { keyboardCaptureTap }, applicationIsActive: applicationIsActive,
+            makeExternalDisplayWindow: makeExternalDisplayWindow,
             userInterfacePluginLookUp: userInterfacePluginLookUp,
             onClose: onClose, onRestart: onRestart, onShutDown: onShutDown)
     }
