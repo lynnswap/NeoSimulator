@@ -7,6 +7,27 @@ import Synchronization
 
 @Suite(.serialized) @MainActor
 struct InputFocusTests {
+    @Test func sigtermHandsOffOnTheMainActor() async throws {
+        let previous = signal(SIGTERM, SIG_IGN)
+        let handoffs = AsyncStream<Void>.makeStream()
+        let source = HostApplication.observeHandoverSignal {
+            MainActor.assertIsolated()
+            handoffs.continuation.yield(())
+        }
+        defer {
+            source.cancel()
+            signal(SIGTERM, previous)
+            handoffs.continuation.finish()
+        }
+        try #require(kill(getpid(), SIGTERM) == 0)
+        var events = handoffs.stream.makeAsyncIterator()
+        #expect(await events.next() != nil)
+        await withCheckedContinuation { (finished: CheckedContinuation<Void, Never>) in
+            source.setCancelHandler { @Sendable in finished.resume() }
+            source.cancel()
+        }
+    }
+
     @Test func embeddedAndCompactPresentationsKeepOneSessionAndInputOwner() async throws {
         _ = NSApplication.shared
         let display = TestDisplay()
