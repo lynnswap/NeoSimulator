@@ -3904,14 +3904,16 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
     private let progress = NSProgressIndicator()
     private let retryButton = NSButton(title: "Reconnect", target: nil, action: nil)
     private let inputView: RemoteDeviceInputView
+    // Keep key and modifier releases on the original responder after focus or native-view changes.
+    private var capturedKeyboardResponder: NSView?
     private lazy var keyboardCapture = KeyboardCapture(isEligible: { [weak self] in
         guard let self, !self.closing, !self.changingPresentation, self.session.state == .connected,
               self.session.inputCapabilities.contains(.keyboard), NSApp.isActive,
               let window = self.presentationWindow, window.isKeyWindow, window.attachedSheet == nil else { return false }
-        return self.screenOwnsFocus
+        return self.focusedScreenInputResponder === self.capturedKeyboardResponder
+            && self.capturedKeyboardResponder != nil
     }, forward: { [weak self] event in
-        guard let self else { return }
-        let input = self.session.nativeInputView ?? self.inputView
+        guard let input = self?.capturedKeyboardResponder else { return }
         switch event.type {
         case .keyDown: input.keyDown(with: event)
         case .keyUp: input.keyUp(with: event)
@@ -3919,11 +3921,11 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
         default: break
         }
     }, releaseModifiers: { [weak self] releases in
-        guard let self else { return }
-        if let native = self.session.nativeInputView {
-            for event in releases { native.flagsChanged(with: event) }
-        } else {
+        guard let self, let input = self.capturedKeyboardResponder else { return }
+        if input === self.inputView {
             self.inputView.releaseModifiers(releases)
+        } else {
+            for event in releases { input.flagsChanged(with: event) }
         }
     })
     var capturesKeyboard: Bool { keyboardCapture.isCapturing }
@@ -4031,7 +4033,10 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
         session.onInputCapabilitiesLost = { [weak self] kinds in self?.inputView.invalidateInputs(for: kinds) }
         session.onStateChange = { [weak self] in self?.update() }
         keyboardCapture.failure = { [weak self] in self?.showIssue($0) }
-        keyboardCapture.didStop = { [weak self] in self?.update() }
+        keyboardCapture.didStop = { [weak self] in
+            self?.capturedKeyboardResponder = nil
+            self?.update()
+        }
         NotificationCenter.default.addObserver(self, selector: #selector(presentationWindowBecameKey(_:)),
             name: NSWindow.didBecomeKeyNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(presentationWindowResignedKey(_:)),
@@ -4134,9 +4139,18 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
         if let frame { window?.setFrame(frame, display: false) }
     }
 
-    private var screenOwnsFocus: Bool {
-        guard let responder = presentationWindow?.firstResponder as? NSView else { return false }
-        return responder === inputView || session.nativeInputView.map { responder.isDescendant(of: $0) } == true
+    private var focusedScreenInputResponder: NSView? {
+        guard let responder = presentationWindow?.firstResponder as? NSView,
+              responder === inputView || session.nativeInputView.map({ responder.isDescendant(of: $0) }) == true else { return nil }
+        return responder
+    }
+
+    private var screenOwnsFocus: Bool { focusedScreenInputResponder != nil }
+
+    private func startKeyboardCapture() throws {
+        capturedKeyboardResponder = focusedScreenInputResponder
+        do { try keyboardCapture.start() }
+        catch { capturedKeyboardResponder = nil; throw error }
     }
 
     private func focusScreen() {
@@ -4419,7 +4433,7 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
         case "captureKeyboard":
             if !keyboardCapture.stop() {
                 focusScreen()
-                do { try keyboardCapture.start() } catch { showIssue(error) }
+                do { try startKeyboardCapture() } catch { showIssue(error) }
             }
             update()
         case "compact": onShowInMainWindow?()

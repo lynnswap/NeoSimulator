@@ -25,7 +25,8 @@ public final class RemoteDeviceScreenSession {
     public let device: CoreDeviceDevice
     public var deviceID: DeviceInventoryID { .coreDevice(device.identifier) }
     public let contentView: NSView
-    /// ScreenSharing handles AppKit events in this view; media streams use the explicit HID methods below.
+    /// Root of the native input hierarchy; its focused responder handles AppKit events.
+    /// Media streams use the explicit HID methods below.
     public var nativeInputView: NSView? { transport?.nativeInputView }
     public var canCaptureScreenshot: Bool { state == .connected && transport?.canCaptureScreenshot == true }
     public var canRecordScreen: Bool { state == .connected && transport?.canRecordScreen == true }
