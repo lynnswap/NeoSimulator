@@ -159,7 +159,7 @@ final class SimulatorManagerModel {
     private func managementDisconnectsScreen(_ action: DeviceManagementAction, for device: InventoryDevice) -> Bool {
         guard case .remote = device, device.supports(action) else { return false }
         switch action {
-        case .shutdown, .restart, .erase, .remove, .unpair, .pause: return true
+        case .shutdown, .forceShutdown, .restart, .erase, .remove, .unpair, .pause: return true
         case .rename, .clone, .start, .resume, .pair: return false
         }
     }

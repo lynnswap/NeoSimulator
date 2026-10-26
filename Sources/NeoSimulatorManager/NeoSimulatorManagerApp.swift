@@ -395,7 +395,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         simulatorWindows.removeValue(forKey: device.id)
                         mainWindow?.showDevicePreview(ifDisplaying: device.id)
                     }
-                case .shutdown, .remove:
+                case .shutdown, .forceShutdown, .remove:
                     try await host.releasePresentation(for: identifier)
                     simulatorWindows.removeValue(forKey: device.id)
                     mainWindow?.showDevicePreview(ifDisplaying: device.id)
@@ -1819,7 +1819,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         let name = devices.first?.name ?? ""
         let operations: [(String, DeviceManagementAction)] = [
             ("Rename…", .rename(name)), ("Clone…", .clone("\(name) Copy")),
-            ("Start", .start), ("Shut Down", .shutdown), ("Restart", .restart),
+            ("Start", .start), ("Shut Down", .shutdown), ("Force Shut Down", .forceShutdown), ("Restart", .restart),
             ("Pause", .pause), ("Resume", .resume),
             ("Pair Simulators", .pair), ("Unpair", .unpair),
             ("Erase Content and Settings…", .erase), ("Remove…", .remove),

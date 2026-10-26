@@ -2,7 +2,7 @@ import Foundation
 
 public enum DeviceManagementAction: Equatable, Sendable {
     case rename(String), clone(String)
-    case start, shutdown, restart, erase, remove, pair, unpair, pause, resume
+    case start, shutdown, forceShutdown, restart, erase, remove, pair, unpair, pause, resume
 }
 
 public struct DeviceManagementResult: Sendable {
@@ -26,13 +26,17 @@ extension InventoryDevice {
             case .clone, .erase: return device.isAvailable && ["Booted", "Shutdown"].contains(device.state)
             case .start: return device.isAvailable && device.state == "Shutdown"
             case .shutdown: return ["Booted", "Booting"].contains(device.state)
+            case .forceShutdown:
+                return device.deviceSetPath == nil && ["Booted", "Booting", "Shutting Down"].contains(device.state)
+                    && device.capabilities.contains("com.apple.dt.coredevice.device.shutdown")
             case .restart: return device.isAvailable && device.state == "Booted"
             case .pair: return device.isAvailable && ["Apple Watch", "iPhone"].contains(device.productFamily)
             case .unpair: return device.productFamily == "Apple Watch" && !device.pairIdentifiers.isEmpty
             case .pause, .resume: return false
             }
         case .remote(let device):
-            if let feature = action.virtualMachineFeature { return device.capabilities.contains(feature) }
+            if action == .forceShutdown, device.bootState == "shutdown" { return false }
+            if let feature = action.coreDeviceFeature { return device.capabilities.contains(feature) }
             switch action {
             case .rename: return device.capabilities.contains("com.apple.coredevice.feature.renamedevice")
             case .restart: return device.capabilities.contains("com.apple.coredevice.feature.rebootdevice")
@@ -57,7 +61,7 @@ extension SimulatorHostController {
         let backend = DeviceManagementBackend(
             context: { try await self.deviceManagementContext(for: $0, requiresRenderer: $1) },
             runSimctl: Self.runManagementSimctl, runDevicectl: Self.runManagementDevicectl,
-            manageVirtualMachine: { action, identifier in try await CoreDeviceVirtualMachineClient.perform(action, identifier: identifier) },
+            manageCoreDevice: { action, identifier in try await CoreDeviceManagementClient.perform(action, deviceID: identifier) },
             release: { renderer, identifier in try await RendererDeviceRequestWaiter().release(identifier, from: renderer) },
             restart: { renderer, identifier, erasing in
                 try await RendererDeviceRequestWaiter().restart(identifier, in: renderer, erasing: erasing)
@@ -100,7 +104,7 @@ struct DeviceManagementBackend: Sendable {
     var context: @Sendable (SimulatorHostDevice, Bool) async throws -> DeviceManagementContext
     var runSimctl: @Sendable (URL, [String], String?) async throws -> Data
     var runDevicectl: @Sendable ([String]) async throws -> Data
-    var manageVirtualMachine: @Sendable (DeviceManagementAction, String) async throws -> Void
+    var manageCoreDevice: @Sendable (DeviceManagementAction, DeviceInventoryID) async throws -> Void
     var release: @Sendable (RendererRegistration, DeviceInventoryID) async throws -> Void
     /// False means the renderer had no existing window; the backend uses the release/CLI path instead.
     var restart: @Sendable (RendererRegistration, DeviceInventoryID, Bool) async throws -> Bool
@@ -151,7 +155,8 @@ struct DeviceManagementBackend: Sendable {
             try Task.checkCancellation()
             switch target {
             case .simulator(let original):
-                let needsCleanup: Bool = switch action { case .shutdown, .restart, .erase, .remove: true; default: false }
+                if action == .forceShutdown, original.deviceSetPath != nil { throw unavailable(action, target: target) }
+                let needsCleanup: Bool = switch action { case .shutdown, .forceShutdown, .restart, .erase, .remove: true; default: false }
                 let resolved = try await context(original, needsCleanup)
                 let device = resolved.device
                 let identifier = device.identifier
@@ -180,6 +185,9 @@ struct DeviceManagementBackend: Sendable {
                         created = .simulator(udid: clone, deviceSetPath: device.deviceSetPath)
                     case .start: _ = try await command(["boot", identifier], step: "Started")
                     case .shutdown: _ = try await command(["shutdown", identifier], step: "Shut down")
+                    case .forceShutdown:
+                        try await manageCoreDevice(action, device.inventoryID)
+                        completed.append("Forcibly shut down")
                     case .restart, .erase, .remove:
                         let wasRunning = ["Booted", "Booting"].contains(device.state)
                         if wasRunning { _ = try await command(["shutdown", identifier], step: "Shut down") }
@@ -220,11 +228,12 @@ struct DeviceManagementBackend: Sendable {
                     }
                 }
             case .remote(let device):
-                if action.virtualMachineFeature != nil {
-                    try await manageVirtualMachine(action, device.identifier)
+                if action.coreDeviceFeature != nil {
+                    try await manageCoreDevice(action, target.id)
                     let step = switch action {
                     case .start: "Started"
                     case .shutdown: "Shut down"
+                    case .forceShutdown: "Forcibly shut down"
                     case .pause: "Paused"
                     case .resume: "Resumed"
                     case .remove: "Removed"
