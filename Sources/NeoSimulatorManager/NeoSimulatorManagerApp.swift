@@ -900,6 +900,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     private var selectionIdentifier: DeviceInventoryID?
     private var previewStack: NSStackView?
     private let compactIdentifier = NSToolbarItem.Identifier("CompactDeviceWindow")
+    private let moreIdentifier = NSToolbarItem.Identifier("CanvasMoreActions")
+    private var moreItem: NSMenuToolbarItem?
     private let screenActionIdentifiers = ["home", "lock", "rotate", "capture", "record"]
     private let activity = NSTextField(labelWithString: "")
     private let progress = NSProgressIndicator()
@@ -1495,7 +1497,9 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         liveDeviceIdentifier = identifier
         liveScreenContainer.view.isHidden = false
         previewStack?.isHidden = true
-        window?.toolbar?.items.first(where: { $0.itemIdentifier == compactIdentifier })?.isHidden = false
+        for item in window?.toolbar?.items ?? [] where item.itemIdentifier == compactIdentifier || item.itemIdentifier == moreIdentifier {
+            item.isHidden = false
+        }
     }
 
     func showDevicePreview(ifDisplaying identifier: DeviceInventoryID) {
@@ -1504,7 +1508,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         activeScreenCommandTarget = nil
         liveScreenContainer.view.isHidden = true
         previewStack?.isHidden = false
-        for item in window?.toolbar?.items ?? [] where item.itemIdentifier == compactIdentifier || screenActionIdentifiers.contains(item.itemIdentifier.rawValue) {
+        for item in window?.toolbar?.items ?? [] where item.itemIdentifier == compactIdentifier || item.itemIdentifier == moreIdentifier || screenActionIdentifiers.contains(item.itemIdentifier.rawValue) {
             item.isHidden = true
         }
     }
@@ -1549,6 +1553,10 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     }
 
     func validateToolbarItem(_ item: NSToolbarItem) -> Bool {
+        if item.itemIdentifier == moreIdentifier {
+            return liveDeviceIdentifier.map { id in model.inventory.contains { $0.id == id } } == true
+                && window?.attachedSheet == nil
+        }
         if item.itemIdentifier == compactIdentifier {
             return liveDeviceIdentifier != nil && window?.attachedSheet == nil && window?.styleMask.contains(.fullScreen) == false
         }
@@ -1715,7 +1723,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [.toggleSidebar, .flexibleSpace, newSimulatorIdentifier, filterIdentifier, .sidebarTrackingSeparator,
          .flexibleSpace] + screenActionIdentifiers.map { NSToolbarItem.Identifier($0) } +
-         [compactIdentifier, .inspectorTrackingSeparator, inspectorIdentifier]
+         [compactIdentifier, moreIdentifier, .inspectorTrackingSeparator, inspectorIdentifier]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { toolbarDefaultItemIdentifiers(toolbar) }
@@ -1738,6 +1746,19 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             item.action = #selector(performScreenAction(_:))
             item.autovalidates = false
             item.isHidden = liveDeviceIdentifier == nil
+            return item
+        }
+        if itemIdentifier == moreIdentifier {
+            let item = NSMenuToolbarItem(itemIdentifier: itemIdentifier)
+            item.label = "More Actions"
+            item.toolTip = "More Actions"
+            item.image = NSImage(systemSymbolName: "ellipsis", accessibilityDescription: "More Actions")
+            item.showsIndicator = false
+            item.menu = NSMenu(title: "Device Actions")
+            item.menu.autoenablesItems = false
+            item.menu.delegate = self
+            item.isHidden = liveDeviceIdentifier == nil
+            moreItem = item
             return item
         }
         if itemIdentifier == compactIdentifier {
@@ -1815,11 +1836,11 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         populateDeviceMenu(deviceMenu, devices: selectedDevices)
     }
 
-    private func populateDeviceMenu(_ menu: NSMenu, devices: [InventoryDevice]) {
+    private func populateDeviceMenu(_ menu: NSMenu, devices: [InventoryDevice], includesViewScreen: Bool = true) {
         menu.removeAllItems()
         let identifiers = Set(devices.map(\.id))
         let idle = !model.isBusy && identifiers.isDisjoint(with: model.managingDeviceIDs)
-        if devices.count == 1, canViewScreen(devices[0]) {
+        if includesViewScreen, devices.count == 1, canViewScreen(devices[0]) {
             let item = NSMenuItem(title: "View Screen", action: #selector(openDeviceFromMenu(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = devices[0].id
@@ -1848,6 +1869,50 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             item.isEnabled = false
             menu.addItem(item)
         }
+    }
+
+    private func updateCanvasMenu(_ menu: NSMenu) {
+        let device = model.inventory.first { $0.id == liveDeviceIdentifier }
+        populateDeviceMenu(menu, devices: device.map { [$0] } ?? [], includesViewScreen: false)
+        guard let device else { return }
+        menu.insertItem(.sectionHeader(title: device.name), at: 0)
+        if let controller = activeScreenCommandTarget as? DeviceWindowController {
+            let command = DeviceCommand.command(.externalDisplayCarPlay)
+            if command.isSupported(controller.session.capabilities) {
+                let item = NSMenuItem(title: "CarPlay", action: #selector(showCanvasCarPlay(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = device.id
+                item.isEnabled = command.validate(item, for: controller)
+                menu.addItem(.separator())
+                menu.addItem(item)
+            }
+        }
+        guard case .simulator(let phone) = device, phone.productFamily == "iPhone" else { return }
+        let watches = model.inventory.filter { candidate in
+            guard case .simulator(let watch) = candidate, watch.productFamily == "Apple Watch" else { return false }
+            return supports(.pair, devices: [device, candidate])
+        }.sorted(by: precedes)
+        let pairing = NSMenuItem(title: "Pair Apple Watch", action: nil, keyEquivalent: "")
+        let submenu = NSMenu(title: pairing.title)
+        submenu.autoenablesItems = false
+        for watch in watches {
+            let identifiers = Set([device.id, watch.id])
+            let item = NSMenuItem(title: "\(watch.name) (\(watch.operatingSystem ?? "Apple Watch"))",
+                                 action: #selector(performManagement(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = ManagementRequest(action: .pair, identifiers: identifiers)
+            item.isEnabled = !model.isBusy && identifiers.isDisjoint(with: model.managingDeviceIDs)
+            submenu.addItem(item)
+        }
+        pairing.submenu = submenu
+        pairing.isEnabled = !watches.isEmpty && !model.isBusy && !model.managingDeviceIDs.contains(device.id)
+        menu.addItem(pairing)
+    }
+
+    @objc private func showCanvasCarPlay(_ sender: NSMenuItem) {
+        guard let identifier = sender.representedObject as? DeviceInventoryID, identifier == liveDeviceIdentifier,
+              let controller = activeScreenCommandTarget as? DeviceWindowController else { return }
+        controller.perform(.externalDisplayCarPlay)
     }
 
     private func supports(_ action: DeviceManagementAction, devices: [InventoryDevice]) -> Bool {
@@ -1942,6 +2007,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         if menu === deviceMenu { updateDeviceMenu(); return }
+        if menu === moreItem?.menu { updateCanvasMenu(menu); return }
         guard menu === filterItem?.menu else { return }
         menu.removeAllItems()
         menu.addItem(.sectionHeader(title: "Devices"))
