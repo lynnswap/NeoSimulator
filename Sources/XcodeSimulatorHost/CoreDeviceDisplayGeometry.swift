@@ -30,9 +30,8 @@ final class CoreDeviceDisplayGeometry {
 
     @concurrent
     private static func deviceKitURL() async throws -> URL {
-        let renderer = Bundle.main.bundleURL.appendingPathComponent("Contents/Applications/NeoSimulatorRenderer.app")
-        let xcode = try SimulatorHostController.discoverXcodes(rendererApplicationURL: renderer)[0]
-        return xcode.applicationURL.appendingPathComponent(ToolConstants.deviceKitPath)
+        let xcodeURL = try await CoreDeviceRuntime.uiXcodeURL()
+        return xcodeURL.appendingPathComponent(ToolConstants.deviceKitPath)
             .appendingPathComponent("Versions/A/DeviceKit")
     }
 

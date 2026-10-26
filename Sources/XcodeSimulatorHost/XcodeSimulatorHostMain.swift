@@ -17,7 +17,6 @@ public struct SimulatorCreationContext: Sendable {
 public struct SimulatorPresentationContext: Sendable {
     public let deviceID: DeviceInventoryID
     public let xcodeURL: URL
-    public let displayXcodeURLs: [URL]
 }
 
 public struct SimulatorHostStatus: Sendable {
@@ -314,8 +313,7 @@ public actor SimulatorHostController {
 
     private func present(_ deviceID: DeviceInventoryID, xcodeURL: URL) async throws {
         guard let presentSimulator else { return }
-        try await presentSimulator(SimulatorPresentationContext(deviceID: deviceID, xcodeURL: xcodeURL,
-            displayXcodeURLs: try await availableXcodes().map(\.applicationURL)))
+        try await presentSimulator(SimulatorPresentationContext(deviceID: deviceID, xcodeURL: xcodeURL))
     }
 
     /// Closes the presentation's backend ownership, optionally leaving the guest running.

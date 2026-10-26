@@ -6,7 +6,7 @@ import ImageIO
 import SwiftUI
 import UniformTypeIdentifiers
 import Observation
-import XcodeSimulatorHost
+@_spi(NeoSimulator) import XcodeSimulatorHost
 
 @MainActor
 private final class SimulatorDevicesMenu: NSMenu, NSMenuDelegate {
@@ -355,7 +355,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func openSimulatorPresentation(_ context: SimulatorPresentationContext) async throws {
         guard !quitting else { throw CancellationError() }
-        let displayURL = try displayXcodeURL ?? SimulatorRuntime.selectUIXcode(from: context.displayXcodeURLs)
+        let displayURL = try await CoreDeviceRuntime.uiXcodeURL()
         displayXcodeURL = displayURL
         let sourceURL = context.xcodeURL.standardizedFileURL.resolvingSymlinksInPath()
         let host: HostApplication
@@ -949,6 +949,13 @@ enum NeoSimulatorApplication {
     @MainActor static func main() {
         let app = NSApplication.shared
         app.setActivationPolicy(.regular)
+        do {
+            let options = try ManagerLaunchOptions(arguments: Array(CommandLine.arguments.dropFirst()))
+            try CoreDeviceRuntime.configureUIFrameworks(xcodeURL: options.xcodeURL)
+        } catch {
+            NSAlert(error: error).runModal()
+            return
+        }
         let delegate = AppDelegate()
         app.delegate = delegate
         withExtendedLifetime(delegate) { app.run() }
