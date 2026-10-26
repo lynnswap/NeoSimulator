@@ -308,6 +308,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
 
     /// Removes a scene without ending its device connection.
     func detachPresentation() {
+        session.stopAppResize()
         releasePresentationFocus()
         window?.orderOut(nil)
         content.removeFromSuperview()
@@ -355,12 +356,22 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         toolbar.attach(to: window)
         toolbar.setShowsMainWindowAction(onShowInMainWindow != nil)
         session.display.onPropertiesChange = { [weak self] in self?.displayPropertiesChanged() }
+        session.onAppResizeError = { [weak self] in self?.present($0) }
+        session.onDisplayWillChange = { [weak self] in
+            guard let self else { return }
+            self.keyboard.setEnabled(false)
+            self.session.display.setActive(false)
+            self.session.display.onPropertiesChange = nil
+        }
+        session.onDisplayChange = { [weak self] in self?.appDisplayChanged() }
+        session.onAppResizeGeometryChange = { [weak self] in self?.appGeometryChanged() }
         session.onExternalScreenChange = { [weak self] in self?.syncExternalDisplayWindow() }
         content.canImport = { [weak self] in self?.session.canPerformToolOperation == true }
         content.importFiles = { [weak self] in self?.importFiles($0) }
         content.onDisplaySizeChange = { [weak self] in
             guard let self, self.isEmbedded else { return }
-            self.session.display.resize(to: self.content.availableDisplaySize)
+            if self.session.isResizingApp { self.session.resizeApp(to: self.content.availableDisplaySize) }
+            else { self.session.display.resize(to: self.content.availableDisplaySize) }
         }
         presentationViewController.view = content
         content.onWindowChange = { [weak self] in
@@ -384,6 +395,33 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         showTouchIndicators()
         session.followBacklight()
         attachUserInterfacePlugin()
+    }
+
+    func toggleAppResize() {
+        session.toggleAppResize(size: content.availableDisplaySize)
+    }
+
+    private func appDisplayChanged() {
+        guard !closed else { return }
+        content.setDisplay(session.display.view)
+        fitting.scalesDisplay = !session.isResizingApp
+        fitting.attach(session.display, content: content)
+        content.isSizedToDisplay = false
+        keyboard.display = session.display
+        session.display.onPropertiesChange = { [weak self] in self?.displayPropertiesChanged() }
+        if session.isResizingApp { session.display.setRenderScale(1) }
+        else { session.display.setChromeVisible(preferences.showsDeviceBezels) }
+        bezelChanged()
+        connectTouchPressure()
+        showTouchIndicators()
+        resizeDisplay()
+        if presentationWindow?.isKeyWindow == true { activateDisplay() }
+    }
+
+    private func appGeometryChanged() {
+        guard session.isResizingApp else { return }
+        session.display.view.invalidateIntrinsicContentSize()
+        content.needsLayout = true
     }
 
     // MARK: User-interface plugin
@@ -763,7 +801,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     /// Whether captures apply the device's mask by default: the device has
     /// one and `ScreenShotUseMask` is on.
     private var usesDeviceMask: Bool {
-        session.capabilities.hasFramebufferMask && HostPreferences.defaults.bool(forKey: HostPreferences.screenShotUseMask)
+        !session.isResizingApp && session.capabilities.hasFramebufferMask && HostPreferences.defaults.bool(forKey: HostPreferences.screenShotUseMask)
     }
 
     /// File ▸ Save Screen: captures the screen without asking and shows its
@@ -801,8 +839,8 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         let base: CGFloat = landscape || family == .tv || family == .watch ? 20 : 10
         let horizontal = window.styleMask.contains(.fullScreen) ? displayFrame.maxX - source.maxX + 10 : 10
         let thumbnail = CaptureThumbnail(capture, image: image, parent: window, source: source,
-                                         rotation: session.displayAngle,
-                                         cornerRadius: session.capabilities.screenCornerRadius * scale,
+                                         rotation: session.isResizingApp ? 0 : session.displayAngle,
+                                         cornerRadius: (session.appResizeGeometry?.cornerRadius ?? CGFloat(session.capabilities.screenCornerRadius)) * scale,
                                          spacing: NSSize(width: horizontal, height: ceil(scale * base))) { [weak self] error in
             if let self, !self.closed { self.present(error) } else { CaptureThumbnail.reportDetached(error) }
         }
@@ -997,6 +1035,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     // Only orientation changes resize the window; other properties preserve its frame.
     private func displayPropertiesChanged() {
         guard !closed else { return }
+        if session.isResizingApp { appGeometryChanged(); return }
         session.followBacklight()
         let enabled = HostPreferences.defaults.bool(forKey: HostPreferences.rotateWindowWhenSignaledByGuest)
         guard session.followGuestInterfaceOrientation(enabled: enabled) else { return }
@@ -1062,7 +1101,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
 
     /// Checks prerequisites without changing unavailable commands' checkmarks.
     private func validatesScale(_ mode: WindowScaleMode) -> Bool {
-        session.canPerformCommands && !isEmbedded && !isFullScreen
+        session.canPerformCommands && !session.isResizingApp && !isEmbedded && !isFullScreen
             && (mode != .physicalSize || session.display.displayClass == 0)
     }
 
@@ -1225,7 +1264,11 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
 
     private func resizeDisplay() {
         guard !closed else { return }
-        fitting.fit()
+        if session.isResizingApp {
+            session.resizeApp(to: content.availableDisplaySize)
+            session.display.setRenderScale(1)
+            content.needsLayout = true
+        } else { fitting.fit() }
     }
 
     func focusInput() {
@@ -1456,7 +1499,14 @@ final class DeviceWindow: NSWindow {
 
 @MainActor
 private final class DeviceContentView: NSView, DisplayContentView {
-    let display: NSView
+    private(set) var display: NSView
+    func setDisplay(_ display: NSView) {
+        self.display.removeFromSuperview()
+        self.display = display
+        previousDisplaySize = nil
+        addSubview(display)
+        needsLayout = true
+    }
     var canImport: () -> Bool = { false }
     var importFiles: ([URL]) -> Void = { _ in }
     var isEmbedded = false

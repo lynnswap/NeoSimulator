@@ -7,6 +7,126 @@ import Synchronization
 
 @Suite(.serialized) @MainActor
 struct InputFocusTests {
+    @Test func appResizeSwitchesTheCanvasInputAndCaptureAsOneOwnedDisplay() async throws {
+        _ = NSApplication.shared
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let log = directory.appendingPathComponent("arguments"), simctl = directory.appendingPathComponent("simctl")
+        try """
+            #!/bin/sh
+            printf '%s\\n' "$@" > "\(log.path)"
+            for destination do :; done
+            printf '\\211PNG\\r\\n\\032\\n' > "$destination"
+            """.write(to: simctl, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: simctl.path)
+        let primary = TestDisplay(), app = TestDisplay()
+        app.captureDisplayID = 47
+        app.displayClass = 1
+        primary.appDisplay = app
+        let transport = TestAppResizeTransport()
+        let controller = try makeController(primary, features: [DeviceCapabilities.keyboard], simctl: simctl, appResizeTransport: { transport })
+        defer { controller.invalidate() }
+        let session = controller.session
+        controller.showAndActivate()
+        try await wait { session.canResizeApp }
+        #expect(session.canResizeApp)
+        try await wait { controller.window?.toolbar?.items.contains { $0.itemIdentifier.rawValue == "resizeApp" && $0.isEnabled } == true }
+        let item = try #require(controller.window?.toolbar?.items.first { $0.itemIdentifier.rawValue == "resizeApp" })
+        let button = try #require(item.view as? NSButton)
+        #expect(item.isEnabled)
+        session.send(.hold(.button(.home), for: .seconds(30)), failure: { Issue.record($0) })
+        #expect(NSApp.sendAction(try #require(button.action), to: button.target, from: button))
+        try await wait { session.isResizingApp }
+        #expect(session.display === app)
+        #expect(primary.requestedDisplayUniqueIDs == [transport.lease.displayUniqueID])
+        #expect(primary.events.map(\.state) == [.down, .up])
+        #expect(controller.presentationViewController.view.subviews.contains(app.view))
+        controller.focusInput()
+        #expect(controller.presentationWindow?.firstResponder === app.inputView)
+        let screenshot = try await session.screenshot(mask: .ignored)
+        defer { try? FileManager.default.removeItem(at: screenshot) }
+        #expect(try String(contentsOf: log, encoding: .utf8).split(separator: "\n").contains("--display=47"))
+        let geometry = AppResizeGeometry(minimumSize: CGSize(width: 200, height: 200), maximumSize: CGSize(width: 700, height: 800),
+            preferredSize: CGSize(width: 500, height: 600), resolvedSize: CGSize(width: 480, height: 580), cornerRadius: 16)
+        transport.lease.geometryUpdates.continuation.yield(geometry)
+        try await wait { session.appResizeGeometry == geometry }
+        session.resizeApp(to: CGSize(width: 900, height: 100))
+        try await wait { transport.lease.adjustedSizes.last == CGSize(width: 700, height: 200) }
+        #expect(session.appResizeGeometry?.resolvedSize == CGSize(width: 480, height: 580))
+        #expect(transport.lease.adjustedSizes.last == CGSize(width: 700, height: 200))
+        session.send(.press(.button(.home)), failure: { Issue.record($0) })
+        #expect(app.events.map(\.state) == [.down, .up])
+        controller.detachPresentation()
+        #expect(session.display === primary)
+        #expect(!session.isResizingApp)
+        #expect(transport.lease.invalidations == 1)
+        #expect(app.disconnectCount == 1)
+        #expect(primary.disconnectCount == 0)
+    }
+
+    @Test func appResizeInvalidatesAnAssertionReturnedAfterStopAndCleansUpFailedDisplayConnection() async throws {
+        let primary = TestDisplay()
+        let delayed = TestAppResizeTransport()
+        delayed.holdsStart = true
+        let session = try makeSession(primary, appResizeTransport: { delayed })
+        defer { session.disconnect() }
+        try await wait { session.canResizeApp }
+        session.toggleAppResize(size: CGSize(width: 500, height: 600))
+        try await wait { delayed.startContinuation != nil }
+        session.stopAppResize()
+        delayed.completeStart()
+        try await wait { delayed.lease.invalidations == 1 }
+        #expect(delayed.lease.invalidations == 1)
+        #expect(primary.requestedDisplayUniqueIDs.isEmpty)
+        #expect(session.display === primary)
+
+        let rejected = TestAppResizeTransport()
+        let disconnected = TestDisplay()
+        disconnected.appDisplayError = HostError.operation("Display disconnected")
+        let failed = try makeSession(disconnected, appResizeTransport: { rejected })
+        defer { failed.disconnect() }
+        var failures: [String] = []
+        failed.onAppResizeError = { failures.append($0.localizedDescription) }
+        try await wait { failed.canResizeApp }
+        failed.toggleAppResize(size: CGSize(width: 500, height: 600))
+        try await wait { !failures.isEmpty }
+        #expect(failures == ["Display disconnected"])
+        #expect(rejected.lease.invalidations == 1)
+        #expect(failed.display === disconnected)
+        #expect(!failed.isStartingAppResize && !failed.isResizingApp)
+    }
+
+    @Test func appResizeEligibilityInvalidationAndGeometryFailureRestoreThePrimaryDisplay() async throws {
+        for end in 0..<3 {
+            let primary = TestDisplay(), app = TestDisplay()
+            primary.appDisplay = app
+            let transport = TestAppResizeTransport()
+            let session = try makeSession(primary, appResizeTransport: { transport })
+            defer { session.disconnect() }
+            var failures: [String] = []
+            session.onAppResizeError = { failures.append($0.localizedDescription) }
+            try await wait { session.canResizeApp }
+            session.toggleAppResize(size: CGSize(width: 500, height: 600))
+            try await wait { session.isResizingApp }
+            transport.eligibilityUpdates.continuation.yield(.resizing)
+            await Task.yield()
+            #expect(session.isResizingApp)
+            switch end {
+            case 0: transport.eligibilityUpdates.continuation.yield(.unavailable)
+            case 1: transport.lease.invalidation.continuation.finish()
+            default:
+                transport.lease.adjustmentError = HostError.operation("Geometry rejected")
+                session.resizeApp(to: CGSize(width: 600, height: 700))
+            }
+            try await wait { !session.isResizingApp }
+            #expect(session.display === primary)
+            #expect(app.disconnectCount == 1)
+            #expect(transport.lease.invalidations == 1)
+            #expect(failures == (end == 2 ? ["Geometry rejected"] : []))
+        }
+    }
+
     @Test func sigtermHandsOffOnTheMainActor() async throws {
         let previous = signal(SIGTERM, SIG_IGN)
         let handoffs = AsyncStream<Void>.makeStream()
@@ -6270,6 +6390,7 @@ struct InputFocusTests {
                                 userInterfacePlugin: Bool = false,
                                 runtimeVersion: UInt32 = 0x1B_00_00,
                                 enhancedMultitasking: Bool = false,
+                                appResizeTransport: (@MainActor () async throws -> (any SimulatorAppResizeTransport)?)? = nil,
                                 userInterfacePluginLookUp: (attempts: Int, interval: Duration) = (5, .milliseconds(20)),
                                 performWindowDrag: @escaping (NSWindow, NSEvent) -> Void = { _, _ in },
                                 presentCompactWindow: @escaping (NSWindow) -> Void = { $0.makeKeyAndOrderFront(nil) },
@@ -6284,7 +6405,7 @@ struct InputFocusTests {
                                       pasteboard: pasteboard, pasteboardSync: pasteboardSync,
                                       externalDisplayChanges: externalDisplayChanges,
                                       userInterfacePlugin: userInterfacePlugin, runtimeVersion: runtimeVersion,
-                                      enhancedMultitasking: enhancedMultitasking)
+                                      enhancedMultitasking: enhancedMultitasking, appResizeTransport: appResizeTransport)
         return try DeviceWindowController(
             session: session, preferences: preferences,
             touchPressure: touchPressure ?? TouchPressure(preferences: preferences, forceTouchTrackpad: { false }),
@@ -6392,7 +6513,8 @@ struct InputFocusTests {
                              externalDisplayChanges: ExternalDisplayChanges = ExternalDisplayChanges(),
                              userInterfacePlugin: Bool = false,
                              runtimeVersion: UInt32 = 0x1B_00_00,
-                             enhancedMultitasking: Bool = false) throws -> DeviceSession {
+                             enhancedMultitasking: Bool = false,
+                             appResizeTransport: (@MainActor () async throws -> (any SimulatorAppResizeTransport)?)? = nil) throws -> DeviceSession {
         // Keep the external-display timeout short enough to exercise expiry.
         DeviceSession(
             device: availableDevice(identifier, "Test iPhone", runtime: "iOS", state: 3, deviceSetPath: deviceSetPath),
@@ -6407,7 +6529,49 @@ struct InputFocusTests {
                                    simctl: simctl, devicectl: devicectl),
             recordingProcess: recordingProcess, openLog: openLog, preferences: preferences,
             hostKeyboardLanguage: keyboardLanguage, pasteboard: pasteboard, pasteboardSync: pasteboardSync,
-            externalDisplayChanges: externalDisplayChanges, externalScreenTimeout: .milliseconds(100))
+            externalDisplayChanges: externalDisplayChanges, externalScreenTimeout: .milliseconds(100),
+            appResizeTransport: appResizeTransport)
+    }
+}
+
+@MainActor
+private final class TestAppResizeTransport: SimulatorAppResizeTransport {
+    let lease = TestAppResizeLease()
+    let eligibilityUpdates = AsyncThrowingStream<AppResizeEligibility, any Error>.makeStream()
+    var holdsStart = false
+    var startContinuation: CheckedContinuation<any SimulatorAppResizeLease, Never>?
+    func eligibility() async throws -> AsyncThrowingStream<AppResizeEligibility, any Error> {
+        eligibilityUpdates.continuation.yield(.eligible)
+        return eligibilityUpdates.stream
+    }
+    func start(size: CGSize, cornerRadius: CGFloat) async throws -> any SimulatorAppResizeLease {
+        if holdsStart { return await withCheckedContinuation { startContinuation = $0 } }
+        return lease
+    }
+    func completeStart() { startContinuation?.resume(returning: lease); startContinuation = nil }
+}
+
+@MainActor
+private final class TestAppResizeLease: SimulatorAppResizeLease {
+    let displayUniqueID = "dedicated-app-display"
+    let geometry = AppResizeGeometry(minimumSize: CGSize(width: 200, height: 200), maximumSize: CGSize(width: 1000, height: 1000),
+        preferredSize: CGSize(width: 500, height: 600), resolvedSize: CGSize(width: 500, height: 600), cornerRadius: 0)
+    let geometryUpdates = AsyncThrowingStream<AppResizeGeometry, any Error>.makeStream()
+    let invalidation = AsyncStream<Void>.makeStream()
+    var invalidations = 0
+    var adjustedSizes: [CGSize] = []
+    var adjustmentError: (any Error)?
+    func updates() throws -> AsyncThrowingStream<AppResizeGeometry, any Error> { geometryUpdates.stream }
+    func adjust(size: CGSize, cornerRadius: CGFloat) async throws {
+        if let adjustmentError { throw adjustmentError }
+        adjustedSizes.append(size)
+    }
+    func awaitInvalidation() async throws { for await _ in invalidation.stream { return } }
+    func invalidate() throws {
+        guard invalidations == 0 else { return }
+        invalidations += 1
+        invalidation.continuation.finish()
+        geometryUpdates.continuation.finish()
     }
 }
 
@@ -6619,6 +6783,16 @@ private final class TestDisplayView: NSView {
 private final class TestDisplay: SimulatorDisplay {
     let view: NSView = TestDisplayView(frame: NSRect(x: 0, y: 0, width: 390, height: 844))
     let input = InputView()
+    var captureDisplayID: UInt32?
+    var appDisplay: TestDisplay?
+    var appDisplayError: (any Error)?
+    var requestedDisplayUniqueIDs: [String] = []
+    func connectAppDisplay(uniqueID: String) async throws -> any SimulatorDisplay {
+        requestedDisplayUniqueIDs.append(uniqueID)
+        if let appDisplayError { throw appDisplayError }
+        guard let appDisplay else { throw HostError.unavailable("No dedicated display") }
+        return appDisplay
+    }
     var inputView: NSView { foundPlugin?.overlayView ?? input }
     var plugin: SimulatorUserInterfacePlugin?
     var pluginError: Error?
@@ -7689,8 +7863,11 @@ struct DeviceToolTests {
         try await tools.boot()
         #expect(try String(contentsOf: log, encoding: .utf8).split(separator: "\n")
                 == ["--set", "/tmp/XCTestDevices", "boot", "test-device"])
-        #expect(tools.recordingProcess(to: URL(fileURLWithPath: "/tmp/video.mov"), mask: .ignored, codec: .h264).arguments?.prefix(4)
-                == ["--set", "/tmp/XCTestDevices", "io", "test-device"])
+        try await tools.screenshot(to: directory.appendingPathComponent("screen.png"), mask: .ignored, displayID: 47)
+        #expect(try String(contentsOf: log, encoding: .utf8).split(separator: "\n").contains("--display=47"))
+        let recording = tools.recordingProcess(to: URL(fileURLWithPath: "/tmp/video.mov"), mask: .ignored, codec: .h264, displayID: 47)
+        #expect(recording.arguments?.prefix(4) == ["--set", "/tmp/XCTestDevices", "io", "test-device"])
+        #expect(recording.arguments?.contains("--display=47") == true)
     }
 
     @Test func createDevicePassesNameTypeAndRuntimeToSimctl() async throws {

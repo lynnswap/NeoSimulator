@@ -797,7 +797,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                             tools: try DeviceTools(identifier: identifier.identifier, xcodeURL: runtime.xcodeURL,
                                                    deviceSetPath: device.deviceSetPath),
                             recordings: recordings, pasteboardSync: pasteboardSync,
-                            externalDisplayChanges: externalDisplayChanges(of: device))
+                            externalDisplayChanges: externalDisplayChanges(of: device),
+                            appResizeTransport: { try await NativeSimulatorAppResizeTransport.make(simulatorUDID: identifier.identifier) })
                         do { try session.applyDebugSettings() } catch {
                             hostLog("Could not apply debug settings to \(device.name): \(error.localizedDescription)")
                         }

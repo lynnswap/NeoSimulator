@@ -115,6 +115,8 @@ final class DisplayFitting {
     /// Whether the window is between `windowWillStartLiveResize` and
     /// `windowDidEndLiveResize`.
     private var isLiveResizing = false
+    /// App resize mode sends point geometry to the guest; its framebuffer keeps scale 1.
+    var scalesDisplay = true
     /// The display's scale and the window's origin when the window entered
     /// full screen, which Simulator.app restores when the window leaves it.
     private var geometryBeforeFullScreen: (scale: CGFloat, origin: NSPoint)?
@@ -144,7 +146,7 @@ final class DisplayFitting {
     /// Gives the display the largest scale at which it fits the content.
     func fit() {
         content.isSizedToDisplay = false
-        display.resize(to: content.availableDisplaySize)
+        if scalesDisplay { display.resize(to: content.availableDisplaySize) }
         layout()
     }
 
@@ -157,13 +159,13 @@ final class DisplayFitting {
 
     func willStartLiveResize() {
         isLiveResizing = true
-        display.beginResize()
+        if scalesDisplay { display.beginResize() }
     }
 
     func didEndLiveResize() {
         isLiveResizing = false
         fit()
-        display.endResize()
+        if scalesDisplay { display.endResize() }
     }
 
     func willEnterFullScreen() {

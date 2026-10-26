@@ -140,6 +140,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case "home": .home
             case "lock": .lock
             case "rotate": .rotateRight
+            case "resizeApp": .resizeApp
             case "capture": .saveScreen
             case "record": controller.session.recording == nil ? .recordScreen : .stopRecording
             default: nil
@@ -150,8 +151,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             switch self {
             case .simulator(let controller):
                 guard let id = simulatorCommand(identifier, for: controller) else { return false }
-                return DeviceCommand.command(id).isSupported(controller.session.capabilities)
-            case .remote: return identifier != "rotate"
+                return id == .resizeApp ? controller.session.supportsAppResize : DeviceCommand.command(id).isSupported(controller.session.capabilities)
+            case .remote: return identifier != "rotate" && identifier != "resizeApp"
             }
         }
 
@@ -170,6 +171,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if let id = simulatorCommand(identifier, for: controller) { controller.perform(id) }
             case .remote(let controller): controller.performScreenAction(identifier)
             }
+        }
+
+        var resizingApp: Bool {
+            if case .simulator(let controller) = self { return controller.session.isResizingApp || controller.session.isStartingAppResize }
+            return false
         }
 
         var recordingTitle: String {
@@ -443,7 +449,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let identifier = mainWindow?.liveDeviceIdentifier, let screen = screen(for: identifier) else { return }
         simulatorMenus.updateKeyEquivalents(for: (screen.commandTarget as? DeviceWindowController)?.session.capabilities)
         mainWindow?.updateScreenToolbar(supports: screen.supports, isEnabled: screen.isEnabled,
-                                       recordingTitle: screen.recordingTitle)
+                                       recordingTitle: screen.recordingTitle, resizingApp: screen.resizingApp)
     }
 
     private func observeScreenState(_ identifier: DeviceInventoryID) {
@@ -900,7 +906,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     private var selectionIdentifier: DeviceInventoryID?
     private var previewStack: NSStackView?
     private let compactIdentifier = NSToolbarItem.Identifier("CompactDeviceWindow")
-    private let screenActionIdentifiers = ["home", "lock", "rotate", "capture", "record"]
+    private let screenActionIdentifiers = ["home", "lock", "rotate", "capture", "record", "resizeApp"]
     private let activity = NSTextField(labelWithString: "")
     private let progress = NSProgressIndicator()
     private var inspectorHost: NSHostingController<ManagerDeviceSettingsView>?
@@ -1526,11 +1532,12 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         return super.supplementalTarget(forAction: action, sender: sender)
     }
 
-    func updateScreenToolbar(supports: (String) -> Bool, isEnabled: (String) -> Bool, recordingTitle: String) {
+    func updateScreenToolbar(supports: (String) -> Bool, isEnabled: (String) -> Bool, recordingTitle: String, resizingApp: Bool = false) {
         for item in window?.toolbar?.items ?? [] where screenActionIdentifiers.contains(item.itemIdentifier.rawValue) {
             let id = item.itemIdentifier.rawValue
             item.isHidden = liveDeviceIdentifier == nil || !supports(id)
             item.isEnabled = isEnabled(id)
+            if id == "resizeApp" { (item.view as? NSButton)?.state = resizingApp ? .on : .off }
             if id == "record" {
                 item.label = recordingTitle
                 item.toolTip = recordingTitle
@@ -1539,6 +1546,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             }
         }
     }
+
+    @objc private func performResizeAction(_ sender: NSButton) { onScreenAction?("resizeApp") }
 
     @objc private func performScreenAction(_ sender: NSToolbarItem) { onScreenAction?(sender.itemIdentifier.rawValue) }
 
@@ -1718,6 +1727,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             case "home": ("Home", "house")
             case "lock": ("Lock", "lock")
             case "rotate": ("Rotate", "rotate.right")
+            case "resizeApp": ("Resize App", "arrow.up.left.and.arrow.down.right")
             case "capture": ("Save Screenshot…", "camera")
             default: ("Record Screen", "record.circle")
             }
@@ -1727,6 +1737,14 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             item.target = self
             item.action = #selector(performScreenAction(_:))
             item.autovalidates = false
+            if itemIdentifier.rawValue == "resizeApp" {
+                let button = NSButton(title: title, target: self, action: #selector(performResizeAction(_:)))
+                button.image = item.image
+                button.imagePosition = .imageOnly
+                button.bezelStyle = .toolbar
+                button.setButtonType(.pushOnPushOff)
+                item.view = button
+            }
             item.isHidden = liveDeviceIdentifier == nil
             return item
         }
