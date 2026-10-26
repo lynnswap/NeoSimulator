@@ -779,7 +779,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func present(_ error: any Error) {
         let alert = NSAlert()
         alert.messageText = error.localizedDescription
-        alert.informativeText = (error as? any LocalizedError)?.recoverySuggestion ?? ""
+        let failure = error as? any LocalizedError
+        alert.informativeText = [failure?.failureReason, failure?.recoverySuggestion].compactMap { $0 }.joined(separator: "\n\n")
         if let failure = error as? SimulatorHostFailure {
             NSLog("NeoSimulator: %@", failure.technicalDetails)
             if failure.kind == .preferencesChanged, model.status?.restorationAvailable == true {

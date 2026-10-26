@@ -13,6 +13,8 @@ struct CLIError: Error, Equatable, LocalizedError {
     let category: Category
     let identifier: String
     let message: String
+    var failureReason: String? = nil
+    var recoverySuggestion: String? = nil
 
     var errorDescription: String? {
         message
