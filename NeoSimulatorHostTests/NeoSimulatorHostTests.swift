@@ -1391,7 +1391,6 @@ struct InputFocusTests {
             try await SimulatorRuntime.load(xcodeURL: runtime.xcodeURL, uiXcodeURL: otherToolkit)
         }
         let retried = try await SimulatorRuntime.load(xcodeURL: runtime.xcodeURL, uiXcodeURL: runtime.uiXcodeURL)
-        #expect(try SimulatorRuntime.selectUIXcode(from: [otherToolkit]) == runtime.uiXcodeURL)
         #expect(retried.pasteboard.serviceName == "com.apple.CoreSimulator.SimPasteboardInterface")
     }
 

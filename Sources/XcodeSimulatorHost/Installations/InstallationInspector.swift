@@ -47,6 +47,10 @@ struct InstallationInspector {
         return try xcode(at: xcodeURL)
     }
 
+    func xcodeForUIFrameworks(override: URL?) throws -> XcodeInstallation {
+        try override.map { try xcode(at: $0) } ?? selectedXcode()
+    }
+
     func xcode(at url: URL) throws -> XcodeInstallation {
         let xcode = try inspectXcode(at: url.resolvingSymlinksInPath().standardizedFileURL)
 

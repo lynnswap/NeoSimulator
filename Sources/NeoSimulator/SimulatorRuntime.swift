@@ -26,15 +26,6 @@ final class SimulatorRuntime {
     let pasteboard: SimulatorPasteboardInterface
     let audio: SimulatorAudioInterface
 
-    /// The catalog supplies candidates in descending compatible Xcode order.
-    static func selectUIXcode(from candidates: [URL]) throws -> URL {
-        if let loadedUIXcodeURL { return loadedUIXcodeURL }
-        guard let candidate = candidates.first else {
-            throw HostError.unavailable("No compatible Xcode is available for simulator display.")
-        }
-        return candidate.resolvingSymlinksInPath()
-    }
-
     /// Joins a context's in-flight preparation while its native values stay on the main actor.
     static func load(xcodeURL: URL, uiXcodeURL: URL? = nil) async throws -> SimulatorRuntime {
         try Task.checkCancellation()
