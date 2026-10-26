@@ -119,7 +119,7 @@ final class DisplayFitting {
     var scalesDisplay = true
     /// The display's scale and the window's origin when the window entered
     /// full screen, which Simulator.app restores when the window leaves it.
-    private var geometryBeforeFullScreen: (scale: CGFloat, origin: NSPoint)?
+    private var geometryBeforeFullScreen: (scale: CGFloat?, origin: NSPoint)?
     /// An embedded presentation may preserve a fixed scale after a native size change.
     var onNaturalSizeChange: (() -> Void)?
 
@@ -148,8 +148,17 @@ final class DisplayFitting {
     /// Gives the display the largest scale at which it fits the content.
     func fit() {
         content.isSizedToDisplay = false
-        if scalesDisplay { display.resize(to: content.availableDisplaySize) }
+        resize(to: content.availableDisplaySize)
         layout()
+    }
+
+    /// Applies the presentation policy to every explicit scale request.
+    func setScale(_ scale: CGFloat) {
+        display.setRenderScale(scalesDisplay ? scale : 1)
+    }
+
+    func resize(to size: NSSize) {
+        if scalesDisplay { display.resize(to: size) } else { setScale(1) }
     }
 
     /// Lays the display out in the content again.
@@ -173,7 +182,7 @@ final class DisplayFitting {
     func willEnterFullScreen() {
         isFullScreen = true
         guard let window = content.window else { return }
-        geometryBeforeFullScreen = (display.renderScale, window.frame.origin)
+        geometryBeforeFullScreen = (scalesDisplay ? display.renderScale : nil, window.frame.origin)
     }
 
     func didFailToEnterFullScreen() {
@@ -183,10 +192,11 @@ final class DisplayFitting {
 
     /// Leaves full screen, returning the display's scale and the window's
     /// origin from before it, which the window returns to.
-    func didExitFullScreen() -> (scale: CGFloat, origin: NSPoint)? {
+    func didExitFullScreen(defaultScale: CGFloat) -> (scale: CGFloat, origin: NSPoint)? {
         isFullScreen = false
         defer { geometryBeforeFullScreen = nil }
-        return geometryBeforeFullScreen
+        guard let geometry = geometryBeforeFullScreen else { return nil }
+        return (geometry.scale ?? defaultScale, geometry.origin)
     }
 
     /// Stops following the display's size.

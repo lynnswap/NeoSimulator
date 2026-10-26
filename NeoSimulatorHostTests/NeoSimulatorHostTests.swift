@@ -39,6 +39,89 @@ struct InputFocusTests {
         #expect(primary.renderScale == 0.5)
     }
 
+    @Test func fullscreenRestorationUsesTheCurrentDisplayScalePolicy() async throws {
+        _ = NSApplication.shared
+        let primary = TestDisplay(), app = TestDisplay()
+        app.naturalSize = NSSize(width: 500, height: 600)
+        primary.appDisplay = app
+        let transport = TestAppResizeTransport()
+        let preferences = MemoryPreferences()
+        preferences.setWindowGeometry(center: NSPoint(x: 300, y: 300), scale: 0.5,
+            forDevice: "test-device", screens: NSScreen.screens.map(\.frame))
+        let controller = try makeController(primary, preferences: preferences, appResizeTransport: { transport },
+                                            presentCompactWindow: { _ in })
+        defer { controller.invalidate() }
+        controller.showCompactWindow()
+        let window = try #require(controller.window)
+        try #require(primary.renderScale == 0.5)
+        controller.windowWillEnterFullScreen(Notification(name: NSWindow.willEnterFullScreenNotification, object: window))
+        try await wait { controller.session.canResizeApp }
+        controller.toggleAppResize()
+        try await wait { controller.session.isResizingApp }
+        controller.windowDidExitFullScreen(Notification(name: NSWindow.didExitFullScreenNotification, object: window))
+        #expect(app.renderScale == 1)
+        controller.windowWillEnterFullScreen(Notification(name: NSWindow.willEnterFullScreenNotification, object: window))
+        controller.session.stopAppResize()
+        controller.windowDidExitFullScreen(Notification(name: NSWindow.didExitFullScreenNotification, object: window))
+        #expect(primary.renderScale == 0.5)
+    }
+
+    @Test func appMinimumGeometryUsesABoundedPannableViewportInBothPresentations() async throws {
+        _ = NSApplication.shared
+        let visible = try #require(NSScreen.main?.visibleFrame)
+        let primary = TestDisplay(), app = TestDisplay()
+        app.naturalSize = NSSize(width: visible.width + 600, height: 600)
+        primary.appDisplay = app
+        let transport = TestAppResizeTransport()
+        transport.lease.geometry.minimumSize = NSSize(width: app.naturalSize.width, height: 300)
+        transport.lease.geometry.maximumSize = NSSize(width: app.naturalSize.width * 2, height: 2000)
+        transport.lease.geometry.resolvedSize = app.naturalSize
+        let controller = try makeController(primary, appResizeTransport: { transport }, presentCompactWindow: { _ in })
+        defer { controller.invalidate() }
+        let compact = try #require(controller.window)
+        let normalMinimum = compact.contentMinSize
+        let parent = NSViewController()
+        parent.view = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 400))
+        let main = KeyPresentationWindow(contentRect: parent.view.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        main.isReleasedWhenClosed = false
+        main.contentViewController = parent
+        defer { main.close() }
+        controller.embed(in: parent)
+        try await wait { controller.session.canResizeApp }
+        controller.toggleAppResize()
+        try await wait { controller.session.isResizingApp }
+        let content = controller.presentationViewController.view
+        content.layoutSubtreeIfNeeded()
+        let scroll = try #require(content.subviews.compactMap { $0 as? NSScrollView }.first)
+        #expect(app.renderScale == 1 && !controller.canPerformCanvasZoom(.zoomOut))
+        let mainFrame = main.frame
+        let local = NSPoint(x: app.naturalSize.width - 8, y: 300)
+        func panToRightEdge() {
+            let clip = scroll.contentView
+            let target = NSRect(x: app.view.frame.maxX - clip.bounds.width, y: 0,
+                                width: clip.bounds.width, height: clip.bounds.height)
+            clip.scroll(to: clip.constrainBoundsRect(target).origin)
+            scroll.reflectScrolledClipView(clip)
+        }
+        panToRightEdge()
+        #expect(scroll.contentView.bounds.contains(app.view.convert(local, to: scroll.contentView)))
+        #expect(main.frame == mainFrame)
+        controller.showCompactWindow()
+        content.layoutSubtreeIfNeeded()
+        #expect(!scroll.isHidden && app.renderScale == 1)
+        let maximum = compact.contentRect(forFrameRect: visible).size
+        #expect(compact.contentMinSize.width == maximum.width)
+        let header = content.bounds.height - compact.contentLayoutRect.height
+        #expect(compact.contentMinSize.height == 300 + header + WindowScale.displayGap(bezelPadding: nil))
+        #expect(compact.frame.width <= visible.width && compact.frame.height <= visible.height)
+        panToRightEdge()
+        #expect(scroll.contentView.bounds.contains(app.view.convert(local, to: scroll.contentView)))
+        let pointInWindow = app.view.convert(local, to: nil)
+        #expect(app.inputView.convert(pointInWindow, from: nil) == local)
+        controller.session.stopAppResize()
+        #expect(compact.contentMinSize == normalMinimum && scroll.isHidden)
+    }
+
     @Test func recordingWaitsForThePendingAppDisplayConnectionAndCapturesTheShownDisplay() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -120,7 +203,7 @@ struct InputFocusTests {
         #expect(session.display === app)
         #expect(primary.requestedDisplayUniqueIDs == [transport.lease.displayUniqueID])
         #expect(primary.events.map(\.state) == [.down, .up])
-        #expect(controller.presentationViewController.view.subviews.contains(app.view))
+        #expect(app.view.isDescendant(of: controller.presentationViewController.view))
         controller.focusInput()
         #expect(controller.presentationWindow?.firstResponder === app.inputView)
         let screenshot = try await session.screenshot(mask: .ignored)
@@ -6711,7 +6794,7 @@ private final class TestAppResizeTransport: SimulatorAppResizeTransport {
 @MainActor
 private final class TestAppResizeLease: SimulatorAppResizeLease {
     let displayUniqueID = "dedicated-app-display"
-    let geometry = AppResizeGeometry(minimumSize: CGSize(width: 200, height: 200), maximumSize: CGSize(width: 1000, height: 1000),
+    var geometry = AppResizeGeometry(minimumSize: CGSize(width: 200, height: 200), maximumSize: CGSize(width: 1000, height: 1000),
         preferredSize: CGSize(width: 500, height: 600), resolvedSize: CGSize(width: 500, height: 600), cornerRadius: 0)
     let geometryUpdates = AsyncThrowingStream<AppResizeGeometry, any Error>.makeStream()
     let invalidation = AsyncStream<Void>.makeStream()

@@ -119,7 +119,7 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
         showWindow(nil)
         window.makeKeyAndOrderFront(nil)
         // Recompute fit for the destination screen after placement.
-        display.setRenderScale(initialScale)
+        fitting.setScale(initialScale)
         updateWindowSize()
         place(window)
         moveWindowOntoScreen()
@@ -218,7 +218,7 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
 
     private func showDisplay(at scale: CGFloat) {
         guard !closed else { return }
-        display.setRenderScale(scale)
+        fitting.setScale(scale)
         updateWindowSize()
     }
 
@@ -322,7 +322,7 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
 
     /// Restore the scale and origin from before full screen.
     func windowDidExitFullScreen(_ notification: Notification) {
-        guard let geometry = fitting.didExitFullScreen() else { return }
+        guard let geometry = fitting.didExitFullScreen(defaultScale: display.renderScale) else { return }
         showDisplay(at: geometry.scale)
         window?.setFrameOrigin(geometry.origin)
         moveWindowOntoScreen()
