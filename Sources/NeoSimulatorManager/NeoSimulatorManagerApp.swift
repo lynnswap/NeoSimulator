@@ -457,6 +457,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard mainWindow == nil else { return }
         let controller = ManagerWindowController(model: model)
         controller.isDeviceActivated = { [weak self] identifier in self?.screen(for: identifier) != nil }
+        controller.preferredArtworkXcodeURL = { [weak self] in self?.displayXcodeURL }
         controller.onShowCompactWindow = { [weak self] identifier in self?.showCompactScreen(identifier) }
         controller.onSelectionChange = { [weak self] identifier in self?.selectedDeviceChanged(identifier) }
         controller.onScreenAction = { [weak self] action in
@@ -922,6 +923,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     private var previewTask: Task<Void, Never>?
     private var previewArtwork: DeviceArtworkModel?
     var isDeviceActivated: (DeviceInventoryID) -> Bool = { _ in false }
+    var preferredArtworkXcodeURL: () -> URL? = { nil }
     private let deviceName = NSTextField(labelWithString: "Select a Device")
     private let deviceRuntime = NSTextField(labelWithString: "")
     private let viewScreen = NSButton(title: "View Screen", target: nil, action: nil)
@@ -1800,10 +1802,11 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
 
     private func artwork(for device: InventoryDevice) -> DeviceArtworkModel {
         let xcodeURL: URL?
-        if case .simulator(let simulator) = device { xcodeURL = simulator.ownerXcodeURL }
+        if let preferred = preferredArtworkXcodeURL() { xcodeURL = preferred }
+        else if case .simulator(let simulator) = device { xcodeURL = simulator.ownerXcodeURL }
         else { xcodeURL = nil }
         return artworkCache.artwork(modelIdentifier: device.modelIdentifier, family: family(of: device), xcodeURL: xcodeURL,
-                                    resolveXcodeURL: { [weak model] in await model?.artworkXcodeURL(for: device) })
+                                    resolveXcodeURLs: { [weak model] in await model?.artworkXcodeURLs(for: device) ?? [] })
     }
 
     func reloadDeviceArtwork() {

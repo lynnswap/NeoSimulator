@@ -23,7 +23,7 @@ final class DeviceArtworkCache {
     private var entries: [String: DeviceArtworkModel] = [:]
 
     func artwork(modelIdentifier: String?, family: String, xcodeURL: URL?,
-                 resolveXcodeURL: @escaping @MainActor () async -> URL? = { nil }) -> DeviceArtworkModel {
+                 resolveXcodeURLs: @escaping @MainActor () async -> [URL] = { [] }) -> DeviceArtworkModel {
         let key = [modelIdentifier ?? "", family, xcodeURL?.path ?? ""].joined(separator: "|")
         if let entry = entries[key] { return entry }
         let type = modelIdentifier.flatMap {
@@ -31,7 +31,7 @@ final class DeviceArtworkCache {
                          conformingTo: nil).first(where: \.isDeclared)
         }
         let entry = DeviceArtworkModel(contentType: type, family: family, xcodeURL: xcodeURL,
-                                       metadata: metadata, resolveXcodeURL: resolveXcodeURL)
+                                       metadata: metadata, resolveXcodeURLs: resolveXcodeURLs)
         entries[key] = entry
         return entry
     }
@@ -41,27 +41,28 @@ final class DeviceArtworkCache {
 final class DeviceArtworkModel {
     let contentType: UTType?
     private(set) var symbol: DeviceSymbolArtwork?
-    @ObservationIgnored private var previewTask: Task<NSImage, Never>?
+    @ObservationIgnored private var previewTask: Task<NSImage?, Never>?
+    private let fallbackSymbol: DeviceSymbolArtwork
 
     fileprivate init(contentType: UTType?, family: String, xcodeURL: URL?,
                      metadata: Task<DeviceSymbolMetadata, Never>,
-                     resolveXcodeURL: @escaping @MainActor () async -> URL?) {
+                     resolveXcodeURLs: @escaping @MainActor () async -> [URL]) {
         self.contentType = contentType
+        fallbackSymbol = DeviceSymbolMetadata.familyArtwork(for: family)
         Task { [weak self] in
             let definitions = await metadata.value
-            let identifier = contentType?.identifier ?? ""
-            let needsDuoResource = identifier.contains("iphone-duo") || identifier.contains("iphone-v68")
-            var resourceURL = xcodeURL
-            if needsDuoResource, resourceURL == nil { resourceURL = await resolveXcodeURL() }
-            guard let self else { return }
-            self.symbol = definitions.artwork(for: contentType, family: family, xcodeURL: resourceURL)
+            let symbol = await definitions.artwork(for: contentType, family: family, xcodeURL: xcodeURL,
+                                                   resolveXcodeURLs: resolveXcodeURLs)
+            self?.symbol = symbol
         }
     }
 
     func hardwarePreview() async -> NSImage? {
         if let previewTask { return await previewTask.value }
-        guard let contentType else { return nil }
-        let task = Task { await Self.loadHardwarePreview(contentType) }
+        let task = Task<NSImage?, Never> {
+            if let contentType { return await Self.loadHardwarePreview(contentType) }
+            return NSImage(systemSymbolName: fallbackSymbol.name, accessibilityDescription: nil)
+        }
         previewTask = task
         return await task.value
     }
@@ -132,13 +133,14 @@ fileprivate struct DeviceSymbolMetadata: Sendable {
         return result
     }
 
-    @MainActor func artwork(for type: UTType?, family: String, xcodeURL: URL?) -> DeviceSymbolArtwork {
+    @MainActor func artwork(for type: UTType?, family: String, xcodeURL: URL?,
+                            resolveXcodeURLs: @MainActor () async -> [URL]) async -> DeviceSymbolArtwork {
         if let type {
             let identifier = type.identifier.lowercased()
             if identifier.contains("iphone-duo") || identifier.contains("iphone-v68") {
-                let url = xcodeURL?.appendingPathComponent("Contents/SharedFrameworks/DeviceKit.framework")
-                if let url, Bundle(url: url)?.image(forResource: "v68_Closed") != nil {
-                    return DeviceSymbolArtwork(name: "v68_Closed", bundleURL: url)
+                if let xcodeURL, let artwork = duoArtwork(in: xcodeURL) { return artwork }
+                for candidate in await resolveXcodeURLs() where candidate != xcodeURL {
+                    if let artwork = duoArtwork(in: candidate) { return artwork }
                 }
                 return DeviceSymbolArtwork(name: "questionmark")
             }
@@ -157,6 +159,16 @@ fileprivate struct DeviceSymbolMetadata: Sendable {
                 pending.append(contentsOf: parents[identifier] ?? [])
             }
         }
+        return Self.familyArtwork(for: family)
+    }
+
+    @MainActor private func duoArtwork(in xcodeURL: URL) -> DeviceSymbolArtwork? {
+        let url = xcodeURL.appendingPathComponent("Contents/SharedFrameworks/DeviceKit.framework")
+        guard Bundle(url: url)?.image(forResource: "v68_Closed") != nil else { return nil }
+        return DeviceSymbolArtwork(name: "v68_Closed", bundleURL: url)
+    }
+
+    static func familyArtwork(for family: String) -> DeviceSymbolArtwork {
         let name: String = switch family {
         case "iPad": "ipad"
         case "iPhone": "iphone"
