@@ -1524,12 +1524,15 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
 
     private func updateSelection() {
         let selections = selectedDevices
-        let identifier = selections.count == 1 ? selections.first?.id : nil
+        let selectedDevice = selections.count == 1 ? selections.first : nil
+        window?.title = selectedDevice?.name ?? "NeoSimulator"
+        window?.subtitle = selectedDevice?.operatingSystem ?? ""
+        let identifier = selectedDevice?.id
         if identifier != selectionIdentifier {
             selectionIdentifier = identifier
             onSelectionChange?(identifier)
         }
-        if selections.count == 1, let device = selections.first {
+        if let device = selectedDevice {
             deviceName.stringValue = device.name
             if case .simulator(let simulator) = device { deviceRuntime.stringValue = "\(simulator.runtimeName) Simulator" }
             else {
@@ -1551,7 +1554,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         viewScreen.isEnabled = selections.count == 1 && selections.first.map(canViewScreen) == true
         viewScreen.toolTip = nil
         updateDeviceSettings()
-        model.settings.inspect(selections.count == 1 ? selections.first : nil, selectionCount: selections.count)
+        model.settings.inspect(selectedDevice, selectionCount: selections.count)
     }
 
     func selectDevice(_ identifier: DeviceInventoryID) {
