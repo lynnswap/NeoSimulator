@@ -87,6 +87,13 @@ extension SimulatorHostController {
     /// Simulator mutations share the existing operation FIFO with opens and host changes.
     /// Force shutdown may join a matching normal shutdown without giving up that FIFO ownership.
     public func manage(_ action: DeviceManagementAction, devices: [InventoryDevice]) async -> DeviceManagementReport {
+        await manage(action, devices: devices, preparing: nil)
+    }
+
+    /// Includes caller-owned display preparation in the management operation's lifetime.
+    /// A normal simulator shutdown accepts escalation while its preparation is pending.
+    public func manage(_ action: DeviceManagementAction, devices: [InventoryDevice],
+                       preparing: (@isolated(any) @Sendable () async throws -> Void)?) async -> DeviceManagementReport {
         let backend = DeviceManagementBackend(
             context: { try await self.deviceManagementContext(for: $0, requiresRenderer: $1) },
             runSimctl: Self.runManagementSimctl, runDevicectl: Self.runManagementDevicectl,
@@ -98,16 +105,24 @@ extension SimulatorHostController {
             },
             attach: { renderer, identifier in try await RendererDeviceRequestWaiter().open(identifier, in: renderer) }
         )
-        return await manage(action, devices: devices, using: backend)
+        return await manage(action, devices: devices, preparing: preparing, using: backend)
     }
 
-    func manage(_ action: DeviceManagementAction, devices: [InventoryDevice], using backend: DeviceManagementBackend) async -> DeviceManagementReport {
+    func manage(_ action: DeviceManagementAction, devices: [InventoryDevice],
+                preparing: (@isolated(any) @Sendable () async throws -> Void)? = nil,
+                using backend: DeviceManagementBackend) async -> DeviceManagementReport {
         if action == .forceShutdown {
             for transaction in shutdownTransactions {
                 if let report = await transaction.escalate(devices) { return report }
             }
         }
         guard devices.contains(where: { if case .simulator = $0 { true } else { false } }) else {
+            do { try await preparing?() }
+            catch {
+                return DeviceManagementReport(results: devices.map {
+                    DeviceManagementResult(deviceID: $0.id, completedSteps: [], createdDeviceID: nil, error: error)
+                })
+            }
             return await backend.manage(action, devices: devices)
         }
         let shutdown: SimulatorShutdownTransaction?
@@ -121,7 +136,8 @@ extension SimulatorHostController {
         }
         do {
             return try await operation {
-                if let shutdown { return await shutdown.run() }
+                if let shutdown { return await shutdown.run(preparing: preparing) }
+                try await preparing?()
                 return await backend.manage(action, devices: devices)
             }
         }
@@ -421,13 +437,20 @@ actor SimulatorShutdownTransaction {
         }
         let task = Task { await self.force(targets) }
         escalations[UUID()] = Escalation(identifiers: seen, task: task)
-        return await task.value
+        return await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            task.cancel()
+        }
     }
 
-    func run() async -> DeviceManagementReport {
+    func run(preparing: (@isolated(any) @Sendable () async throws -> Void)? = nil) async -> DeviceManagementReport {
         started = true
         for waiter in startWaiters { waiter.resume() }
         startWaiters.removeAll()
+        var preparationError: (any Error)?
+        do { try await preparing?() }
+        catch { preparationError = error }
         var results: [DeviceManagementResult] = []
         for device in devices {
             for escalation in escalations.values where escalation.identifiers.contains(device.id) {
@@ -435,7 +458,12 @@ actor SimulatorShutdownTransaction {
             }
             if forciblyStopped.contains(device.id) {
                 results.append(DeviceManagementResult(deviceID: device.id, completedSteps: ["Forcibly shut down"],
-                                                      createdDeviceID: nil, error: nil))
+                                                      createdDeviceID: nil, error: preparationError))
+                continue
+            }
+            if let preparationError {
+                results.append(DeviceManagementResult(deviceID: device.id, completedSteps: [],
+                                                      createdDeviceID: nil, error: preparationError))
                 continue
             }
             let task = Task { await self.backend.manage(.shutdown, devices: [device]).results[0] }
@@ -451,7 +479,8 @@ actor SimulatorShutdownTransaction {
         accepting = false
         for escalation in escalations.values { _ = await escalation.task.value }
         return DeviceManagementReport(results: results.map { result in
-            guard result.error is CancellationError, forciblyStopped.contains(result.deviceID) else { return result }
+            guard preparationError == nil, result.error is CancellationError,
+                  forciblyStopped.contains(result.deviceID) else { return result }
             // Successful escalation fulfilled the original shutdown; unrelated CLI failures remain errors.
             return DeviceManagementResult(deviceID: result.deviceID,
                 completedSteps: result.completedSteps + ["Forcibly shut down"], createdDeviceID: result.createdDeviceID, error: nil)
@@ -460,6 +489,11 @@ actor SimulatorShutdownTransaction {
 
     private func force(_ targets: [InventoryDevice]) async -> DeviceManagementReport {
         if !started { await withCheckedContinuation { startWaiters.append($0) } }
+        if Task.isCancelled {
+            return DeviceManagementReport(results: targets.map {
+                DeviceManagementResult(deviceID: $0.id, completedSteps: [], createdDeviceID: nil, error: CancellationError())
+            })
+        }
         let report = await backend.requestForceShutdown(targets)
         let completed = report.results.filter { $0.error == nil }.map(\.deviceID)
         for identifier in completed {

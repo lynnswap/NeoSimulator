@@ -6,6 +6,59 @@ import Testing
 
 @Suite
 struct DeviceManagementTests {
+    @Test(.timeLimit(.minutes(1)), arguments: [false, true])
+    func forceEscalatesDuringPreparationWithoutStartingALaterNormalShutdown(preparationFails: Bool) async throws {
+        let device = Self.simulator("A", state: "Booted", features: ["com.apple.dt.coredevice.device.shutdown"])
+        let fixture = ManagementFixture(nativeFeatures: [device.inventoryID: ["com.apple.dt.coredevice.device.shutdown"]])
+        let controller = SimulatorHostController(rendererApplicationURL: URL(fileURLWithPath: "/Renderer.app"))
+        let preparing = AsyncStream<CheckedContinuation<Void, any Error>>.makeStream()
+        var preparations = preparing.stream.makeAsyncIterator()
+        let normal = Task {
+            await controller.manage(.shutdown, devices: [.simulator(device)], preparing: {
+                try await withCheckedThrowingContinuation { preparing.continuation.yield($0) }
+            }, using: fixture.backend)
+        }
+        let preparation = try #require(await preparations.next())
+        let forced = await controller.manage(.forceShutdown, devices: [.simulator(device)], using: fixture.backend)
+        #expect(forced.results[0].error == nil && forced.results[0].completedSteps == ["Forcibly shut down"])
+        if preparationFails { preparation.resume(throwing: CLIError.io("preparation-fixture", "Display cleanup failed")) }
+        else { preparation.resume() }
+        let result = await normal.value.results[0]
+        #expect(result.completedSteps == ["Forcibly shut down"])
+        #expect((result.error as? CLIError)?.identifier == (preparationFails ? "preparation-fixture" : nil))
+        #expect(await fixture.commands.isEmpty)
+        #expect(await fixture.coreDeviceOperations.count == 1)
+        #expect(await controller.shutdownTransactions.isEmpty)
+    }
+
+    @Test(.timeLimit(.minutes(1))) func cancellationReachesAnAcceptedEscalationBeforeItsNativeRequest() async throws {
+        let device = Self.simulator("A", state: "Booted", features: ["com.apple.dt.coredevice.device.shutdown"])
+        let fixture = ManagementFixture(holdsShutdown: true,
+            nativeFeatures: [device.inventoryID: ["com.apple.dt.coredevice.device.shutdown"]])
+        var backend = fixture.backend
+        let native = backend.manageCoreDevice
+        let pending = AsyncStream<CheckedContinuation<Void, Never>>.makeStream()
+        var requests = pending.stream.makeAsyncIterator()
+        backend.manageCoreDevice = { action, identifier in
+            await withCheckedContinuation { pending.continuation.yield($0) }
+            try Task.checkCancellation()
+            try await native(action, identifier)
+        }
+        let preparedBackend = backend
+        let controller = SimulatorHostController(rendererApplicationURL: URL(fileURLWithPath: "/Renderer.app"))
+        var events = fixture.events.makeAsyncIterator()
+        let normal = Task { await controller.manage(.shutdown, devices: [.simulator(device)], using: preparedBackend) }
+        #expect(await events.next() == .command("shutdown", "A"))
+        let force = Task { await controller.manage(.forceShutdown, devices: [.simulator(device)], using: preparedBackend) }
+        let request = try #require(await requests.next())
+        force.cancel()
+        request.resume()
+        #expect(await force.value.results[0].error is CancellationError)
+        #expect(await fixture.coreDeviceOperations.isEmpty)
+        await fixture.completeShutdown("A")
+        #expect(await normal.value.results[0].error == nil)
+    }
+
     @Test(.timeLimit(.minutes(1))) func forceEscalatesAnOwnedShutdownAndReapsOnlyItsCommand() async throws {
         let device = Self.simulator("A", state: "Booted", features: ["com.apple.dt.coredevice.device.shutdown"])
         let fixture = ManagementFixture(holdsShutdown: true,

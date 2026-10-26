@@ -229,6 +229,7 @@ struct ManagerModelTests {
         }
         manager.manage(.shutdown, devices: [device])
         let cleanup = try #require(await cleanupEvents.next())
+        #expect(await source.preparationRequests == 1)
         #expect(await source.managementRequests == 0)
         cleanup.resume()
         #expect(await events.next() == .manage(.shutdown, [device.id]))
@@ -262,6 +263,7 @@ private actor ManagerModelSource: SimulatorManagerSource {
     private(set) var writeInputs: [SimulatorDeviceSettings?] = []
     private(set) var readCount = 0
     private(set) var managementRequests = 0
+    private(set) var preparationRequests = 0
     private let managementFailureID: DeviceInventoryID?
     private let holdsManagement: Bool
     private var managementWaiters: [(DeviceManagementAction, [InventoryDevice], CheckedContinuation<DeviceManagementReport, Never>)] = []
@@ -335,7 +337,19 @@ private actor ManagerModelSource: SimulatorManagerSource {
     func creationCatalog() throws -> SimulatorCreationContext { throw Failure.unavailable }
     func createSimulator(named name: String, deviceType: String, runtime: String, context: SimulatorCreationContext) throws -> String { throw Failure.unavailable }
     func pairSimulators(watch: String, phone: String, context: SimulatorCreationContext) throws { throw Failure.unavailable }
-    func manage(_ action: DeviceManagementAction, devices: [InventoryDevice]) async -> DeviceManagementReport {
+    func manage(_ action: DeviceManagementAction, devices: [InventoryDevice],
+                preparing: (@isolated(any) @Sendable () async throws -> Void)?) async -> DeviceManagementReport {
+        do {
+            if let preparing {
+                preparationRequests += 1
+                try await preparing()
+            }
+        }
+        catch {
+            return DeviceManagementReport(results: devices.map {
+                DeviceManagementResult(deviceID: $0.id, completedSteps: [], createdDeviceID: nil, error: error)
+            })
+        }
         managementRequests += 1
         if holdsManagement {
             return await withCheckedContinuation { waiting in

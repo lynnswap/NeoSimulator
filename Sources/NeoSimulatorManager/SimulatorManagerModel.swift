@@ -11,7 +11,8 @@ protocol SimulatorManagerSource: DeviceSettingsSource {
     func creationCatalog() async throws -> SimulatorCreationContext
     func createSimulator(named name: String, deviceType: String, runtime: String, context: SimulatorCreationContext) async throws -> String
     func pairSimulators(watch: String, phone: String, context: SimulatorCreationContext) async throws
-    func manage(_ action: DeviceManagementAction, devices: [InventoryDevice]) async -> DeviceManagementReport
+    func manage(_ action: DeviceManagementAction, devices: [InventoryDevice],
+                preparing: (@isolated(any) @Sendable () async throws -> Void)?) async -> DeviceManagementReport
     func inspector(for device: InventoryDevice) async throws -> DeviceInspector
     func restore(force: Bool) async throws
     func synchronizeXcodeConnections() async throws -> Bool
@@ -154,12 +155,21 @@ final class SimulatorManagerModel {
                 self.managementRequests.removeValue(forKey: request)
             }
             do {
-                if action != .forceShutdown {
+                let preparesOwnedShutdown = action == .shutdown && targets.allSatisfy {
+                    if case .simulator = $0 { true } else { false }
+                }
+                if action != .forceShutdown && !preparesOwnedShutdown {
                     let remoteIDs = Set(targets.filter { self.managementDisconnectsScreen(action, for: $0) }.map(\.id))
                     if !remoteIDs.isEmpty { try await self.beforeManagingRemoteDevices?(remoteIDs) }
                     try await self.beforeManagingSimulators?(action, targets)
                 }
-                var report = await self.controller.manage(action, devices: targets)
+                let preparation: (@isolated(any) @Sendable () async throws -> Void)?
+                if preparesOwnedShutdown {
+                    preparation = { @MainActor in
+                        try await self.beforeManagingSimulators?(action, targets)
+                    }
+                } else { preparation = nil }
+                var report = await self.controller.manage(action, devices: targets, preparing: preparation)
                 if action == .forceShutdown {
                     var results: [DeviceManagementResult] = []
                     for result in report.results {
