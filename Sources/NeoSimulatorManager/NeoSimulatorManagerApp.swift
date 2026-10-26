@@ -933,6 +933,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     private var groupByAvailability = true
     private let deviceMenu = NSMenu(title: "Device Actions")
     private var sidebarObservation: NSKeyValueObservation?
+    private var toolbarAppearanceObservation: NSKeyValueObservation?
     private let newSimulatorIdentifier = NSToolbarItem.Identifier("NewSimulator")
     private let filterIdentifier = NSToolbarItem.Identifier("FilterSimulators")
     private var filterItem: NSMenuToolbarItem?
@@ -1029,6 +1030,9 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         toolbar.displayMode = .iconOnly
         toolbar.allowsUserCustomization = false
         window.toolbar = toolbar
+        toolbarAppearanceObservation = window.observe(\.effectiveAppearance, options: [.new]) { [weak self] _, _ in
+            MainActor.assumeIsolated { self?.updateToolbarAppearance() }
+        }
         sidebarObservation = splitController.splitViewItems[0].observe(\.isCollapsed, options: [.initial, .new]) { [weak self] _, _ in
             MainActor.assumeIsolated { self?.updateSidebarToolbarItems() }
         }
@@ -1793,6 +1797,18 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     @objc private func openSelectedDevice(_ sender: Any?) {
         guard selectedDevices.count == 1, let device = selectedDevices.first, canViewScreen(device) else { return }
         model.openScreen(for: device)
+    }
+
+    private func updateToolbarAppearance() {
+        guard let window else { return }
+        // Individual toolbar items can retain their prior template tint on macOS 26.
+        window.effectiveAppearance.performAsCurrentDrawingAppearance {
+            for item in window.toolbar?.items ?? [] {
+                if let image = item.image, image.isTemplate, let refreshed = image.copy() as? NSImage {
+                    item.image = refreshed
+                }
+            }
+        }
     }
 
     private func updateSidebarToolbarItems() {
