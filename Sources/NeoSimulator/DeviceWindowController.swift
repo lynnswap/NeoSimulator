@@ -724,7 +724,9 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         content.displayGap = isEmbedded ? 0 : WindowScale.displayGap(bezelPadding: padding)
         window.chromeTopPadding = padding?.height ?? 0
         updateHeaderShape()
-        if padding != nil { window.backgroundColor = .clear } else if !isFullScreen { window.backgroundColor = .black }
+        if session.display.usesNativeCanvas { window.backgroundColor = .windowBackgroundColor }
+        else if padding != nil { window.backgroundColor = .clear }
+        else if !isFullScreen { window.backgroundColor = .black }
         updateContentMinimumSize()
         guard !isFullScreen else { return }
         if padding == nil { window.styleMask.insert(.resizable) } else { window.styleMask.remove(.resizable) }

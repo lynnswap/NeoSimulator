@@ -749,6 +749,36 @@ struct InputFocusTests {
         #expect(saved.center == movedCenter)
     }
 
+    @Test func nativeCanvasMovesBetweenWindowsWithoutLosingItsViewport() throws {
+        _ = NSApplication.shared
+        let display = TestDisplay()
+        display.usesNativeCanvas = true
+        let controller = try makeController(display)
+        defer { controller.invalidate() }
+        let parent = NSViewController()
+        parent.view = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 400))
+        let window = KeyPresentationWindow(contentRect: parent.view.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentViewController = parent
+        defer { window.close() }
+        controller.embed(in: parent)
+        parent.view.layoutSubtreeIfNeeded()
+        #expect(display.view.frame == parent.view.bounds)
+        #expect(display.view.superview === controller.presentationViewController.view)
+        controller.showCompactWindow()
+        let compact = try #require(controller.window)
+        #expect(display.view.window === compact && compact.isOpaque)
+        #expect(compact.backgroundColor == .windowBackgroundColor)
+        controller.setDeviceBezelVisible(false)
+        controller.setDeviceBezelVisible(true)
+        #expect(compact.backgroundColor == .windowBackgroundColor)
+        controller.embed(in: parent)
+        parent.view.setFrameSize(NSSize(width: 400, height: 300))
+        parent.view.layoutSubtreeIfNeeded()
+        #expect(display.view.frame == parent.view.bounds)
+        #expect(display.disconnectCount == 0)
+    }
+
     @Test func embeddedZoomKeepsPanningAndScaleSeparateFromCompactGeometry() throws {
         _ = NSApplication.shared
         let display = TestDisplay()
@@ -7373,6 +7403,7 @@ private final class TestDisplayView: NSView {
 
 @MainActor
 private final class TestDisplay: SimulatorDisplay {
+    var usesNativeCanvas = false
     let view: NSView = TestDisplayView(frame: NSRect(x: 0, y: 0, width: 390, height: 844))
     let input = InputView()
     var captureDisplayID: UInt32?

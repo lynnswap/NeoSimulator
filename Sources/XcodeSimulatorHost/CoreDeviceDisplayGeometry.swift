@@ -267,7 +267,6 @@ private struct NativeCanvasRoot: View {
                 presentation.naturalSize = size
                 presentation.onSizeChange?()
             }
-            .scaleEffect(presentation.zoom)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .clipped()
     }
