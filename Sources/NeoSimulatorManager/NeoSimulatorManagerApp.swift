@@ -902,7 +902,15 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     private let compactIdentifier = NSToolbarItem.Identifier("CompactDeviceWindow")
     private let moreIdentifier = NSToolbarItem.Identifier("CanvasMoreActions")
     private var moreItem: NSMenuToolbarItem?
-    private let screenActionIdentifiers = ["home", "lock", "rotate", "capture", "record"]
+    private let screenActionIdentifiers = ["home", "capture", "record", "rotate"]
+    private let screenActionBar = NSStackView()
+    private let primaryScreenActions = NSGlassEffectView()
+    private let profileScreenActions = NSGlassEffectView()
+    private var screenActionButtons: [String: NSButton] = [:]
+    private let deviceFooter = NSStackView()
+    private let activityStack = NSStackView()
+    private var canvasBottomToPane: NSLayoutConstraint?
+    private var canvasBottomToFooter: NSLayoutConstraint?
     private let activity = NSTextField(labelWithString: "")
     private let progress = NSProgressIndicator()
     private var inspectorHost: NSHostingController<ManagerDeviceSettingsView>?
@@ -1099,6 +1107,17 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         activity.isHidden = activity.stringValue.isEmpty
         progress.isHidden = !model.isBusy
         if model.isBusy { progress.startAnimation(nil) } else { progress.stopAnimation(nil) }
+        activityStack.isHidden = activity.isHidden && progress.isHidden
+        updateDeviceFooter()
+    }
+
+    private func updateDeviceFooter() {
+        deviceFooter.isHidden = activityStack.isHidden && screenActionBar.isHidden
+        let showsFooter = !deviceFooter.isHidden
+        if canvasBottomToFooter?.isActive != showsFooter {
+            (showsFooter ? canvasBottomToPane : canvasBottomToFooter)?.isActive = false
+            (showsFooter ? canvasBottomToFooter : canvasBottomToPane)?.isActive = true
+        }
     }
 
     private var filteredDevices: [InventoryDevice] {
@@ -1248,12 +1267,14 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         liveView.translatesAutoresizingMaskIntoConstraints = false
         liveView.isHidden = true
         view.addSubview(liveView)
+        canvasBottomToPane = liveView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor)
+        canvasBottomToFooter = liveView.bottomAnchor.constraint(equalTo: deviceFooter.topAnchor, constant: -12)
         NSLayoutConstraint.activate([
             liveView.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
             liveView.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
             liveView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
-            liveView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
         ])
+        canvasBottomToPane?.isActive = true
         deviceImage.imageScaling = .scaleProportionallyUpOrDown
         deviceImage.translatesAutoresizingMaskIntoConstraints = false
         deviceImage.setAccessibilityHidden(true)
@@ -1286,12 +1307,21 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         activity.font = .systemFont(ofSize: 12)
         activity.textColor = .secondaryLabelColor
         activity.lineBreakMode = .byTruncatingTail
-        let activityStack = NSStackView(views: [progress, activity])
+        activityStack.addArrangedSubview(progress)
+        activityStack.addArrangedSubview(activity)
         activityStack.orientation = .horizontal
         activityStack.alignment = .centerY
         activityStack.spacing = 7
-        activityStack.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(activityStack)
+        activityStack.isHidden = true
+        buildScreenActionBar()
+        deviceFooter.orientation = .vertical
+        deviceFooter.alignment = .centerX
+        deviceFooter.spacing = 8
+        deviceFooter.translatesAutoresizingMaskIntoConstraints = false
+        deviceFooter.addArrangedSubview(activityStack)
+        deviceFooter.addArrangedSubview(screenActionBar)
+        deviceFooter.isHidden = true
+        view.addSubview(deviceFooter)
         NSLayoutConstraint.activate([
             deviceImage.widthAnchor.constraint(equalToConstant: 192),
             deviceImage.heightAnchor.constraint(equalToConstant: 192),
@@ -1302,15 +1332,62 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             stack.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -24),
             deviceName.widthAnchor.constraint(lessThanOrEqualTo: stack.widthAnchor),
             deviceRuntime.widthAnchor.constraint(lessThanOrEqualTo: stack.widthAnchor),
-            activityStack.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            activityStack.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -22),
-            activityStack.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 12),
-            activityStack.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -12),
+            deviceFooter.centerXAnchor.constraint(equalTo: view.safeAreaLayoutGuide.centerXAnchor),
+            deviceFooter.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -12),
+            deviceFooter.leadingAnchor.constraint(greaterThanOrEqualTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 12),
+            deviceFooter.trailingAnchor.constraint(lessThanOrEqualTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -12),
         ])
         let content = NSSplitViewItem(viewController: controller)
         content.minimumThickness = 280
         content.holdingPriority = .defaultLow
         splitController.addSplitViewItem(content)
+    }
+
+    private func buildScreenActionBar() {
+        screenActionBar.orientation = .horizontal
+        screenActionBar.alignment = .centerY
+        screenActionBar.distribution = .fill
+        screenActionBar.spacing = 8
+        screenActionBar.isHidden = true
+        screenActionBar.setAccessibilityLabel("Device Actions")
+        for (identifiers, glass) in [(["home", "capture", "record"], primaryScreenActions),
+                                      (["rotate"], profileScreenActions)] {
+            let controls = NSStackView()
+            controls.orientation = .horizontal
+            controls.alignment = .centerY
+            controls.distribution = .fill
+            controls.spacing = 0
+            controls.edgeInsets = NSEdgeInsets(top: 4, left: 6, bottom: 4, right: 6)
+            for identifier in identifiers {
+                let (title, symbol) = switch identifier {
+                case "home": ("Home", "square.grid.3x3.fill")
+                case "capture": ("Save Screenshot…", "camera.viewfinder")
+                case "record": ("Record Screen", "record.circle")
+                default: ("Rotate", "rotate.right")
+                }
+                let button = NSButton(title: "", target: self, action: #selector(performScreenAction(_:)))
+                button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)
+                button.imagePosition = .imageOnly
+                button.identifier = NSUserInterfaceItemIdentifier(identifier)
+                button.isBordered = false
+                button.imageScaling = .scaleProportionallyDown
+                button.contentTintColor = .labelColor
+                button.toolTip = title
+                button.setAccessibilityLabel(title)
+                button.translatesAutoresizingMaskIntoConstraints = false
+                NSLayoutConstraint.activate([
+                    button.widthAnchor.constraint(equalToConstant: 32),
+                    button.heightAnchor.constraint(equalToConstant: 32),
+                ])
+                controls.addArrangedSubview(button)
+                screenActionButtons[identifier] = button
+            }
+            glass.style = .regular
+            glass.cornerRadius = 20
+            glass.contentView = controls
+            glass.heightAnchor.constraint(equalToConstant: 40).isActive = true
+            screenActionBar.addArrangedSubview(glass)
+        }
     }
 
     private func buildInspector() {
@@ -1508,9 +1585,11 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         activeScreenCommandTarget = nil
         liveScreenContainer.view.isHidden = true
         previewStack?.isHidden = false
-        for item in window?.toolbar?.items ?? [] where item.itemIdentifier == compactIdentifier || item.itemIdentifier == moreIdentifier || screenActionIdentifiers.contains(item.itemIdentifier.rawValue) {
+        for item in window?.toolbar?.items ?? [] where item.itemIdentifier == compactIdentifier || item.itemIdentifier == moreIdentifier {
             item.isHidden = true
         }
+        screenActionBar.isHidden = true
+        updateDeviceFooter()
     }
 
     override func supplementalTarget(forAction action: Selector, sender: Any?) -> Any? {
@@ -1531,20 +1610,33 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     }
 
     func updateScreenToolbar(supports: (String) -> Bool, isEnabled: (String) -> Bool, recordingTitle: String) {
-        for item in window?.toolbar?.items ?? [] where screenActionIdentifiers.contains(item.itemIdentifier.rawValue) {
-            let id = item.itemIdentifier.rawValue
-            item.isHidden = liveDeviceIdentifier == nil || !supports(id)
-            item.isEnabled = isEnabled(id)
-            if id == "record" {
-                item.label = recordingTitle
-                item.toolTip = recordingTitle
-                item.image = NSImage(systemSymbolName: recordingTitle == "Stop Recording" ? "stop.circle" : "record.circle",
-                                     accessibilityDescription: recordingTitle)
+        for identifier in screenActionIdentifiers {
+            guard let button = screenActionButtons[identifier] else { continue }
+            button.isHidden = liveDeviceIdentifier == nil || !supports(identifier)
+            button.isEnabled = isEnabled(identifier)
+            if identifier == "record" {
+                let symbol = switch recordingTitle {
+                case "Stop Recording": "stop.circle"
+                case "Save Recording…": "square.and.arrow.down"
+                default: "record.circle"
+                }
+                button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: recordingTitle)
+                button.toolTip = recordingTitle
+                button.setAccessibilityLabel(recordingTitle)
             }
         }
+        primaryScreenActions.isHidden = ["home", "capture", "record"].allSatisfy {
+            screenActionButtons[$0]?.isHidden != false
+        }
+        profileScreenActions.isHidden = screenActionButtons["rotate"]?.isHidden != false
+        screenActionBar.isHidden = primaryScreenActions.isHidden && profileScreenActions.isHidden
+        updateDeviceFooter()
     }
 
-    @objc private func performScreenAction(_ sender: NSToolbarItem) { onScreenAction?(sender.itemIdentifier.rawValue) }
+    @objc private func performScreenAction(_ sender: NSButton) {
+        guard let identifier = sender.identifier?.rawValue else { return }
+        onScreenAction?(identifier)
+    }
 
     @objc private func showCompactDeviceWindow(_ sender: Any?) {
         guard let identifier = liveDeviceIdentifier, window?.attachedSheet == nil,
@@ -1722,32 +1814,13 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [.toggleSidebar, .flexibleSpace, newSimulatorIdentifier, filterIdentifier, .sidebarTrackingSeparator,
-         .flexibleSpace] + screenActionIdentifiers.map { NSToolbarItem.Identifier($0) } +
-         [compactIdentifier, moreIdentifier, .inspectorTrackingSeparator, inspectorIdentifier]
+         .flexibleSpace, compactIdentifier, moreIdentifier, .inspectorTrackingSeparator, inspectorIdentifier]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { toolbarDefaultItemIdentifiers(toolbar) }
 
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
                  willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
-        if screenActionIdentifiers.contains(itemIdentifier.rawValue) {
-            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
-            let (title, symbol) = switch itemIdentifier.rawValue {
-            case "home": ("Home", "house")
-            case "lock": ("Lock", "lock")
-            case "rotate": ("Rotate", "rotate.right")
-            case "capture": ("Save Screenshot…", "camera")
-            default: ("Record Screen", "record.circle")
-            }
-            item.label = title
-            item.toolTip = title
-            item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)
-            item.target = self
-            item.action = #selector(performScreenAction(_:))
-            item.autovalidates = false
-            item.isHidden = liveDeviceIdentifier == nil
-            return item
-        }
         if itemIdentifier == moreIdentifier {
             let item = NSMenuToolbarItem(itemIdentifier: itemIdentifier)
             item.label = "More Actions"
@@ -1847,6 +1920,14 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             item.isEnabled = idle
             menu.addItem(item)
         }
+        if devices.count == 1, case .remote = devices[0], devices[0].id == liveDeviceIdentifier,
+           let controller = activeScreenCommandTarget as? RemoteDeviceWindowController {
+            let item = NSMenuItem(title: "Lock", action: #selector(lockDeviceFromMenu(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = devices[0].id
+            item.isEnabled = controller.isScreenActionEnabled("lock")
+            menu.addItem(item)
+        }
         let name = devices.first?.name ?? ""
         let operations: [(String, DeviceManagementAction)] = [
             ("Rename…", .rename(name)), ("Clone…", .clone("\(name) Copy")),
@@ -1932,6 +2013,12 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         guard let id = sender.representedObject as? DeviceInventoryID,
               let device = model.inventory.first(where: { $0.id == id }), canViewScreen(device) else { return }
         model.openScreen(for: device)
+    }
+
+    @objc private func lockDeviceFromMenu(_ sender: NSMenuItem) {
+        guard let identifier = sender.representedObject as? DeviceInventoryID,
+              identifier == liveDeviceIdentifier else { return }
+        onScreenAction?("lock")
     }
 
     @objc private func performManagement(_ sender: NSMenuItem) {
