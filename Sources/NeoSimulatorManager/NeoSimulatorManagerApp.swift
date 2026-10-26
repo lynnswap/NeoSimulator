@@ -1526,7 +1526,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         return cell
     }
 
-    func outlineView(_ outlineView: NSOutlineView, didAdd rowView: NSTableRowView, forItem item: Any) {
+    func outlineView(_ outlineView: NSOutlineView, didAdd rowView: NSTableRowView, forRow row: Int) {
         rowView.selectionHighlightStyle = .regular
     }
 
