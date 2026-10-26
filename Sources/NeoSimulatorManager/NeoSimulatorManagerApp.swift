@@ -1255,7 +1255,6 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         table.outlineTableColumn = column
         table.headerView = nil
         table.style = .sourceList
-        table.selectionHighlightStyle = .regular
         table.rowHeight = 52
         table.intercellSpacing = NSSize(width: 0, height: 2)
         table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
@@ -1488,6 +1487,15 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     func outlineView(_ outlineView: NSOutlineView, shouldSelectItem item: Any) -> Bool { item is DeviceRow }
     func outlineView(_ outlineView: NSOutlineView, heightOfRowByItem item: Any) -> CGFloat {
         item is AvailabilityGroup ? 26 : 52
+    }
+
+    func outlineView(_ outlineView: NSOutlineView, rowViewForItem item: Any) -> NSTableRowView? {
+        guard item is DeviceRow else { return nil }
+        let identifier = NSUserInterfaceItemIdentifier("DeviceSelectionRow")
+        let row = outlineView.makeView(withIdentifier: identifier, owner: self) as? SimulatorSidebarRowView
+            ?? SimulatorSidebarRowView()
+        row.identifier = identifier
+        return row
     }
 
     func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
@@ -2262,6 +2270,14 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         update()
     }
 
+}
+
+@MainActor
+private final class SimulatorSidebarRowView: NSTableRowView {
+    // Keep AppKit's selection geometry without the sidebar template's extra vibrancy.
+    override func drawSelection(in dirtyRect: NSRect) {
+        super.drawSelection(in: dirtyRect)
+    }
 }
 
 @MainActor
