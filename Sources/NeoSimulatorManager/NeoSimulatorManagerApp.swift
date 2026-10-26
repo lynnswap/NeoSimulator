@@ -1363,7 +1363,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
                 case "record": ("Record Screen", "record.circle")
                 default: ("Rotate", "rotate.right")
                 }
-                let button = NSButton(title: title, target: self, action: #selector(performScreenAction(_:)))
+                let button = NSButton(title: "", target: self, action: #selector(performScreenAction(_:)))
                 button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)
                 button.imagePosition = .imageOnly
                 button.identifier = NSUserInterfaceItemIdentifier(identifier)
@@ -1614,7 +1614,6 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
                 case "Save Recording…": "square.and.arrow.down"
                 default: "record.circle"
                 }
-                button.title = recordingTitle
                 button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: recordingTitle)
                 button.toolTip = recordingTitle
                 button.setAccessibilityLabel(recordingTitle)
