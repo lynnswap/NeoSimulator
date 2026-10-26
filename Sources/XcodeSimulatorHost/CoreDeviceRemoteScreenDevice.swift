@@ -6,6 +6,33 @@ import Darwin
 @MainActor
 public enum CoreDeviceRuntime {
     private static var manager: NativeSwiftValue?
+    private static var uiXcodeOverride: URL?
+    private static var uiXcodePreparation: Task<URL, any Error>?
+
+    /// Overrides the UI framework installation before any device screen is opened.
+    /// Device runtimes and their owning Xcode processes are selected independently.
+    public static func configureUIFrameworks(xcodeURL: URL?) throws {
+        guard uiXcodePreparation == nil else {
+            throw CLIError.configuration("ui-frameworks-loaded", "Restart NeoSimulator to change its UI framework installation.")
+        }
+        uiXcodeOverride = xcodeURL
+    }
+
+    /// Uses one installation for SimulatorKit and DeviceKit throughout this process.
+    public static func uiXcodeURL() async throws -> URL {
+        if let uiXcodePreparation { return try await uiXcodePreparation.value }
+        let override = uiXcodeOverride
+        let task = Task { try await resolveUIXcode(override: override) }
+        uiXcodePreparation = task
+        do { return try await task.value }
+        catch { uiXcodePreparation = nil; throw error }
+    }
+
+    @concurrent
+    private static func resolveUIXcode(override: URL?) async throws -> URL {
+        let inspector = InstallationInspector(runner: SystemCommandRunner())
+        return try inspector.xcodeForUIFrameworks(override: override).applicationURL
+    }
 
     /// Returns the retained, shared manager for default devices and simulators.
     ///

@@ -16,6 +16,23 @@ request access to other apps' data for those explicit operations.
 Continue using Xcode for Build & Run. The main window's inspector contains
 settings for the selected simulator, separate from the app-wide display host.
 
+## Select the UI framework installation
+
+NeoSimulator loads its display frameworks from the Xcode selected by
+`DEVELOPER_DIR`, or by `xcode-select` when that environment variable is unset.
+To override that choice, quit NeoSimulator and launch it with:
+
+```bash
+open /Applications/NeoSimulator.app --args --xcode /Applications/Xcode_27.1.app
+```
+
+This selects the app's SimulatorKit and DeviceKit frameworks for that launch.
+It does not limit which simulator runtimes can run or change Xcode's Build & Run
+routing. Devices retain their own runtime and connection owner; a newer request
+for the same device takes precedence over the previous owner. Changing the UI
+framework installation requires restarting NeoSimulator because loaded Apple
+frameworks remain registered for the lifetime of the process.
+
 ## Recover original preferences
 
 Choose **Restore Original Settings…** in Settings before uninstalling. This

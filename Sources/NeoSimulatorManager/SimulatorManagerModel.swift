@@ -2,6 +2,27 @@ import Foundation
 import Observation
 import XcodeSimulatorHost
 
+struct ManagerLaunchOptions {
+    let xcodeURL: URL?
+
+    init(arguments: [String]) throws {
+        var xcodeURL: URL?
+        var index = 0
+        while index < arguments.count {
+            if arguments[index] == "--xcode" {
+                index += 1
+                guard xcodeURL == nil, index < arguments.count,
+                      (arguments[index] as NSString).isAbsolutePath else {
+                    throw HostError.invalidArguments("Expected --xcode /absolute/path/to/Xcode.app")
+                }
+                xcodeURL = URL(fileURLWithPath: arguments[index], isDirectory: true)
+            }
+            index += 1
+        }
+        self.xcodeURL = xcodeURL
+    }
+}
+
 protocol SimulatorManagerSource: DeviceSettingsSource {
     func status() async throws -> SimulatorHostStatus
     func inventory() async -> DeviceInventorySnapshot

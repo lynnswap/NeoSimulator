@@ -5,6 +5,17 @@ import Testing
 
 @Suite
 struct InstallationInspectorTests {
+    @Test func UIFrameworksUseSelectedXcodeUnlessExplicitlyOverridden() throws {
+        let selected = try InstallationFixture(targetVersion: "27.1")
+        let alternate = try InstallationFixture(targetVersion: "27.2")
+        let inspector = makeInspector(selected)
+        #expect(try inspector.xcodeForUIFrameworks(override: nil).applicationURL == selected.targetXcodeURL)
+        #expect(try inspector.xcodeForUIFrameworks(override: alternate.targetXcodeURL).applicationURL == alternate.targetXcodeURL)
+        #expect(throws: (any Error).self) {
+            try inspector.xcodeForUIFrameworks(override: alternate.targetXcodeURL.appendingPathComponent("Missing.app"))
+        }
+    }
+
     @Test func simulatorCommandsPreserveXcodeSelectionWithoutInvokingInstallingWrapper() throws {
         let fixture = try InstallationFixture(simctlExpectedVersion: "9999", coreSimulatorBundleVersion: "1174.9.2")
         try Data(#"""

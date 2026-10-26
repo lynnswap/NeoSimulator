@@ -6,6 +6,15 @@ import Testing
 
 @Suite(.serialized, .timeLimit(.minutes(1))) @MainActor
 struct ManagerModelTests {
+    @Test func launchUsesDefaultFrameworksAndAcceptsAnExplicitOverride() throws {
+        #expect(try ManagerLaunchOptions(arguments: []).xcodeURL == nil)
+        let path = "/Applications/Xcode 27.1.app"
+        #expect(try ManagerLaunchOptions(arguments: ["--xcode", path]).xcodeURL?.path == path)
+        for arguments in [["--xcode"], ["--xcode", "relative.app"], ["--xcode", path, "--xcode", path]] {
+            #expect(throws: HostError.self) { try ManagerLaunchOptions(arguments: arguments) }
+        }
+    }
+
     @Test func forceCanJoinNormalShutdownWithoutTheOriginalRequestUnlockingIt() async throws {
         let device = simulator()
         let other = InventoryDevice.simulator(SimulatorHostDevice(identifier: "other", name: "Other Phone", descriptiveName: "Other Phone",
