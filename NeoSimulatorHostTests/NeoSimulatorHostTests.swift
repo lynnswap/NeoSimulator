@@ -450,7 +450,7 @@ struct InputFocusTests {
         #expect(pointer.faces == ButtonFace.optionAlternates)
         #expect(try pointer.click(.saveScreen))
         let recording = try #require(controller.session.recording)
-        try await wait { pointer.faces[1] == .stopRecording }
+        try await wait { pointer.faces[2] == .stopRecording }
         #expect(pointer.faces == [.captureKeyboard, .home, .stopRecording, .rotateLeft])
         pointer.hold([])
         #expect(pointer.faces == [.captureKeyboard, .home, .stopRecording, .rotate])
@@ -460,7 +460,7 @@ struct InputFocusTests {
         #expect(pointer.faces == [.captureKeyboard, .home, .stopRecording, .rotateLeft])
         #expect(try pointer.click(.saveScreen))
         #expect(recording.isStopping)
-        try await wait { pointer.faces[1] == .recordScreen }
+        try await wait { pointer.faces[2] == .recordScreen }
         #expect(pointer.faces == ButtonFace.optionAlternates)
         pointer.hold([])
         #expect(pointer.faces == ButtonFace.normal)
