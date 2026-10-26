@@ -4,7 +4,7 @@ import Testing
 
 @Suite(.serialized, .timeLimit(.minutes(1))) @MainActor
 struct ManagerModelTests {
-    @Test func reconnectingAScreenReplacesItsFailedPostureOwnerAfterDrainingIt() async throws {
+    @Test func connectingAScreenReplacesItsFailedPostureOwnerAfterDrainingIt() async throws {
         let features = DevicePosturePayload.features
         let data = try JSONSerialization.data(withJSONObject: ["result": ["devices": [[
             "identifier": "remote-command", "properties": ["hardware": ["reality": "physical", "hardwareModel": "V68AP"],
@@ -18,12 +18,12 @@ struct ManagerModelTests {
         manager.setOpenDeviceScreens([device.id])
         #expect(await events.next() == .observing(device.id))
         let failed = try #require(manager.devicePostures[device.id])
-        await manager.deviceScreenDidReconnect(device.id)
+        await manager.deviceScreenDidConnect(device.id)
         #expect(manager.devicePostures[device.id] === failed)
         postures.failCurrentObservation()
         #expect(await events.next() == .stopped(device.id))
         #expect(failed.state == .failed && !failed.canSelect)
-        await manager.deviceScreenDidReconnect(device.id)
+        await manager.deviceScreenDidConnect(device.id)
         #expect(await events.next() == .observing(device.id))
         #expect(failed.state == .stopped)
         #expect(manager.devicePostures[device.id] !== failed && manager.devicePostures[device.id]?.canSelect == true)

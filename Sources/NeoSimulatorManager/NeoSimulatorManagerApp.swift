@@ -678,9 +678,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.mainWindow?.showDevicePreview(ifDisplaying: id)
             }
             controller.onShowInMainWindow = { [weak self] in self?.showScreenInMainWindow(id) }
-            controller.onReconnect = { [weak self, weak controller] in
+            controller.onConnect = { [weak self, weak controller] in
                 guard let self, self.remoteWindows[id] === controller else { return }
-                await self.model.deviceScreenDidReconnect(id)
+                await self.model.deviceScreenDidConnect(id)
             }
             controller.onChange = { [weak self] in self?.updateScreenToolbar() }
             remoteWindows[id] = controller
@@ -3809,7 +3809,7 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
     let session: RemoteDeviceScreenSession
     var onClose: (() -> Void)?
     var onChange: (() -> Void)?
-    var onReconnect: (() async -> Void)?
+    var onConnect: (() async -> Void)?
     var onShowInMainWindow: (() -> Void)? { didSet { update() } }
     let presentationViewController = RemoteDevicePresentationViewController()
     var isEmbedded: Bool { presentationViewController.parent != nil }
@@ -4056,15 +4056,16 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
         return window
     }
 
-    func connectIfNeeded(reconnecting: Bool = false) {
-        guard !closing, !mayClose, connectionTask == nil, session.state != .connected else { return }
+    func connectIfNeeded() {
+        guard !closing, !mayClose, connectionTask == nil else { return }
         issue = nil
         connectionTask = Task { [weak self] in
             guard let self else { return }
             defer { self.connectionTask = nil; self.update() }
             do {
                 try await self.session.start()
-                if reconnecting { await self.onReconnect?() }
+                try Task.checkCancellation()
+                await self.onConnect?()
             }
             catch is CancellationError {}
             catch { if !self.closing { self.showIssue(error) } }
@@ -4226,7 +4227,7 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
         guard !closing, stoppingTask == nil else { return }
         Task { [weak self] in
             guard let self else { return }
-            do { try await self.stop(); self.connectIfNeeded(reconnecting: true) }
+            do { try await self.stop(); self.connectIfNeeded() }
             catch is CancellationError {}
             catch { self.showIssue(error) }
         }
