@@ -6,15 +6,6 @@ import Testing
 
 @Suite(.serialized, .timeLimit(.minutes(1))) @MainActor
 struct ManagerModelTests {
-    @Test func launchUsesDefaultFrameworksAndAcceptsAnExplicitOverride() throws {
-        #expect(try ManagerLaunchOptions(arguments: []).xcodeURL == nil)
-        let path = "/Applications/Xcode 27.1.app"
-        #expect(try ManagerLaunchOptions(arguments: ["--xcode", path]).xcodeURL?.path == path)
-        for arguments in [["--xcode"], ["--xcode", "relative.app"], ["--xcode", path, "--xcode", path]] {
-            #expect(throws: HostError.self) { try ManagerLaunchOptions(arguments: arguments) }
-        }
-    }
-
     @Test func openingASimulatorRetriesItsFailedPostureAfterPresentationSucceeds() async throws {
         guard case .simulator(let simulator) = simulator(deviceSet: "/custom-device-set") else { return }
         let device = InventoryDevice.simulator(simulator.inventoryCopy(ownerXcodeURL: nil, capabilities: DevicePosturePayload.features))
@@ -172,6 +163,70 @@ struct ManagerModelTests {
         #expect(await postureEvents.next() == .stopped(device.id))
     }
 
+    @Test func screenRestorationKeepsItsSourceAndPresentation() async throws {
+        let device = SimulatorDeviceIdentifier("test-device", deviceSetPath: "/custom/testing devices")
+        let xcode = URL(fileURLWithPath: "/Applications/Other Xcode.app", isDirectory: true)
+        let restoration = SimulatorScreenRestoration(device: device, xcodeURL: xcode, presentation: .compact)
+        let decoded = try #require(SimulatorScreenRestoration(url: restoration.url))
+        #expect(decoded == restoration)
+        let source = ManagerModelSource(devices: [simulator()])
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source)
+        var presented = false
+        manager.restoreScreen(decoded) {
+            #expect(!manager.inventory.isEmpty)
+            presented = true
+        }
+        #expect(await events.next() == .open(decoded.deviceID))
+        #expect(await source.lastOpenXcodeURL == xcode)
+        #expect(!presented)
+        await source.completeOpen()
+        try await manager.quitRenderer(keepingDevicesRunning: true)
+        #expect(presented)
+    }
+
+
+    @Test func relaunchWaitsForTheOldProcessToExit() async throws {
+        let owner = Process()
+        owner.executableURL = URL(fileURLWithPath: "/bin/cat")
+        let input = Pipe()
+        owner.standardInput = input
+        owner.standardOutput = FileHandle.nullDevice
+        try owner.run()
+        defer { if owner.isRunning { owner.terminate() } }
+        let ready = AsyncStream<Void>.makeStream()
+        var events = ready.stream.makeAsyncIterator()
+        var didExit = false
+        let waiting = Task {
+            await ManagerRelaunch.waitForExit(of: owner.processIdentifier) { ready.continuation.yield(()) }
+            didExit = true
+        }
+        await events.next()
+        #expect(owner.isRunning && !didExit)
+        owner.terminate()
+        await waiting.value
+        #expect(didExit)
+    }
+
+
+    @Test func frameworkSettingPersistsOverrideAndRestoresDefault() throws {
+        let suite = "NeoSimulator.UIFrameworkSettingsTests." + UUID().uuidString
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = UIFrameworkSettings(defaults: defaults, discover: { [] })
+        #expect(settings.selectedXcodeURL == nil && !settings.needsRestart)
+        let xcode = URL(fileURLWithPath: "/Applications/Xcode 27.1.app", isDirectory: true)
+        settings.select(xcode)
+        #expect(settings.needsRestart)
+        #expect(UIFrameworkSettings.selection(in: defaults) == xcode)
+        let relaunched = UIFrameworkSettings(defaults: defaults, discover: { [] })
+        #expect(relaunched.selectedXcodeURL == xcode && !relaunched.needsRestart)
+        relaunched.select(nil)
+        #expect(relaunched.needsRestart && UIFrameworkSettings.selection(in: defaults) == nil)
+        settings.select(nil)
+        #expect(!settings.needsRestart)
+    }
+
     @Test func forceCanJoinNormalShutdownWithoutTheOriginalRequestUnlockingIt() async throws {
         let device = simulator()
         let other = InventoryDevice.simulator(SimulatorHostDevice(identifier: "other", name: "Other Phone", descriptiveName: "Other Phone",
@@ -254,6 +309,12 @@ struct ManagerModelTests {
         #expect(manager.settings.settings?.appearance == "dark")
         #expect(manager.settings.settings?.contentSize == "large")
         #expect(await source.readCount == 1)
+        manager.resumeAfterCancelledQuit()
+        manager.openDevice(device.id)
+        #expect(await events.next() == .open(device.id))
+        await source.completeOpen()
+        try await manager.quitRenderer(keepingDevicesRunning: true)
+        #expect(await events.next() == .quit)
     }
 
     @Test func editingDuringRefreshStillReadsExternalChanges() async throws {
@@ -473,6 +534,7 @@ private actor ManagerModelSource: SimulatorManagerSource {
     private var pendingWrite: SimulatorDeviceSettings?
     private(set) var writeInputs: [SimulatorDeviceSettings?] = []
     private(set) var readCount = 0
+    private(set) var lastOpenXcodeURL: URL?
     private(set) var artworkXcodeRequests: [DeviceInventoryID] = []
     private(set) var installedXcodeReadCount = 0
     private(set) var managementRequests = 0
@@ -554,6 +616,7 @@ private actor ManagerModelSource: SimulatorManagerSource {
     func quitRenderer(keepingDevicesRunning: Bool?) { continuation.yield(.quit) }
     func selectHost(_ host: SimulatorHost, xcodeURL: URL?) throws { throw Failure.unavailable }
     func openDevice(_ deviceID: DeviceInventoryID, xcodeURL: URL?) async throws {
+        lastOpenXcodeURL = xcodeURL
         try await withCheckedThrowingContinuation { waiting in
             openContinuation = waiting
             continuation.yield(.open(deviceID))

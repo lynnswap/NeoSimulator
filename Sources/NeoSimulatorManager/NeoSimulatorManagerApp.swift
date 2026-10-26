@@ -92,6 +92,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var inventoryObservation: DeviceInventoryObservation?
     private var inventoryObservationTask: Task<Void, Never>?
     private var quitKeepingDevicesRunning: Bool?
+    private var restartsAfterQuitting = false
     private var remoteWindows: [DeviceInventoryID: RemoteDeviceWindowController] = [:] {
         didSet { updateDevicePostureScreens(); mainWindow?.reloadDeviceArtwork() }
     }
@@ -640,6 +641,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return .terminateCancel
         }
         quitting = true
+        let restoring: [SimulatorScreenRestoration] = restartsAfterQuitting ? simulatorHosts.flatMap { xcode, host in
+            host.openedDeviceIdentifiers.compactMap { device in
+                let id = DeviceInventoryID.simulator(udid: device.identifier, deviceSetPath: device.deviceSetPath)
+                guard let controller = simulatorWindows[id] else { return nil as SimulatorScreenRestoration? }
+                let presentation: SimulatorScreenRestoration.Presentation = controller.isEmbedded ? .main
+                    : controller.window?.isVisible == true ? .compact : .hidden
+                return SimulatorScreenRestoration(device: device, xcodeURL: xcode, presentation: presentation)
+            }
+        }.sorted { $0.presentation.restorationOrder < $1.presentation.restorationOrder } : []
         Task {
             do {
                 mainWindow?.stopInspectorReads()
@@ -652,9 +662,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 try await stopSimulatorPresentations()
                 try await stopRemoteScreens()
                 try await model.quitRenderer(keepingDevicesRunning: quitKeepingDevicesRunning)
+                if restartsAfterQuitting {
+                    let urls = restoring.map(\.url)
+                    let helper = rendererURL.appendingPathComponent("Contents/MacOS/NeoSimulatorRenderer")
+                    try await ManagerRelaunch(processIdentifier: ProcessInfo.processInfo.processIdentifier,
+                        applicationURL: Bundle.main.bundleURL, deviceURLs: urls).schedule(using: helper)
+                }
                 sender.reply(toApplicationShouldTerminate: true)
             } catch {
                 quitting = false
+                if restartsAfterQuitting { quitKeepingDevicesRunning = nil }
+                restartsAfterQuitting = false
+                model.resumeAfterCancelledQuit()
                 updateDevicePostureScreens()
                 mainWindow?.resumeInspectorAfterCancelledQuit()
                 startInventoryObservation()
@@ -674,6 +693,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
                 guard let identifier = query.first(where: { $0.name == "udid" })?.value else { continue }
                 model.openDevice(.simulator(udid: identifier, deviceSetPath: query.first(where: { $0.name == "deviceSetPath" })?.value))
+            case "restore-screen":
+                guard let restoration = SimulatorScreenRestoration(url: url) else { continue }
+                model.restoreScreen(restoration) { [weak self] in
+                    guard let self, let screen = self.screen(for: restoration.deviceID) else { return }
+                    try await self.transitionPresentation {
+                        switch restoration.presentation {
+                        case .main: break // Opening the screen already embeds it in the main window.
+                        case .compact:
+                            try await screen.showCompactWindow()
+                            self.mainWindow?.showDevicePreview(ifDisplaying: restoration.deviceID)
+                            self.mainWindow?.window?.orderOut(nil)
+                        case .hidden:
+                            try await screen.detach()
+                            self.mainWindow?.showDevicePreview(ifDisplaying: restoration.deviceID)
+                        }
+                    }
+                }
             case "quit":
                 if URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
                     .first(where: { $0.name == "ask" })?.value == "true" {
@@ -765,7 +801,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func showSettings(_ sender: Any?) {
-        if settingsWindow == nil { settingsWindow = SettingsWindowController(model: model) }
+        if settingsWindow == nil {
+            settingsWindow = SettingsWindowController(model: model, restart: { [weak self] in self?.restartForFrameworkChange() })
+        }
+        model.frameworks.reload()
         settingsWindow?.showWindow(nil)
         settingsWindow?.window?.makeKeyAndOrderFront(nil)
         NSApp.activate()
@@ -800,6 +839,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 NSApp.activate()
             } catch { self.present(error) }
         }
+    }
+
+    private func restartForFrameworkChange() {
+        guard !model.isBusy, !quitting, model.frameworks.needsRestart else { return }
+        restartsAfterQuitting = true
+        quitKeepingDevicesRunning = true
+        NSApp.terminate(nil)
     }
 
     @objc private func quitAsking(_ sender: Any?) {
@@ -950,8 +996,7 @@ enum NeoSimulatorApplication {
         let app = NSApplication.shared
         app.setActivationPolicy(.regular)
         do {
-            let options = try ManagerLaunchOptions(arguments: Array(CommandLine.arguments.dropFirst()))
-            try CoreDeviceRuntime.configureUIFrameworks(xcodeURL: options.xcodeURL)
+            try CoreDeviceRuntime.configureUIFrameworks(xcodeURL: UIFrameworkSettings.selection(in: .standard))
         } catch {
             NSAlert(error: error).runModal()
             return
@@ -2561,14 +2606,19 @@ final class SettingsWindowController: NSWindowController {
     private let model: SimulatorManagerModel
     private let preferences = UserDefaults(suiteName: "dev.lynnswap.NeoSimulator.Renderer")
     private let hostPopup = NSPopUpButton()
+    private let frameworkPopup = NSPopUpButton()
+    private let frameworkMessage = NSTextField(wrappingLabelWithString: "")
+    private let restartButton = NSButton(title: "Restart to Apply", target: nil, action: nil)
+    private let restart: () -> Void
     private let restore = NSButton(title: "Restore Original Settings…", target: nil, action: nil)
     private let gifSize = NSPopUpButton()
     private let gifRate = NSPopUpButton()
     private var toggles: [String: NSButton] = [:]
 
-    init(model: SimulatorManagerModel) {
+    init(model: SimulatorManagerModel, restart: @escaping () -> Void) {
         self.model = model
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 620, height: 380),
+        self.restart = restart
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 620, height: 480),
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = "NeoSimulator Settings"
         window.isReleasedWhenClosed = false
@@ -2618,6 +2668,7 @@ final class SettingsWindowController: NSWindowController {
     }
 
     func update() {
+        updateFrameworkSelection()
         hostPopup.selectItem(at: model.status?.host == .deviceHub ? 1 : 0)
         hostPopup.isEnabled = !model.isBusy && model.status != nil
         restore.isEnabled = !model.isBusy && model.status?.restorationAvailable == true
@@ -2640,6 +2691,18 @@ final class SettingsWindowController: NSWindowController {
         hostPopup.setAccessibilityLabel("Display Host")
         let stack = formStack()
         stack.addArrangedSubview(popupRow("Display Host:", popup: hostPopup))
+        frameworkPopup.target = self
+        frameworkPopup.action = #selector(selectFramework(_:))
+        frameworkPopup.setAccessibilityLabel("UI Frameworks")
+        stack.addArrangedSubview(popupRow("UI Frameworks:", popup: frameworkPopup))
+        frameworkMessage.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        frameworkMessage.textColor = .secondaryLabelColor
+        frameworkMessage.widthAnchor.constraint(equalToConstant: 500).isActive = true
+        stack.addArrangedSubview(frameworkMessage)
+        restartButton.bezelStyle = .rounded
+        restartButton.target = self
+        restartButton.action = #selector(restartApplication(_:))
+        stack.addArrangedSubview(restartButton)
         stack.addArrangedSubview(separator())
         addToggle("Start the last used simulator on launch", key: "StartLastDeviceOnLaunch", to: stack)
         addToggle("Keep simulators running when closing a window", key: "DetachOnWindowClose", to: stack)
@@ -2649,6 +2712,39 @@ final class SettingsWindowController: NSWindowController {
         addToggle("Show pinch gestures", key: "ShowPinches", to: stack)
         return pane(containing: stack)
     }
+
+    private func updateFrameworkSelection() {
+        let frameworks = model.frameworks
+        frameworkPopup.removeAllItems()
+        frameworkPopup.addItem(withTitle: "Default (xcode-select)")
+        for xcode in frameworks.installations {
+            frameworkPopup.addItem(withTitle: "\(xcode.name) (\(xcode.version))")
+            frameworkPopup.lastItem?.representedObject = xcode.url
+            frameworkPopup.lastItem?.toolTip = xcode.url.path
+        }
+        if let selected = frameworks.selectedXcodeURL {
+            if let item = frameworkPopup.itemArray.first(where: { ($0.representedObject as? URL) == selected }) {
+                frameworkPopup.select(item)
+            } else {
+                frameworkPopup.addItem(withTitle: selected.deletingPathExtension().lastPathComponent)
+                frameworkPopup.lastItem?.representedObject = selected
+                frameworkPopup.lastItem?.toolTip = selected.path
+                frameworkPopup.selectItem(at: frameworkPopup.numberOfItems - 1)
+            }
+        } else { frameworkPopup.selectItem(at: 0) }
+        frameworkPopup.isEnabled = !frameworks.isLoading && !model.isBusy
+        frameworkMessage.stringValue = frameworks.issue ?? (frameworks.needsRestart
+            ? "Restart NeoSimulator to apply this change. Simulators will keep running."
+            : "Uses the selected Xcode's display frameworks. Simulator runtimes are selected independently.")
+        restartButton.isHidden = !frameworks.needsRestart
+        restartButton.isEnabled = !model.isBusy
+    }
+
+    @objc private func selectFramework(_ sender: NSPopUpButton) {
+        model.frameworks.select(sender.selectedItem?.representedObject as? URL)
+    }
+
+    @objc private func restartApplication(_ sender: Any?) { restart() }
 
     private func capturePane() -> NSView {
         let stack = formStack()
