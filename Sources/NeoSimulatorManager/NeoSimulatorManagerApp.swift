@@ -985,6 +985,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     private let profileScreenActions = NSGlassEffectView()
     private var screenActionButtons: [String: NSButton] = [:]
     private var postureButtons: [DevicePosture: NSButton] = [:]
+    private var postureArtworkXcodeURL: URL?
+    private var postureArtworkTask: Task<Void, Never>?
     private let deviceFooter = NSStackView()
     private let activityStack = NSStackView()
     private var canvasBottomToPane: NSLayoutConstraint?
@@ -1465,9 +1467,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             if glass === profileScreenActions {
                 for posture in DevicePosture.allCases {
                     let button = NSButton(title: posture.title, target: self, action: #selector(performScreenAction(_:)))
-                    let symbol = switch posture { case .closed: "iphone"; case .partiallyOpen: "book"; case .open: "ipad.landscape" }
-                    button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: posture.title)
-                    button.imagePosition = .imageOnly
+                    button.imagePosition = .noImage
                     button.identifier = NSUserInterfaceItemIdentifier("posture." + posture.rawValue)
                     button.setButtonType(.pushOnPushOff)
                     button.bezelStyle = .accessoryBarAction
@@ -1477,7 +1477,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
                     button.setAccessibilityLabel(posture.title)
                     button.translatesAutoresizingMaskIntoConstraints = false
                     NSLayoutConstraint.activate([
-                        button.widthAnchor.constraint(equalToConstant: 32),
+                        button.widthAnchor.constraint(greaterThanOrEqualToConstant: 32),
                         button.heightAnchor.constraint(equalToConstant: 32),
                     ])
                     controls.addArrangedSubview(button)
@@ -1783,6 +1783,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         let available = liveDeviceIdentifier.flatMap { id in self.model.inventory.first { $0.id == id } }
             .map { DevicePostureModel.canInspect(capabilities: $0.capabilities) } ?? false
         let visible = liveDeviceIdentifier != nil && model?.isSupported == true
+        if visible { loadPostureArtworkIfNeeded() }
         for (posture, button) in postureButtons {
             button.isHidden = !visible
             button.isEnabled = isEnabled && available && model?.canSelect == true
@@ -1808,6 +1809,36 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     @objc private func performCanvasZoom(_ sender: NSToolbarItemGroup) {
         guard CanvasZoom.Action.allCases.indices.contains(sender.selectedIndex) else { return }
         onScreenAction?(CanvasZoom.Action.allCases[sender.selectedIndex].rawValue)
+    }
+
+    private func loadPostureArtworkIfNeeded() {
+        guard let xcodeURL = preferredArtworkXcodeURL(), xcodeURL != postureArtworkXcodeURL else { return }
+        postureArtworkXcodeURL = xcodeURL
+        postureArtworkTask?.cancel()
+        for button in postureButtons.values {
+            button.image = nil
+            button.imagePosition = .noImage
+        }
+        let catalogURL = xcodeURL.appendingPathComponent(
+            "Contents/SharedFrameworks/DeviceKit.framework/Versions/A/PlugIns/CoreDevicePopDeviceKitExtension.devicekitplugin/Contents/Resources/Assets.car")
+        postureArtworkTask = Task { [weak self] in
+            var images: [DevicePosture: NSImage] = [:]
+            for posture in DevicePosture.allCases {
+                let name = switch posture {
+                case .closed: "v68_Closed"
+                case .partiallyOpen: "v68_HalfOpen_Landscape"
+                case .open: "v68_Open"
+                }
+                let resource = try? await DeviceSymbolResource.load(named: name, from: catalogURL)
+                guard !Task.isCancelled else { return }
+                images[posture] = resource?.image
+            }
+            guard let self else { return }
+            for (posture, button) in self.postureButtons {
+                button.image = images[posture]
+                button.imagePosition = button.image == nil ? .noImage : .imageOnly
+            }
+        }
     }
 
     @objc private func performScreenAction(_ sender: NSButton) {
