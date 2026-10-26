@@ -627,6 +627,7 @@ final class DeviceSession {
             self.appDisplay = nil
             isResizingApp = false
             appResizeGeometry = nil
+            primaryDisplay.setRotation(degrees: displayAngle)
             onDisplayChange?()
             appDisplay.disconnect()
         }

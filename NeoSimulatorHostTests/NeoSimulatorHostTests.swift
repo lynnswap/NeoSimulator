@@ -50,6 +50,76 @@ struct InputFocusTests {
         #expect(window.frame.size == compactSize)
     }
 
+    @Test func stoppingAppResizeKeepsAnOversizedPointAccuratePrimaryWindow() async throws {
+        _ = NSApplication.shared
+        let visible = try #require(NSScreen.main?.visibleFrame)
+        let primary = TestDisplay(), app = TestDisplay()
+        primary.naturalSize = NSSize(width: visible.width + 100, height: 300)
+        primary.bezel = NSSize(width: 20, height: 20)
+        primary.bezelPadding = NSSize(width: 10, height: 10)
+        primary.appDisplay = app
+        let transport = TestAppResizeTransport()
+        let controller = try makeController(primary, appResizeTransport: { transport })
+        defer { controller.invalidate() }
+        let window = try #require(controller.window)
+        try #require(DeviceCommand.command(.pointAccurate).isEnabled(controller))
+        controller.perform(.pointAccurate)
+        let size = window.frame.size
+        try #require(primary.renderScale == 1 && size.width > visible.width)
+        try await wait { controller.session.canResizeApp }
+        controller.toggleAppResize()
+        try await wait { controller.session.isResizingApp }
+        controller.session.stopAppResize()
+        #expect(primary.renderScale == 1)
+        #expect(window.frame.size == size)
+    }
+
+    @Test func stoppingAppResizeAppliesManualRotationToThePrimaryBeforeLayingItOut() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let state = directory.appendingPathComponent("orientation")
+        try "portrait".write(to: state, atomically: true, encoding: .utf8)
+        let devicectl = directory.appendingPathComponent("devicectl")
+        try """
+            #!/bin/sh
+            case "$3" in
+            rotate) printf landscapeRight > "\(state.path)" ;;
+            get) o=$(cat "\(state.path)")
+                 printf '{"result":{"deviceOrientation":"%s","deviceOrientationNonFlat":"%s"}}' "$o" "$o" ;;
+            esac
+            """.write(to: devicectl, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: devicectl.path)
+        let key = HostPreferences.rotateWindowWhenSignaledByGuest
+        let saved = UserDefaults.standard.object(forKey: key)
+        defer { UserDefaults.standard.set(saved, forKey: key) }
+        UserDefaults.standard.set(false, forKey: key)
+        let primary = TestDisplay(), app = TestDisplay()
+        let portrait = NSSize(width: 400, height: 600), landscape = NSSize(width: 600, height: 400)
+        primary.naturalSize = portrait
+        primary.onRotation = { [weak primary] angle in
+            primary?.takeScreenSize(abs(angle.truncatingRemainder(dividingBy: 180)) == 90 ? landscape : portrait)
+        }
+        primary.appDisplay = app
+        let transport = TestAppResizeTransport()
+        let controller = try makeController(primary, devicectl: devicectl, appResizeTransport: { transport })
+        defer { controller.invalidate() }
+        let window = try #require(controller.window)
+        let scale = primary.renderScale
+        try await wait { controller.session.canResizeApp }
+        controller.toggleAppResize()
+        try await wait { controller.session.isResizingApp }
+        try #require(DeviceCommand.command(.rotateRight).isEnabled(controller))
+        controller.perform(.rotateRight)
+        try await wait { !controller.session.isBusy }
+        try #require(controller.session.displayAngle == -90 && app.rotations.last == -90)
+        controller.session.stopAppResize()
+        primary.onPropertiesChange?()
+        #expect(primary.rotations.last == -90)
+        #expect(primary.view.intrinsicContentSize == NSSize(width: landscape.width * scale, height: landscape.height * scale))
+        #expect(window.frame.width == (landscape.width * scale).rounded(.up))
+    }
+
     @Test func resizingAnAppKeepsPointScaleAcrossCompactMovesAndPreservesPrimaryGeometry() async throws {
         _ = NSApplication.shared
         let primary = TestDisplay(), app = TestDisplay()
