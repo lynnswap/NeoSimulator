@@ -122,6 +122,12 @@ final class SimulatorManagerModel {
         reconcileDevicePostures()
     }
 
+    func deviceScreenDidReconnect(_ identifier: DeviceInventoryID) async {
+        guard openDeviceScreens.contains(identifier), devicePostures[identifier]?.state == .failed else { return }
+        await stopDevicePosture(for: identifier)
+        reconcileDevicePostures()
+    }
+
     private func reconcileDevicePostures() {
         for identifier in Array(devicePostures.keys) where !openDeviceScreens.contains(identifier) {
             beginStoppingDevicePosture(for: identifier)

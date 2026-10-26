@@ -517,8 +517,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         observeRemoteDevices()
         model.onOpenRemoteDevice = { [weak self] device in self?.openRemoteScreen(device) }
         model.beforeStoppingScreens = { [weak self] in
-            try await self?.stopSimulatorPresentations()
-            try await self?.stopRemoteScreens()
+            do {
+                try await self?.stopSimulatorPresentations()
+                try await self?.stopRemoteScreens()
+            } catch {
+                self?.updateDevicePostureScreens()
+                throw error
+            }
         }
         model.beforeManagingRemoteDevices = { [weak self] identifiers in
             try await self?.stopRemoteScreens(for: identifiers)
@@ -617,6 +622,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 sender.reply(toApplicationShouldTerminate: true)
             } catch {
                 quitting = false
+                updateDevicePostureScreens()
                 mainWindow?.resumeInspectorAfterCancelledQuit()
                 startInventoryObservation()
                 if !(error is CancellationError) { present(error) }
@@ -672,6 +678,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.mainWindow?.showDevicePreview(ifDisplaying: id)
             }
             controller.onShowInMainWindow = { [weak self] in self?.showScreenInMainWindow(id) }
+            controller.onReconnect = { [weak self, weak controller] in
+                guard let self, self.remoteWindows[id] === controller else { return }
+                await self.model.deviceScreenDidReconnect(id)
+            }
             controller.onChange = { [weak self] in self?.updateScreenToolbar() }
             remoteWindows[id] = controller
         }
@@ -3799,6 +3809,7 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
     let session: RemoteDeviceScreenSession
     var onClose: (() -> Void)?
     var onChange: (() -> Void)?
+    var onReconnect: (() async -> Void)?
     var onShowInMainWindow: (() -> Void)? { didSet { update() } }
     let presentationViewController = RemoteDevicePresentationViewController()
     var isEmbedded: Bool { presentationViewController.parent != nil }
@@ -4045,13 +4056,16 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
         return window
     }
 
-    func connectIfNeeded() {
+    func connectIfNeeded(reconnecting: Bool = false) {
         guard !closing, !mayClose, connectionTask == nil, session.state != .connected else { return }
         issue = nil
         connectionTask = Task { [weak self] in
             guard let self else { return }
             defer { self.connectionTask = nil; self.update() }
-            do { try await self.session.start() }
+            do {
+                try await self.session.start()
+                if reconnecting { await self.onReconnect?() }
+            }
             catch is CancellationError {}
             catch { if !self.closing { self.showIssue(error) } }
         }
@@ -4212,7 +4226,7 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
         guard !closing, stoppingTask == nil else { return }
         Task { [weak self] in
             guard let self else { return }
-            do { try await self.stop(); self.connectIfNeeded() }
+            do { try await self.stop(); self.connectIfNeeded(reconnecting: true) }
             catch is CancellationError {}
             catch { self.showIssue(error) }
         }

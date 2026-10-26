@@ -381,9 +381,9 @@ enum DevicePosturePayload {
 @MainActor
 private final class NativeDevicePostureTransport: DevicePostureTransport {
     private let remote: CoreDeviceRemoteScreenDevice
-    private let motion: NativeSwiftValue
     private let config: NativeSwiftValue
-    private let monitor: NativeSwiftMethod<(NativeSwiftValue) async throws -> NativeSwiftValue>
+    private let monitor: @MainActor (NativeSwiftValue) async throws -> NativeSwiftValue
+    private let prepareVendorSend: @MainActor (NativeSwiftValue) async throws -> (@MainActor (Data) throws -> Void)
     private let makeIterator: NativeSwiftMethod<() -> NativeSwiftValue>
     private let next: NativeSwiftMethod<() async throws -> [NativeSwiftValue]?>
     private let isValid: NativeSwiftMethod<() -> Bool>
@@ -408,17 +408,29 @@ private final class NativeDevicePostureTransport: DevicePostureTransport {
         let features = try Set(DevicePosturePayload.features.filter { try remote.supports($0) })
         guard DevicePosturePayload.supports(hardwareModel: model, features: features) else { return nil }
         let implementation = try await remote.implementation(capability: "MonitorMotionCapability", feature: "com.apple.coredevice.feature.monitormotion")
+        let errorType = try await remote.runtime.resolve(.swift(.type("CoreDevice.CoreDeviceError")))
+        let sampleError = try await errorType.resolve(.swift(.staticGetter("ioError", as: (() -> NativeSwiftValue).self,
+            valueABIs: [errorType: try .opaque(named: errorType.name)])))
+        let owner = try unsafe sampleError.unsafeInvoke()
+        // Open the framework's actual Error representation instead of mirroring its resilient layout.
+        guard let failure = try owner.withCopy({ $0 as? any Error }) else {
+            throw CLIError.unavailable("device-posture-error-type", "The native posture error type could not be resolved.")
+        }
+        return try await make(remote: remote, implementation: implementation, failure: failure)
+    }
+
+    private static func make<Failure: Error>(remote: CoreDeviceRemoteScreenDevice, implementation: NativeSwiftValue,
+                                            failure: Failure) async throws -> (any DevicePostureTransport)? {
         let getMotion = try await implementation.type.resolve(.swift(.method("CoreDevice.MonitorMotionProtocol.motionManager()",
-            as: (() async throws -> NativeSwiftValue).self)))
+            as: (() async throws(Failure) -> NativeSwiftValue).self)))
         let motion = try await unsafe getMotion.unsafeInvoke(on: implementation).copyUnderlyingValue()
         let supportsHinge = try await motion.type.resolve(.swift(.getter("supportsHingeAngle", as: (() -> Bool).self)))
         guard try unsafe supportsHinge.unsafeInvoke(on: motion) else { return nil }
-        return try await NativeDevicePostureTransport(remote: remote, motion: motion)
+        return try await NativeDevicePostureTransport(remote: remote, motion: motion, failure: failure)
     }
 
-    private init(remote: CoreDeviceRemoteScreenDevice, motion: NativeSwiftValue) async throws {
+    private init<Failure: Error>(remote: CoreDeviceRemoteScreenDevice, motion: NativeSwiftValue, failure: Failure) async throws {
         self.remote = remote
-        self.motion = motion
         let runtime = remote.runtime
         let snapshot = try await runtime.resolve(.swift(.type("CoreDeviceUtilities.DeviceHingeAngleSnapshot")))
         let configuration = try await runtime.resolve(.swift(.type("CoreDeviceUtilities.HingeAngleStreamConfig")))
@@ -426,12 +438,20 @@ private final class NativeDevicePostureTransport: DevicePostureTransport {
         let arguments: [NativeSwiftGenericArgument] = [.type(array), .type((any Error).self)]
         let sequence = try await runtime.resolve(.swift(.type("Swift.AsyncThrowingStream", genericArguments: arguments)))
         let iterator = try await runtime.resolve(.swift(.type("Swift.AsyncThrowingStream.Iterator", genericArguments: arguments)))
-        let abis = try Dictionary(uniqueKeysWithValues: [snapshot, configuration, sequence, iterator].map { ($0, try NativeType.opaque(named: $0.name)) })
+        let measurement = try await runtime.resolve(.swift(.type("Foundation.Measurement", genericArguments: [.type(UnitAngle.self)])))
+        let abis = try Dictionary(uniqueKeysWithValues: [snapshot, configuration, sequence, iterator, measurement]
+            .map { ($0, try NativeType.opaque(named: $0.name)) })
         let makeConfig = try await configuration.resolve(.swift(.initializer("init(changeThreshold:updateInterval:)",
             as: ((Measurement<UnitAngle>, Duration) -> NativeSwiftValue).self, valueABIs: abis)))
         config = try unsafe makeConfig.unsafeInvoke(Measurement(value: 0.01, unit: .degrees), .milliseconds(50))
-        monitor = try await motion.type.resolve(.swift(.method("monitorHingeAngle(config:)",
-            as: ((NativeSwiftValue) async throws -> NativeSwiftValue).self, valueABIs: abis)))
+        let monitor = try await motion.type.resolve(.swift(.method("monitorHingeAngle(config:)",
+            as: ((NativeSwiftValue) async throws(Failure) -> NativeSwiftValue).self, valueABIs: abis)))
+        self.monitor = { config in try await unsafe monitor.unsafeInvoke(on: motion, config) }
+        prepareVendorSend = { implementation in
+            let send = try await implementation.type.resolve(.swift(.method("CoreDevice.HIDVendorDefined.send(usagePage:usage:version:data:)",
+                as: ((UInt16, UInt16, UInt32, Data) throws(Failure) -> Void).self)))
+            return { data in try unsafe send.unsafeInvoke(on: implementation, 0xFF61, 0x5B, 0, data) }
+        }
         isValid = try await snapshot.resolve(.swift(.getter("isAngleValid", as: (() -> Bool).self, valueABIs: abis)))
         readAngle = try await snapshot.resolve(.swift(.getter("angle", as: (() -> Measurement<UnitAngle>).self, valueABIs: abis)))
         makeIterator = try await sequence.resolve(.swift(.method("makeAsyncIterator()", as: (() -> NativeSwiftValue).self,
@@ -441,7 +461,7 @@ private final class NativeDevicePostureTransport: DevicePostureTransport {
     }
 
     func observe(_ update: @escaping @MainActor (Double?) -> Void) async throws {
-        let sequence = try await unsafe monitor.unsafeInvoke(on: motion, config)
+        let sequence = try await monitor(config)
         let iterator = try unsafe makeIterator.unsafeInvoke(on: sequence)
         while let snapshots = try await unsafe next.unsafeInvoke(on: iterator) {
             try Task.checkCancellation()
@@ -455,11 +475,10 @@ private final class NativeDevicePostureTransport: DevicePostureTransport {
         try validateCapabilities()
         let implementation = try await remote.implementation(capability: "VendorDefinedHIDCapability",
             feature: "com.apple.coredevice.feature.remote.hid.vendordefined")
-        let send = try await implementation.type.resolve(.swift(.method("CoreDevice.HIDVendorDefined.send(usagePage:usage:version:data:)",
-            as: ((UInt16, UInt16, UInt32, Data) throws -> Void).self)))
+        let send = try await prepareVendorSend(implementation)
         try Task.checkCancellation()
         try validateCapabilities()
-        try unsafe send.unsafeInvoke(on: implementation, 0xFF61, 0x5B, 0, DevicePosturePayload.serialize(posture))
+        try send(DevicePosturePayload.serialize(posture))
     }
 
     private func validateCapabilities() throws {

@@ -4,6 +4,34 @@ import Testing
 
 @Suite(.serialized, .timeLimit(.minutes(1))) @MainActor
 struct ManagerModelTests {
+    @Test func reconnectingAScreenReplacesItsFailedPostureOwnerAfterDrainingIt() async throws {
+        let features = DevicePosturePayload.features
+        let data = try JSONSerialization.data(withJSONObject: ["result": ["devices": [[
+            "identifier": "remote-command", "properties": ["hardware": ["reality": "physical", "hardwareModel": "V68AP"],
+                "state": ["name": "Duo"], "connection": ["state": "connected"]],
+            "capabilities": features.sorted().map { ["featureIdentifier": $0] }]]]])
+        let device = InventoryDevice.remote(try #require(CoreDeviceInventoryDecoder.decode(data).first))
+        let postures = ManagerPostureConnections()
+        var events = postures.events.stream.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: ManagerModelSource(devices: [device]), makeDevicePosture: postures.model)
+        await manager.refresh()
+        manager.setOpenDeviceScreens([device.id])
+        #expect(await events.next() == .observing(device.id))
+        let failed = try #require(manager.devicePostures[device.id])
+        await manager.deviceScreenDidReconnect(device.id)
+        #expect(manager.devicePostures[device.id] === failed)
+        postures.failCurrentObservation()
+        #expect(await events.next() == .stopped(device.id))
+        #expect(failed.state == .failed && !failed.canSelect)
+        await manager.deviceScreenDidReconnect(device.id)
+        #expect(await events.next() == .observing(device.id))
+        #expect(failed.state == .stopped)
+        #expect(manager.devicePostures[device.id] !== failed && manager.devicePostures[device.id]?.canSelect == true)
+        #expect(postures.identifiers == [device.id, device.id])
+        await manager.stopDevicePostures()
+        #expect(await events.next() == .stopped(device.id))
+    }
+
     @Test func restartingAnOpenSimulatorReplacesPostureObservationAfterManagementFinishes() async throws {
         guard case .simulator(let simulator) = simulator(deviceSet: "/custom-device-set") else { return }
         let device = InventoryDevice.simulator(simulator.inventoryCopy(ownerXcodeURL: nil, capabilities: DevicePosturePayload.features))
@@ -327,10 +355,14 @@ private final class ManagerPostureConnections {
     enum Event: Equatable { case observing(DeviceInventoryID), stopped(DeviceInventoryID) }
     let events = AsyncStream<Event>.makeStream()
     private(set) var identifiers: [DeviceInventoryID] = []
+    private var current: ManagerPostureTransport?
+    func failCurrentObservation() { current?.fail() }
     func model(_ identifier: DeviceInventoryID) -> DevicePostureModel {
         DevicePostureModel(deviceID: identifier) { [self] id in
             identifiers.append(id)
-            return ManagerPostureTransport(identifier: id, events: events.continuation)
+            let transport = ManagerPostureTransport(identifier: id, events: events.continuation)
+            current = transport
+            return transport
         }
     }
 }
@@ -339,7 +371,7 @@ private final class ManagerPostureConnections {
 private final class ManagerPostureTransport: DevicePostureTransport {
     let identifier: DeviceInventoryID
     let events: AsyncStream<ManagerPostureConnections.Event>.Continuation
-    private let lifetime = AsyncStream<Void>.makeStream()
+    private let lifetime = AsyncThrowingStream<Void, any Error>.makeStream()
     init(identifier: DeviceInventoryID, events: AsyncStream<ManagerPostureConnections.Event>.Continuation) {
         self.identifier = identifier
         self.events = events
@@ -348,7 +380,8 @@ private final class ManagerPostureTransport: DevicePostureTransport {
         update(0)
         events.yield(.observing(identifier))
         defer { events.yield(.stopped(identifier)) }
-        for await _ in lifetime.stream { }
+        for try await _ in lifetime.stream { }
     }
+    func fail() { lifetime.continuation.finish(throwing: ManagerModelSource.Failure.unavailable) }
     func send(_ posture: DevicePosture) async throws { }
 }
