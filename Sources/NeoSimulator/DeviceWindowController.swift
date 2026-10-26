@@ -442,7 +442,10 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         updateContentMinimumSize()
         if isEmbedded { updateEmbeddedScale() }
         else if session.isResizingApp { resizeDisplay() }
-        else { showDisplay(fitting: { self.initialScale }) }
+        else {
+            let scale = session.display.renderScale
+            showDisplay(fitting: { min(self.scale(for: .fitScreen) ?? .infinity, scale) })
+        }
         if presentationWindow?.isKeyWindow == true { activateDisplay() }
     }
 

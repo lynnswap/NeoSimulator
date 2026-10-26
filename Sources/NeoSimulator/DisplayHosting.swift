@@ -138,6 +138,10 @@ final class DisplayFitting {
         self.display = display
         self.content = content
         size = display.size(for: 1)
+        if scalesDisplay, let geometry = geometryBeforeFullScreen, geometry.scale == nil {
+            // Keep the returning primary's scale before full-screen fitting overwrites it.
+            geometryBeforeFullScreen = (display.renderScale, geometry.origin)
+        }
         observe()
     }
 

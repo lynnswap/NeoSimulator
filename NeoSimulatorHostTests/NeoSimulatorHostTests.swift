@@ -7,6 +7,49 @@ import Synchronization
 
 @Suite(.serialized) @MainActor
 struct InputFocusTests {
+    @Test(arguments: ["compact", "embedded", "fullscreen"])
+    func stoppingAppResizeRestoresTheManualPrimaryScale(presentation: String) async throws {
+        _ = NSApplication.shared
+        let primary = TestDisplay(), app = TestDisplay()
+        app.naturalSize = NSSize(width: 500, height: 600)
+        primary.appDisplay = app
+        let transport = TestAppResizeTransport()
+        let controller = try makeController(primary, appResizeTransport: { transport }, presentCompactWindow: { _ in })
+        defer { controller.invalidate() }
+        controller.showCompactWindow()
+        let window = try #require(controller.window)
+        primary.screenScale = window.backingScaleFactor / 2
+        controller.setScale(.pixelAccurate)
+        try #require(primary.renderScale == 0.5)
+        let compactSize = window.frame.size
+        let parent = NSViewController()
+        var main: KeyPresentationWindow?
+        defer { main?.close() }
+        if presentation == "embedded" {
+            parent.view = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 600))
+            main = KeyPresentationWindow(contentRect: parent.view.frame, styleMask: [.titled], backing: .buffered, defer: false)
+            main?.isReleasedWhenClosed = false
+            main?.contentViewController = parent
+            controller.embed(in: parent)
+            controller.setScale(.pixelAccurate)
+            try #require(primary.renderScale == 0.5)
+        }
+        try await wait { controller.session.canResizeApp }
+        controller.toggleAppResize()
+        try await wait { controller.session.isResizingApp }
+        try #require(app.renderScale == 1)
+        if presentation == "fullscreen" {
+            controller.windowWillEnterFullScreen(Notification(name: NSWindow.willEnterFullScreenNotification, object: window))
+        }
+        controller.session.stopAppResize()
+        if presentation == "fullscreen" {
+            controller.windowDidExitFullScreen(Notification(name: NSWindow.didExitFullScreenNotification, object: window))
+        }
+        #expect(primary.renderScale == 0.5)
+        #expect(primary.view.frame.size == primary.size(for: 0.5))
+        #expect(window.frame.size == compactSize)
+    }
+
     @Test func resizingAnAppKeepsPointScaleAcrossCompactMovesAndPreservesPrimaryGeometry() async throws {
         _ = NSApplication.shared
         let primary = TestDisplay(), app = TestDisplay()
