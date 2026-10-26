@@ -12,7 +12,7 @@ protocol SimulatorManagerSource: DeviceSettingsSource {
     func createSimulator(named name: String, deviceType: String, runtime: String, context: SimulatorCreationContext) async throws -> String
     func pairSimulators(watch: String, phone: String, context: SimulatorCreationContext) async throws
     func manage(_ action: DeviceManagementAction, devices: [InventoryDevice],
-                preparing: (@isolated(any) @Sendable () async throws -> Void)?) async -> DeviceManagementReport
+                preparingDisplay: (@isolated(any) @Sendable (InventoryDevice) async throws -> Void)?) async -> DeviceManagementReport
     func inspector(for device: InventoryDevice) async throws -> DeviceInspector
     func restore(force: Bool) async throws
     func synchronizeXcodeConnections() async throws -> Bool
@@ -138,7 +138,7 @@ final class SimulatorManagerModel {
     func canManage(_ action: DeviceManagementAction, deviceIDs: Set<DeviceInventoryID>) -> Bool {
         guard !stopping, !deviceIDs.isEmpty else { return false }
         let overlapping = managementRequests.values.filter { !$0.identifiers.isDisjoint(with: deviceIDs) }
-        if overlapping.isEmpty { return true }
+        if overlapping.isEmpty { return !isBusy }
         guard action == .forceShutdown, overlapping.count == 1, let shutdown = overlapping.first,
               shutdown.action == DeviceManagementAction.shutdown, deviceIDs.isSubset(of: shutdown.identifiers) else { return false }
         return shutdown.identifiers.allSatisfy { if case .simulator = $0 { true } else { false } }
@@ -163,34 +163,16 @@ final class SimulatorManagerModel {
                     if !remoteIDs.isEmpty { try await self.beforeManagingRemoteDevices?(remoteIDs) }
                     try await self.beforeManagingSimulators?(action, targets)
                 }
-                let preparation: (@isolated(any) @Sendable () async throws -> Void)?
-                if preparesOwnedShutdown {
-                    preparation = { @MainActor in
-                        try await self.beforeManagingSimulators?(action, targets)
+                let preparation: (@isolated(any) @Sendable (InventoryDevice) async throws -> Void)?
+                if preparesOwnedShutdown || action == .forceShutdown {
+                    preparation = { @MainActor target in
+                        switch target {
+                        case .simulator: try await self.beforeManagingSimulators?(action, [target])
+                        case .remote: try await self.beforeManagingRemoteDevices?([target.id])
+                        }
                     }
                 } else { preparation = nil }
-                var report = await self.controller.manage(action, devices: targets, preparing: preparation)
-                if action == .forceShutdown {
-                    var results: [DeviceManagementResult] = []
-                    for result in report.results {
-                        guard let target = targets.first(where: { $0.id == result.deviceID }), target.supports(action) else {
-                            results.append(result)
-                            continue
-                        }
-                        do {
-                            switch target {
-                            case .simulator:
-                                guard let cleanup = self.beforeManagingSimulators else { results.append(result); continue }
-                                try await cleanup(action, [target])
-                            case .remote:
-                                guard let cleanup = self.beforeManagingRemoteDevices else { results.append(result); continue }
-                                try await cleanup([target.id])
-                            }
-                            results.append(result.recordingDisplayCleanup(.success(()), completedStep: "Display cleanup completed"))
-                        } catch { results.append(result.recordingDisplayCleanup(.failure(error))) }
-                    }
-                    report = DeviceManagementReport(results: results)
-                }
+                let report = await self.controller.manage(action, devices: targets, preparingDisplay: preparation)
                 var presentationError: (any Error)?
                 do { try await self.afterManagingSimulators?(action, targets) }
                 catch { presentationError = error }

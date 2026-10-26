@@ -7,11 +7,17 @@ import Testing
 struct ManagerModelTests {
     @Test func forceCanJoinNormalShutdownWithoutTheOriginalRequestUnlockingIt() async throws {
         let device = simulator()
-        let source = ManagerModelSource(devices: [device], holdsManagement: true)
+        let other = InventoryDevice.simulator(SimulatorHostDevice(identifier: "other", name: "Other Phone", descriptiveName: "Other Phone",
+            runtimeIdentifier: "test-runtime", runtimeName: "iOS", productFamily: "iPhone", state: "Booted"))
+        let source = ManagerModelSource(devices: [device, other], holdsManagement: true)
         var events = source.events.makeAsyncIterator()
         let manager = SimulatorManagerModel(source: source)
         manager.manage(.shutdown, devices: [device])
         #expect(await events.next() == .manage(.shutdown, [device.id]))
+        manager.openScreen(for: other)
+        #expect(await events.next() == .open(other.id))
+        #expect(manager.isBusy)
+        #expect(!manager.canManage(.erase, deviceIDs: [other.id]))
         #expect(manager.canManage(.forceShutdown, deviceIDs: [device.id]))
         manager.manage(.forceShutdown, devices: [device])
         #expect(await events.next() == .manage(.forceShutdown, [device.id]))
@@ -27,6 +33,7 @@ struct ManagerModelTests {
         #expect(await changed.next() == [device.id])
         #expect(!manager.canManage(.restart, deviceIDs: [device.id]))
         await source.completeManagement(.forceShutdown)
+        await source.completeOpen()
         try await manager.quitRenderer(keepingDevicesRunning: true)
         #expect(manager.managingDeviceIDs.isEmpty)
     }
@@ -239,7 +246,7 @@ struct ManagerModelTests {
     private func simulator(deviceSet: String? = nil) -> InventoryDevice {
         .simulator(SimulatorHostDevice(identifier: "same-udid", name: "Test Phone", descriptiveName: "Test Phone",
             runtimeIdentifier: "test-runtime", runtimeName: "iOS", productFamily: "iPhone", state: "Booted",
-            deviceSetPath: deviceSet))
+            deviceSetPath: deviceSet, capabilities: ["com.apple.dt.coredevice.device.shutdown"]))
     }
 
     private func settings(appearance: String, contentSize: String? = nil) -> SimulatorDeviceSettings {
@@ -248,7 +255,7 @@ struct ManagerModelTests {
 }
 
 private actor ManagerModelSource: SimulatorManagerSource {
-    enum Event: Equatable, Sendable { case read(DeviceInventoryID), write(DeviceInventoryID), quit, manage(DeviceManagementAction, [DeviceInventoryID]) }
+    enum Event: Equatable, Sendable { case read(DeviceInventoryID), write(DeviceInventoryID), open(DeviceInventoryID), quit, manage(DeviceManagementAction, [DeviceInventoryID]) }
     enum Failure: LocalizedError {
         case unavailable, native
         var errorDescription: String? { self == .native ? "Native shutdown failed" : "Unavailable" }
@@ -260,13 +267,15 @@ private actor ManagerModelSource: SimulatorManagerSource {
     private var readContinuation: CheckedContinuation<SimulatorDeviceSettings, any Error>?
     private var writeContinuation: CheckedContinuation<SimulatorDeviceSettings, any Error>?
     private var pendingWrite: SimulatorDeviceSettings?
+    private var openContinuation: CheckedContinuation<Void, Never>?
     private(set) var writeInputs: [SimulatorDeviceSettings?] = []
     private(set) var readCount = 0
     private(set) var managementRequests = 0
     private(set) var preparationRequests = 0
     private let managementFailureID: DeviceInventoryID?
     private let holdsManagement: Bool
-    private var managementWaiters: [(DeviceManagementAction, [InventoryDevice], CheckedContinuation<DeviceManagementReport, Never>)] = []
+    private var managementWaiters: [(DeviceManagementAction, CheckedContinuation<Void, Never>)] = []
+    private var admittedManagement: Set<UUID> = []
 
     init(devices: [InventoryDevice], managementFailureID: DeviceInventoryID? = nil, holdsManagement: Bool = false) {
         self.managementFailureID = managementFailureID
@@ -332,46 +341,57 @@ private actor ManagerModelSource: SimulatorManagerSource {
     }
     func quitRenderer(keepingDevicesRunning: Bool?) { continuation.yield(.quit) }
     func selectHost(_ host: SimulatorHost, xcodeURL: URL?) throws { throw Failure.unavailable }
-    func openDevice(_ deviceID: DeviceInventoryID, xcodeURL: URL?) throws { throw Failure.unavailable }
+    func openDevice(_ deviceID: DeviceInventoryID, xcodeURL: URL?) async {
+        await withCheckedContinuation { waiting in
+            openContinuation = waiting
+            continuation.yield(.open(deviceID))
+        }
+    }
+    func completeOpen() { openContinuation?.resume(); openContinuation = nil }
     func closeDevice(_ deviceID: DeviceInventoryID, keepingDeviceRunning: Bool) throws { throw Failure.unavailable }
     func creationCatalog() throws -> SimulatorCreationContext { throw Failure.unavailable }
     func createSimulator(named name: String, deviceType: String, runtime: String, context: SimulatorCreationContext) throws -> String { throw Failure.unavailable }
     func pairSimulators(watch: String, phone: String, context: SimulatorCreationContext) throws { throw Failure.unavailable }
     func manage(_ action: DeviceManagementAction, devices: [InventoryDevice],
-                preparing: (@isolated(any) @Sendable () async throws -> Void)?) async -> DeviceManagementReport {
-        do {
-            if let preparing {
-                preparationRequests += 1
-                try await preparing()
+                preparingDisplay: (@isolated(any) @Sendable (InventoryDevice) async throws -> Void)?) async -> DeviceManagementReport {
+        let request = UUID()
+        let preparation: (@isolated(any) @Sendable (InventoryDevice) async throws -> Void)?
+        if let preparingDisplay {
+            preparation = { target in
+                await self.recordPreparation()
+                try await preparingDisplay(target)
             }
-        }
-        catch {
-            return DeviceManagementReport(results: devices.map {
-                DeviceManagementResult(deviceID: $0.id, completedSteps: [], createdDeviceID: nil, error: error)
-            })
-        }
+        } else { preparation = nil }
+        let backend = DeviceManagementBackend(context: { device, _ in
+            DeviceManagementContext(device: device, xcodeURL: URL(fileURLWithPath: "/Fixture.app"), renderer: nil)
+        }, runSimctl: { _, _, _ in
+            await self.beginManagement(request, action: action, devices: devices)
+            return Data()
+        }, runDevicectl: { _ in
+            await self.beginManagement(request, action: action, devices: devices)
+            return Data()
+        }, shutdownSimulator: { _, _, _ in
+            await self.beginManagement(request, action: action, devices: devices)
+        }, manageCoreDevice: { _, identifier in
+            await self.beginManagement(request, action: action, devices: devices)
+            if self.managementFailureID == identifier { throw Failure.native }
+        }, release: { _, _ in }, restart: { _, _, _ in false }, attach: { _, _ in })
+        return await backend.manage(action, devices: devices, preparingDisplay: preparation)
+    }
+    private func recordPreparation() { preparationRequests += 1 }
+    private func beginManagement(_ request: UUID, action: DeviceManagementAction, devices: [InventoryDevice]) async {
+        guard admittedManagement.insert(request).inserted else { return }
         managementRequests += 1
         if holdsManagement {
-            return await withCheckedContinuation { waiting in
-                managementWaiters.append((action, devices, waiting))
+            await withCheckedContinuation { waiting in
+                managementWaiters.append((action, waiting))
                 continuation.yield(.manage(action, devices.map(\.id)))
             }
-        }
-        continuation.yield(.manage(action, devices.map(\.id)))
-        return managementReport(action, devices: devices)
+        } else { continuation.yield(.manage(action, devices.map(\.id))) }
     }
     func completeManagement(_ action: DeviceManagementAction) {
         guard let index = managementWaiters.firstIndex(where: { $0.0 == action }) else { return }
-        let (_, devices, waiting) = managementWaiters.remove(at: index)
-        waiting.resume(returning: managementReport(action, devices: devices))
-    }
-    private func managementReport(_ action: DeviceManagementAction, devices: [InventoryDevice]) -> DeviceManagementReport {
-        return DeviceManagementReport(results: devices.map {
-            let failure = $0.id == managementFailureID
-            return DeviceManagementResult(deviceID: $0.id,
-                completedSteps: failure ? [] : [action == .forceShutdown ? "Forcibly shut down" : "Shut down"],
-                createdDeviceID: nil, error: failure ? Failure.native : nil)
-        })
+        managementWaiters.remove(at: index).1.resume()
     }
     func inspector(for device: InventoryDevice) throws -> DeviceInspector { throw Failure.unavailable }
     func restore(force: Bool) throws { throw Failure.unavailable }

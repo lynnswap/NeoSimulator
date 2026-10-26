@@ -82,18 +82,24 @@ struct DeviceManagementContext: Sendable {
     let renderer: RendererRegistration?
 }
 
+struct SimulatorShutdownPreparation: Sendable {
+    let context: Result<DeviceManagementContext, any Error>
+    let completedSteps: [String]
+}
+
 extension SimulatorHostController {
     /// Runs each requested target once, preserving completed work and target-specific failures.
     /// Simulator mutations share the existing operation FIFO with opens and host changes.
-    /// Force shutdown may join a matching normal shutdown without giving up that FIFO ownership.
+    /// Force shutdown may join a matching all-simulator shutdown without giving up that FIFO ownership.
     public func manage(_ action: DeviceManagementAction, devices: [InventoryDevice]) async -> DeviceManagementReport {
-        await manage(action, devices: devices, preparing: nil)
+        await manage(action, devices: devices, preparingDisplay: nil)
     }
 
-    /// Includes caller-owned display preparation in the management operation's lifetime.
-    /// A normal simulator shutdown accepts escalation while its preparation is pending.
+    /// Prepares each target's display before its normal mutation, or after all native force requests.
+    /// Escalation shares the pending shutdown's preparation and result instead of invoking this callback again.
+    /// For simulator shutdown, accepted display preparation drains after caller cancellation; only its CLI is cancelled.
     public func manage(_ action: DeviceManagementAction, devices: [InventoryDevice],
-                       preparing: (@isolated(any) @Sendable () async throws -> Void)?) async -> DeviceManagementReport {
+                       preparingDisplay: (@isolated(any) @Sendable (InventoryDevice) async throws -> Void)?) async -> DeviceManagementReport {
         let backend = DeviceManagementBackend(
             context: { try await self.deviceManagementContext(for: $0, requiresRenderer: $1) },
             runSimctl: Self.runManagementSimctl, runDevicectl: Self.runManagementDevicectl,
@@ -105,19 +111,22 @@ extension SimulatorHostController {
             },
             attach: { renderer, identifier in try await RendererDeviceRequestWaiter().open(identifier, in: renderer) }
         )
-        return await manage(action, devices: devices, preparing: preparing, using: backend)
+        return await manage(action, devices: devices, preparingDisplay: preparingDisplay, using: backend)
     }
 
     func manage(_ action: DeviceManagementAction, devices: [InventoryDevice],
-                preparing: (@isolated(any) @Sendable () async throws -> Void)? = nil,
+                preparingDisplay: (@isolated(any) @Sendable (InventoryDevice) async throws -> Void)? = nil,
                 using backend: DeviceManagementBackend) async -> DeviceManagementReport {
+        var seen = Set<DeviceInventoryID>()
+        let devices = devices.filter { seen.insert($0.id).inserted }
         if action == .forceShutdown {
             for transaction in shutdownTransactions {
                 if let report = await transaction.escalate(devices) { return report }
             }
         }
         guard devices.contains(where: { if case .simulator = $0 { true } else { false } }) else {
-            do { try await preparing?() }
+            if action == .forceShutdown { return await backend.forceShutdown(devices, preparingDisplay: preparingDisplay) }
+            do { for device in devices { try await preparingDisplay?(device) } }
             catch {
                 return DeviceManagementReport(results: devices.map {
                     DeviceManagementResult(deviceID: $0.id, completedSteps: [], createdDeviceID: nil, error: error)
@@ -127,7 +136,7 @@ extension SimulatorHostController {
         }
         let shutdown: SimulatorShutdownTransaction?
         if action == .shutdown, devices.allSatisfy({ if case .simulator = $0 { true } else { false } }) {
-            let transaction = SimulatorShutdownTransaction(devices: devices, backend: backend)
+            let transaction = SimulatorShutdownTransaction(devices: devices, backend: backend, preparingDisplay: preparingDisplay)
             shutdownTransactions.append(transaction)
             shutdown = transaction
         } else { shutdown = nil }
@@ -136,8 +145,9 @@ extension SimulatorHostController {
         }
         do {
             return try await operation {
-                if let shutdown { return await shutdown.run(preparing: preparing) }
-                try await preparing?()
+                if let shutdown { return await shutdown.run() }
+                if action == .forceShutdown { return await backend.forceShutdown(devices, preparingDisplay: preparingDisplay) }
+                for device in devices { try await preparingDisplay?(device) }
                 return await backend.manage(action, devices: devices)
             }
         }
@@ -193,10 +203,11 @@ struct DeviceManagementBackend: Sendable {
     var restart: @Sendable (RendererRegistration, DeviceInventoryID, Bool) async throws -> Bool
     var attach: @Sendable (RendererRegistration, DeviceInventoryID) async throws -> Void
 
-    func manage(_ action: DeviceManagementAction, devices: [InventoryDevice]) async -> DeviceManagementReport {
+    func manage(_ action: DeviceManagementAction, devices: [InventoryDevice],
+                preparingDisplay: (@isolated(any) @Sendable (InventoryDevice) async throws -> Void)? = nil) async -> DeviceManagementReport {
         var seen = Set<DeviceInventoryID>()
         let targets = devices.filter { seen.insert($0.id).inserted }
-        if action == .forceShutdown { return await forceShutdown(targets) }
+        if action == .forceShutdown { return await forceShutdown(targets, preparingDisplay: preparingDisplay) }
         var paired: [DeviceInventoryID: DeviceManagementResult] = [:]
         if action == .pair {
             let simulators = targets.compactMap { if case .simulator(let device) = $0 { device } else { nil } }
@@ -208,13 +219,19 @@ struct DeviceManagementBackend: Sendable {
         var results: [DeviceManagementResult] = []
         for target in targets {
             if let result = paired[target.id] { results.append(result); continue }
-            results.append(await perform(action, on: target))
+            results.append(await perform(action, on: target, preparingDisplay: preparingDisplay))
         }
         return DeviceManagementReport(results: results)
     }
 
-    private func forceShutdown(_ targets: [InventoryDevice]) async -> DeviceManagementReport {
-        await finishForceShutdown(await requestForceShutdown(targets), targets: targets)
+    func forceShutdown(_ devices: [InventoryDevice],
+                       preparingDisplay: (@isolated(any) @Sendable (InventoryDevice) async throws -> Void)? = nil) async -> DeviceManagementReport {
+        var seen = Set<DeviceInventoryID>()
+        let targets = devices.filter { seen.insert($0.id).inserted }
+        let report = await requestForceShutdown(targets)
+        // Caller cancellation cannot abandon display work after a native request has taken effect.
+        let cleanup = Task { await finishForceShutdown(report, targets: targets, preparingDisplay: preparingDisplay) }
+        return await cleanup.value
     }
 
     func requestForceShutdown(_ targets: [InventoryDevice]) async -> DeviceManagementReport {
@@ -237,21 +254,61 @@ struct DeviceManagementBackend: Sendable {
         return DeviceManagementReport(results: results)
     }
 
-    func finishForceShutdown(_ report: DeviceManagementReport, targets: [InventoryDevice]) async -> DeviceManagementReport {
+    func finishForceShutdown(_ report: DeviceManagementReport, targets: [InventoryDevice],
+                             preparingDisplay: (@isolated(any) @Sendable (InventoryDevice) async throws -> Void)? = nil) async -> DeviceManagementReport {
         var results = report.results
         for (index, target) in targets.enumerated() {
-            guard case .simulator(let device) = target, device.deviceSetPath == nil else { continue }
-            do {
-                let resolved = try await context(device, true)
-                if let renderer = resolved.renderer {
-                    try await release(renderer, device.inventoryID)
-                    results[index] = results[index].recordingDisplayCleanup(.success(()))
+            if results[index].error is CancellationError, results[index].completedSteps.isEmpty { continue }
+            if case .simulator(let device) = target, device.deviceSetPath == nil {
+                do {
+                    let resolved = try await context(device, true)
+                    if let renderer = resolved.renderer {
+                        try await release(renderer, device.inventoryID)
+                        results[index] = results[index].recordingDisplayCleanup(.success(()))
+                    }
+                } catch {
+                    results[index] = results[index].recordingDisplayCleanup(.failure(error))
                 }
-            } catch {
-                results[index] = results[index].recordingDisplayCleanup(.failure(error))
+            }
+            if let preparingDisplay, target.supports(.forceShutdown) {
+                do {
+                    try await preparingDisplay(target)
+                    results[index] = results[index].recordingDisplayCleanup(.success(()), completedStep: "Display cleanup completed")
+                } catch { results[index] = results[index].recordingDisplayCleanup(.failure(error)) }
             }
         }
         return DeviceManagementReport(results: results)
+    }
+
+    func prepareShutdown(_ device: SimulatorHostDevice,
+                         preparingDisplay: (@isolated(any) @Sendable (InventoryDevice) async throws -> Void)?) async -> SimulatorShutdownPreparation {
+        var completed: [String] = []
+        do {
+            if let preparingDisplay {
+                try await preparingDisplay(.simulator(device))
+                completed.append("Display cleanup completed")
+            }
+            let resolved = try await context(device, true)
+            if let renderer = resolved.renderer {
+                try await release(renderer, device.inventoryID)
+                completed.append("Display disconnected")
+            }
+            return SimulatorShutdownPreparation(context: .success(resolved), completedSteps: completed)
+        } catch {
+            return SimulatorShutdownPreparation(context: .failure(error), completedSteps: completed)
+        }
+    }
+
+    func finishShutdown(_ context: DeviceManagementContext, completedSteps: [String]) async -> DeviceManagementResult {
+        var completed = completedSteps
+        var failure: (any Error)?
+        do {
+            try Task.checkCancellation()
+            try await shutdownSimulator(context.xcodeURL, context.device.identifier, context.device.deviceSetPath)
+            completed.append("Shut down")
+        } catch { failure = error }
+        return DeviceManagementResult(deviceID: context.device.inventoryID, completedSteps: completed,
+                                      createdDeviceID: nil, error: failure)
     }
 
     private func pair(_ devices: [SimulatorHostDevice]) async -> [DeviceManagementResult] {
@@ -273,15 +330,21 @@ struct DeviceManagementBackend: Sendable {
             completedSteps: completed, createdDeviceID: nil, error: failure) }
     }
 
-    private func perform(_ action: DeviceManagementAction, on target: InventoryDevice) async -> DeviceManagementResult {
+    private func perform(_ action: DeviceManagementAction, on target: InventoryDevice,
+                         preparingDisplay: (@isolated(any) @Sendable (InventoryDevice) async throws -> Void)?) async -> DeviceManagementResult {
         var completed: [String] = []
         var created: DeviceInventoryID?
         do {
             try Task.checkCancellation()
             switch target {
             case .simulator(let original):
-                let needsCleanup: Bool = switch action { case .shutdown, .restart, .erase, .remove: true; default: false }
-                let resolved = try await context(original, needsCleanup)
+                let needsCleanup: Bool = switch action { case .restart, .erase, .remove: true; default: false }
+                let resolved: DeviceManagementContext
+                if action == .shutdown {
+                    let preparation = await prepareShutdown(original, preparingDisplay: preparingDisplay)
+                    completed = preparation.completedSteps
+                    resolved = try preparation.context.get()
+                } else { resolved = try await context(original, needsCleanup) }
                 let device = resolved.device
                 let identifier = device.identifier
                 func command(_ arguments: [String], step: String) async throws -> Data {
@@ -309,9 +372,7 @@ struct DeviceManagementBackend: Sendable {
                         created = .simulator(udid: clone, deviceSetPath: device.deviceSetPath)
                     case .start: _ = try await command(["boot", identifier], step: "Started")
                     case .shutdown:
-                        try Task.checkCancellation()
-                        try await shutdownSimulator(resolved.xcodeURL, identifier, device.deviceSetPath)
-                        completed.append("Shut down")
+                        return await finishShutdown(resolved, completedSteps: completed)
                     case .restart, .erase, .remove:
                         let wasRunning = ["Booted", "Booting"].contains(device.state)
                         if wasRunning { _ = try await command(["shutdown", identifier], step: "Shut down") }
@@ -402,7 +463,7 @@ struct DeviceManagementBackend: Sendable {
     }
 }
 
-/// Keeps an accepted force request within the normal shutdown's FIFO ownership.
+/// Owns display preparation and CLI shutdown until all admitted escalations have drained.
 actor SimulatorShutdownTransaction {
     private struct Escalation {
         let identifiers: Set<DeviceInventoryID>
@@ -411,18 +472,22 @@ actor SimulatorShutdownTransaction {
     private let devices: [InventoryDevice]
     private let identifiers: Set<DeviceInventoryID>
     private let backend: DeviceManagementBackend
+    private let preparingDisplay: (@isolated(any) @Sendable (InventoryDevice) async throws -> Void)?
     private var accepting = true
     private var started = false
     private var startWaiters: [CheckedContinuation<Void, Never>] = []
+    private var preparations: [DeviceInventoryID: Task<SimulatorShutdownPreparation, Never>] = [:]
     private var shutdownTasks: [DeviceInventoryID: Task<DeviceManagementResult, Never>] = [:]
     private var escalations: [UUID: Escalation] = [:]
     private var forciblyStopped: Set<DeviceInventoryID> = []
 
-    init(devices: [InventoryDevice], backend: DeviceManagementBackend) {
+    init(devices: [InventoryDevice], backend: DeviceManagementBackend,
+         preparingDisplay: (@isolated(any) @Sendable (InventoryDevice) async throws -> Void)?) {
         var seen: Set<DeviceInventoryID> = []
         self.devices = devices.filter { seen.insert($0.id).inserted }
         identifiers = seen
         self.backend = backend
+        self.preparingDisplay = preparingDisplay
     }
 
     func escalate(_ requested: [InventoryDevice]) async -> DeviceManagementReport? {
@@ -430,11 +495,7 @@ actor SimulatorShutdownTransaction {
         let targets = requested.filter { seen.insert($0.id).inserted }
         guard accepting, !targets.isEmpty, seen.isSubset(of: identifiers),
               targets.allSatisfy({ if case .simulator = $0 { true } else { false } }) else { return nil }
-        if Task.isCancelled {
-            return DeviceManagementReport(results: targets.map {
-                DeviceManagementResult(deviceID: $0.id, completedSteps: [], createdDeviceID: nil, error: CancellationError())
-            })
-        }
+        if Task.isCancelled { return cancelled(targets) }
         let task = Task { await self.force(targets) }
         escalations[UUID()] = Escalation(identifiers: seen, task: task)
         return await withTaskCancellationHandler {
@@ -444,56 +505,83 @@ actor SimulatorShutdownTransaction {
         }
     }
 
-    func run(preparing: (@isolated(any) @Sendable () async throws -> Void)? = nil) async -> DeviceManagementReport {
+    func run() async -> DeviceManagementReport {
         started = true
         for waiter in startWaiters { waiter.resume() }
         startWaiters.removeAll()
-        var preparationError: (any Error)?
-        do { try await preparing?() }
-        catch { preparationError = error }
         var results: [DeviceManagementResult] = []
-        for device in devices {
-            for escalation in escalations.values where escalation.identifiers.contains(device.id) {
+        for target in devices {
+            guard case .simulator(let device) = target else { continue }
+            if Task.isCancelled, preparations[target.id] == nil,
+               !escalations.values.contains(where: { $0.identifiers.contains(target.id) }) {
+                results.append(cancelled([target]).results[0])
+                continue
+            }
+            let preparation = await preparation(for: device).value
+            for escalation in escalations.values where escalation.identifiers.contains(target.id) {
                 _ = await escalation.task.value
             }
-            if forciblyStopped.contains(device.id) {
-                results.append(DeviceManagementResult(deviceID: device.id, completedSteps: ["Forcibly shut down"],
-                                                      createdDeviceID: nil, error: preparationError))
+            if forciblyStopped.contains(target.id) {
+                results.append(preparedResult(preparation, deviceID: target.id, forced: true))
                 continue
             }
-            if let preparationError {
-                results.append(DeviceManagementResult(deviceID: device.id, completedSteps: [],
-                                                      createdDeviceID: nil, error: preparationError))
-                continue
+            switch preparation.context {
+            case .failure:
+                results.append(preparedResult(preparation, deviceID: target.id, forced: false))
+            case .success(let context):
+                if Task.isCancelled {
+                    results.append(DeviceManagementResult(deviceID: target.id, completedSteps: preparation.completedSteps,
+                                                          createdDeviceID: nil, error: CancellationError()))
+                    continue
+                }
+                let task = Task { await self.backend.finishShutdown(context, completedSteps: preparation.completedSteps) }
+                shutdownTasks[target.id] = task
+                let result = await withTaskCancellationHandler {
+                    await task.value
+                } onCancel: {
+                    task.cancel()
+                }
+                results.append(result)
+                shutdownTasks.removeValue(forKey: target.id)
             }
-            let task = Task { await self.backend.manage(.shutdown, devices: [device]).results[0] }
-            shutdownTasks[device.id] = task
-            let result = await withTaskCancellationHandler {
-                await task.value
-            } onCancel: {
-                task.cancel()
-            }
-            results.append(result)
-            shutdownTasks.removeValue(forKey: device.id)
         }
         accepting = false
         for escalation in escalations.values { _ = await escalation.task.value }
-        return DeviceManagementReport(results: results.map { result in
-            guard preparationError == nil, result.error is CancellationError,
-                  forciblyStopped.contains(result.deviceID) else { return result }
-            // Successful escalation fulfilled the original shutdown; unrelated CLI failures remain errors.
-            return DeviceManagementResult(deviceID: result.deviceID,
-                completedSteps: result.completedSteps + ["Forcibly shut down"], createdDeviceID: result.createdDeviceID, error: nil)
+        for index in results.indices where results[index].error is CancellationError && forciblyStopped.contains(results[index].deviceID) {
+            if let preparation = preparations[results[index].deviceID] {
+                results[index] = preparedResult(await preparation.value, deviceID: results[index].deviceID, forced: true)
+            }
+        }
+        return DeviceManagementReport(results: results)
+    }
+
+    private func preparation(for device: SimulatorHostDevice) -> Task<SimulatorShutdownPreparation, Never> {
+        if let task = preparations[device.inventoryID] { return task }
+        let task = Task { await backend.prepareShutdown(device, preparingDisplay: preparingDisplay) }
+        preparations[device.inventoryID] = task
+        return task
+    }
+
+    private func preparedResult(_ preparation: SimulatorShutdownPreparation, deviceID: DeviceInventoryID, forced: Bool) -> DeviceManagementResult {
+        let failure: (any Error)?
+        switch preparation.context {
+        case .success: failure = nil
+        case .failure(let error): failure = error
+        }
+        return DeviceManagementResult(deviceID: deviceID,
+            completedSteps: preparation.completedSteps + (forced ? ["Forcibly shut down"] : []),
+            createdDeviceID: nil, error: failure)
+    }
+
+    private func cancelled(_ targets: [InventoryDevice]) -> DeviceManagementReport {
+        DeviceManagementReport(results: targets.map {
+            DeviceManagementResult(deviceID: $0.id, completedSteps: [], createdDeviceID: nil, error: CancellationError())
         })
     }
 
     private func force(_ targets: [InventoryDevice]) async -> DeviceManagementReport {
         if !started { await withCheckedContinuation { startWaiters.append($0) } }
-        if Task.isCancelled {
-            return DeviceManagementReport(results: targets.map {
-                DeviceManagementResult(deviceID: $0.id, completedSteps: [], createdDeviceID: nil, error: CancellationError())
-            })
-        }
+        if Task.isCancelled { return cancelled(targets) }
         let report = await backend.requestForceShutdown(targets)
         let completed = report.results.filter { $0.error == nil }.map(\.deviceID)
         for identifier in completed {
@@ -501,6 +589,19 @@ actor SimulatorShutdownTransaction {
             shutdownTasks[identifier]?.cancel()
         }
         for identifier in completed { _ = await shutdownTasks[identifier]?.value }
-        return await backend.finishForceShutdown(report, targets: targets)
+        var results = report.results
+        for (index, target) in targets.enumerated() {
+            guard let owned = devices.first(where: { $0.id == target.id }), case .simulator(let device) = owned else { continue }
+            if results[index].error is CancellationError, results[index].completedSteps.isEmpty { continue }
+            let preparation = await preparation(for: device).value
+            let result = results[index]
+            results[index] = DeviceManagementResult(deviceID: result.deviceID,
+                completedSteps: result.completedSteps + preparation.completedSteps,
+                createdDeviceID: result.createdDeviceID, error: result.error)
+            if case .failure(let error) = preparation.context {
+                results[index] = results[index].recordingDisplayCleanup(.failure(error))
+            }
+        }
+        return DeviceManagementReport(results: results)
     }
 }

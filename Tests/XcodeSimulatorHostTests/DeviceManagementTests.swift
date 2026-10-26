@@ -6,6 +6,45 @@ import Testing
 
 @Suite
 struct DeviceManagementTests {
+    enum ReleaseOutcome: Sendable { case acknowledged, failed, cancelledCaller }
+
+    @MainActor @Test(.timeLimit(.minutes(1)), arguments: [ReleaseOutcome.acknowledged, .failed, .cancelledCaller])
+    func escalationDrainsTheOriginalRendererRelease(_ outcome: ReleaseOutcome) async throws {
+        let device = Self.simulator("A", state: "Booted", features: ["com.apple.dt.coredevice.device.shutdown"])
+        let fixture = ManagementFixture(hasRenderer: true,
+            nativeFeatures: [device.inventoryID: ["com.apple.dt.coredevice.device.shutdown"]])
+        let release = PendingRendererRelease()
+        var backend = fixture.backend
+        backend.release = { renderer, identifier in try await release.release(identifier, from: renderer) }
+        let preparedBackend = backend
+        let controller = SimulatorHostController(rendererApplicationURL: URL(fileURLWithPath: "/Renderer.app"))
+        var requests = release.sent.makeAsyncIterator()
+        var events = fixture.events.makeAsyncIterator()
+        let normal = Task { await controller.manage(.shutdown, devices: [.simulator(device)], using: preparedBackend) }
+        #expect(await requests.next() != nil)
+        let queued = Task { try await controller.operation { @Sendable in await release.finished } }
+        let force = Task { await controller.manage(.forceShutdown, devices: [.simulator(device)], using: preparedBackend) }
+        #expect(await events.next() == .native(device.inventoryID))
+        if outcome == .cancelledCaller { force.cancel() }
+        #expect(await controller.shutdownTransactions.count == 1)
+        release.finishOriginal(error: outcome == .failed ? "Recording cleanup failed" : nil)
+        let forced = await force.value.results[0]
+        let original = await normal.value.results[0]
+        #expect(release.requests.count == 1)
+        if outcome == .failed {
+            let cleanup = try #require(forced.error as? DeviceManagementCleanupError)
+            #expect((cleanup.cleanupErrors.first as? CLIError)?.identifier == "renderer-device-request")
+            #expect((original.error as? CLIError)?.identifier == "renderer-device-request")
+        } else {
+            #expect(forced.error == nil && original.error == nil)
+            #expect(forced.completedSteps.contains("Display disconnected"))
+            #expect(original.completedSteps.contains("Display disconnected"))
+        }
+        #expect(forced.completedSteps.contains("Forcibly shut down") && original.completedSteps.contains("Forcibly shut down"))
+        #expect(try await queued.value)
+        #expect(await fixture.commands.isEmpty)
+    }
+
     @Test(.timeLimit(.minutes(1)), arguments: [false, true])
     func forceEscalatesDuringPreparationWithoutStartingALaterNormalShutdown(preparationFails: Bool) async throws {
         let device = Self.simulator("A", state: "Booted", features: ["com.apple.dt.coredevice.device.shutdown"])
@@ -14,17 +53,25 @@ struct DeviceManagementTests {
         let preparing = AsyncStream<CheckedContinuation<Void, any Error>>.makeStream()
         var preparations = preparing.stream.makeAsyncIterator()
         let normal = Task {
-            await controller.manage(.shutdown, devices: [.simulator(device)], preparing: {
+            await controller.manage(.shutdown, devices: [.simulator(device)], preparingDisplay: { _ in
                 try await withCheckedThrowingContinuation { preparing.continuation.yield($0) }
             }, using: fixture.backend)
         }
         let preparation = try #require(await preparations.next())
-        let forced = await controller.manage(.forceShutdown, devices: [.simulator(device)], using: fixture.backend)
-        #expect(forced.results[0].error == nil && forced.results[0].completedSteps == ["Forcibly shut down"])
+        var events = fixture.events.makeAsyncIterator()
+        let force = Task {
+            await controller.manage(.forceShutdown, devices: [.simulator(device)], preparingDisplay: { _ in
+                Issue.record("Escalation must reuse the admitted display preparation.")
+            }, using: fixture.backend)
+        }
+        #expect(await events.next() == .native(device.inventoryID))
         if preparationFails { preparation.resume(throwing: CLIError.io("preparation-fixture", "Display cleanup failed")) }
         else { preparation.resume() }
+        let forced = await force.value.results[0]
         let result = await normal.value.results[0]
-        #expect(result.completedSteps == ["Forcibly shut down"])
+        #expect(forced.completedSteps.contains("Forcibly shut down"))
+        #expect((forced.error as? DeviceManagementCleanupError)?.cleanupErrors.count == (preparationFails ? 1 : nil))
+        #expect(result.completedSteps.contains("Forcibly shut down"))
         #expect((result.error as? CLIError)?.identifier == (preparationFails ? "preparation-fixture" : nil))
         #expect(await fixture.commands.isEmpty)
         #expect(await fixture.coreDeviceOperations.count == 1)
@@ -378,6 +425,37 @@ struct DeviceManagementTests {
             "capabilities": features.map { ["featureIdentifier": $0] }
         ]]]])
         return try #require(CoreDeviceInventoryDecoder.decode(data).first)
+    }
+}
+
+@MainActor private final class PendingRendererRelease {
+    let sent: AsyncStream<Void>
+    private let continuation: AsyncStream<Void>.Continuation
+    private let acknowledgements = NotificationCenter()
+    private(set) var requests: [[String: String]] = []
+    private(set) var finished = false
+
+    init() { (sent, continuation) = AsyncStream.makeStream() }
+
+    func release(_ identifier: DeviceInventoryID, from renderer: RendererRegistration) async throws {
+        let waiter = RendererDeviceRequestWaiter(acknowledgements: acknowledgements, scheduleTimeout: { _, _ in {} }) { [self] info, _ in
+            requests.append(info)
+            continuation.yield(())
+            if requests.count > 1 { acknowledge(info, error: finished ? nil : "This simulator is already being handed over.") }
+        }
+        try await waiter.release(identifier, from: renderer)
+    }
+
+    func finishOriginal(error: String? = nil) {
+        finished = true
+        if let request = requests.first { acknowledge(request, error: error) }
+    }
+
+    private func acknowledge(_ request: [String: String], error: String?) {
+        var info = request
+        info["error"] = error
+        acknowledgements.post(name: Notification.Name("dev.lynnswap.NeoSimulator.RendererReleased"),
+            object: request["requestIdentifier"], userInfo: info)
     }
 }
 
