@@ -37,6 +37,8 @@ final class SimulatorManagerModel {
     private(set) var activity = ""
     private(set) var backgroundIssue: String?
     let settings: DeviceSettingsModel
+    private(set) var devicePostures: [DeviceInventoryID: DevicePostureModel] = [:]
+    @ObservationIgnored private var postureStarts: [DeviceInventoryID: Task<Void, Never>] = [:]
     @ObservationIgnored var onError: ((any Error) -> Void)?
     @ObservationIgnored var onOpenRemoteDevice: ((CoreDeviceDevice) -> Void)?
     @ObservationIgnored var beforeStoppingScreens: (() async throws -> Void)?
@@ -106,6 +108,33 @@ final class SimulatorManagerModel {
                 self.onOpenRemoteDevice?(current)
             }
         }
+    }
+
+    func observeDevicePosture(for identifier: DeviceInventoryID) {
+        guard !stopping, devicePostures[identifier] == nil,
+              let device = inventory.first(where: { $0.id == identifier }),
+              DevicePostureModel.canInspect(capabilities: device.capabilities) else { return }
+        let posture = DevicePostureModel(deviceID: identifier)
+        devicePostures[identifier] = posture
+        postureStarts[identifier] = Task { [weak self, posture] in
+            do { try await posture.start() }
+            catch is CancellationError {}
+            catch {
+                if self?.devicePostures[identifier] === posture { self?.onError?(error) }
+            }
+        }
+    }
+
+    func stopDevicePosture(for identifier: DeviceInventoryID) async {
+        guard let posture = devicePostures.removeValue(forKey: identifier) else { return }
+        let starting = postureStarts.removeValue(forKey: identifier)
+        starting?.cancel()
+        await posture.stop()
+        await starting?.value
+    }
+
+    func stopDevicePostures() async {
+        for identifier in Array(devicePostures.keys) { await stopDevicePosture(for: identifier) }
     }
 
     func creationCatalog() async throws -> SimulatorCreationContext {
@@ -306,6 +335,7 @@ final class SimulatorManagerModel {
         stopping = true
         pendingOperations.removeAll { $0.refreshCatalog }
         settings.stopReading()
+        await stopDevicePostures()
         statusRefreshTask?.cancel()
         await operationTask?.value
         for task in Array(managementTasks.values) { await task.value }

@@ -117,6 +117,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
+        var canControlDevice: Bool {
+            switch self {
+            case .simulator(let controller): controller.session.canPerformCommands
+            case .remote(let controller): controller.session.state == .connected
+            }
+        }
+
         func validatePresentationMove() throws {
             let canMove: Bool
             switch self {
@@ -325,6 +332,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard let self else { return }
                 let id = DeviceInventoryID.simulator(udid: identifier.identifier, deviceSetPath: identifier.deviceSetPath)
                 self.simulatorWindows.removeValue(forKey: id)
+                Task { await self.model.stopDevicePosture(for: id) }
                 self.mainWindow?.showDevicePreview(ifDisplaying: id)
                 let keepRunning = choice == .keepRunning || (choice == nil && HostPreferences.defaults.bool(forKey: HostPreferences.detachOnWindowClose))
                 self.model.closeDevice(id, keepingDeviceRunning: keepRunning, after: finishing)
@@ -354,6 +362,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let controller = try await host.openPresentation(for: identifier, bootIfNeeded: false)
         controller.onShowInMainWindow = { [weak self] in self?.showScreenInMainWindow(context.deviceID) }
         simulatorWindows[context.deviceID] = controller
+        model.observeDevicePosture(for: context.deviceID)
         try await embedScreen(context.deviceID, selectDevice: true)
     }
 
@@ -364,6 +373,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         })
         for identifier in simulatorWindows.keys where !opened.contains(identifier) {
             simulatorWindows.removeValue(forKey: identifier)
+            Task { await model.stopDevicePosture(for: identifier) }
             mainWindow?.showDevicePreview(ifDisplaying: identifier)
         }
         updateScreenToolbar()
@@ -371,6 +381,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func stopSimulatorPresentations() async throws {
         _ = await presentationTask?.result
+        await model.stopDevicePostures()
         for host in simulatorHosts.values { try await host.stop(keepingDevicesRunning: true) }
         simulatorHosts.removeAll()
         simulatorWindows.removeAll()
@@ -387,6 +398,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard let host = simulatorHosts.values.first(where: { $0.openedDeviceIdentifiers.contains(identifier) }) else { continue }
                 switch action {
                 case .restart, .erase:
+                    await model.stopDevicePosture(for: device.id)
                     if simulator.state == "Booted" {
                         try await host.preparePresentationForRestart(for: identifier)
                         prepared.append(device)
@@ -396,6 +408,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         mainWindow?.showDevicePreview(ifDisplaying: device.id)
                     }
                 case .shutdown, .remove:
+                    await model.stopDevicePosture(for: device.id)
                     try await host.releasePresentation(for: identifier)
                     simulatorWindows.removeValue(forKey: device.id)
                     mainWindow?.showDevicePreview(ifDisplaying: device.id)
@@ -403,6 +416,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         } catch {
+            defer {
+                for device in devices where simulatorWindows[device.id] != nil { model.observeDevicePosture(for: device.id) }
+            }
             do { try await finishSimulatorManagement(action, devices: prepared) }
             catch let cleanupError {
                 throw HostError.operation([error.localizedDescription, cleanupError.localizedDescription].joined(separator: "\n"))
@@ -420,6 +436,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let host = simulatorHosts.values.first(where: { $0.openedDeviceIdentifiers.contains(identifier) }) else { continue }
             do { try await host.finishPresentationRestart(for: identifier) }
             catch { failures.append("\(device.name): \(error.localizedDescription)") }
+            model.observeDevicePosture(for: device.id)
         }
         simulatorPresentationsChanged()
         if !failures.isEmpty { throw HostError.operation(failures.joined(separator: "\n")) }
@@ -432,7 +449,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller.onSelectionChange = { [weak self] identifier in self?.selectedDeviceChanged(identifier) }
         controller.onScreenAction = { [weak self] action in
             guard let self, let identifier = self.mainWindow?.liveDeviceIdentifier,
-                  let screen = self.screen(for: identifier), screen.supports(action), screen.isEnabled(action) else { return }
+                  let screen = self.screen(for: identifier) else { return }
+            if action.hasPrefix("posture."), let posture = DevicePosture(rawValue: String(action.dropFirst("posture.".count))),
+               let source = self.model.devicePostures[identifier], screen.canControlDevice,
+               !self.model.managingDeviceIDs.contains(identifier) {
+                Task {
+                    do { try await source.select(posture) }
+                    catch is CancellationError {}
+                    catch { self.present(error) }
+                }
+                if case .simulator(let controller) = screen { controller.focusInput() }
+                self.updateScreenToolbar()
+                return
+            }
+            guard screen.supports(action), screen.isEnabled(action) else { return }
             screen.perform(action)
             self.updateScreenToolbar()
         }
@@ -442,8 +472,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func updateScreenToolbar() {
         guard let identifier = mainWindow?.liveDeviceIdentifier, let screen = screen(for: identifier) else { return }
         simulatorMenus.updateKeyEquivalents(for: (screen.commandTarget as? DeviceWindowController)?.session.capabilities)
-        mainWindow?.updateScreenToolbar(supports: screen.supports, isEnabled: screen.isEnabled,
+        let posture = model.devicePostures[identifier]
+        mainWindow?.updateScreenToolbar(supports: { action in
+            action == "rotate" && posture?.isSupported == true ? false : screen.supports(action)
+        }, isEnabled: screen.isEnabled,
                                        recordingTitle: screen.recordingTitle)
+        mainWindow?.updateDevicePosture(posture, isEnabled: screen.canControlDevice && !model.managingDeviceIDs.contains(identifier))
     }
 
     private func observeScreenState(_ identifier: DeviceInventoryID) {
@@ -648,6 +682,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func updateRemoteWindows() {
+        for identifier in simulatorWindows.keys { model.observeDevicePosture(for: identifier) }
         if model.isRemoteInventoryComplete {
             for (id, controller) in remoteWindows {
                 let current = model.inventory.first { $0.id == id }
@@ -905,6 +940,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     private let primaryScreenActions = NSGlassEffectView()
     private let profileScreenActions = NSGlassEffectView()
     private var screenActionButtons: [String: NSButton] = [:]
+    private var postureButtons: [DevicePosture: NSButton] = [:]
     private let deviceFooter = NSStackView()
     private let activityStack = NSStackView()
     private var canvasBottomToPane: NSLayoutConstraint?
@@ -1384,6 +1420,28 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
                 controls.addArrangedSubview(button)
                 screenActionButtons[identifier] = button
             }
+            if glass === profileScreenActions {
+                for posture in DevicePosture.allCases {
+                    let button = NSButton(title: posture.title, target: self, action: #selector(performScreenAction(_:)))
+                    let symbol = switch posture { case .closed: "iphone"; case .partiallyOpen: "book"; case .open: "ipad.landscape" }
+                    button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: posture.title)
+                    button.imagePosition = .imageOnly
+                    button.identifier = NSUserInterfaceItemIdentifier("posture." + posture.rawValue)
+                    button.setButtonType(.pushOnPushOff)
+                    button.bezelStyle = .accessoryBarAction
+                    button.isBordered = false
+                    button.isHidden = true
+                    button.toolTip = posture.title
+                    button.setAccessibilityLabel(posture.title)
+                    button.translatesAutoresizingMaskIntoConstraints = false
+                    NSLayoutConstraint.activate([
+                        button.widthAnchor.constraint(equalToConstant: 32),
+                        button.heightAnchor.constraint(equalToConstant: 32),
+                    ])
+                    controls.addArrangedSubview(button)
+                    postureButtons[posture] = button
+                }
+            }
             glass.style = .regular
             glass.cornerRadius = 20
             glass.contentView = controls
@@ -1627,6 +1685,22 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             screenActionButtons[$0]?.isHidden != false
         }
         profileScreenActions.isHidden = screenActionButtons["rotate"]?.isHidden != false
+        screenActionBar.isHidden = primaryScreenActions.isHidden && profileScreenActions.isHidden
+        updateDeviceFooter()
+    }
+
+    func updateDevicePosture(_ model: DevicePostureModel?, isEnabled: Bool) {
+        let available = liveDeviceIdentifier.flatMap { id in self.model.inventory.first { $0.id == id } }
+            .map { DevicePostureModel.canInspect(capabilities: $0.capabilities) } ?? false
+        let visible = liveDeviceIdentifier != nil && model?.isSupported == true
+        for (posture, button) in postureButtons {
+            button.isHidden = !visible
+            button.isEnabled = isEnabled && available && model?.canSelect == true
+            button.state = model?.confirmedPosture == posture ? .on : .off
+            button.contentTintColor = button.state == .on ? .controlAccentColor : .labelColor
+            button.toolTip = model?.lastError?.localizedDescription ?? posture.title
+        }
+        profileScreenActions.isHidden = screenActionButtons["rotate"]?.isHidden != false && !visible
         screenActionBar.isHidden = primaryScreenActions.isHidden && profileScreenActions.isHidden
         updateDeviceFooter()
     }

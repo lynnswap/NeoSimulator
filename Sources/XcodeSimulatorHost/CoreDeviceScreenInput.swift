@@ -1,5 +1,7 @@
 import ABIBridge
 import Foundation
+import IOKit
+import Observation
 
 @MainActor
 final class CoreDeviceScreenInput {
@@ -187,6 +189,282 @@ private extension RemoteScreenInput {
         case .button: .button
         case .pointer, .pointerButton: .pointer
         case .touch: .digitizer
+        }
+    }
+}
+
+public enum DevicePosture: String, CaseIterable, Sendable {
+    case closed, partiallyOpen, open
+
+    public var title: String {
+        switch self {
+        case .closed: "Closed"
+        case .partiallyOpen: "Partially Open"
+        case .open: "Open"
+        }
+    }
+
+    var degrees: Double {
+        switch self {
+        case .closed: 0
+        case .partiallyOpen: 130
+        case .open: 180
+        }
+    }
+
+    static func confirmed(angle: Double?) -> Self? {
+        guard let angle, angle.isFinite else { return nil }
+        if angle < 15 { return .closed }
+        if angle > 175 { return .open }
+        return .partiallyOpen
+    }
+}
+
+@MainActor
+protocol DevicePostureTransport: AnyObject {
+    func observe(_ update: @escaping @MainActor (Double?) -> Void) async throws
+    func send(_ posture: DevicePosture) async throws
+}
+
+/// A button request never becomes the selected posture until hinge feedback confirms it.
+@Observable @MainActor
+public final class DevicePostureModel {
+    public enum State: Equatable, Sendable { case idle, connecting, connected, unsupported, stopped, failed }
+
+    public let deviceID: DeviceInventoryID
+    public private(set) var state = State.idle
+    public private(set) var angle: Double?
+    public var confirmedPosture: DevicePosture? { DevicePosture.confirmed(angle: angle) }
+    public private(set) var isSending = false
+    public private(set) var isSupported = false
+    public private(set) var lastError: (any Error)?
+    public var canSelect: Bool { state == .connected && !isSending }
+
+    public static func canInspect(capabilities: Set<String>) -> Bool { DevicePosturePayload.features.isSubset(of: capabilities) }
+    @ObservationIgnored private let makeTransport: @MainActor (DeviceInventoryID) async throws -> (any DevicePostureTransport)?
+    @ObservationIgnored private var transport: (any DevicePostureTransport)?
+    @ObservationIgnored private var starting: Task<Void, any Error>?
+    @ObservationIgnored private var observation: Task<Void, Never>?
+    @ObservationIgnored private var command: Task<Void, any Error>?
+    @ObservationIgnored private var stopping: Task<Void, Never>?
+    @ObservationIgnored private var generation = 0
+
+    public convenience init(deviceID: DeviceInventoryID) {
+        self.init(deviceID: deviceID, makeTransport: NativeDevicePostureTransport.make)
+    }
+
+    init(deviceID: DeviceInventoryID,
+         makeTransport: @escaping @MainActor (DeviceInventoryID) async throws -> (any DevicePostureTransport)?) {
+        self.deviceID = deviceID
+        self.makeTransport = makeTransport
+    }
+
+    isolated deinit { starting?.cancel(); observation?.cancel(); command?.cancel() }
+
+    public func start() async throws {
+        if let stopping { await stopping.value }
+        if let starting { try await starting.value; return }
+        guard state != .connected else { return }
+        if transport != nil { await stop() }
+        generation += 1
+        let token = generation
+        state = .connecting
+        angle = nil
+        lastError = nil
+        let task = Task { [weak self, makeTransport, deviceID] in
+            let transport = try await makeTransport(deviceID)
+            try Task.checkCancellation()
+            guard let self, self.generation == token else { throw CancellationError() }
+            guard let transport else { self.state = .unsupported; return }
+            self.transport = transport
+            self.isSupported = true
+            self.state = .connected
+            self.observation = Task { [weak self, transport] in
+                do {
+                    try await transport.observe { [weak self] angle in
+                        guard let self, self.generation == token, !Task.isCancelled else { return }
+                        self.angle = angle
+                    }
+                    if !Task.isCancelled {
+                        self?.observationFailed(CLIError.unavailable("device-posture-observation", "The device's hinge observation ended."), generation: token)
+                    }
+                } catch {
+                    if !Task.isCancelled { self?.observationFailed(error, generation: token) }
+                }
+            }
+        }
+        starting = task
+        defer { if generation == token { starting = nil } }
+        do {
+            try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
+        } catch {
+            if generation == token {
+                state = error is CancellationError ? .stopped : .failed
+                lastError = error is CancellationError ? nil : error
+            }
+            throw error
+        }
+    }
+
+    public func select(_ posture: DevicePosture) async throws {
+        guard canSelect, let transport else {
+            throw CLIError.unavailable("device-posture-unavailable", "The device's posture controls are unavailable.")
+        }
+        let token = generation
+        isSending = true
+        lastError = nil
+        let task = Task { try await transport.send(posture) }
+        command = task
+        defer {
+            if generation == token { command = nil; isSending = false }
+        }
+        do {
+            try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
+            try Task.checkCancellation()
+        } catch {
+            if generation == token, !(error is CancellationError) { lastError = error }
+            throw error
+        }
+    }
+
+    public func stop() async {
+        if let stopping { await stopping.value; return }
+        generation += 1
+        let starting = self.starting, observation = self.observation, command = self.command
+        self.starting = nil
+        self.observation = nil
+        self.command = nil
+        state = .stopped
+        angle = nil
+        starting?.cancel()
+        observation?.cancel()
+        command?.cancel()
+        let task = Task {
+            _ = await starting?.result
+            await observation?.value
+            _ = await command?.result
+        }
+        stopping = task
+        await task.value
+        transport = nil
+        isSending = false
+        stopping = nil
+    }
+
+    private func observationFailed(_ error: any Error, generation token: Int) {
+        guard generation == token else { return }
+        state = .failed
+        angle = nil
+        lastError = error
+        command?.cancel()
+    }
+}
+
+enum DevicePosturePayload {
+    static let features: Set<String> = ["com.apple.coredevice.feature.remote.hid.vendordefined",
+        "com.apple.coredevice.feature.monitormotion", "com.apple.coredevice.feature.remote.universalhidservice"]
+
+    static func supports(hardwareModel: String?, features: Set<String>) -> Bool {
+        ["v68", "v68ap", "v68dev"].contains(hardwareModel?.lowercased() ?? "") && Self.features.isSubset(of: features)
+    }
+
+    static func serialize(_ posture: DevicePosture) throws -> Data {
+        let dictionary: [String: Any] = ["provider": "com.apple.Virtualization.VirtualMachines",
+            "source": "hinge-slider-control", "type": "range", "value": posture.degrees]
+        guard let data = IOCFSerialize(dictionary as CFDictionary, CFOptionFlags(kIOCFSerializeToBinary)) else {
+            throw CLIError.io("device-posture-payload", "The hinge command could not be serialized.")
+        }
+        return data as Data
+    }
+}
+
+@MainActor
+private final class NativeDevicePostureTransport: DevicePostureTransport {
+    private let remote: CoreDeviceRemoteScreenDevice
+    private let motion: NativeSwiftValue
+    private let config: NativeSwiftValue
+    private let monitor: NativeSwiftMethod<(NativeSwiftValue) async throws -> NativeSwiftValue>
+    private let makeIterator: NativeSwiftMethod<() -> NativeSwiftValue>
+    private let next: NativeSwiftMethod<() async throws -> [NativeSwiftValue]?>
+    private let isValid: NativeSwiftMethod<() -> Bool>
+    private let readAngle: NativeSwiftMethod<() -> Measurement<UnitAngle>>
+
+    static func make(_ identifier: DeviceInventoryID) async throws -> (any DevicePostureTransport)? {
+        let commandID: String
+        switch identifier {
+        case .coreDevice(let id): commandID = id
+        case .simulator(let udid, nil):
+            guard let id = try await CoreDeviceRemoteScreenDevice.simulatorIdentifier(udid: udid) else { return nil }
+            commandID = id
+        case .simulator(_, .some):
+            // DeviceInfo's UDID cannot distinguish duplicate UDIDs in different device sets.
+            return nil
+        }
+        let remote = try await CoreDeviceRemoteScreenDevice(identifier: commandID)
+        let deviceInfo = try await remote.type.resolve(.swift(.getter("deviceInfo", as: (() -> NativeSwiftValue).self)))
+        let info = try unsafe deviceInfo.unsafeInvoke(on: remote.object)
+        let hardware = try await info.type.resolve(.swift(.getter("hardwareModel", as: (() -> String?).self)))
+        let model = try unsafe hardware.unsafeInvoke(on: info)
+        let features = try Set(DevicePosturePayload.features.filter { try remote.supports($0) })
+        guard DevicePosturePayload.supports(hardwareModel: model, features: features) else { return nil }
+        let implementation = try await remote.implementation(capability: "MonitorMotionCapability", feature: "com.apple.coredevice.feature.monitormotion")
+        let getMotion = try await implementation.type.resolve(.swift(.method("CoreDevice.MonitorMotionProtocol.motionManager()",
+            as: (() async throws -> NativeSwiftValue).self)))
+        let motion = try await unsafe getMotion.unsafeInvoke(on: implementation).copyUnderlyingValue()
+        let supportsHinge = try await motion.type.resolve(.swift(.getter("supportsHingeAngle", as: (() -> Bool).self)))
+        guard try unsafe supportsHinge.unsafeInvoke(on: motion) else { return nil }
+        return try await NativeDevicePostureTransport(remote: remote, motion: motion)
+    }
+
+    private init(remote: CoreDeviceRemoteScreenDevice, motion: NativeSwiftValue) async throws {
+        self.remote = remote
+        self.motion = motion
+        let runtime = remote.runtime
+        let snapshot = try await runtime.resolve(.swift(.type("CoreDeviceUtilities.DeviceHingeAngleSnapshot")))
+        let configuration = try await runtime.resolve(.swift(.type("CoreDeviceUtilities.HingeAngleStreamConfig")))
+        let array = try await runtime.resolve(.swift(.type("Swift.Array", genericArguments: [.type(snapshot)])))
+        let arguments: [NativeSwiftGenericArgument] = [.type(array), .type((any Error).self)]
+        let sequence = try await runtime.resolve(.swift(.type("Swift.AsyncThrowingStream", genericArguments: arguments)))
+        let iterator = try await runtime.resolve(.swift(.type("Swift.AsyncThrowingStream.Iterator", genericArguments: arguments)))
+        let abis = try Dictionary(uniqueKeysWithValues: [snapshot, configuration, sequence, iterator].map { ($0, try NativeType.opaque(named: $0.name)) })
+        let makeConfig = try await configuration.resolve(.swift(.initializer("init(changeThreshold:updateInterval:)",
+            as: ((Measurement<UnitAngle>, Duration) -> NativeSwiftValue).self, valueABIs: abis)))
+        config = try unsafe makeConfig.unsafeInvoke(Measurement(value: 0.01, unit: .degrees), .milliseconds(50))
+        monitor = try await motion.type.resolve(.swift(.method("monitorHingeAngle(config:)",
+            as: ((NativeSwiftValue) async throws -> NativeSwiftValue).self, valueABIs: abis)))
+        isValid = try await snapshot.resolve(.swift(.getter("isAngleValid", as: (() -> Bool).self, valueABIs: abis)))
+        readAngle = try await snapshot.resolve(.swift(.getter("angle", as: (() -> Measurement<UnitAngle>).self, valueABIs: abis)))
+        makeIterator = try await sequence.resolve(.swift(.method("makeAsyncIterator()", as: (() -> NativeSwiftValue).self,
+            valueABIs: abis, receiverABI: .opaque(named: sequence.name))))
+        next = try await iterator.resolve(.swift(.method("next()", as: (() async throws -> [NativeSwiftValue]?).self,
+            valueABIs: abis, receiverABI: .opaque(named: iterator.name))))
+    }
+
+    func observe(_ update: @escaping @MainActor (Double?) -> Void) async throws {
+        let sequence = try await unsafe monitor.unsafeInvoke(on: motion, config)
+        let iterator = try unsafe makeIterator.unsafeInvoke(on: sequence)
+        while let snapshots = try await unsafe next.unsafeInvoke(on: iterator) {
+            try Task.checkCancellation()
+            guard let snapshot = snapshots.last, try unsafe isValid.unsafeInvoke(on: snapshot) else { update(nil); continue }
+            let angle = try unsafe readAngle.unsafeInvoke(on: snapshot).converted(to: .degrees).value
+            update(angle.isFinite ? angle : nil)
+        }
+    }
+
+    func send(_ posture: DevicePosture) async throws {
+        try validateCapabilities()
+        let implementation = try await remote.implementation(capability: "VendorDefinedHIDCapability",
+            feature: "com.apple.coredevice.feature.remote.hid.vendordefined")
+        let send = try await implementation.type.resolve(.swift(.method("CoreDevice.HIDVendorDefined.send(usagePage:usage:version:data:)",
+            as: ((UInt16, UInt16, UInt32, Data) throws -> Void).self)))
+        try Task.checkCancellation()
+        try validateCapabilities()
+        try unsafe send.unsafeInvoke(on: implementation, 0xFF61, 0x5B, 0, DevicePosturePayload.serialize(posture))
+    }
+
+    private func validateCapabilities() throws {
+        guard try DevicePosturePayload.features.allSatisfy({ try remote.supports($0) }) else {
+            throw CLIError.unavailable("device-posture-capability", "The device no longer exposes posture controls.")
         }
     }
 }

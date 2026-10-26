@@ -37,6 +37,34 @@ final class CoreDeviceRemoteScreenDevice {
         try unsafe supportsFeature.unsafeInvoke(on: object, feature)
     }
 
+    /// Simulator UDIDs identify hardware records, not keys in DeviceManager.devices.
+    static func simulatorIdentifier(udid: String) async throws -> String? {
+        try load("/Library/Developer/PrivateFrameworks/CoreDevice.framework/CoreDevice")
+        let runtime = ABIRuntime.shared
+        let managerType = try await runtime.resolve(.swift(.type("CoreDevice.DeviceManager")))
+        let shared = try await managerType.resolve(.swift(.staticGetter("shared", as: (() -> NativeSwiftValue).self)))
+        let manager = try unsafe shared.unsafeInvoke()
+        let initialize = try await managerType.resolve(.swift(.method("awaitFullInitialization()", as: (() async -> Void).self)))
+        try await unsafe initialize.unsafeInvoke(on: manager)
+        try Task.checkCancellation()
+        let devices = try await managerType.resolve(.swift(.getter("devices", as: (() -> [UUID: NativeSwiftValue]).self)))
+        let remote = try await runtime.resolve(.swift(.type("CoreDevice.RemoteDevice")))
+        let deviceInfo = try await remote.resolve(.swift(.getter("deviceInfo", as: (() -> NativeSwiftValue).self)))
+        let infoType = try await runtime.resolve(.swift(.type("CoreDeviceProtocols.DeviceInfo")))
+        let readUDID = try await infoType.resolve(.swift(.getter("udid", as: (() -> String?).self)))
+        var match: String?
+        for (identifier, object) in try unsafe devices.unsafeInvoke(on: manager) {
+            let info = try unsafe deviceInfo.unsafeInvoke(on: object)
+            if try unsafe readUDID.unsafeInvoke(on: info)?.caseInsensitiveCompare(udid) == .orderedSame {
+                guard match == nil else {
+                    throw CLIError.unavailable("device-posture-identity", "More than one CoreDevice record matches this simulator's UDID.")
+                }
+                match = identifier.uuidString
+            }
+        }
+        return match
+    }
+
     func vncURL() throws -> URL? {
         let readInfo = try type.resolveAndWait(.swift(.getter("deviceInfo", as: (() -> NativeSwiftValue).self)))
         let info = try unsafe readInfo.unsafeInvoke(on: object)
