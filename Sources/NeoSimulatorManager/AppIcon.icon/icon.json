@@ -4,25 +4,93 @@
   },
   "groups" : [
     {
-      "blur-material" : 0.3,
+      "blur-material" : 0.6,
       "layers" : [
         {
           "glass" : true,
-          "hidden" : false,
-          "image-name" : "review-badge.svg",
-          "name" : "Review Badge"
+          "image-name" : "iphone.svg",
+          "name" : "iPhone",
+          "opacity" : 0.85,
+          "position" : {
+            "scale" : 0.8095703125,
+            "translation-in-points" : [
+              -423.5,
+              54.5
+            ]
+          }
         }
       ],
       "lighting" : "individual",
+      "name" : "iPhone",
       "opacity" : 1,
       "shadow" : {
         "kind" : "neutral",
-        "opacity" : 0.8
+        "opacity" : 1
       },
       "specular" : true,
       "translucency" : {
         "enabled" : true,
-        "value" : 0.5
+        "value" : 0.42
+      }
+    },
+    {
+      "blur-material" : 0.5,
+      "layers" : [
+        {
+          "glass" : true,
+          "image-name" : "vision-pro.svg",
+          "name" : "Vision Pro",
+          "opacity" : 0.8,
+          "position" : {
+            "scale" : 0.900390625,
+            "translation-in-points" : [
+              161,
+              -55
+            ]
+          }
+        }
+      ],
+      "lighting" : "individual",
+      "name" : "Vision Pro",
+      "opacity" : 1,
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 1
+      },
+      "specular" : true,
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.7
+      }
+    },
+    {
+      "blur-material" : 0.5,
+      "layers" : [
+        {
+          "glass" : true,
+          "image-name" : "ipad.svg",
+          "name" : "iPad",
+          "opacity" : 0.7,
+          "position" : {
+            "scale" : 0.9296875,
+            "translation-in-points" : [
+              26,
+              -9
+            ]
+          }
+        }
+      ],
+      "lighting" : "individual",
+      "name" : "iPad",
+      "opacity" : 1,
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      },
+      "specular" : true,
+      "translucency" : {
+        "enabled" : true,
+        "value" : 1
       }
     },
     {
