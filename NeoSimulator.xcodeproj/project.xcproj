@@ -202,6 +202,13 @@
             "NeoSimulatorHostTests/compile-sources",
           ],
         }, {
+          "path": "SimulatorAppResize.swift",
+          "target-membership": [
+            "NeoSimulator/compile-sources",
+            "NeoSimulatorRenderer/compile-sources",
+            "NeoSimulatorHostTests/compile-sources",
+          ],
+        }, {
           "path": "DeviceSymbolResource.swift",
           "target-membership": [
             "NeoSimulator/compile-sources",

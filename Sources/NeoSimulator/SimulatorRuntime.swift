@@ -434,6 +434,18 @@ struct SimulatorDisplayInterface {
         return nil
     }
 
+    func appScreen(uniqueID: String, of device: SimulatorDevice) throws -> (identifier: UInt32, object: AnyObject)? {
+        guard let adapter = try screenAdapter.adapter(of: device.object) else { return nil }
+        for (identifier, value) in try unsafe adapterScreens.unsafeInvoke(on: adapter) {
+            let screen = try value.withCopy { $0 as AnyObject }
+            let properties = try unsafe screenProperties.unsafeInvoke(on: screen)
+            if try screenMessages.send("uniqueId", to: properties, as: String?.self) == uniqueID {
+                return (identifier, screen)
+            }
+        }
+        return nil
+    }
+
     /// `SimScreenType`'s TVOut, the external display that I/O ▸ External
     /// Displays configures. 0 is a device's own screen and 2 is CarPlay.
     static let externalScreenType: UInt64 = 1
@@ -1362,6 +1374,8 @@ struct DisplayResizeRect {
 @MainActor
 protocol SimulatorDisplay: AnyObject {
     var isBooted: Bool { get }
+    var captureDisplayID: UInt32? { get }
+    func connectAppDisplay(uniqueID: String) async throws -> any SimulatorDisplay
     var view: NSView { get }
     /// The input digitizer, or the loaded plugin's overlay.
     var inputView: NSView { get }
@@ -1481,6 +1495,13 @@ protocol SimulatorDisplay: AnyObject {
     func disconnect()
 }
 
+extension SimulatorDisplay {
+    var captureDisplayID: UInt32? { nil }
+    func connectAppDisplay(uniqueID: String) async throws -> any SimulatorDisplay {
+        throw HostError.unavailable("This display cannot connect to the app resizing screen.")
+    }
+}
+
 @MainActor
 final class SimulatorConnection: SimulatorDisplay {
     let view: NSView
@@ -1492,6 +1513,7 @@ final class SimulatorConnection: SimulatorDisplay {
     private let chromeView: NSView
     private let device: SimulatorDevice
     private let buttonTarget: UInt32
+    let captureDisplayID: UInt32?
     private var hidClient: AnyObject?
     private var disconnected = false
     var onPropertiesChange: (() -> Void)?
@@ -1502,6 +1524,7 @@ final class SimulatorConnection: SimulatorDisplay {
         self.device = device
         self.runtime = runtime
         self.screen = screen.object
+        captureDisplayID = screen.identifier
         let display = runtime.display
         buttonTarget = try unsafe display.buttonTarget.unsafeInvoke(on: screen.object)
         hidClient = try runtime.input.connect(to: device)
@@ -1527,6 +1550,22 @@ final class SimulatorConnection: SimulatorDisplay {
         // SimulatorKit connects keyboard input on every display and sends each modifier
         // change to all of them; the window controller enables it only while the window is key.
         setKeyboardEnabled(false)
+    }
+
+    func connectAppDisplay(uniqueID: String) async throws -> any SimulatorDisplay {
+        // Device Hub waits up to 30 seconds for the same uniqueId in this device's
+        // screen adapter. CoreDevice displayId and SimulatorKit screenID differ.
+        for _ in 0..<120 {
+            try Task.checkCancellation()
+            guard isBooted else { throw HostError.unavailable("The simulator disconnected while preparing app resizing.") }
+            if let screen = try runtime.display.appScreen(uniqueID: uniqueID, of: device) {
+                let connection = try SimulatorConnection(device: device, screen: screen, runtime: runtime)
+                connection.setChromeVisible(false)
+                return connection
+            }
+            try await Task.sleep(for: .milliseconds(250))
+        }
+        throw HostError.unavailable("Timed out waiting for the app resizing screen.")
     }
 
     var isBooted: Bool { !disconnected && device.state == 3 }

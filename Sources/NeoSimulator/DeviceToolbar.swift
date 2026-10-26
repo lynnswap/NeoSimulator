@@ -129,7 +129,8 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [Self.mainWindowItem] + toolbarDefaultItemIdentifiers(toolbar)
+        [Self.mainWindowItem] + (controller?.session.supportsAppResize == true
+            ? [NSToolbarItem.Identifier(DeviceCommand.ID.resizeApp.rawValue)] : []) + toolbarDefaultItemIdentifiers(toolbar)
     }
 
     func setShowsMainWindowAction(_ visible: Bool) {
@@ -139,9 +140,18 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
     }
 
     private func updateMainWindowAction(in toolbar: NSToolbar) {
+        updateResizeAction(in: toolbar)
         if let index = toolbar.items.firstIndex(where: { $0.itemIdentifier == Self.mainWindowItem }) {
             if !showsMainWindowAction { toolbar.removeItem(at: index) }
         } else if showsMainWindowAction { toolbar.insertItem(withItemIdentifier: Self.mainWindowItem, at: 0) }
+    }
+
+    private func updateResizeAction(in toolbar: NSToolbar) {
+        let id = NSToolbarItem.Identifier(DeviceCommand.ID.resizeApp.rawValue)
+        let supports = controller?.session.supportsAppResize == true
+        if let index = toolbar.items.firstIndex(where: { $0.itemIdentifier == id }) {
+            if !supports { toolbar.removeItem(at: index) }
+        } else if supports { toolbar.insertItem(withItemIdentifier: id, at: 0) }
     }
 
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
@@ -188,8 +198,8 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
 
         func restore() {
             guard let toolbar, toolbar.delegate === self else { return }
-            if let index = toolbar.items.firstIndex(where: { $0.itemIdentifier == DeviceToolbar.mainWindowItem }) {
-                toolbar.removeItem(at: index)
+            for id in [DeviceToolbar.mainWindowItem, NSToolbarItem.Identifier(DeviceCommand.ID.resizeApp.rawValue)] {
+                if let index = toolbar.items.firstIndex(where: { $0.itemIdentifier == id }) { toolbar.removeItem(at: index) }
             }
             if let index = toolbar.items.firstIndex(where: { $0.itemIdentifier.rawValue == DeviceCommand.ID.captureKeyboard.rawValue }) {
                 toolbar.removeItem(at: index)
@@ -199,7 +209,8 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
 
         func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier identifier: NSToolbarItem.Identifier,
                      willBeInsertedIntoToolbar inserted: Bool) -> NSToolbarItem? {
-            if identifier == DeviceToolbar.mainWindowItem || identifier.rawValue == DeviceCommand.ID.captureKeyboard.rawValue {
+            if identifier == DeviceToolbar.mainWindowItem || identifier.rawValue == DeviceCommand.ID.resizeApp.rawValue
+                || identifier.rawValue == DeviceCommand.ID.captureKeyboard.rawValue {
                 return owner?.toolbar(toolbar, itemForItemIdentifier: identifier, willBeInsertedIntoToolbar: inserted)
             }
             return original?.toolbar?(toolbar, itemForItemIdentifier: identifier, willBeInsertedIntoToolbar: inserted)
@@ -212,11 +223,11 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
         }
 
         func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-            var identifiers = original?.toolbarAllowedItemIdentifiers?(toolbar) ?? toolbar.items.map(\.itemIdentifier)
-            let additions = [DeviceToolbar.mainWindowItem] + (owner?.commands.contains(.captureKeyboard) == true
-                ? [NSToolbarItem.Identifier(DeviceCommand.ID.captureKeyboard.rawValue)] : [])
-            for identifier in additions where !identifiers.contains(identifier) { identifiers.append(identifier) }
-            return identifiers
+            let identifiers = original?.toolbarAllowedItemIdentifiers?(toolbar) ?? toolbar.items.map(\.itemIdentifier)
+            let hostItems = [DeviceToolbar.mainWindowItem]
+                + (owner?.controller?.session.supportsAppResize == true ? [NSToolbarItem.Identifier(DeviceCommand.ID.resizeApp.rawValue)] : [])
+                + (owner?.commands.contains(.captureKeyboard) == true ? [NSToolbarItem.Identifier(DeviceCommand.ID.captureKeyboard.rawValue)] : [])
+            return hostItems + identifiers.filter { !hostItems.contains($0) }
         }
 
         func toolbarSelectableItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
@@ -263,6 +274,11 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
         withObservationTracking {
             guard let controller else { return }
             // Read these even before AppKit has asked the delegate to create items.
+            _ = controller.session.supportsAppResize
+            _ = controller.session.canResizeApp
+            _ = controller.session.isStartingAppResize
+            updateResizeAction(in: toolbar)
+            if let pluginToolbar = pluginDelegate?.toolbar { updateResizeAction(in: pluginToolbar) }
             _ = controller.session.isBusy
             _ = controller.session.isConnected
             _ = controller.session.recording?.isStopping

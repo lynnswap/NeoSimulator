@@ -154,6 +154,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case "home": .home
             case "lock": .lock
             case "rotate": .rotateRight
+            case "resizeApp": .resizeApp
             case "capture": .saveScreen
             case "record": controller.session.recording == nil ? .recordScreen : .stopRecording
             case "captureKeyboard": .captureKeyboard
@@ -169,8 +170,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             switch self {
             case .simulator(let controller):
                 guard let id = simulatorCommand(identifier, for: controller) else { return false }
-                return DeviceCommand.command(id).isSupported(controller.session.capabilities)
-            case .remote: return identifier != "rotate"
+                return id == .resizeApp ? controller.session.supportsAppResize : DeviceCommand.command(id).isSupported(controller.session.capabilities)
+            case .remote: return identifier != "rotate" && identifier != "resizeApp"
             }
         }
 
@@ -197,6 +198,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case .remote(let controller): controller.performScreenAction(identifier)
             }
         }
+
+        var resizingApp: Bool {
+            if case .simulator(let controller) = self { return controller.session.isResizingApp || controller.session.isStartingAppResize }
+            return false
+    }
 
         func canvasZoomIsSelected(_ identifier: String) -> Bool {
             guard let action = CanvasZoom.Action(rawValue: identifier), case .simulator(let controller) = self else { return false }
@@ -500,7 +506,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         mainWindow?.updateScreenToolbar(supports: { action in
             action == "rotate" && posture?.isSupported == true ? false : screen.supports(action)
         }, isEnabled: screen.isEnabled,
-                                       recordingTitle: screen.recordingTitle, capturesKeyboard: screen.capturesKeyboard)
+                                       recordingTitle: screen.recordingTitle, resizingApp: screen.resizingApp, capturesKeyboard: screen.capturesKeyboard)
         mainWindow?.updateDevicePosture(posture, isEnabled: screen.canControlDevice && !model.managingDeviceIDs.contains(identifier))
         mainWindow?.updateCanvasZoom(supports: screen.supports, isEnabled: screen.isEnabled, isSelected: screen.canvasZoomIsSelected)
     }
@@ -975,6 +981,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     private var selectionIdentifier: DeviceInventoryID?
     private var previewStack: NSStackView?
     private let compactIdentifier = NSToolbarItem.Identifier("CompactDeviceWindow")
+    private let resizeAppIdentifier = NSToolbarItem.Identifier("resizeApp")
     private let captureKeyboardIdentifier = NSToolbarItem.Identifier("captureKeyboard")
     private let canvasZoomIdentifier = NSToolbarItem.Identifier("CanvasZoom")
     private let moreIdentifier = NSToolbarItem.Identifier("CanvasMoreActions")
@@ -1719,7 +1726,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         activeScreenCommandTarget = nil
         liveScreenContainer.view.isHidden = true
         previewStack?.isHidden = false
-        for item in window?.toolbar?.items ?? [] where item.itemIdentifier == compactIdentifier || item.itemIdentifier == captureKeyboardIdentifier || item.itemIdentifier == canvasZoomIdentifier || item.itemIdentifier == moreIdentifier {
+        for item in window?.toolbar?.items ?? [] where item.itemIdentifier == resizeAppIdentifier || item.itemIdentifier == captureKeyboardIdentifier || item.itemIdentifier == compactIdentifier || item.itemIdentifier == canvasZoomIdentifier || item.itemIdentifier == moreIdentifier {
             item.isHidden = true
         }
         screenActionBar.isHidden = true
@@ -1743,8 +1750,17 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         return super.supplementalTarget(forAction: action, sender: sender)
     }
 
-    func updateScreenToolbar(supports: (String) -> Bool, isEnabled: (String) -> Bool, recordingTitle: String,
-                             capturesKeyboard: Bool = false) {
+    func updateScreenToolbar(supports: (String) -> Bool, isEnabled: (String) -> Bool, recordingTitle: String, resizingApp: Bool = false, capturesKeyboard: Bool = false) {
+        if let item = window?.toolbar?.items.first(where: { $0.itemIdentifier == resizeAppIdentifier }) {
+            item.isHidden = liveDeviceIdentifier == nil || !supports("resizeApp")
+            item.isEnabled = isEnabled("resizeApp")
+            item.menuFormRepresentation?.isEnabled = item.isEnabled
+            item.menuFormRepresentation?.state = resizingApp ? .on : .off
+            if let button = item.view as? NSButton {
+                button.state = resizingApp ? .on : .off
+                button.isEnabled = item.isEnabled
+            }
+        }
         if let item = window?.toolbar?.items.first(where: { $0.itemIdentifier == captureKeyboardIdentifier }) {
             item.isHidden = liveDeviceIdentifier == nil || !supports("captureKeyboard")
             item.isEnabled = isEnabled("captureKeyboard")
@@ -1794,6 +1810,10 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         profileScreenActions.isHidden = screenActionButtons["rotate"]?.isHidden != false && !visible
         screenActionBar.isHidden = primaryScreenActions.isHidden && profileScreenActions.isHidden
         updateDeviceFooter()
+    }
+
+    @objc private func resizeApp(_ sender: Any?) {
+        onScreenAction?("resizeApp")
     }
 
     @objc private func captureKeyboard(_ sender: Any?) { onScreenAction?("captureKeyboard") }
@@ -2025,13 +2045,34 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [.toggleSidebar, .flexibleSpace, newSimulatorIdentifier, filterIdentifier, .sidebarTrackingSeparator,
-         .flexibleSpace, captureKeyboardIdentifier, canvasZoomIdentifier, compactIdentifier, moreIdentifier, .inspectorTrackingSeparator, inspectorIdentifier]
+         .flexibleSpace, resizeAppIdentifier, captureKeyboardIdentifier, canvasZoomIdentifier, compactIdentifier, moreIdentifier, .inspectorTrackingSeparator, inspectorIdentifier]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { toolbarDefaultItemIdentifiers(toolbar) }
 
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
                  willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
+        if itemIdentifier == resizeAppIdentifier {
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            item.label = "Resize App"
+            item.toolTip = "Resize App"
+            item.image = NSImage(systemSymbolName: "arrow.up.left.and.arrow.down.right", accessibilityDescription: item.label)
+            item.target = self
+            item.action = #selector(resizeApp(_:))
+            let menuItem = NSMenuItem(title: item.label, action: item.action, keyEquivalent: "")
+            menuItem.target = self
+            item.menuFormRepresentation = menuItem
+            let button = NSButton(image: item.image ?? NSImage(), target: self, action: #selector(resizeApp(_:)))
+            button.identifier = NSUserInterfaceItemIdentifier(itemIdentifier.rawValue)
+            button.bezelStyle = .toolbar
+            button.setButtonType(.pushOnPushOff)
+            button.toolTip = item.toolTip
+            button.setAccessibilityLabel(item.label)
+            item.view = button
+            item.autovalidates = false
+            item.isHidden = liveDeviceIdentifier == nil
+            return item
+        }
         if itemIdentifier == captureKeyboardIdentifier {
             let item = NSToolbarItem(itemIdentifier: itemIdentifier)
             item.label = "Capture Keyboard"

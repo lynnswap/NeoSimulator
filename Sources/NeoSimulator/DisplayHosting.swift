@@ -316,9 +316,11 @@ final class DisplayFitting {
     /// Whether the window is between `windowWillStartLiveResize` and
     /// `windowDidEndLiveResize`.
     private var isLiveResizing = false
+    /// App resize mode sends point geometry to the guest; its framebuffer keeps scale 1.
+    var scalesDisplay = true
     /// The display's scale and the window's origin when the window entered
     /// full screen, which Simulator.app restores when the window leaves it.
-    private var geometryBeforeFullScreen: (scale: CGFloat, origin: NSPoint)?
+    private var geometryBeforeFullScreen: (scale: CGFloat?, origin: NSPoint)?
     /// An embedded presentation may preserve a fixed scale after a native size change.
     var onNaturalSizeChange: (() -> Void)?
 
@@ -337,6 +339,10 @@ final class DisplayFitting {
         self.display = display
         self.content = content
         size = display.size(for: 1)
+        if scalesDisplay, let geometry = geometryBeforeFullScreen, geometry.scale == nil {
+            // Keep the returning primary's scale before full-screen fitting overwrites it.
+            geometryBeforeFullScreen = (display.renderScale, geometry.origin)
+        }
         observe()
     }
 
@@ -347,8 +353,17 @@ final class DisplayFitting {
     /// Gives the display the largest scale at which it fits the content.
     func fit() {
         content.isSizedToDisplay = false
-        display.resize(to: content.availableDisplaySize)
+        resize(to: content.availableDisplaySize)
         layout()
+    }
+
+    /// Applies the presentation policy to every explicit scale request.
+    func setScale(_ scale: CGFloat) {
+        display.setRenderScale(scalesDisplay ? scale : 1)
+    }
+
+    func resize(to size: NSSize) {
+        if scalesDisplay { display.resize(to: size) } else { setScale(1) }
     }
 
     /// Lays the display out in the content again.
@@ -360,19 +375,19 @@ final class DisplayFitting {
 
     func willStartLiveResize() {
         isLiveResizing = true
-        display.beginResize()
+        if scalesDisplay { display.beginResize() }
     }
 
     func didEndLiveResize() {
         isLiveResizing = false
         fit()
-        display.endResize()
+        if scalesDisplay { display.endResize() }
     }
 
     func willEnterFullScreen() {
         isFullScreen = true
         guard let window = content.window else { return }
-        geometryBeforeFullScreen = (display.renderScale, window.frame.origin)
+        geometryBeforeFullScreen = (scalesDisplay ? display.renderScale : nil, window.frame.origin)
     }
 
     func didFailToEnterFullScreen() {
@@ -382,10 +397,11 @@ final class DisplayFitting {
 
     /// Leaves full screen, returning the display's scale and the window's
     /// origin from before it, which the window returns to.
-    func didExitFullScreen() -> (scale: CGFloat, origin: NSPoint)? {
+    func didExitFullScreen(defaultScale: CGFloat) -> (scale: CGFloat, origin: NSPoint)? {
         isFullScreen = false
         defer { geometryBeforeFullScreen = nil }
-        return geometryBeforeFullScreen
+        guard let geometry = geometryBeforeFullScreen else { return nil }
+        return (geometry.scale ?? defaultScale, geometry.origin)
     }
 
     /// Stops following the display's size.
