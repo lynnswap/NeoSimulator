@@ -5,15 +5,7 @@ import UniformTypeIdentifiers
 
 struct DeviceSymbolArtwork: Sendable {
     let name: String
-    var bundleURL: URL?
-
-    @MainActor var image: Image {
-        if let bundleURL, let bundle = Bundle(url: bundleURL) {
-            Image(name, bundle: bundle)
-        } else {
-            Image(systemName: name)
-        }
-    }
+    var resource: DeviceSymbolResource?
 }
 
 /// Presentation artwork is cached by the device's model and Xcode resources.
@@ -138,9 +130,9 @@ fileprivate struct DeviceSymbolMetadata: Sendable {
         if let type {
             let identifier = type.identifier.lowercased()
             if identifier.contains("iphone-duo") || identifier.contains("iphone-v68") {
-                if let xcodeURL, let artwork = duoArtwork(in: xcodeURL) { return artwork }
+                if let xcodeURL, let artwork = await duoArtwork(in: xcodeURL) { return artwork }
                 for candidate in await resolveXcodeURLs() where candidate != xcodeURL {
-                    if let artwork = duoArtwork(in: candidate) { return artwork }
+                    if let artwork = await duoArtwork(in: candidate) { return artwork }
                 }
                 return DeviceSymbolArtwork(name: "questionmark")
             }
@@ -162,10 +154,12 @@ fileprivate struct DeviceSymbolMetadata: Sendable {
         return Self.familyArtwork(for: family)
     }
 
-    @MainActor private func duoArtwork(in xcodeURL: URL) -> DeviceSymbolArtwork? {
-        let url = xcodeURL.appendingPathComponent("Contents/SharedFrameworks/DeviceKit.framework")
-        guard Bundle(url: url)?.image(forResource: "v68_Closed") != nil else { return nil }
-        return DeviceSymbolArtwork(name: "v68_Closed", bundleURL: url)
+    @MainActor private func duoArtwork(in xcodeURL: URL) async -> DeviceSymbolArtwork? {
+        let framework = xcodeURL.appendingPathComponent("Contents/SharedFrameworks/DeviceKit.framework")
+        guard let url = Bundle(url: framework)?.url(forResource: "Assets", withExtension: "car"),
+              let resource = try? await DeviceSymbolResource.load(named: "v68_Closed", from: url, weight: .thin)
+        else { return nil }
+        return DeviceSymbolArtwork(name: "v68_Closed", resource: resource)
     }
 
     static func familyArtwork(for family: String) -> DeviceSymbolArtwork {
@@ -219,14 +213,19 @@ struct SidebarDeviceArtwork: View {
                         lineWidth: 1)
                 }
             if let symbol = model.symbol {
-                symbol.image
-                    .symbolRenderingMode(.palette)
-                    .resizable()
-                    .symbolVariant(.none)
-                    .foregroundStyle(outline, fill)
-                .fontWeight(.thin)
-                .aspectRatio(contentMode: .fit)
-                .frame(width: 32 * 0.66, height: 32 * 0.66)
+                if let resource = symbol.resource {
+                    resource.palette(primary: outline, secondary: fill)
+                        .frame(width: 32 * 0.66, height: 32 * 0.66)
+                } else {
+                    Image(systemName: symbol.name)
+                        .symbolRenderingMode(.palette)
+                        .resizable()
+                        .symbolVariant(.none)
+                        .foregroundStyle(outline, fill)
+                        .fontWeight(.thin)
+                        .aspectRatio(contentMode: .fit)
+                        .frame(width: 32 * 0.66, height: 32 * 0.66)
+                }
             }
         }
         .frame(width: 32, height: 32)
