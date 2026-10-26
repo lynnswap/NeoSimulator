@@ -61,6 +61,9 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
         toolbar.delegate = delegate
         window.toolbar = toolbar
         updateMainWindowAction(in: toolbar)
+        if commands.contains(.captureKeyboard), !toolbar.items.contains(where: { $0.itemIdentifier.rawValue == DeviceCommand.ID.captureKeyboard.rawValue }) {
+            toolbar.insertItem(withItemIdentifier: NSToolbarItem.Identifier(DeviceCommand.ID.captureKeyboard.rawValue), at: 0)
+        }
     }
 
     /// Read physical modifier state so synthetic releases sent to devices do not
@@ -188,12 +191,15 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
             if let index = toolbar.items.firstIndex(where: { $0.itemIdentifier == DeviceToolbar.mainWindowItem }) {
                 toolbar.removeItem(at: index)
             }
+            if let index = toolbar.items.firstIndex(where: { $0.itemIdentifier.rawValue == DeviceCommand.ID.captureKeyboard.rawValue }) {
+                toolbar.removeItem(at: index)
+            }
             toolbar.delegate = original
         }
 
         func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier identifier: NSToolbarItem.Identifier,
                      willBeInsertedIntoToolbar inserted: Bool) -> NSToolbarItem? {
-            if identifier == DeviceToolbar.mainWindowItem {
+            if identifier == DeviceToolbar.mainWindowItem || identifier.rawValue == DeviceCommand.ID.captureKeyboard.rawValue {
                 return owner?.toolbar(toolbar, itemForItemIdentifier: identifier, willBeInsertedIntoToolbar: inserted)
             }
             return original?.toolbar?(toolbar, itemForItemIdentifier: identifier, willBeInsertedIntoToolbar: inserted)
@@ -201,12 +207,16 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
 
         func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
             let identifiers = original?.toolbarDefaultItemIdentifiers?(toolbar) ?? []
-            return owner?.showsMainWindowAction == true ? [DeviceToolbar.mainWindowItem] + identifiers : identifiers
+            let capture = owner?.commands.contains(.captureKeyboard) == true ? [NSToolbarItem.Identifier(DeviceCommand.ID.captureKeyboard.rawValue)] : []
+            return (owner?.showsMainWindowAction == true ? [DeviceToolbar.mainWindowItem] : []) + capture + identifiers
         }
 
         func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-            let identifiers = original?.toolbarAllowedItemIdentifiers?(toolbar) ?? toolbar.items.map(\.itemIdentifier)
-            return identifiers.contains(DeviceToolbar.mainWindowItem) ? identifiers : [DeviceToolbar.mainWindowItem] + identifiers
+            var identifiers = original?.toolbarAllowedItemIdentifiers?(toolbar) ?? toolbar.items.map(\.itemIdentifier)
+            let additions = [DeviceToolbar.mainWindowItem] + (owner?.commands.contains(.captureKeyboard) == true
+                ? [NSToolbarItem.Identifier(DeviceCommand.ID.captureKeyboard.rawValue)] : [])
+            for identifier in additions where !identifiers.contains(identifier) { identifiers.append(identifier) }
+            return identifiers
         }
 
         func toolbarSelectableItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
@@ -257,6 +267,7 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
             _ = controller.session.isConnected
             _ = controller.session.recording?.isStopping
             _ = controller.session.showsAlwaysOn
+            _ = controller.capturesKeyboard
             configureItems()
         } onChange: { [weak self] in
             Task { @MainActor [weak self] in self?.updateItems() }
@@ -264,7 +275,7 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
     }
 
     private func configureItems() {
-        for item in toolbar.items {
+        for item in toolbar.items + (pluginDelegate?.toolbar?.items ?? []) {
             if let id = DeviceCommand.ID(rawValue: item.itemIdentifier.rawValue) { configure(item, id) }
         }
     }

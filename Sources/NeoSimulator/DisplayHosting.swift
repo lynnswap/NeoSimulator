@@ -1,4 +1,183 @@
 import AppKit
+import Carbon
+import Observation
+
+/// A synchronous filter: returning true consumes an event before AppKit handles shortcuts.
+@MainActor
+protocol KeyboardEventTap: AnyObject {
+    func start(receive: @escaping @MainActor (CGEventType, CGEvent) -> Bool) throws
+    func stop()
+}
+
+@MainActor
+final class SystemKeyboardEventTap: KeyboardEventTap {
+    private var port: CFMachPort?
+    private var source: CFRunLoopSource?
+    private var receive: (@MainActor (CGEventType, CGEvent) -> Bool)?
+
+    func start(receive: @escaping @MainActor (CGEventType, CGEvent) -> Bool) throws {
+        self.receive = receive
+        let mask = (1 << CGEventType.keyDown.rawValue) | (1 << CGEventType.keyUp.rawValue)
+            | (1 << CGEventType.flagsChanged.rawValue)
+        guard let port = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap,
+            options: .defaultTap, eventsOfInterest: CGEventMask(mask), callback: { _, type, event, context in
+                // The source is installed exclusively on the main run loop below.
+                let consumed = MainActor.assumeIsolated {
+                    guard let context else { return false }
+                    let tap = Unmanaged<SystemKeyboardEventTap>.fromOpaque(context).takeUnretainedValue()
+                    return tap.receive?(type, event) ?? false
+                }
+                return consumed ? nil : Unmanaged.passUnretained(event)
+            }, userInfo: Unmanaged.passUnretained(self).toOpaque()) else {
+            self.receive = nil
+            throw HostError.operation("Unable to Capture Keyboard. Allow NeoSimulator in System Settings > Privacy & Security > Accessibility, then try again.")
+        }
+        guard let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, port, 0) else {
+            CFMachPortInvalidate(port)
+            self.receive = nil
+            throw HostError.operation("Unable to Capture Keyboard. The keyboard event source could not be created.")
+        }
+        self.port = port
+        self.source = source
+        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+    }
+
+    func stop() {
+        receive = nil
+        if let port { CGEvent.tapEnable(tap: port, enable: false); CFMachPortInvalidate(port) }
+        if let source { CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes) }
+        source = nil
+        port = nil
+    }
+
+    isolated deinit { stop() }
+}
+
+/// Captures shortcuts only while its displayed device owns focus. Escape remains a way out.
+@Observable @MainActor
+final class KeyboardCapture {
+    private(set) var isCapturing = false
+    @ObservationIgnored var failure: (any Error) -> Void = { _ in }
+    @ObservationIgnored var didStop: () -> Void = {}
+    private let tap: any KeyboardEventTap
+    private let isEligible: () -> Bool
+    private let forward: (NSEvent) -> Void
+    private let releaseModifiers: ([NSEvent]) -> Void
+    private let waitForEscapeHold: () async throws -> Void
+    private let initialModifierFlags: () -> NSEvent.ModifierFlags
+    @ObservationIgnored private var pressed: [UInt16: NSEvent] = [:]
+    @ObservationIgnored private var modifiers: [UInt16: NSEvent] = [:]
+    @ObservationIgnored private var escapeHold: Task<Void, Never>?
+    @ObservationIgnored private var observers: [any NSObjectProtocol] = []
+    private static let modifierKeys: [(Int, NSEvent.ModifierFlags)] = [
+        (kVK_Command, .command), (kVK_RightCommand, .command),
+        (kVK_Shift, .shift), (kVK_RightShift, .shift),
+        (kVK_Option, .option), (kVK_RightOption, .option),
+        (kVK_Control, .control), (kVK_RightControl, .control), (kVK_Function, .function),
+    ]
+
+    init(tap: any KeyboardEventTap = SystemKeyboardEventTap(), isEligible: @escaping () -> Bool,
+         forward: @escaping (NSEvent) -> Void, releaseModifiers: @escaping ([NSEvent]) -> Void,
+         initialModifierFlags: @escaping () -> NSEvent.ModifierFlags = { NSEvent.modifierFlags },
+         waitForEscapeHold: @escaping () async throws -> Void = { try await Task.sleep(for: .seconds(1)) }) {
+        self.tap = tap
+        self.isEligible = isEligible
+        self.forward = forward
+        self.releaseModifiers = releaseModifiers
+        self.waitForEscapeHold = waitForEscapeHold
+        self.initialModifierFlags = initialModifierFlags
+        observers.append(NotificationCenter.default.addObserver(forName: NSApplication.willResignActiveNotification,
+            object: nil, queue: .main) { [weak self] _ in MainActor.assumeIsolated { _ = self?.stop() } })
+        observers.append(NotificationCenter.default.addObserver(forName: NSWindow.didUpdateNotification,
+            object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self, self.isCapturing, !self.isEligible() else { return }
+                    self.stop()
+                }
+            })
+    }
+
+    func start() throws {
+        guard !isCapturing else { return }
+        guard isEligible() else { throw HostError.operation("Focus the device screen before capturing its keyboard.") }
+        try tap.start { [weak self] type, event in self?.receive(type, event) ?? false }
+        isCapturing = true
+        // Focus may already have sent modifiers held before the tap started.
+        let flags = initialModifierFlags()
+        for (code, flag) in Self.modifierKeys where flags.contains(flag) {
+            if let event = NSEvent.keyEvent(with: .flagsChanged, location: .zero, modifierFlags: flags,
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: 0, context: nil,
+                characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: UInt16(code)) {
+                modifiers[UInt16(code)] = event
+            }
+        }
+    }
+
+    @discardableResult
+    func stop() -> Bool {
+        guard isCapturing else { return false }
+        isCapturing = false
+        tap.stop()
+        escapeHold?.cancel()
+        escapeHold = nil
+        let keys = pressed.values
+        pressed.removeAll()
+        for event in keys {
+            if let up = NSEvent.keyEvent(with: .keyUp, location: event.locationInWindow, modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: event.windowNumber, context: nil,
+                characters: event.characters ?? "", charactersIgnoringModifiers: event.charactersIgnoringModifiers ?? "",
+                isARepeat: false, keyCode: event.keyCode) { forward(up) }
+        }
+        let releases = modifiers.values.compactMap { event in
+            NSEvent.keyEvent(with: .flagsChanged, location: .zero, modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: event.windowNumber, context: nil,
+                characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: event.keyCode)
+        }
+        modifiers.removeAll()
+        releaseModifiers(releases)
+        didStop()
+        return true
+    }
+
+    private func receive(_ type: CGEventType, _ cgEvent: CGEvent) -> Bool {
+        guard isCapturing else { return false }
+        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            stop()
+            failure(HostError.operation("Keyboard capture stopped because macOS disabled its event tap. Try Capture Keyboard again."))
+            return false
+        }
+        guard isEligible() else { stop(); return false }
+        guard let event = NSEvent(cgEvent: cgEvent) else { return false }
+        switch event.type {
+        case .keyDown:
+            pressed[event.keyCode] = event
+            if event.keyCode == UInt16(kVK_Escape), !event.isARepeat, escapeHold == nil {
+                escapeHold = Task { [weak self, waitForEscapeHold] in
+                    do {
+                        try await waitForEscapeHold()
+                        try Task.checkCancellation()
+                        self?.stop()
+                    } catch is CancellationError {} catch { self?.stop(); self?.failure(error) }
+                }
+            }
+        case .keyUp:
+            pressed.removeValue(forKey: event.keyCode)
+            if event.keyCode == UInt16(kVK_Escape) { escapeHold?.cancel(); escapeHold = nil }
+        case .flagsChanged:
+            let flag = Self.modifierKeys.first { $0.0 == Int(event.keyCode) }?.1
+            if let flag, event.modifierFlags.contains(flag) { modifiers[event.keyCode] = event }
+            else { modifiers.removeValue(forKey: event.keyCode) }
+        default: return false
+        }
+        forward(event)
+        return true
+    }
+
+    isolated deinit {
+        stop()
+        for observer in observers { NotificationCenter.default.removeObserver(observer) }
+    }
+}
 
 /// Shares host keyboard routing between primary and external display windows.
 /// Only a key window with a connected hardware keyboard receives keys.
@@ -9,15 +188,36 @@ final class DisplayKeyboardInput {
     /// The window's display. A device window gets a new display when its
     /// device reconnects, which takes no keyboard until the window gives it.
     var display: any SimulatorDisplay {
+        willSet { capture.stop() }
         didSet { isEnabled = false }
     }
     /// Whether the display takes the Mac's keyboard.
     private var isEnabled = false
     private var commandKeyUpMonitor: Any?
+    private let captureTap: any KeyboardEventTap
+    private let applicationIsActive: () -> Bool
+    lazy var capture = KeyboardCapture(tap: captureTap, isEligible: { [weak self] in
+        guard let self, self.isEnabled, self.display.isBooted, self.applicationIsActive(), let window = self.window,
+              window.isKeyWindow, window.attachedSheet == nil else { return false }
+        return window.firstResponder === self.display.inputView
+    }, forward: { [weak self] event in
+        guard let input = self?.display.inputView else { return }
+        switch event.type {
+        case .keyDown: input.keyDown(with: event)
+        case .keyUp: input.keyUp(with: event)
+        case .flagsChanged:
+            // SimulatorKit processes keyboard modifiers in an application event monitor.
+            NSApp.sendEvent(event)
+        default: break
+        }
+    }, releaseModifiers: { [weak self] _ in self?.releaseModifiers() })
 
-    init(window: NSWindow, display: any SimulatorDisplay) {
+    init(window: NSWindow, display: any SimulatorDisplay, captureTap: any KeyboardEventTap = SystemKeyboardEventTap(),
+         applicationIsActive: @escaping () -> Bool = { NSApp.isActive }) {
         self.window = window
         self.display = display
+        self.captureTap = captureTap
+        self.applicationIsActive = applicationIsActive
         commandKeyUpMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyUp) { [weak self] event in
             guard let self, event.modifierFlags.contains(.command), let window = self.window,
                   event.window === window, window.firstResponder === self.display.inputView else { return event }
@@ -44,7 +244,7 @@ final class DisplayKeyboardInput {
             display.setKeyboardEnabled(true)
             Self.sendModifiers(NSEvent.modifierFlags)
         } else {
-            releaseModifiers()
+            if !capture.stop() { releaseModifiers() }
             display.setKeyboardEnabled(false)
         }
     }
@@ -68,6 +268,7 @@ final class DisplayKeyboardInput {
 
     /// Stops forwarding the window's key-ups.
     func invalidate() {
+        capture.stop()
         if let commandKeyUpMonitor { NSEvent.removeMonitor(commandKeyUpMonitor) }
         commandKeyUpMonitor = nil
     }
