@@ -784,6 +784,10 @@ struct InputFocusTests {
         let compact = try #require(controller.window)
         #expect(display.view.window === compact && compact.isOpaque)
         #expect(compact.backgroundColor == .windowBackgroundColor)
+        let beforeFit = compact.frame
+        controller.setScale(.fitScreen)
+        #expect(compact.frame != beforeFit)
+        #expect(controller.scaleState(.fitScreen) == .on)
         controller.setDeviceBezelVisible(false)
         controller.setDeviceBezelVisible(true)
         #expect(compact.backgroundColor == .windowBackgroundColor)

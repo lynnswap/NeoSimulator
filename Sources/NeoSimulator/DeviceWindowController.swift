@@ -211,18 +211,22 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
             let scope = (notification.userInfo?[AudioRouting.scopeKey] as? UInt64).flatMap(AudioScope.init(rawValue:))
             MainActor.assumeIsolated { if let scope { self?.audioRouteChosen(in: scope) } }
         }
-        showDisplay(fitting: { self.initialScale })
+        showInitialDisplay()
     }
 
     private var initialScale: CGFloat {
         min(scale(for: .fitScreen) ?? .infinity, savedScale ?? 1)
     }
 
-    /// Recomputes fit if a narrower window switches to the taller expanded title bar.
-    private func showDisplay(fitting scale: () -> CGFloat?) {
+    private func showInitialDisplay() {
         // DeviceKit initially lays out its loading indicator. Preserve the
         // window's viewport while the device composition becomes available.
         if session.display.usesNativeCanvas { resizeDisplay(); return }
+        showDisplay(fitting: { self.initialScale })
+    }
+
+    /// Recomputes fit if a narrower window switches to the taller expanded title bar.
+    private func showDisplay(fitting scale: () -> CGFloat?) {
         guard let first = scale() else { return }
         showDisplay(at: first)
         if let second = scale(), second < first { showDisplay(at: second) }
@@ -321,7 +325,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         keyboard.attach(to: window)
         observePresentationWindow()
         bezelChanged()
-        showDisplay(fitting: { self.initialScale })
+        showInitialDisplay()
         if let window {
             let place: ((NSWindow) -> Void)?
             if needsInitialPlacement {
