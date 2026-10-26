@@ -1,5 +1,4 @@
 import ABIBridge
-import Darwin
 import Foundation
 
 extension DeviceManagementAction {
@@ -52,16 +51,9 @@ final class CoreDeviceManagementClient {
     }
 
     private init() throws {
-        let binary = "/Library/Developer/PrivateFrameworks/CoreDevice.framework/CoreDevice"
-        // Apple runtime metadata and registered classes outlive the handle.
-        guard dlopen(binary, RTLD_NOW | RTLD_LOCAL) != nil else {
-            let detail = dlerror().map { String(cString: $0) } ?? "Unknown loader error"
-            throw CLIError.unavailable("coredevice-runtime", "Could not load CoreDevice: \(detail)")
-        }
+        manager = try CoreDeviceRuntime.deviceManagerIncludingSimulators()
         runtime = .shared
         let managerType = try runtime.resolveAndWait(.swift(.type("CoreDevice.DeviceManager")))
-        let shared = try managerType.resolveAndWait(.swift(.staticGetter("shared", as: (() -> NativeSwiftValue).self)))
-        manager = try unsafe shared.unsafeInvoke()
         initialize = try managerType.resolveAndWait(.swift(.method("awaitFullInitialization()", as: (() async -> Void).self)))
         devices = try managerType.resolveAndWait(.swift(.getter("devices", as: (() -> [UUID: NativeSwiftValue]).self)))
         remoteType = try runtime.resolveAndWait(.swift(.type("CoreDevice.RemoteDevice")))

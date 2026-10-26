@@ -57,6 +57,8 @@ Simulator.app's Mac input capture depends on Apple-only entitlements. Neo omits
 Send Pointer to Device and Send Keyboard Input to Device, along with matching
 iPad toolbar controls. Vision's plugin still displays its capture buttons, but
 they do not capture Mac input. The ordinary focused keyboard path is supported.
+Neo's separate Capture Keyboard command uses a public Quartz event tap with
+macOS Accessibility access; see <doc:InputAndPeripherals>.
 
 SimulatorKit owns multi-touch gesture state. A touch can survive a window's
 disconnection while its simulator keeps running. The gesture-release guidance
