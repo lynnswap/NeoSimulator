@@ -2,11 +2,46 @@ import Foundation
 import Darwin
 import Testing
 
-@testable import XcodeSimulatorHost
+@_spi(NeoSimulator) @testable import XcodeSimulatorHost
 
 @MainActor
 @Suite
 struct HostModeControllerTests {
+    @Test func anExitedRendererRetainsItsStartupFailureAndRecovery() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let result = directory.appendingPathComponent("result")
+        let reason = "Device Hub is running or launched during startup; close it before opening NeoSimulator"
+        let recovery = "Close the other display app, then choose View Screen again."
+        try JSONEncoder().encode(RendererStartupResult.failed(message: reason, recoverySuggestion: recovery))
+            .write(to: result, options: .atomic)
+        do {
+            try await WorkspaceClient.waitForNeoHostStartup(resultURL: result, isTerminated: { true })
+            Issue.record("An exited renderer reported successful startup")
+        } catch {
+            let failure = SimulatorHostFailure(error)
+            #expect(failure.failureReason == reason)
+            #expect(failure.recoverySuggestion == recovery)
+        }
+    }
+
+    @Test func aStartupReadyResultRequiresTheRendererToRemainRunning() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let result = directory.appendingPathComponent("result")
+        try JSONEncoder().encode(RendererStartupResult.ready).write(to: result, options: .atomic)
+        try await WorkspaceClient.waitForNeoHostStartup(resultURL: result, isTerminated: { false })
+        do {
+            try await WorkspaceClient.waitForNeoHostStartup(resultURL: result, isTerminated: { true })
+            Issue.record("A terminated renderer was accepted as ready")
+        } catch let error as CLIError {
+            #expect(error.identifier == "neo-host-startup")
+            #expect(error.message == "NeoSimulator exited during startup")
+        }
+    }
+
     @Test func managedRendererLaunchIncludesTheManagersExactIdentity() throws {
         let owner = RendererOwnerIdentity(processIdentifier: 321, launchDate: Date(timeIntervalSinceReferenceDate: 123456.125))
         let arguments = WorkspaceClient.rendererLaunchArguments(owner: owner,
@@ -711,14 +746,20 @@ struct HostModeControllerTests {
 
     @Test func neoHostLaunchFailureLeavesTheCommittedModeRestorable() async throws {
         let fixture = try ControllerFixture()
-        fixture.workspace.openNeoHostError = CLIError.io("open", "injected open failure")
+        let reason = "Device Hub is running or launched during startup; close it before opening NeoSimulator"
+        let recovery = "Close the other display app, then choose View Screen again."
+        fixture.workspace.openNeoHostError = CLIError(category: .temporary, identifier: "neo-host-startup", message: reason,
+            failureReason: reason, recoverySuggestion: recovery)
 
         do {
             _ = try await fixture.controller.use(.neo)
             Issue.record("expected standalone host launch failure")
         } catch let error as CLIError {
             #expect(error.identifier == "neo-host-launch-partial-success")
-            #expect(SimulatorHostFailure(error).kind == .partialSuccess)
+            let failure = SimulatorHostFailure(error)
+            #expect(failure.kind == .partialSuccess)
+            #expect(failure.failureReason == reason)
+            #expect(failure.recoverySuggestion == recovery + " The preferences remain managed; use Restore Original Settings… to undo them.")
         }
         #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .trueValue)
         #expect(try fixture.receiptStore.load() != nil)

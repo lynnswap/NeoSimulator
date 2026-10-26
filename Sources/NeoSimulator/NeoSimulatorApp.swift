@@ -1,6 +1,7 @@
 import AppKit
 import Darwin
 import Synchronization
+@_spi(NeoSimulator) import XcodeSimulatorHost
 
 
 struct RendererOwnerIdentity: Equatable {
@@ -276,8 +277,9 @@ enum NeoSimulatorApp {
         let options: HostLaunchOptions
         do {
             options = try HostLaunchOptions(arguments: arguments)
-            try options.validateInstallation()
         } catch { fail(error) }
+        do { try options.validateInstallation() }
+        catch { fail(error, resultURL: options.startupResultURL) }
         if options.readsCreationCatalog || options.validatesRuntime {
             Task { await runHelper(options: options) }
             dispatchMain()
@@ -333,7 +335,7 @@ enum NeoSimulatorApp {
                 throw error
             }
             if let result = options.startupResultURL {
-                do { try Data("ready\n".utf8).write(to: result, options: .atomic) }
+                do { try JSONEncoder().encode(RendererStartupResult.ready).write(to: result, options: .atomic) }
                 catch {
                     controller.shutdown()
                     hostLog("Could not write startup result: \(error.localizedDescription)")
@@ -342,10 +344,17 @@ enum NeoSimulatorApp {
             }
             application.activate()
             startup.replay(to: controller, application: application)
-        } catch { fail(error) }
+        } catch { fail(error, resultURL: options.startupResultURL) }
     }
 
-    private static func fail(_ error: any Error) -> Never {
+    private static func fail(_ error: any Error, resultURL: URL? = nil) -> Never {
+        if let resultURL {
+            do {
+                let result = RendererStartupResult.failed(message: error.localizedDescription,
+                    recoverySuggestion: (error as? any LocalizedError)?.recoverySuggestion)
+                try JSONEncoder().encode(result).write(to: resultURL, options: .atomic)
+            } catch { hostLog("Could not write startup failure: \(error.localizedDescription)") }
+        }
         hostLog(error.localizedDescription)
         if case HostError.invalidArguments = error { exit(EX_USAGE) }
         if case HostError.conflict = error { exit(EX_TEMPFAIL) }
