@@ -151,6 +151,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         func supports(_ identifier: String) -> Bool {
+            if CanvasZoom.Action(rawValue: identifier) != nil {
+                if case .simulator = self { return true }
+                return false
+            }
             switch self {
             case .simulator(let controller):
                 guard let id = simulatorCommand(identifier, for: controller) else { return false }
@@ -160,6 +164,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         func isEnabled(_ identifier: String) -> Bool {
+            if let action = CanvasZoom.Action(rawValue: identifier), case .simulator(let controller) = self {
+                return controller.canPerformCanvasZoom(action)
+            }
             switch self {
             case .simulator(let controller):
                 guard let id = simulatorCommand(identifier, for: controller) else { return false }
@@ -169,11 +176,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         func perform(_ identifier: String) {
+            if let action = CanvasZoom.Action(rawValue: identifier), case .simulator(let controller) = self {
+                controller.performCanvasZoom(action)
+                return
+            }
             switch self {
             case .simulator(let controller):
                 if let id = simulatorCommand(identifier, for: controller) { controller.perform(id) }
             case .remote(let controller): controller.performScreenAction(identifier)
             }
+        }
+
+        func canvasZoomIsSelected(_ identifier: String) -> Bool {
+            guard let action = CanvasZoom.Action(rawValue: identifier), case .simulator(let controller) = self else { return false }
+            return controller.canvasZoomIsSelected(action)
         }
 
         var recordingTitle: String {
@@ -449,6 +465,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         simulatorMenus.updateKeyEquivalents(for: (screen.commandTarget as? DeviceWindowController)?.session.capabilities)
         mainWindow?.updateScreenToolbar(supports: screen.supports, isEnabled: screen.isEnabled,
                                        recordingTitle: screen.recordingTitle)
+        mainWindow?.updateCanvasZoom(supports: screen.supports, isEnabled: screen.isEnabled, isSelected: screen.canvasZoomIsSelected)
     }
 
     private func observeScreenState(_ identifier: DeviceInventoryID) {
@@ -908,6 +925,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     private var selectionIdentifier: DeviceInventoryID?
     private var previewStack: NSStackView?
     private let compactIdentifier = NSToolbarItem.Identifier("CompactDeviceWindow")
+    private let canvasZoomIdentifier = NSToolbarItem.Identifier("CanvasZoom")
     private let moreIdentifier = NSToolbarItem.Identifier("CanvasMoreActions")
     private var moreItem: NSMenuToolbarItem?
     private let screenActionIdentifiers = ["home", "capture", "record", "rotate"]
@@ -1604,7 +1622,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         activeScreenCommandTarget = nil
         liveScreenContainer.view.isHidden = true
         previewStack?.isHidden = false
-        for item in window?.toolbar?.items ?? [] where item.itemIdentifier == compactIdentifier || item.itemIdentifier == moreIdentifier {
+        for item in window?.toolbar?.items ?? [] where item.itemIdentifier == compactIdentifier || item.itemIdentifier == canvasZoomIdentifier || item.itemIdentifier == moreIdentifier {
             item.isHidden = true
         }
         screenActionBar.isHidden = true
@@ -1650,6 +1668,20 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         profileScreenActions.isHidden = screenActionButtons["rotate"]?.isHidden != false
         screenActionBar.isHidden = primaryScreenActions.isHidden && profileScreenActions.isHidden
         updateDeviceFooter()
+    }
+
+    func updateCanvasZoom(supports: (String) -> Bool, isEnabled: (String) -> Bool, isSelected: (String) -> Bool) {
+        guard let group = window?.toolbar?.items.first(where: { $0.itemIdentifier == canvasZoomIdentifier }) as? NSToolbarItemGroup else { return }
+        group.isHidden = liveDeviceIdentifier == nil || !supports(CanvasZoom.Action.fit.rawValue)
+        for (index, action) in CanvasZoom.Action.allCases.enumerated() {
+            group.subitems[index].isEnabled = isEnabled(action.rawValue)
+            group.setSelected(isSelected(action.rawValue), at: index)
+        }
+    }
+
+    @objc private func performCanvasZoom(_ sender: NSToolbarItemGroup) {
+        guard CanvasZoom.Action.allCases.indices.contains(sender.selectedIndex) else { return }
+        onScreenAction?(CanvasZoom.Action.allCases[sender.selectedIndex].rawValue)
     }
 
     @objc private func performScreenAction(_ sender: NSButton) {
@@ -1835,13 +1867,32 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [.toggleSidebar, .flexibleSpace, newSimulatorIdentifier, filterIdentifier, .sidebarTrackingSeparator,
-         .flexibleSpace, compactIdentifier, moreIdentifier, .inspectorTrackingSeparator, inspectorIdentifier]
+         .flexibleSpace, canvasZoomIdentifier, compactIdentifier, moreIdentifier, .inspectorTrackingSeparator, inspectorIdentifier]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { toolbarDefaultItemIdentifiers(toolbar) }
 
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
                  willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
+        if itemIdentifier == canvasZoomIdentifier {
+            let labels = ["Zoom Out", "Fit", "Physical Size", "Zoom In"]
+            let symbols = ["minus.magnifyingglass", "arrow.up.left.and.down.right.magnifyingglass", "1.magnifyingglass", "plus.magnifyingglass"]
+            let images = zip(symbols, labels).compactMap { NSImage(systemSymbolName: $0, accessibilityDescription: $1) }
+            let item: NSToolbarItemGroup
+            if images.count == labels.count {
+                item = NSToolbarItemGroup(itemIdentifier: itemIdentifier, images: images, selectionMode: .selectAny,
+                                           labels: labels, target: self, action: #selector(performCanvasZoom(_:)))
+            } else {
+                item = NSToolbarItemGroup(itemIdentifier: itemIdentifier, titles: labels, selectionMode: .selectAny,
+                                           labels: labels, target: self, action: #selector(performCanvasZoom(_:)))
+            }
+            item.label = "Canvas Zoom"
+            item.autovalidates = false
+            for subitem in item.subitems { subitem.autovalidates = false }
+            item.controlRepresentation = .expanded
+            item.isHidden = liveDeviceIdentifier == nil
+            return item
+        }
         if itemIdentifier == moreIdentifier {
             let item = NSMenuToolbarItem(itemIdentifier: itemIdentifier)
             item.label = "More Actions"

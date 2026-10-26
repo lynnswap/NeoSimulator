@@ -1,5 +1,22 @@
 import AppKit
 import CryptoKit
+import Observation
+
+/// The embedded viewport's scale is independent from compact-window geometry.
+@Observable @MainActor
+final class CanvasZoom {
+    enum Mode: Equatable {
+        case fit, physicalSize, fixed(CGFloat)
+    }
+
+    enum Action: String, CaseIterable {
+        case zoomOut, fit, physicalSize, zoomIn
+    }
+
+    var mode = Mode.fit
+    var scale: CGFloat = 1
+    var fitScale: CGFloat = 1
+}
 
 /// Window scaling modes; they resize the presentation without changing the guest screen.
 enum WindowScaleMode: String {
