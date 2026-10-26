@@ -118,6 +118,8 @@ final class DisplayFitting {
     /// The display's scale and the window's origin when the window entered
     /// full screen, which Simulator.app restores when the window leaves it.
     private var geometryBeforeFullScreen: (scale: CGFloat, origin: NSPoint)?
+    /// An embedded presentation may preserve a fixed scale after a native size change.
+    var onNaturalSizeChange: (() -> Void)?
 
     init(display: any SimulatorDisplay, content: any DisplayContentView) {
         self.display = display
@@ -203,6 +205,6 @@ final class DisplayFitting {
         let size = display.size(for: 1)
         guard size != self.size else { return }
         self.size = size
-        if fitsWindow { fit() }
+        if fitsWindow { fit() } else { onNaturalSizeChange?() }
     }
 }

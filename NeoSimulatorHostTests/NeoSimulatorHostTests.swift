@@ -61,11 +61,11 @@ struct InputFocusTests {
         #expect(controller.presentationViewController.supplementalTarget(forAction: screenshot.action!, sender: screenshot)
             as AnyObject? === controller)
         #expect(controller.validateMenuItem(screenshot))
-        #expect(display.view.superview === controller.presentationViewController.view)
+        #expect(display.view.isDescendant(of: controller.presentationViewController.view))
         controller.focusInput()
         #expect(window.firstResponder === display.inputView)
         #expect(controller.session === session && display.disconnectCount == 0)
-        #expect(!DeviceCommand.command(.fitScreen).isEnabled(controller))
+        #expect(DeviceCommand.command(.fitScreen).isEnabled(controller))
         #expect(!DeviceCommand.command(.stayOnTop).isEnabled(controller))
         controller.perform(.stayOnTop)
         #expect(controller.window?.level == .normal)
@@ -147,6 +147,77 @@ struct InputFocusTests {
         let saved = preferences.windowGeometry(forDevice: session.device.identity.preferenceIdentifier, screens: NSScreen.screens.map(\.frame))
         #expect(saved.scale.map { WindowScale.matches($0, compactScale) } == true)
         #expect(saved.center == movedCenter)
+    }
+
+    @Test func embeddedZoomKeepsPanningAndScaleSeparateFromCompactGeometry() throws {
+        _ = NSApplication.shared
+        let display = TestDisplay()
+        let controller = try makeController(display)
+        defer { controller.invalidate() }
+        let session = controller.session
+        let compactScale = display.renderScale
+        let compactFrame = try #require(controller.window?.frame)
+        let parent = NSViewController()
+        parent.view = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 400))
+        let window = KeyPresentationWindow(contentRect: parent.view.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentViewController = parent
+        defer { window.close() }
+        let outerFrame = window.frame
+        controller.embed(in: parent)
+        parent.view.layoutSubtreeIfNeeded()
+        let content = controller.presentationViewController.view
+        let scroll = try #require(content.subviews.compactMap { $0 as? NSScrollView }.first)
+        #expect(controller.canvasZoom.mode == .fit)
+        #expect(WindowScale.matches(display.renderScale, display.scale(for: content.bounds.size)))
+        let fitScale = display.renderScale
+        controller.performCanvasZoom(.zoomIn)
+        #expect(display.renderScale > fitScale)
+        controller.setScale(.pointAccurate)
+        #expect(controller.canvasZoom.mode == .fixed(1) && display.renderScale == 1)
+        #expect(window.frame == outerFrame && controller.window?.frame == compactFrame)
+        let clip = scroll.contentView
+        let local = NSPoint(x: 120, y: 400)
+        let before = display.view.convert(local, to: content)
+        let originalOrigin = clip.bounds.origin
+        clip.scroll(to: NSPoint(x: 60, y: 240))
+        scroll.reflectScrolledClipView(clip)
+        let after = display.view.convert(local, to: content)
+        #expect(after.x == before.x - (clip.bounds.minX - originalOrigin.x))
+        #expect(after.y == before.y - (clip.bounds.minY - originalOrigin.y))
+        #expect(display.view.convert(after, from: content) == local)
+        parent.view.setFrameSize(NSSize(width: 250, height: 350))
+        parent.view.layoutSubtreeIfNeeded()
+        #expect(display.renderScale == 1 && controller.canvasZoom.mode == .fixed(1))
+        let pannedCenter = NSPoint(x: clip.bounds.midX, y: clip.bounds.midY)
+        controller.showCompactWindow()
+        #expect(WindowScale.matches(display.renderScale, compactScale))
+        controller.embed(in: parent)
+        parent.view.layoutSubtreeIfNeeded()
+        #expect(display.renderScale == 1 && controller.canvasZoom.mode == .fixed(1))
+        #expect(abs(clip.bounds.midX - pannedCenter.x) < 1 && abs(clip.bounds.midY - pannedCenter.y) < 1)
+        #expect(controller.session === session && display.disconnectCount == 0)
+        controller.focusInput()
+        #expect(window.firstResponder === display.inputView)
+        controller.performCanvasZoom(.fit)
+        #expect(controller.canvasZoomIsSelected(.fit))
+        #expect(scroll.documentVisibleRect.contains(display.view.frame))
+        parent.view.setFrameSize(NSSize(width: 220, height: 300))
+        parent.view.layoutSubtreeIfNeeded()
+        #expect(WindowScale.matches(display.renderScale, display.scale(for: content.bounds.size)))
+        display.takeScreenSize(NSSize(width: 844, height: 390))
+        content.layoutSubtreeIfNeeded()
+        #expect(WindowScale.matches(display.renderScale, display.scale(for: content.bounds.size)))
+        controller.performCanvasZoom(.physicalSize)
+        let physicalScale = try #require(controller.scale(for: .physicalSize))
+        #expect(controller.canvasZoomIsSelected(.physicalSize) && WindowScale.matches(display.renderScale, physicalScale))
+        display.takeScreenSize(NSSize(width: 390, height: 844))
+        content.layoutSubtreeIfNeeded()
+        #expect(WindowScale.matches(display.renderScale, physicalScale))
+        controller.performCanvasZoom(.zoomOut)
+        #expect(display.renderScale < physicalScale)
+        #expect(!controller.canvasZoomIsSelected(.physicalSize))
+        #expect(window.frame == outerFrame)
     }
 
     @Test func commandsAndActivationRestoreTheNativeInputOwner() throws {
