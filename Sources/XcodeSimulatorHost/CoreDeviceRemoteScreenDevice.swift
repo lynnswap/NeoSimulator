@@ -2,6 +2,38 @@ import ABIBridge
 import AppKit
 import Darwin
 
+@_spi(NeoSimulator)
+@MainActor
+public enum CoreDeviceRuntime {
+    private static var manager: NativeSwiftValue?
+
+    /// Returns the retained, shared manager for default devices and simulators.
+    ///
+    /// Callers must await the manager's `awaitFullInitialization()` before reading
+    /// its devices or observing device changes. This method does not wait for initialization.
+    public static func deviceManagerIncludingSimulators() throws -> NativeSwiftValue {
+        if let manager { return manager }
+        let binary = "/Library/Developer/PrivateFrameworks/CoreDevice.framework/CoreDevice"
+        // Apple runtime metadata and registered classes outlive the handle.
+        guard dlopen(binary, RTLD_NOW | RTLD_LOCAL) != nil else {
+            let detail = dlerror().map { String(cString: $0) } ?? "Unknown loader error"
+            throw CLIError.unavailable("coredevice-runtime", "Could not load CoreDevice: \(detail)")
+        }
+        let runtime = ABIRuntime.shared
+        let service = try runtime.resolveAndWait(.swift(.type("CoreDevice.CoreDeviceService")))
+        let sharedConnection = try service.resolveAndWait(.swift(.staticGetter("sharedConnection", as: (() -> NativeSwiftValue).self)))
+        let connection = try unsafe sharedConnection.unsafeInvoke()
+        let visibility = try runtime.resolveAndWait(.swift(.type("CoreDevice.DeviceVisibilityClass")))
+        let classes = try ["default", "simulators"].map { try visibility.makeEnumCase(named: $0) }
+        let type = try runtime.resolveAndWait(.swift(.type("CoreDevice.DeviceManager")))
+        let make = try type.resolveAndWait(.swift(.initializer("init(serviceConnection:allowedDeviceVisibilityClasses:)",
+            as: ((NativeSwiftValue, [NativeSwiftValue]) -> NativeSwiftValue).self)))
+        let manager = try unsafe make.unsafeInvoke(connection, classes)
+        self.manager = manager
+        return manager
+    }
+}
+
 @MainActor
 final class CoreDeviceRemoteScreenDevice {
     let runtime: ABIRuntime
@@ -11,11 +43,9 @@ final class CoreDeviceRemoteScreenDevice {
     private let supportsFeature: NativeSwiftMethod<(String) -> Bool>
 
     init(identifier: String) async throws {
-        try Self.load("/Library/Developer/PrivateFrameworks/CoreDevice.framework/CoreDevice")
+        let manager = try CoreDeviceRuntime.deviceManagerIncludingSimulators()
         let runtime = ABIRuntime.shared
         let managerType = try runtime.resolveAndWait(.swift(.type("CoreDevice.DeviceManager")))
-        let shared = try managerType.resolveAndWait(.swift(.staticGetter("shared", as: (() -> NativeSwiftValue).self)))
-        let manager = try unsafe shared.unsafeInvoke()
         let initialize = try managerType.resolveAndWait(.swift(.method("awaitFullInitialization()", as: (() async -> Void).self)))
         try await unsafe initialize.unsafeInvoke(on: manager)
         try Task.checkCancellation()
@@ -35,6 +65,32 @@ final class CoreDeviceRemoteScreenDevice {
 
     func supports(_ feature: String) throws -> Bool {
         try unsafe supportsFeature.unsafeInvoke(on: object, feature)
+    }
+
+    /// Simulator UDIDs identify hardware records, not keys in DeviceManager.devices.
+    static func simulatorIdentifier(udid: String) async throws -> String? {
+        let manager = try CoreDeviceRuntime.deviceManagerIncludingSimulators()
+        let runtime = ABIRuntime.shared
+        let managerType = try await runtime.resolve(.swift(.type("CoreDevice.DeviceManager")))
+        let initialize = try await managerType.resolve(.swift(.method("awaitFullInitialization()", as: (() async -> Void).self)))
+        try await unsafe initialize.unsafeInvoke(on: manager)
+        try Task.checkCancellation()
+        let devices = try await managerType.resolve(.swift(.getter("devices", as: (() -> [UUID: NativeSwiftValue]).self)))
+        let remote = try await runtime.resolve(.swift(.type("CoreDevice.RemoteDevice")))
+        let deviceInfo = try await remote.resolve(.swift(.getter("deviceInfo", as: (() -> NativeSwiftValue).self)))
+        let infoType = try await runtime.resolve(.swift(.type("CoreDeviceProtocols.DeviceInfo")))
+        let readUDID = try await infoType.resolve(.swift(.getter("udid", as: (() -> String?).self)))
+        var match: String?
+        for (identifier, object) in try unsafe devices.unsafeInvoke(on: manager) {
+            let info = try unsafe deviceInfo.unsafeInvoke(on: object)
+            if try unsafe readUDID.unsafeInvoke(on: info)?.caseInsensitiveCompare(udid) == .orderedSame {
+                guard match == nil else {
+                    throw CLIError.unavailable("device-posture-identity", "More than one CoreDevice record matches this simulator's UDID.")
+                }
+                match = identifier.uuidString
+            }
+        }
+        return match
     }
 
     func vncURL() throws -> URL? {

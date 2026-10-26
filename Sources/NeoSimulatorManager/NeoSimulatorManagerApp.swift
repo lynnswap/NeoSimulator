@@ -423,7 +423,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         simulatorWindows.removeValue(forKey: device.id)
                         mainWindow?.showDevicePreview(ifDisplaying: device.id)
                     }
-                case .shutdown, .remove:
+                case .shutdown, .forceShutdown, .remove:
                     try await host.releasePresentation(for: identifier)
                     simulatorWindows.removeValue(forKey: device.id)
                     mainWindow?.showDevicePreview(ifDisplaying: device.id)
@@ -785,7 +785,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func present(_ error: any Error) {
         let alert = NSAlert()
         alert.messageText = error.localizedDescription
-        alert.informativeText = (error as? any LocalizedError)?.recoverySuggestion ?? ""
+        let failure = error as? any LocalizedError
+        alert.informativeText = [failure?.failureReason, failure?.recoverySuggestion].compactMap { $0 }.joined(separator: "\n\n")
         if let failure = error as? SimulatorHostFailure {
             NSLog("NeoSimulator: %@", failure.technicalDetails)
             if failure.kind == .preferencesChanged, model.status?.restorationAvailable == true {
@@ -2072,7 +2073,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         let name = devices.first?.name ?? ""
         let operations: [(String, DeviceManagementAction)] = [
             ("Rename…", .rename(name)), ("Clone…", .clone("\(name) Copy")),
-            ("Start", .start), ("Shut Down", .shutdown), ("Restart", .restart),
+            ("Start", .start), ("Shut Down", .shutdown), ("Force Shut Down", .forceShutdown), ("Restart", .restart),
             ("Pause", .pause), ("Resume", .resume),
             ("Pair Simulators", .pair), ("Unpair", .unpair),
             ("Erase Content and Settings…", .erase), ("Remove…", .remove),
@@ -2083,7 +2084,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             let item = NSMenuItem(title: title, action: #selector(performManagement(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = ManagementRequest(action: action, identifiers: identifiers)
-            item.isEnabled = idle
+            item.isEnabled = model.canManage(action, deviceIDs: identifiers)
             menu.addItem(item)
         }
         if menu.items.isEmpty {
@@ -2165,8 +2166,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     @objc private func performManagement(_ sender: NSMenuItem) {
         guard let request = sender.representedObject as? ManagementRequest else { return }
         let devices = model.inventory.filter { request.identifiers.contains($0.id) }
-        guard devices.count == request.identifiers.count, supports(request.action, devices: devices), !model.isBusy,
-              request.identifiers.isDisjoint(with: model.managingDeviceIDs) else { return }
+        guard devices.count == request.identifiers.count, supports(request.action, devices: devices),
+              model.canManage(request.action, deviceIDs: request.identifiers) else { return }
         switch request.action {
         case .rename: presentNameEditor(for: devices[0], cloning: false)
         case .clone: presentNameEditor(for: devices[0], cloning: true)

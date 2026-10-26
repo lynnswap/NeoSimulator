@@ -346,6 +346,12 @@
       ],
       "package-product-members": [
         {
+          "product-name": "XcodeSimulatorHost",
+          "build-phase": {
+            "build-phase": "frameworks"
+          }
+        },
+        {
           "package": "ABIBridge",
           "product-name": "ABIBridge",
           "build-phase": { "build-phase": "frameworks" },
