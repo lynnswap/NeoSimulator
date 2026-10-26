@@ -12,11 +12,14 @@ struct ManagerModelTests {
         let restoration = SimulatorScreenRestoration(device: device, xcodeURL: xcode, presentation: .compact)
         let decoded = try #require(SimulatorScreenRestoration(url: restoration.url))
         #expect(decoded == restoration)
-        let source = ManagerModelSource(devices: [])
+        let source = ManagerModelSource(devices: [simulator()])
         var events = source.events.makeAsyncIterator()
         let manager = SimulatorManagerModel(source: source)
         var presented = false
-        manager.restoreScreen(decoded) { presented = true }
+        manager.restoreScreen(decoded) {
+            #expect(!manager.inventory.isEmpty)
+            presented = true
+        }
         #expect(await events.next() == .open(decoded.deviceID))
         #expect(await source.lastOpenXcodeURL == xcode)
         #expect(!presented)
