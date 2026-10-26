@@ -165,23 +165,12 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             }
         }
         if !isInProcess {
-            signal(SIGTERM, SIG_IGN)
             Self.handoverTarget = self
-            let handover = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .global())
-            handover.setEventHandler {
-                // An alert shown from a main-queue block keeps the main queue busy,
-                // but its modal loop still runs main run-loop blocks.
-                CFRunLoopPerformBlock(CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue) {
-                    MainActor.assumeIsolated {
-                        Self.handoverTarget?.handoverRequested = true
-                        Self.handoverTarget?.yieldToAnotherHost()
-                        Self.requestTermination()
-                    }
-                }
-                CFRunLoopWakeUp(CFRunLoopGetMain())
+            handoverSignal = Self.observeHandoverSignal {
+                Self.handoverTarget?.handoverRequested = true
+                Self.handoverTarget?.yieldToAnotherHost()
+                Self.requestTermination()
             }
-            handover.resume()
-            handoverSignal = handover
         }
         openTestingSet()
         if isInProcess { return }
@@ -958,6 +947,22 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         yieldedToAnotherHost = true
         for shutdown in closingShutdowns.values { shutdown.cancel() }
         for shutdown in terminationShutdowns { shutdown.cancel() }
+    }
+
+    static func observeHandoverSignal(_ onHandover: @escaping @MainActor @Sendable () -> Void) -> DispatchSourceSignal {
+        signal(SIGTERM, SIG_IGN)
+        let source = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .global())
+        // DispatchSourceHandler is not Sendable, so make this worker callback's isolation explicit.
+        source.setEventHandler { @Sendable in
+            // An alert shown from a main-queue block keeps the main queue busy,
+            // but its modal loop still runs main run-loop blocks.
+            CFRunLoopPerformBlock(CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue) {
+                MainActor.assumeIsolated { onHandover() }
+            }
+            CFRunLoopWakeUp(CFRunLoopGetMain())
+        }
+        source.resume()
+        return source
     }
 
     nonisolated static func requestTerminationAfterOwnerExit() {
