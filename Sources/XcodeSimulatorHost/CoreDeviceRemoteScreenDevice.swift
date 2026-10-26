@@ -69,11 +69,9 @@ final class CoreDeviceRemoteScreenDevice {
 
     /// Simulator UDIDs identify hardware records, not keys in DeviceManager.devices.
     static func simulatorIdentifier(udid: String) async throws -> String? {
-        try load("/Library/Developer/PrivateFrameworks/CoreDevice.framework/CoreDevice")
+        let manager = try CoreDeviceRuntime.deviceManagerIncludingSimulators()
         let runtime = ABIRuntime.shared
         let managerType = try await runtime.resolve(.swift(.type("CoreDevice.DeviceManager")))
-        let shared = try await managerType.resolve(.swift(.staticGetter("shared", as: (() -> NativeSwiftValue).self)))
-        let manager = try unsafe shared.unsafeInvoke()
         let initialize = try await managerType.resolve(.swift(.method("awaitFullInitialization()", as: (() async -> Void).self)))
         try await unsafe initialize.unsafeInvoke(on: manager)
         try Task.checkCancellation()
