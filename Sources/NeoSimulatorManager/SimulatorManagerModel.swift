@@ -194,6 +194,7 @@ final class SimulatorManagerModel {
     func restoreScreen(_ restoration: SimulatorScreenRestoration,
                        present: @escaping @MainActor () async throws -> Void) {
         perform("Restoring simulator…") {
+            await self.refresh()
             try await self.controller.openDevice(restoration.deviceID, xcodeURL: restoration.xcodeURL)
             try await present()
         }

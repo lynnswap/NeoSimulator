@@ -271,6 +271,9 @@ public actor SimulatorHostController {
     public func openDevice(_ deviceID: DeviceInventoryID, xcodeURL: URL? = nil) async throws {
         _ = try deviceID.simulatorAddress
         try await operation {
+            // An explicit request supersedes the saved startup selection.
+            self.startupHandled = true
+            self.startupDeviceIdentifier = nil
             try await self.openDeviceBody(deviceID: deviceID, xcodeURL: xcodeURL)
         }
     }
