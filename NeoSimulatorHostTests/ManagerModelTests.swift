@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Observation
 import Testing
@@ -333,6 +334,41 @@ struct ManagerModelTests {
         #expect(model.issue == nil)
     }
 
+    @Test func artworkResolvesXcodeBeforeOpeningAScreen() async throws {
+        let device = simulator(deviceSet: "/tmp/artwork-device-set")
+        let source = ManagerModelSource(devices: [device])
+        let model = SimulatorManagerModel(source: source)
+        let urls = await model.artworkXcodeURLs(for: device)
+        #expect(urls == [URL(fileURLWithPath: "/Applications/Test Xcode.app")])
+        #expect(await source.artworkXcodeRequests == [device.id])
+    }
+
+    @Test func missingModelUsesFamilyPreview() async throws {
+        let artwork = DeviceArtworkCache().artwork(modelIdentifier: nil, family: "Mac", xcodeURL: nil)
+        let image = try #require(await artwork.hardwarePreview())
+        let expected = try #require(NSImage(systemSymbolName: "desktopcomputer", accessibilityDescription: nil))
+        #expect(try #require(image.tiffRepresentation) == #require(expected.tiffRepresentation))
+    }
+
+    @Test func remoteDuoResolvesInstalledArtworkWithoutOpeningAScreen() async {
+        let device = InventoryDevice.remote(CoreDeviceDevice(identifier: "remote-duo", udid: nil,
+            kind: .physical, name: "Duo", modelIdentifier: "iPhone19,4", modelName: "iPhone Duo",
+            platform: "iOS", osVersion: nil, osBuild: nil, connectionState: "connected",
+            pairingState: "paired", transportType: nil, bootState: "booted", capabilities: [],
+            lastConnectedAt: nil, visibilityClass: nil))
+        let source = ManagerModelSource(devices: [device])
+        let model = SimulatorManagerModel(source: source)
+        let artwork = DeviceArtworkCache().artwork(modelIdentifier: device.modelIdentifier, family: "iPhone",
+            xcodeURL: nil, resolveXcodeURLs: { await model.artworkXcodeURLs(for: device) })
+        while artwork.symbol == nil {
+            await withCheckedContinuation { continuation in
+                withObservationTracking { _ = artwork.symbol } onChange: { continuation.resume() }
+            }
+        }
+        #expect(await source.installedXcodeReadCount == 1)
+        #expect(await source.artworkXcodeRequests.isEmpty)
+    }
+
     @Test(arguments: [false, true])
     func forceShutdownPrecedesPresentationCleanupAndRetainsBothFailures(remote: Bool) async throws {
         let targets = try ["A", "B"].map { identifier -> InventoryDevice in
@@ -428,6 +464,8 @@ private actor ManagerModelSource: SimulatorManagerSource {
     private var pendingWrite: SimulatorDeviceSettings?
     private(set) var writeInputs: [SimulatorDeviceSettings?] = []
     private(set) var readCount = 0
+    private(set) var artworkXcodeRequests: [DeviceInventoryID] = []
+    private(set) var installedXcodeReadCount = 0
     private(set) var managementRequests = 0
     private(set) var preparationRequests = 0
     private let managementFailureID: DeviceInventoryID?
@@ -441,6 +479,14 @@ private actor ManagerModelSource: SimulatorManagerSource {
         (events, continuation) = AsyncStream.makeStream()
     }
 
+    func xcodeURL(forDevice deviceID: DeviceInventoryID) -> URL {
+        artworkXcodeRequests.append(deviceID)
+        return URL(fileURLWithPath: "/Applications/Test Xcode.app")
+    }
+    func installedXcodes() -> [SimulatorXcode] {
+        installedXcodeReadCount += 1
+        return [SimulatorXcode(url: URL(fileURLWithPath: "/Applications/Test Xcode.app"), version: "27.1", name: "Test Xcode")]
+    }
     func inventory() -> DeviceInventorySnapshot { DeviceInventorySnapshot(devices: devices, issues: []) }
     func status() -> SimulatorHostStatus { SimulatorHostStatus(host: .neo, restorationAvailable: false, rendererRunning: false) }
     func deviceSettings(for device: InventoryDevice) async throws -> SimulatorDeviceSettings {
