@@ -1619,6 +1619,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         if let item = window?.toolbar?.items.first(where: { $0.itemIdentifier == resizeAppIdentifier }) {
             item.isHidden = liveDeviceIdentifier == nil || !supports("resizeApp")
             item.isEnabled = isEnabled("resizeApp")
+            item.menuFormRepresentation?.isEnabled = item.isEnabled
+            item.menuFormRepresentation?.state = resizingApp ? .on : .off
             if let button = item.view as? NSButton {
                 button.state = resizingApp ? .on : .off
                 button.isEnabled = item.isEnabled
@@ -1645,6 +1647,10 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         profileScreenActions.isHidden = screenActionButtons["rotate"]?.isHidden != false
         screenActionBar.isHidden = primaryScreenActions.isHidden && profileScreenActions.isHidden
         updateDeviceFooter()
+    }
+
+    @objc private func resizeApp(_ sender: Any?) {
+        onScreenAction?("resizeApp")
     }
 
     @objc private func performScreenAction(_ sender: NSButton) {
@@ -1848,7 +1854,12 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             item.label = "Resize App"
             item.toolTip = "Resize App"
             item.image = NSImage(systemSymbolName: "arrow.up.left.and.arrow.down.right", accessibilityDescription: item.label)
-            let button = NSButton(image: item.image ?? NSImage(), target: self, action: #selector(performScreenAction(_:)))
+            item.target = self
+            item.action = #selector(resizeApp(_:))
+            let menuItem = NSMenuItem(title: item.label, action: item.action, keyEquivalent: "")
+            menuItem.target = self
+            item.menuFormRepresentation = menuItem
+            let button = NSButton(image: item.image ?? NSImage(), target: self, action: #selector(resizeApp(_:)))
             button.identifier = NSUserInterfaceItemIdentifier(itemIdentifier.rawValue)
             button.bezelStyle = .toolbar
             button.setButtonType(.pushOnPushOff)
