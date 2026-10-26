@@ -92,7 +92,10 @@ final class SimulatorManagerModel {
     }
 
     func openDevice(_ identifier: DeviceInventoryID) {
-        perform("Opening simulator…") { try await self.controller.openDevice(identifier, xcodeURL: nil) }
+        perform("Opening simulator…") {
+            try await self.controller.openDevice(identifier, xcodeURL: nil)
+            await self.deviceScreenDidConnect(identifier)
+        }
     }
 
     func closeDevice(_ identifier: DeviceInventoryID, keepingDeviceRunning: Bool, after finishing: Task<Void, Never>) {

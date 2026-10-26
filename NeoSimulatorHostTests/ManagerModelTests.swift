@@ -4,6 +4,50 @@ import Testing
 
 @Suite(.serialized, .timeLimit(.minutes(1))) @MainActor
 struct ManagerModelTests {
+    @Test func openingASimulatorRetriesItsFailedPostureAfterPresentationSucceeds() async throws {
+        guard case .simulator(let simulator) = simulator(deviceSet: "/custom-device-set") else { return }
+        let device = InventoryDevice.simulator(simulator.inventoryCopy(ownerXcodeURL: nil, capabilities: DevicePosturePayload.features))
+        let source = ManagerModelSource(devices: [device])
+        let postures = ManagerPostureConnections()
+        var events = source.events.makeAsyncIterator()
+        var postureEvents = postures.events.stream.makeAsyncIterator()
+        let failures = AsyncStream<Void>.makeStream()
+        var failureEvents = failures.stream.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source, makeDevicePosture: postures.model)
+        manager.onError = { _ in failures.continuation.yield(()) }
+        await manager.refresh()
+        manager.openDevice(device.id)
+        #expect(await events.next() == .open(device.id))
+        manager.setOpenDeviceScreens([device.id])
+        #expect(manager.isBusy && manager.devicePostures.isEmpty)
+        await source.completeOpen()
+        #expect(await postureEvents.next() == .observing(device.id))
+        #expect(!manager.isBusy)
+        let failed = try #require(manager.devicePostures[device.id])
+        postures.failCurrentObservation()
+        #expect(await postureEvents.next() == .stopped(device.id))
+        try #require(failed.state == .failed)
+
+        manager.openDevice(device.id)
+        #expect(await events.next() == .open(device.id))
+        #expect(manager.devicePostures[device.id] === failed)
+        await source.failOpen()
+        _ = await failureEvents.next()
+        #expect(manager.devicePostures[device.id] === failed && failed.state == .failed)
+
+        manager.openDevice(device.id)
+        #expect(await events.next() == .open(device.id))
+        #expect(manager.devicePostures[device.id] === failed)
+        await source.completeOpen()
+        for _ in 0..<200 where manager.isBusy { try await Task.sleep(for: .milliseconds(10)) }
+        try #require(!manager.isBusy && manager.devicePostures[device.id] !== failed)
+        #expect(await postureEvents.next() == .observing(device.id))
+        #expect(failed.state == .stopped && manager.devicePostures[device.id]?.canSelect == true)
+        #expect(postures.identifiers == [device.id, device.id])
+        await manager.stopDevicePostures()
+        #expect(await postureEvents.next() == .stopped(device.id))
+    }
+
     @Test func connectingAScreenReplacesItsFailedPostureOwnerAfterDrainingIt() async throws {
         let features = DevicePosturePayload.features
         let data = try JSONSerialization.data(withJSONObject: ["result": ["devices": [[
@@ -252,7 +296,7 @@ struct ManagerModelTests {
 }
 
 private actor ManagerModelSource: SimulatorManagerSource {
-    enum Event: Equatable, Sendable { case read(DeviceInventoryID), write(DeviceInventoryID), close(DeviceInventoryID), quit, management }
+    enum Event: Equatable, Sendable { case read(DeviceInventoryID), write(DeviceInventoryID), open(DeviceInventoryID), close(DeviceInventoryID), quit, management }
     enum Failure: Error { case unavailable }
     nonisolated let events: AsyncStream<Event>
     private let continuation: AsyncStream<Event>.Continuation
@@ -261,6 +305,7 @@ private actor ManagerModelSource: SimulatorManagerSource {
     private var managementContinuation: CheckedContinuation<Void, Never>?
     private var immediateRead: SimulatorDeviceSettings?
     private var readContinuation: CheckedContinuation<SimulatorDeviceSettings, any Error>?
+    private var openContinuation: CheckedContinuation<Void, any Error>?
     private var writeContinuation: CheckedContinuation<SimulatorDeviceSettings, any Error>?
     private var pendingWrite: SimulatorDeviceSettings?
     private(set) var writeInputs: [SimulatorDeviceSettings?] = []
@@ -328,7 +373,14 @@ private actor ManagerModelSource: SimulatorManagerSource {
     }
     func quitRenderer(keepingDevicesRunning: Bool?) { continuation.yield(.quit) }
     func selectHost(_ host: SimulatorHost, xcodeURL: URL?) throws { throw Failure.unavailable }
-    func openDevice(_ deviceID: DeviceInventoryID, xcodeURL: URL?) throws { throw Failure.unavailable }
+    func openDevice(_ deviceID: DeviceInventoryID, xcodeURL: URL?) async throws {
+        try await withCheckedThrowingContinuation { waiting in
+            openContinuation = waiting
+            continuation.yield(.open(deviceID))
+        }
+    }
+    func completeOpen() { openContinuation?.resume(); openContinuation = nil }
+    func failOpen() { openContinuation?.resume(throwing: Failure.unavailable); openContinuation = nil }
     func closeDevice(_ deviceID: DeviceInventoryID, keepingDeviceRunning: Bool) { continuation.yield(.close(deviceID)) }
     func creationCatalog() throws -> SimulatorCreationContext { throw Failure.unavailable }
     func createSimulator(named name: String, deviceType: String, runtime: String, context: SimulatorCreationContext) throws -> String { throw Failure.unavailable }
