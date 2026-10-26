@@ -2,25 +2,91 @@ import Foundation
 import Observation
 import XcodeSimulatorHost
 
-struct ManagerLaunchOptions {
-    let xcodeURL: URL?
-
-    init(arguments: [String]) throws {
-        var xcodeURL: URL?
-        var index = 0
-        while index < arguments.count {
-            if arguments[index] == "--xcode" {
-                index += 1
-                guard xcodeURL == nil, index < arguments.count,
-                      (arguments[index] as NSString).isAbsolutePath else {
-                    throw HostError.invalidArguments("Expected --xcode /absolute/path/to/Xcode.app")
-                }
-                xcodeURL = URL(fileURLWithPath: arguments[index], isDirectory: true)
-            }
-            index += 1
+struct SimulatorScreenRestoration: Equatable {
+    enum Presentation: String {
+        case hidden, compact, main
+        var restorationOrder: Int {
+            switch self { case .hidden: 0; case .compact: 1; case .main: 2 }
         }
-        self.xcodeURL = xcodeURL
     }
+    let device: SimulatorDeviceIdentifier
+    let xcodeURL: URL
+    let presentation: Presentation
+    var deviceID: DeviceInventoryID { .simulator(udid: device.identifier, deviceSetPath: device.deviceSetPath) }
+
+    var url: URL {
+        var items = [URLQueryItem(name: "udid", value: device.identifier),
+                     URLQueryItem(name: "xcode", value: xcodeURL.path),
+                     URLQueryItem(name: "presentation", value: presentation.rawValue)]
+        if let path = device.deviceSetPath { items.append(URLQueryItem(name: "deviceSetPath", value: path)) }
+        return URL(string: "neosimulator://restore-screen")!.appending(queryItems: items)
+    }
+
+    init(device: SimulatorDeviceIdentifier, xcodeURL: URL, presentation: Presentation) {
+        self.device = device
+        self.xcodeURL = xcodeURL
+        self.presentation = presentation
+    }
+
+    init?(url: URL) {
+        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        guard let udid = items.first(where: { $0.name == "udid" })?.value,
+              let xcode = items.first(where: { $0.name == "xcode" })?.value,
+              let name = items.first(where: { $0.name == "presentation" })?.value,
+              let presentation = Presentation(rawValue: name) else { return nil }
+        self.init(device: SimulatorDeviceIdentifier(udid, deviceSetPath: items.first(where: { $0.name == "deviceSetPath" })?.value),
+                  xcodeURL: URL(fileURLWithPath: xcode, isDirectory: true), presentation: presentation)
+    }
+}
+
+@MainActor @Observable
+final class UIFrameworkSettings {
+    static let preferenceKey = "UIFrameworkXcodePath"
+    private let defaults: UserDefaults
+    private let selectionAtLaunch: URL?
+    private(set) var selectedXcodeURL: URL?
+    private(set) var installations: [SimulatorXcode] = []
+    private(set) var isLoading = false
+    private(set) var issue: String?
+    @ObservationIgnored private var loading: Task<Void, Never>?
+    @ObservationIgnored private let discover: () async throws -> [SimulatorXcode]
+
+    static func selection(in defaults: UserDefaults) -> URL? {
+        defaults.string(forKey: preferenceKey).map { URL(fileURLWithPath: $0, isDirectory: true) }
+    }
+
+    init(defaults: UserDefaults = .standard, discover: @escaping () async throws -> [SimulatorXcode]) {
+        self.defaults = defaults
+        self.discover = discover
+        let selection = Self.selection(in: defaults)
+        selectedXcodeURL = selection
+        selectionAtLaunch = selection
+    }
+
+    var needsRestart: Bool { selectedXcodeURL != selectionAtLaunch }
+
+    func select(_ url: URL?) {
+        selectedXcodeURL = url
+        if let url { defaults.set(url.path, forKey: Self.preferenceKey) }
+        else { defaults.removeObject(forKey: Self.preferenceKey) }
+    }
+
+    func reload() {
+        guard loading == nil else { return }
+        isLoading = true
+        issue = nil
+        loading = Task { [weak self, discover] in
+            defer { self?.isLoading = false; self?.loading = nil }
+            do {
+                let installations = try await discover()
+                try Task.checkCancellation()
+                self?.installations = installations
+            } catch is CancellationError {}
+            catch { self?.issue = error.localizedDescription }
+        }
+    }
+
+    isolated deinit { loading?.cancel() }
 }
 
 protocol SimulatorManagerSource: DeviceSettingsSource {
@@ -69,6 +135,7 @@ final class SimulatorManagerModel {
     private(set) var activity = ""
     private(set) var backgroundIssue: String?
     let settings: DeviceSettingsModel
+    let frameworks: UIFrameworkSettings
     @ObservationIgnored var onError: ((any Error) -> Void)?
     @ObservationIgnored var onOpenRemoteDevice: ((CoreDeviceDevice) -> Void)?
     @ObservationIgnored var beforeStoppingScreens: (() async throws -> Void)?
@@ -92,11 +159,13 @@ final class SimulatorManagerModel {
          presentSimulator: (@MainActor @Sendable (SimulatorPresentationContext) async throws -> Void)? = nil) {
         let controller = SimulatorHostController(rendererApplicationURL: rendererApplicationURL, presentSimulator: presentSimulator)
         self.controller = controller
+        frameworks = UIFrameworkSettings { try await controller.installedXcodes() }
         settings = DeviceSettingsModel(source: controller)
     }
 
     init(source: any SimulatorManagerSource) {
         controller = source
+        frameworks = UIFrameworkSettings { try await source.installedXcodes() }
         settings = DeviceSettingsModel(source: source)
     }
 
@@ -125,6 +194,15 @@ final class SimulatorManagerModel {
 
     func openDevice(_ identifier: DeviceInventoryID) {
         perform("Opening simulator…") { try await self.controller.openDevice(identifier, xcodeURL: nil) }
+    }
+
+    func restoreScreen(_ restoration: SimulatorScreenRestoration,
+                       present: @escaping @MainActor () async throws -> Void) {
+        perform("Restoring simulator…") {
+            await self.refreshCatalog()
+            try await self.controller.openDevice(restoration.deviceID, xcodeURL: restoration.xcodeURL)
+            try await present()
+        }
     }
 
     func closeDevice(_ identifier: DeviceInventoryID, keepingDeviceRunning: Bool, after finishing: Task<Void, Never>) {
@@ -375,6 +453,11 @@ final class SimulatorManagerModel {
         await settings.finishReading()
         do { try await controller.quitRenderer(keepingDevicesRunning: keepingDevicesRunning) }
         catch { stopping = false; settings.resumeReading(); throw error }
+    }
+
+    func resumeAfterCancelledQuit() {
+        stopping = false
+        settings.resumeReading()
     }
 
     private func reportBackgroundError(_ error: any Error) {

@@ -271,6 +271,9 @@ public actor SimulatorHostController {
     public func openDevice(_ deviceID: DeviceInventoryID, xcodeURL: URL? = nil) async throws {
         _ = try deviceID.simulatorAddress
         try await operation {
+            // An explicit request supersedes the saved startup selection.
+            self.startupHandled = true
+            self.startupDeviceIdentifier = nil
             try await self.openDeviceBody(deviceID: deviceID, xcodeURL: xcodeURL)
         }
     }
@@ -282,9 +285,15 @@ public actor SimulatorHostController {
         let renderers = try await self.registeredRenderers()
         if selection.host == .neo,
            let owner = renderers.first(where: { $0.deviceIdentifiers.contains(deviceID) }) {
-            if bootIfNeeded { try await RendererDeviceRequestWaiter().open(deviceID, in: owner) }
-            else { try await RendererDeviceRequestWaiter().attach(deviceID, in: owner) }
-            try await self.present(deviceID, xcodeURL: URL(fileURLWithPath: owner.xcodePath))
+            if let xcodeURL, !sameURL(xcodeURL, URL(fileURLWithPath: owner.xcodePath)) {
+                let (xcode, _) = try await resolveDevice(deviceID: deviceID, preferredURL: xcodeURL, catalogs: catalogs)
+                try await RendererDeviceRequestWaiter().release(deviceID, from: owner)
+                try await openRendererDevice(deviceID, xcode: xcode, bootIfNeeded: bootIfNeeded)
+            } else {
+                if bootIfNeeded { try await RendererDeviceRequestWaiter().open(deviceID, in: owner) }
+                else { try await RendererDeviceRequestWaiter().attach(deviceID, in: owner) }
+                try await self.present(deviceID, xcodeURL: URL(fileURLWithPath: owner.xcodePath))
+            }
             return
         }
         let (xcode, device) = try await resolveDevice(deviceID: deviceID, preferredURL: xcodeURL, catalogs: catalogs)
