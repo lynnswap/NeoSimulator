@@ -1274,6 +1274,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         ])
         canvasBottomToPane?.isActive = true
         deviceImage.imageScaling = .scaleProportionallyUpOrDown
+        deviceImage.symbolConfiguration = NSImage.SymbolConfiguration(paletteColors: [.black, .systemCyan])
         deviceImage.translatesAutoresizingMaskIntoConstraints = false
         deviceImage.setAccessibilityHidden(true)
         deviceName.font = .systemFont(ofSize: 17, weight: .semibold)
@@ -1692,13 +1693,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     }
 
     private func devicePreview(for device: InventoryDevice) -> NSImage? {
-        if let modelIdentifier = device.modelIdentifier,
-           let type = UTType.types(tag: modelIdentifier,
-                                   tagClass: UTTagClass(rawValue: "com.apple.device-model-code"),
-                                   conformingTo: nil).first(where: \.isDeclared) {
-            return NSWorkspace.shared.icon(for: type)
-        }
-        return NSImage(systemSymbolName: symbolName(for: device), accessibilityDescription: nil)
+        NSImage(systemSymbolName: symbolName(for: device), accessibilityDescription: nil)
     }
 
     private func shouldRenderAsActive(_ device: InventoryDevice) -> Bool {
@@ -1735,7 +1730,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         case "Apple Watch": "applewatch"
         case "Apple Vision", "visionOS": "visionpro"
         case "Mac": "desktopcomputer"
-        case "iPhone": "iphone"
+        case "iPhone": "iphone.gen3"
         default: device.kind == .virtualMachine ? "desktopcomputer" : "externaldrive"
         }
     }
@@ -2120,6 +2115,8 @@ private final class SimulatorSidebarCellView: NSTableCellView {
         didSet { updateIconAppearance() }
     }
 
+    override var allowsVibrancy: Bool { true }
+
     override var backgroundStyle: NSView.BackgroundStyle {
         didSet { needsDisplay = true }
     }
@@ -2129,8 +2126,6 @@ private final class SimulatorSidebarCellView: NSTableCellView {
         let icon = NSImageView()
         icon.translatesAutoresizingMaskIntoConstraints = false
         icon.imageScaling = .scaleProportionallyUpOrDown
-        icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 20, weight: .regular)
-            .applying(NSImage.SymbolConfiguration(paletteColors: [.labelColor, .systemCyan]))
         icon.setAccessibilityHidden(true)
         let name = NSTextField(labelWithString: "")
         name.font = .systemFont(ofSize: 13, weight: .medium)
@@ -2192,7 +2187,11 @@ private final class SimulatorSidebarCellView: NSTableCellView {
     }
 
     private func updateIconAppearance() {
-        imageView?.isEnabled = isDeviceActive
+        let colors = isDeviceActive
+            ? NSImage.SymbolConfiguration(paletteColors: [.black, .systemCyan])
+            : NSImage.SymbolConfiguration(hierarchicalColor: .tertiaryLabelColor)
+        imageView?.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 20, weight: .regular)
+            .applying(colors)
         needsDisplay = true
     }
 }
