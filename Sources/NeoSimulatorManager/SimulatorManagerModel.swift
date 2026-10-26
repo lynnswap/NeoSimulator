@@ -3,7 +3,12 @@ import Observation
 import XcodeSimulatorHost
 
 struct SimulatorScreenRestoration: Equatable {
-    enum Presentation: String { case hidden, compact, main }
+    enum Presentation: String {
+        case hidden, compact, main
+        var restorationOrder: Int {
+            switch self { case .hidden: 0; case .compact: 1; case .main: 2 }
+        }
+    }
     let device: SimulatorDeviceIdentifier
     let xcodeURL: URL
     let presentation: Presentation

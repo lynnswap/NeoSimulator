@@ -55,6 +55,9 @@ struct ManagerRelaunch: Codable, Sendable {
                 catch { _exit(EX_IOERR) }
             }
             let configuration = NSWorkspace.OpenConfiguration()
+            if let developerDirectory = ProcessInfo.processInfo.environment["DEVELOPER_DIR"] {
+                configuration.environment = ["DEVELOPER_DIR": developerDirectory]
+            }
             configuration.allowsRunningApplicationSubstitution = false
             if request.deviceURLs.isEmpty {
                 _ = try await NSWorkspace.shared.openApplication(at: request.applicationURL, configuration: configuration)

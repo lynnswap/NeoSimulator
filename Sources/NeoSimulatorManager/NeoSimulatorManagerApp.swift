@@ -616,7 +616,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     : controller.window?.isVisible == true ? .compact : .hidden
                 return SimulatorScreenRestoration(device: device, xcodeURL: xcode, presentation: presentation)
             }
-        }.sorted { $0.presentation != .main && $1.presentation == .main } : []
+        }.sorted { $0.presentation.restorationOrder < $1.presentation.restorationOrder } : []
         Task {
             do {
                 mainWindow?.stopInspectorReads()
