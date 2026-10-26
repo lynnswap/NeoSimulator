@@ -912,6 +912,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     private let deviceImage = NSImageView()
     private let artworkCache = DeviceArtworkCache()
     private var previewTask: Task<Void, Never>?
+    private var previewArtwork: DeviceArtworkModel?
     var isDeviceActivated: (DeviceInventoryID) -> Bool = { _ in false }
     private let deviceName = NSTextField(labelWithString: "Select a Device")
     private let deviceRuntime = NSTextField(labelWithString: "")
@@ -1555,7 +1556,11 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             selectionIdentifier = identifier
             onSelectionChange?(identifier)
         }
-        previewTask?.cancel()
+        if selectedDevice == nil {
+            previewTask?.cancel()
+            previewTask = nil
+            previewArtwork = nil
+        }
         if let device = selectedDevice {
             deviceName.stringValue = device.name
             if case .simulator(let simulator) = device { deviceRuntime.stringValue = "\(simulator.runtimeName) Simulator" }
@@ -1563,12 +1568,16 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
                 deviceRuntime.stringValue = [device.operatingSystem, modelName(of: device), kindTitle(device)]
                     .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
             }
-            deviceImage.image = nil
             let artwork = artwork(for: device)
-            previewTask = Task { [weak self] in
-                let image = await artwork.hardwarePreview()
-                guard !Task.isCancelled, let self else { return }
-                self.deviceImage.image = image
+            if previewArtwork !== artwork {
+                previewTask?.cancel()
+                previewArtwork = artwork
+                deviceImage.image = nil
+                previewTask = Task { [weak self] in
+                    let image = await artwork.hardwarePreview()
+                    guard !Task.isCancelled, let self else { return }
+                    self.deviceImage.image = image
+                }
             }
         } else if selections.isEmpty {
             deviceName.stringValue = "Select a Device"

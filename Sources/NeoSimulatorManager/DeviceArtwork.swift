@@ -41,20 +41,19 @@ final class DeviceArtworkCache {
 final class DeviceArtworkModel {
     let contentType: UTType?
     private(set) var symbol: DeviceSymbolArtwork?
-    @ObservationIgnored private var symbolTask: Task<Void, Never>?
     @ObservationIgnored private var previewTask: Task<NSImage, Never>?
 
     fileprivate init(contentType: UTType?, family: String, xcodeURL: URL?,
                      metadata: Task<DeviceSymbolMetadata, Never>,
                      resolveXcodeURL: @escaping @MainActor () async -> URL?) {
         self.contentType = contentType
-        symbolTask = Task { [weak self] in
+        Task { [weak self] in
             let definitions = await metadata.value
             let identifier = contentType?.identifier ?? ""
             let needsDuoResource = identifier.contains("iphone-duo") || identifier.contains("iphone-v68")
             var resourceURL = xcodeURL
             if needsDuoResource, resourceURL == nil { resourceURL = await resolveXcodeURL() }
-            guard !Task.isCancelled, let self else { return }
+            guard let self else { return }
             self.symbol = definitions.artwork(for: contentType, family: family, xcodeURL: resourceURL)
         }
     }
