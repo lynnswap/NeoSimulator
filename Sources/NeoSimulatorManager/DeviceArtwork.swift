@@ -223,8 +223,3 @@ struct SidebarDeviceArtwork: View {
         .accessibilityHidden(true)
     }
 }
-
-@MainActor
-final class SidebarArtworkHostingView: NSHostingView<SidebarDeviceArtwork> {
-    override var allowsVibrancy: Bool { true }
-}

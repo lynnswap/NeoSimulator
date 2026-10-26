@@ -1526,6 +1526,10 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         return cell
     }
 
+    func outlineView(_ outlineView: NSOutlineView, didAdd rowView: NSTableRowView, forItem item: Any) {
+        rowView.selectionHighlightStyle = .regular
+    }
+
     func outlineViewSelectionDidChange(_ notification: Notification) {
         guard !updatingSelection else { return }
         selectedIdentifiers = Set(table.selectedRowIndexes.compactMap { (table.item(atRow: $0) as? DeviceRow)?.id })
@@ -2259,13 +2263,13 @@ private final class SimulatorSidebarCellView: NSTableCellView {
     let subtitle = NSTextField(labelWithString: "Simulator")
     let version = NSTextField(labelWithString: "")
     let progress = NSProgressIndicator()
-    private var artworkHost: SidebarArtworkHostingView?
+    private var artworkHost: NSHostingView<SidebarDeviceArtwork>?
 
     func setArtwork(_ model: DeviceArtworkModel, isActive: Bool) {
         let content = SidebarDeviceArtwork(model: model, isActive: isActive, isEmphasized: backgroundStyle == .emphasized)
         if let artworkHost { artworkHost.rootView = content }
         else {
-            let host = SidebarArtworkHostingView(rootView: content)
+            let host = NSHostingView(rootView: content)
             host.translatesAutoresizingMaskIntoConstraints = false
             host.setAccessibilityHidden(true)
             addSubview(host)
@@ -2278,8 +2282,6 @@ private final class SimulatorSidebarCellView: NSTableCellView {
             artworkHost = host
         }
     }
-
-    override var allowsVibrancy: Bool { true }
 
     override var backgroundStyle: NSView.BackgroundStyle {
         didSet {
