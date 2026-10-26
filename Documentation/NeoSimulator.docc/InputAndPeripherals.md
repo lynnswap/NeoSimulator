@@ -10,6 +10,13 @@ When disconnected, the Mac keyboard does not type into the device, and the
 software keyboard appears. **Toggle Software Keyboard** (Command-K) controls
 its visibility while the hardware keyboard is connected.
 
+Choose **Capture Keyboard** above the device screen or in **I/O → Keyboard**
+to send Mac shortcuts to the device. Click the button again or hold Escape for
+one second to release the keyboard. Capture ends when the screen loses focus,
+its presentation moves, or NeoSimulator becomes inactive. macOS must allow
+NeoSimulator in **System Settings → Privacy & Security → Accessibility**;
+NeoSimulator reports an error if it cannot create the keyboard event tap.
+
 **Use the Same Keyboard Language as macOS** defaults to on. It applies the Mac's
 input-source language when a device connects or the Mac input source changes;
 turning it on takes effect at the next such event.
@@ -38,9 +45,9 @@ arbitrary gestures are unavailable.
 Force** needs a Force Touch trackpad. Shallow Press and Deep Press select click
 pressure on supported watches. These settings apply across device windows.
 
-Neo does not capture the Mac's pointer and keyboard using Simulator.app's
-**I/O → Input** commands. Those facilities require Apple-only entitlements;
-see <doc:SimulatorIntegration>.
+Keyboard capture uses a macOS accessibility event tap. Simulator.app's
+**I/O → Input** facilities, including pointer capture, remain unavailable;
+those facilities require Apple-only entitlements. See <doc:SimulatorIntegration>.
 
 ## Physical-device and VM input
 

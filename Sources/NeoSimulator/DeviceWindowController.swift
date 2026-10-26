@@ -90,6 +90,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     /// user-interface plugin.
     private let userInterfacePluginLookUp: (attempts: Int, interval: Duration)
     var staysOnTop: Bool { window?.level == .floating }
+    var capturesKeyboard: Bool { keyboard.capture.isCapturing }
 
     /// The device window of the key window, whose device the menus act on:
     /// see `deviceWindow(for:)`.
@@ -111,6 +112,8 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
          touchPressure: TouchPressure, tvRemote: TVRemoteController,
          performWindowDrag: @escaping (NSWindow, NSEvent) -> Void = { $0.performDrag(with: $1) },
          presentCompactWindow: @escaping (NSWindow) -> Void = { $0.makeKeyAndOrderFront(nil) },
+         keyboardCaptureTap: any KeyboardEventTap = SystemKeyboardEventTap(),
+         applicationIsActive: @escaping () -> Bool = { NSApp.isActive },
          userInterfacePluginLookUp: (attempts: Int, interval: Duration) = (40, .milliseconds(250)),
          onClose: @escaping (DeviceWindowController, DeviceLifetimeChoice?) -> Void,
          onRestart: @escaping (DeviceWindowController, _ erasing: Bool) -> Void = { _, _ in },
@@ -140,8 +143,10 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered, defer: false)
         fitting = DisplayFitting(display: session.display, content: content)
-        keyboard = DisplayKeyboardInput(window: window, display: session.display)
+        keyboard = DisplayKeyboardInput(window: window, display: session.display,
+                                        captureTap: keyboardCaptureTap, applicationIsActive: applicationIsActive)
         super.init(window: window)
+        keyboard.capture.failure = { [weak self] in self?.present($0) }
         (window.title, window.subtitle) = deviceWindowTitles(name: session.device.name, runtimeName: session.device.runtimeName)
         window.appearance = NSAppearance(named: .darkAqua)
         // AppKit draws the opaque title bar; see `updateHeaderShape()`.
@@ -455,6 +460,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         guard !closed else { return }
         customLocation?.close()
         closeExternalDisplayWindow()
+        keyboard.capture.stop()
         session.disconnect()
         fitting.invalidate()
         window?.subtitle = "Restarting…"
@@ -664,6 +670,12 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     }
 
     // MARK: Keyboard and touch pressure
+
+    func toggleKeyboardCapture() {
+        if keyboard.capture.stop() { return }
+        focusInput()
+        do { try keyboard.capture.start() } catch { present(error) }
+    }
 
     /// Updates host keyboard input immediately; applies the saved choice to the guest asynchronously.
     func toggleHardwareKeyboard() {

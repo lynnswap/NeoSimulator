@@ -132,7 +132,7 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
         let io = menu("I/O", in: main)
         ioMenu = io
         // Input capture requires an Apple-only HID entitlement; keyboard settings do not.
-        commands([.syncKeyboardLanguage, .connectHardwareKeyboard, .toggleSoftwareKeyboard], in: menu("Keyboard", in: io))
+        commands([.syncKeyboardLanguage, .connectHardwareKeyboard, .captureKeyboard, .toggleSoftwareKeyboard], in: menu("Keyboard", in: io))
         commands([.useTrackpadForce, .shallowPress, .deepPress], in: menu("Touch Pressure", in: io))
         io.addItem(.separator())
         for audio in audioMenus { io.addItem(audio.item) }
