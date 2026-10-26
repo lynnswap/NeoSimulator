@@ -2308,39 +2308,58 @@ private struct ManagerDeviceSettingsView: View {
     }
 
     var body: some View {
-        if model.selectionCount != 1 {
-            ContentUnavailableView(model.selectionCount == 0 ? "Select a Device" : "Multiple Devices Selected",
+        if model.selectionCount != 1 || device == nil {
+            ContentUnavailableView(model.selectionCount > 1 ? "Multiple Devices Selected" : "Select a Device",
                                    systemImage: "slider.horizontal.3",
                                    description: Text("Select one device to adjust its settings."))
-        } else { settingsForm }
+        } else if device?.canInspectSettings != true {
+            unavailableSettings
+        } else if settings == nil, issue == nil {
+            ProgressView("Loading settings…")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if hasAvailableSettings {
+            settingsForm
+        } else {
+            unavailableSettings
+        }
+    }
+
+    private var unavailableSettings: some View {
+        ContentUnavailableView("Settings Unavailable", systemImage: "slider.horizontal.3",
+                               description: Text(message ?? "No settings are available for this device."))
+            .help(issue ?? settings?.issues.joined(separator: "\n") ?? "")
+    }
+
+    private var hasAvailableSettings: Bool {
+        guard let settings else { return false }
+        return settings.appearance != nil || settings.liquidGlassOpacity != nil || settings.colorFilter != nil
+            || textSizeIndex != nil || settings.reduceMotion != nil || settings.increaseContrast != nil
+            || settings.showBorders != nil || settings.reduceTransparency != nil || settings.voiceOver != nil
+            || settings.locationAvailable || settings.volume != nil
+            || (settings.audioOutputDevice != nil && !settings.audioOutputDevices.isEmpty)
+            || (settings.audioInputDevice != nil && !settings.audioInputDevices.isEmpty)
     }
 
     private var settingsForm: some View {
         Form {
-            if device?.canInspectSettings == true, settings == nil, issue == nil {
-                ProgressView("Loading settings…")
-            } else {
-                if device != nil {
-                    Section {
-                        appearanceRows
-                        accessibilityRows
-                    }
-                    locationSection
-                    soundSection
-                }
-                if let message {
-                    Section {
-                        Text(message)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .help(issue ?? settings?.issues.joined(separator: "\n") ?? "")
-                    }
+            Section {
+                appearanceRows
+                accessibilityRows
+            }
+            locationSection
+            soundSection
+            if let message {
+                Section {
+                    Text(message)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .help(issue ?? settings?.issues.joined(separator: "\n") ?? "")
                 }
             }
         }
         .formStyle(.grouped)
         .labelStyle(.titleAndIcon)
-        .disabled(isBusy || device?.canInspectSettings != true)
+        .disabled(isBusy)
     }
 
     private var appearanceRows: some View {
@@ -2493,8 +2512,11 @@ private struct ManagerDeviceSettingsView: View {
         case .remote(let remote):
             guard remote.isAvailable else { return "Connect this device to change its settings." }
         }
-        if issue != nil || settings?.issues.isEmpty == false { return "Some settings could not be loaded for this device." }
-        return settings == nil ? "Loading settings…" : nil
+        if issue != nil || settings?.issues.isEmpty == false {
+            return hasAvailableSettings ? "Some settings could not be loaded for this device."
+                : "Settings could not be loaded for this device."
+        }
+        return nil
     }
 
     private func filterTitle(_ filter: SimulatorColorFilter) -> String {
