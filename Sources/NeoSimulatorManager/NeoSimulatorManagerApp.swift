@@ -1411,11 +1411,11 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         cell.subtitle.stringValue = device.kind == .simulator ? "Simulator" : (modelName(of: device) ?? "")
         cell.subtitle.isHidden = cell.subtitle.stringValue.isEmpty
         cell.version.stringValue = version(of: device)
-        cell.imageView?.image = NSImage(systemSymbolName: symbolName(for: device), accessibilityDescription: nil)
+        cell.imageView?.image = devicePreview(for: device)
+        cell.isDeviceActive = shouldRenderAsActive(device)
         let managing = model.managingDeviceIDs.contains(device.id)
         cell.progress.isHidden = !managing
         if managing { cell.progress.startAnimation(nil) } else { cell.progress.stopAnimation(nil) }
-        cell.alphaValue = device.isAvailable ? 1 : 0.6
         cell.setAccessibilityLabel("\(device.name), \(device.operatingSystem ?? kindTitle(device)), \(device.isAvailable ? "Available" : "Unavailable")")
         return cell
     }
@@ -1609,6 +1609,16 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             return NSWorkspace.shared.icon(for: type)
         }
         return NSImage(systemSymbolName: symbolName(for: device), accessibilityDescription: nil)
+    }
+
+    private func shouldRenderAsActive(_ device: InventoryDevice) -> Bool {
+        switch device {
+        case .simulator(let simulator):
+            return ["Booted", "Booting", "Shutting Down"].contains(simulator.state)
+        case .remote(let remote):
+            if remote.kind == .virtualMachine { return remote.bootState == "booted" }
+            return remote.connectionState == "connected"
+        }
     }
 
     private func modelName(of device: InventoryDevice) -> String? {
@@ -2021,13 +2031,22 @@ private final class SimulatorSidebarCellView: NSTableCellView {
     let subtitle = NSTextField(labelWithString: "Simulator")
     let version = NSTextField(labelWithString: "")
     let progress = NSProgressIndicator()
+    var isDeviceActive = false {
+        didSet { updateIconAppearance() }
+    }
+
+    override var backgroundStyle: NSView.BackgroundStyle {
+        didSet { needsDisplay = true }
+    }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         let icon = NSImageView()
         icon.translatesAutoresizingMaskIntoConstraints = false
-        icon.contentTintColor = .secondaryLabelColor
-        icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 18, weight: .regular)
+        icon.imageScaling = .scaleProportionallyUpOrDown
+        icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 20, weight: .regular)
+            .applying(NSImage.SymbolConfiguration(paletteColors: [.labelColor, .systemCyan]))
+        icon.setAccessibilityHidden(true)
         let name = NSTextField(labelWithString: "")
         name.font = .systemFont(ofSize: 13, weight: .medium)
         name.lineBreakMode = .byTruncatingTail
@@ -2059,11 +2078,11 @@ private final class SimulatorSidebarCellView: NSTableCellView {
         imageView = icon
         textField = name
         NSLayoutConstraint.activate([
-            icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
             icon.centerYAnchor.constraint(equalTo: centerYAnchor),
-            icon.widthAnchor.constraint(equalToConstant: 25),
-            icon.heightAnchor.constraint(equalToConstant: 30),
-            labels.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 9),
+            icon.widthAnchor.constraint(equalToConstant: 24),
+            icon.heightAnchor.constraint(equalToConstant: 24),
+            labels.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 49),
             labels.trailingAnchor.constraint(equalTo: trailing.leadingAnchor, constant: -10),
             labels.centerYAnchor.constraint(equalTo: centerYAnchor),
             name.widthAnchor.constraint(equalTo: labels.widthAnchor),
@@ -2074,6 +2093,23 @@ private final class SimulatorSidebarCellView: NSTableCellView {
     }
 
     required init?(coder: NSCoder) { nil }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        let color: NSColor
+        if backgroundStyle == .emphasized {
+            color = isDeviceActive ? .secondaryLabelColor : .quaternaryLabelColor
+        } else {
+            color = isDeviceActive ? .controlColor : .tertiarySystemFill
+        }
+        color.setFill()
+        NSBezierPath(ovalIn: NSRect(x: 8, y: (bounds.height - 32) / 2, width: 32, height: 32)).fill()
+    }
+
+    private func updateIconAppearance() {
+        imageView?.isEnabled = isDeviceActive
+        needsDisplay = true
+    }
 }
 
 @MainActor
