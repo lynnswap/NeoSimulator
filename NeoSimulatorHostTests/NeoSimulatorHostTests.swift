@@ -207,6 +207,21 @@ struct InputFocusTests {
         try await wait { controller.session.isResizingApp }
         controller.windowDidExitFullScreen(Notification(name: NSWindow.didExitFullScreenNotification, object: window))
         #expect(app.renderScale == 1)
+        window.setFrame(NSRect(origin: window.frame.origin, size: NSSize(width: 600, height: 700)), display: true)
+        let windowed = window.frame
+        controller.windowWillEnterFullScreen(Notification(name: NSWindow.willEnterFullScreenNotification, object: window))
+        window.setFrame(windowed.insetBy(dx: -100, dy: -50), display: true)
+        let fullscreenSize = NSSize(width: 900, height: 900)
+        app.takeScreenSize(fullscreenSize)
+        // AppKit restores its window before the guest reports the smaller framebuffer.
+        window.setFrame(windowed, display: true)
+        let content = try #require(controller.presentationViewController.view as? any DisplayContentView)
+        let restoredViewport = content.availableDisplaySize
+        controller.windowDidExitFullScreen(Notification(name: NSWindow.didExitFullScreenNotification, object: window))
+        #expect(window.frame.size == windowed.size)
+        #expect(app.naturalSize == fullscreenSize && app.renderScale == 1)
+        try await wait { transport.lease.adjustedSizes.last == restoredViewport }
+        #expect(transport.lease.adjustedSizes.last == restoredViewport)
         controller.windowWillEnterFullScreen(Notification(name: NSWindow.willEnterFullScreenNotification, object: window))
         controller.session.stopAppResize()
         controller.windowDidExitFullScreen(Notification(name: NSWindow.didExitFullScreenNotification, object: window))

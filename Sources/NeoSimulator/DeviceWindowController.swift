@@ -1475,7 +1475,8 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         updateHeaderShape()
         bezelChanged()
         guard let geometry else { return }
-        showDisplay(at: geometry.scale)
+        if session.isResizingApp { resizeDisplay() }
+        else { showDisplay(at: geometry.scale) }
         window?.setFrameOrigin(geometry.origin)
         // The screen the window was on may be gone, and the screen changes
         // that happened meanwhile did not move it.
