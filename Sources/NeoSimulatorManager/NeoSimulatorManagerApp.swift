@@ -1561,7 +1561,6 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     func updateCanvasZoom(supports: (String) -> Bool, isEnabled: (String) -> Bool, isSelected: (String) -> Bool) {
         guard let group = window?.toolbar?.items.first(where: { $0.itemIdentifier == canvasZoomIdentifier }) as? NSToolbarItemGroup else { return }
         group.isHidden = liveDeviceIdentifier == nil || !supports(CanvasZoom.Action.fit.rawValue)
-        group.selectedIndex = -1
         for (index, action) in CanvasZoom.Action.allCases.enumerated() {
             group.subitems[index].isEnabled = isEnabled(action.rawValue)
             group.setSelected(isSelected(action.rawValue), at: index)
@@ -1751,10 +1750,10 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             let images = zip(symbols, labels).compactMap { NSImage(systemSymbolName: $0, accessibilityDescription: $1) }
             let item: NSToolbarItemGroup
             if images.count == labels.count {
-                item = NSToolbarItemGroup(itemIdentifier: itemIdentifier, images: images, selectionMode: .selectOne,
+                item = NSToolbarItemGroup(itemIdentifier: itemIdentifier, images: images, selectionMode: .selectAny,
                                            labels: labels, target: self, action: #selector(performCanvasZoom(_:)))
             } else {
-                item = NSToolbarItemGroup(itemIdentifier: itemIdentifier, titles: labels, selectionMode: .selectOne,
+                item = NSToolbarItemGroup(itemIdentifier: itemIdentifier, titles: labels, selectionMode: .selectAny,
                                            labels: labels, target: self, action: #selector(performCanvasZoom(_:)))
             }
             item.label = "Canvas Zoom"
