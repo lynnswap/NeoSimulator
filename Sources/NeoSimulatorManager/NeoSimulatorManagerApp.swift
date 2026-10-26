@@ -92,9 +92,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var inventoryObservation: DeviceInventoryObservation?
     private var inventoryObservationTask: Task<Void, Never>?
     private var quitKeepingDevicesRunning: Bool?
-    private var remoteWindows: [DeviceInventoryID: RemoteDeviceWindowController] = [:]
+    private var remoteWindows: [DeviceInventoryID: RemoteDeviceWindowController] = [:] {
+        didSet { mainWindow?.reloadDeviceArtwork() }
+    }
     private var simulatorHosts: [URL: HostApplication] = [:]
-    private var simulatorWindows: [DeviceInventoryID: DeviceWindowController] = [:]
+    private var simulatorWindows: [DeviceInventoryID: DeviceWindowController] = [:] {
+        didSet { mainWindow?.reloadDeviceArtwork() }
+    }
     private var displayXcodeURL: URL?
     private var presentationTask: Task<Void, any Error>?
     private var presentationGeneration = 0
@@ -458,6 +462,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func prepareMainWindow() {
         guard mainWindow == nil else { return }
         let controller = ManagerWindowController(model: model)
+        controller.isDeviceActivated = { [weak self] identifier in self?.screen(for: identifier) != nil }
+        controller.preferredArtworkXcodeURL = { [weak self] in self?.displayXcodeURL }
         controller.onShowCompactWindow = { [weak self] identifier in self?.showCompactScreen(identifier) }
         controller.onSelectionChange = { [weak self] identifier in self?.selectedDeviceChanged(identifier) }
         controller.onScreenAction = { [weak self] action in
@@ -920,6 +926,11 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     private let table = NSOutlineView()
     private let search = NSSearchField()
     private let deviceImage = NSImageView()
+    private let artworkCache = DeviceArtworkCache()
+    private var previewTask: Task<Void, Never>?
+    private var previewArtwork: DeviceArtworkModel?
+    var isDeviceActivated: (DeviceInventoryID) -> Bool = { _ in false }
+    var preferredArtworkXcodeURL: () -> URL? = { nil }
     private let deviceName = NSTextField(labelWithString: "Select a Device")
     private let deviceRuntime = NSTextField(labelWithString: "")
     private let viewScreen = NSButton(title: "View Screen", target: nil, action: nil)
@@ -1265,7 +1276,6 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         table.style = .sourceList
         table.rowHeight = 52
         table.intercellSpacing = NSSize(width: 0, height: 2)
-        table.backgroundColor = .clear
         table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
         table.allowsMultipleSelection = true
         table.allowsEmptySelection = true
@@ -1315,7 +1325,6 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         ])
         canvasBottomToPane?.isActive = true
         deviceImage.imageScaling = .scaleProportionallyUpOrDown
-        deviceImage.symbolConfiguration = NSImage.SymbolConfiguration(paletteColors: [.black, .systemCyan])
         deviceImage.translatesAutoresizingMaskIntoConstraints = false
         deviceImage.setAccessibilityHidden(true)
         deviceName.font = .systemFont(ofSize: 17, weight: .semibold)
@@ -1331,7 +1340,6 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         viewScreen.imagePosition = .imageLeading
         viewScreen.target = self
         viewScreen.action = #selector(openSelectedDevice(_:))
-        viewScreen.keyEquivalent = "\r"
         let stack = NSStackView(views: [deviceImage, deviceName, deviceRuntime, viewScreen])
         previewStack = stack
         stack.orientation = .vertical
@@ -1500,6 +1508,20 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         item is AvailabilityGroup ? 26 : 52
     }
 
+    func outlineView(_ outlineView: NSOutlineView, typeSelectStringFor tableColumn: NSTableColumn?, item: Any) -> String? {
+        guard let row = item as? DeviceRow else { return nil }
+        return device(for: row)?.name
+    }
+
+    func outlineView(_ outlineView: NSOutlineView, rowViewForItem item: Any) -> NSTableRowView? {
+        guard item is DeviceRow else { return nil }
+        let identifier = NSUserInterfaceItemIdentifier("DeviceSelectionRow")
+        let row = outlineView.makeView(withIdentifier: identifier, owner: self) as? SimulatorSidebarRowView
+            ?? SimulatorSidebarRowView()
+        row.identifier = identifier
+        return row
+    }
+
     func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
         if let group = item as? AvailabilityGroup {
             let identifier = NSUserInterfaceItemIdentifier("DeviceAvailabilityGroup")
@@ -1526,12 +1548,9 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         let cell = outlineView.makeView(withIdentifier: identifier, owner: self) as? SimulatorSidebarCellView
             ?? SimulatorSidebarCellView()
         cell.identifier = identifier
-        cell.textField?.stringValue = device.name
-        cell.subtitle.stringValue = device.kind == .simulator ? "Simulator" : (modelName(of: device) ?? "")
-        cell.subtitle.isHidden = cell.subtitle.stringValue.isEmpty
+        cell.setLabels(name: device.name, subtitle: device.kind == .simulator ? "Simulator" : (modelName(of: device) ?? ""))
         cell.version.stringValue = version(of: device)
-        cell.imageView?.image = devicePreview(for: device)
-        cell.isDeviceActive = shouldRenderAsActive(device)
+        cell.setArtwork(artwork(for: device), isActive: shouldRenderAsActive(device))
         let managing = model.managingDeviceIDs.contains(device.id)
         cell.progress.isHidden = !managing
         if managing { cell.progress.startAnimation(nil) } else { cell.progress.stopAnimation(nil) }
@@ -1567,6 +1586,11 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             selectionIdentifier = identifier
             onSelectionChange?(identifier)
         }
+        if selectedDevice == nil {
+            previewTask?.cancel()
+            previewTask = nil
+            previewArtwork = nil
+        }
         if let device = selectedDevice {
             deviceName.stringValue = device.name
             if case .simulator(let simulator) = device { deviceRuntime.stringValue = "\(simulator.runtimeName) Simulator" }
@@ -1574,7 +1598,17 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
                 deviceRuntime.stringValue = [device.operatingSystem, modelName(of: device), kindTitle(device)]
                     .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
             }
-            deviceImage.image = devicePreview(for: device)
+            let artwork = artwork(for: device)
+            if previewArtwork !== artwork {
+                previewTask?.cancel()
+                previewArtwork = artwork
+                deviceImage.image = nil
+                previewTask = Task { [weak self] in
+                    let image = await artwork.hardwarePreview()
+                    guard !Task.isCancelled, let self else { return }
+                    self.deviceImage.image = image
+                }
+            }
         } else if selections.isEmpty {
             deviceName.stringValue = "Select a Device"
             deviceRuntime.stringValue = "Choose a device in the sidebar to view its details."
@@ -1585,6 +1619,9 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             deviceImage.image = NSImage(systemSymbolName: "square.stack.3d.up", accessibilityDescription: nil)
         }
         deviceImage.contentTintColor = nil
+        let isShutdown = selectedSimulator?.state == "Shutdown"
+        viewScreen.title = isShutdown ? "Start" : "View Screen"
+        viewScreen.image = isShutdown ? nil : NSImage(systemSymbolName: "rectangle.badge.person.crop", accessibilityDescription: nil)
         viewScreen.isHidden = selections.count != 1
         viewScreen.isEnabled = selections.count == 1 && selections.first.map(canViewScreen) == true
         viewScreen.toolTip = nil
@@ -1784,17 +1821,26 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         }
     }
 
-    private func devicePreview(for device: InventoryDevice) -> NSImage? {
-        NSImage(systemSymbolName: symbolName(for: device), accessibilityDescription: nil)
+    private func artwork(for device: InventoryDevice) -> DeviceArtworkModel {
+        let xcodeURL: URL?
+        if let preferred = preferredArtworkXcodeURL() { xcodeURL = preferred }
+        else if case .simulator(let simulator) = device { xcodeURL = simulator.ownerXcodeURL }
+        else { xcodeURL = nil }
+        return artworkCache.artwork(modelIdentifier: device.modelIdentifier, family: family(of: device), xcodeURL: xcodeURL,
+                                    resolveXcodeURLs: { [weak model] in await model?.artworkXcodeURLs(for: device) ?? [] })
+    }
+
+    func reloadDeviceArtwork() {
+        for row in rows { table.reloadItem(row) }
     }
 
     private func shouldRenderAsActive(_ device: InventoryDevice) -> Bool {
+        if isDeviceActivated(device.id) { return true }
         switch device {
         case .simulator(let simulator):
-            return ["Booted", "Booting", "Shutting Down"].contains(simulator.state)
+            return ["Booting", "Shutting Down"].contains(simulator.state)
         case .remote(let remote):
-            if remote.kind == .virtualMachine { return remote.bootState == "booted" }
-            return remote.connectionState == "connected"
+            return ["booting", "shuttingDown"].contains(remote.bootState ?? "")
         }
     }
 
@@ -1813,18 +1859,6 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         if identifier.hasPrefix("Reality") { return "Apple Vision" }
         if platform(of: device).localizedCaseInsensitiveContains("mac") { return "Mac" }
         return platform(of: device).isEmpty ? "Other" : platform(of: device)
-    }
-
-    private func symbolName(for device: InventoryDevice) -> String {
-        switch family(of: device) {
-        case "iPad": "ipad"
-        case "Apple TV": "appletv"
-        case "Apple Watch": "applewatch"
-        case "Apple Vision", "visionOS": "visionpro"
-        case "Mac": "desktopcomputer"
-        case "iPhone": "iphone.gen3"
-        default: device.kind == .virtualMachine ? "desktopcomputer" : "externaldrive"
-        }
     }
 
     private func platform(of device: InventoryDevice) -> String {
@@ -2329,32 +2363,53 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
 }
 
 @MainActor
+private final class SimulatorSidebarRowView: NSTableRowView {
+    // Keep AppKit's selection geometry without the sidebar template's extra vibrancy.
+    override func drawSelection(in dirtyRect: NSRect) {
+        super.drawSelection(in: dirtyRect)
+    }
+}
+
+@MainActor
 private final class SimulatorSidebarCellView: NSTableCellView {
-    let subtitle = NSTextField(labelWithString: "Simulator")
+    private let labels = NSHostingView(rootView: SidebarDeviceLabels(name: "", subtitle: ""))
     let version = NSTextField(labelWithString: "")
     let progress = NSProgressIndicator()
-    var isDeviceActive = false {
-        didSet { updateIconAppearance() }
+    private var artworkHost: NSHostingView<SidebarDeviceArtwork>?
+
+    func setLabels(name: String, subtitle: String) {
+        labels.rootView = SidebarDeviceLabels(name: name, subtitle: subtitle)
     }
 
-    override var allowsVibrancy: Bool { true }
+    func setArtwork(_ model: DeviceArtworkModel, isActive: Bool) {
+        let content = SidebarDeviceArtwork(model: model, isActive: isActive, isEmphasized: backgroundStyle == .emphasized)
+        if let artworkHost { artworkHost.rootView = content }
+        else {
+            let host = NSHostingView(rootView: content)
+            host.translatesAutoresizingMaskIntoConstraints = false
+            host.setAccessibilityHidden(true)
+            addSubview(host)
+            NSLayoutConstraint.activate([
+                host.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+                host.centerYAnchor.constraint(equalTo: centerYAnchor),
+                host.widthAnchor.constraint(equalToConstant: 32),
+                host.heightAnchor.constraint(equalToConstant: 32),
+            ])
+            artworkHost = host
+        }
+    }
 
     override var backgroundStyle: NSView.BackgroundStyle {
-        didSet { needsDisplay = true }
+        didSet {
+            guard let artworkHost else { return }
+            let previous = artworkHost.rootView
+            artworkHost.rootView = SidebarDeviceArtwork(model: previous.model, isActive: previous.isActive,
+                                                        isEmphasized: backgroundStyle == .emphasized)
+        }
     }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        let icon = NSImageView()
-        icon.translatesAutoresizingMaskIntoConstraints = false
-        icon.imageScaling = .scaleProportionallyUpOrDown
-        icon.setAccessibilityHidden(true)
-        let name = NSTextField(labelWithString: "")
-        name.font = .systemFont(ofSize: 13, weight: .medium)
-        name.lineBreakMode = .byTruncatingTail
-        subtitle.font = .systemFont(ofSize: 11)
-        subtitle.textColor = .secondaryLabelColor
-        subtitle.lineBreakMode = .byTruncatingTail
         version.font = .systemFont(ofSize: 12)
         version.textColor = .secondaryLabelColor
         version.alignment = .right
@@ -2369,26 +2424,13 @@ private final class SimulatorSidebarCellView: NSTableCellView {
         trailing.distribution = .fill
         trailing.spacing = 6
         trailing.translatesAutoresizingMaskIntoConstraints = false
-        let labels = NSStackView(views: [name, subtitle])
-        labels.orientation = .vertical
-        labels.alignment = .leading
-        labels.spacing = 3
         labels.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(icon)
         addSubview(labels)
         addSubview(trailing)
-        imageView = icon
-        textField = name
         NSLayoutConstraint.activate([
-            icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
-            icon.centerYAnchor.constraint(equalTo: centerYAnchor),
-            icon.widthAnchor.constraint(equalToConstant: 24),
-            icon.heightAnchor.constraint(equalToConstant: 24),
             labels.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 49),
             labels.trailingAnchor.constraint(equalTo: trailing.leadingAnchor, constant: -10),
             labels.centerYAnchor.constraint(equalTo: centerYAnchor),
-            name.widthAnchor.constraint(equalTo: labels.widthAnchor),
-            subtitle.widthAnchor.constraint(equalTo: labels.widthAnchor),
             trailing.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
             trailing.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
@@ -2396,26 +2438,7 @@ private final class SimulatorSidebarCellView: NSTableCellView {
 
     required init?(coder: NSCoder) { nil }
 
-    override func draw(_ dirtyRect: NSRect) {
-        super.draw(dirtyRect)
-        let color: NSColor
-        if backgroundStyle == .emphasized {
-            color = isDeviceActive ? .secondaryLabelColor : .quaternaryLabelColor
-        } else {
-            color = isDeviceActive ? .controlColor : .tertiarySystemFill
-        }
-        color.setFill()
-        NSBezierPath(ovalIn: NSRect(x: 8, y: (bounds.height - 32) / 2, width: 32, height: 32)).fill()
-    }
 
-    private func updateIconAppearance() {
-        let colors = isDeviceActive
-            ? NSImage.SymbolConfiguration(paletteColors: [.black, .systemCyan])
-            : NSImage.SymbolConfiguration(hierarchicalColor: .tertiaryLabelColor)
-        imageView?.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 20, weight: .regular)
-            .applying(colors)
-        needsDisplay = true
-    }
 }
 
 @MainActor
