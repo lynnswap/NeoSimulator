@@ -61,6 +61,9 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
         toolbar.delegate = delegate
         window.toolbar = toolbar
         updateMainWindowAction(in: toolbar)
+        if commands.contains(.captureKeyboard), !toolbar.items.contains(where: { $0.itemIdentifier.rawValue == DeviceCommand.ID.captureKeyboard.rawValue }) {
+            toolbar.insertItem(withItemIdentifier: NSToolbarItem.Identifier(DeviceCommand.ID.captureKeyboard.rawValue), at: 0)
+        }
     }
 
     /// Read physical modifier state so synthetic releases sent to devices do not
@@ -198,12 +201,16 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
             for id in [DeviceToolbar.mainWindowItem, NSToolbarItem.Identifier(DeviceCommand.ID.resizeApp.rawValue)] {
                 if let index = toolbar.items.firstIndex(where: { $0.itemIdentifier == id }) { toolbar.removeItem(at: index) }
             }
+            if let index = toolbar.items.firstIndex(where: { $0.itemIdentifier.rawValue == DeviceCommand.ID.captureKeyboard.rawValue }) {
+                toolbar.removeItem(at: index)
+            }
             toolbar.delegate = original
         }
 
         func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier identifier: NSToolbarItem.Identifier,
                      willBeInsertedIntoToolbar inserted: Bool) -> NSToolbarItem? {
-            if identifier == DeviceToolbar.mainWindowItem || identifier.rawValue == DeviceCommand.ID.resizeApp.rawValue {
+            if identifier == DeviceToolbar.mainWindowItem || identifier.rawValue == DeviceCommand.ID.resizeApp.rawValue
+                || identifier.rawValue == DeviceCommand.ID.captureKeyboard.rawValue {
                 return owner?.toolbar(toolbar, itemForItemIdentifier: identifier, willBeInsertedIntoToolbar: inserted)
             }
             return original?.toolbar?(toolbar, itemForItemIdentifier: identifier, willBeInsertedIntoToolbar: inserted)
@@ -211,13 +218,15 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
 
         func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
             let identifiers = original?.toolbarDefaultItemIdentifiers?(toolbar) ?? []
-            return owner?.showsMainWindowAction == true ? [DeviceToolbar.mainWindowItem] + identifiers : identifiers
+            let capture = owner?.commands.contains(.captureKeyboard) == true ? [NSToolbarItem.Identifier(DeviceCommand.ID.captureKeyboard.rawValue)] : []
+            return (owner?.showsMainWindowAction == true ? [DeviceToolbar.mainWindowItem] : []) + capture + identifiers
         }
 
         func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
             let identifiers = original?.toolbarAllowedItemIdentifiers?(toolbar) ?? toolbar.items.map(\.itemIdentifier)
-            let hostItems = [DeviceToolbar.mainWindowItem] + (owner?.controller?.session.supportsAppResize == true
-                ? [NSToolbarItem.Identifier(DeviceCommand.ID.resizeApp.rawValue)] : [])
+            let hostItems = [DeviceToolbar.mainWindowItem]
+                + (owner?.controller?.session.supportsAppResize == true ? [NSToolbarItem.Identifier(DeviceCommand.ID.resizeApp.rawValue)] : [])
+                + (owner?.commands.contains(.captureKeyboard) == true ? [NSToolbarItem.Identifier(DeviceCommand.ID.captureKeyboard.rawValue)] : [])
             return hostItems + identifiers.filter { !hostItems.contains($0) }
         }
 
@@ -274,6 +283,7 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
             _ = controller.session.isConnected
             _ = controller.session.recording?.isStopping
             _ = controller.session.showsAlwaysOn
+            _ = controller.capturesKeyboard
             configureItems()
         } onChange: { [weak self] in
             Task { @MainActor [weak self] in self?.updateItems() }
@@ -281,10 +291,8 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
     }
 
     private func configureItems() {
-        for current in [toolbar, pluginDelegate?.toolbar].compactMap({ $0 }) {
-            for item in current.items {
-                if let id = DeviceCommand.ID(rawValue: item.itemIdentifier.rawValue) { configure(item, id) }
-            }
+        for item in toolbar.items + (pluginDelegate?.toolbar?.items ?? []) {
+            if let id = DeviceCommand.ID(rawValue: item.itemIdentifier.rawValue) { configure(item, id) }
         }
     }
 

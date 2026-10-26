@@ -37,13 +37,16 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
     private var showsSize: Bool
     /// Whether the window is key, while the display can take the Mac's keyboard.
     private(set) var isKey = false
-    private let keyboard: DisplayKeyboardInput
+    let keyboard: DisplayKeyboardInput
     private let fitting: DisplayFitting
     private var observers: [any NSObjectProtocol] = []
 
     /// - Parameter state: The external display's state, which gives its size.
     init(session: DeviceSession, display: any SimulatorDisplay, state: ExternalScreenState,
          deviceWindow: DeviceWindowController?, preferences: any PreferenceStore = HostPreferences.defaults,
+         keyboardCaptureTap: any KeyboardEventTap = SystemKeyboardEventTap(),
+         applicationIsActive: @escaping () -> Bool = { NSApp.isActive },
+         makeWindow: @MainActor (NSRect) -> NSWindow = ExternalDisplayWindowController.makeWindow,
          onClose: @escaping () -> Void) throws {
         self.session = session
         self.display = display
@@ -62,10 +65,9 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
             display.disconnect()
             throw HostError.unavailable("The external display has no usable size")
         }
-        let window = NSWindow(contentRect: NSRect(origin: .zero, size: screenSize),
-                              styleMask: [.titled, .closable, .miniaturizable, .resizable],
-                              backing: .buffered, defer: false)
-        keyboard = DisplayKeyboardInput(window: window, display: display)
+        let window = makeWindow(NSRect(origin: .zero, size: screenSize))
+        keyboard = DisplayKeyboardInput(window: window, display: display,
+                                        captureTap: keyboardCaptureTap, applicationIsActive: applicationIsActive)
         fitting = DisplayFitting(display: display, content: content)
         super.init(window: window)
         (window.title, window.subtitle) = deviceWindowTitles(
@@ -97,6 +99,11 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
     }
 
     required init?(coder: NSCoder) { nil }
+
+    static func makeWindow(_ frame: NSRect) -> NSWindow {
+        NSWindow(contentRect: frame, styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                 backing: .buffered, defer: false)
+    }
 
     /// Fits the saved scale, or Point Accurate for a new or CarPlay window, to the screen.
     private var initialScale: CGFloat { min(scale(for: .fitScreen) ?? .infinity, isCarPlay ? 1 : savedScale ?? 1) }

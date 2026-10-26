@@ -11,7 +11,7 @@ struct DeviceCommand {
         case rotateDeviceAutomatically
         case home, lock, alwaysOn, sideButton, actionButtonSting
         case actionButtonStaccato, doubleTap, wristFlick, siri, shake, appSwitcher, triggerScreenshot
-        case syncKeyboardLanguage, connectHardwareKeyboard, toggleSoftwareKeyboard
+        case syncKeyboardLanguage, connectHardwareKeyboard, captureKeyboard, toggleSoftwareKeyboard
         case useTrackpadForce, shallowPress, deepPress
         case increaseVolume, decreaseVolume, openURL
         case externalDisplayDisabled, externalDisplay640x480, externalDisplay720x480, externalDisplay1024x768
@@ -219,6 +219,13 @@ struct DeviceCommand {
                       modifiers: [.command, .shift],
                       isSupported: { $0.supportsFeature(DeviceCapabilities.keyboard) },
                       state: { $0.session.connectsHardwareKeyboard ? .on : .off }) { $0.toggleHardwareKeyboard() },
+        DeviceCommand(id: .captureKeyboard, title: "Capture Keyboard",
+                      toolbar: Toolbar(label: "Capture Keyboard", toolTip: "Capture Keyboard — hold Escape for one second to release.",
+                                       symbol: "keyboard", buttonWidth: 32),
+                      isSupported: { $0.supportsFeature(DeviceCapabilities.keyboard) },
+                      isEnabled: { $0.session.canPerformCommands && $0.session.connectsHardwareKeyboard },
+                      state: { $0.capturesKeyboard ? .on : .off },
+                      stateTitle: { $0.capturesKeyboard ? "Release Keyboard" : "Capture Keyboard" }) { $0.toggleKeyboardCapture() },
         // Software keyboard toggling requires the hardware keyboard.
         DeviceCommand(id: .toggleSoftwareKeyboard, title: "Toggle Software Keyboard", key: "k",
                       isSupported: { $0.supportsFeature(DeviceCapabilities.keyboard) },
@@ -424,7 +431,7 @@ struct DeviceCommand {
     }
 
     /// Simulator.app toolbar order; capability validation omits unsupported items.
-    static let toolbarItems: [ID] = [.home, .saveScreen, .rotateRight, .alwaysOn]
+    static let toolbarItems: [ID] = [.captureKeyboard, .home, .saveScreen, .rotateRight, .alwaysOn]
 }
 
 /// Plugin commands use the first-responder chain for validation and execution.
