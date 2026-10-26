@@ -101,12 +101,6 @@ final class SimulatorRuntime {
             if path.contains("/DeviceHub.app/") {
                 throw HostError.unavailable("Forbidden Device Hub component is loaded: \(path)")
             }
-#if !NEOSIMULATOR_MANAGER
-            // The manager also hosts DeviceKit-backed physical-device screens.
-            if path.contains("/DeviceKit.framework/") {
-                throw HostError.unavailable("Forbidden Device Hub component is loaded: \(path)")
-            }
-#endif
             if (path.contains("/SimulatorKit.framework/") || path.contains("/IDEPlaygroundSimulator.framework/")),
                !path.hasPrefix(prefix) {
                 throw HostError.unavailable("Private simulator code came from a different Xcode: \(path)")

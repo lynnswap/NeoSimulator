@@ -1675,7 +1675,7 @@ private final class DeviceContentView: NSView, DisplayContentView {
     var importFiles: ([URL]) -> Void = { _ in }
     var isEmbedded = false { didSet { if isEmbedded != oldValue { updateViewport() } } }
     var scrollsDisplay = false { didSet { if scrollsDisplay != oldValue { updateViewport() } } }
-    private var usesViewport: Bool { !usesNativeCanvas && (isEmbedded || scrollsDisplay) }
+    private var usesViewport: Bool { isEmbedded || scrollsDisplay }
     private func updateViewport() {
         retainedCanvasCenter = canvasCenter
         let parent = usesViewport ? canvasDocumentView : self

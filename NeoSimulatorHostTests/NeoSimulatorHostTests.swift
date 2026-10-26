@@ -763,8 +763,17 @@ struct InputFocusTests {
         defer { window.close() }
         controller.embed(in: parent)
         parent.view.layoutSubtreeIfNeeded()
-        #expect(display.view.frame == parent.view.bounds)
-        #expect(display.view.superview === controller.presentationViewController.view)
+        let content = controller.presentationViewController.view
+        let scroll = try #require(content.subviews.compactMap { $0 as? NSScrollView }.first)
+        #expect(scroll.documentVisibleRect.contains(display.view.frame))
+        controller.setScale(.pointAccurate)
+        let before = display.view.convert(NSPoint(x: 120, y: 400), to: content)
+        let origin = scroll.contentView.bounds.origin
+        scroll.contentView.scroll(to: NSPoint(x: 60, y: 240))
+        scroll.reflectScrolledClipView(scroll.contentView)
+        let after = display.view.convert(NSPoint(x: 120, y: 400), to: content)
+        #expect(before != after)
+        #expect(after.y == before.y - (scroll.contentView.bounds.minY - origin.y))
         controller.showCompactWindow()
         let compact = try #require(controller.window)
         #expect(display.view.window === compact && compact.isOpaque)
@@ -773,9 +782,10 @@ struct InputFocusTests {
         controller.setDeviceBezelVisible(true)
         #expect(compact.backgroundColor == .windowBackgroundColor)
         controller.embed(in: parent)
+        controller.performCanvasZoom(.fit)
         parent.view.setFrameSize(NSSize(width: 400, height: 300))
         parent.view.layoutSubtreeIfNeeded()
-        #expect(display.view.frame == parent.view.bounds)
+        #expect(scroll.documentVisibleRect.contains(display.view.frame))
         #expect(display.disconnectCount == 0)
     }
 

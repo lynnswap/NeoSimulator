@@ -120,10 +120,7 @@ public final class NativeDeviceCanvas {
     private let values: [NativeSwiftValue]
     private let sendNativeButton: (Int, Int, RemoteDeviceButtonState) throws -> Void
     public var naturalSize: CGSize { presentation.naturalSize }
-    public var onSizeChange: (() -> Void)? {
-        get { presentation.onSizeChange }
-        set { presentation.onSizeChange = newValue }
-    }
+    public var onSizeChange: (() -> Void)?
 
     public var inputView: NSView {
         func find(in view: NSView) -> NSView? {
@@ -208,10 +205,19 @@ public final class NativeDeviceCanvas {
         self.values = values
         sendNativeButton = sendButton
         view = hosting
+        hosting.contentSize = { CGSize(width: presentation.naturalSize.width * presentation.zoom,
+                                       height: presentation.naturalSize.height * presentation.zoom) }
+        presentation.onSizeChange = { [weak self] in
+            self?.hosting.invalidateIntrinsicContentSize()
+            self?.onSizeChange?()
+        }
     }
 
     public func setChromeVisible(_ visible: Bool) { presentation.showsChrome = visible }
-    public func setZoom(_ zoom: CGFloat) { presentation.zoom = zoom }
+    public func setZoom(_ zoom: CGFloat) {
+        presentation.zoom = zoom
+        hosting.invalidateIntrinsicContentSize()
+    }
     public func sendButton(usagePage: Int, usage: Int, state: RemoteDeviceButtonState) throws {
         try sendNativeButton(usagePage, usage, state)
     }
@@ -221,6 +227,8 @@ public final class NativeDeviceCanvas {
 @MainActor
 private final class NativeCanvasHostingView: NSHostingView<AnyView> {
     var content: AnyView?
+    var contentSize: (() -> CGSize)?
+    override var intrinsicContentSize: NSSize { contentSize?() ?? super.intrinsicContentSize }
     required init(rootView: AnyView) { content = rootView; super.init(rootView: rootView) }
     required init?(coder: NSCoder) { nil }
     override func viewDidMoveToWindow() {

@@ -10,13 +10,18 @@ Neo loads CoreSimulator, SimulatorKit, and IDEPlaygroundSimulator through
 operations use the resolved installation's validated tools. The app does not
 load Simulator.app code or resources and does not modify or re-sign Xcode.
 
+Duo screens in the default device set use DeviceKit's native device composition
+from the selected UI framework installation. That composition owns the cover and
+inner display providers, bezel, and pointer input. Posture controls send the
+device's native hinge commands and follow its reported motion state.
+
 The compatibility gate checks:
 
 - Xcode and component generations, Apple signatures, bundle identities, and
   exact framework and tool paths.
 - The `EXPECTED_VERSION` in each tool wrapper against its installed framework.
-- The simulator CoreDevice plugin's version and generation, and forbidden
-  DeviceKit or Device Hub load paths.
+- The simulator CoreDevice plugin's version and generation, and unexpected
+  DeviceKit or Device Hub linkage in the command-line tools and that plugin.
 - The packaged renderer and its private runtime contract, including Objective-C
   messages, Swift members, C symbols, and loaded-image provenance.
 
