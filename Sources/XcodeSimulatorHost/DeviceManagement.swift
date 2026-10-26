@@ -85,10 +85,12 @@ struct DeviceManagementContext: Sendable {
 extension SimulatorHostController {
     /// Runs each requested target once, preserving completed work and target-specific failures.
     /// Simulator mutations share the existing operation FIFO with opens and host changes.
+    /// Force shutdown may join a matching normal shutdown without giving up that FIFO ownership.
     public func manage(_ action: DeviceManagementAction, devices: [InventoryDevice]) async -> DeviceManagementReport {
         let backend = DeviceManagementBackend(
             context: { try await self.deviceManagementContext(for: $0, requiresRenderer: $1) },
             runSimctl: Self.runManagementSimctl, runDevicectl: Self.runManagementDevicectl,
+            shutdownSimulator: Self.shutdownSimulator,
             manageCoreDevice: { action, identifier in try await CoreDeviceManagementClient.perform(action, deviceID: identifier) },
             release: { renderer, identifier in try await RendererDeviceRequestWaiter().release(identifier, from: renderer) },
             restart: { renderer, identifier, erasing in
@@ -96,14 +98,50 @@ extension SimulatorHostController {
             },
             attach: { renderer, identifier in try await RendererDeviceRequestWaiter().open(identifier, in: renderer) }
         )
+        return await manage(action, devices: devices, using: backend)
+    }
+
+    func manage(_ action: DeviceManagementAction, devices: [InventoryDevice], using backend: DeviceManagementBackend) async -> DeviceManagementReport {
+        if action == .forceShutdown {
+            for transaction in shutdownTransactions {
+                if let report = await transaction.escalate(devices) { return report }
+            }
+        }
         guard devices.contains(where: { if case .simulator = $0 { true } else { false } }) else {
             return await backend.manage(action, devices: devices)
         }
-        do { return try await operation { await backend.manage(action, devices: devices) } }
+        let shutdown: SimulatorShutdownTransaction?
+        if action == .shutdown, devices.allSatisfy({ if case .simulator = $0 { true } else { false } }) {
+            let transaction = SimulatorShutdownTransaction(devices: devices, backend: backend)
+            shutdownTransactions.append(transaction)
+            shutdown = transaction
+        } else { shutdown = nil }
+        defer {
+            if let shutdown { shutdownTransactions.removeAll { $0 === shutdown } }
+        }
+        do {
+            return try await operation {
+                if let shutdown { return await shutdown.run() }
+                return await backend.manage(action, devices: devices)
+            }
+        }
         catch {
             return DeviceManagementReport(results: devices.map {
                 DeviceManagementResult(deviceID: $0.id, completedSteps: [], createdDeviceID: nil, error: error)
             })
+        }
+    }
+
+    private static func shutdownSimulator(_ xcode: URL, _ identifier: String, _ path: String?) async throws {
+        let arguments = (path.map { ["--set", $0] } ?? []) + ["shutdown", identifier]
+        let environment = ProcessInfo.processInfo.environment.merging([
+            "DEVELOPER_DIR": xcode.appendingPathComponent("Contents/Developer").path
+        ]) { _, new in new }
+        let output = try await SystemCommandRunner.runCancellable(
+            executable: URL(fileURLWithPath: ToolConstants.coreSimulatorFrameworkPath)
+                .appendingPathComponent(ToolConstants.simctlBinaryPath), arguments: arguments, environment: environment)
+        guard output.terminationStatus == 0 else {
+            throw CLIError.io("device-management", output.stderrText.isEmpty ? output.stdoutText : output.stderrText)
         }
     }
 
@@ -132,6 +170,7 @@ struct DeviceManagementBackend: Sendable {
     var context: @Sendable (SimulatorHostDevice, Bool) async throws -> DeviceManagementContext
     var runSimctl: @Sendable (URL, [String], String?) async throws -> Data
     var runDevicectl: @Sendable ([String]) async throws -> Data
+    var shutdownSimulator: @Sendable (URL, String, String?) async throws -> Void
     var manageCoreDevice: @Sendable (DeviceManagementAction, DeviceInventoryID) async throws -> Void
     var release: @Sendable (RendererRegistration, DeviceInventoryID) async throws -> Void
     /// False means the renderer had no existing window; the backend uses the release/CLI path instead.
@@ -159,6 +198,10 @@ struct DeviceManagementBackend: Sendable {
     }
 
     private func forceShutdown(_ targets: [InventoryDevice]) async -> DeviceManagementReport {
+        await finishForceShutdown(await requestForceShutdown(targets), targets: targets)
+    }
+
+    func requestForceShutdown(_ targets: [InventoryDevice]) async -> DeviceManagementReport {
         var results: [DeviceManagementResult] = []
         // A renderer may be unresponsive. Send every requested force operation before waiting for cleanup.
         for target in targets {
@@ -175,6 +218,11 @@ struct DeviceManagementBackend: Sendable {
             results.append(DeviceManagementResult(deviceID: target.id, completedSteps: completed,
                                                   createdDeviceID: nil, error: failure))
         }
+        return DeviceManagementReport(results: results)
+    }
+
+    func finishForceShutdown(_ report: DeviceManagementReport, targets: [InventoryDevice]) async -> DeviceManagementReport {
+        var results = report.results
         for (index, target) in targets.enumerated() {
             guard case .simulator(let device) = target, device.deviceSetPath == nil else { continue }
             do {
@@ -244,7 +292,10 @@ struct DeviceManagementBackend: Sendable {
                         let clone = String(decoding: output, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
                         created = .simulator(udid: clone, deviceSetPath: device.deviceSetPath)
                     case .start: _ = try await command(["boot", identifier], step: "Started")
-                    case .shutdown: _ = try await command(["shutdown", identifier], step: "Shut down")
+                    case .shutdown:
+                        try Task.checkCancellation()
+                        try await shutdownSimulator(resolved.xcodeURL, identifier, device.deviceSetPath)
+                        completed.append("Shut down")
                     case .restart, .erase, .remove:
                         let wasRunning = ["Booted", "Booting"].contains(device.state)
                         if wasRunning { _ = try await command(["shutdown", identifier], step: "Shut down") }
@@ -332,5 +383,90 @@ struct DeviceManagementBackend: Sendable {
             let phone: Device
         }
         let pairs: [String: Pair]
+    }
+}
+
+/// Keeps an accepted force request within the normal shutdown's FIFO ownership.
+actor SimulatorShutdownTransaction {
+    private struct Escalation {
+        let identifiers: Set<DeviceInventoryID>
+        let task: Task<DeviceManagementReport, Never>
+    }
+    private let devices: [InventoryDevice]
+    private let identifiers: Set<DeviceInventoryID>
+    private let backend: DeviceManagementBackend
+    private var accepting = true
+    private var started = false
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+    private var shutdownTasks: [DeviceInventoryID: Task<DeviceManagementResult, Never>] = [:]
+    private var escalations: [UUID: Escalation] = [:]
+    private var forciblyStopped: Set<DeviceInventoryID> = []
+
+    init(devices: [InventoryDevice], backend: DeviceManagementBackend) {
+        var seen: Set<DeviceInventoryID> = []
+        self.devices = devices.filter { seen.insert($0.id).inserted }
+        identifiers = seen
+        self.backend = backend
+    }
+
+    func escalate(_ requested: [InventoryDevice]) async -> DeviceManagementReport? {
+        var seen: Set<DeviceInventoryID> = []
+        let targets = requested.filter { seen.insert($0.id).inserted }
+        guard accepting, !targets.isEmpty, seen.isSubset(of: identifiers),
+              targets.allSatisfy({ if case .simulator = $0 { true } else { false } }) else { return nil }
+        if Task.isCancelled {
+            return DeviceManagementReport(results: targets.map {
+                DeviceManagementResult(deviceID: $0.id, completedSteps: [], createdDeviceID: nil, error: CancellationError())
+            })
+        }
+        let task = Task { await self.force(targets) }
+        escalations[UUID()] = Escalation(identifiers: seen, task: task)
+        return await task.value
+    }
+
+    func run() async -> DeviceManagementReport {
+        started = true
+        for waiter in startWaiters { waiter.resume() }
+        startWaiters.removeAll()
+        var results: [DeviceManagementResult] = []
+        for device in devices {
+            for escalation in escalations.values where escalation.identifiers.contains(device.id) {
+                _ = await escalation.task.value
+            }
+            if forciblyStopped.contains(device.id) {
+                results.append(DeviceManagementResult(deviceID: device.id, completedSteps: ["Forcibly shut down"],
+                                                      createdDeviceID: nil, error: nil))
+                continue
+            }
+            let task = Task { await self.backend.manage(.shutdown, devices: [device]).results[0] }
+            shutdownTasks[device.id] = task
+            let result = await withTaskCancellationHandler {
+                await task.value
+            } onCancel: {
+                task.cancel()
+            }
+            results.append(result)
+            shutdownTasks.removeValue(forKey: device.id)
+        }
+        accepting = false
+        for escalation in escalations.values { _ = await escalation.task.value }
+        return DeviceManagementReport(results: results.map { result in
+            guard result.error is CancellationError, forciblyStopped.contains(result.deviceID) else { return result }
+            // Successful escalation fulfilled the original shutdown; unrelated CLI failures remain errors.
+            return DeviceManagementResult(deviceID: result.deviceID,
+                completedSteps: result.completedSteps + ["Forcibly shut down"], createdDeviceID: result.createdDeviceID, error: nil)
+        })
+    }
+
+    private func force(_ targets: [InventoryDevice]) async -> DeviceManagementReport {
+        if !started { await withCheckedContinuation { startWaiters.append($0) } }
+        let report = await backend.requestForceShutdown(targets)
+        let completed = report.results.filter { $0.error == nil }.map(\.deviceID)
+        for identifier in completed {
+            forciblyStopped.insert(identifier)
+            shutdownTasks[identifier]?.cancel()
+        }
+        for identifier in completed { _ = await shutdownTasks[identifier]?.value }
+        return await backend.finishForceShutdown(report, targets: targets)
     }
 }

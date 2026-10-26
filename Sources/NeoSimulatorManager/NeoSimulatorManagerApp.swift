@@ -1935,7 +1935,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             let item = NSMenuItem(title: title, action: #selector(performManagement(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = ManagementRequest(action: action, identifiers: identifiers)
-            item.isEnabled = idle
+            item.isEnabled = !model.isBusy && model.canManage(action, deviceIDs: identifiers)
             menu.addItem(item)
         }
         if menu.items.isEmpty {
@@ -1974,7 +1974,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         guard let request = sender.representedObject as? ManagementRequest else { return }
         let devices = model.inventory.filter { request.identifiers.contains($0.id) }
         guard devices.count == request.identifiers.count, supports(request.action, devices: devices), !model.isBusy,
-              request.identifiers.isDisjoint(with: model.managingDeviceIDs) else { return }
+              model.canManage(request.action, deviceIDs: request.identifiers) else { return }
         switch request.action {
         case .rename: presentNameEditor(for: devices[0], cloning: false)
         case .clone: presentNameEditor(for: devices[0], cloning: true)

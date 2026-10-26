@@ -1,9 +1,51 @@
 import Foundation
+import Observation
 import Testing
 @testable import XcodeSimulatorHost
 
 @Suite(.serialized, .timeLimit(.minutes(1))) @MainActor
 struct ManagerModelTests {
+    @Test func forceCanJoinNormalShutdownWithoutTheOriginalRequestUnlockingIt() async throws {
+        let device = simulator()
+        let source = ManagerModelSource(devices: [device], holdsManagement: true)
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source)
+        manager.manage(.shutdown, devices: [device])
+        #expect(await events.next() == .manage(.shutdown, [device.id]))
+        #expect(manager.canManage(.forceShutdown, deviceIDs: [device.id]))
+        manager.manage(.forceShutdown, devices: [device])
+        #expect(await events.next() == .manage(.forceShutdown, [device.id]))
+        #expect(!manager.canManage(.forceShutdown, deviceIDs: [device.id]))
+        let changes = AsyncStream<Set<DeviceInventoryID>>.makeStream()
+        var changed = changes.stream.makeAsyncIterator()
+        withObservationTracking {
+            _ = manager.managingDeviceIDs
+        } onChange: {
+            Task { @MainActor in changes.continuation.yield(manager.managingDeviceIDs) }
+        }
+        await source.completeManagement(.shutdown)
+        #expect(await changed.next() == [device.id])
+        #expect(!manager.canManage(.restart, deviceIDs: [device.id]))
+        await source.completeManagement(.forceShutdown)
+        try await manager.quitRenderer(keepingDevicesRunning: true)
+        #expect(manager.managingDeviceIDs.isEmpty)
+    }
+
+    @Test(arguments: [DeviceManagementAction.restart, .erase, .remove])
+    func forceCannotJoinOtherManagementRequests(_ action: DeviceManagementAction) async throws {
+        let device = simulator()
+        let source = ManagerModelSource(devices: [device], holdsManagement: true)
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source)
+        manager.manage(action, devices: [device])
+        #expect(await events.next() == .manage(action, [device.id]))
+        #expect(!manager.canManage(.forceShutdown, deviceIDs: [device.id]))
+        manager.manage(.forceShutdown, devices: [device])
+        #expect(await source.managementRequests == 1)
+        await source.completeManagement(action)
+        try await manager.quitRenderer(keepingDevicesRunning: true)
+    }
+
     @Test func acceptedEditsMergeSnapshotsAndDrainBeforeQuit() async throws {
         let device = simulator()
         let source = ManagerModelSource(devices: [device])
@@ -221,9 +263,12 @@ private actor ManagerModelSource: SimulatorManagerSource {
     private(set) var readCount = 0
     private(set) var managementRequests = 0
     private let managementFailureID: DeviceInventoryID?
+    private let holdsManagement: Bool
+    private var managementWaiters: [(DeviceManagementAction, [InventoryDevice], CheckedContinuation<DeviceManagementReport, Never>)] = []
 
-    init(devices: [InventoryDevice], managementFailureID: DeviceInventoryID? = nil) {
+    init(devices: [InventoryDevice], managementFailureID: DeviceInventoryID? = nil, holdsManagement: Bool = false) {
         self.managementFailureID = managementFailureID
+        self.holdsManagement = holdsManagement
         self.devices = devices
         (events, continuation) = AsyncStream.makeStream()
     }
@@ -290,9 +335,23 @@ private actor ManagerModelSource: SimulatorManagerSource {
     func creationCatalog() throws -> SimulatorCreationContext { throw Failure.unavailable }
     func createSimulator(named name: String, deviceType: String, runtime: String, context: SimulatorCreationContext) throws -> String { throw Failure.unavailable }
     func pairSimulators(watch: String, phone: String, context: SimulatorCreationContext) throws { throw Failure.unavailable }
-    func manage(_ action: DeviceManagementAction, devices: [InventoryDevice]) -> DeviceManagementReport {
+    func manage(_ action: DeviceManagementAction, devices: [InventoryDevice]) async -> DeviceManagementReport {
         managementRequests += 1
+        if holdsManagement {
+            return await withCheckedContinuation { waiting in
+                managementWaiters.append((action, devices, waiting))
+                continuation.yield(.manage(action, devices.map(\.id)))
+            }
+        }
         continuation.yield(.manage(action, devices.map(\.id)))
+        return managementReport(action, devices: devices)
+    }
+    func completeManagement(_ action: DeviceManagementAction) {
+        guard let index = managementWaiters.firstIndex(where: { $0.0 == action }) else { return }
+        let (_, devices, waiting) = managementWaiters.remove(at: index)
+        waiting.resume(returning: managementReport(action, devices: devices))
+    }
+    private func managementReport(_ action: DeviceManagementAction, devices: [InventoryDevice]) -> DeviceManagementReport {
         return DeviceManagementReport(results: devices.map {
             let failure = $0.id == managementFailureID
             return DeviceManagementResult(deviceID: $0.id,

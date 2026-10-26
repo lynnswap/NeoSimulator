@@ -1,10 +1,105 @@
 import Foundation
+import Darwin
 import Testing
 
 @testable import XcodeSimulatorHost
 
 @Suite
 struct DeviceManagementTests {
+    @Test(.timeLimit(.minutes(1))) func forceEscalatesAnOwnedShutdownAndReapsOnlyItsCommand() async throws {
+        let device = Self.simulator("A", state: "Booted", features: ["com.apple.dt.coredevice.device.shutdown"])
+        let fixture = ManagementFixture(holdsShutdown: true,
+            nativeFeatures: [device.inventoryID: ["com.apple.dt.coredevice.device.shutdown"]])
+        let controller = SimulatorHostController(rendererApplicationURL: URL(fileURLWithPath: "/Renderer.app"))
+        var events = fixture.events.makeAsyncIterator()
+        let normal = Task { await controller.manage(.shutdown, devices: [.simulator(device)], using: fixture.backend) }
+        #expect(await events.next() == .command("shutdown", "A"))
+        let force = Task { await controller.manage(.forceShutdown, devices: [.simulator(device)], using: fixture.backend) }
+        #expect(await events.next() == .native(device.inventoryID))
+        #expect(await events.next() == .cancelledShutdown("A"))
+        let forced = await force.value
+        let original = await normal.value
+        #expect(forced.results[0].error == nil && forced.results[0].completedSteps == ["Forcibly shut down"])
+        #expect(original.results[0].error == nil && original.results[0].completedSteps == ["Forcibly shut down"])
+        #expect(await controller.shutdownTransactions.isEmpty)
+    }
+
+    @Test(arguments: [DeviceManagementAction.restart, .erase, .remove])
+    func forceDoesNotPreemptShutdownStepsOwnedByOtherActions(_ action: DeviceManagementAction) async throws {
+        let device = Self.simulator("A", state: "Booted", features: ["com.apple.dt.coredevice.device.shutdown"])
+        let fixture = ManagementFixture(holdsShutdown: true,
+            nativeFeatures: [device.inventoryID: ["com.apple.dt.coredevice.device.shutdown"]])
+        let controller = SimulatorHostController(rendererApplicationURL: URL(fileURLWithPath: "/Renderer.app"))
+        var events = fixture.events.makeAsyncIterator()
+        let original = Task { await controller.manage(action, devices: [.simulator(device)], using: fixture.backend) }
+        #expect(await events.next() == .command("shutdown", "A"))
+        let force = Task { await controller.manage(.forceShutdown, devices: [.simulator(device)], using: fixture.backend) }
+        await fixture.completeShutdown("A")
+        let remaining: [String] = switch action {
+        case .restart: ["boot"]
+        case .erase: ["erase", "boot"]
+        default: ["delete"]
+        }
+        for command in remaining { #expect(await events.next() == .command(command, "A")) }
+        #expect(await events.next() == .native(device.inventoryID))
+        #expect(await original.value.results[0].error == nil)
+        #expect(await force.value.results[0].error == nil)
+    }
+
+    @Test(.timeLimit(.minutes(1))) func failedEscalationKeepsTheOriginalShutdownAndItsResult() async throws {
+        let device = Self.simulator("A", state: "Booted", features: ["com.apple.dt.coredevice.device.shutdown"])
+        let fixture = ManagementFixture(holdsShutdown: true)
+        let controller = SimulatorHostController(rendererApplicationURL: URL(fileURLWithPath: "/Renderer.app"))
+        var events = fixture.events.makeAsyncIterator()
+        let normal = Task { await controller.manage(.shutdown, devices: [.simulator(device)], using: fixture.backend) }
+        #expect(await events.next() == .command("shutdown", "A"))
+        let failed = await controller.manage(.forceShutdown, devices: [.simulator(device)], using: fixture.backend)
+        #expect((failed.results[0].error as? CLIError)?.identifier == "virtual-machine-capability")
+        await fixture.completeShutdown("A")
+        let report = await normal.value
+        #expect(report.results[0].completedSteps == ["Shut down"] && report.results[0].error == nil)
+    }
+
+    @Test(.timeLimit(.minutes(1))) func cancelledEscalationDoesNotSendAForceRequest() async throws {
+        let device = Self.simulator("A", state: "Booted", features: ["com.apple.dt.coredevice.device.shutdown"])
+        let fixture = ManagementFixture(holdsShutdown: true,
+            nativeFeatures: [device.inventoryID: ["com.apple.dt.coredevice.device.shutdown"]])
+        let controller = SimulatorHostController(rendererApplicationURL: URL(fileURLWithPath: "/Renderer.app"))
+        var events = fixture.events.makeAsyncIterator()
+        let normal = Task { await controller.manage(.shutdown, devices: [.simulator(device)], using: fixture.backend) }
+        #expect(await events.next() == .command("shutdown", "A"))
+        let force = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await controller.manage(.forceShutdown, devices: [.simulator(device)], using: fixture.backend)
+        }
+        #expect(await force.value.results[0].error is CancellationError)
+        #expect(await fixture.coreDeviceOperations.isEmpty)
+        await fixture.completeShutdown("A")
+        #expect(await normal.value.results[0].error == nil)
+    }
+
+    @Test(.timeLimit(.minutes(1))) func cancellableCommandsReapTheirOwnedChildWhenItIgnoresTermination() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let ready = directory.appendingPathComponent("ready")
+        try #require(mkfifo(ready.path, 0o600) == 0)
+        let pid = Task.detached {
+            let handle = try FileHandle(forReadingFrom: ready)
+            defer { try? handle.close() }
+            return try handle.readToEnd() ?? Data()
+        }
+        let command = Task {
+            try await SystemCommandRunner.runCancellable(executable: URL(fileURLWithPath: "/bin/sh"),
+                arguments: ["-c", "trap '' TERM; printf '%s\\n' \"$$\" > \"$1\"; exec /bin/sleep 300", "fixture", ready.path])
+        }
+        defer { command.cancel() }
+        let child = try #require(Int32(String(decoding: try await pid.value, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)))
+        command.cancel()
+        await #expect(throws: CancellationError.self) { _ = try await command.value }
+        #expect(kill(child, 0) == -1 && errno == ESRCH)
+    }
+
     @Test func batchPreservesPartialSuccessAndUsesNamespacedCommandDestinations() async throws {
         let fixture = ManagementFixture(failingCommand: "rename", failingIdentifier: "fails")
         let remote = try Self.remote(identifier: "same", reality: "physical")
@@ -234,11 +329,15 @@ struct DeviceManagementTests {
 }
 
 private actor ManagementFixture {
-    enum Event: Equatable, Sendable { case native(DeviceInventoryID), release(DeviceInventoryID) }
+    enum Event: Equatable, Sendable {
+        case native(DeviceInventoryID), release(DeviceInventoryID), command(String, String), cancelledShutdown(String)
+    }
     nonisolated let events: AsyncStream<Event>
     private let continuation: AsyncStream<Event>.Continuation
     private var releaseContinuation: CheckedContinuation<Void, any Error>?
     private let holdsRelease: Bool
+    private let holdsShutdown: Bool
+    private var shutdownWaiters: [String: CheckedContinuation<Void, any Error>] = [:]
     struct Command: Sendable { let arguments: [String]; let path: String?; let xcodeURL: URL? }
     struct NativeOperation: Equatable, Sendable { let action: DeviceManagementAction; let deviceID: DeviceInventoryID }
     let hasRenderer: Bool
@@ -256,11 +355,12 @@ private actor ManagementFixture {
     private(set) var releasedDevices: [DeviceInventoryID] = []
     var virtualOperations: [String] { coreDeviceOperations.compactMap { if case .coreDevice(let id) = $0.deviceID { id } else { nil } } }
 
-    init(hasRenderer: Bool = false, failsRelease: Bool = false, holdsRelease: Bool = false, restartHasWindow: Bool = true,
+    init(hasRenderer: Bool = false, failsRelease: Bool = false, holdsRelease: Bool = false, holdsShutdown: Bool = false, restartHasWindow: Bool = true,
          failingCommand: String? = nil, failingIdentifier: String? = nil, virtualFeatures: [String: Set<String>] = [:],
          managementCatalogs: [(URL, [SimulatorHostDevice])] = [], nativeFeatures: [DeviceInventoryID: Set<String>] = [:]) {
         (events, continuation) = AsyncStream.makeStream()
         self.holdsRelease = holdsRelease
+        self.holdsShutdown = holdsShutdown
         self.hasRenderer = hasRenderer
         self.displayConnected = hasRenderer
         self.failsRelease = failsRelease
@@ -274,7 +374,9 @@ private actor ManagementFixture {
     nonisolated var backend: DeviceManagementBackend {
         DeviceManagementBackend(context: { device, requiresRenderer in try await self.context(device, requiresRenderer: requiresRenderer) }, runSimctl: { xcode, arguments, path in
             try await self.run(arguments, path: path, xcodeURL: xcode)
-        }, runDevicectl: { try await self.run($0, path: nil) }, manageCoreDevice: { action, identifier in
+        }, runDevicectl: { try await self.run($0, path: nil) }, shutdownSimulator: { xcode, identifier, path in
+            _ = try await self.run(["shutdown", identifier], path: path, xcodeURL: xcode)
+        }, manageCoreDevice: { action, identifier in
             try await self.manageCoreDevice(action, identifier: identifier)
         }, release: { _, identifier in
             try await self.release(identifier)
@@ -328,7 +430,7 @@ private actor ManagementFixture {
         continuation.yield(.native(identifier))
     }
 
-    private func run(_ arguments: [String], path: String?, xcodeURL: URL? = nil) throws -> Data {
+    private func run(_ arguments: [String], path: String?, xcodeURL: URL? = nil) async throws -> Data {
         if ["shutdown", "erase", "delete"].contains(arguments.first ?? ""), displayConnected {
             throw CLIError.io("unsafe-mutation", "The live display was not released before mutation")
         }
@@ -337,9 +439,30 @@ private actor ManagementFixture {
            failingIdentifier == nil || arguments.dropFirst().first == failingIdentifier {
             throw CLIError.io("mutation-fixture", "Synthetic command failure")
         }
+        if holdsShutdown, arguments.first == "shutdown", let identifier = arguments.dropFirst().first {
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { (waiting: CheckedContinuation<Void, any Error>) in
+                    if Task.isCancelled { waiting.resume(throwing: CancellationError()); return }
+                    shutdownWaiters[identifier] = waiting
+                    continuation.yield(.command("shutdown", identifier))
+                }
+            } onCancel: {
+                Task { await self.cancelShutdown(identifier) }
+            }
+        } else if let command = arguments.first, let identifier = arguments.dropFirst().first {
+            continuation.yield(.command(command, identifier))
+        }
         if arguments == ["list", "pairs", "--json"] {
             return Data(#"{"pairs":{"actual-pair-id":{"watch":{"udid":"watch-device"},"phone":{"udid":"phone-device"}}}}"#.utf8)
         }
         return Data()
+    }
+
+    func completeShutdown(_ identifier: String) { shutdownWaiters.removeValue(forKey: identifier)?.resume() }
+
+    private func cancelShutdown(_ identifier: String) {
+        guard let waiter = shutdownWaiters.removeValue(forKey: identifier) else { return }
+        continuation.yield(.cancelledShutdown(identifier))
+        waiter.resume(throwing: CancellationError())
     }
 }

@@ -32,7 +32,15 @@ final class SimulatorManagerModel {
             return device
         }
     }
-    private(set) var managingDeviceIDs: Set<DeviceInventoryID> = []
+    var managingDeviceIDs: Set<DeviceInventoryID> {
+        Set(managementRequests.values.flatMap(\.identifiers))
+    }
+    private struct ManagementRequest {
+        let action: DeviceManagementAction?
+        let identifiers: Set<DeviceInventoryID>
+        var task: Task<Void, Never>?
+    }
+    private var managementRequests: [UUID: ManagementRequest] = [:]
     private(set) var isBusy = false
     private(set) var activity = ""
     private(set) var backgroundIssue: String?
@@ -54,7 +62,6 @@ final class SimulatorManagerModel {
     @ObservationIgnored private var inventoryRefreshRequested = false
     @ObservationIgnored private var stopping = false
     @ObservationIgnored private var operationTask: Task<Void, Never>?
-    @ObservationIgnored private var managementTasks: [UUID: Task<Void, Never>] = [:]
     @ObservationIgnored private var pendingOperations: [(activity: String, refreshCatalog: Bool, run: @MainActor () async throws -> Void)] = []
 
     init(rendererApplicationURL: URL,
@@ -127,17 +134,24 @@ final class SimulatorManagerModel {
         await refresh()
     }
 
+    func canManage(_ action: DeviceManagementAction, deviceIDs: Set<DeviceInventoryID>) -> Bool {
+        guard !stopping, !deviceIDs.isEmpty else { return false }
+        let overlapping = managementRequests.values.filter { !$0.identifiers.isDisjoint(with: deviceIDs) }
+        if overlapping.isEmpty { return true }
+        guard action == .forceShutdown, overlapping.count == 1, let shutdown = overlapping.first,
+              shutdown.action == DeviceManagementAction.shutdown, deviceIDs.isSubset(of: shutdown.identifiers) else { return false }
+        return shutdown.identifiers.allSatisfy { if case .simulator = $0 { true } else { false } }
+    }
+
     func manage(_ action: DeviceManagementAction, devices: [InventoryDevice]) {
-        guard !stopping else { return }
         var identifiers = Set<DeviceInventoryID>()
         let targets = devices.filter { identifiers.insert($0.id).inserted }
-        guard !targets.isEmpty, managingDeviceIDs.isDisjoint(with: identifiers) else { return }
-        managingDeviceIDs.formUnion(identifiers)
+        guard canManage(action, deviceIDs: identifiers) else { return }
         let request = UUID()
-        managementTasks[request] = Task {
+        managementRequests[request] = ManagementRequest(action: action, identifiers: identifiers)
+        let task = Task {
             defer {
-                self.managingDeviceIDs.subtract(identifiers)
-                self.managementTasks.removeValue(forKey: request)
+                self.managementRequests.removeValue(forKey: request)
             }
             do {
                 if action != .forceShutdown {
@@ -176,6 +190,7 @@ final class SimulatorManagerModel {
                 }
             } catch { self.onError?(error) }
         }
+        managementRequests[request]?.task = task
 
     }
 
@@ -196,12 +211,11 @@ final class SimulatorManagerModel {
                                    operation: @escaping @MainActor () async throws -> Void,
                                    completion: @escaping @MainActor () -> Void) {
         guard !stopping, !managingDeviceIDs.contains(device.id) else { return }
-        managingDeviceIDs.insert(device.id)
         let request = UUID()
-        managementTasks[request] = Task {
+        managementRequests[request] = ManagementRequest(action: nil, identifiers: [device.id])
+        let task = Task {
             defer {
-                self.managingDeviceIDs.remove(device.id)
-                self.managementTasks.removeValue(forKey: request)
+                self.managementRequests.removeValue(forKey: request)
             }
             do { try await operation() }
             catch { self.onError?(InspectorOperationFailure(deviceName: device.name, error: error)) }
@@ -210,6 +224,7 @@ final class SimulatorManagerModel {
                 completion()
             }
         }
+        managementRequests[request]?.task = task
 
     }
 
@@ -331,7 +346,7 @@ final class SimulatorManagerModel {
         settings.stopReading()
         statusRefreshTask?.cancel()
         await operationTask?.value
-        for task in Array(managementTasks.values) { await task.value }
+        for task in managementRequests.values.compactMap(\.task) { await task.value }
         await statusRefreshTask?.value
         await settings.finishReading()
         do { try await controller.quitRenderer(keepingDevicesRunning: keepingDevicesRunning) }
