@@ -5,6 +5,7 @@ import XcodeSimulatorHost
 protocol SimulatorManagerSource: DeviceSettingsSource {
     func status() async throws -> SimulatorHostStatus
     func inventory() async -> DeviceInventorySnapshot
+    func xcodeURL(forDevice deviceID: DeviceInventoryID) async throws -> URL
     func selectHost(_ host: SimulatorHost, xcodeURL: URL?) async throws
     func openDevice(_ deviceID: DeviceInventoryID, xcodeURL: URL?) async throws
     func closeDevice(_ deviceID: DeviceInventoryID, keepingDeviceRunning: Bool) async throws
@@ -81,6 +82,14 @@ final class SimulatorManagerModel {
             if host == .deviceHub { try await self.beforeStoppingScreens?() }
             try await self.controller.selectHost(host, xcodeURL: nil)
         }
+    }
+
+    func artworkXcodeURL(for device: InventoryDevice) async -> URL? {
+        if case .simulator(let simulator) = device {
+            if let owner = simulator.ownerXcodeURL { return owner }
+            return try? await controller.xcodeURL(forDevice: device.id)
+        }
+        return nil
     }
 
     func openDevice(_ identifier: DeviceInventoryID) {

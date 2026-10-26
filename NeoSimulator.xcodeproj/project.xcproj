@@ -274,6 +274,13 @@
             "NeoSimulator/compile-sources",
             "NeoSimulatorHostTests/compile-sources"
           ]
+        },
+        {
+          "path": "DeviceArtwork.swift",
+          "target-membership": [
+            "NeoSimulator/compile-sources",
+            "NeoSimulatorHostTests/compile-sources"
+          ]
         }
       ]
     },

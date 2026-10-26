@@ -127,6 +127,15 @@ struct ManagerModelTests {
         #expect(model.issue == nil)
     }
 
+    @Test func artworkResolvesXcodeBeforeOpeningAScreen() async throws {
+        let device = simulator(deviceSet: "/tmp/artwork-device-set")
+        let source = ManagerModelSource(devices: [device])
+        let model = SimulatorManagerModel(source: source)
+        let url = await model.artworkXcodeURL(for: device)
+        #expect(url == URL(fileURLWithPath: "/Applications/Test Xcode.app"))
+        #expect(await source.artworkXcodeRequests == [device.id])
+    }
+
     private func simulator(deviceSet: String? = nil) -> InventoryDevice {
         .simulator(SimulatorHostDevice(identifier: "same-udid", name: "Test Phone", descriptiveName: "Test Phone",
             runtimeIdentifier: "test-runtime", runtimeName: "iOS", productFamily: "iPhone", state: "Booted",
@@ -150,12 +159,17 @@ private actor ManagerModelSource: SimulatorManagerSource {
     private var pendingWrite: SimulatorDeviceSettings?
     private(set) var writeInputs: [SimulatorDeviceSettings?] = []
     private(set) var readCount = 0
+    private(set) var artworkXcodeRequests: [DeviceInventoryID] = []
 
     init(devices: [InventoryDevice]) {
         self.devices = devices
         (events, continuation) = AsyncStream.makeStream()
     }
 
+    func xcodeURL(forDevice deviceID: DeviceInventoryID) -> URL {
+        artworkXcodeRequests.append(deviceID)
+        return URL(fileURLWithPath: "/Applications/Test Xcode.app")
+    }
     func inventory() -> DeviceInventorySnapshot { DeviceInventorySnapshot(devices: devices, issues: []) }
     func status() -> SimulatorHostStatus { SimulatorHostStatus(host: .neo, restorationAvailable: false, rendererRunning: false) }
     func deviceSettings(for device: InventoryDevice) async throws -> SimulatorDeviceSettings {
