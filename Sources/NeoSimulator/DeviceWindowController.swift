@@ -21,6 +21,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     private let onShutDown: ((DeviceWindowController) -> Void)?
     private var content: DeviceContentView
     private let fitting: DisplayFitting
+    let canvasZoom = CanvasZoom()
     private let keyboard: DisplayKeyboardInput
     private var deviceToolbar: DeviceToolbar?
     private var customLocation: CustomLocationWindowController?
@@ -166,7 +167,10 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         // Keep the window on screen after display or Dock geometry changes.
         screenParametersObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.moveWindowOntoScreen() }
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                if self.isEmbedded { self.updateEmbeddedScale() } else { self.moveWindowOntoScreen() }
+            }
         }
         touchPressureObserver = NotificationCenter.default.addObserver(
             forName: TouchPressure.didChangeNotification, object: touchPressure, queue: .main) { [weak self] _ in
@@ -266,7 +270,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         container.addSubview(content)
         keyboard.attach(to: content.window)
         observePresentationWindow()
-        fitting.fit()
+        updateEmbeddedScale()
         if content.window?.isKeyWindow == true { activateDisplay() }
         readInitialOrientation()
     }
@@ -344,6 +348,12 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
                     }
                 })
         }
+        for name in [NSWindow.didChangeScreenNotification, NSWindow.didChangeBackingPropertiesNotification] {
+            presentationObservers.append(NotificationCenter.default.addObserver(
+                forName: name, object: presented, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.updateEmbeddedScale() }
+                })
+        }
     }
 
     /// Connects the window's toolbar, content, and display events to `session`.
@@ -359,7 +369,11 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         content.importFiles = { [weak self] in self?.importFiles($0) }
         content.onDisplaySizeChange = { [weak self] in
             guard let self, self.isEmbedded else { return }
-            self.session.display.resize(to: self.content.availableDisplaySize)
+            self.updateEmbeddedScale(layout: false)
+        }
+        fitting.onNaturalSizeChange = { [weak self] in
+            guard let self, self.isEmbedded else { return }
+            self.updateEmbeddedScale()
         }
         presentationViewController.view = content
         content.onWindowChange = { [weak self] in
@@ -621,7 +635,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     func setDeviceBezelVisible(_ visible: Bool) {
         session.display.setChromeVisible(visible)
         bezelChanged()
-        if isEmbedded { fitting.fit() } else { updateWindowSize() }
+        if isEmbedded { updateEmbeddedScale() } else { updateWindowSize() }
     }
 
     /// Applies bezel padding, background, header shape, and resize behavior.
@@ -1008,7 +1022,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
 
     /// Preserves display scale and the window's top edge during rotation, then keeps it on screen.
     private func didRotate(placing place: ((NSWindow) -> Void)? = nil) {
-        if isEmbedded { resizeDisplay(); return }
+        if isEmbedded { updateEmbeddedScale(); return }
         guard !closed, let window, !fitting.fitsWindow else {
             resizeDisplay()
             return
@@ -1028,9 +1042,61 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
 
     // MARK: Window scale
 
+    private var canvasFitScale: CGFloat { session.display.scale(for: content.availableDisplaySize) }
+
+    private var canvasScaleRange: ClosedRange<CGFloat> {
+        min(canvasZoom.fitScale, minimumScale)...max(canvasZoom.fitScale, 4)
+    }
+
+    func canPerformCanvasZoom(_ action: CanvasZoom.Action) -> Bool {
+        guard isEmbedded, session.canPerformCommands else { return false }
+        switch action {
+        case .fit: return true
+        case .physicalSize: return session.display.displayClass == 0
+        case .zoomOut: return canvasZoom.scale > canvasScaleRange.lowerBound + 0.001
+        case .zoomIn: return canvasZoom.scale < canvasScaleRange.upperBound - 0.001
+        }
+    }
+
+    func canvasZoomIsSelected(_ action: CanvasZoom.Action) -> Bool {
+        switch (action, canvasZoom.mode) {
+        case (.fit, .fit), (.physicalSize, .physicalSize): true
+        default: false
+        }
+    }
+
+    func performCanvasZoom(_ action: CanvasZoom.Action) {
+        guard canPerformCanvasZoom(action) else { return }
+        switch action {
+        case .fit:
+            canvasZoom.mode = .fit
+            content.centerCanvas()
+        case .physicalSize: canvasZoom.mode = .physicalSize
+        case .zoomOut:
+            canvasZoom.mode = .fixed(max(canvasScaleRange.lowerBound, session.display.renderScale / 1.25))
+        case .zoomIn:
+            canvasZoom.mode = .fixed(min(canvasScaleRange.upperBound, session.display.renderScale * 1.25))
+        }
+        updateEmbeddedScale()
+    }
+
+    private func updateEmbeddedScale(layout: Bool = true) {
+        guard isEmbedded, !closed else { return }
+        canvasZoom.fitScale = canvasFitScale
+        switch canvasZoom.mode {
+        case .fit: session.display.resize(to: content.availableDisplaySize)
+        case .physicalSize:
+            if let scale = scale(for: .physicalSize) { session.display.setRenderScale(scale) }
+        case .fixed(let scale): session.display.setRenderScale(scale)
+        }
+        canvasZoom.scale = session.display.renderScale
+        content.needsLayout = true
+        if layout, !content.isLayingOutCanvas { content.layoutSubtreeIfNeeded() }
+    }
+
     /// Returns nil for Fit Screen when no host screen is available.
     func scale(for mode: WindowScaleMode) -> CGFloat? {
-        let screen = window?.screen
+        let screen = presentationWindow?.screen
         switch mode {
         case .physicalSize:
             return WindowScale.physicalSize(hostDensity: screen.flatMap(WindowScale.density(of:)),
@@ -1041,6 +1107,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
             return WindowScale.pixelAccurate(screenScale: session.display.screenScale,
                                              backingScaleFactor: screen?.backingScaleFactor)
         case .fitScreen:
+            if isEmbedded { return canvasFitScale }
             // The window keeps 10 points from each edge of the screen.
             guard let space = displaySpace(on: screen ?? NSScreen.main) else { return nil }
             return session.display.scale(for: NSSize(width: space.width - 20, height: space.height - 20))
@@ -1061,13 +1128,14 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
 
     /// Checks prerequisites without changing unavailable commands' checkmarks.
     private func validatesScale(_ mode: WindowScaleMode) -> Bool {
-        session.canPerformCommands && !isEmbedded && !isFullScreen
+        session.canPerformCommands && (isEmbedded || !isFullScreen)
             && (mode != .physicalSize || session.display.displayClass == 0)
     }
 
     /// Checks minimum scale and screen fit; a window with a bezel may extend beyond the screen.
     func canSetScale(_ mode: WindowScaleMode) -> Bool {
         guard validatesScale(mode), let window else { return false }
+        if isEmbedded { return true }
         guard mode != .fitScreen else { return true }
         guard let scale = scale(for: mode), scale >= minimumScale else { return false }
         guard session.display.chromePadding == nil, let visible = window.screen?.visibleFrame else { return true }
@@ -1093,6 +1161,17 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
 
     /// Resizes below the top edge. Fit Screen centers; fixed scales keep the window on screen.
     func setScale(_ mode: WindowScaleMode) {
+        if isEmbedded {
+            guard canSetScale(mode), let scale = scale(for: mode) else { return }
+            switch mode {
+            case .fitScreen: performCanvasZoom(.fit)
+            case .physicalSize: performCanvasZoom(.physicalSize)
+            case .pointAccurate, .pixelAccurate:
+                canvasZoom.mode = .fixed(scale)
+                updateEmbeddedScale()
+            }
+            return
+        }
         guard let window, let scale = scale(for: mode) else { return }
         let previous = window.frame
         if mode == .fitScreen {
@@ -1454,9 +1533,25 @@ final class DeviceWindow: NSWindow {
 @MainActor
 private final class DeviceContentView: NSView, DisplayContentView {
     let display: NSView
+    private let canvasScrollView = NSScrollView()
+    private let canvasDocumentView = NSView()
+    private var canvasDisplayFrame = NSRect.zero
+    private var retainedCanvasCenter: NSPoint?
+    private var scrollMonitor: Any?
+    private(set) var isLayingOutCanvas = false
     var canImport: () -> Bool = { false }
     var importFiles: ([URL]) -> Void = { _ in }
-    var isEmbedded = false
+    var isEmbedded = false {
+        didSet {
+            guard isEmbedded != oldValue else { return }
+            if !isEmbedded { retainedCanvasCenter = canvasCenter }
+            display.removeFromSuperview()
+            if isEmbedded { canvasDocumentView.addSubview(display) } else { addSubview(display) }
+            canvasScrollView.isHidden = !isEmbedded
+            updateScrollMonitor()
+            needsLayout = true
+        }
+    }
     var onDisplaySizeChange: () -> Void = {}
     var onWindowChange: () -> Void = {}
     private var previousDisplaySize: NSSize?
@@ -1482,12 +1577,41 @@ private final class DeviceContentView: NSView, DisplayContentView {
         self.display = display
         super.init(frame: .zero)
         wantsLayer = true
+        canvasScrollView.drawsBackground = false
+        canvasScrollView.contentView.drawsBackground = false
+        canvasScrollView.hasHorizontalScroller = true
+        canvasScrollView.hasVerticalScroller = true
+        canvasScrollView.autohidesScrollers = true
+        canvasScrollView.scrollerStyle = .overlay
+        canvasScrollView.horizontalScrollElasticity = .none
+        canvasScrollView.verticalScrollElasticity = .none
+        canvasScrollView.usesPredominantAxisScrolling = false
+        canvasScrollView.automaticallyAdjustsContentInsets = false
+        canvasScrollView.documentView = canvasDocumentView
+        canvasScrollView.isHidden = true
+        canvasScrollView.toolTip = "Use the scroll bars or Option-scroll to pan the device."
+        addSubview(canvasScrollView)
         addSubview(display)
         registerForDraggedTypes([.fileURL])
     }
+    isolated deinit {
+        if let scrollMonitor { NSEvent.removeMonitor(scrollMonitor) }
+    }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        updateScrollMonitor()
         onWindowChange()
+    }
+    private func updateScrollMonitor() {
+        if let scrollMonitor { NSEvent.removeMonitor(scrollMonitor) }
+        scrollMonitor = nil
+        guard isEmbedded, window != nil else { return }
+        scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+            guard let self, event.modifierFlags.contains(.option), let window = self.window,
+                  event.window === window, self.bounds.contains(self.convert(event.locationInWindow, from: nil)) else { return event }
+            self.canvasScrollView.scrollWheel(with: event)
+            return nil
+        }
     }
     override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
         canImport() ? .copy : []
@@ -1504,13 +1628,49 @@ private final class DeviceContentView: NSView, DisplayContentView {
         NSSize(width: max(1, bounds.width), height: max(1, bounds.height - heightAboveDisplay))
     }
 
+    private var canvasCenter: NSPoint? {
+        guard canvasDisplayFrame.width > 0, canvasDisplayFrame.height > 0 else { return nil }
+        let visible = canvasScrollView.contentView.bounds
+        return NSPoint(x: (visible.midX - canvasDisplayFrame.minX) / canvasDisplayFrame.width,
+                       y: (visible.midY - canvasDisplayFrame.minY) / canvasDisplayFrame.height)
+    }
+
+    func centerCanvas() {
+        retainedCanvasCenter = NSPoint(x: 0.5, y: 0.5)
+        needsLayout = true
+    }
+
     override func layout() {
+        guard !isLayingOutCanvas else { return }
+        isLayingOutCanvas = true
+        defer { isLayingOutCanvas = false }
         super.layout()
         if previousDisplaySize != availableDisplaySize {
             previousDisplaySize = availableDisplaySize
             onDisplaySizeChange()
         }
         let available = NSRect(origin: .zero, size: availableDisplaySize)
+        if isEmbedded {
+            let center = retainedCanvasCenter ?? canvasCenter ?? NSPoint(x: 0.5, y: 0.5)
+            retainedCanvasCenter = nil
+            canvasScrollView.frame = available
+            let intrinsic = display.intrinsicContentSize
+            let size = intrinsic.width > 0 && intrinsic.height > 0 ? intrinsic : display.frame.size
+            let viewport = canvasScrollView.contentSize
+            let documentSize = NSSize(width: max(viewport.width, size.width), height: max(viewport.height, size.height))
+            canvasDocumentView.setFrameSize(documentSize)
+            canvasDisplayFrame = NSRect(x: (documentSize.width - size.width) / 2,
+                                       y: (documentSize.height - size.height) / 2,
+                                       width: size.width, height: size.height)
+            display.frame = canvasDisplayFrame
+            let clip = canvasScrollView.contentView
+            let proposed = NSRect(x: canvasDisplayFrame.minX + size.width * center.x - clip.bounds.width / 2,
+                                  y: canvasDisplayFrame.minY + size.height * center.y - clip.bounds.height / 2,
+                                  width: clip.bounds.width, height: clip.bounds.height)
+            clip.scroll(to: clip.constrainBoundsRect(proposed).origin)
+            canvasScrollView.reflectScrolledClipView(clip)
+            return
+        }
         if isSizedToDisplay {
             display.frame = available
         } else {
