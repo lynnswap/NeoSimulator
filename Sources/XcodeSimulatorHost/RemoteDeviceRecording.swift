@@ -24,6 +24,8 @@ final class RemoteScreenRecording {
     private(set) var state = RemoteDeviceRecordingState.idle
     private(set) var completed: RemoteDeviceRecording?
     private(set) var lastError: (any Error)?
+    private var beganAt: Date?
+    var startDate: Date? { state == .recording ? beganAt : nil }
     var onChange: (() -> Void)?
     private var handle: (any RemoteScreenRecordingHandle)?
     private var starting: Task<Void, any Error>?
@@ -41,6 +43,7 @@ final class RemoteScreenRecording {
         let task = Task { [self] in
             do {
                 handle = try await begin()
+                beganAt = Date()
                 if stopping == nil { state = .recording }
                 onChange?()
             } catch {

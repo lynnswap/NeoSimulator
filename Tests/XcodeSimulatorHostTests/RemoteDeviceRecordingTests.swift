@@ -11,10 +11,12 @@ import Testing
         #expect(session.canRecordScreen)
         try await session.startRecording(displayUniqueID: "fixture-display")
         #expect(session.hasUnfinishedRecording)
+        #expect(session.recordingStartDate != nil)
         let result = try #require(try await session.stopRecording())
         #expect(result.data == RecordingFixtureHandle.result.data && result.duration == 2.5 && result.codec == "fixture-codec")
         #expect(transport.requestedDisplay == "fixture-display")
         #expect(!session.hasUnfinishedRecording)
+        #expect(session.recordingStartDate == nil)
         do { try await session.startRecording(); Issue.record("An unsaved recording was overwritten") }
         catch { #expect(session.completedRecording?.data == result.data) }
         try await session.stop()
@@ -37,6 +39,7 @@ import Testing
         let start = Task { try await session.startRecording() }
         await gate.waitUntilEntered()
         #expect(session.hasUnfinishedRecording && startOwnershipWasReported)
+        #expect(session.recordingStartDate == nil)
         let shutdown = Task { try await session.stop() }
         await stopping.wait()
         #expect(session.hasUnfinishedRecording)
@@ -60,6 +63,7 @@ import Testing
         catch {
             #expect(session.recordingState == .failed && !session.hasUnfinishedRecording)
             #expect(!unfinishedAtLastNotification)
+            #expect(session.recordingStartDate == nil)
         }
         try await session.startRecording()
         transport.handle.failNextStop = true
@@ -67,6 +71,7 @@ import Testing
         catch {
             #expect(session.recordingState == .failed && session.recordingError != nil)
             #expect(session.hasUnfinishedRecording && unfinishedAtLastNotification)
+            #expect(session.recordingStartDate == nil)
             #expect(!transport.operations.contains("screen-stop"))
         }
         try await session.stop()
@@ -88,6 +93,7 @@ import Testing
         do { try await start.value; Issue.record("Caller cancellation was lost") }
         catch { #expect(error is CancellationError) }
         #expect(transport.handle.stopAttempts == 1 && session.recordingState == .completed)
+        #expect(session.recordingStartDate == nil)
         #expect(session.completedRecording?.data == RecordingFixtureHandle.result.data)
         try await session.stop()
     }
