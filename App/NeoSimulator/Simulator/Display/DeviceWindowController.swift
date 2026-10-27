@@ -35,6 +35,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
             canvasControls?.onLayoutChange = { [weak self] in
                 self?.content.needsLayout = true
                 self?.updateContentMinimumSize()
+                self?.fitCanvasControls()
             }
             deviceToolbar?.setUsesCanvasControls(canvasControls != nil)
             bezelChanged()
@@ -791,6 +792,16 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         window.contentMinSize = minimum
     }
 
+    private func fitCanvasControls() {
+        guard !isEmbedded, !isFullScreen, let window,
+              let currentSize = window.contentView?.bounds.size,
+              currentSize.width < content.canvasControlsWidth else { return }
+        var frame = window.frameRect(forContentRect: NSRect(origin: .zero,
+            size: NSSize(width: content.canvasControlsWidth, height: currentSize.height)))
+        frame.origin = window.frame.origin
+        setFrame(around: frame)
+    }
+
     /// Rounds the header below a visible bezel outside full screen.
     private func updateHeaderShape() {
         (window as? DeviceWindow)?.roundHeader(session.display.chromePadding != nil && !isFullScreen)
@@ -1355,10 +1366,11 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         }
         let size = session.display.size(for: session.display.renderScale)
         let visible = (window.screen ?? NSScreen.main)?.visibleFrame
-        let width = fitting.scalesDisplay ? size.width : min(size.width, visible?.width ?? size.width)
+        let width = max(content.canvasControlsWidth,
+            fitting.scalesDisplay ? size.width : min(size.width, visible?.width ?? size.width))
         updateToolbarStyle(forWidth: width)
         var sized = window.frameRect(forContentRect: NSRect(x: 0, y: 0,
-            width: size.width, height: size.height + content.heightAboveDisplay))
+            width: max(size.width, content.canvasControlsWidth), height: size.height + content.heightAboveDisplay))
         if !fitting.scalesDisplay, let visible {
             sized.size.width = min(sized.width, visible.width)
             sized.size.height = min(sized.height, visible.height)
@@ -1695,7 +1707,9 @@ private final class DeviceContentView: NSView, DisplayContentView {
         }
     }
     private var canvasControlsHeight: CGFloat { canvasControls?.isHidden == false ? 52 : 0 }
-    var canvasControlsWidth: CGFloat { canvasControls.map { $0.fittingSize.width + 24 } ?? 0 }
+    var canvasControlsWidth: CGFloat {
+        canvasControls.flatMap { $0.isHidden ? nil : $0.fittingSize.width + 24 } ?? 0
+    }
     func setDisplay(_ display: NSView, usesNativeCanvas: Bool) {
         self.usesNativeCanvas = usesNativeCanvas
         self.display.removeFromSuperview()
@@ -1825,7 +1839,7 @@ private final class DeviceContentView: NSView, DisplayContentView {
             onDisplaySizeChange()
         }
         if let canvasControls, !canvasControls.isHidden {
-            let width = min(max(0, bounds.width - 24), canvasControls.fittingSize.width)
+            let width = canvasControls.fittingSize.width
             canvasControls.frame = NSRect(x: (bounds.width - width) / 2, y: 8, width: width, height: 36)
         }
         let available = NSRect(origin: NSPoint(x: 0, y: canvasControlsHeight), size: availableDisplaySize)
@@ -1850,7 +1864,7 @@ private final class DeviceContentView: NSView, DisplayContentView {
             canvasScrollView.reflectScrolledClipView(clip)
             return
         }
-        if isSizedToDisplay || usesNativeCanvas {
+        if usesNativeCanvas || (isSizedToDisplay && canvasControls == nil) {
             display.frame = available
         } else {
             let intrinsic = display.intrinsicContentSize

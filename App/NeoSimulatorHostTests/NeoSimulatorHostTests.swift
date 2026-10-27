@@ -796,7 +796,9 @@ struct InputFocusTests {
             """.write(to: devicectl, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: devicectl.path)
         let display = TestDisplay()
-        display.usesNativeCanvas = true
+        display.naturalSize = NSSize(width: 160, height: 320)
+        display.bezel = NSSize(width: 20, height: 20)
+        display.bezelPadding = NSSize(width: 9, height: 0)
         let controller = try makeController(display, devicectl: devicectl,
             recordingProcess: { _, _ in Self.recorder(then: "while :; do sleep 0.05; done") },
             presentCompactWindow: { _ in })
@@ -819,6 +821,26 @@ struct InputFocusTests {
         func button(_ identifier: String) throws -> NSButton {
             try #require(descendants(controls).compactMap { $0 as? NSButton }.first { $0.identifier?.rawValue == identifier })
         }
+        func checkControls() throws {
+            let content = controller.presentationViewController.view
+            content.layoutSubtreeIfNeeded()
+            let window = try #require(controller.presentationWindow)
+            #expect(display.view.frame.size == display.size(for: display.renderScale))
+            for identifier in ["home", "capture", "record", "rotate"] {
+                let button = try button(identifier)
+                #expect(controls.bounds.contains(button.convert(button.bounds, to: controls)))
+                #expect(content.bounds.contains(button.convert(button.bounds, to: content)))
+                let center = button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), to: nil)
+                #expect(window.contentView?.superview?.hitTest(center) === button)
+            }
+        }
+        func shrinkCompactWindow() throws {
+            controller.setScale(.pointAccurate)
+            let window = try #require(controller.window)
+            try drag(window, from: try point(of: .lowerRight, in: display),
+                     by: NSSize(width: -1000, height: 1000))
+            try checkControls()
+        }
         updateControls()
         let parent = NSViewController()
         parent.view = NSView(frame: NSRect(x: 0, y: 0, width: 500, height: 700))
@@ -827,7 +849,10 @@ struct InputFocusTests {
         main.contentViewController = parent
         defer { main.close() }
         controller.embed(in: parent)
-        if startInCompact { controller.showCompactWindow() }
+        if startInCompact {
+            controller.showCompactWindow()
+            controller.setScale(.pointAccurate)
+        }
         let orientationRead = AsyncStream<Void>.makeStream()
         withObservationTracking { _ = session.isBusy } onChange: {
             orientationRead.continuation.yield(())
@@ -856,7 +881,10 @@ struct InputFocusTests {
         updateControls()
         let timer = try #require(descendants(controls).first { $0.accessibilityLabel() == "Recording Time" })
         #expect(!timer.isHidden && recordingButton.toolTip == "Stop Recording")
+        try checkControls()
+        if startInCompact { try shrinkCompactWindow() }
         if startInCompact { controller.embed(in: parent) } else { controller.showCompactWindow() }
+        if !startInCompact { try shrinkCompactWindow() }
         controller.presentationViewController.view.layoutSubtreeIfNeeded()
         #expect(controls.window === controller.presentationWindow && controls.superview === controller.presentationViewController.view)
         #expect(controller.canvasControls === controls && session.recording === recording && recording.startDate == startedAt)

@@ -688,9 +688,14 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         }
     }
 
+    func updateCanvasMinimumWidth(_ width: CGFloat) {
+        splitController.splitViewItems[1].minimumThickness = max(280, width)
+    }
+
     func showDevicePreview(ifDisplaying identifier: DeviceInventoryID) {
         guard liveDeviceIdentifier == identifier else { return }
         liveDeviceIdentifier = nil
+        updateCanvasMinimumWidth(0)
         activeScreenCommandTarget = nil
         liveScreenContainer.view.isHidden = true
         previewStack?.isHidden = false
