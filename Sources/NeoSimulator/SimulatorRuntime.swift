@@ -1364,6 +1364,7 @@ protocol SimulatorDisplay: AnyObject {
     func connectAppDisplay(uniqueID: String) async throws -> any SimulatorDisplay
     var view: NSView { get }
     var usesNativeCanvas: Bool { get }
+    var nativeRotationControl: NativeDeviceRotationControl? { get }
     /// The input digitizer, or the loaded plugin's overlay.
     var inputView: NSView { get }
     /// Loaded device-profile plugin, or nil until available. Throws if unusable,
@@ -1484,6 +1485,7 @@ protocol SimulatorDisplay: AnyObject {
 
 extension SimulatorDisplay {
     var usesNativeCanvas: Bool { false }
+    var nativeRotationControl: NativeDeviceRotationControl? { nil }
     var captureDisplayID: UInt32? { nil }
     func connectAppDisplay(uniqueID: String) async throws -> any SimulatorDisplay {
         throw HostError.unavailable("This display cannot connect to the app resizing screen.")
@@ -1502,6 +1504,7 @@ final class SimulatorConnection: SimulatorDisplay {
     private let nativeCanvas: NativeDeviceCanvas?
     private var nativeScale: CGFloat = 1
     var usesNativeCanvas: Bool { nativeCanvas != nil }
+    var nativeRotationControl: NativeDeviceRotationControl? { nativeCanvas?.rotationControl }
     private let device: SimulatorDevice
     private let buttonTarget: UInt32
     let captureDisplayID: UInt32?

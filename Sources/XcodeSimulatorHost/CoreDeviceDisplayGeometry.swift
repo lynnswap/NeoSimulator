@@ -115,6 +115,7 @@ final class CoreDeviceDisplayGeometry {
 @MainActor
 public final class NativeDeviceCanvas {
     public let view: NSView
+    public let rotationControl: NativeDeviceRotationControl
     private let hosting: NativeCanvasHostingView
     private let presentation: NativeCanvasPresentation
     private let values: [NativeSwiftValue]
@@ -191,17 +192,19 @@ public final class NativeDeviceCanvas {
         let presentation = NativeCanvasPresentation()
         let root = NativeCanvasRoot(presentation: presentation, shown: try activated(content(shown)),
             hidden: try activated(content(hidden)), canvasPath: canvasPath, zoomPath: zoomPath)
-        return NativeDeviceCanvas(root: AnyView(root), presentation: presentation,
+        let rotation = try await NativeDeviceRotationControl.connect(deviceIdentifier: uuid)
+        return NativeDeviceCanvas(root: AnyView(root), presentation: presentation, rotationControl: rotation,
             values: [base, activation, shown, hidden, canvasKey, zoomKey]) { page, usage, state in
                 try unsafe send.unsafeInvoke(on: button, page, usage, state == .down ? down : up)
             }
     }
 
-    private init(root: AnyView, presentation: NativeCanvasPresentation, values: [NativeSwiftValue],
+    private init(root: AnyView, presentation: NativeCanvasPresentation, rotationControl: NativeDeviceRotationControl, values: [NativeSwiftValue],
                  sendButton: @escaping (Int, Int, RemoteDeviceButtonState) throws -> Void) {
         hosting = NativeCanvasHostingView(rootView: root)
         hosting.sizingOptions = []
         self.presentation = presentation
+        self.rotationControl = rotationControl
         self.values = values
         sendNativeButton = sendButton
         view = hosting
@@ -221,7 +224,11 @@ public final class NativeDeviceCanvas {
     public func sendButton(usagePage: Int, usage: Int, state: RemoteDeviceButtonState) throws {
         try sendNativeButton(usagePage, usage, state)
     }
-    public func disconnect() { hosting.content = nil; hosting.rootView = AnyView(EmptyView()) }
+    public func disconnect() {
+        rotationControl.disconnect()
+        hosting.content = nil
+        hosting.rootView = AnyView(EmptyView())
+    }
 }
 
 @MainActor
