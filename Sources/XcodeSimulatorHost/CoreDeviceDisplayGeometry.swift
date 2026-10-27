@@ -120,7 +120,9 @@ public final class NativeDeviceCanvas {
     private let presentation: NativeCanvasPresentation
     private let values: [NativeSwiftValue]
     private let sendNativeButton: (Int, Int, RemoteDeviceButtonState) throws -> Void
+    private let readCaptureDisplayID: () throws -> UInt32
     public var naturalSize: CGSize { presentation.naturalSize }
+    public var captureDisplayID: UInt32 { get throws { try readCaptureDisplayID() } }
     public var onSizeChange: (() -> Void)?
 
     public var inputView: NSView {
@@ -193,18 +195,52 @@ public final class NativeDeviceCanvas {
         let root = NativeCanvasRoot(presentation: presentation, shown: try activated(content(shown)),
             hidden: try activated(content(hidden)), canvasPath: canvasPath, zoomPath: zoomPath)
         let rotation = try await NativeDeviceRotationControl.connect(deviceIdentifier: uuid)
+        let captureDisplay = try await captureDisplayReader(for: remote)
         return NativeDeviceCanvas(root: AnyView(root), presentation: presentation, rotationControl: rotation,
+            captureDisplay: captureDisplay,
             values: [base, activation, shown, hidden, canvasKey, zoomKey]) { page, usage, state in
                 try unsafe send.unsafeInvoke(on: button, page, usage, state == .down ? down : up)
             }
     }
 
-    private init(root: AnyView, presentation: NativeCanvasPresentation, rotationControl: NativeDeviceRotationControl, values: [NativeSwiftValue],
+    private static func captureDisplayReader(for remote: CoreDeviceRemoteScreenDevice) async throws -> () throws -> UInt32 {
+        let runtime = remote.runtime
+        let infoType = try await runtime.resolve(.swift(.type("CoreDeviceProtocols.DeviceInfo")))
+        let displayInfo = try await runtime.resolve(.swift(.type("CoreDevice.DisplayInfo")))
+        let display = try await runtime.resolve(.swift(.type("CoreDevice.Display")))
+        let abis = try Dictionary(uniqueKeysWithValues: [displayInfo, display]
+            .map { ($0, try NativeType.opaque(named: $0.name)) })
+        let initial = try await remote.type.resolve(.swift(.getter("displayInfo",
+            as: (() async throws -> NativeSwiftValue).self, valueABIs: abis)))
+        _ = try await unsafe initial.unsafeInvoke(on: remote.object)
+        let deviceInfo = try await remote.type.resolve(.swift(.getter("deviceInfo", as: (() -> NativeSwiftValue).self)))
+        let current = try await infoType.resolve(.swift(.getter("displayInfo", as: (() -> NativeSwiftValue?).self, valueABIs: abis)))
+        let displays = try await displayInfo.resolve(.swift(.getter("displays", as: (() -> [NativeSwiftValue]).self, valueABIs: abis)))
+        let active = try await display.resolve(.swift(.getter("active", as: (() -> Bool?).self, valueABIs: abis)))
+        let external = try await display.resolve(.swift(.getter("external", as: (() -> Bool).self, valueABIs: abis)))
+        let identifier = try await display.resolve(.swift(.getter("displayId", as: (() -> UInt32).self, valueABIs: abis)))
+        return {
+            let info = try unsafe deviceInfo.unsafeInvoke(on: remote.object)
+            if let current = try unsafe current.unsafeInvoke(on: info) {
+                for display in try unsafe displays.unsafeInvoke(on: current) {
+                    if try unsafe active.unsafeInvoke(on: display) == true,
+                       try unsafe !external.unsafeInvoke(on: display) {
+                        return try unsafe identifier.unsafeInvoke(on: display)
+                    }
+                }
+            }
+            throw CLIError.unavailable("capture-display", "The device has no active integrated display to capture.")
+        }
+    }
+
+    private init(root: AnyView, presentation: NativeCanvasPresentation, rotationControl: NativeDeviceRotationControl,
+                 captureDisplay: @escaping () throws -> UInt32, values: [NativeSwiftValue],
                  sendButton: @escaping (Int, Int, RemoteDeviceButtonState) throws -> Void) {
         hosting = NativeCanvasHostingView(rootView: root)
         hosting.sizingOptions = []
         self.presentation = presentation
         self.rotationControl = rotationControl
+        readCaptureDisplayID = captureDisplay
         self.values = values
         sendNativeButton = sendButton
         view = hosting

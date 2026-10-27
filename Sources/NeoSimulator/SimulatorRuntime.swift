@@ -1360,7 +1360,7 @@ struct DisplayResizeRect {
 @MainActor
 protocol SimulatorDisplay: AnyObject {
     var isBooted: Bool { get }
-    var captureDisplayID: UInt32? { get }
+    var captureDisplayID: UInt32? { get throws }
     func connectAppDisplay(uniqueID: String) async throws -> any SimulatorDisplay
     var view: NSView { get }
     var usesNativeCanvas: Bool { get }
@@ -1507,7 +1507,10 @@ final class SimulatorConnection: SimulatorDisplay {
     var nativeRotationControl: NativeDeviceRotationControl? { nativeCanvas?.rotationControl }
     private let device: SimulatorDevice
     private let buttonTarget: UInt32
-    let captureDisplayID: UInt32?
+    private let connectedDisplayID: UInt32
+    var captureDisplayID: UInt32? {
+        get throws { try nativeCanvas?.captureDisplayID ?? connectedDisplayID }
+    }
     private var hidClient: AnyObject?
     private var disconnected = false
     var onPropertiesChange: (() -> Void)?
@@ -1520,7 +1523,7 @@ final class SimulatorConnection: SimulatorDisplay {
         self.device = device
         self.runtime = runtime
         self.screen = screen.object
-        captureDisplayID = screen.identifier
+        connectedDisplayID = screen.identifier
         let display = runtime.display
         buttonTarget = try unsafe display.buttonTarget.unsafeInvoke(on: screen.object)
         hidClient = try runtime.input.connect(to: device)
