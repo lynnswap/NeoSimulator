@@ -837,8 +837,12 @@ struct InputFocusTests {
         func shrinkCompactWindow() throws {
             controller.setScale(.pointAccurate)
             let window = try #require(controller.window)
+            let before = window.convertToScreen(display.view.convert(display.view.bounds, to: nil))
             try drag(window, from: try point(of: .lowerRight, in: display),
-                     by: NSSize(width: -1000, height: 1000))
+                     by: NSSize(width: -1000, height: 1000)) {
+                let after = window.convertToScreen(display.view.convert(display.view.bounds, to: nil))
+                #expect(abs(after.minX - before.minX) < 0.001 && abs(after.maxY - before.maxY) < 0.001)
+            }
             try checkControls()
         }
         updateControls()
@@ -3695,6 +3699,18 @@ struct InputFocusTests {
         #expect(controller.canSetScale(.pointAccurate))
         display.naturalSize = NSSize(width: 200, height: visible.height - header + 1)
         #expect(!controller.canSetScale(.pointAccurate))
+
+        display.naturalSize = NSSize(width: 200, height: 400)
+        let controls = DeviceCanvasControls()
+        controller.canvasControls = controls
+        controls.update(supports: { _ in true }, isEnabled: { _ in true }, recordingTitle: "Record Screen")
+        controller.perform(.pointAccurate)
+        let occupiedHeight = window.frame.height - display.view.frame.height
+        try #require(occupiedHeight > header)
+        display.naturalSize = NSSize(width: 200, height: visible.height - occupiedHeight)
+        #expect(controller.canSetScale(.pointAccurate))
+        display.naturalSize.height += 1
+        #expect(!controller.canSetScale(.pointAccurate))
     }
 
     @Test func aManualResizeTakesTheStyleForItsWidthAndKeepsTheHeightBelowTheTitleBar() throws {
@@ -3895,6 +3911,26 @@ struct InputFocusTests {
             }
             #expect(!display.isResizing)
             #expect(display.renderScale == 1.25)
+        }
+
+        let controls = DeviceCanvasControls()
+        controller.canvasControls = controls
+        controls.update(supports: { _ in true }, isEnabled: { _ in true }, recordingTitle: "Record Screen")
+        controller.perform(.pointAccurate)
+        window.setFrameOrigin(NSPoint(x: (visible.midX - window.frame.width / 2).rounded(),
+                                      y: (visible.midY - window.frame.height / 2).rounded()))
+        func displayRect() -> NSRect {
+            window.convertToScreen(display.view.convert(display.view.bounds, to: nil))
+        }
+        let start = displayRect()
+        try #require(window.frame.width > start.width)
+        try drag(window, from: try point(of: .lowerLeft, in: display), by: .zero) {
+            #expect(display.renderScale == 1 && displayRect() == start)
+        }
+        try drag(window, from: try point(of: .lowerLeft, in: display), by: NSSize(width: -30, height: -55)) {
+            let frame = displayRect()
+            #expect(display.renderScale == 1.25)
+            #expect(abs(frame.maxX - start.maxX) < 0.001 && abs(frame.maxY - start.maxY) < 0.001)
         }
     }
 
