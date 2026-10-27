@@ -1385,8 +1385,13 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
 
     /// Rounds the frame outward and constrains its top edge.
     private func setFrame(around frame: NSRect) {
+        setFrame(NSIntegralRect(frame))
+    }
+
+    /// Applies the same top-edge constraint when resizing and repositioning.
+    private func setFrame(_ proposed: NSRect) {
         guard let window else { return }
-        var frame = NSIntegralRect(frame)
+        var frame = proposed
         if let visible = window.screen?.visibleFrame, visible.maxY < frame.maxY {
             frame.origin.y = visible.maxY - frame.height
         }
@@ -1442,8 +1447,8 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         updateWindowSize()
         let frame = window.convertToScreen(display.view.convert(display.view.bounds, to: nil))
         let origin = resize.drag.origin(for: frame.size)
-        window.setFrameOrigin(NSPoint(x: window.frame.minX + origin.x - frame.minX,
-                                      y: window.frame.minY + origin.y - frame.minY))
+        setFrame(NSRect(origin: NSPoint(x: window.frame.minX + origin.x - frame.minX,
+                                       y: window.frame.minY + origin.y - frame.minY), size: window.frame.size))
     }
 
     /// After the drag, keep the window within reach of the screen.

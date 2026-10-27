@@ -3973,6 +3973,18 @@ struct InputFocusTests {
             let point = controls.convert(NSPoint(x: controls.bounds.midX, y: controls.bounds.midY), to: nil)
             #expect(window.contentView?.superview?.hitTest(point)?.isDescendant(of: controls) == true)
         }
+        display.bezelPadding = NSSize(width: 9, height: 9)
+        controller.setDeviceBezelVisible(true)
+        controller.perform(.pointAccurate)
+        window.setFrameOrigin(NSPoint(x: visible.midX - window.frame.width / 2, y: visible.minY + 40))
+        try drag(window, from: try point(of: .upperLeft, in: display), by: NSSize(width: -10_000, height: 10_000)) {
+            try #require(display.isResizing && display.renderScale > 1)
+            let close = try #require(window.standardWindowButton(.closeButton))
+            let center = window.convertPoint(toScreen: close.convert(NSPoint(x: close.bounds.midX, y: close.bounds.midY), to: nil))
+            #expect(visible.contains(center))
+            let hit = window.contentView?.superview?.hitTest(window.convertPoint(fromScreen: center))
+            #expect(hit === close || hit?.isDescendant(of: close) == true)
+        }
     }
 
     @Test func aBezelDragStopsAtTheDevicesMinimumAndTheScreensEdge() throws {
