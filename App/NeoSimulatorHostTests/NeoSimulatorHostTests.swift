@@ -6800,22 +6800,27 @@ struct InputFocusTests {
         let preferences = MemoryPreferences()
         var language = "en"
         let first = TestDisplay(), second = TestDisplay()
+        let languageChanges = AsyncStream<String>.makeStream()
+        first.keyboardLanguageDidChange = { languageChanges.continuation.yield($0) }
+        second.keyboardLanguageDidChange = { languageChanges.continuation.yield($0) }
+        var appliedLanguages = languageChanges.stream.makeAsyncIterator()
         let a = try makeController(first, device: "A", preferences: preferences, keyboardLanguage: { language })
         let b = try makeController(second, device: "B", preferences: preferences, keyboardLanguage: { language })
-        defer { a.invalidate(); b.invalidate() }
-        func changeInputSource(to new: String) async {
+        defer { a.invalidate(); b.invalidate(); languageChanges.continuation.finish() }
+        func changeInputSource(to new: String) {
             language = new
             NotificationCenter.default.post(name: NSTextInputContext.keyboardSelectionDidChangeNotification, object: nil)
-            for _ in 0..<10 { await Task.yield() }
         }
-        await changeInputSource(to: "en")
+        changeInputSource(to: "en")
         #expect(first.keyboardLanguages.isEmpty && second.keyboardLanguages.isEmpty)
         a.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification, object: a.window))
-        await changeInputSource(to: "ja")
+        changeInputSource(to: "ja")
+        #expect(await appliedLanguages.next() == "ja")
         #expect(first.keyboardLanguages == ["ja"] && second.keyboardLanguages.isEmpty)
         a.windowDidResignKey(Notification(name: NSWindow.didResignKeyNotification, object: a.window))
         b.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification, object: b.window))
-        await changeInputSource(to: "de")
+        changeInputSource(to: "de")
+        #expect(await appliedLanguages.next() == "de")
         #expect(first.keyboardLanguages == ["ja"] && second.keyboardLanguages == ["de"])
 
         // Simulator.app changes only the app-wide preference.
@@ -6824,12 +6829,13 @@ struct InputFocusTests {
         b.perform(.syncKeyboardLanguage)
         #expect(preferences.values[HostPreferences.enableKeyboardSync] as? Bool == false)
         #expect(sync.state?(a) == .off && sync.state?(b) == .off)
-        await changeInputSource(to: "fr")
+        // Task.immediate returns at the disabled-sync guard before reaching the display await.
+        changeInputSource(to: "fr")
         #expect(second.keyboardLanguages == ["de"])
         b.perform(.syncKeyboardLanguage)
         #expect(second.keyboardLanguages == ["de"])
         b.invalidate()
-        await changeInputSource(to: "it")
+        changeInputSource(to: "it")
         #expect(second.keyboardLanguages == ["de"])
     }
 
@@ -7648,6 +7654,7 @@ private final class TestDisplay: SimulatorDisplay {
     var keyboardLanguages: [String] = []
     var hardwareKeyboardError: Error?
     var keyboardLanguageError: Error?
+    var keyboardLanguageDidChange: ((String) -> Void)?
     func setHardwareKeyboardConnected(_ connected: Bool) async throws {
         hardwareKeyboard.append(connected)
         if let hardwareKeyboardError { throw hardwareKeyboardError }
@@ -7655,6 +7662,7 @@ private final class TestDisplay: SimulatorDisplay {
     func setKeyboardLanguage(_ language: String) async throws {
         keyboardLanguages.append(language)
         if let keyboardLanguageError { throw keyboardLanguageError }
+        keyboardLanguageDidChange?(language)
     }
     var pasteboards: [TestPasteboard] = []
     /// Fails once, then clears itself.
