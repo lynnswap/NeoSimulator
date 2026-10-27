@@ -1710,7 +1710,7 @@ private final class DeviceContentView: NSView, DisplayContentView {
     }
     // App resize owns an unscaled guest viewport; Device Hub canvases overlay their controls.
     private var usesDeviceCanvasLayout: Bool {
-        !scrollsDisplay && (isEmbedded || usesNativeCanvas || canvasControls != nil)
+        !scrollsDisplay && (isEmbedded || canvasControls != nil)
     }
     private var canvasInset: CGFloat { usesDeviceCanvasLayout ? 8 : 0 }
     var horizontalDisplayPadding: CGFloat { canvasInset * 2 }
