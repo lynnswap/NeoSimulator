@@ -1269,7 +1269,8 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     /// Available display space below the header and display gap.
     private func displaySpace(on screen: NSScreen?) -> NSSize? {
         guard let visible = screen?.visibleFrame else { return nil }
-        return NSSize(width: visible.width, height: visible.height - content.heightAboveDisplay)
+        return NSSize(width: visible.width - content.horizontalDisplayPadding,
+                      height: visible.height - content.heightAboveDisplay)
     }
 
     /// Minimum scale for fixed scaling and bezel resizing.
@@ -1366,11 +1367,12 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         }
         let size = session.display.size(for: session.display.renderScale)
         let visible = (window.screen ?? NSScreen.main)?.visibleFrame
+        let displayWidth = size.width + content.horizontalDisplayPadding
         let width = max(content.canvasControlsWidth,
-            fitting.scalesDisplay ? size.width : min(size.width, visible?.width ?? size.width))
+            fitting.scalesDisplay ? displayWidth : min(displayWidth, visible?.width ?? displayWidth))
         updateToolbarStyle(forWidth: width)
         var sized = window.frameRect(forContentRect: NSRect(x: 0, y: 0,
-            width: max(size.width, content.canvasControlsWidth), height: size.height + content.heightAboveDisplay))
+            width: max(displayWidth, content.canvasControlsWidth), height: size.height + content.heightAboveDisplay))
         if !fitting.scalesDisplay, let visible {
             sized.size.width = min(sized.width, visible.width)
             sized.size.height = min(sized.height, visible.height)
@@ -1706,7 +1708,15 @@ private final class DeviceContentView: NSView, DisplayContentView {
             needsLayout = true
         }
     }
-    private var canvasControlsHeight: CGFloat { canvasControls?.isHidden == false ? 52 : 0 }
+    // App resize owns an unscaled guest viewport; Device Hub canvases overlay their controls.
+    private var usesDeviceCanvasLayout: Bool {
+        !scrollsDisplay && (isEmbedded || usesNativeCanvas || canvasControls != nil)
+    }
+    private var canvasInset: CGFloat { usesDeviceCanvasLayout ? 8 : 0 }
+    var horizontalDisplayPadding: CGFloat { canvasInset * 2 }
+    private var reservedControlsHeight: CGFloat {
+        !usesDeviceCanvasLayout && canvasControls?.isHidden == false ? 52 : 0
+    }
     var canvasControlsWidth: CGFloat {
         canvasControls.flatMap { $0.isHidden ? nil : $0.fittingSize.width + 24 } ?? 0
     }
@@ -1715,7 +1725,8 @@ private final class DeviceContentView: NSView, DisplayContentView {
         self.display.removeFromSuperview()
         self.display = display
         previousDisplaySize = nil
-        if usesViewport { canvasDocumentView.addSubview(display) } else { addSubview(display) }
+        if usesViewport { canvasDocumentView.addSubview(display) }
+        else { addSubview(display, positioned: .below, relativeTo: canvasControls) }
         needsLayout = true
     }
     private let canvasScrollView = NSScrollView()
@@ -1734,7 +1745,8 @@ private final class DeviceContentView: NSView, DisplayContentView {
         let parent = usesViewport ? canvasDocumentView : self
         if display.superview !== parent {
             display.removeFromSuperview()
-            parent.addSubview(display)
+            if usesViewport { parent.addSubview(display) }
+            else { addSubview(display, positioned: .below, relativeTo: canvasControls) }
         }
         canvasScrollView.isHidden = !usesViewport
         updateScrollMonitor()
@@ -1759,8 +1771,8 @@ private final class DeviceContentView: NSView, DisplayContentView {
         guard let window else { return 52 }
         return max(0, bounds.height - window.contentLayoutRect.height)
     }
-    /// The window space reserved for its header, display gap, and canvas controls.
-    var heightAboveDisplay: CGFloat { headerHeight + displayGap + canvasControlsHeight }
+    /// The window space around the display, excluding its scaled size.
+    var heightAboveDisplay: CGFloat { headerHeight + displayGap + reservedControlsHeight + canvasInset * 2 }
     init(display: NSView, usesNativeCanvas: Bool) {
         self.usesNativeCanvas = usesNativeCanvas
         self.display = display
@@ -1813,9 +1825,12 @@ private final class DeviceContentView: NSView, DisplayContentView {
     }
     required init?(coder: NSCoder) { nil }
 
-    var availableDisplaySize: NSSize {
-        NSSize(width: max(1, bounds.width), height: max(1, bounds.height - heightAboveDisplay))
+    private var availableDisplayRect: NSRect {
+        NSRect(x: canvasInset, y: reservedControlsHeight + canvasInset,
+               width: max(1, bounds.width - horizontalDisplayPadding),
+               height: max(1, bounds.height - heightAboveDisplay))
     }
+    var availableDisplaySize: NSSize { availableDisplayRect.size }
 
     private var canvasCenter: NSPoint? {
         guard canvasDisplayFrame.width > 0, canvasDisplayFrame.height > 0 else { return nil }
@@ -1842,7 +1857,7 @@ private final class DeviceContentView: NSView, DisplayContentView {
             let width = canvasControls.fittingSize.width
             canvasControls.frame = NSRect(x: (bounds.width - width) / 2, y: 8, width: width, height: 36)
         }
-        let available = NSRect(origin: NSPoint(x: 0, y: canvasControlsHeight), size: availableDisplaySize)
+        let available = availableDisplayRect
         if usesViewport {
             let center = retainedCanvasCenter ?? canvasCenter ?? NSPoint(x: 0.5, y: 0.5)
             retainedCanvasCenter = nil

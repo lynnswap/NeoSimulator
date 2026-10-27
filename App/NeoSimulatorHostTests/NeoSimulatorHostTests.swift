@@ -271,6 +271,7 @@ struct InputFocusTests {
         content.layoutSubtreeIfNeeded()
         let scroll = try #require(content.subviews.compactMap { $0 as? NSScrollView }.first)
         #expect(app.renderScale == 1 && !controller.canPerformCanvasZoom(.zoomOut))
+        #expect(scroll.frame == content.bounds)
         let mainFrame = main.frame
         let local = NSPoint(x: app.naturalSize.width - 8, y: 300)
         func panToRightEdge() {
@@ -826,6 +827,14 @@ struct InputFocusTests {
             content.layoutSubtreeIfNeeded()
             let window = try #require(controller.presentationWindow)
             #expect(display.view.frame.size == display.size(for: display.renderScale))
+            let header = controller.isEmbedded ? 0 : max(0, content.bounds.height - window.contentLayoutRect.height)
+            let gap = controller.isEmbedded ? 0 : WindowScale.displayGap(bezelPadding: display.chromePadding)
+            let canvas = NSRect(x: 8, y: 8, width: content.bounds.width - 16,
+                                height: content.bounds.height - header - gap - 16)
+            let displayRect = display.view.convert(display.view.bounds, to: content)
+            #expect((content as? any DisplayContentView)?.availableDisplaySize == canvas.size)
+            #expect(abs(displayRect.midX - canvas.midX) < 1 && abs(displayRect.midY - canvas.midY) < 1)
+            #expect(controls.frame.intersects(displayRect))
             for identifier in ["home", "capture", "record", "rotate"] {
                 let button = try button(identifier)
                 #expect(controls.bounds.contains(button.convert(button.bounds, to: controls)))
@@ -929,6 +938,7 @@ struct InputFocusTests {
         parent.view.layoutSubtreeIfNeeded()
         let content = controller.presentationViewController.view
         let scroll = try #require(content.subviews.compactMap { $0 as? NSScrollView }.first)
+        #expect(scroll.frame == content.bounds.insetBy(dx: 8, dy: 8))
         #expect(scroll.documentVisibleRect.contains(display.view.frame))
         controller.setScale(.pointAccurate)
         let before = display.view.convert(NSPoint(x: 120, y: 400), to: content)
@@ -989,7 +999,7 @@ struct InputFocusTests {
         let content = controller.presentationViewController.view
         let scroll = try #require(content.subviews.compactMap { $0 as? NSScrollView }.first)
         #expect(controller.canvasZoom.mode == .fit)
-        #expect(WindowScale.matches(display.renderScale, display.scale(for: content.bounds.size)))
+        #expect(WindowScale.matches(display.renderScale, display.scale(for: content.bounds.insetBy(dx: 8, dy: 8).size)))
         let fitScale = display.renderScale
         controller.performCanvasZoom(.zoomIn)
         #expect(display.renderScale > fitScale)
@@ -1024,10 +1034,10 @@ struct InputFocusTests {
         #expect(scroll.documentVisibleRect.contains(display.view.frame))
         parent.view.setFrameSize(NSSize(width: 220, height: 300))
         parent.view.layoutSubtreeIfNeeded()
-        #expect(WindowScale.matches(display.renderScale, display.scale(for: content.bounds.size)))
+        #expect(WindowScale.matches(display.renderScale, display.scale(for: content.bounds.insetBy(dx: 8, dy: 8).size)))
         display.takeScreenSize(NSSize(width: 844, height: 390))
         content.layoutSubtreeIfNeeded()
-        #expect(WindowScale.matches(display.renderScale, display.scale(for: content.bounds.size)))
+        #expect(WindowScale.matches(display.renderScale, display.scale(for: content.bounds.insetBy(dx: 8, dy: 8).size)))
         controller.performCanvasZoom(.physicalSize)
         let physicalScale = try #require(controller.scale(for: .physicalSize))
         #expect(controller.canvasZoomIsSelected(.physicalSize) && WindowScale.matches(display.renderScale, physicalScale))
