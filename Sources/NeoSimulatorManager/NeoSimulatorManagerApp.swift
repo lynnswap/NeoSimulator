@@ -1731,8 +1731,12 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     func controlTextDidChange(_ notification: Notification) { update() }
 
     private var selectedDevices: [InventoryDevice] {
-        let visibleSelection = Set(table.selectedRowIndexes.compactMap { (table.item(atRow: $0) as? DeviceRow)?.id })
-        return model.inventory.filter { visibleSelection.contains($0.id) }.sorted(by: precedes)
+        model.inventory.filter { selectedIdentifiers.contains($0.id) }.sorted(by: precedes)
+    }
+
+    private var visibleSelectedDevices: [InventoryDevice] {
+        let identifiers = Set(table.selectedRowIndexes.compactMap { (table.item(atRow: $0) as? DeviceRow)?.id })
+        return model.inventory.filter { identifiers.contains($0.id) }.sorted(by: precedes)
     }
 
     private var selectedSimulator: SimulatorHostDevice? {
@@ -1796,17 +1800,10 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
 
     func selectDevice(_ identifier: DeviceInventoryID) {
         selectedIdentifiers = [identifier]
-        search.stringValue = ""
-        if !filteredDevices.contains(where: { $0.id == identifier }) {
-            kindFilter = .all
-            availabilityFilter = .all
-            familyFilter = nil
-            updateFilterItem()
-        }
         updatingSelection = true
         reloadRows()
-        if groupByAvailability {
-            for group in availabilityGroups { table.expandItem(group) }
+        if groupByAvailability, rows.contains(where: { $0.id == identifier }), let device = devicesByID[identifier] {
+            table.expandItem(device.isAvailable ? availableGroup : unavailableGroup)
         }
         restoreVisibleSelection()
         updatingSelection = false
@@ -2186,7 +2183,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     }
 
     @objc private func openSelectedDevice(_ sender: Any?) {
-        guard selectedDevices.count == 1, let device = selectedDevices.first, canViewScreen(device) else { return }
+        let selection = sender is NSOutlineView ? visibleSelectedDevices : selectedDevices
+        guard selection.count == 1, let device = selection.first, canViewScreen(device) else { return }
         model.openScreen(for: device)
     }
 
@@ -2345,7 +2343,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     func menuForSelectedDevices() -> NSMenu {
         let menu = NSMenu(title: "Device")
         menu.autoenablesItems = false
-        populateDeviceMenu(menu, devices: selectedDevices)
+        populateDeviceMenu(menu, devices: visibleSelectedDevices)
         return menu
     }
 
@@ -2363,7 +2361,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
                 updateSelection()
             }
         }
-        populateDeviceMenu(deviceMenu, devices: selectedDevices)
+        populateDeviceMenu(deviceMenu, devices: visibleSelectedDevices)
     }
 
     private func populateDeviceMenu(_ menu: NSMenu, devices: [InventoryDevice], includesViewScreen: Bool = true) {
