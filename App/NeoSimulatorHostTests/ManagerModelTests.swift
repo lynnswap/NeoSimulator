@@ -6,6 +6,39 @@ import Testing
 
 @Suite(.serialized, .timeLimit(.minutes(1))) @MainActor
 struct ManagerModelTests {
+    @Test func pairingMenuUsesCoreDeviceEligibilityAndTheSelectedDeviceSet() async throws {
+        _ = NSApplication.shared
+        let feature = "com.apple.coredevice.feature.companiondevicepairing"
+        func device(_ id: String, family: String = "Apple Watch", set: String? = nil,
+                    pairs: Set<String> = [], capabilities: Set<String> = [feature], available: Bool = true) -> SimulatorHostDevice {
+            SimulatorHostDevice(identifier: id, name: id, descriptiveName: id,
+                runtimeIdentifier: "runtime-\(id)", runtimeName: "OS", productFamily: family, state: "Shutdown",
+                deviceSetPath: set, deviceTypeIdentifier: "type-\(id)", isAvailable: available,
+                capabilities: capabilities, pairIdentifiers: pairs)
+        }
+        let phone = device("phone", family: "iPhone")
+        let watch = device("unpaired-watch")
+        let source = ManagerModelSource(devices: [phone, watch, device("paired-watch", pairs: ["existing-pair"]),
+            device("unknown-watch", capabilities: []), device("other-set-watch", set: "/custom"),
+            device("unavailable-watch", available: false), device("other-phone", family: "iPhone")].map(InventoryDevice.simulator))
+        let manager = SimulatorManagerModel(source: source)
+        await manager.refresh()
+        let target = NSObject()
+        let menu = SimulatorPairingMenu.make(for: phone, model: manager, target: target, action: #selector(NSApplication.terminate(_:)))
+        #expect(manager.pairingWatches(for: phone).map(\.identifier) == [watch.identifier])
+        let actions = menu.items.filter { $0.action != nil }
+        #expect(actions.map(\.title) == ["unpaired-watch", "New Watch Simulator…"])
+        #expect(actions.allSatisfy { $0.isEnabled })
+        guard case .pair(let identifiers) = actions.first?.representedObject as? SimulatorPairingMenu.Action else {
+            Issue.record("Expected an existing-watch pairing action")
+            return
+        }
+        #expect(identifiers == [phone.inventoryID, watch.inventoryID])
+        var events = source.events.makeAsyncIterator()
+        manager.manage(.pair, devices: manager.inventory.filter { identifiers.contains($0.id) })
+        #expect(await events.next() == .manage(.pair, [phone.inventoryID, watch.inventoryID]))
+    }
+
     @Test func openingASimulatorRetriesItsFailedPostureAfterPresentationSucceeds() async throws {
         guard case .simulator(let simulator) = simulator(deviceSet: "/custom-device-set") else { return }
         let device = InventoryDevice.simulator(simulator.inventoryCopy(ownerXcodeURL: nil, capabilities: DevicePosturePayload.features))
@@ -701,6 +734,7 @@ private actor ManagerModelSource: SimulatorManagerSource {
     func failOpen() { openContinuation?.resume(throwing: Failure.unavailable); openContinuation = nil }
     func closeDevice(_ deviceID: DeviceInventoryID, keepingDeviceRunning: Bool) { continuation.yield(.close(deviceID)) }
     func creationCatalog() throws -> SimulatorCreationContext { throw Failure.unavailable }
+    func creationCatalog(for deviceID: DeviceInventoryID) throws -> SimulatorCreationContext { throw Failure.unavailable }
     func createSimulator(named name: String, deviceType: String, runtime: String, context: SimulatorCreationContext) throws -> String { throw Failure.unavailable }
     func pairSimulators(watch: String, phone: String, context: SimulatorCreationContext) throws { throw Failure.unavailable }
     func holdManagement() { holdsManagement = true }

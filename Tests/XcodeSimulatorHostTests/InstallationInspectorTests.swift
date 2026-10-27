@@ -36,18 +36,19 @@ struct InstallationInspectorTests {
         #expect(!FileManager.default.fileExists(atPath: fixture.simctlWrapperURL.path + ".install"))
     }
 
-    @Test func testingCloneBootUsesTheRecordedDeviceSet() throws {
+    @Test(arguments: [["boot", "clone"], ["create", "My Watch", "watch-type", "watch-runtime"], ["pair", "watch", "phone"]])
+    func simulatorCommandsUseTheRecordedDeviceSet(_ arguments: [String]) throws {
         let fixture = try InstallationFixture()
         try Data(#"""
         #!/bin/sh
         printf '%s\n' "$@"
         """#.utf8).write(to: fixture.simctlBinaryURL)
         let output = try SystemCommandRunner().runSimctl(
-            xcodeURL: fixture.targetXcodeURL, arguments: ["boot", "clone"], deviceSetPath: "/custom/XCTestDevices",
+            xcodeURL: fixture.targetXcodeURL, arguments: arguments, deviceSetPath: "/custom/XCTestDevices",
             coreSimulatorFrameworkURL: fixture.coreSimulatorFrameworkURL
         )
         #expect(output.terminationStatus == 0)
-        #expect(output.stdoutText == "--set\n/custom/XCTestDevices\nboot\nclone")
+        #expect(output.stdoutText == (["--set", "/custom/XCTestDevices"] + arguments).joined(separator: "\n"))
     }
 
     @Test func validatesSelectedXcode27AndNeoHostComponents() throws {

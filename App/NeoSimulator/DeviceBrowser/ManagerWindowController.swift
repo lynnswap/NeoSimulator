@@ -24,6 +24,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     var onShowCompactWindow: ((DeviceInventoryID) -> Void)?
     var onSelectionChange: ((DeviceInventoryID?) -> Void)?
     var onScreenAction: ((String) -> Void)?
+    var onNewWatch: ((SimulatorHostDevice) -> Void)?
     weak var activeScreenCommandTarget: NSResponder?
     private var selectionIdentifier: DeviceInventoryID?
     private var previewStack: NSStackView?
@@ -1187,23 +1188,9 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             separate()
             let pairing = NSMenuItem(title: "Pair Apple Watch", action: nil, keyEquivalent: "")
             pairing.image = NSImage.deviceControlSymbol(named: "iphone.and.applewatch", accessibilityDescription: pairing.title)
-            let watches = model.inventory.filter { candidate in
-                guard case .simulator(let watch) = candidate, watch.productFamily == "Apple Watch" else { return false }
-                return supports(.pair, devices: [device, candidate])
-            }.sorted(by: precedes)
-            let submenu = NSMenu(title: pairing.title)
-            submenu.autoenablesItems = false
-            submenu.addItem(.sectionHeader(title: "Simulators"))
-            for watch in watches {
-                let identifiers: Set<DeviceInventoryID> = [device.id, watch.id]
-                let item = NSMenuItem(title: watch.name, action: #selector(performManagement(_:)), keyEquivalent: "")
-                item.target = self
-                item.representedObject = ManagementRequest(action: .pair, identifiers: identifiers)
-                item.isEnabled = model.canManage(.pair, deviceIDs: identifiers)
-                submenu.addItem(item)
-            }
+            let submenu = pairingMenu(for: phone)
             pairing.submenu = submenu
-            pairing.isEnabled = !watches.isEmpty && model.canManage(.pair, deviceIDs: [device.id])
+            pairing.isEnabled = submenu.items.contains { $0.action != nil && $0.isEnabled }
             menu.addItem(pairing)
         }
         if device.supports(.remove) {
@@ -1222,6 +1209,28 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             return Set([first.productFamily, second.productFamily]) == Set(["iPhone", "Apple Watch"])
                 && first.deviceSetPath == second.deviceSetPath
         default: return true
+        }
+    }
+
+    func pairingMenu(for phone: SimulatorHostDevice) -> NSMenu {
+        SimulatorPairingMenu.make(for: phone, model: model, target: self, action: #selector(performPairingMenuAction(_:)))
+    }
+
+    @objc func performPairingMenuAction(_ sender: NSMenuItem) {
+        switch sender.representedObject as? SimulatorPairingMenu.Action {
+        case .pair(let identifiers):
+            let devices = model.inventory.filter { identifiers.contains($0.id) }
+            guard devices.count == 2, supports(.pair, devices: devices),
+                  let phone = devices.compactMap({ if case .simulator(let device) = $0, device.productFamily == "iPhone" { device } else { nil } }).first,
+                  model.pairingWatches(for: phone).contains(where: { identifiers.contains($0.inventoryID) }),
+                  model.canManage(.pair, deviceIDs: identifiers) else { return }
+            model.manage(.pair, devices: devices)
+        case .newWatch(let identifier):
+            guard let device = model.inventory.first(where: { $0.id == identifier }),
+                  case .simulator(let phone) = device, phone.productFamily == "iPhone", device.supports(.pair),
+                  model.canManage(.pair, deviceIDs: [identifier]) else { return }
+            onNewWatch?(phone)
+        case nil: break
         }
     }
 
