@@ -5,8 +5,14 @@ Build NeoSimulator.app and its embedded renderer with Xcode.
 ## Workspace and builds
 
 Use Xcode 27+ and Swift 6.4+. Open `NeoSimulator.xcworkspace`, which contains the
-app project and host-switching package. The project uses Xcode's JSON
-`project.xcproj` format. Select **NeoSimulator** to build the distributable app.
+app project and its local Swift package dependency. The application project is
+`App/NeoSimulator.xcodeproj`; its code, host tests, and `AppIcon.icon` are also in
+`App/`. The root `Package.swift` defines **NeoSimulatorKit**, with library code in
+`Sources/XcodeSimulatorHost` and package tests in `Tests/XcodeSimulatorHostTests`.
+Its library product remains `XcodeSimulatorHost`.
+
+The project uses Xcode's JSON `project.xcproj` format. Select **NeoSimulator** to
+build the distributable app.
 
 ```bash
 scripts/build-local.sh

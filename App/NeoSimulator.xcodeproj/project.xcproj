@@ -15,14 +15,30 @@
       "kind": "remote",
       "repository": "https://github.com/lynnswap/ABIBridge.git",
       "version": {
-        "revision": "8aa09a1d9e319c5e10aa8641a58fd7569de6c2e9",
+        "version": "0.13.2",
       },
+    }, {
+      "kind": "local",
+      "path": "..",
     },
   ],
   "files": [
     {
       "kind": "group",
-      "path": "Sources/NeoSimulator",
+      "path": "Shared",
+      "children": [
+        {
+          "path": "SimulatorDeviceMenu.swift",
+          "target-membership": [
+            "NeoSimulator/compile-sources",
+            "NeoSimulatorRenderer/compile-sources",
+            "NeoSimulatorHostTests/compile-sources",
+          ],
+        },
+      ],
+    }, {
+      "kind": "group",
+      "path": "NeoSimulator",
       "children": [
         {
           "path": "DeviceBrowser.swift",
@@ -226,19 +242,11 @@
       ],
     }, {
       "kind": "group",
-      "path": "Sources/NeoSimulatorManager",
-      "name": "Manager",
+      "path": "NeoSimulatorManager",
       "children": [
         { "path": "NeoSimulatorManagerApp.swift", "target-membership": [ "NeoSimulator/compile-sources" ] },
         { "path": "Info.plist" },
         {
-          "path": "AppIcon.icon",
-          "type": "folder.iconcomposer.icon",
-          "target-membership": [
-            "NeoSimulator/resources",
-            "NeoSimulatorRenderer/resources",
-          ],
-        }, {
           "path": "SimulatorManagerModel.swift",
           "target-membership": [
             "NeoSimulator/compile-sources",
@@ -264,22 +272,16 @@
           ],
         },
       ],
-    }, {
-      "kind": "group",
-      "path": "Sources/Shared",
-      "children": [
-        {
-          "path": "SimulatorDeviceMenu.swift",
-          "target-membership": [
-            "NeoSimulator/compile-sources",
-            "NeoSimulatorRenderer/compile-sources",
-            "NeoSimulatorHostTests/compile-sources",
-          ],
-        },
-      ],
     },
     { "kind": "folder", "path": "NeoSimulatorHostTests", "target-membership": [ "NeoSimulatorHostTests" ] },
     {
+      "path": "AppIcon.icon",
+      "type": "folder.iconcomposer.icon",
+      "target-membership": [
+        "NeoSimulator/resources",
+        "NeoSimulatorRenderer/resources",
+      ],
+    }, {
       "kind": "group",
       "name": "Frameworks",
       "children": [
@@ -335,7 +337,7 @@
         "CURRENT_PROJECT_VERSION": "1",
         "GENERATE_INFOPLIST_FILE": "NO",
         "GENERATE_PKGINFO_FILE": "NO",
-        "INFOPLIST_FILE": "Sources/NeoSimulatorManager/Info.plist",
+        "INFOPLIST_FILE": "NeoSimulatorManager/Info.plist",
         "LD_RUNPATH_SEARCH_PATHS": [
           "$(inherited)",
           "@executable_path/../Frameworks",
@@ -379,7 +381,7 @@
         "CURRENT_PROJECT_VERSION": "1",
         "GENERATE_INFOPLIST_FILE": "NO",
         "GENERATE_PKGINFO_FILE": "NO",
-        "INFOPLIST_FILE": "Sources/NeoSimulator/Info.plist",
+        "INFOPLIST_FILE": "NeoSimulator/Info.plist",
         "LD_RUNPATH_SEARCH_PATHS": [
           "$(inherited)",
           "@executable_path/../Frameworks",
