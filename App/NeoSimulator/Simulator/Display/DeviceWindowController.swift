@@ -1269,8 +1269,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     /// Available display space below the header and display gap.
     private func displaySpace(on screen: NSScreen?) -> NSSize? {
         guard let visible = screen?.visibleFrame else { return nil }
-        return NSSize(width: visible.width - content.horizontalDisplayPadding,
-                      height: visible.height - content.heightAboveDisplay)
+        return content.displayRect(in: visible).size
     }
 
     /// Minimum scale for fixed scaling and bezel resizing.
@@ -1434,7 +1433,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
                                pointer: Self.screenLocation(of: event, in: window))
         let maximumScale = (window.screen ?? NSScreen.main).flatMap { screen in
             displaySpace(on: screen).map { space in
-                let anchored = drag.largestSize(within: screen.visibleFrame)
+                let anchored = drag.largestSize(within: content.displayRect(in: screen.visibleFrame))
                 return display.scale(for: NSSize(width: min(anchored.width, space.width),
                                                  height: min(anchored.height, space.height)))
             }
@@ -1728,6 +1727,9 @@ private final class DeviceContentView: NSView, DisplayContentView {
         !scrollsDisplay && (isEmbedded || canvasControls != nil)
     }
     private var canvasInset: CGFloat { usesDeviceCanvasLayout ? 8 : 0 }
+    private var canvasControlsInset: CGFloat {
+        canvasControls.flatMap { $0.isHidden ? nil : $0.fittingSize.height + 8 } ?? 0
+    }
     var horizontalDisplayPadding: CGFloat { canvasInset * 2 }
     var canvasControlsWidth: CGFloat {
         canvasControls.flatMap { $0.isHidden ? nil : $0.fittingSize.width + 24 } ?? 0
@@ -1784,7 +1786,7 @@ private final class DeviceContentView: NSView, DisplayContentView {
         return max(0, bounds.height - window.contentLayoutRect.height)
     }
     /// The window space around the display, excluding its scaled size.
-    var heightAboveDisplay: CGFloat { headerHeight + displayGap + canvasInset * 2 }
+    var heightAboveDisplay: CGFloat { headerHeight + displayGap + canvasControlsInset + canvasInset * 2 }
     init(display: NSView, usesNativeCanvas: Bool) {
         self.usesNativeCanvas = usesNativeCanvas
         self.display = display
@@ -1837,11 +1839,12 @@ private final class DeviceContentView: NSView, DisplayContentView {
     }
     required init?(coder: NSCoder) { nil }
 
-    private var availableDisplayRect: NSRect {
-        NSRect(x: canvasInset, y: canvasInset,
+    func displayRect(in bounds: NSRect) -> NSRect {
+        NSRect(x: bounds.minX + canvasInset, y: bounds.minY + canvasControlsInset + canvasInset,
                width: max(1, bounds.width - horizontalDisplayPadding),
                height: max(1, bounds.height - heightAboveDisplay))
     }
+    private var availableDisplayRect: NSRect { displayRect(in: bounds) }
     var availableDisplaySize: NSSize { availableDisplayRect.size }
 
     private var canvasCenter: NSPoint? {
@@ -1867,7 +1870,8 @@ private final class DeviceContentView: NSView, DisplayContentView {
         }
         if let canvasControls, !canvasControls.isHidden {
             let width = canvasControls.fittingSize.width
-            canvasControls.frame = NSRect(x: (bounds.width - width) / 2, y: 8, width: width, height: 36)
+            canvasControls.frame = NSRect(x: (bounds.width - width) / 2, y: 8,
+                                         width: width, height: canvasControls.fittingSize.height)
         }
         let available = availableDisplayRect
         if usesViewport {

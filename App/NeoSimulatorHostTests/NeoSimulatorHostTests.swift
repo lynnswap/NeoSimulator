@@ -839,12 +839,12 @@ struct InputFocusTests {
             #expect(display.view.frame.size == display.size(for: display.renderScale))
             let header = controller.isEmbedded ? 0 : max(0, content.bounds.height - window.contentLayoutRect.height)
             let gap = controller.isEmbedded ? 0 : WindowScale.displayGap(bezelPadding: display.chromePadding)
-            let canvas = NSRect(x: 8, y: 8, width: content.bounds.width - 16,
-                                height: content.bounds.height - header - gap - 16)
+            let canvas = NSRect(x: 8, y: 52, width: content.bounds.width - 16,
+                                height: content.bounds.height - header - gap - 60)
             let displayRect = display.view.convert(display.view.bounds, to: content)
             #expect((content as? any DisplayContentView)?.availableDisplaySize == canvas.size)
             #expect(abs(displayRect.midX - canvas.midX) < 1 && abs(displayRect.midY - canvas.midY) < 1)
-            #expect(controls.frame.intersects(displayRect))
+            #expect(controls.frame.maxY + 8 <= displayRect.minY + 1)
             for identifier in ["home", "capture", "record", "rotate"] {
                 let button = try button(identifier)
                 #expect(controls.bounds.contains(button.convert(button.bounds, to: controls)))
@@ -960,11 +960,11 @@ struct InputFocusTests {
         }
         let initialFrame = try #require(controller.window?.frame)
         #expect(initialFrame.width >= 500 && initialFrame.height >= 700)
-        display.naturalSize = NSSize(width: 900, height: 900)
+        display.naturalSize = NSSize(width: 336, height: 644.5)
         display.onPropertiesChange?()
         #expect(controller.window?.frame == initialFrame)
         let parent = NSViewController()
-        parent.view = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 400))
+        parent.view = NSView(frame: NSRect(x: 0, y: 0, width: 575, height: 673))
         let window = KeyPresentationWindow(contentRect: parent.view.frame, styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentViewController = parent
@@ -973,8 +973,14 @@ struct InputFocusTests {
         parent.view.layoutSubtreeIfNeeded()
         let content = controller.presentationViewController.view
         let scroll = try #require(content.subviews.compactMap { $0 as? NSScrollView }.first)
-        #expect(scroll.frame == content.bounds.insetBy(dx: 8, dy: 8))
+        #expect(scroll.frame == NSRect(x: 8, y: 52, width: content.bounds.width - 16,
+                                      height: content.bounds.height - 60))
+        // Device Hub 27.2 measures DeviceView, including its own chrome padding.
+        #expect(scroll.frame.size == NSSize(width: 559, height: 613))
+        #expect(WindowScale.matches(display.renderScale, min(559 / 336, 613 / 644.5)))
         #expect(scroll.documentVisibleRect.contains(display.view.frame))
+        display.naturalSize = NSSize(width: 900, height: 900)
+        display.onPropertiesChange?()
         controller.setScale(.pointAccurate)
         let before = display.view.convert(NSPoint(x: 120, y: 400), to: content)
         let origin = scroll.contentView.bounds.origin
@@ -3749,7 +3755,7 @@ struct InputFocusTests {
         controls.update(supports: { _ in true }, isEnabled: { _ in true }, recordingTitle: "Record Screen")
         controller.perform(.pointAccurate)
         let occupiedHeight = window.frame.height - display.view.frame.height
-        #expect(occupiedHeight == header + 16)
+        #expect(occupiedHeight == header + 60)
         display.naturalSize = NSSize(width: 200, height: visible.height - occupiedHeight)
         #expect(controller.canSetScale(.pointAccurate))
         display.naturalSize.height += 1
@@ -3987,7 +3993,7 @@ struct InputFocusTests {
             let pixel = 1 / window.backingScaleFactor
             #expect(abs(frame.maxX - beforeEdgeDrag.maxX) < pixel && abs(frame.maxY - beforeEdgeDrag.maxY) < pixel,
                     "display \(frame), before \(beforeEdgeDrag), window \(window.frame), backing \(window.backingScaleFactor)")
-            #expect(abs(frame.minY - visible.minY) < 0.001)
+            #expect(abs(frame.minY - visible.minY - 52) < 0.001)
             let bar = window.convertToScreen(controls.convert(controls.bounds, to: nil))
             #expect(visible.contains(bar))
             let point = controls.convert(NSPoint(x: controls.bounds.midX, y: controls.bounds.midY), to: nil)
