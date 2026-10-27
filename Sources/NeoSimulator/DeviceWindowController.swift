@@ -1446,7 +1446,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
 
     func present(_ error: Error) {
         guard !closed, let window = presentationWindow else { return }
-        let alert = NSAlert(error: error)
+        let alert = NSAlert(presenting: error)
         alert.beginSheetModal(for: window)
     }
 

@@ -198,7 +198,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             Task {
                 do { try await openSimulator(withIdentifier: device.identity) } catch is CancellationError {
                 } catch {
-                    NSAlert(error: error).runModal()
+                    NSAlert(presenting: error).runModal()
                     showDeviceBrowser()
                 }
             }
@@ -223,7 +223,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             catch {
                 result["error"] = error.localizedDescription
                 if requestIdentifier == nil, !(error is CancellationError) {
-                    NSAlert(error: error).runModal()
+                    NSAlert(presenting: error).runModal()
                     showDeviceBrowser()
                 }
             }
@@ -243,7 +243,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                 case .activate: activateWindows()
                 case .showBrowser: showDeviceBrowser()
                 }
-            } catch { NSAlert(error: error).runModal() }
+            } catch { NSAlert(presenting: error).runModal() }
         }
     }
 
@@ -428,7 +428,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         Task {
             do {
                 try await openManagerURL(url, at: managerURL)
-            } catch { NSAlert(error: error).runModal() }
+            } catch { NSAlert(presenting: error).runModal() }
         }
     }
 
@@ -1177,7 +1177,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         hostLog(error.localizedDescription)
         if isInProcess { onError?(error); return }
         if isManaged {
-            NSAlert(error: error).runModal()
+            NSAlert(presenting: error).runModal()
             return
         }
         showDeviceBrowser()
@@ -1211,7 +1211,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             // A handover ends the host without waiting on alerts.
             for error in recordingTerminationErrors {
                 if ownerExitRequested { hostLog(error.localizedDescription) }
-                else if !handoverRequested { NSAlert(error: error).runModal() }
+                else if !handoverRequested { NSAlert(presenting: error).runModal() }
             }
             recordingTerminationErrors.removeAll()
             Self.requestTermination()
@@ -1256,7 +1256,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             // A handover ends the host without waiting on alerts.
             for error in recordingTerminationErrors {
                 if ownerExitRequested { hostLog(error.localizedDescription) }
-                else if !handoverRequested { NSAlert(error: error).runModal() }
+                else if !handoverRequested { NSAlert(presenting: error).runModal() }
             }
             recordingTerminationErrors.removeAll()
             // A restart could boot its device again, so it ends first.
