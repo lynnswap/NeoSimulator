@@ -317,7 +317,10 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
             } else { message = "This device does not currently support \(content.title.lowercased())." }
             return ("Profiles", message, "checkmark.seal")
         }
-        if showingReports, let inspector, device.kind != .simulator, !inspector.supportsReportListing {
+        if showingReports && device.kind == .simulator {
+            return ("Reports", "Crash, log, spin, and diagnostic reports are unavailable for simulators.", "text.document")
+        }
+        if showingReports, let inspector, !inspector.supportsReportListing {
             return ("Reports", "Connect and unlock this device to inspect its reports.", "text.document")
         }
         return nil

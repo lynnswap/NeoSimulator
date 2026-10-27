@@ -67,7 +67,7 @@ right side of the toolbar:
 | Page | Contents |
 | --- | --- |
 | Settings | The selected device's available appearance, accessibility, location, and sound controls. |
-| Reports | Available device reports, including local simulator reports. |
+| Reports | Reports from physical devices and VMs that support report access. |
 | Info | Grouped device information and the Info, Apps, and Profiles categories. |
 
 In **Info → Info**, choose **Edit Visibility** to select the fields to show, then
@@ -228,8 +228,8 @@ custom app URL schemes in the active device.
 
 Select a device in the main window and choose **Reports** in the right
 inspector's toolbar. Physical-device and VM report operations depend on the
-connected device's capabilities. For simulators, NeoSimulator lists local
-reports from the Mac.
+connected device's capabilities. Crash, log, spin, and diagnostic reports are
+unavailable for simulators.
 
 Search by report name, path, file extension, or recorded type. **All Report
 Types** lets you filter by the device's recorded log type, or by file extension

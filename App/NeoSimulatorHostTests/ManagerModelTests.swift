@@ -689,6 +689,16 @@ struct ManagerModelTests {
         #expect(inspection.content == .provisioning && inspection.canReadProfiles)
     }
 
+    @Test func stoppedSimulatorDoesNotExposeAppAndProfileOperationsFromCachedCapabilities() {
+        let features = ["streamapplist", "installapp", "configurationprofiles"]
+        let inspection = DeviceInspectorModel()
+        inspection.device = .simulator(SimulatorHostDevice(identifier: "phone", name: "Phone", descriptiveName: "Phone",
+            runtimeIdentifier: "runtime", runtimeName: "iOS", productFamily: "iPhone", state: "Shutdown",
+            capabilities: Set(features.map { "com.apple.coredevice.feature." + $0 })))
+        inspection.select(.configuration)
+        #expect(!inspection.canReadApplications && !inspection.canInstallApplications && !inspection.canReadProfiles)
+    }
+
     @Test func infoVisibilityStartsWithFourFieldsAndPersistsExplicitChoices() throws {
         let suite = "NeoSimulatorTests.InfoVisibility.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))

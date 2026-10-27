@@ -56,10 +56,11 @@ final class DeviceInspectorModel {
         return simulator.isAvailable && simulator.state == "Booted"
     }
     func supports(_ feature: String) -> Bool { device?.capabilities.contains("com.apple.coredevice.feature." + feature) == true }
-    var canReadApplications: Bool { simulatorIsRunning || supports("streamapplist") }
-    var canInstallApplications: Bool { simulatorIsRunning || supports("installapp") }
+    var canReadApplications: Bool { device?.kind == .simulator ? simulatorIsRunning : supports("streamapplist") }
+    var canInstallApplications: Bool { device?.kind == .simulator ? simulatorIsRunning : supports("installapp") }
     var canReadProfiles: Bool {
-        if case .simulator(let simulator) = device, simulator.deviceSetPath != nil { return false }
+        if case .simulator(let simulator) = device,
+           simulator.deviceSetPath != nil || !simulatorIsRunning { return false }
         return supports(content == .provisioning ? "provisioningprofiles" : "configurationprofiles")
     }
 
@@ -102,8 +103,11 @@ final class DeviceInspectorModel {
                     applications = apps
                     lastIssue = apps.isEmpty ? "No applications installed." : nil
                 } else if page == .reports {
-                    guard inspector.supportsReportListing || device.kind == .simulator else {
-                        throw DeviceInspectorError.unsupported("This device does not currently support reports. Connect and unlock it, then refresh.")
+                    guard inspector.supportsReportListing else {
+                        let message = device.kind == .simulator
+                            ? "Crash, log, spin, and diagnostic reports are unavailable for simulators."
+                            : "This device does not currently support reports. Connect and unlock it, then refresh."
+                        throw DeviceInspectorError.unsupported(message)
                     }
                     let snapshot = try await inspector.reports()
                     guard generation == request, !Task.isCancelled else { return }
