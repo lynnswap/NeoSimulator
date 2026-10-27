@@ -19,10 +19,12 @@ struct CaptureAndImportTests {
             while :; do sleep 0.1; done
             """]
         let recording = try VideoRecording(process: process, startupTimeout: .seconds(3))
+        #expect(recording.startDate == nil)
         recording.stop()
         try await recording.waitUntilFinished()
         #expect(recording.hasStarted)
         #expect(recording.isStopping)
+        #expect(recording.startDate == nil)
         #expect(!process.isRunning)
     }
 
@@ -32,6 +34,14 @@ struct CaptureAndImportTests {
         rejected.arguments = ["-c", "echo denied >&2; exit 7"]
         let recording = try VideoRecording(process: rejected)
         await #expect(throws: (any Error).self) { try await recording.waitUntilFinished() }
+        #expect(recording.startDate == nil)
+
+        let interrupted = Process()
+        interrupted.executableURL = URL(fileURLWithPath: "/bin/sh")
+        interrupted.arguments = ["-c", "echo 'Recording started' >&2; exit 7"]
+        let started = try VideoRecording(process: interrupted)
+        await #expect(throws: (any Error).self) { try await started.waitUntilFinished() }
+        #expect(started.hasStarted && started.startDate == nil)
 
         let stalled = Process()
         stalled.executableURL = URL(fileURLWithPath: "/bin/sleep")
@@ -178,9 +188,12 @@ struct CaptureAndImportTests {
             return process
         }, onFinished: { finished = true })
         for _ in 0..<100 where !recording.hasStarted { try await Task.sleep(for: .milliseconds(10)) }
+        let startedAt = try #require(recording.startDate)
+        #expect(startedAt <= Date())
         #expect(handedOver.isEmpty)
         stopped = true
         recording.stop()
+        #expect(recording.startDate == nil)
         try await recording.waitUntilFinished()
         for _ in 0..<200 where !finished { try await Task.sleep(for: .milliseconds(10)) }
         #expect(errors.isEmpty)

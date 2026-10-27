@@ -11,7 +11,9 @@ final class VideoRecording {
         case exited(Int32, Process.TerminationReason)
     }
     private(set) var isStopping = false
-    private(set) var hasStarted = false
+    private var firstFrameAt: Date?
+    var hasStarted: Bool { firstFrameAt != nil }
+    var startDate: Date? { isStopping || completion != nil ? nil : firstFrameAt }
     private let process: Process
     private var completion: Result<Void, Error>?
     private var waiters: [CheckedContinuation<Void, Error>] = []
@@ -48,7 +50,7 @@ final class VideoRecording {
                 case .output(let data):
                     output = Data((output + data).suffix(8192))
                     if !hasStarted, String(decoding: output, as: UTF8.self).contains("Recording started") {
-                        hasStarted = true
+                        firstFrameAt = Date()
                         if isStopping {
                             if process.isRunning { process.interrupt() }
                         } else {

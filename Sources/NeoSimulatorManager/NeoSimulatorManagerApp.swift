@@ -224,6 +224,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
+        var recordingStartDate: Date? {
+            switch self {
+            case .simulator(let controller): controller.session.recording?.startDate
+            case .remote(let controller): controller.session.recordingStartDate
+            }
+        }
+
         var capturesKeyboard: Bool {
             switch self {
             case .simulator(let controller): controller.capturesKeyboard
@@ -514,7 +521,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         mainWindow?.updateScreenToolbar(supports: { action in
             action == "rotate" && posture?.isSupported == true ? false : screen.supports(action)
         }, isEnabled: screen.isEnabled,
-                                       recordingTitle: screen.recordingTitle, resizingApp: screen.resizingApp, capturesKeyboard: screen.capturesKeyboard,
+                                       recordingTitle: screen.recordingTitle, recordingStartDate: screen.recordingStartDate,
+                                       resizingApp: screen.resizingApp, capturesKeyboard: screen.capturesKeyboard,
                                        nativePoses: screen.nativePoseControls,
                                        nativePosesEnabled: screen.canControlDevice && !model.managingDeviceIDs.contains(identifier))
         mainWindow?.updateDevicePosture(posture, isEnabled: screen.canControlDevice && !model.managingDeviceIDs.contains(identifier))
@@ -1050,6 +1058,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     private let screenActionIdentifiers = ["home", "capture", "record", "rotate"]
     private let screenActionBar = NSStackView()
     private let primaryScreenActions = NSGlassEffectView()
+    private let screenRecordingTimer = NSHostingView(rootView: AnyView(EmptyView()))
     private let profileScreenActions = NSGlassEffectView()
     private var screenActionButtons: [String: NSButton] = [:]
     private var postureButtons: [DevicePosture: NSButton] = [:]
@@ -1522,6 +1531,10 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             controls.spacing = 2
             controls.edgeInsets = NSEdgeInsets(top: 4, left: 4, bottom: 4, right: 4)
             for identifier in identifiers {
+                if identifier == "record" {
+                    screenRecordingTimer.isHidden = true
+                    controls.addArrangedSubview(screenRecordingTimer)
+                }
                 let (title, symbol): (String, String?) = switch identifier {
                 case "home": ("Home", "app.grid.3x3")
                 case "capture": ("Save Screenshot…", "camera.viewfinder")
@@ -1812,6 +1825,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     func showDevicePreview(ifDisplaying identifier: DeviceInventoryID) {
         guard liveDeviceIdentifier == identifier else { return }
         liveDeviceIdentifier = nil
+        screenRecordingTimer.isHidden = true
+        screenRecordingTimer.rootView = AnyView(EmptyView())
         activeScreenCommandTarget = nil
         liveScreenContainer.view.isHidden = true
         previewStack?.isHidden = false
@@ -1850,7 +1865,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         container.isHidden = view == nil
     }
 
-    func updateScreenToolbar(supports: (String) -> Bool, isEnabled: (String) -> Bool, recordingTitle: String, resizingApp: Bool = false, capturesKeyboard: Bool = false,
+    func updateScreenToolbar(supports: (String) -> Bool, isEnabled: (String) -> Bool, recordingTitle: String, recordingStartDate: Date? = nil,
+                             resizingApp: Bool = false, capturesKeyboard: Bool = false,
                              nativePoses: NativeDevicePoseControls? = nil, nativePosesEnabled: Bool = true) {
         let showsNative = liveDeviceIdentifier != nil && nativePoses?.isAvailable == true
         installNativeControl(showsNative ? nativePoses?.rotationView : nil, in: nativeRotationContainer)
@@ -1884,14 +1900,26 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             button.isEnabled = isEnabled(identifier)
             if identifier == "record" {
                 let symbol = switch recordingTitle {
-                case "Stop Recording": "stop.circle"
+                case "Stop Recording": "stop.fill"
                 case "Save Recording…": "square.and.arrow.down"
                 default: "record.circle"
                 }
                 button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: recordingTitle)
+                button.symbolConfiguration = .init(pointSize: recordingTitle == "Stop Recording" ? 10 : 15,
+                                                   weight: recordingTitle == "Stop Recording" ? .medium : .regular, scale: .medium)
+                button.contentTintColor = recordingTitle == "Stop Recording" ? .systemRed : .labelColor
                 button.toolTip = recordingTitle
                 button.setAccessibilityLabel(recordingTitle)
             }
+        }
+        if let recordingStartDate, liveDeviceIdentifier != nil, screenActionButtons["record"]?.isHidden == false {
+            screenRecordingTimer.rootView = AnyView(Text(recordingStartDate, style: .timer)
+                .font(.system(size: 15)).monospacedDigit().fixedSize()
+                .padding(.horizontal, 8).frame(height: 28))
+            screenRecordingTimer.isHidden = false
+        } else {
+            screenRecordingTimer.isHidden = true
+            screenRecordingTimer.rootView = AnyView(EmptyView())
         }
         updateRotationButton()
         primaryScreenActions.isHidden = ["home", "capture", "record"].allSatisfy {
