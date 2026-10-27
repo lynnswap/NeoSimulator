@@ -894,6 +894,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.messageText = error.localizedDescription
         let failure = error as? any LocalizedError
         alert.informativeText = [failure?.failureReason, failure?.recoverySuggestion].compactMap { $0 }.joined(separator: "\n\n")
+        alert.addDiagnosticDetails((error as? SimulatorHostFailure)?.technicalDetails)
         if let failure = error as? SimulatorHostFailure {
             NSLog("NeoSimulator: %@", failure.technicalDetails)
             if failure.kind == .preferencesChanged, model.status?.restorationAvailable == true {
@@ -1015,7 +1016,7 @@ enum NeoSimulatorApplication {
         do {
             try CoreDeviceRuntime.configureUIFrameworks(xcodeURL: UIFrameworkSettings.selection(in: .standard))
         } catch {
-            NSAlert(error: error).runModal()
+            NSAlert(presenting: error).runModal()
             return
         }
         let delegate = AppDelegate()

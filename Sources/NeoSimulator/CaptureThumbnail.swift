@@ -484,7 +484,7 @@ final class CaptureThumbnail: NSObject {
             try action.body(self)
             dismiss()
         } catch {
-            NSAlert(error: error).runModal()
+            NSAlert(presenting: error).runModal()
         }
     }
 

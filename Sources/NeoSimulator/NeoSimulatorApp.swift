@@ -67,7 +67,7 @@ struct ManagerRelaunch: Codable, Sendable {
             exit(EXIT_SUCCESS)
         } catch {
             NSApplication.shared.setActivationPolicy(.regular)
-            NSAlert(error: error).runModal()
+            NSAlert(presenting: error).runModal()
             exit(EX_SOFTWARE)
         }
     }

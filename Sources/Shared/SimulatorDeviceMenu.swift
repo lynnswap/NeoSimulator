@@ -431,9 +431,9 @@ final class NewSimulatorWindowController: NSWindowController, NSWindowDelegate {
             } catch {
                 // The window may have been closed while the devices were being created.
                 if let window, window.isVisible {
-                    NSAlert(error: error).beginSheetModal(for: window, completionHandler: nil)
+                    NSAlert(presenting: error).beginSheetModal(for: window, completionHandler: nil)
                 } else {
-                    NSAlert(error: error).runModal()
+                    NSAlert(presenting: error).runModal()
                 }
             }
         }

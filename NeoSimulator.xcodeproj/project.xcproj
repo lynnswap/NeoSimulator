@@ -215,6 +215,13 @@
             "NeoSimulatorRenderer/compile-sources",
             "NeoSimulatorHostTests/compile-sources",
           ],
+        }, {
+          "path": "ErrorAlert.swift",
+          "target-membership": [
+            "NeoSimulator/compile-sources",
+            "NeoSimulatorRenderer/compile-sources",
+            "NeoSimulatorHostTests/compile-sources",
+          ],
         },
       ],
     }, {
