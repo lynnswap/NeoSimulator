@@ -4,6 +4,7 @@ import Darwin
 import Observation
 import Testing
 import Synchronization
+import IOKit.hidsystem
 
 @Suite(.serialized) @MainActor
 struct InputFocusTests {
@@ -565,6 +566,34 @@ struct InputFocusTests {
         try capture.start()
         NotificationCenter.default.post(name: NSApplication.willResignActiveNotification, object: NSApp)
         #expect(!capture.isCapturing && tap.stops == 3)
+    }
+
+    @Test(arguments: [kIOHIDAccessTypeUnknown, kIOHIDAccessTypeDenied, kIOHIDAccessTypeGranted])
+    func captureReportsActualAuthorizationWhenTapCreationFails(access: IOHIDAccessType) throws {
+        var checks = 0
+        let tap = SystemKeyboardEventTap(applicationName: "Fixture App", access: { checks += 1; return access },
+                                        createTap: { _, _, _ in nil })
+        let capture = KeyboardCapture(tap: tap, isEligible: { true }, forward: { _ in
+            Issue.record("Failed capture forwarded an event")
+        }, releaseModifiers: { _ in })
+        do {
+            try capture.start()
+            Issue.record("Captured without an event tap")
+        } catch {
+            let failure = try #require(error as? any LocalizedError)
+            #expect(failure.recoverySuggestion?.contains("Fixture App") == true)
+            #expect(failure.recoverySuggestion?.contains("focused device screen") == true)
+            if access == kIOHIDAccessTypeGranted {
+                #expect(failure.errorDescription == "Unable to Create Keyboard Event Tap.")
+                #expect(failure.recoverySuggestion?.contains("System Settings") == false)
+            } else {
+                #expect(failure.errorDescription == (access == kIOHIDAccessTypeDenied
+                    ? "Keyboard Capture Access Was Denied." : "Keyboard Capture Access Is Not Authorized."))
+                #expect(failure.recoverySuggestion?.contains("System Settings > Privacy & Security > Accessibility") == true)
+            }
+        }
+        #expect(checks == 1 && !capture.isCapturing)
+        #expect(!capture.stop())
     }
 
     @Test func escapeHoldReleasesCaptureAndShortEscapeStillReachesTheGuest() async throws {
