@@ -519,9 +519,10 @@ final class SimulatorManagerModel {
     }
 
     func setDeviceSetting(_ setting: SimulatorDeviceSetting, for identifier: DeviceInventoryID) {
-        guard !managingDeviceIDs.contains(identifier), let device = inventory.first(where: { $0.id == identifier }) else { return }
+        guard !stopping, !managingDeviceIDs.contains(identifier), let device = inventory.first(where: { $0.id == identifier }) else { return }
+        let edit = settings.accept(setting, for: device)
         perform("Updating device settings…", refreshCatalog: false) {
-            try await self.settings.apply(setting, to: device)
+            try await self.settings.apply(edit)
         }
     }
 

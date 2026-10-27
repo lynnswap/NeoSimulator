@@ -288,6 +288,8 @@ struct ManagerModelTests {
 
         manager.setDeviceSetting(.appearance("dark"), for: device.id)
         manager.setDeviceSetting(.contentSize("large"), for: device.id)
+        #expect(manager.settings.settings?.appearance == "dark")
+        #expect(manager.settings.settings?.contentSize == "large")
         #expect(await events.next() == .write(device.id))
         await source.completeWrite()
         #expect(await events.next() == .write(device.id))
@@ -331,9 +333,10 @@ struct ManagerModelTests {
         #expect(await events.next() == .read(device.id))
         let beganApplying = AsyncStream<Void>.makeStream()
         var applyEvents = beganApplying.stream.makeAsyncIterator()
+        let edit = model.accept(.contentSize("large"), for: device)
         let applying = Task {
             beganApplying.continuation.yield(())
-            try await model.apply(.contentSize("large"), to: device)
+            try await model.apply(edit)
         }
         await applyEvents.next()
         await source.completeRead(settings(appearance: "dark", contentSize: "medium"))
@@ -392,7 +395,8 @@ struct ManagerModelTests {
         await source.completeRead(settings(appearance: "light"))
         await model.finishReading()
 
-        let applying = Task { try await model.apply(.appearance("dark"), to: device) }
+        let edit = model.accept(.appearance("dark"), for: device)
+        let applying = Task { try await model.apply(edit) }
         #expect(await events.next() == .write(device.id))
         await source.failWrite()
         do { try await applying.value; Issue.record("The source failure must reach the caller.") }
@@ -402,6 +406,75 @@ struct ManagerModelTests {
         await model.finishReading()
         #expect(model.settings?.appearance == "dark")
         #expect(model.issue == nil)
+    }
+
+    @Test func rapidSwitchEditsKeepTheirLatestValuesWhenAnEarlierWriteFails() async throws {
+        let device = simulator()
+        let source = ManagerModelSource(devices: [device])
+        var events = source.events.makeAsyncIterator()
+        let failures = AsyncStream<any Error>.makeStream()
+        var failureEvents = failures.stream.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source)
+        manager.onError = { failures.continuation.yield($0) }
+        await manager.refresh()
+        manager.settings.inspect(device, selectionCount: 1)
+        #expect(await events.next() == .read(device.id))
+        await source.completeRead(SimulatorDeviceSettings(showBorders: false, reduceTransparency: false))
+        await manager.settings.finishReading()
+
+        manager.setDeviceSetting(.showBorders(true), for: device.id)
+        #expect(manager.settings.settings?.showBorders == true)
+        #expect(await events.next() == .write(device.id))
+        manager.setDeviceSetting(.reduceTransparency(true), for: device.id)
+        manager.setDeviceSetting(.showBorders(false), for: device.id)
+        #expect(manager.settings.settings?.showBorders == false)
+        #expect(manager.settings.settings?.reduceTransparency == true)
+        await source.failWrite()
+        #expect(await events.next() == .write(device.id))
+        #expect(await failureEvents.next() is ManagerModelSource.Failure)
+        #expect(manager.settings.settings?.showBorders == false)
+        #expect(manager.settings.settings?.reduceTransparency == true)
+        await source.completeWrite()
+        #expect(await events.next() == .write(device.id))
+        #expect(manager.settings.settings?.showBorders == false)
+        #expect(manager.settings.settings?.reduceTransparency == true)
+        await source.returnOnNextRead(SimulatorDeviceSettings(showBorders: false, reduceTransparency: true))
+        await source.completeWrite()
+        #expect(await events.next() == .read(device.id))
+        await manager.settings.finishReading()
+        #expect(manager.settings.settings?.showBorders == false)
+        #expect(manager.settings.settings?.reduceTransparency == true)
+        try await manager.quitRenderer(keepingDevicesRunning: true)
+    }
+
+    @Test func pendingEditsStayWithTheirDeviceAcrossSelectionChanges() async throws {
+        let first = simulator(deviceSet: "/first")
+        let second = simulator(deviceSet: "/second")
+        let source = ManagerModelSource(devices: [first, second])
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source)
+        await manager.refresh()
+        manager.settings.inspect(first, selectionCount: 1)
+        #expect(await events.next() == .read(first.id))
+        await source.completeRead(SimulatorDeviceSettings(showBorders: false))
+        await manager.settings.finishReading()
+        manager.setDeviceSetting(.showBorders(true), for: first.id)
+        #expect(await events.next() == .write(first.id))
+
+        manager.settings.inspect(second, selectionCount: 1)
+        #expect(manager.settings.settings == nil)
+        await source.completeWrite()
+        #expect(await events.next() == .read(second.id))
+        await source.completeRead(SimulatorDeviceSettings(showBorders: false))
+        await manager.settings.finishReading()
+        #expect(manager.settings.settings?.showBorders == false)
+
+        manager.settings.inspect(first, selectionCount: 1)
+        #expect(await events.next() == .read(first.id))
+        await source.completeRead(SimulatorDeviceSettings(showBorders: true))
+        await manager.settings.finishReading()
+        #expect(manager.settings.settings?.showBorders == true)
+        try await manager.quitRenderer(keepingDevicesRunning: true)
     }
 
     @Test func artworkResolvesXcodeBeforeOpeningAScreen() async throws {
@@ -592,6 +665,8 @@ private actor ManagerModelSource: SimulatorManagerSource {
         switch setting {
         case .appearance(let appearance): updated.appearance = appearance
         case .contentSize(let size): updated.contentSize = size
+        case .showBorders(let value): updated.showBorders = value
+        case .reduceTransparency(let value): updated.reduceTransparency = value
         default: throw Failure.unavailable
         }
         pendingWrite = updated

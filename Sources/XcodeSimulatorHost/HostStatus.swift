@@ -112,6 +112,40 @@ public enum SimulatorDeviceSetting: Sendable {
     case clearLocation
 }
 
+extension SimulatorDeviceSettings {
+    /// Projects an accepted edit until the device confirms its values.
+    @_spi(NeoSimulator) public func applying(_ setting: SimulatorDeviceSetting) -> Self {
+        var result = self
+        switch setting {
+        case .appearance(let value): result.appearance = value
+        case .contentSize(let value): result.contentSize = value
+        case .increaseContrast(let value): result.increaseContrast = value
+        case .lookAndFeel(let value): result.lookAndFeel = value.rawValue
+        case .liquidGlassOpacity(let value): result.liquidGlassOpacity = value
+        case .colorFilter(let value, let intensity):
+            result.colorFilter = value
+            if let intensity { result.colorFilterIntensity = intensity }
+        case .reduceMotion(let value): result.reduceMotion = value
+        case .showBorders(let value): result.showBorders = value
+        case .reduceTransparency(let value): result.reduceTransparency = value
+        case .voiceOver(let value): result.voiceOver = value
+        case .volume(let value): result.volume = value
+        case .audioInputDevice(let value): result.audioInputDevice = value
+        case .audioOutputDevice(let value): result.audioOutputDevice = value
+        case .location:
+            result.locationMode = "custom"
+            result.locationScenario = nil
+        case .locationScenario(let value):
+            result.locationMode = "scenario"
+            result.locationScenario = value
+        case .clearLocation:
+            result.locationMode = "none"
+            result.locationScenario = nil
+        }
+        return result
+    }
+}
+
 private enum DeviceSettingsQuery { case appearance, voiceOver, audio, location }
 
 private extension InventoryDevice {

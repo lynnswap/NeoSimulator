@@ -2940,38 +2940,36 @@ private struct ManagerDeviceSettingsView: View {
 
     private var appearanceRows: some View {
         Group {
-            picker("Appearance", symbol: "circle.lefthalf.filled", value: settings?.appearance,
-                   choices: [Choice(id: "light", title: "Light"), Choice(id: "dark", title: "Dark")]) {
-                apply(.appearance($0))
-            }
-            slider("Liquid Glass", symbol: "drop.halffull", value: settings?.liquidGlassOpacity, range: 0...1) {
-                apply(.liquidGlassOpacity($0))
-            }
-            picker("Color Filter", symbol: "camera.filters", value: settings?.colorFilter?.rawValue,
-                   choices: SimulatorColorFilter.allCases.map { Choice(id: $0.rawValue, title: filterTitle($0)) }) {
-                if let value = SimulatorColorFilter(rawValue: $0) { apply(.colorFilter(value)) }
-            }
+            picker("Appearance", symbol: "circle.lefthalf.filled",
+                   value: binding(get: { $0.appearance }, setting: SimulatorDeviceSetting.appearance),
+                   choices: [Choice(id: "light", title: "Light"), Choice(id: "dark", title: "Dark")])
+            slider("Liquid Glass", symbol: "drop.halffull",
+                   value: binding(get: { $0.liquidGlassOpacity }, setting: SimulatorDeviceSetting.liquidGlassOpacity), range: 0...1)
+            picker("Color Filter", symbol: "camera.filters",
+                   value: binding(get: { $0.colorFilter?.rawValue }, setting: { SimulatorColorFilter(rawValue: $0).map { .colorFilter($0) } }),
+                   choices: SimulatorColorFilter.allCases.map { Choice(id: $0.rawValue, title: filterTitle($0)) })
             if let filter = settings?.colorFilter, filter != .none, filter != .grayscale {
-                slider("Intensity", symbol: "slider.horizontal.3", value: settings?.colorFilterIntensity, range: 0.25...1) {
-                    apply(.colorFilter(filter, intensity: $0))
-                }
+                slider("Intensity", symbol: "slider.horizontal.3",
+                       value: binding(get: { $0.colorFilterIntensity }, setting: { .colorFilter(filter, intensity: $0) }), range: 0.25...1)
             }
-            slider("Text Size", symbol: "textformat.size", value: textSizeIndex, range: 0...11,
-                   tickMarks: SimulatorDeviceSettings.contentSizes.count, help: textSizeDescription) {
-                let index = Int($0.rounded())
-                guard SimulatorDeviceSettings.contentSizes.indices.contains(index) else { return }
-                apply(.contentSize(SimulatorDeviceSettings.contentSizes[index]))
-            }
+            slider("Text Size", symbol: "textformat.size",
+                   value: binding(get: { $0.contentSize.flatMap { SimulatorDeviceSettings.contentSizes.firstIndex(of: $0) }.map(Double.init) },
+                                  setting: {
+                                      let index = Int($0.rounded())
+                                      guard SimulatorDeviceSettings.contentSizes.indices.contains(index) else { return nil }
+                                      return .contentSize(SimulatorDeviceSettings.contentSizes[index])
+                                  }),
+                   range: 0...11, tickMarks: SimulatorDeviceSettings.contentSizes.count, help: textSizeDescription)
         }
     }
 
     private var accessibilityRows: some View {
         Group {
-            toggle("Reduce Motion", symbol: "figure.walk.motion", value: settings?.reduceMotion, setting: SimulatorDeviceSetting.reduceMotion)
-            toggle("Increase Contrast", symbol: "circle.lefthalf.striped.horizontal", value: settings?.increaseContrast, setting: SimulatorDeviceSetting.increaseContrast)
-            toggle("Show Borders", symbol: "square.dashed", value: settings?.showBorders, setting: SimulatorDeviceSetting.showBorders)
-            toggle("Reduce Transparency", symbol: "square.on.square", value: settings?.reduceTransparency, setting: SimulatorDeviceSetting.reduceTransparency)
-            toggle("VoiceOver", symbol: "person.wave.2", value: settings?.voiceOver, setting: SimulatorDeviceSetting.voiceOver)
+            toggle("Reduce Motion", symbol: "figure.walk.motion", keyPath: \.reduceMotion, setting: SimulatorDeviceSetting.reduceMotion)
+            toggle("Increase Contrast", symbol: "circle.lefthalf.striped.horizontal", keyPath: \.increaseContrast, setting: SimulatorDeviceSetting.increaseContrast)
+            toggle("Show Borders", symbol: "square.dashed", keyPath: \.showBorders, setting: SimulatorDeviceSetting.showBorders)
+            toggle("Reduce Transparency", symbol: "square.on.square", keyPath: \.reduceTransparency, setting: SimulatorDeviceSetting.reduceTransparency)
+            toggle("VoiceOver", symbol: "person.wave.2", keyPath: \.voiceOver, setting: SimulatorDeviceSetting.voiceOver)
         }
     }
 
@@ -2995,25 +2993,30 @@ private struct ManagerDeviceSettingsView: View {
 
     private var soundSection: some View {
         Section {
-            slider("Sound", symbol: "speaker.wave.2", value: settings?.volume.map(Double.init), range: 0...100) {
-                apply(.volume(Int($0.rounded())))
-            }
-            picker("Output", symbol: "speaker", value: settings?.audioOutputDevice,
-                   choices: (settings?.audioOutputDevices ?? []).map { Choice(id: $0.identifier, title: $0.name) }) {
-                apply(.audioOutputDevice($0))
-            }
-            picker("Input", symbol: "mic", value: settings?.audioInputDevice,
-                   choices: (settings?.audioInputDevices ?? []).map { Choice(id: $0.identifier, title: $0.name) }) {
-                apply(.audioInputDevice($0))
-            }
+            slider("Sound", symbol: "speaker.wave.2",
+                   value: binding(get: { $0.volume.map(Double.init) }, setting: { .volume(Int($0.rounded())) }), range: 0...100)
+            picker("Output", symbol: "speaker", value: binding(get: { $0.audioOutputDevice }, setting: SimulatorDeviceSetting.audioOutputDevice),
+                   choices: (settings?.audioOutputDevices ?? []).map { Choice(id: $0.identifier, title: $0.name) })
+            picker("Input", symbol: "mic", value: binding(get: { $0.audioInputDevice }, setting: SimulatorDeviceSetting.audioInputDevice),
+                   choices: (settings?.audioInputDevices ?? []).map { Choice(id: $0.identifier, title: $0.name) })
         }
     }
 
+    private func binding<Value>(get: @escaping (SimulatorDeviceSettings) -> Value?,
+                                setting: @escaping (Value) -> SimulatorDeviceSetting?) -> Binding<Value>? {
+        guard let settings, let initial = get(settings), let identifier = device?.id else { return nil }
+        return Binding(get: {
+            model.settings.flatMap(get) ?? initial
+        }, set: {
+            if let edit = setting($0) { manager.setDeviceSetting(edit, for: identifier) }
+        })
+    }
+
     @ViewBuilder
-    private func picker(_ title: String, symbol: String, value: String?, choices: [Choice], action: @escaping (String) -> Void) -> some View {
+    private func picker(_ title: String, symbol: String, value: Binding<String>?, choices: [Choice]) -> some View {
         if let value {
-            Picker(selection: Binding(get: { value }, set: action)) {
-                if !choices.contains(where: { $0.id == value }) { Text("Unavailable").tag(value) }
+            Picker(selection: value) {
+                if !choices.contains(where: { $0.id == value.wrappedValue }) { Text("Unavailable").tag(value.wrappedValue) }
                 ForEach(choices) { Text($0.title).tag($0.id) }
             } label: {
                 Label(title, systemImage: symbol)
@@ -3026,9 +3029,10 @@ private struct ManagerDeviceSettingsView: View {
     }
 
     @ViewBuilder
-    private func toggle(_ title: String, symbol: String, value: Bool?, setting: @escaping (Bool) -> SimulatorDeviceSetting) -> some View {
-        if let value {
-            Toggle(isOn: Binding(get: { value }, set: { apply(setting($0)) })) {
+    private func toggle(_ title: String, symbol: String, keyPath: KeyPath<SimulatorDeviceSettings, Bool?>,
+                        setting: @escaping (Bool) -> SimulatorDeviceSetting) -> some View {
+        if let value = binding(get: { $0[keyPath: keyPath] }, setting: setting) {
+            Toggle(isOn: value) {
                 Label(title, systemImage: symbol)
             }
             .toggleStyle(.switch)
@@ -3038,11 +3042,12 @@ private struct ManagerDeviceSettingsView: View {
     }
 
     @ViewBuilder
-    private func slider(_ title: String, symbol: String, value: Double?, range: ClosedRange<Double>, tickMarks: Int = 0,
-                        help: String = "", action: @escaping (Double) -> Void) -> some View {
+    private func slider(_ title: String, symbol: String, value: Binding<Double>?, range: ClosedRange<Double>, tickMarks: Int = 0,
+                        help: String = "") -> some View {
         if let value {
             LabeledContent {
-                ManagerSettingSlider(value: value, range: range, tickMarks: tickMarks, label: title, changed: action)
+                ManagerSettingSlider(value: value.wrappedValue, range: range, tickMarks: tickMarks, label: title,
+                                     changed: { value.wrappedValue = $0 })
                     .frame(minWidth: 90, maxWidth: .infinity, minHeight: 22)
                     .help(help)
             } label: {
