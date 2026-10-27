@@ -31,6 +31,15 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
     private var presentationConstraints: [NSLayoutConstraint] = []
     private var changingPresentation = false
     private let viewport = NSView()
+    private let canvasControlsContainer = NSStackView()
+    var canvasControls: DeviceCanvasControls? {
+        didSet {
+            oldValue?.removeFromSuperview()
+            if let canvasControls { canvasControlsContainer.addArrangedSubview(canvasControls) }
+            canvasControlsContainer.isHidden = canvasControls == nil
+            update()
+        }
+    }
     private let statusLabel = NSTextField(wrappingLabelWithString: "")
     private let progress = NSProgressIndicator()
     private let retryButton = NSButton(title: "Reconnect", target: nil, action: nil)
@@ -134,6 +143,17 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
         footer.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
         footer.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(footer)
+        canvasControlsContainer.orientation = .vertical
+        canvasControlsContainer.alignment = .centerX
+        canvasControlsContainer.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
+        canvasControlsContainer.translatesAutoresizingMaskIntoConstraints = false
+        canvasControlsContainer.isHidden = true
+        let bottom = NSStackView(views: [footer, canvasControlsContainer])
+        bottom.orientation = .vertical
+        bottom.alignment = .width
+        bottom.spacing = 0
+        bottom.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(bottom)
         progress.style = .spinning
         progress.controlSize = .small
         statusLabel.font = .systemFont(ofSize: 11)
@@ -143,9 +163,9 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
         retryButton.controlSize = .small
         NSLayoutConstraint.activate([
             viewport.leadingAnchor.constraint(equalTo: root.leadingAnchor), viewport.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            viewport.topAnchor.constraint(equalTo: root.topAnchor), viewport.bottomAnchor.constraint(equalTo: footer.topAnchor),
-            footer.leadingAnchor.constraint(equalTo: root.leadingAnchor), footer.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            footer.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+            viewport.topAnchor.constraint(equalTo: root.topAnchor), viewport.bottomAnchor.constraint(equalTo: bottom.topAnchor),
+            bottom.leadingAnchor.constraint(equalTo: root.leadingAnchor), bottom.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            bottom.bottomAnchor.constraint(equalTo: root.bottomAnchor),
             progress.widthAnchor.constraint(equalToConstant: 16), progress.heightAnchor.constraint(equalToConstant: 16),
             session.contentView.leadingAnchor.constraint(equalTo: viewport.leadingAnchor), session.contentView.trailingAnchor.constraint(equalTo: viewport.trailingAnchor),
             session.contentView.topAnchor.constraint(equalTo: viewport.topAnchor), session.contentView.bottomAnchor.constraint(equalTo: viewport.bottomAnchor),
@@ -348,6 +368,7 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
            !isEmbedded || screenOwnsFocus { presentationWindow?.makeFirstResponder(native) }
         inputView.isInputEnabled = connected && !changingPresentation && presentationWindow != nil
         for (identifier, item) in toolbarItems {
+            item.isHidden = canvasControls != nil && ["home", "capture", "record"].contains(identifier)
             item.isEnabled = isScreenActionEnabled(identifier)
             if let presentation = screenActionPresentation(identifier) {
                 item.label = presentation.title

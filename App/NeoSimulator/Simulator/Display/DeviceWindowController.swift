@@ -7,6 +7,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     /// The device's current connection. A restart replaces it after the
     /// device boots again, keeping this window.
     private(set) var session: DeviceSession
+    var onSessionChange: (() -> Void)?
     private var closed = false
     /// Suppresses geometry saving from restart until the next device connection.
     private var isRestarting = false
@@ -28,6 +29,17 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     private let makeExternalDisplayWindow: @MainActor (NSRect) -> NSWindow
     private let applicationIsActive: () -> Bool
     private var deviceToolbar: DeviceToolbar?
+    var canvasControls: DeviceCanvasControls? {
+        didSet {
+            content.canvasControls = canvasControls
+            canvasControls?.onLayoutChange = { [weak self] in
+                self?.content.needsLayout = true
+                self?.updateContentMinimumSize()
+            }
+            deviceToolbar?.setUsesCanvasControls(canvasControls != nil)
+            bezelChanged()
+        }
+    }
     private var customLocation: CustomLocationWindowController?
     /// Keeps where each device's window closes and its display scale.
     private let preferences: any PreferenceStore
@@ -404,6 +416,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         deviceToolbar = toolbar
         toolbar.attach(to: window)
         toolbar.setShowsMainWindowAction(onShowInMainWindow != nil)
+        toolbar.setUsesCanvasControls(canvasControls != nil)
         session.display.onPropertiesChange = { [weak self] in self?.displayPropertiesChanged() }
         session.display.nativePoseControls?.onError = { [weak self] in self?.present($0) }
         session.onAppResizeError = { [weak self] in self?.present($0) }
@@ -427,6 +440,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
             guard let self, self.isEmbedded else { return }
             self.updateEmbeddedScale()
         }
+        content.canvasControls = canvasControls
         presentationViewController.view = content
         content.onWindowChange = { [weak self] in
             guard let self else { return }
@@ -589,6 +603,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         if present { showAndActivate() } else { readInitialOrientation() }
         // A window that stayed key gets no new key notification.
         if presentationWindow?.isKeyWindow == true { activateDisplay(focusingInput: restoreInputFocus) }
+        onSessionChange?()
     }
 
     func showAndActivate() {
@@ -739,7 +754,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         content.displayGap = isEmbedded ? 0 : WindowScale.displayGap(bezelPadding: padding)
         window.chromeTopPadding = padding?.height ?? 0
         updateHeaderShape()
-        if session.display.usesNativeCanvas { window.backgroundColor = .windowBackgroundColor }
+        if canvasControls != nil || session.display.usesNativeCanvas { window.backgroundColor = .windowBackgroundColor }
         else if padding != nil { window.backgroundColor = .clear }
         else if !isFullScreen { window.backgroundColor = .black }
         updateContentMinimumSize()
@@ -762,10 +777,10 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     private func updateContentMinimumSize() {
         guard let window else { return }
         guard let geometry = session.appResizeGeometry else {
-            window.contentMinSize = NSSize(width: 320, height: 300)
+            window.contentMinSize = NSSize(width: max(320, content.canvasControlsWidth), height: 300)
             return
         }
-        var minimum = NSSize(width: geometry.minimumSize.width,
+        var minimum = NSSize(width: max(geometry.minimumSize.width, content.canvasControlsWidth),
                              height: geometry.minimumSize.height + content.heightAboveDisplay)
         // Oversized guest minima remain reachable through the canvas viewport.
         if let visible = (window.screen ?? NSScreen.main)?.visibleFrame {
@@ -1672,6 +1687,15 @@ final class DeviceWindow: NSWindow {
 private final class DeviceContentView: NSView, DisplayContentView {
     private(set) var display: NSView
     private var usesNativeCanvas: Bool
+    var canvasControls: DeviceCanvasControls? {
+        didSet {
+            oldValue?.removeFromSuperview()
+            if let canvasControls { addSubview(canvasControls) }
+            needsLayout = true
+        }
+    }
+    private var canvasControlsHeight: CGFloat { canvasControls?.isHidden == false ? 52 : 0 }
+    var canvasControlsWidth: CGFloat { canvasControls.map { $0.fittingSize.width + 24 } ?? 0 }
     func setDisplay(_ display: NSView, usesNativeCanvas: Bool) {
         self.usesNativeCanvas = usesNativeCanvas
         self.display.removeFromSuperview()
@@ -1721,8 +1745,8 @@ private final class DeviceContentView: NSView, DisplayContentView {
         guard let window else { return 52 }
         return max(0, bounds.height - window.contentLayoutRect.height)
     }
-    /// The window's height above the display: the header and the gap below it.
-    var heightAboveDisplay: CGFloat { headerHeight + displayGap }
+    /// The window space reserved for its header, display gap, and canvas controls.
+    var heightAboveDisplay: CGFloat { headerHeight + displayGap + canvasControlsHeight }
     init(display: NSView, usesNativeCanvas: Bool) {
         self.usesNativeCanvas = usesNativeCanvas
         self.display = display
@@ -1800,7 +1824,11 @@ private final class DeviceContentView: NSView, DisplayContentView {
             previousDisplaySize = availableDisplaySize
             onDisplaySizeChange()
         }
-        let available = NSRect(origin: .zero, size: availableDisplaySize)
+        if let canvasControls, !canvasControls.isHidden {
+            let width = min(max(0, bounds.width - 24), canvasControls.fittingSize.width)
+            canvasControls.frame = NSRect(x: (bounds.width - width) / 2, y: 8, width: width, height: 36)
+        }
+        let available = NSRect(origin: NSPoint(x: 0, y: canvasControlsHeight), size: availableDisplaySize)
         if usesViewport {
             let center = retainedCanvasCenter ?? canvasCenter ?? NSPoint(x: 0.5, y: 0.5)
             retainedCanvasCenter = nil

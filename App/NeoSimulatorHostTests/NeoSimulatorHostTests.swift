@@ -672,6 +672,9 @@ struct InputFocusTests {
             presentCompactWindow: { _ in compactPresentations += 1 }, onClose: { _, _ in closes += 1 },
             onShutDown: { _ in shutdownRequests += 1 })
         defer { controller.invalidate() }
+        let controls = DeviceCanvasControls()
+        controls.update(supports: { _ in true }, isEnabled: { _ in true }, recordingTitle: "Record Screen")
+        controller.canvasControls = controls
         let session = controller.session
         let parent = NSViewController()
         parent.view = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 600))
@@ -747,6 +750,8 @@ struct InputFocusTests {
         #expect(controller.isEmbedded && controller.presentationViewController.parent === parent)
         #expect(controller.session === replacementSession && compactPresentations == 2)
         #expect(replacement.disconnectCount == 0 && display.disconnectCount == 1 && closes == 0)
+        #expect(controller.canvasControls === controls && controls.window === window)
+        #expect(controls.isDescendant(of: controller.presentationViewController.view))
         #expect(window.firstResponder === replacement.inputView && replacement.keyboard.last == true)
         let sheet = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 100),
                              styleMask: .titled, backing: .buffered, defer: false)
@@ -776,6 +781,102 @@ struct InputFocusTests {
         let saved = preferences.windowGeometry(forDevice: session.device.identity.preferenceIdentifier, screens: NSScreen.screens.map(\.frame))
         #expect(saved.scale.map { WindowScale.matches($0, compactScale) } == true)
         #expect(saved.center == movedCenter)
+    }
+
+    @Test(arguments: [false, true])
+    func compactCanvasControlsKeepTheRecordingAndDeviceActions(startInCompact: Bool) async throws {
+        _ = NSApplication.shared
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let devicectl = directory.appendingPathComponent("devicectl")
+        try """
+            #!/bin/sh
+            printf '{"result":{"deviceOrientation":"portrait","deviceOrientationNonFlat":"portrait"}}'
+            """.write(to: devicectl, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: devicectl.path)
+        let display = TestDisplay()
+        display.usesNativeCanvas = true
+        let controller = try makeController(display, devicectl: devicectl,
+            recordingProcess: { _, _ in Self.recorder(then: "while :; do sleep 0.05; done") },
+            presentCompactWindow: { _ in })
+        defer { controller.invalidate() }
+        let controls = DeviceCanvasControls()
+        controller.canvasControls = controls
+        let session = controller.session
+        var actions: [String] = []
+        controls.onAction = { action in
+            actions.append(action)
+            if action == "record" { controller.perform(session.recording == nil ? .recordScreen : .stopRecording) }
+        }
+        func updateControls() {
+            controls.update(supports: { ["home", "capture", "record", "rotate"].contains($0) },
+                            isEnabled: { _ in session.canPerformCommands },
+                            recordingTitle: session.recording == nil ? "Record Screen" : "Stop Recording",
+                            recordingStartDate: session.recording?.startDate)
+        }
+        func descendants(_ view: NSView) -> [NSView] { view.subviews.flatMap { [$0] + descendants($0) } }
+        func button(_ identifier: String) throws -> NSButton {
+            try #require(descendants(controls).compactMap { $0 as? NSButton }.first { $0.identifier?.rawValue == identifier })
+        }
+        updateControls()
+        let parent = NSViewController()
+        parent.view = NSView(frame: NSRect(x: 0, y: 0, width: 500, height: 700))
+        let main = KeyPresentationWindow(contentRect: parent.view.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        main.isReleasedWhenClosed = false
+        main.contentViewController = parent
+        defer { main.close() }
+        controller.embed(in: parent)
+        if startInCompact { controller.showCompactWindow() }
+        let orientationRead = AsyncStream<Void>.makeStream()
+        withObservationTracking { _ = session.isBusy } onChange: {
+            orientationRead.continuation.yield(())
+            orientationRead.continuation.finish()
+        }
+        if session.isBusy {
+            var readings = orientationRead.stream.makeAsyncIterator()
+            #expect(await readings.next() != nil)
+        }
+        try #require(session.canStartRecording)
+        let recordingButton = try button("record")
+        #expect(NSApp.sendAction(try #require(recordingButton.action), to: recordingButton.target, from: recordingButton))
+        #expect(actions == ["record"])
+        let recording = try #require(session.recording)
+        let firstFrame = AsyncStream<Void>.makeStream()
+        withObservationTracking { _ = recording.hasStarted } onChange: {
+            firstFrame.continuation.yield(())
+            firstFrame.continuation.finish()
+        }
+        if !recording.hasStarted {
+            var frames = firstFrame.stream.makeAsyncIterator()
+            #expect(await frames.next() != nil)
+        }
+        try #require(recording.hasStarted)
+        let startedAt = try #require(recording.startDate)
+        updateControls()
+        let timer = try #require(descendants(controls).first { $0.accessibilityLabel() == "Recording Time" })
+        #expect(!timer.isHidden && recordingButton.toolTip == "Stop Recording")
+        if startInCompact { controller.embed(in: parent) } else { controller.showCompactWindow() }
+        controller.presentationViewController.view.layoutSubtreeIfNeeded()
+        #expect(controls.window === controller.presentationWindow && controls.superview === controller.presentationViewController.view)
+        #expect(controller.canvasControls === controls && session.recording === recording && recording.startDate == startedAt)
+        #expect(!timer.isHidden && recordingButton.contentTintColor == .systemRed)
+        #expect(display.disconnectCount == 0 && controller.session === session)
+        #expect(try button("capture").isEnabled)
+        for identifier in ["home", "rotate"] {
+            let button = try button(identifier)
+            #expect(NSApp.sendAction(try #require(button.action), to: button.target, from: button))
+        }
+        #expect(actions.suffix(2) == ["home", "rotate"])
+        let toolbar = try #require(controller.window?.toolbar)
+        #expect(toolbar.items.filter { ["home", "saveScreen", "rotateRight"].contains($0.itemIdentifier.rawValue) }
+            .allSatisfy { $0.isHidden })
+        #expect(NSApp.sendAction(try #require(recordingButton.action), to: recordingButton.target, from: recordingButton))
+        #expect(recording.isStopping)
+        try await recording.waitUntilFinished()
+        if startInCompact { controller.showCompactWindow() } else { controller.embed(in: parent) }
+        #expect(controller.canvasControls === controls && controls.window === controller.presentationWindow)
+        #expect(controller.session === session && display.disconnectCount == 0)
     }
 
     @Test func nativeCanvasMovesBetweenWindowsWithoutLosingItsViewport() async throws {
