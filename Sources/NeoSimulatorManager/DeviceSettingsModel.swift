@@ -1,6 +1,6 @@
 import Foundation
 import Observation
-import XcodeSimulatorHost
+@_spi(NeoSimulator) import XcodeSimulatorHost
 
 protocol DeviceSettingsSource: Sendable {
     func deviceSettings(for device: InventoryDevice) async throws -> SimulatorDeviceSettings
@@ -15,7 +15,20 @@ extension SimulatorHostController: DeviceSettingsSource {}
 final class DeviceSettingsModel {
     private(set) var device: InventoryDevice?
     private(set) var selectionCount = 0
-    private(set) var settings: SimulatorDeviceSettings?
+    private var confirmedSettings: SimulatorDeviceSettings?
+    private var pendingEdits: [Edit] = []
+    var settings: SimulatorDeviceSettings? {
+        guard var values = confirmedSettings else { return nil }
+        for edit in pendingEdits where edit.destination.id == device?.id {
+            values = values.applying(edit.setting)
+        }
+        return values
+    }
+    struct Edit {
+        fileprivate let id = UUID()
+        let setting: SimulatorDeviceSetting
+        let destination: InventoryDevice
+    }
     private(set) var issue: String?
     private(set) var isLoading = false
     @ObservationIgnored private let source: any DeviceSettingsSource
@@ -33,7 +46,7 @@ final class DeviceSettingsModel {
         if self.device != device {
             self.device = device
             generation += 1
-            settings = nil
+            confirmedSettings = nil
             issue = nil
             refreshRequested = true
             readTask?.cancel()
@@ -67,21 +80,32 @@ final class DeviceSettingsModel {
         while let readTask { await readTask.value }
     }
 
+    func accept(_ setting: SimulatorDeviceSetting, for destination: InventoryDevice) -> Edit {
+        let edit = Edit(setting: setting, destination: destination)
+        pendingEdits.append(edit)
+        return edit
+    }
+
     /// Called by the manager's operation queue, which owns write ordering and quit draining.
-    func apply(_ setting: SimulatorDeviceSetting, to destination: InventoryDevice) async throws {
+    func apply(_ edit: Edit) async throws {
+        let setting = edit.setting
+        let destination = edit.destination
         let wasSuspended = readingSuspended
         readingSuspended = true
-        defer { setReadingSuspended(wasSuspended) }
+        defer {
+            pendingEdits.removeAll { $0.id == edit.id }
+            setReadingSuspended(wasSuspended)
+        }
         let interruptedRead = readTask != nil
         readTask?.cancel()
         await finishReading()
         generation += 1
         let request = generation
         do {
-            if device == destination, let settings {
+            if device == destination, let settings = confirmedSettings {
                 let updated = try await source.setDeviceSetting(setting, for: destination, updating: settings)
                 guard generation == request, device == destination else { return }
-                self.settings = updated
+                self.confirmedSettings = updated
                 if interruptedRead { refreshRequested = true }
                 issue = nil
                 logIssues(updated)
@@ -121,7 +145,7 @@ final class DeviceSettingsModel {
                 do {
                     let settings = try await self.source.deviceSettings(for: device)
                     guard !self.stopped, !Task.isCancelled, self.generation == request else { continue }
-                    self.settings = settings
+                    self.confirmedSettings = settings
                     self.issue = nil
                     self.logIssues(settings)
                 } catch {
