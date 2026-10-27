@@ -24,7 +24,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     var onShowCompactWindow: ((DeviceInventoryID) -> Void)?
     var onSelectionChange: ((DeviceInventoryID?) -> Void)?
     var onScreenAction: ((String) -> Void)?
-    var onNewWatch: ((SimulatorHostDevice) -> Void)?
+    var onNewCompanion: ((SimulatorHostDevice) -> Void)?
     weak var activeScreenCommandTarget: NSResponder?
     private var selectionIdentifier: DeviceInventoryID?
     private var previewStack: NSStackView?
@@ -1218,24 +1218,24 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         }
     }
 
-    func pairingMenu(for phone: SimulatorHostDevice) -> NSMenu {
-        SimulatorPairingMenu.make(for: phone, model: model, target: self, action: #selector(performPairingMenuAction(_:)))
+    func pairingMenu(for device: SimulatorHostDevice) -> NSMenu {
+        SimulatorPairingMenu.make(for: device, model: model, target: self, action: #selector(performPairingMenuAction(_:)))
     }
 
     @objc func performPairingMenuAction(_ sender: NSMenuItem) {
         switch sender.representedObject as? SimulatorPairingMenu.Action {
         case .pair(let identifiers):
             let devices = model.inventory.filter { identifiers.contains($0.id) }
-            guard devices.count == 2, supports(.pair, devices: devices),
+            guard supports(.pair, devices: devices),
                   let phone = devices.compactMap({ if case .simulator(let device) = $0, device.productFamily == "iPhone" { device } else { nil } }).first,
-                  model.pairingWatches(for: phone).contains(where: { identifiers.contains($0.inventoryID) }),
+                  model.pairingCandidates(for: phone).contains(where: { identifiers.contains($0.inventoryID) }),
                   model.canManage(.pair, deviceIDs: identifiers) else { return }
             model.manage(.pair, devices: devices)
-        case .newWatch(let identifier):
+        case .newCompanion(let identifier):
             guard let device = model.inventory.first(where: { $0.id == identifier }),
-                  case .simulator(let phone) = device, phone.productFamily == "iPhone", device.supports(.pair),
+                  case .simulator(let simulator) = device, model.canAddPairing(for: simulator),
                   model.canManage(.pair, deviceIDs: [identifier]) else { return }
-            onNewWatch?(phone)
+            onNewCompanion?(simulator)
         case nil: break
         }
     }

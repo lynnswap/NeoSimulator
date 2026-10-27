@@ -39,7 +39,7 @@ unpaired watch offered by CoreDevice. **New Watch Simulator…** creates a compa
 watch in that iPhone's simulator set and pairs it with the existing phone.
 Creation does not boot the new devices. If creation or pairing fails after a
 device was created, the error names the devices kept. If pairing with an existing
-iPhone fails, the error includes the new watch's identifier. Install runtimes in Xcode.
+simulator fails, the error includes the new device's identifier. Install runtimes in Xcode.
 
 Neo supports iPhone, iPad, Apple Watch, Apple TV, and Apple Vision Pro. Menus show
 the controls supported by the active device. Device association with Xcode is automatic.
@@ -72,7 +72,11 @@ right side of the toolbar:
 
 In **Info → Info**, choose **Edit Visibility** to select the fields to show, then
 choose **Done**. NeoSimulator remembers these choices. The Info cards also show
-paired simulators and their pairing controls when applicable.
+paired simulators and their pairing controls when applicable. Use **Add** to pair
+an existing iPhone or an unpaired Apple Watch with a simulator offered by
+CoreDevice. On a watch, **New iPhone Simulator…** creates only a compatible iPhone
+in the watch's simulator set and pairs it with that watch. Add is disabled when
+the selected watch is already paired.
 
 Start a simulator before inspecting its apps or profiles. For physical devices
 and virtual machines, actions depend on the connected device's capabilities.

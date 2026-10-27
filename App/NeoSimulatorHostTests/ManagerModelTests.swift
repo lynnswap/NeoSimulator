@@ -20,12 +20,15 @@ struct ManagerModelTests {
         let watch = device("unpaired-watch")
         let source = ManagerModelSource(devices: [phone, watch, device("paired-watch", pairs: ["existing-pair"]),
             device("unknown-watch", capabilities: []), device("other-set-watch", set: "/custom"),
-            device("unavailable-watch", available: false), device("other-phone", family: "iPhone")].map(InventoryDevice.simulator))
+            device("unavailable-watch", available: false), device("other-phone", family: "iPhone", pairs: ["other-pair"]),
+            device("unknown-phone", family: "iPhone", capabilities: []),
+            device("other-set-phone", family: "iPhone", set: "/custom"),
+            device("unavailable-phone", family: "iPhone", available: false)].map(InventoryDevice.simulator))
         let manager = SimulatorManagerModel(source: source)
         await manager.refresh()
         let target = NSObject()
         let menu = SimulatorPairingMenu.make(for: phone, model: manager, target: target, action: #selector(NSApplication.terminate(_:)))
-        #expect(manager.pairingWatches(for: phone).map(\.identifier) == [watch.identifier])
+        #expect(manager.pairingCandidates(for: phone).map(\.identifier) == [watch.identifier])
         let actions = menu.items.filter { $0.action != nil }
         #expect(actions.map(\.title) == ["unpaired-watch", "New Watch Simulator…"])
         #expect(actions.allSatisfy { $0.isEnabled })
@@ -34,6 +37,28 @@ struct ManagerModelTests {
             return
         }
         #expect(identifiers == [phone.inventoryID, watch.inventoryID])
+        let watchMenu = SimulatorPairingMenu.make(for: watch, model: manager, target: target,
+                                                 action: #selector(NSApplication.terminate(_:)))
+        #expect(manager.canAddPairing(for: watch))
+        #expect(manager.pairingCandidates(for: watch).map(\.identifier) == ["other-phone", "phone"])
+        #expect(watchMenu.title == "Pair iPhone")
+        #expect(watchMenu.items.filter { $0.action != nil }.map(\.title) == ["other-phone", "phone", "New iPhone Simulator…"])
+        guard case .pair(let watchIdentifiers) = watchMenu.items.first(where: { $0.action != nil })?.representedObject as? SimulatorPairingMenu.Action else {
+            Issue.record("Expected a phone pairing action for the existing watch")
+            return
+        }
+        #expect(watchIdentifiers == [watch.inventoryID, device("other-phone", family: "iPhone").inventoryID])
+        guard case .newCompanion(let existingID) = watchMenu.items.last?.representedObject as? SimulatorPairingMenu.Action else {
+            Issue.record("Expected an iPhone creation action for the existing watch")
+            return
+        }
+        #expect(existingID == watch.inventoryID)
+        let pairedWatch = device("paired-watch", pairs: ["existing-pair"])
+        #expect(!manager.canAddPairing(for: pairedWatch))
+        #expect(manager.pairingCandidates(for: pairedWatch).isEmpty)
+        let pairedMenu = SimulatorPairingMenu.make(for: pairedWatch, model: manager, target: target,
+                                                  action: #selector(NSApplication.terminate(_:)))
+        #expect(pairedMenu.items.filter { $0.action != nil }.allSatisfy { !$0.isEnabled })
         var events = source.events.makeAsyncIterator()
         manager.manage(.pair, devices: manager.inventory.filter { identifiers.contains($0.id) })
         #expect(await events.next() == .manage(.pair, [phone.inventoryID, watch.inventoryID]))

@@ -116,11 +116,10 @@ struct DeviceInformationView: View {
                 }
                 Divider()
                 HStack(spacing: 4) {
-                    if device.productFamily == "iPhone" {
-                        PairingMenuButton(menu: pairingMenu(device),
-                                          isEnabled: !inspection.isManaging && !manager.isBusy)
-                            .frame(width: 34, height: 24)
-                    }
+                    PairingMenuButton(menu: pairingMenu(device),
+                                      isEnabled: manager.canAddPairing(for: device) && !inspection.isManaging &&
+                                          manager.canManage(.pair, deviceIDs: [device.inventoryID]))
+                        .frame(width: 34, height: 24)
                     Button {
                         if let targetWatch { unpair(targetWatch) }
                     } label: {
@@ -146,12 +145,14 @@ struct DeviceInformationView: View {
             button.controlSize = .small
             button.isEnabled = isEnabled
             button.setAccessibilityLabel("Add Paired Simulator")
+            button.toolTip = menu.title
             return button
         }
 
         func updateNSView(_ button: NSPopUpButton, context: Context) {
             button.menu = menu
             button.isEnabled = isEnabled
+            button.toolTip = menu.title
         }
     }
 }

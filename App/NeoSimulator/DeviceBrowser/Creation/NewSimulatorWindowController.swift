@@ -4,9 +4,10 @@ import AppKit
 /// Creation does not boot them. Partial failures retain created devices and name them in the alert.
 @MainActor
 final class NewSimulatorWindowController: NSWindowController, NSWindowDelegate {
-    struct ExistingPhone {
+    struct ExistingDevice {
         let identifier: String
         let name: String
+        let productFamily: String
         let deviceType: String
         let runtime: String
     }
@@ -34,31 +35,34 @@ final class NewSimulatorWindowController: NSWindowController, NSWindowDelegate {
     private let simulatorPage = NSGridView()
     private let watchPage = NSGridView()
     private let catalog: SimulatorCatalog
-    private let existingPhone: ExistingPhone?
+    private let existingDevice: ExistingDevice?
     private let create: Create
     private let pair: Pair
     private let onClose: () -> Void
     private var creation: Task<Void, Never>?
+    private var createsPhone: Bool { existingDevice?.productFamily == "Apple Watch" }
 
-    init(catalog: SimulatorCatalog, pairingWith existingPhone: ExistingPhone? = nil,
+    init(catalog: SimulatorCatalog, pairingWith existingDevice: ExistingDevice? = nil,
          create: @escaping Create, pair: @escaping Pair, onClose: @escaping () -> Void = {}) {
         self.catalog = catalog
-        self.existingPhone = existingPhone
+        self.existingDevice = existingDevice
         self.create = create
         self.pair = pair
         self.onClose = onClose
         let window = NSWindow(contentRect: NSRect(x: 196, y: 240, width: 618, height: 258),
                               styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
-        window.title = existingPhone == nil ? "New Simulator" : "New Watch Simulator"
+        window.title = existingDevice.map { $0.productFamily == "Apple Watch" ? "New iPhone Simulator" : "New Watch Simulator" }
+            ?? "New Simulator"
         window.isReleasedWhenClosed = false
         super.init(window: window)
         window.delegate = self
         window.contentView = makeContent()
         fillMenus()
-        fillWatchMenus()
-        if existingPhone != nil {
+        if !createsPhone { fillWatchMenus() }
+        if existingDevice != nil {
             previousButton.isHidden = true
-            showWatchPage(true)
+            pairedWatchButton.isHidden = true
+            showWatchPage(!createsPhone)
         }
     }
 
@@ -91,12 +95,20 @@ final class NewSimulatorWindowController: NSWindowController, NSWindowDelegate {
         }
         pairedWatchButton.target = self
         pairedWatchButton.action = #selector(pairedWatchChanged(_:))
-        layOut(simulatorPage, [
-            [label("Simulator Name:"), nameField],
-            [label("Device Type:"), deviceTypes],
-            [label("OS Version:"), runtimes],
-            [NSGridCell.emptyContentView, pairedWatchButton],
-        ])
+        if createsPhone {
+            layOut(simulatorPage, [
+                [label("Name:"), nameField],
+                [label("OS Version:"), runtimes],
+                [label("Model:"), deviceTypes],
+            ])
+        } else {
+            layOut(simulatorPage, [
+                [label("Simulator Name:"), nameField],
+                [label("Device Type:"), deviceTypes],
+                [label("OS Version:"), runtimes],
+                [NSGridCell.emptyContentView, pairedWatchButton],
+            ])
+        }
         layOut(watchPage, [
             [label("Paired Watch Name:"), watchNameField],
             [label("Device Type:"), watchDeviceTypes],
@@ -110,7 +122,7 @@ final class NewSimulatorWindowController: NSWindowController, NSWindowDelegate {
         previousButton.isEnabled = false
         forwardButton.target = self
         forwardButton.action = #selector(forward(_:))
-        let heading = NSTextField(labelWithString: existingPhone.map { "Create an Apple Watch for \($0.name):" }
+        let heading = NSTextField(labelWithString: existingDevice.map { "Create \(createsPhone ? "an iPhone" : "an Apple Watch") for \($0.name):" }
                                   ?? "Create a new simulator:")
         let content = NSView()
         for view in [heading, simulatorPage, watchPage, cancel, previousButton, forwardButton] {
@@ -135,19 +147,27 @@ final class NewSimulatorWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func fillMenus() {
+        let types = catalog.deviceTypes.filter { type in
+            !createsPhone || (type.productFamily == 1 && catalog.runtimes.contains {
+                phoneRuntime($0.identifier, supports: type.identifier)
+            })
+        }
         var family: Int?
-        for type in catalog.deviceTypes {
+        for type in types {
             if let family, family != type.productFamily { deviceTypes.menu?.addItem(.separator()) }
             family = type.productFamily
             deviceTypes.menu?.addItem(item(type.name, representing: type.identifier))
         }
-        guard !catalog.runtimes.isEmpty else {
+        let availableRuntimes = catalog.runtimes.filter { runtime in
+            !createsPhone || types.contains { phoneRuntime(runtime.identifier, supports: $0.identifier) }
+        }
+        guard !availableRuntimes.isEmpty else {
             addNoRuntimesItem(to: runtimes)
             for control in [runtimes, deviceTypes, pairedWatchButton] as [NSControl] { control.isEnabled = false }
             updateForwardButton()
             return
         }
-        for runtime in catalog.runtimes {
+        for runtime in availableRuntimes {
             runtimes.menu?.addItem(item(runtime.name, representing: runtime.identifier))
         }
         deviceTypes.selectItem(at: 0)
@@ -160,7 +180,7 @@ final class NewSimulatorWindowController: NSWindowController, NSWindowDelegate {
     /// at first, the runtimes that support any of them.
     private func fillWatchMenus() {
         let watchTypes = catalog.deviceTypes.filter { type in
-            type.productFamily == 4 && (existingPhone == nil || catalog.runtimes.contains {
+            type.productFamily == 4 && (existingDevice == nil || catalog.runtimes.contains {
                 watchRuntime($0.identifier, supports: type.identifier)
             })
         }
@@ -197,32 +217,38 @@ final class NewSimulatorWindowController: NSWindowController, NSWindowDelegate {
     private var watchType: String? { watchDeviceTypes.selectedItem?.representedObject as? String }
     private var watchRuntime: String? { watchRuntimes.selectedItem?.representedObject as? String }
 
+    private func phoneRuntime(_ runtime: String, supports type: String) -> Bool {
+        guard catalog.runtime(runtime, supports: type) else { return false }
+        guard let existingDevice, createsPhone else { return true }
+        return catalog.canPair(existingDevice.deviceType, existingDevice.runtime, type, runtime)
+    }
+
     private func watchRuntime(_ runtime: String, supports type: String) -> Bool {
         guard catalog.runtime(runtime, supports: type) else { return false }
-        guard let existingPhone else { return true }
-        return catalog.canPair(type, runtime, existingPhone.deviceType, existingPhone.runtime)
+        guard let existingDevice, !createsPhone else { return true }
+        return catalog.canPair(type, runtime, existingDevice.deviceType, existingDevice.runtime)
     }
 
     // An empty selection is incompatible so the next change restores a valid pair.
     @objc private func deviceTypeChanged(_ sender: Any?) {
-        if let deviceType, runtime.map({ catalog.runtime($0, supports: deviceType) }) != true {
-            select(in: runtimes) { catalog.runtime($0, supports: deviceType) }
+        if let deviceType, runtime.map({ phoneRuntime($0, supports: deviceType) }) != true {
+            select(in: runtimes) { phoneRuntime($0, supports: deviceType) }
         }
         simulatorSelectionDidChange()
     }
 
     @objc private func runtimeChanged(_ sender: Any?) {
-        if let runtime, deviceType.map({ catalog.runtime(runtime, supports: $0) }) != true {
-            select(in: deviceTypes) { catalog.runtime(runtime, supports: $0) }
+        if let runtime, deviceType.map({ phoneRuntime(runtime, supports: $0) }) != true {
+            select(in: deviceTypes) { phoneRuntime(runtime, supports: $0) }
         }
         simulatorSelectionDidChange()
     }
 
-    /// Pairing is available only for iPhone; an empty selection preserves the current state.
+    /// Only a new iPhone can add a watch through the second page; an empty selection preserves the current state.
     private func simulatorSelectionDidChange() {
         nameField.placeholderString = deviceTypes.selectedItem?.title
         if let family = deviceType.flatMap(catalog.deviceType)?.productFamily {
-            pairedWatchButton.isEnabled = family == 1
+            pairedWatchButton.isEnabled = existingDevice == nil && family == 1
             if !pairedWatchButton.isEnabled { pairedWatchButton.state = .off }
         }
         updateForwardButton()
@@ -256,25 +282,30 @@ final class NewSimulatorWindowController: NSWindowController, NSWindowDelegate {
 
     @objc private func pairedWatchChanged(_ sender: Any?) { updateForwardButton() }
 
-    private var pairsWatch: Bool { existingPhone != nil || (pairedWatchButton.isEnabled && pairedWatchButton.state == .on) }
+    private var pairsWatch: Bool {
+        (existingDevice != nil && !createsPhone) || (pairedWatchButton.isEnabled && pairedWatchButton.state == .on)
+    }
 
     /// Whether the four choices make a pair that CoreSimulator can create.
     private var canPair: Bool {
-        guard let deviceType = existingPhone?.deviceType ?? deviceType,
-              let runtime = existingPhone?.runtime ?? runtime, let watchType, let watchRuntime,
+        guard let deviceType = createsPhone ? deviceType : existingDevice?.deviceType ?? deviceType,
+              let runtime = createsPhone ? runtime : existingDevice?.runtime ?? runtime,
+              let watchType = createsPhone ? existingDevice?.deviceType : watchType,
+              let watchRuntime = createsPhone ? existingDevice?.runtime : watchRuntime,
               catalog.runtime(watchRuntime, supports: watchType) else { return false }
         return catalog.canPair(watchType, watchRuntime, deviceType, runtime)
     }
 
     private func updateForwardButton() {
         forwardButton.title = pairsWatch && !showsWatchPage ? "Next" : "Create"
-        forwardButton.isEnabled = !catalog.runtimes.isEmpty && creation == nil && (!showsWatchPage || canPair)
+        forwardButton.isEnabled = !catalog.runtimes.isEmpty && creation == nil &&
+            ((existingDevice == nil && !showsWatchPage) || canPair)
     }
 
     private func showWatchPage(_ shows: Bool) {
         simulatorPage.isHidden = shows
         watchPage.isHidden = !shows
-        previousButton.isEnabled = shows && existingPhone == nil
+        previousButton.isEnabled = shows && existingDevice == nil
         updateForwardButton()
     }
 
@@ -290,11 +321,17 @@ final class NewSimulatorWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func createSimulator() {
-        guard creation == nil, let deviceType = existingPhone?.deviceType ?? deviceType,
-              let runtime = existingPhone?.runtime ?? runtime, !pairsWatch || canPair else { return }
-        let name = Self.name(in: nameField)
+        guard creation == nil, (existingDevice == nil && !pairsWatch) || canPair else { return }
+        let newDevice: (name: String, deviceType: String, runtime: String)
+        if existingDevice != nil, !createsPhone {
+            guard let watchType, let watchRuntime else { return }
+            newDevice = (Self.name(in: watchNameField), watchType, watchRuntime)
+        } else {
+            guard let deviceType, let runtime else { return }
+            newDevice = (Self.name(in: nameField), deviceType, runtime)
+        }
         var watch: (name: String, deviceType: String, runtime: String)?
-        if pairsWatch {
+        if existingDevice == nil, pairsWatch {
             guard let watchType, let watchRuntime else { return }
             watch = (Self.name(in: watchNameField), watchType, watchRuntime)
         }
@@ -304,23 +341,24 @@ final class NewSimulatorWindowController: NSWindowController, NSWindowDelegate {
                 updateForwardButton()
             }
             do {
-                let phone: String
-                if let existingPhone { phone = existingPhone.identifier }
-                else { phone = try await create(name, deviceType, runtime) }
-                if let watch {
-                    let identifier: String
-                    do { identifier = try await create(watch.name, watch.deviceType, watch.runtime) } catch {
-                        if existingPhone != nil { throw error }
+                let identifier = try await create(newDevice.name, newDevice.deviceType, newDevice.runtime)
+                if let existingDevice {
+                    do {
+                        if createsPhone { try await pair(existingDevice.identifier, identifier) }
+                        else { try await pair(identifier, existingDevice.identifier) }
+                    } catch {
                         throw CreationFailure(
-                            "Created “\(name)”, but could not create its paired Apple Watch: \(error.localizedDescription)")
+                            "Created “\(newDevice.name)” (\(identifier)), but could not pair it with “\(existingDevice.name)”: \(error.localizedDescription)")
                     }
-                    do { try await pair(identifier, phone) } catch {
-                        if let existingPhone {
-                            throw CreationFailure(
-                                "Created “\(watch.name)” (\(identifier)), but could not pair it with “\(existingPhone.name)”: \(error.localizedDescription)")
-                        }
+                } else if let watch {
+                    let watchIdentifier: String
+                    do { watchIdentifier = try await create(watch.name, watch.deviceType, watch.runtime) } catch {
                         throw CreationFailure(
-                            "Created “\(name)” and “\(watch.name)”, but could not pair them: \(error.localizedDescription)")
+                            "Created “\(newDevice.name)”, but could not create its paired Apple Watch: \(error.localizedDescription)")
+                    }
+                    do { try await pair(watchIdentifier, identifier) } catch {
+                        throw CreationFailure(
+                            "Created “\(newDevice.name)” and “\(watch.name)”, but could not pair them: \(error.localizedDescription)")
                     }
                 }
                 close()

@@ -431,7 +431,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller.preferredArtworkXcodeURL = { [weak self] in self?.displayXcodeURL }
         controller.onShowCompactWindow = { [weak self] identifier in self?.showCompactScreen(identifier) }
         controller.onSelectionChange = { [weak self] identifier in self?.selectedDeviceChanged(identifier) }
-        controller.onNewWatch = { [weak self] phone in self?.showNewSimulator(pairingWith: phone) }
+        controller.onNewCompanion = { [weak self] device in self?.showNewSimulator(pairingWith: device) }
         controller.onScreenAction = { [weak self] action in
             guard let self, let identifier = self.mainWindow?.liveDeviceIdentifier else { return }
             self.performScreenAction(action, for: identifier)
@@ -803,9 +803,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         showNewSimulator(pairingWith: nil)
     }
 
-    private func showNewSimulator(pairingWith phone: SimulatorHostDevice?) {
+    private func showNewSimulator(pairingWith device: SimulatorHostDevice?) {
         guard !quitting else { return }
-        let creationID = phone?.inventoryID
+        let creationID = device?.inventoryID
         if let newSimulatorWindow = newSimulatorWindows[creationID] {
             newSimulatorWindow.showWindow(nil)
             newSimulatorWindow.window?.makeKeyAndOrderFront(nil)
@@ -818,21 +818,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             defer { self.preparingNewSimulators.remove(creationID) }
             do {
                 let context: SimulatorCreationContext
-                let existingPhone: NewSimulatorWindowController.ExistingPhone?
-                if let phone {
-                    guard let type = phone.deviceTypeIdentifier else {
-                        throw HostError.operation("The selected iPhone's simulator device type is unavailable.")
+                let existingDevice: NewSimulatorWindowController.ExistingDevice?
+                if let device {
+                    guard let type = device.deviceTypeIdentifier else {
+                        throw HostError.operation("The selected simulator's device type is unavailable.")
                     }
-                    context = try await self.model.creationCatalog(for: phone.inventoryID)
-                    existingPhone = .init(identifier: phone.identifier, name: phone.name,
-                                          deviceType: type, runtime: phone.runtimeIdentifier)
+                    context = try await self.model.creationCatalog(for: device.inventoryID)
+                    existingDevice = .init(identifier: device.identifier, name: device.name, productFamily: device.productFamily,
+                                           deviceType: type, runtime: device.runtimeIdentifier)
                 } else {
                     context = try await self.model.creationCatalog()
-                    existingPhone = nil
+                    existingDevice = nil
                 }
                 let snapshot = try await SimulatorCatalog.Snapshot.decode(context.data)
                 guard !self.quitting else { return }
-                let form = NewSimulatorWindowController(catalog: snapshot.catalog(), pairingWith: existingPhone, create: { [model = self.model] name, type, runtime in
+                let form = NewSimulatorWindowController(catalog: snapshot.catalog(), pairingWith: existingDevice, create: { [model = self.model] name, type, runtime in
                     try await model.createSimulator(named: name, deviceType: type, runtime: runtime, context: context)
                 }, pair: { [model = self.model] watch, phone in
                     try await model.pairSimulators(watch: watch, phone: phone, context: context)
