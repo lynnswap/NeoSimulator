@@ -19,7 +19,7 @@ public final class NativeDeviceRotationControl {
         host.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
             host.widthAnchor.constraint(equalToConstant: 32),
-            host.heightAnchor.constraint(equalToConstant: 32),
+            host.heightAnchor.constraint(equalToConstant: 28),
         ])
         return host
     }()
@@ -118,9 +118,9 @@ public final class NativeDeviceRotationControl {
                 content
                     .labelStyle(.iconOnly)
                     .buttonStyle(.plain)
-                    .font(.system(size: 17))
+                    .font(.system(size: 15))
                     .disabled(!model.isEnabled)
-                    .frame(width: 32, height: 32)
+                    .frame(width: 32, height: 28)
             }
         }
     }
