@@ -1746,6 +1746,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         window?.title = selectedDevice?.name ?? "NeoSimulator"
         window?.subtitle = selectedDevice?.operatingSystem ?? ""
         let identifier = selectedDevice?.id
+        moreItem?.isHidden = selectedDevice == nil
         if identifier != selectionIdentifier {
             selectionIdentifier = identifier
             onSelectionChange?(identifier)
@@ -1831,7 +1832,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         activeScreenCommandTarget = nil
         liveScreenContainer.view.isHidden = true
         previewStack?.isHidden = false
-        for item in window?.toolbar?.items ?? [] where item.itemIdentifier == resizeAppIdentifier || item.itemIdentifier == captureKeyboardIdentifier || item.itemIdentifier == compactIdentifier || item.itemIdentifier == canvasZoomIdentifier || item.itemIdentifier == moreIdentifier {
+        for item in window?.toolbar?.items ?? [] where item.itemIdentifier == resizeAppIdentifier || item.itemIdentifier == captureKeyboardIdentifier || item.itemIdentifier == compactIdentifier || item.itemIdentifier == canvasZoomIdentifier {
             item.isHidden = true
         }
         screenActionBar.isHidden = true
@@ -2286,7 +2287,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             item.menu = NSMenu(title: "Device Actions")
             item.menu.autoenablesItems = false
             item.menu.delegate = self
-            item.isHidden = liveDeviceIdentifier == nil
+            item.isHidden = selectedDevices.count != 1
             moreItem = item
             return item
         }
@@ -2409,47 +2410,69 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     }
 
     private func updateCanvasMenu(_ menu: NSMenu) {
-        let device = model.inventory.first { $0.id == liveDeviceIdentifier }
-        populateDeviceMenu(menu, devices: device.map { [$0] } ?? [], includesViewScreen: false)
-        guard let device else { return }
-        menu.insertItem(.sectionHeader(title: device.name), at: 0)
-        if let controller = activeScreenCommandTarget as? DeviceWindowController {
-            let command = DeviceCommand.command(.externalDisplayCarPlay)
-            if command.isSupported(controller.session.capabilities) {
-                let item = NSMenuItem(title: "CarPlay", action: #selector(showCanvasCarPlay(_:)), keyEquivalent: "")
-                item.target = self
-                item.representedObject = device.id
-                item.isEnabled = command.validate(item, for: controller)
-                menu.addItem(.separator())
-                menu.addItem(item)
-            }
+        menu.removeAllItems()
+        guard selectedDevices.count == 1, let device = selectedDevices.first else { return }
+        // NSMenuToolbarItem's pull-down cell hides the first item as its button title.
+        defer { menu.insertItem(NSMenuItem(title: "", action: nil, keyEquivalent: ""), at: 0) }
+        if case .remote = device {
+            populateDeviceMenu(menu, devices: [device], includesViewScreen: false)
+            return
         }
-        guard case .simulator(let phone) = device, phone.productFamily == "iPhone" else { return }
-        let watches = model.inventory.filter { candidate in
-            guard case .simulator(let watch) = candidate, watch.productFamily == "Apple Watch" else { return false }
-            return supports(.pair, devices: [device, candidate])
-        }.sorted(by: precedes)
-        let pairing = NSMenuItem(title: "Pair Apple Watch", action: nil, keyEquivalent: "")
-        let submenu = NSMenu(title: pairing.title)
-        submenu.autoenablesItems = false
-        for watch in watches {
-            let identifiers = Set([device.id, watch.id])
-            let item = NSMenuItem(title: "\(watch.name) (\(watch.operatingSystem ?? "Apple Watch"))",
-                                 action: #selector(performManagement(_:)), keyEquivalent: "")
+        func add(_ title: String, symbol: String, action: DeviceManagementAction, alternate: Bool = false) {
+            guard device.supports(action) else { return }
+            let item = NSMenuItem(title: title, action: #selector(performManagement(_:)), keyEquivalent: "")
             item.target = self
-            item.representedObject = ManagementRequest(action: .pair, identifiers: identifiers)
-            item.isEnabled = !model.isBusy && identifiers.isDisjoint(with: model.managingDeviceIDs)
-            submenu.addItem(item)
+            item.image = NSImage.deviceControlSymbol(named: symbol, accessibilityDescription: title)
+            item.representedObject = ManagementRequest(action: action, identifiers: [device.id])
+            item.isEnabled = model.canManage(action, deviceIDs: [device.id])
+            item.keyEquivalentModifierMask = []
+            item.isAlternate = alternate
+            if alternate { item.keyEquivalentModifierMask = .option }
+            menu.addItem(item)
         }
-        pairing.submenu = submenu
-        pairing.isEnabled = !watches.isEmpty && !model.isBusy && !model.managingDeviceIDs.contains(device.id)
-        menu.addItem(pairing)
-    }
-
-    @objc private func showCanvasCarPlay(_ sender: NSMenuItem) {
-        guard let identifier = sender.representedObject as? DeviceInventoryID, identifier == liveDeviceIdentifier,
-              let controller = activeScreenCommandTarget as? DeviceWindowController else { return }
-        controller.perform(.externalDisplayCarPlay)
+        func separate() { if !menu.items.isEmpty { menu.addItem(.separator()) } }
+        add("Start", symbol: "play", action: .start)
+        add("Shut Down", symbol: "power", action: .shutdown)
+        add("Force Shut Down", symbol: "power", action: .forceShutdown, alternate: device.supports(.shutdown))
+        if device.supports(.restart) {
+            separate()
+            add("Restart", symbol: "restart", action: .restart)
+        }
+        if device.supports(.rename(device.name)) {
+            separate()
+            add("Rename…", symbol: "pencil", action: .rename(device.name))
+        }
+        if device.supports(.erase) {
+            separate()
+            add("Reset Content and Settings…", symbol: "eraser", action: .erase)
+        }
+        if case .simulator(let phone) = device, phone.productFamily == "iPhone", device.supports(.pair) {
+            separate()
+            let pairing = NSMenuItem(title: "Pair Apple Watch", action: nil, keyEquivalent: "")
+            pairing.image = NSImage.deviceControlSymbol(named: "iphone.and.applewatch", accessibilityDescription: pairing.title)
+            let watches = model.inventory.filter { candidate in
+                guard case .simulator(let watch) = candidate, watch.productFamily == "Apple Watch" else { return false }
+                return supports(.pair, devices: [device, candidate])
+            }.sorted(by: precedes)
+            let submenu = NSMenu(title: pairing.title)
+            submenu.autoenablesItems = false
+            submenu.addItem(.sectionHeader(title: "Simulators"))
+            for watch in watches {
+                let identifiers: Set<DeviceInventoryID> = [device.id, watch.id]
+                let item = NSMenuItem(title: watch.name, action: #selector(performManagement(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = ManagementRequest(action: .pair, identifiers: identifiers)
+                item.isEnabled = model.canManage(.pair, deviceIDs: identifiers)
+                submenu.addItem(item)
+            }
+            pairing.submenu = submenu
+            pairing.isEnabled = !watches.isEmpty && model.canManage(.pair, deviceIDs: [device.id])
+            menu.addItem(pairing)
+        }
+        if device.supports(.remove) {
+            separate()
+            add("Remove…", symbol: "trash", action: .remove)
+        }
     }
 
     private func supports(_ action: DeviceManagementAction, devices: [InventoryDevice]) -> Bool {
