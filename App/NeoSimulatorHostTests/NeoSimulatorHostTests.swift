@@ -366,6 +366,9 @@ struct InputFocusTests {
         let transport = TestAppResizeTransport()
         let controller = try makeController(primary, features: [DeviceCapabilities.keyboard], simctl: simctl, appResizeTransport: { transport })
         defer { controller.invalidate() }
+        let controls = DeviceCanvasControls()
+        controller.canvasControls = controls
+        controls.update(supports: { _ in true }, isEnabled: { _ in true }, recordingTitle: "Record Screen")
         let session = controller.session
         controller.showAndActivate()
         try await wait { session.canResizeApp }
@@ -381,6 +384,13 @@ struct InputFocusTests {
         #expect(primary.requestedDisplayUniqueIDs == [transport.lease.displayUniqueID])
         #expect(primary.events.map(\.state) == [.down, .up])
         #expect(app.view.isDescendant(of: controller.presentationViewController.view))
+        controller.presentationViewController.view.layoutSubtreeIfNeeded()
+        func buttons(_ view: NSView) -> [NSButton] {
+            view.subviews.flatMap { ($0 as? NSButton).map { [$0] } ?? buttons($0) }
+        }
+        let home = try #require(buttons(controls).first { $0.identifier?.rawValue == "home" })
+        let center = home.convert(NSPoint(x: home.bounds.midX, y: home.bounds.midY), to: nil)
+        #expect(controller.presentationWindow?.contentView?.superview?.hitTest(center) === home)
         controller.focusInput()
         #expect(controller.presentationWindow?.firstResponder === app.inputView)
         let screenshot = try await session.screenshot(mask: .ignored)
@@ -672,6 +682,9 @@ struct InputFocusTests {
             presentCompactWindow: { _ in compactPresentations += 1 }, onClose: { _, _ in closes += 1 },
             onShutDown: { _ in shutdownRequests += 1 })
         defer { controller.invalidate() }
+        let controls = DeviceCanvasControls()
+        controls.update(supports: { _ in true }, isEnabled: { _ in true }, recordingTitle: "Record Screen")
+        controller.canvasControls = controls
         let session = controller.session
         let parent = NSViewController()
         parent.view = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 600))
@@ -747,6 +760,8 @@ struct InputFocusTests {
         #expect(controller.isEmbedded && controller.presentationViewController.parent === parent)
         #expect(controller.session === replacementSession && compactPresentations == 2)
         #expect(replacement.disconnectCount == 0 && display.disconnectCount == 1 && closes == 0)
+        #expect(controller.canvasControls === controls && controls.window === window)
+        #expect(controls.isDescendant(of: controller.presentationViewController.view))
         #expect(window.firstResponder === replacement.inputView && replacement.keyboard.last == true)
         let sheet = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 100),
                              styleMask: .titled, backing: .buffered, defer: false)
@@ -778,6 +793,135 @@ struct InputFocusTests {
         #expect(saved.center == movedCenter)
     }
 
+    @Test(arguments: [false, true])
+    func compactCanvasControlsKeepTheRecordingAndDeviceActions(startInCompact: Bool) async throws {
+        _ = NSApplication.shared
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let devicectl = directory.appendingPathComponent("devicectl")
+        try """
+            #!/bin/sh
+            printf '{"result":{"deviceOrientation":"portrait","deviceOrientationNonFlat":"portrait"}}'
+            """.write(to: devicectl, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: devicectl.path)
+        let display = TestDisplay()
+        display.naturalSize = NSSize(width: 160, height: 320)
+        display.bezel = NSSize(width: 20, height: 20)
+        display.bezelPadding = NSSize(width: 9, height: 0)
+        let controller = try makeController(display, devicectl: devicectl,
+            recordingProcess: { _, _ in Self.recorder(then: "while :; do sleep 0.05; done") },
+            presentCompactWindow: { _ in })
+        defer { controller.invalidate() }
+        let controls = DeviceCanvasControls()
+        controller.canvasControls = controls
+        let session = controller.session
+        var actions: [String] = []
+        controls.onAction = { action in
+            actions.append(action)
+            if action == "record" { controller.perform(session.recording == nil ? .recordScreen : .stopRecording) }
+        }
+        func updateControls() {
+            controls.update(supports: { ["home", "capture", "record", "rotate"].contains($0) },
+                            isEnabled: { _ in session.canPerformCommands },
+                            recordingTitle: session.recording == nil ? "Record Screen" : "Stop Recording",
+                            recordingStartDate: session.recording?.startDate)
+        }
+        func descendants(_ view: NSView) -> [NSView] { view.subviews.flatMap { [$0] + descendants($0) } }
+        func button(_ identifier: String) throws -> NSButton {
+            try #require(descendants(controls).compactMap { $0 as? NSButton }.first { $0.identifier?.rawValue == identifier })
+        }
+        func checkControls() throws {
+            let content = controller.presentationViewController.view
+            content.layoutSubtreeIfNeeded()
+            let window = try #require(controller.presentationWindow)
+            #expect(display.view.frame.size == display.size(for: display.renderScale))
+            if !controller.isEmbedded { #expect(display.view.frame.minY == 0) }
+            for identifier in ["home", "capture", "record", "rotate"] {
+                let button = try button(identifier)
+                #expect(controls.bounds.contains(button.convert(button.bounds, to: controls)))
+                #expect(content.bounds.contains(button.convert(button.bounds, to: content)))
+                let center = button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), to: nil)
+                #expect(window.contentView?.superview?.hitTest(center) === button)
+            }
+        }
+        func shrinkCompactWindow() throws {
+            controller.setScale(.pointAccurate)
+            let window = try #require(controller.window)
+            let before = window.convertToScreen(display.view.convert(display.view.bounds, to: nil))
+            try drag(window, from: try point(of: .lowerRight, in: display),
+                     by: NSSize(width: -1000, height: 1000)) {
+                let after = window.convertToScreen(display.view.convert(display.view.bounds, to: nil))
+                #expect(abs(after.minX - before.minX) < 0.001 && abs(after.maxY - before.maxY) < 0.001)
+            }
+            try checkControls()
+        }
+        updateControls()
+        let parent = NSViewController()
+        parent.view = NSView(frame: NSRect(x: 0, y: 0, width: 500, height: 700))
+        let main = KeyPresentationWindow(contentRect: parent.view.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        main.isReleasedWhenClosed = false
+        main.contentViewController = parent
+        defer { main.close() }
+        controller.embed(in: parent)
+        if startInCompact {
+            controller.showCompactWindow()
+            controller.setScale(.pointAccurate)
+        }
+        let orientationRead = AsyncStream<Void>.makeStream()
+        withObservationTracking { _ = session.isBusy } onChange: {
+            orientationRead.continuation.yield(())
+            orientationRead.continuation.finish()
+        }
+        if session.isBusy {
+            var readings = orientationRead.stream.makeAsyncIterator()
+            #expect(await readings.next() != nil)
+        }
+        try #require(session.canStartRecording)
+        let recordingButton = try button("record")
+        #expect(NSApp.sendAction(try #require(recordingButton.action), to: recordingButton.target, from: recordingButton))
+        #expect(actions == ["record"])
+        let recording = try #require(session.recording)
+        let firstFrame = AsyncStream<Void>.makeStream()
+        withObservationTracking { _ = recording.hasStarted } onChange: {
+            firstFrame.continuation.yield(())
+            firstFrame.continuation.finish()
+        }
+        if !recording.hasStarted {
+            var frames = firstFrame.stream.makeAsyncIterator()
+            #expect(await frames.next() != nil)
+        }
+        try #require(recording.hasStarted)
+        let startedAt = try #require(recording.startDate)
+        updateControls()
+        let timer = try #require(descendants(controls).first { $0.accessibilityLabel() == "Recording Time" })
+        #expect(!timer.isHidden && recordingButton.toolTip == "Stop Recording")
+        try checkControls()
+        if startInCompact { try shrinkCompactWindow() }
+        if startInCompact { controller.embed(in: parent) } else { controller.showCompactWindow() }
+        if !startInCompact { try shrinkCompactWindow() }
+        controller.presentationViewController.view.layoutSubtreeIfNeeded()
+        #expect(controls.window === controller.presentationWindow && controls.superview === controller.presentationViewController.view)
+        #expect(controller.canvasControls === controls && session.recording === recording && recording.startDate == startedAt)
+        #expect(!timer.isHidden && recordingButton.contentTintColor == .systemRed)
+        #expect(display.disconnectCount == 0 && controller.session === session)
+        #expect(try button("capture").isEnabled)
+        for identifier in ["home", "rotate"] {
+            let button = try button(identifier)
+            #expect(NSApp.sendAction(try #require(button.action), to: button.target, from: button))
+        }
+        #expect(actions.suffix(2) == ["home", "rotate"])
+        let toolbar = try #require(controller.window?.toolbar)
+        #expect(toolbar.items.filter { ["home", "saveScreen", "rotateRight"].contains($0.itemIdentifier.rawValue) }
+            .allSatisfy { $0.isHidden })
+        #expect(NSApp.sendAction(try #require(recordingButton.action), to: recordingButton.target, from: recordingButton))
+        #expect(recording.isStopping)
+        try await recording.waitUntilFinished()
+        if startInCompact { controller.showCompactWindow() } else { controller.embed(in: parent) }
+        #expect(controller.canvasControls === controls && controls.window === controller.presentationWindow)
+        #expect(controller.session === session && display.disconnectCount == 0)
+    }
+
     @Test func nativeCanvasMovesBetweenWindowsWithoutLosingItsViewport() async throws {
         _ = NSApplication.shared
         let display = TestDisplay()
@@ -785,6 +929,20 @@ struct InputFocusTests {
         display.naturalSize = NSSize(width: 20, height: 20)
         let controller = try makeController(display)
         defer { controller.invalidate() }
+        let controls = DeviceCanvasControls()
+        controller.canvasControls = controls
+        controls.update(supports: { _ in true }, isEnabled: { _ in true }, recordingTitle: "Record Screen")
+        func checkControls() throws {
+            controller.presentationViewController.view.layoutSubtreeIfNeeded()
+            func buttons(_ view: NSView) -> [NSButton] {
+                view.subviews.flatMap { ($0 as? NSButton).map { [$0] } ?? buttons($0) }
+            }
+            let window = try #require(controller.presentationWindow)
+            for button in buttons(controls) where !button.isHiddenOrHasHiddenAncestor {
+                let center = button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), to: nil)
+                #expect(window.contentView?.superview?.hitTest(center) === button)
+            }
+        }
         let initialFrame = try #require(controller.window?.frame)
         #expect(initialFrame.width >= 500 && initialFrame.height >= 700)
         display.naturalSize = NSSize(width: 900, height: 900)
@@ -810,6 +968,7 @@ struct InputFocusTests {
         #expect(before != after)
         #expect(after.y == before.y - (scroll.contentView.bounds.minY - origin.y))
         controller.showCompactWindow()
+        try checkControls()
         let compact = try #require(controller.window)
         #expect(display.view.window === compact && compact.isOpaque)
         #expect(compact.backgroundColor == .windowBackgroundColor)
@@ -838,6 +997,7 @@ struct InputFocusTests {
         replacement.onPropertiesChange?()
         #expect(compact.frame == beforeRestart)
         #expect(replacement.view.window === compact && display.disconnectCount == 1)
+        try checkControls()
     }
 
     @Test func embeddedZoomKeepsPanningAndScaleSeparateFromCompactGeometry() throws {
@@ -3566,6 +3726,18 @@ struct InputFocusTests {
         #expect(controller.canSetScale(.pointAccurate))
         display.naturalSize = NSSize(width: 200, height: visible.height - header + 1)
         #expect(!controller.canSetScale(.pointAccurate))
+
+        display.naturalSize = NSSize(width: 200, height: 400)
+        let controls = DeviceCanvasControls()
+        controller.canvasControls = controls
+        controls.update(supports: { _ in true }, isEnabled: { _ in true }, recordingTitle: "Record Screen")
+        controller.perform(.pointAccurate)
+        let occupiedHeight = window.frame.height - display.view.frame.height
+        #expect(occupiedHeight == header)
+        display.naturalSize = NSSize(width: 200, height: visible.height - occupiedHeight)
+        #expect(controller.canSetScale(.pointAccurate))
+        display.naturalSize.height += 1
+        #expect(!controller.canSetScale(.pointAccurate))
     }
 
     @Test func aManualResizeTakesTheStyleForItsWidthAndKeepsTheHeightBelowTheTitleBar() throws {
@@ -3766,6 +3938,60 @@ struct InputFocusTests {
             }
             #expect(!display.isResizing)
             #expect(display.renderScale == 1.25)
+        }
+
+        let controls = DeviceCanvasControls()
+        controller.canvasControls = controls
+        controls.update(supports: { _ in true }, isEnabled: { _ in true }, recordingTitle: "Record Screen")
+        controller.perform(.pointAccurate)
+        window.setFrameOrigin(NSPoint(x: (visible.midX - window.frame.width / 2).rounded(),
+                                      y: (visible.midY - window.frame.height / 2).rounded()))
+        func displayRect() -> NSRect {
+            window.convertToScreen(display.view.convert(display.view.bounds, to: nil))
+        }
+        let start = displayRect()
+        try #require(window.frame.width > start.width)
+        try drag(window, from: try point(of: .lowerLeft, in: display), by: .zero) {
+            #expect(display.renderScale == 1 && displayRect() == start)
+        }
+        try drag(window, from: try point(of: .lowerLeft, in: display), by: NSSize(width: -30, height: -55)) {
+            let frame = displayRect()
+            #expect(display.renderScale == 1.25)
+            #expect(abs(frame.maxX - start.maxX) < 0.001 && abs(frame.maxY - start.maxY) < 0.001)
+        }
+        controller.perform(.pointAccurate)
+        window.setFrameOrigin(NSPoint(x: visible.midX - window.frame.width / 2, y: visible.minY + 40))
+        let beforeEdgeDrag = displayRect()
+        try drag(window, from: try point(of: .lowerLeft, in: display), by: NSSize(width: -10_000, height: -10_000)) {
+            let frame = displayRect()
+            let pixel = 1 / window.backingScaleFactor
+            #expect(abs(frame.maxX - beforeEdgeDrag.maxX) < pixel && abs(frame.maxY - beforeEdgeDrag.maxY) < pixel,
+                    "display \(frame), before \(beforeEdgeDrag), window \(window.frame), backing \(window.backingScaleFactor)")
+            #expect(abs(frame.minY - visible.minY) < 0.001)
+            let bar = window.convertToScreen(controls.convert(controls.bounds, to: nil))
+            #expect(visible.contains(bar))
+            let point = controls.convert(NSPoint(x: controls.bounds.midX, y: controls.bounds.midY), to: nil)
+            #expect(window.contentView?.superview?.hitTest(point)?.isDescendant(of: controls) == true)
+        }
+        display.bezelPadding = NSSize(width: 9, height: 9)
+        controller.setDeviceBezelVisible(true)
+        controller.perform(.pointAccurate)
+        window.setFrameOrigin(NSPoint(x: visible.midX - window.frame.width / 2, y: visible.minY))
+        try drag(window, from: try point(of: .upperLeft, in: display), by: NSSize(width: -10_000, height: 10_000)) {
+            try #require(display.isResizing && display.renderScale > 1)
+            let close = try #require(window.standardWindowButton(.closeButton))
+            let center = window.convertPoint(toScreen: close.convert(NSPoint(x: close.bounds.midX, y: close.bounds.midY), to: nil))
+            #expect(visible.contains(center))
+            let hit = window.contentView?.superview?.hitTest(window.convertPoint(fromScreen: center))
+            #expect(hit === close || hit?.isDescendant(of: close) == true)
+            func recordingButton(in view: NSView) -> NSButton? {
+                if let button = view as? NSButton, button.identifier?.rawValue == "record" { return button }
+                return view.subviews.lazy.compactMap { recordingButton(in: $0) }.first
+            }
+            let record = try #require(recordingButton(in: controls))
+            let recordCenter = window.convertPoint(toScreen: record.convert(NSPoint(x: record.bounds.midX, y: record.bounds.midY), to: nil))
+            #expect(visible.contains(recordCenter))
+            #expect(window.contentView?.superview?.hitTest(window.convertPoint(fromScreen: recordCenter)) === record)
         }
     }
 

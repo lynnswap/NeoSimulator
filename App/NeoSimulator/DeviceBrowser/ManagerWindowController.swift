@@ -34,20 +34,6 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     private let canvasZoomIdentifier = NSToolbarItem.Identifier("CanvasZoom")
     private let moreIdentifier = NSToolbarItem.Identifier("CanvasMoreActions")
     private var moreItem: NSMenuToolbarItem?
-    private let screenActionIdentifiers = ["home", "capture", "record", "rotate"]
-    private let screenActionBar = NSStackView()
-    private let primaryScreenActions = NSGlassEffectView()
-    private let screenRecordingTimer = NSHostingView(rootView: AnyView(EmptyView()))
-    private let profileScreenActions = NSGlassEffectView()
-    private var screenActionButtons: [String: NSButton] = [:]
-    private var postureButtons: [DevicePosture: NSButton] = [:]
-    private let nativeRotationContainer = NSStackView()
-    private let nativePostureContainer = NSStackView()
-    private let rotationDivider = NSBox()
-    private var screenActionArtworkXcodeURL: URL?
-    private var screenActionArtworkTask: Task<Void, Never>?
-    private var screenRotationImages: [DeviceCommand.ID: NSImage] = [:]
-    private var screenActionModifierMonitor: Any?
     private let deviceFooter = NSStackView()
     private let activityStack = NSStackView()
     private var canvasBottomToPane: NSLayoutConstraint?
@@ -165,10 +151,6 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         super.init(window: window)
         buildSidebar()
         buildDevicePane()
-        screenActionModifierMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
-            self?.updateRotationButton(modifierFlags: event.modifierFlags)
-            return event
-        }
         buildInspector()
         splitController.view.heightAnchor.constraint(greaterThanOrEqualToConstant: 480).isActive = true
         window.contentViewController = splitController
@@ -189,10 +171,6 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         observeInventory()
         observeActivity()
         observeManagement()
-    }
-
-    isolated deinit {
-        if let screenActionModifierMonitor { NSEvent.removeMonitor(screenActionModifierMonitor) }
     }
 
     required init?(coder: NSCoder) { nil }
@@ -265,7 +243,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     }
 
     private func updateDeviceFooter() {
-        deviceFooter.isHidden = activityStack.isHidden && screenActionBar.isHidden
+        deviceFooter.isHidden = activityStack.isHidden
         let showsFooter = !deviceFooter.isHidden
         if canvasBottomToFooter?.isActive != showsFooter {
             (showsFooter ? canvasBottomToPane : canvasBottomToFooter)?.isActive = false
@@ -464,13 +442,11 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         activityStack.alignment = .centerY
         activityStack.spacing = 7
         activityStack.isHidden = true
-        buildScreenActionBar()
         deviceFooter.orientation = .vertical
         deviceFooter.alignment = .centerX
         deviceFooter.spacing = 8
         deviceFooter.translatesAutoresizingMaskIntoConstraints = false
         deviceFooter.addArrangedSubview(activityStack)
-        deviceFooter.addArrangedSubview(screenActionBar)
         deviceFooter.isHidden = true
         view.addSubview(deviceFooter)
         NSLayoutConstraint.activate([
@@ -492,92 +468,6 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         content.minimumThickness = 280
         content.holdingPriority = .defaultLow
         splitController.addSplitViewItem(content)
-    }
-
-    private func buildScreenActionBar() {
-        screenActionBar.orientation = .horizontal
-        screenActionBar.alignment = .centerY
-        screenActionBar.distribution = .fill
-        screenActionBar.spacing = 8
-        screenActionBar.isHidden = true
-        screenActionBar.setAccessibilityLabel("Device Actions")
-        for (identifiers, glass) in [(["home", "capture", "record"], primaryScreenActions),
-                                      (["rotate"], profileScreenActions)] {
-            let controls = NSStackView()
-            controls.orientation = .horizontal
-            controls.alignment = .centerY
-            controls.distribution = .fill
-            controls.spacing = 2
-            controls.edgeInsets = NSEdgeInsets(top: 4, left: 4, bottom: 4, right: 4)
-            for identifier in identifiers {
-                if identifier == "record" {
-                    screenRecordingTimer.isHidden = true
-                    controls.addArrangedSubview(screenRecordingTimer)
-                }
-                let (title, symbol): (String, String?) = switch identifier {
-                case "home": ("Home", "app.grid.3x3")
-                case "capture": ("Save Screenshot…", "camera.viewfinder")
-                case "record": ("Record Screen", "record.circle")
-                default: ("Rotate", nil)
-                }
-                let button = NSButton(title: title, target: self, action: #selector(performScreenAction(_:)))
-                button.image = symbol.flatMap { NSImage.deviceControlSymbol(named: $0, accessibilityDescription: title) }
-                button.imagePosition = button.image == nil ? .noImage : .imageOnly
-                button.identifier = NSUserInterfaceItemIdentifier(identifier)
-                button.bezelStyle = .accessoryBarAction
-                button.symbolConfiguration = .init(pointSize: 15, weight: .regular, scale: .medium)
-                button.isBordered = false
-                button.imageScaling = .scaleProportionallyDown
-                button.contentTintColor = .labelColor
-                button.toolTip = title
-                button.setAccessibilityLabel(title)
-                button.translatesAutoresizingMaskIntoConstraints = false
-                NSLayoutConstraint.activate([
-                    button.widthAnchor.constraint(equalToConstant: 32),
-                    button.heightAnchor.constraint(equalToConstant: 28),
-                ])
-                controls.addArrangedSubview(button)
-                screenActionButtons[identifier] = button
-            }
-            if glass === profileScreenActions {
-                controls.insertArrangedSubview(nativeRotationContainer, at: 0)
-                nativeRotationContainer.isHidden = true
-                rotationDivider.boxType = .separator
-                rotationDivider.translatesAutoresizingMaskIntoConstraints = false
-                NSLayoutConstraint.activate([
-                    rotationDivider.widthAnchor.constraint(equalToConstant: 1),
-                    rotationDivider.heightAnchor.constraint(equalToConstant: 20),
-                ])
-                controls.addArrangedSubview(rotationDivider)
-                rotationDivider.isHidden = true
-                controls.addArrangedSubview(nativePostureContainer)
-                nativePostureContainer.isHidden = true
-                for posture in DevicePosture.allCases {
-                    let button = NSButton(title: posture.title, target: self, action: #selector(performScreenAction(_:)))
-                    button.imagePosition = .noImage
-                    button.identifier = NSUserInterfaceItemIdentifier("posture." + posture.rawValue)
-                    button.setButtonType(.pushOnPushOff)
-                    button.bezelStyle = .accessoryBarAction
-                    button.symbolConfiguration = .init(pointSize: 15, weight: .regular, scale: .medium)
-                    button.isBordered = false
-                    button.isHidden = true
-                    button.toolTip = posture.title
-                    button.setAccessibilityLabel(posture.title)
-                    button.translatesAutoresizingMaskIntoConstraints = false
-                    NSLayoutConstraint.activate([
-                        button.widthAnchor.constraint(greaterThanOrEqualToConstant: 32),
-                        button.heightAnchor.constraint(equalToConstant: 28),
-                    ])
-                    controls.addArrangedSubview(button)
-                    postureButtons[posture] = button
-                }
-            }
-            glass.style = .regular
-            glass.cornerRadius = 18
-            glass.contentView = controls
-            glass.heightAnchor.constraint(equalToConstant: 36).isActive = true
-            screenActionBar.addArrangedSubview(glass)
-        }
     }
 
     private func buildInspector() {
@@ -799,18 +689,20 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         }
     }
 
+    func updateCanvasMinimumWidth(_ width: CGFloat) {
+        splitController.splitViewItems[1].minimumThickness = max(280, width)
+    }
+
     func showDevicePreview(ifDisplaying identifier: DeviceInventoryID) {
         guard liveDeviceIdentifier == identifier else { return }
         liveDeviceIdentifier = nil
-        screenRecordingTimer.isHidden = true
-        screenRecordingTimer.rootView = AnyView(EmptyView())
+        updateCanvasMinimumWidth(0)
         activeScreenCommandTarget = nil
         liveScreenContainer.view.isHidden = true
         previewStack?.isHidden = false
         for item in window?.toolbar?.items ?? [] where item.itemIdentifier == resizeAppIdentifier || item.itemIdentifier == captureKeyboardIdentifier || item.itemIdentifier == compactIdentifier || item.itemIdentifier == canvasZoomIdentifier {
             item.isHidden = true
         }
-        screenActionBar.isHidden = true
         updateDeviceFooter()
     }
 
@@ -831,25 +723,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         return super.supplementalTarget(forAction: action, sender: sender)
     }
 
-    private func installNativeControl(_ view: NSView?, in container: NSStackView) {
-        if container.arrangedSubviews.first !== view || view.map({ $0.superview !== container }) == true {
-            for child in container.arrangedSubviews {
-                container.removeArrangedSubview(child)
-                child.removeFromSuperview()
-            }
-            if let view { container.addArrangedSubview(view) }
-        }
-        container.isHidden = view == nil
-    }
-
-    func updateScreenToolbar(supports: (String) -> Bool, isEnabled: (String) -> Bool, recordingTitle: String, recordingStartDate: Date? = nil,
-                             resizingApp: Bool = false, capturesKeyboard: Bool = false,
-                             nativePoses: NativeDevicePoseControls? = nil, nativePosesEnabled: Bool = true) {
-        let showsNative = liveDeviceIdentifier != nil && nativePoses?.isAvailable == true
-        installNativeControl(showsNative ? nativePoses?.rotationView : nil, in: nativeRotationContainer)
-        installNativeControl(showsNative ? nativePoses?.postureView : nil, in: nativePostureContainer)
-        nativePoses?.isEnabled = nativePosesEnabled
-        if liveDeviceIdentifier != nil { loadScreenActionArtworkIfNeeded() }
+    func updateScreenToolbar(supports: (String) -> Bool, isEnabled: (String) -> Bool,
+                             resizingApp: Bool = false, capturesKeyboard: Bool = false) {
         if let item = window?.toolbar?.items.first(where: { $0.itemIdentifier == resizeAppIdentifier }) {
             item.isHidden = liveDeviceIdentifier == nil || !supports("resizeApp")
             item.isEnabled = isEnabled("resizeApp")
@@ -871,58 +746,6 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
                 button.toolTip = capturesKeyboard ? "Release Keyboard — or hold Escape for one second." : "Capture Keyboard"
             }
         }
-        for identifier in screenActionIdentifiers {
-            guard let button = screenActionButtons[identifier] else { continue }
-            button.isHidden = liveDeviceIdentifier == nil || !supports(identifier)
-            button.isEnabled = isEnabled(identifier)
-            if identifier == "record" {
-                let symbol = switch recordingTitle {
-                case "Stop Recording": "stop.fill"
-                case "Save Recording…": "square.and.arrow.down"
-                default: "record.circle"
-                }
-                button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: recordingTitle)
-                button.symbolConfiguration = .init(pointSize: recordingTitle == "Stop Recording" ? 10 : 15,
-                                                   weight: recordingTitle == "Stop Recording" ? .medium : .regular, scale: .medium)
-                button.contentTintColor = recordingTitle == "Stop Recording" ? .systemRed : .labelColor
-                button.toolTip = recordingTitle
-                button.setAccessibilityLabel(recordingTitle)
-            }
-        }
-        if let recordingStartDate, liveDeviceIdentifier != nil, screenActionButtons["record"]?.isHidden == false {
-            screenRecordingTimer.rootView = AnyView(Text(recordingStartDate, style: .timer)
-                .font(.system(size: 15)).monospacedDigit().fixedSize()
-                .padding(.horizontal, 8).frame(height: 28))
-            screenRecordingTimer.isHidden = false
-        } else {
-            screenRecordingTimer.isHidden = true
-            screenRecordingTimer.rootView = AnyView(EmptyView())
-        }
-        updateRotationButton()
-        primaryScreenActions.isHidden = ["home", "capture", "record"].allSatisfy {
-            screenActionButtons[$0]?.isHidden != false
-        }
-        profileScreenActions.isHidden = screenActionButtons["rotate"]?.isHidden != false && nativeRotationContainer.isHidden
-        screenActionBar.isHidden = primaryScreenActions.isHidden && profileScreenActions.isHidden
-        updateDeviceFooter()
-    }
-
-    func updateDevicePosture(_ model: DevicePostureModel?, isEnabled: Bool) {
-        let available = liveDeviceIdentifier.flatMap { id in self.model.inventory.first { $0.id == id } }
-            .map { DevicePostureModel.canInspect(capabilities: $0.capabilities) } ?? false
-        let visible = liveDeviceIdentifier != nil && model?.isSupported == true
-        let showsNative = !nativePostureContainer.isHidden
-        rotationDivider.isHidden = (!visible && !showsNative) || nativeRotationContainer.isHidden
-        for (posture, button) in postureButtons {
-            button.isHidden = !visible || showsNative
-            button.isEnabled = isEnabled && available && model?.canSelect == true
-            button.state = model?.confirmedPosture == posture ? .on : .off
-            button.contentTintColor = button.state == .on ? .controlAccentColor : .labelColor
-            button.toolTip = model?.lastError?.localizedDescription ?? posture.title
-        }
-        profileScreenActions.isHidden = screenActionButtons["rotate"]?.isHidden != false && nativeRotationContainer.isHidden && !visible && !showsNative
-        screenActionBar.isHidden = primaryScreenActions.isHidden && profileScreenActions.isHidden
-        updateDeviceFooter()
     }
 
     @objc private func resizeApp(_ sender: Any?) {
@@ -949,62 +772,6 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     @objc private func performCanvasZoom(_ sender: NSToolbarItemGroup) {
         guard CanvasZoom.Action.allCases.indices.contains(sender.selectedIndex) else { return }
         onScreenAction?(CanvasZoom.Action.allCases[sender.selectedIndex].rawValue)
-    }
-
-    private func loadScreenActionArtworkIfNeeded() {
-        guard let xcodeURL = preferredArtworkXcodeURL(), xcodeURL != screenActionArtworkXcodeURL else { return }
-        screenActionArtworkXcodeURL = xcodeURL
-        screenActionArtworkTask?.cancel()
-        screenRotationImages.removeAll()
-        updateRotationButton()
-        for button in postureButtons.values {
-            button.image = nil
-            button.imagePosition = .noImage
-        }
-        let catalogURL = xcodeURL.appendingPathComponent(
-            "Contents/SharedFrameworks/DeviceKit.framework/Versions/A/PlugIns/CoreDevicePopDeviceKitExtension.devicekitplugin/Contents/Resources/Assets.car")
-        screenActionArtworkTask = Task { [weak self] in
-            let deviceKitCatalogURL = xcodeURL.appendingPathComponent("Contents/SharedFrameworks/DeviceKit.framework/Versions/A/Resources/Assets.car")
-            var rotations: [DeviceCommand.ID: NSImage] = [:]
-            for (command, symbol) in [(DeviceCommand.ID.rotateLeft, "rotate.device.left"), (.rotateRight, "rotate.device.right")] {
-                let resource = try? await DeviceSymbolResource.load(named: symbol, from: deviceKitCatalogURL)
-                guard !Task.isCancelled else { return }
-                rotations[command] = resource?.image
-            }
-            var images: [DevicePosture: NSImage] = [:]
-            for posture in DevicePosture.allCases {
-                let name = switch posture {
-                case .closed: "v68_Closed"
-                case .partiallyOpen: "v68_HalfOpen_Landscape"
-                case .open: "v68_Open"
-                }
-                let resource = try? await DeviceSymbolResource.load(named: name, from: catalogURL)
-                guard !Task.isCancelled else { return }
-                images[posture] = resource?.image
-            }
-            guard let self else { return }
-            self.screenRotationImages = rotations
-            self.updateRotationButton()
-            for (posture, button) in self.postureButtons {
-                button.image = images[posture]
-                button.imagePosition = button.image == nil ? .noImage : .imageOnly
-            }
-        }
-    }
-
-    private func updateRotationButton(modifierFlags: NSEvent.ModifierFlags = NSEvent.modifierFlags) {
-        guard let button = screenActionButtons["rotate"] else { return }
-        let command = DeviceCommand.canvasRotation(modifierFlags: modifierFlags)
-        let title = DeviceCommand.command(command).title
-        button.image = screenRotationImages[command]
-        button.imagePosition = button.image == nil ? .noImage : .imageOnly
-        button.toolTip = title
-        button.setAccessibilityLabel(title)
-    }
-
-    @objc private func performScreenAction(_ sender: NSButton) {
-        guard let identifier = sender.identifier?.rawValue else { return }
-        onScreenAction?(identifier)
     }
 
     @objc private func showCompactDeviceWindow(_ sender: Any?) {
