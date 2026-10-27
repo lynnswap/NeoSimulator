@@ -304,8 +304,10 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
     private var unavailableState: (title: String, message: String, symbol: String)? {
         guard let device else { return ("No Selection", "Select one device to inspect it.", "cursorarrow") }
         if showingApplications && !canReadApplications {
-            return ("Apps", device.kind == .simulator ? "Start the simulator to add or customize apps."
-                : "Connect and unlock this device to inspect its applications.", "app")
+            let message = device.kind == .simulator ? "Start the simulator to add or customize apps."
+                : inspection.canInstallApplications ? "Installed applications cannot be listed on this device."
+                : "Connect and unlock this device to inspect its applications."
+            return ("Apps", message, "app")
         }
         if showingProfiles && !canReadProfiles {
             let message: String
@@ -338,7 +340,9 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
         profileHeading.isHidden = !showingProfiles || hasBothProfileKinds
         profileHeading.stringValue = content == .provisioning ? "Provisioning" : "Configuration"
         profileKindPicker.selectItem(at: content == .provisioning ? 1 : 0)
-        for control in [addButton, removeButton, launchButton, actions] {
+        addButton.isHidden = !showingApplications && !showingProfiles ||
+            unavailable != nil && !(showingApplications && inspection.canInstallApplications)
+        for control in [removeButton, launchButton, actions] {
             control.isHidden = !showingApplications && !showingProfiles || unavailable != nil
         }
         previewButton.isHidden = !showingReports || unavailable != nil
@@ -364,7 +368,7 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
         let apps = showingApplications
         infoPicker.isEnabled = !isManaging
         profileKindPicker.isEnabled = !isManaging
-        addButton.isEnabled = available && (apps ? simulatorIsRunning || supports("installapp") : canReadProfiles)
+        addButton.isEnabled = available && (apps ? inspection.canInstallApplications : canReadProfiles)
         removeButton.isEnabled = available && (apps ? selectedApp != nil && selectedApp?.isRemovable != false && (simulatorIsRunning || supports("uninstallapp")) : selectedProfile != nil && canReadProfiles && selectedProfile?.metadata["removalDisallowed"]?.boolean != true)
         launchButton.isHidden = !apps || unavailableState != nil
         launchButton.isEnabled = available && selectedApp != nil && (simulatorIsRunning || supports("launchapplication") || supports("applicationcontrol"))

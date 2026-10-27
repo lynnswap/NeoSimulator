@@ -57,6 +57,7 @@ final class DeviceInspectorModel {
     }
     func supports(_ feature: String) -> Bool { device?.capabilities.contains("com.apple.coredevice.feature." + feature) == true }
     var canReadApplications: Bool { simulatorIsRunning || supports("streamapplist") }
+    var canInstallApplications: Bool { simulatorIsRunning || supports("installapp") }
     var canReadProfiles: Bool {
         if case .simulator(let simulator) = device, simulator.deviceSetPath != nil { return false }
         return supports(content == .provisioning ? "provisioningprofiles" : "configurationprofiles")
