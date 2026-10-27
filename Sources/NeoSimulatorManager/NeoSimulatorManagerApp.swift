@@ -4686,7 +4686,11 @@ private final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
         onChange?()
     }
 
-    private func showIssue(_ error: any Error) { issue = error.localizedDescription; update() }
+    private func showIssue(_ error: any Error) {
+        let error = error as NSError
+        issue = [error.localizedDescription, error.localizedRecoverySuggestion].compactMap { $0 }.joined(separator: "\n\n")
+        update()
+    }
 
     private func enqueueInput(_ operation: @escaping @MainActor () async throws -> Void) {
         guard !closing, !changingPresentation else { return }
