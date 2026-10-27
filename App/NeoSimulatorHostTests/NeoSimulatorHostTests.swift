@@ -6796,7 +6796,7 @@ struct InputFocusTests {
         #expect(failures == ["keyboard failed", "language failed"])
     }
 
-    @Test func theMacsInputSourceReachesTheKeyDeviceWhileLanguageSyncIsOn() async throws {
+    @Test(.timeLimit(.minutes(1))) func theMacsInputSourceReachesTheKeyDeviceWhileLanguageSyncIsOn() async throws {
         let preferences = MemoryPreferences()
         var language = "en"
         let first = TestDisplay(), second = TestDisplay()
