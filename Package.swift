@@ -3,7 +3,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "NeoSimulator",
+    name: "NeoSimulatorKit",
     platforms: [
         .macOS("26.4"),
     ],
