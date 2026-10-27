@@ -94,7 +94,7 @@ extension PreferenceStore {
     /// Per-device routes share the manager's defaults domain, including when the renderer reconnects.
     private func deviceAudioPreferences() throws -> any PreferenceStore {
         guard self is UserDefaults else { return self }
-        guard let defaults = UserDefaults(suiteName: "dev.lynnswap.NeoSimulator"), defaults.synchronize() else {
+        guard let defaults = HostPreferences.deviceSettingsDefaults, defaults.synchronize() else {
             throw HostError.operation("Could not read the saved simulator audio route.")
         }
         return defaults

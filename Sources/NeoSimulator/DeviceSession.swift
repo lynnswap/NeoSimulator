@@ -99,6 +99,12 @@ enum HostPreferences {
 #endif
     }()
 
+    /// Per-device choices are shared with the manager; its own domain uses standard defaults.
+    static var deviceSettingsDefaults: UserDefaults? {
+        Bundle.main.bundleIdentifier == "dev.lynnswap.NeoSimulator"
+            ? .standard : UserDefaults(suiteName: "dev.lynnswap.NeoSimulator")
+    }
+
     /// Moving the renderer into the app changes its defaults domain.
     /// Existing renderer settings remain editable in the new domain after this one-time copy.
     static func migrateStandalonePreferences(defaults: UserDefaults = .standard,
@@ -290,7 +296,7 @@ struct DeviceLocationPreset {
     }
 
     private static func store() throws -> UserDefaults {
-        guard let defaults = UserDefaults(suiteName: "dev.lynnswap.NeoSimulator") else {
+        guard let defaults = HostPreferences.deviceSettingsDefaults else {
             throw HostError.operation("The simulator location settings are unavailable.")
         }
         return defaults
