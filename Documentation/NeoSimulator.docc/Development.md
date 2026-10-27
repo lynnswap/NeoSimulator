@@ -11,6 +11,19 @@ app project and its local Swift package dependency. The application project is
 `Sources/XcodeSimulatorHost` and package tests in `Tests/XcodeSimulatorHostTests`.
 Its library product remains `XcodeSimulatorHost`.
 
+`App/NeoSimulator` groups app code by domain: `DeviceBrowser`, `DeviceSettings`,
+`DeviceInspector`, `RemoteDevice`, `Settings`, and `Simulator`. Views, view
+controllers, and models have separate files named for their types within each
+domain. Application launch, menus, and error presentation live in its `App/`
+folder. Keyboard input, display layout, and device symbols belong to
+`DeviceInput`, `DeviceDisplay`, and `DeviceAppearance`, respectively.
+
+The `NeoSimulator` target builds the manager app. `NeoSimulatorRenderer` builds
+the embedded renderer, whose entry point lives in
+`App/NeoSimulatorRenderer/App/Launch`. Both targets compile the simulator
+implementation needed by their process; each has its own application entry
+point. Domain folders organize sources within these target boundaries.
+
 The project uses Xcode's JSON `project.xcproj` format. Select **NeoSimulator** to
 build the distributable app.
 
@@ -63,6 +76,9 @@ installation inspection, and signatures using isolated fixtures.
 The host script runs `xcodebuild test` with the NeoSimulator scheme and covers
 native input focus, runtime lookups, device-browser behavior, cancellation,
 capture/import failures, and other renderer contracts without booting devices.
+Its `NeoSimulatorHostTests` target compiles the sources under test without either
+application entry point. It runs without an app host so tests control defaults
+registration and process state independently of app startup.
 Release-script tests cover the embedded renderer's release metadata.
 These suites do not replace a live check of an affected private API and guest
 runtime.
