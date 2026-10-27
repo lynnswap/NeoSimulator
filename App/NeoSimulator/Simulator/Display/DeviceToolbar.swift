@@ -11,6 +11,7 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
     private weak var controller: DeviceWindowController?
     private var pluginDelegate: PluginToolbarDelegate?
     private var showsMainWindowAction = false
+    private var usesCanvasControls = false
     private let commands: [DeviceCommand.ID]
     /// The modifier keys held now, which the buttons follow.
     var modifierFlags: () -> NSEvent.ModifierFlags = { NSEvent.modifierFlags }
@@ -66,6 +67,7 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
         if commands.contains(.captureKeyboard), !toolbar.items.contains(where: { $0.itemIdentifier.rawValue == DeviceCommand.ID.captureKeyboard.rawValue }) {
             toolbar.insertItem(withItemIdentifier: NSToolbarItem.Identifier(DeviceCommand.ID.captureKeyboard.rawValue), at: 0)
         }
+        configureItems()
     }
 
     /// Read physical modifier state so synthetic releases sent to devices do not
@@ -133,6 +135,17 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [Self.mainWindowItem, Self.nativeRotationItem] + (controller?.session.supportsAppResize == true
             ? [NSToolbarItem.Identifier(DeviceCommand.ID.resizeApp.rawValue)] : []) + toolbarDefaultItemIdentifiers(toolbar)
+    }
+
+    func setUsesCanvasControls(_ usesCanvasControls: Bool) {
+        if self.usesCanvasControls && !usesCanvasControls {
+            for item in toolbar.items + (pluginDelegate?.toolbar?.items ?? []) {
+                if ["home", "saveScreen", "rotateRight"].contains(item.itemIdentifier.rawValue) { item.isHidden = false }
+            }
+        }
+        self.usesCanvasControls = usesCanvasControls
+        updateNativeRotation()
+        configureItems()
     }
 
     func setShowsMainWindowAction(_ visible: Bool) {
@@ -302,8 +315,8 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
 
     func updateNativeRotation() {
         let control = controller?.session.display.nativePoseControls
-        let visible = controller?.isEmbedded == false && control?.isAvailable == true
-        control?.isEnabled = controller?.session.canPerformCommands == true
+        let visible = !usesCanvasControls && controller?.isEmbedded == false && control?.isAvailable == true
+        if !usesCanvasControls { control?.isEnabled = controller?.session.canPerformCommands == true }
         if let index = toolbar.items.firstIndex(where: { $0.itemIdentifier == Self.nativeRotationItem }) {
             if !visible { toolbar.removeItem(at: index) }
             else if toolbar.items[index].view !== control?.rotationView { toolbar.items[index].view = control?.rotationView }
@@ -314,7 +327,10 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
 
     private func configureItems() {
         for item in toolbar.items + (pluginDelegate?.toolbar?.items ?? []) {
-            if let id = DeviceCommand.ID(rawValue: item.itemIdentifier.rawValue) { configure(item, id) }
+            if let id = DeviceCommand.ID(rawValue: item.itemIdentifier.rawValue) {
+                if usesCanvasControls, [.home, .saveScreen, .rotateRight].contains(id) { item.isHidden = true }
+                configure(item, id)
+            }
         }
     }
 

@@ -59,6 +59,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
+        var canvasControls: DeviceCanvasControls? {
+            switch self {
+            case .simulator(let controller): controller.canvasControls
+            case .remote(let controller): controller.canvasControls
+            }
+        }
+
         var nativePoseControls: NativeDevicePoseControls? {
             switch self {
             case .simulator(let controller): controller.session.display.nativePoseControls
@@ -250,7 +257,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if selectDevice { mainWindow.selectDevice(identifier) }
             mainWindow.activeScreenCommandTarget = screen.commandTarget
             mainWindow.showLiveScreen(for: identifier)
-            observeScreenState(identifier)
+            updateScreenToolbar()
             mainWindow.showWindow(nil)
             mainWindow.window?.makeKeyAndOrderFront(nil)
             if let previousResponder { mainWindow.window?.makeFirstResponder(previousResponder) }
@@ -339,7 +346,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let controller = try await host.openPresentation(for: identifier, bootIfNeeded: false)
         controller.onShowInMainWindow = { [weak self] in self?.showScreenInMainWindow(context.deviceID) }
+        let isNew = simulatorWindows[context.deviceID] !== controller
         simulatorWindows[context.deviceID] = controller
+        if isNew {
+            configureCanvasControls(for: context.deviceID, screen: .simulator(controller))
+            observeScreenState(context.deviceID)
+        }
         try await embedScreen(context.deviceID, selectDevice: true)
     }
 
@@ -420,48 +432,94 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller.onShowCompactWindow = { [weak self] identifier in self?.showCompactScreen(identifier) }
         controller.onSelectionChange = { [weak self] identifier in self?.selectedDeviceChanged(identifier) }
         controller.onScreenAction = { [weak self] action in
-            guard let self, let identifier = self.mainWindow?.liveDeviceIdentifier,
-                  let screen = self.screen(for: identifier) else { return }
-            if action.hasPrefix("posture."), let posture = DevicePosture(rawValue: String(action.dropFirst("posture.".count))),
-               let source = self.model.devicePostures[identifier], screen.canControlDevice,
-               !self.model.managingDeviceIDs.contains(identifier) {
-                Task {
-                    do { try await source.select(posture) }
-                    catch is CancellationError {}
-                    catch { self.present(error) }
-                }
-                if case .simulator(let controller) = screen { controller.focusInput() }
-                self.updateScreenToolbar()
-                return
-            }
-            guard screen.supports(action), screen.isEnabled(action) else { return }
-            screen.perform(action)
-            self.updateScreenToolbar()
+            guard let self, let identifier = self.mainWindow?.liveDeviceIdentifier else { return }
+            self.performScreenAction(action, for: identifier)
         }
         mainWindow = controller
     }
 
+    private func configureCanvasControls(for identifier: DeviceInventoryID, screen: Screen) {
+        let controls = DeviceCanvasControls()
+        controls.onAction = { [weak self] action in self?.performScreenAction(action, for: identifier) }
+        switch screen {
+        case .simulator(let controller):
+            controller.canvasControls = controls
+            controller.onSessionChange = { [weak self] in self?.observeScreenState(identifier) }
+        case .remote(let controller): controller.canvasControls = controls
+        }
+    }
+
+    private func performScreenAction(_ action: String, for identifier: DeviceInventoryID) {
+        guard let screen = screen(for: identifier) else { return }
+        if action.hasPrefix("posture."), let posture = DevicePosture(rawValue: String(action.dropFirst("posture.".count))),
+           let source = model.devicePostures[identifier], screen.canControlDevice,
+           !model.managingDeviceIDs.contains(identifier) {
+            Task { [weak self] in
+                do { try await source.select(posture) }
+                catch is CancellationError {}
+                catch { self?.present(error) }
+            }
+            if case .simulator(let controller) = screen { controller.focusInput() }
+            updateScreenToolbar()
+            return
+        }
+        guard screen.supports(action), screen.isEnabled(action) else { return }
+        screen.perform(action)
+        updateScreenToolbar()
+    }
+
+    private func updateCanvasControls(for identifier: DeviceInventoryID) {
+        guard let screen = screen(for: identifier), let controls = screen.canvasControls else { return }
+        let posture = model.devicePostures[identifier]
+        let enabled = screen.canControlDevice && !model.managingDeviceIDs.contains(identifier)
+        controls.xcodeURL = displayXcodeURL
+        controls.update(supports: { action in
+            action == "rotate" && posture?.isSupported == true ? false : screen.supports(action)
+        }, isEnabled: screen.isEnabled, recordingTitle: screen.recordingTitle,
+                        recordingStartDate: screen.recordingStartDate, nativePoses: screen.nativePoseControls,
+                        nativePosesEnabled: enabled)
+        let available = model.inventory.first { $0.id == identifier }
+            .map { DevicePostureModel.canInspect(capabilities: $0.capabilities) } ?? false
+        controls.updatePosture(posture, isEnabled: enabled, available: available)
+        if mainWindow?.liveDeviceIdentifier == identifier {
+            mainWindow?.updateCanvasMinimumWidth(controls.isHidden ? 0 : controls.fittingSize.width + 24)
+        }
+    }
+
     private func updateScreenToolbar() {
+        for identifier in Array(simulatorWindows.keys) + Array(remoteWindows.keys) { updateCanvasControls(for: identifier) }
         guard let identifier = mainWindow?.liveDeviceIdentifier, let screen = screen(for: identifier) else { return }
         simulatorMenus.updateKeyEquivalents(for: (screen.commandTarget as? DeviceWindowController)?.session.capabilities)
-        let posture = model.devicePostures[identifier]
-        mainWindow?.updateScreenToolbar(supports: { action in
-            action == "rotate" && posture?.isSupported == true ? false : screen.supports(action)
-        }, isEnabled: screen.isEnabled,
-                                       recordingTitle: screen.recordingTitle, recordingStartDate: screen.recordingStartDate,
-                                       resizingApp: screen.resizingApp, capturesKeyboard: screen.capturesKeyboard,
-                                       nativePoses: screen.nativePoseControls,
-                                       nativePosesEnabled: screen.canControlDevice && !model.managingDeviceIDs.contains(identifier))
-        mainWindow?.updateDevicePosture(posture, isEnabled: screen.canControlDevice && !model.managingDeviceIDs.contains(identifier))
+        mainWindow?.updateScreenToolbar(supports: screen.supports, isEnabled: screen.isEnabled,
+                                       resizingApp: screen.resizingApp, capturesKeyboard: screen.capturesKeyboard)
         mainWindow?.updateCanvasZoom(supports: screen.supports, isEnabled: screen.isEnabled, isSelected: screen.canvasZoomIsSelected)
     }
 
     private func observeScreenState(_ identifier: DeviceInventoryID) {
-        guard mainWindow?.liveDeviceIdentifier == identifier else { return }
+        guard let screen = screen(for: identifier) else { return }
+        let owner = screen.commandTarget
+        let session = (owner as? DeviceWindowController)?.session
         withObservationTracking {
-            updateScreenToolbar()
-        } onChange: { [weak self] in
-            Task { @MainActor in self?.observeScreenState(identifier) }
+            updateCanvasControls(for: identifier)
+            // These controls return to the main toolbar with the same screen.
+            _ = screen.capturesKeyboard
+            _ = screen.resizingApp
+            for action in ["resizeApp", "captureKeyboard"] {
+                _ = screen.supports(action)
+                _ = screen.isEnabled(action)
+            }
+            if let controller = owner as? DeviceWindowController {
+                _ = controller.canvasZoom.scale
+                _ = controller.canvasZoom.fitScale
+                _ = controller.canvasZoom.mode
+            }
+            if mainWindow?.liveDeviceIdentifier == identifier { updateScreenToolbar() }
+        } onChange: { [weak self, weak owner, weak session] in
+            Task { @MainActor in
+                guard let self, let owner, self.screen(for: identifier)?.commandTarget === owner else { return }
+                if let controller = owner as? DeviceWindowController, controller.session !== session { return }
+                self.observeScreenState(identifier)
+            }
         }
     }
 
@@ -697,6 +755,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             controller.onChange = { [weak self] in self?.updateScreenToolbar() }
             remoteWindows[id] = controller
+            configureCanvasControls(for: id, screen: .remote(controller))
+            observeScreenState(id)
         }
         controller.connectIfNeeded()
         showScreenInMainWindow(id)
