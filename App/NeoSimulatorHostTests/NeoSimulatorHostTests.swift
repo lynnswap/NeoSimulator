@@ -3976,7 +3976,7 @@ struct InputFocusTests {
         display.bezelPadding = NSSize(width: 9, height: 9)
         controller.setDeviceBezelVisible(true)
         controller.perform(.pointAccurate)
-        window.setFrameOrigin(NSPoint(x: visible.midX - window.frame.width / 2, y: visible.minY + 40))
+        window.setFrameOrigin(NSPoint(x: visible.midX - window.frame.width / 2, y: visible.minY))
         try drag(window, from: try point(of: .upperLeft, in: display), by: NSSize(width: -10_000, height: 10_000)) {
             try #require(display.isResizing && display.renderScale > 1)
             let close = try #require(window.standardWindowButton(.closeButton))
@@ -3984,6 +3984,14 @@ struct InputFocusTests {
             #expect(visible.contains(center))
             let hit = window.contentView?.superview?.hitTest(window.convertPoint(fromScreen: center))
             #expect(hit === close || hit?.isDescendant(of: close) == true)
+            func recordingButton(in view: NSView) -> NSButton? {
+                if let button = view as? NSButton, button.identifier?.rawValue == "record" { return button }
+                return view.subviews.lazy.compactMap { recordingButton(in: $0) }.first
+            }
+            let record = try #require(recordingButton(in: controls))
+            let recordCenter = window.convertPoint(toScreen: record.convert(NSPoint(x: record.bounds.midX, y: record.bounds.midY), to: nil))
+            #expect(visible.contains(recordCenter))
+            #expect(window.contentView?.superview?.hitTest(window.convertPoint(fromScreen: recordCenter)) === record)
         }
     }
 

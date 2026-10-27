@@ -1430,8 +1430,12 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         let drag = BezelResize(corner: corner,
                                start: window.convertToScreen(display.view.convert(display.view.bounds, to: nil)),
                                pointer: Self.screenLocation(of: event, in: window))
-        let maximumScale = (window.screen ?? NSScreen.main).map {
-            display.scale(for: drag.largestSize(within: $0.visibleFrame))
+        let maximumScale = (window.screen ?? NSScreen.main).flatMap { screen in
+            displaySpace(on: screen).map { space in
+                let anchored = drag.largestSize(within: screen.visibleFrame)
+                return display.scale(for: NSSize(width: min(anchored.width, space.width),
+                                                 height: min(anchored.height, space.height)))
+            }
         } ?? 1000
         bezelResize = (drag, maximumScale)
         display.beginResize()
