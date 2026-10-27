@@ -166,6 +166,22 @@ public struct DeviceInspector: Sendable {
                 result["runtimeIdentifier"] = .string(simulator.runtimeIdentifier)
                 result["runtimeName"] = .string(simulator.runtimeName)
                 if let model = simulator.modelIdentifier { result["modelIdentifier"] = .string(model) }
+                if let typeIdentifier = record["deviceTypeIdentifier"]?.string,
+                   let type = response["devicetypes"]?.array?.first(where: { $0["identifier"]?.string == typeIdentifier }),
+                   let modelName = type["name"]?.string {
+                    result["modelName"] = .string(modelName)
+                }
+                if let runtime = response["runtimes"]?.array?.first(where: { $0["identifier"]?.string == simulator.runtimeIdentifier }),
+                   let version = runtime["version"]?.string {
+                    let platform: String? = switch simulator.productFamily {
+                    case "iPhone", "iPad": "iOS"
+                    case "Apple Watch": "watchOS"
+                    case "Apple TV": "tvOS"
+                    case "Apple Vision": "visionOS"
+                    default: nil
+                    }
+                    if let platform { result["operatingSystem"] = .string("\(platform) \(version)") }
+                }
                 fields = result
             case .remote:
                 fields = try await coreDeviceResult(["device", "info", "details"], operation: "Read Device Info")["properties"]?.object

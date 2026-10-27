@@ -42,7 +42,11 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     private let progress = NSProgressIndicator()
     private var inspectorHost: NSHostingController<ManagerDeviceSettingsView>?
     private let inspectorContainer = NSViewController()
-    private lazy var deviceInspector = ManagerDeviceInspectorController(model: model)
+    private lazy var deviceInspector: ManagerDeviceInspectorController = {
+        let inspector = ManagerDeviceInspectorController(model: model)
+        inspector.onPairingMenu = { [weak self] in self?.pairingMenu(for: $0) ?? NSMenu() }
+        return inspector
+    }()
     private var inspectorMode = 0
     private let inspectorIdentifier = NSToolbarItem.Identifier("DeviceInspector")
     private var updatingSelection = false
@@ -506,7 +510,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         inspectorMode = sender.selectedIndex
         if inspectorMode == 0, let inspectorHost { showInspectorController(inspectorHost) }
         else {
-            deviceInspector.setPage(inspectorMode == 1 ? .content : .info)
+            deviceInspector.setPage(inspectorMode == 1 ? .reports : .info)
             showInspectorController(deviceInspector)
         }
         updateDeviceSettings()
@@ -949,7 +953,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [.toggleSidebar, .flexibleSpace, newSimulatorIdentifier, filterIdentifier, .sidebarTrackingSeparator,
-         .flexibleSpace, captureKeyboardIdentifier, resizeAppIdentifier, canvasZoomIdentifier, compactIdentifier, moreIdentifier, .inspectorTrackingSeparator, inspectorIdentifier]
+         .flexibleSpace, captureKeyboardIdentifier, resizeAppIdentifier, canvasZoomIdentifier, compactIdentifier, moreIdentifier, .inspectorTrackingSeparator, .flexibleSpace, inspectorIdentifier]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { toolbarDefaultItemIdentifiers(toolbar) }
@@ -1040,14 +1044,16 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             return item
         }
         if itemIdentifier == inspectorIdentifier {
-            let images = ["slider.horizontal.3", "doc", "info.circle"].compactMap {
+            let images = ["slider.horizontal.3", "text.document", "info"].compactMap {
                 NSImage(systemSymbolName: $0, accessibilityDescription: nil)
             }
             let item = NSToolbarItemGroup(itemIdentifier: itemIdentifier, images: images, selectionMode: .selectOne,
-                                          labels: ["Settings", "Content", "Info"], target: self, action: #selector(changeInspector(_:)))
+                                          labels: ["Settings", "Reports", "Info"], target: self, action: #selector(changeInspector(_:)))
             item.label = "Device Inspector"
             item.selectedIndex = inspectorMode
             item.visibilityPriority = .high
+            item.controlRepresentation = .expanded
+            for (subitem, title) in zip(item.subitems, ["Settings", "Reports", "Info"]) { subitem.toolTip = title }
             return item
         }
         if itemIdentifier == newSimulatorIdentifier {

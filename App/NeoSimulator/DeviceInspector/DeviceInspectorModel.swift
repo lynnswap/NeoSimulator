@@ -4,23 +4,25 @@ import XcodeSimulatorHost
 
 @MainActor @Observable
 final class DeviceInspectorModel {
-    enum Page { case content, info }
+    enum Page { case reports, info }
     enum Content: Int, CaseIterable {
-        case applications, configuration, provisioning, reports
+        case info, applications, configuration, provisioning
         var title: String {
             switch self {
+            case .info: "Info"
             case .applications: "Applications"
             case .configuration: "Configuration Profiles"
             case .provisioning: "Provisioning Profiles"
-            case .reports: "Reports"
             }
         }
         var profileKind: DeviceProfileKind { self == .provisioning ? .provisioning : .configuration }
     }
-    var device: InventoryDevice?
+    var device: InventoryDevice? {
+        didSet { select(content) }
+    }
     var inspector: DeviceInspector?
-    var page = Page.content
-    var content = Content.applications
+    var page = Page.info
+    private(set) var content = Content.info
     var isManaging = false
     var isVisible = false
     private(set) var generation = 0
@@ -60,6 +62,17 @@ final class DeviceInspectorModel {
         return supports(content == .provisioning ? "provisioningprofiles" : "configurationprofiles")
     }
 
+    func select(_ content: Content) {
+        switch content {
+        case .provisioning where !supports("provisioningprofiles") && supports("configurationprofiles"):
+            self.content = .configuration
+        case .configuration where !supports("configurationprofiles") && supports("provisioningprofiles"):
+            self.content = .provisioning
+        default:
+            self.content = content
+        }
+    }
+
     func reload(using source: @escaping @MainActor (InventoryDevice) async throws -> DeviceInspector) {
         stopReading()
         guard isVisible, let device else { return }
@@ -74,27 +87,12 @@ final class DeviceInspectorModel {
                 let inspector = try await source(device)
                 guard generation == request, !Task.isCancelled else { return }
                 self.inspector = inspector
-                if page == .info {
+                if page == .info && content == .info {
                     let snapshot = await inspector.info()
                     guard generation == request, !Task.isCancelled else { return }
-                    var properties = snapshot.fields
-                    if properties.isEmpty {
-                        properties["name"] = .string(device.name)
-                        if let os = device.operatingSystem { properties["operatingSystem"] = .string(os) }
-                        if let model = device.modelIdentifier { properties["modelIdentifier"] = .string(model) }
-                        switch device {
-                        case .simulator(let simulator):
-                            properties["udid"] = .string(simulator.identifier)
-                            properties["state"] = .string(simulator.state)
-                        case .remote(let remote):
-                            properties["identifier"] = .string(remote.identifier)
-                            if let udid = remote.udid { properties["udid"] = .string(udid) }
-                            if let connection = remote.connectionState { properties["connectionState"] = .string(connection) }
-                        }
-                    }
-                    infoProperties = properties
+                    infoProperties = snapshot.fields
                     lastIssue = snapshot.issues.map(\.localizedDescription).joined(separator: "\n")
-                } else if content == .applications {
+                } else if page == .info && content == .applications {
                     guard canReadApplications else {
                         throw DeviceInspectorError.unsupported(device.kind == .simulator ? "Start this simulator to inspect its applications." : "This device does not currently support application inspection. Connect and unlock it, then refresh.")
                     }
@@ -102,7 +100,7 @@ final class DeviceInspectorModel {
                     guard generation == request, !Task.isCancelled else { return }
                     applications = apps
                     lastIssue = apps.isEmpty ? "No applications installed." : nil
-                } else if content == .reports {
+                } else if page == .reports {
                     guard inspector.supportsReportListing || device.kind == .simulator else {
                         throw DeviceInspectorError.unsupported("This device does not currently support reports. Connect and unlock it, then refresh.")
                     }

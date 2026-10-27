@@ -612,6 +612,131 @@ struct ManagerModelTests {
         try await manager.quitRenderer(keepingDevicesRunning: true)
     }
 
+    @Test func infoCardsUseLiveValuesAndRetainKnownInventoryFallbacks() throws {
+        let information = DeviceInformation(device: simulator(), properties: [
+            "name": .string("Renamed Phone"), "operatingSystem": .string("iOS 27.2"),
+            "modelName": .string("iPhone 18 Pro"),
+            "hardware": .object(["serialNumber": .string("serial")]),
+        ])
+        func value(_ id: String) -> String? { information.fields.first { $0.id == [id] }?.value }
+        #expect(value("name") == "Renamed Phone")
+        #expect(value("operatingSystem") == "iOS 27.2")
+        #expect(value("modelName") == "iPhone 18 Pro")
+        #expect(value("udid") == "same-udid")
+        #expect(information.fields.filter { $0.id == ["modelName"] || $0.id == ["udid"] }.allSatisfy { $0.group == .hardware })
+        let serial = try #require(information.fields.first { $0.id == ["hardware", "serialNumber"] })
+        #expect(serial.value == "serial" && serial.group == .hardware)
+    }
+
+    @Test func remoteInfoUsesAvailablePropertiesWithoutSubstitutingItsCommandIDForUDID() {
+        let remote = CoreDeviceDevice(identifier: "command-id", udid: nil,
+            kind: .physical, name: "Known Phone", modelIdentifier: "iPhone19,2", modelName: "iPhone 18 Pro",
+            platform: "iOS", osVersion: "27.1", osBuild: nil, connectionState: "connected",
+            pairingState: "paired", transportType: nil, bootState: "booted", capabilities: [],
+            lastConnectedAt: nil, visibilityClass: nil)
+        let information = DeviceInformation(device: .remote(remote), properties: [
+            "state": .object(["name": .string("Current Phone")]),
+            "software": .object([
+                "osVersionNumber": .object(["stringValue": .string("27.2")]),
+                "osBuildVersions": .object(["buildVersion": .object(["name": .string("27C100")])]),
+            ]),
+            "configuration": .object(["displays": .array([
+                .object(["name": .string("Primary")]), .object(["name": .string("External")]),
+            ])]),
+        ])
+        #expect(information.fields.first { $0.id == ["name"] }?.value == "Current Phone")
+        #expect(information.fields.first { $0.id == ["operatingSystem"] }?.value == "iOS 27.2")
+        #expect(information.fields.first { $0.id == ["modelName"] }?.value == "iPhone 18 Pro")
+        #expect(!information.fields.contains { $0.id == ["udid"] })
+        #expect(information.fields.first { $0.value == "27C100" }?.title == "Software / OS Builds / Build / Name")
+        #expect(information.fields.first { $0.value == "Primary" }?.title == "Configuration / Displays — Item 1 / Name")
+        #expect(information.fields.first { $0.value == "External" }?.title == "Configuration / Displays — Item 2 / Name")
+    }
+
+    @Test func pairedInfoResolvesThePartnerInItsDeviceSetAndUnpairsTheWatchFromEitherSide() throws {
+        func device(_ id: String, family: String, set: String? = nil, pairs: Set<String> = ["pair"]) -> SimulatorHostDevice {
+            SimulatorHostDevice(identifier: id, name: id, descriptiveName: id,
+                runtimeIdentifier: "runtime", runtimeName: family == "Apple Watch" ? "watchOS" : "iOS",
+                productFamily: family, state: "Shutdown", deviceSetPath: set, pairIdentifiers: pairs)
+        }
+        let phone = device("phone", family: "iPhone")
+        let watch = device("watch", family: "Apple Watch")
+        let inventory: [InventoryDevice] = [
+            .simulator(phone), .simulator(watch),
+            .simulator(device("watch", family: "Apple Watch", set: "/other-set")),
+            .simulator(device("unpaired-watch", family: "Apple Watch", pairs: ["other-pair"])),
+        ]
+        #expect(DeviceInformation.pairedSimulators(for: phone, in: inventory) == [watch])
+        #expect(DeviceInformation.pairedSimulators(for: watch, in: inventory) == [phone])
+        #expect(DeviceInformation.watchToUnpair(device: phone, partner: watch) == watch)
+        #expect(DeviceInformation.watchToUnpair(device: watch, partner: phone) == watch)
+    }
+
+    @Test func profilesFollowTheAvailableKindWhenChangingDevices() throws {
+        guard case .simulator(let simulator) = simulator() else { return }
+        func device(_ features: [String]) -> InventoryDevice {
+            .simulator(simulator.inventoryCopy(ownerXcodeURL: nil, capabilities:
+                Set(features.map { "com.apple.coredevice.feature." + $0 })))
+        }
+        let inspection = DeviceInspectorModel()
+        inspection.device = device(["configurationprofiles", "provisioningprofiles"])
+        inspection.select(.provisioning)
+        inspection.device = device(["configurationprofiles"])
+        #expect(inspection.content == .configuration && inspection.canReadProfiles)
+        inspection.device = device(["provisioningprofiles"])
+        #expect(inspection.content == .provisioning && inspection.canReadProfiles)
+        inspection.select(.configuration)
+        #expect(inspection.content == .provisioning && inspection.canReadProfiles)
+    }
+
+    @Test func infoVisibilityStartsWithFourFieldsAndPersistsExplicitChoices() throws {
+        let suite = "NeoSimulatorTests.InfoVisibility.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let information = DeviceInformation(device: simulator(), properties: [
+            "modelName": .string("iPhone 18 Pro"), "hardware": .object(["serialNumber": .string("serial")]),
+        ])
+        let visibility = DeviceInfoVisibility(defaults: defaults)
+        #expect(Set(information.fields.filter { visibility.isVisible($0) }.map(\.id)) == DeviceInformation.defaultFields)
+        let serial = try #require(information.fields.first { $0.id == ["hardware", "serialNumber"] })
+        let os = try #require(information.fields.first { $0.id == ["operatingSystem"] })
+        visibility.setVisible(true, for: serial)
+        visibility.setVisible(false, for: os)
+        let restored = DeviceInfoVisibility(defaults: defaults)
+        #expect(restored.isVisible(serial) && !restored.isVisible(os))
+    }
+
+    @Test(arguments: [false, true])
+    func infoVisibilityMigratesLegacyShowAllAndAncestorHidingWithoutLosingUnseenChoices(hidesHardware: Bool) throws {
+        let suite = "NeoSimulatorTests.LegacyInfoVisibility.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(hidesHardware ? [["hardware"], ["future"]] : [],
+                     forKey: DeviceInfoVisibility.legacyPreferenceKey)
+        let information = DeviceInformation(device: simulator(), properties: [
+            "modelName": .string("iPhone 18 Pro"),
+            "hardware": .object(["serialNumber": .string("serial"), "cpuType": .string("arm64")]),
+        ])
+        let model = try #require(information.fields.first { $0.id == ["modelName"] })
+        let serial = try #require(information.fields.first { $0.id == ["hardware", "serialNumber"] })
+        let cpu = try #require(information.fields.first { $0.id == ["hardware", "cpuType"] })
+        let visibility = DeviceInfoVisibility(defaults: defaults)
+        #expect(visibility.isVisible(model) == !hidesHardware)
+        visibility.setVisible(true, for: model)
+        #expect(visibility.isVisible(model) && visibility.isVisible(cpu) == !hidesHardware)
+        visibility.setVisible(true, for: serial)
+        let restored = DeviceInfoVisibility(defaults: defaults)
+        #expect(restored.isVisible(model) && restored.isVisible(serial))
+        #expect(restored.isVisible(cpu) == !hidesHardware)
+        let later = DeviceInformation(device: simulator(), properties: [
+            "future": .object(["revision": .string("known later")]),
+            "hardware": .object(["vendorProperty": .string("known later")]),
+        ])
+        let future = try #require(later.fields.first { $0.id == ["future", "revision"] })
+        let sibling = try #require(later.fields.first { $0.id == ["hardware", "vendorProperty"] })
+        #expect(restored.isVisible(future) == !hidesHardware && restored.isVisible(sibling) == !hidesHardware)
+    }
+
     private func simulator(deviceSet: String? = nil) -> InventoryDevice {
         .simulator(SimulatorHostDevice(identifier: "same-udid", name: "Test Phone", descriptiveName: "Test Phone",
             runtimeIdentifier: "test-runtime", runtimeName: "iOS", productFamily: "iPhone", state: "Booted",

@@ -240,6 +240,21 @@
                 "NeoSimulatorHostTests/compile-sources",
               ],
             },
+            {
+              "path": "DeviceInformation.swift",
+              "target-membership": [
+                "NeoSimulator/compile-sources",
+                "NeoSimulatorHostTests/compile-sources",
+              ],
+            },
+            {
+              "path": "DeviceInfoVisibility.swift",
+              "target-membership": [
+                "NeoSimulator/compile-sources",
+                "NeoSimulatorHostTests/compile-sources",
+              ],
+            },
+            { "path": "DeviceInformationView.swift", "target-membership": [ "NeoSimulator/compile-sources" ] },
           ],
         }, {
           "kind": "group",
