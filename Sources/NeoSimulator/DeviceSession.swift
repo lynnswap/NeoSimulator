@@ -1714,8 +1714,9 @@ final class DeviceSession {
         guard !isStartingAppResize else {
             throw HostError.operation("Wait for the app display to connect before starting a recording.")
         }
-        recording = try recordings.start(to: destination, process: { [makeRecordingProcess, display] in
-            makeRecordingProcess($0, mask, display.captureDisplayID)
+        let displayID = try display.captureDisplayID
+        recording = try recordings.start(to: destination, process: { [makeRecordingProcess] in
+            makeRecordingProcess($0, mask, displayID)
         }) { [weak self] in
             self?.recording = nil
             self?.display.announceRecording(started: false)
