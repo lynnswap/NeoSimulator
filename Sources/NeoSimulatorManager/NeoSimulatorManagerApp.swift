@@ -161,7 +161,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             switch identifier {
             case "home": .home
             case "lock": .lock
-            case "rotate": .rotateRight
+            case "rotate": DeviceCommand.canvasRotation(modifierFlags: NSApp.currentEvent?.modifierFlags ?? NSEvent.modifierFlags)
             case "resizeApp": .resizeApp
             case "capture": .saveScreen
             case "record": controller.session.recording == nil ? .recordScreen : .stopRecording
@@ -1058,6 +1058,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     private let rotationDivider = NSBox()
     private var screenActionArtworkXcodeURL: URL?
     private var screenActionArtworkTask: Task<Void, Never>?
+    private var screenRotationImages: [DeviceCommand.ID: NSImage] = [:]
+    private var screenActionModifierMonitor: Any?
     private let deviceFooter = NSStackView()
     private let activityStack = NSStackView()
     private var canvasBottomToPane: NSLayoutConstraint?
@@ -1175,6 +1177,10 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         super.init(window: window)
         buildSidebar()
         buildDevicePane()
+        screenActionModifierMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+            self?.updateRotationButton(modifierFlags: event.modifierFlags)
+            return event
+        }
         buildInspector()
         splitController.view.heightAnchor.constraint(greaterThanOrEqualToConstant: 480).isActive = true
         window.contentViewController = splitController
@@ -1195,6 +1201,10 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         observeInventory()
         observeActivity()
         observeManagement()
+    }
+
+    isolated deinit {
+        if let screenActionModifierMonitor { NSEvent.removeMonitor(screenActionModifierMonitor) }
     }
 
     required init?(coder: NSCoder) { nil }
@@ -1883,6 +1893,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
                 button.setAccessibilityLabel(recordingTitle)
             }
         }
+        updateRotationButton()
         primaryScreenActions.isHidden = ["home", "capture", "record"].allSatisfy {
             screenActionButtons[$0]?.isHidden != false
         }
@@ -1939,6 +1950,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         guard let xcodeURL = preferredArtworkXcodeURL(), xcodeURL != screenActionArtworkXcodeURL else { return }
         screenActionArtworkXcodeURL = xcodeURL
         screenActionArtworkTask?.cancel()
+        screenRotationImages.removeAll()
+        updateRotationButton()
         for button in postureButtons.values {
             button.image = nil
             button.imagePosition = .noImage
@@ -1947,7 +1960,12 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             "Contents/SharedFrameworks/DeviceKit.framework/Versions/A/PlugIns/CoreDevicePopDeviceKitExtension.devicekitplugin/Contents/Resources/Assets.car")
         screenActionArtworkTask = Task { [weak self] in
             let deviceKitCatalogURL = xcodeURL.appendingPathComponent("Contents/SharedFrameworks/DeviceKit.framework/Versions/A/Resources/Assets.car")
-            let rotation = try? await DeviceSymbolResource.load(named: "rotate.device.right", from: deviceKitCatalogURL)
+            var rotations: [DeviceCommand.ID: NSImage] = [:]
+            for (command, symbol) in [(DeviceCommand.ID.rotateLeft, "rotate.device.left"), (.rotateRight, "rotate.device.right")] {
+                let resource = try? await DeviceSymbolResource.load(named: symbol, from: deviceKitCatalogURL)
+                guard !Task.isCancelled else { return }
+                rotations[command] = resource?.image
+            }
             var images: [DevicePosture: NSImage] = [:]
             for posture in DevicePosture.allCases {
                 let name = switch posture {
@@ -1960,13 +1978,23 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
                 images[posture] = resource?.image
             }
             guard let self else { return }
-            self.screenActionButtons["rotate"]?.image = rotation?.image
-            self.screenActionButtons["rotate"]?.imagePosition = rotation == nil ? .noImage : .imageOnly
+            self.screenRotationImages = rotations
+            self.updateRotationButton()
             for (posture, button) in self.postureButtons {
                 button.image = images[posture]
                 button.imagePosition = button.image == nil ? .noImage : .imageOnly
             }
         }
+    }
+
+    private func updateRotationButton(modifierFlags: NSEvent.ModifierFlags = NSEvent.modifierFlags) {
+        guard let button = screenActionButtons["rotate"] else { return }
+        let command = DeviceCommand.canvasRotation(modifierFlags: modifierFlags)
+        let title = DeviceCommand.command(command).title
+        button.image = screenRotationImages[command]
+        button.imagePosition = button.image == nil ? .noImage : .imageOnly
+        button.toolTip = title
+        button.setAccessibilityLabel(title)
     }
 
     @objc private func performScreenAction(_ sender: NSButton) {
