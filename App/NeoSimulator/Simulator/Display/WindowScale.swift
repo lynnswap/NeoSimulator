@@ -123,8 +123,7 @@ enum WindowScale {
 /// Corner drag with the opposite display corner fixed.
 struct BezelResize {
     let corner: DisplayResizeRect.Corner
-    /// The window's frame on the screen when the drag began, as tall as the
-    /// display below the window's header.
+    /// The display's frame on the screen when the drag began.
     let start: NSRect
     /// Where the pointer was on the screen when the drag began.
     let pointer: NSPoint
@@ -143,7 +142,7 @@ struct BezelResize {
                height: corner.isLower ? start.maxY - visible.minY : visible.maxY - start.minY)
     }
 
-    /// The window's origin for a display of `size`, which keeps the opposite
+    /// The display's origin for a display of `size`, which keeps the opposite
     /// corner where it was.
     func origin(for size: NSSize) -> NSPoint {
         NSPoint(x: corner.isLeft ? start.maxX - size.width : start.minX,

@@ -1293,7 +1293,10 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         guard let scale = scale(for: mode), scale >= minimumScale else { return false }
         guard session.display.chromePadding == nil, let visible = window.screen?.visibleFrame else { return true }
         let size = session.display.size(for: scale)
-        return size.width <= visible.width && size.height <= visible.height - titleBarHeight(forDisplayWidth: size.width)
+        let width = max(size.width + content.horizontalDisplayPadding, content.canvasControlsWidth)
+        let header = titleBarHeight(forDisplayWidth: width)
+        let height = size.height + content.heightAboveDisplay + header - content.headerHeight
+        return width <= visible.width && height <= visible.height
     }
 
     /// Measures the title bar at the requested width, since scaling may change toolbar style.
@@ -1358,9 +1361,9 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     }
 
     /// Sizes the window to the scaled display, gap, and final toolbar height.
-    /// Keeps its bottom-left origin unless supplied and rounds outward to an integral frame.
+    /// Keeps its bottom-left origin and rounds outward to an integral frame.
     /// Full screen and live resize fit the display into the window instead.
-    private func updateWindowSize(origin: NSPoint? = nil) {
+    private func updateWindowSize() {
         guard !closed, let window, !fitting.fitsWindow else {
             resizeDisplay()
             return
@@ -1378,7 +1381,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
             sized.size.height = min(sized.height, visible.height)
         }
         content.isSizedToDisplay = true
-        setFrame(around: NSRect(origin: origin ?? window.frame.origin, size: sized.size))
+        setFrame(around: NSRect(origin: window.frame.origin, size: sized.size))
         fitting.layout()
     }
 
@@ -1422,8 +1425,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         let point = display.view.convert(event.locationInWindow, from: nil)
         guard let corner = display.resizeRects.first(where: { $0.rect.contains(point) })?.corner else { return false }
         let drag = BezelResize(corner: corner,
-                               start: NSRect(origin: window.frame.origin,
-                                             size: NSSize(width: window.frame.width, height: display.view.frame.height)),
+                               start: window.convertToScreen(display.view.convert(display.view.bounds, to: nil)),
                                pointer: Self.screenLocation(of: event, in: window))
         let maximumScale = (window.screen ?? NSScreen.main).map {
             display.scale(for: drag.largestSize(within: $0.visibleFrame))
@@ -1439,7 +1441,11 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         let display = session.display
         let requested = resize.drag.requestedSize(pointerAt: Self.screenLocation(of: event, in: window))
         fitting.setScale(min(resize.maximumScale, max(minimumScale, display.scale(for: requested))))
-        updateWindowSize(origin: resize.drag.origin(for: display.size(for: display.renderScale)))
+        updateWindowSize()
+        let frame = window.convertToScreen(display.view.convert(display.view.bounds, to: nil))
+        let origin = resize.drag.origin(for: frame.size)
+        window.setFrameOrigin(NSPoint(x: window.frame.minX + origin.x - frame.minX,
+                                      y: window.frame.minY + origin.y - frame.minY))
     }
 
     /// After the drag, keep the window within reach of the screen.
@@ -1708,15 +1714,12 @@ private final class DeviceContentView: NSView, DisplayContentView {
             needsLayout = true
         }
     }
-    // App resize owns an unscaled guest viewport; Device Hub canvases overlay their controls.
+    // App resize owns an unscaled guest viewport; only Device Hub presentations inset their canvas.
     private var usesDeviceCanvasLayout: Bool {
         !scrollsDisplay && (isEmbedded || canvasControls != nil)
     }
     private var canvasInset: CGFloat { usesDeviceCanvasLayout ? 8 : 0 }
     var horizontalDisplayPadding: CGFloat { canvasInset * 2 }
-    private var reservedControlsHeight: CGFloat {
-        !usesDeviceCanvasLayout && canvasControls?.isHidden == false ? 52 : 0
-    }
     var canvasControlsWidth: CGFloat {
         canvasControls.flatMap { $0.isHidden ? nil : $0.fittingSize.width + 24 } ?? 0
     }
@@ -1772,7 +1775,7 @@ private final class DeviceContentView: NSView, DisplayContentView {
         return max(0, bounds.height - window.contentLayoutRect.height)
     }
     /// The window space around the display, excluding its scaled size.
-    var heightAboveDisplay: CGFloat { headerHeight + displayGap + reservedControlsHeight + canvasInset * 2 }
+    var heightAboveDisplay: CGFloat { headerHeight + displayGap + canvasInset * 2 }
     init(display: NSView, usesNativeCanvas: Bool) {
         self.usesNativeCanvas = usesNativeCanvas
         self.display = display
@@ -1826,7 +1829,7 @@ private final class DeviceContentView: NSView, DisplayContentView {
     required init?(coder: NSCoder) { nil }
 
     private var availableDisplayRect: NSRect {
-        NSRect(x: canvasInset, y: reservedControlsHeight + canvasInset,
+        NSRect(x: canvasInset, y: canvasInset,
                width: max(1, bounds.width - horizontalDisplayPadding),
                height: max(1, bounds.height - heightAboveDisplay))
     }
