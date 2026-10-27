@@ -1,10 +1,12 @@
 import AppKit
 import Observation
+@_spi(NeoSimulator) import XcodeSimulatorHost
 
 /// The device window's toolbar, built from the command catalog.
 @MainActor
 final class DeviceToolbar: NSObject, NSToolbarDelegate {
     private static let mainWindowItem = NSToolbarItem.Identifier("ShowInMainWindow")
+    private static let nativeRotationItem = NSToolbarItem.Identifier("NativeDeviceRotation")
     let toolbar = NSToolbar(identifier: "DeviceToolbar")
     private weak var controller: DeviceWindowController?
     private var pluginDelegate: PluginToolbarDelegate?
@@ -129,7 +131,7 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [Self.mainWindowItem] + (controller?.session.supportsAppResize == true
+        [Self.mainWindowItem, Self.nativeRotationItem] + (controller?.session.supportsAppResize == true
             ? [NSToolbarItem.Identifier(DeviceCommand.ID.resizeApp.rawValue)] : []) + toolbarDefaultItemIdentifiers(toolbar)
     }
 
@@ -156,6 +158,13 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
 
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
                  willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
+        if itemIdentifier == Self.nativeRotationItem,
+           let control = controller?.session.display.nativeRotationControl, control.isAvailable {
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            item.label = "Rotate"
+            item.view = control.view
+            return item
+        }
         if itemIdentifier == Self.mainWindowItem {
             let item = NSToolbarItem(itemIdentifier: itemIdentifier)
             item.label = "Show in Main Window"
@@ -284,9 +293,22 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
             _ = controller.session.recording?.isStopping
             _ = controller.session.showsAlwaysOn
             _ = controller.capturesKeyboard
+            updateNativeRotation()
             configureItems()
         } onChange: { [weak self] in
             Task { @MainActor [weak self] in self?.updateItems() }
+        }
+    }
+
+    func updateNativeRotation() {
+        let control = controller?.session.display.nativeRotationControl
+        let visible = controller?.isEmbedded == false && control?.isAvailable == true
+        control?.isEnabled = controller?.session.canPerformCommands == true
+        if let index = toolbar.items.firstIndex(where: { $0.itemIdentifier == Self.nativeRotationItem }) {
+            if !visible { toolbar.removeItem(at: index) }
+            else if toolbar.items[index].view !== control?.view { toolbar.items[index].view = control?.view }
+        } else if visible {
+            toolbar.insertItem(withItemIdentifier: Self.nativeRotationItem, at: max(0, toolbar.items.count - 1))
         }
     }
 

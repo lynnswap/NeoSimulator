@@ -1,5 +1,6 @@
 import AppKit
 import UniformTypeIdentifiers
+@_spi(NeoSimulator) import XcodeSimulatorHost
 
 @MainActor
 final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenuItemValidation, NSToolbarItemValidation, DisplayScaling {
@@ -293,6 +294,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         embeddedContainer = container
         Self.embeddedController = self
         content.isEmbedded = true
+        deviceToolbar?.updateNativeRotation()
         content.isSizedToDisplay = false
         content.displayGap = 0
         content.frame = container.bounds
@@ -316,6 +318,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         embeddedContainer = nil
         if Self.embeddedController === self { Self.embeddedController = nil }
         content.isEmbedded = false
+        deviceToolbar?.updateNativeRotation()
         content.autoresizingMask = []
         window?.contentView = content
         keyboard.attach(to: window)
@@ -402,6 +405,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         toolbar.attach(to: window)
         toolbar.setShowsMainWindowAction(onShowInMainWindow != nil)
         session.display.onPropertiesChange = { [weak self] in self?.displayPropertiesChanged() }
+        session.display.nativeRotationControl?.onError = { [weak self] in self?.present($0) }
         session.onAppResizeError = { [weak self] in self?.present($0) }
         session.onDisplayWillChange = { [weak self] in
             guard let self else { return }
@@ -461,6 +465,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         content.isSizedToDisplay = false
         keyboard.display = session.display
         session.display.onPropertiesChange = { [weak self] in self?.displayPropertiesChanged() }
+        session.display.nativeRotationControl?.onError = { [weak self] in self?.present($0) }
         if !session.isResizingApp { session.display.setChromeVisible(preferences.showsDeviceBezels) }
         bezelChanged()
         connectTouchPressure()
