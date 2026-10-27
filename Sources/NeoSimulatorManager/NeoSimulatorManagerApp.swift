@@ -132,9 +132,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        var nativeRotationControl: NativeDeviceRotationControl? {
+        var nativePoseControls: NativeDevicePoseControls? {
             switch self {
-            case .simulator(let controller): controller.session.display.nativeRotationControl
+            case .simulator(let controller): controller.session.display.nativePoseControls
             case .remote: nil
             }
         }
@@ -515,8 +515,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             action == "rotate" && posture?.isSupported == true ? false : screen.supports(action)
         }, isEnabled: screen.isEnabled,
                                        recordingTitle: screen.recordingTitle, resizingApp: screen.resizingApp, capturesKeyboard: screen.capturesKeyboard,
-                                       nativeRotation: screen.nativeRotationControl,
-                                       nativeRotationEnabled: screen.canControlDevice && !model.managingDeviceIDs.contains(identifier))
+                                       nativePoses: screen.nativePoseControls,
+                                       nativePosesEnabled: screen.canControlDevice && !model.managingDeviceIDs.contains(identifier))
         mainWindow?.updateDevicePosture(posture, isEnabled: screen.canControlDevice && !model.managingDeviceIDs.contains(identifier))
         mainWindow?.updateCanvasZoom(supports: screen.supports, isEnabled: screen.isEnabled, isSelected: screen.canvasZoomIsSelected)
     }
@@ -1054,6 +1054,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     private var screenActionButtons: [String: NSButton] = [:]
     private var postureButtons: [DevicePosture: NSButton] = [:]
     private let nativeRotationContainer = NSStackView()
+    private let nativePostureContainer = NSStackView()
     private let rotationDivider = NSBox()
     private var screenActionArtworkXcodeURL: URL?
     private var screenActionArtworkTask: Task<Void, Never>?
@@ -1547,6 +1548,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
                 ])
                 controls.addArrangedSubview(rotationDivider)
                 rotationDivider.isHidden = true
+                controls.addArrangedSubview(nativePostureContainer)
+                nativePostureContainer.isHidden = true
                 for posture in DevicePosture.allCases {
                     let button = NSButton(title: posture.title, target: self, action: #selector(performScreenAction(_:)))
                     button.imagePosition = .noImage
@@ -1826,19 +1829,23 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         return super.supplementalTarget(forAction: action, sender: sender)
     }
 
-    func updateScreenToolbar(supports: (String) -> Bool, isEnabled: (String) -> Bool, recordingTitle: String, resizingApp: Bool = false, capturesKeyboard: Bool = false,
-                             nativeRotation: NativeDeviceRotationControl? = nil, nativeRotationEnabled: Bool = true) {
-        let nativeView = liveDeviceIdentifier != nil && nativeRotation?.isAvailable == true ? nativeRotation?.view : nil
-        if nativeRotationContainer.arrangedSubviews.first !== nativeView ||
-            nativeView.map({ $0.superview !== nativeRotationContainer }) == true {
-            for view in nativeRotationContainer.arrangedSubviews {
-                nativeRotationContainer.removeArrangedSubview(view)
-                view.removeFromSuperview()
+    private func installNativeControl(_ view: NSView?, in container: NSStackView) {
+        if container.arrangedSubviews.first !== view || view.map({ $0.superview !== container }) == true {
+            for child in container.arrangedSubviews {
+                container.removeArrangedSubview(child)
+                child.removeFromSuperview()
             }
-            if let nativeView { nativeRotationContainer.addArrangedSubview(nativeView) }
+            if let view { container.addArrangedSubview(view) }
         }
-        nativeRotation?.isEnabled = nativeRotationEnabled
-        nativeRotationContainer.isHidden = nativeView == nil
+        container.isHidden = view == nil
+    }
+
+    func updateScreenToolbar(supports: (String) -> Bool, isEnabled: (String) -> Bool, recordingTitle: String, resizingApp: Bool = false, capturesKeyboard: Bool = false,
+                             nativePoses: NativeDevicePoseControls? = nil, nativePosesEnabled: Bool = true) {
+        let showsNative = liveDeviceIdentifier != nil && nativePoses?.isAvailable == true
+        installNativeControl(showsNative ? nativePoses?.rotationView : nil, in: nativeRotationContainer)
+        installNativeControl(showsNative ? nativePoses?.postureView : nil, in: nativePostureContainer)
+        nativePoses?.isEnabled = nativePosesEnabled
         if liveDeviceIdentifier != nil { loadScreenActionArtworkIfNeeded() }
         if let item = window?.toolbar?.items.first(where: { $0.itemIdentifier == resizeAppIdentifier }) {
             item.isHidden = liveDeviceIdentifier == nil || !supports("resizeApp")
@@ -1888,15 +1895,16 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         let available = liveDeviceIdentifier.flatMap { id in self.model.inventory.first { $0.id == id } }
             .map { DevicePostureModel.canInspect(capabilities: $0.capabilities) } ?? false
         let visible = liveDeviceIdentifier != nil && model?.isSupported == true
-        rotationDivider.isHidden = !visible || nativeRotationContainer.isHidden
+        let showsNative = !nativePostureContainer.isHidden
+        rotationDivider.isHidden = (!visible && !showsNative) || nativeRotationContainer.isHidden
         for (posture, button) in postureButtons {
-            button.isHidden = !visible
+            button.isHidden = !visible || showsNative
             button.isEnabled = isEnabled && available && model?.canSelect == true
             button.state = model?.confirmedPosture == posture ? .on : .off
             button.contentTintColor = button.state == .on ? .controlAccentColor : .labelColor
             button.toolTip = model?.lastError?.localizedDescription ?? posture.title
         }
-        profileScreenActions.isHidden = screenActionButtons["rotate"]?.isHidden != false && nativeRotationContainer.isHidden && !visible
+        profileScreenActions.isHidden = screenActionButtons["rotate"]?.isHidden != false && nativeRotationContainer.isHidden && !visible && !showsNative
         screenActionBar.isHidden = primaryScreenActions.isHidden && profileScreenActions.isHidden
         updateDeviceFooter()
     }

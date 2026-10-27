@@ -115,7 +115,7 @@ final class CoreDeviceDisplayGeometry {
 @MainActor
 public final class NativeDeviceCanvas {
     public let view: NSView
-    public let rotationControl: NativeDeviceRotationControl
+    public let poseControls: NativeDevicePoseControls
     private let hosting: NativeCanvasHostingView
     private let presentation: NativeCanvasPresentation
     private let values: [NativeSwiftValue]
@@ -194,9 +194,9 @@ public final class NativeDeviceCanvas {
         let presentation = NativeCanvasPresentation()
         let root = NativeCanvasRoot(presentation: presentation, shown: try activated(content(shown)),
             hidden: try activated(content(hidden)), canvasPath: canvasPath, zoomPath: zoomPath)
-        let rotation = try await NativeDeviceRotationControl.connect(deviceIdentifier: uuid)
+        let poses = try await NativeDevicePoseControls.connect(deviceIdentifier: uuid)
         let captureDisplay = try await captureDisplayReader(for: remote)
-        return NativeDeviceCanvas(root: AnyView(root), presentation: presentation, rotationControl: rotation,
+        return NativeDeviceCanvas(root: AnyView(root), presentation: presentation, poseControls: poses,
             captureDisplay: captureDisplay,
             values: [base, activation, shown, hidden, canvasKey, zoomKey]) { page, usage, state in
                 try unsafe send.unsafeInvoke(on: button, page, usage, state == .down ? down : up)
@@ -233,13 +233,13 @@ public final class NativeDeviceCanvas {
         }
     }
 
-    private init(root: AnyView, presentation: NativeCanvasPresentation, rotationControl: NativeDeviceRotationControl,
+    private init(root: AnyView, presentation: NativeCanvasPresentation, poseControls: NativeDevicePoseControls,
                  captureDisplay: @escaping () throws -> UInt32, values: [NativeSwiftValue],
                  sendButton: @escaping (Int, Int, RemoteDeviceButtonState) throws -> Void) {
         hosting = NativeCanvasHostingView(rootView: root)
         hosting.sizingOptions = []
         self.presentation = presentation
-        self.rotationControl = rotationControl
+        self.poseControls = poseControls
         readCaptureDisplayID = captureDisplay
         self.values = values
         sendNativeButton = sendButton
@@ -261,7 +261,7 @@ public final class NativeDeviceCanvas {
         try sendNativeButton(usagePage, usage, state)
     }
     public func disconnect() {
-        rotationControl.disconnect()
+        poseControls.disconnect()
         hosting.content = nil
         hosting.rootView = AnyView(EmptyView())
     }
