@@ -28,6 +28,11 @@ struct DeviceCommand {
         case resizeApp, appleTVRemote, stayOnTop, physicalSize, pointAccurate, pixelAccurate, fitScreen
     }
 
+    /// Device Hub's canvas rotates left by default; Option reverses it.
+    static func canvasRotation(modifierFlags: NSEvent.ModifierFlags) -> ID {
+        modifierFlags.contains(.option) ? .rotateRight : .rotateLeft
+    }
+
     struct Toolbar {
         /// A toolbar button's appearance and action.
         struct Face {
