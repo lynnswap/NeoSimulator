@@ -312,8 +312,13 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
         if showingProfiles && !canReadProfiles {
             let message: String
             if case .simulator(let simulator) = device {
-                message = simulator.deviceSetPath != nil ? "Profiles are unavailable for simulators in custom device sets."
-                    : "Start the simulator to edit configuration profiles."
+                if simulator.deviceSetPath != nil {
+                    message = "Profiles are unavailable for simulators in custom device sets."
+                } else if !simulatorIsRunning {
+                    message = "Start the simulator to edit configuration profiles."
+                } else {
+                    message = "This simulator does not currently support \(content.title.lowercased())."
+                }
             } else { message = "This device does not currently support \(content.title.lowercased())." }
             return ("Profiles", message, "checkmark.seal")
         }
