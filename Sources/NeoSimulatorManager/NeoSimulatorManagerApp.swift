@@ -1054,8 +1054,9 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     private var screenActionButtons: [String: NSButton] = [:]
     private var postureButtons: [DevicePosture: NSButton] = [:]
     private let nativeRotationContainer = NSStackView()
-    private var postureArtworkXcodeURL: URL?
-    private var postureArtworkTask: Task<Void, Never>?
+    private let rotationDivider = NSBox()
+    private var screenActionArtworkXcodeURL: URL?
+    private var screenActionArtworkTask: Task<Void, Never>?
     private let deviceFooter = NSStackView()
     private let activityStack = NSStackView()
     private var canvasBottomToPane: NSLayoutConstraint?
@@ -1484,7 +1485,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             deviceName.widthAnchor.constraint(lessThanOrEqualTo: stack.widthAnchor),
             deviceRuntime.widthAnchor.constraint(lessThanOrEqualTo: stack.widthAnchor),
             deviceFooter.centerXAnchor.constraint(equalTo: view.safeAreaLayoutGuide.centerXAnchor),
-            deviceFooter.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -12),
+            deviceFooter.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8),
             deviceFooter.leadingAnchor.constraint(greaterThanOrEqualTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 12),
             deviceFooter.trailingAnchor.constraint(lessThanOrEqualTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -12),
         ])
@@ -1507,19 +1508,21 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             controls.orientation = .horizontal
             controls.alignment = .centerY
             controls.distribution = .fill
-            controls.spacing = 0
-            controls.edgeInsets = NSEdgeInsets(top: 4, left: 6, bottom: 4, right: 6)
+            controls.spacing = 2
+            controls.edgeInsets = NSEdgeInsets(top: 4, left: 4, bottom: 4, right: 4)
             for identifier in identifiers {
-                let (title, symbol) = switch identifier {
-                case "home": ("Home", "square.grid.3x3.fill")
+                let (title, symbol): (String, String?) = switch identifier {
+                case "home": ("Home", "app.grid.3x3")
                 case "capture": ("Save Screenshot…", "camera.viewfinder")
                 case "record": ("Record Screen", "record.circle")
-                default: ("Rotate", "rotate.right")
+                default: ("Rotate", nil)
                 }
-                let button = NSButton(title: "", target: self, action: #selector(performScreenAction(_:)))
-                button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)
-                button.imagePosition = .imageOnly
+                let button = NSButton(title: title, target: self, action: #selector(performScreenAction(_:)))
+                button.image = symbol.flatMap { NSImage.deviceControlSymbol(named: $0, accessibilityDescription: title) }
+                button.imagePosition = button.image == nil ? .noImage : .imageOnly
                 button.identifier = NSUserInterfaceItemIdentifier(identifier)
+                button.bezelStyle = .accessoryBarAction
+                button.symbolConfiguration = .init(pointSize: 15, weight: .regular, scale: .medium)
                 button.isBordered = false
                 button.imageScaling = .scaleProportionallyDown
                 button.contentTintColor = .labelColor
@@ -1528,7 +1531,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
                 button.translatesAutoresizingMaskIntoConstraints = false
                 NSLayoutConstraint.activate([
                     button.widthAnchor.constraint(equalToConstant: 32),
-                    button.heightAnchor.constraint(equalToConstant: 32),
+                    button.heightAnchor.constraint(equalToConstant: 28),
                 ])
                 controls.addArrangedSubview(button)
                 screenActionButtons[identifier] = button
@@ -1536,12 +1539,21 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             if glass === profileScreenActions {
                 controls.insertArrangedSubview(nativeRotationContainer, at: 0)
                 nativeRotationContainer.isHidden = true
+                rotationDivider.boxType = .separator
+                rotationDivider.translatesAutoresizingMaskIntoConstraints = false
+                NSLayoutConstraint.activate([
+                    rotationDivider.widthAnchor.constraint(equalToConstant: 1),
+                    rotationDivider.heightAnchor.constraint(equalToConstant: 20),
+                ])
+                controls.addArrangedSubview(rotationDivider)
+                rotationDivider.isHidden = true
                 for posture in DevicePosture.allCases {
                     let button = NSButton(title: posture.title, target: self, action: #selector(performScreenAction(_:)))
                     button.imagePosition = .noImage
                     button.identifier = NSUserInterfaceItemIdentifier("posture." + posture.rawValue)
                     button.setButtonType(.pushOnPushOff)
                     button.bezelStyle = .accessoryBarAction
+                    button.symbolConfiguration = .init(pointSize: 15, weight: .regular, scale: .medium)
                     button.isBordered = false
                     button.isHidden = true
                     button.toolTip = posture.title
@@ -1549,16 +1561,16 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
                     button.translatesAutoresizingMaskIntoConstraints = false
                     NSLayoutConstraint.activate([
                         button.widthAnchor.constraint(greaterThanOrEqualToConstant: 32),
-                        button.heightAnchor.constraint(equalToConstant: 32),
+                        button.heightAnchor.constraint(equalToConstant: 28),
                     ])
                     controls.addArrangedSubview(button)
                     postureButtons[posture] = button
                 }
             }
             glass.style = .regular
-            glass.cornerRadius = 20
+            glass.cornerRadius = 18
             glass.contentView = controls
-            glass.heightAnchor.constraint(equalToConstant: 40).isActive = true
+            glass.heightAnchor.constraint(equalToConstant: 36).isActive = true
             screenActionBar.addArrangedSubview(glass)
         }
     }
@@ -1827,6 +1839,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         }
         nativeRotation?.isEnabled = nativeRotationEnabled
         nativeRotationContainer.isHidden = nativeView == nil
+        if liveDeviceIdentifier != nil { loadScreenActionArtworkIfNeeded() }
         if let item = window?.toolbar?.items.first(where: { $0.itemIdentifier == resizeAppIdentifier }) {
             item.isHidden = liveDeviceIdentifier == nil || !supports("resizeApp")
             item.isEnabled = isEnabled("resizeApp")
@@ -1875,7 +1888,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         let available = liveDeviceIdentifier.flatMap { id in self.model.inventory.first { $0.id == id } }
             .map { DevicePostureModel.canInspect(capabilities: $0.capabilities) } ?? false
         let visible = liveDeviceIdentifier != nil && model?.isSupported == true
-        if visible { loadPostureArtworkIfNeeded() }
+        rotationDivider.isHidden = !visible || nativeRotationContainer.isHidden
         for (posture, button) in postureButtons {
             button.isHidden = !visible
             button.isEnabled = isEnabled && available && model?.canSelect == true
@@ -1898,7 +1911,14 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         group.isHidden = liveDeviceIdentifier == nil || !supports(CanvasZoom.Action.fit.rawValue)
         for (index, action) in CanvasZoom.Action.allCases.enumerated() {
             group.subitems[index].isEnabled = isEnabled(action.rawValue)
-            group.setSelected(isSelected(action.rawValue), at: index)
+        }
+        if let selected = CanvasZoom.Action.allCases.firstIndex(where: { isSelected($0.rawValue) }) {
+            group.setSelected(true, at: selected)
+        } else {
+            // selectOne rejects clearing its last selection, including selectedIndex = -1.
+            group.selectionMode = .selectAny
+            for index in group.subitems.indices { group.setSelected(false, at: index) }
+            group.selectionMode = .selectOne
         }
     }
 
@@ -1907,17 +1927,19 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         onScreenAction?(CanvasZoom.Action.allCases[sender.selectedIndex].rawValue)
     }
 
-    private func loadPostureArtworkIfNeeded() {
-        guard let xcodeURL = preferredArtworkXcodeURL(), xcodeURL != postureArtworkXcodeURL else { return }
-        postureArtworkXcodeURL = xcodeURL
-        postureArtworkTask?.cancel()
+    private func loadScreenActionArtworkIfNeeded() {
+        guard let xcodeURL = preferredArtworkXcodeURL(), xcodeURL != screenActionArtworkXcodeURL else { return }
+        screenActionArtworkXcodeURL = xcodeURL
+        screenActionArtworkTask?.cancel()
         for button in postureButtons.values {
             button.image = nil
             button.imagePosition = .noImage
         }
         let catalogURL = xcodeURL.appendingPathComponent(
             "Contents/SharedFrameworks/DeviceKit.framework/Versions/A/PlugIns/CoreDevicePopDeviceKitExtension.devicekitplugin/Contents/Resources/Assets.car")
-        postureArtworkTask = Task { [weak self] in
+        screenActionArtworkTask = Task { [weak self] in
+            let deviceKitCatalogURL = xcodeURL.appendingPathComponent("Contents/SharedFrameworks/DeviceKit.framework/Versions/A/Resources/Assets.car")
+            let rotation = try? await DeviceSymbolResource.load(named: "rotate.device.right", from: deviceKitCatalogURL)
             var images: [DevicePosture: NSImage] = [:]
             for posture in DevicePosture.allCases {
                 let name = switch posture {
@@ -1930,6 +1952,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
                 images[posture] = resource?.image
             }
             guard let self else { return }
+            self.screenActionButtons["rotate"]?.image = rotation?.image
+            self.screenActionButtons["rotate"]?.imagePosition = rotation == nil ? .noImage : .imageOnly
             for (posture, button) in self.postureButtons {
                 button.image = images[posture]
                 button.imagePosition = button.image == nil ? .noImage : .imageOnly
@@ -2121,7 +2145,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [.toggleSidebar, .flexibleSpace, newSimulatorIdentifier, filterIdentifier, .sidebarTrackingSeparator,
-         .flexibleSpace, resizeAppIdentifier, captureKeyboardIdentifier, canvasZoomIdentifier, compactIdentifier, moreIdentifier, .inspectorTrackingSeparator, inspectorIdentifier]
+         .flexibleSpace, captureKeyboardIdentifier, resizeAppIdentifier, canvasZoomIdentifier, compactIdentifier, moreIdentifier, .inspectorTrackingSeparator, inspectorIdentifier]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { toolbarDefaultItemIdentifiers(toolbar) }
@@ -2132,7 +2156,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             let item = NSToolbarItem(itemIdentifier: itemIdentifier)
             item.label = "Resize App"
             item.toolTip = "Resize App"
-            item.image = NSImage(systemSymbolName: "arrow.up.left.and.arrow.down.right", accessibilityDescription: item.label)
+            item.image = NSImage(systemSymbolName: "aspectratio", accessibilityDescription: item.label)
             item.target = self
             item.action = #selector(resizeApp(_:))
             let menuItem = NSMenuItem(title: item.label, action: item.action, keyEquivalent: "")
@@ -2171,14 +2195,14 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         }
         if itemIdentifier == canvasZoomIdentifier {
             let labels = ["Zoom Out", "Fit", "Physical Size", "Zoom In"]
-            let symbols = ["minus.magnifyingglass", "arrow.up.left.and.down.right.magnifyingglass", "1.magnifyingglass", "plus.magnifyingglass"]
-            let images = zip(symbols, labels).compactMap { NSImage(systemSymbolName: $0, accessibilityDescription: $1) }
+            let symbols = ["minus.magnifyingglass", "arrowtriangles.up.right.down.left.magnifyingglass", "1.magnifyingglass", "plus.magnifyingglass"]
+            let images = zip(symbols, labels).compactMap { NSImage.deviceControlSymbol(named: $0, accessibilityDescription: $1) }
             let item: NSToolbarItemGroup
             if images.count == labels.count {
-                item = NSToolbarItemGroup(itemIdentifier: itemIdentifier, images: images, selectionMode: .selectAny,
+                item = NSToolbarItemGroup(itemIdentifier: itemIdentifier, images: images, selectionMode: .selectOne,
                                            labels: labels, target: self, action: #selector(performCanvasZoom(_:)))
             } else {
-                item = NSToolbarItemGroup(itemIdentifier: itemIdentifier, titles: labels, selectionMode: .selectAny,
+                item = NSToolbarItemGroup(itemIdentifier: itemIdentifier, titles: labels, selectionMode: .selectOne,
                                            labels: labels, target: self, action: #selector(performCanvasZoom(_:)))
             }
             item.label = "Canvas Zoom"

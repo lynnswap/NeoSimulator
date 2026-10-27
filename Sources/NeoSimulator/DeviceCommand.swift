@@ -109,7 +109,7 @@ struct DeviceCommand {
 
     static let catalog: [ID: DeviceCommand] = Dictionary(uniqueKeysWithValues: ([
         DeviceCommand(id: .resizeApp, title: "Resize App",
-                      toolbar: Toolbar(label: "Resize App", symbol: "arrow.up.left.and.arrow.down.right", buttonWidth: 32),
+                      toolbar: Toolbar(label: "Resize App", symbol: "aspectratio", buttonWidth: 32),
                       isEnabled: { $0.session.canResizeApp },
                       state: { $0.session.isResizingApp || $0.session.isStartingAppResize ? .on : .off }) { $0.toggleAppResize() },
         // File: Save Screen becomes Record Screen with Option, or Stop Recording while recording.

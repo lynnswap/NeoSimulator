@@ -2,6 +2,17 @@ import ABIBridge
 import AppKit
 import SwiftUI
 
+@MainActor
+extension NSImage {
+    static func deviceControlSymbol(named name: String, accessibilityDescription: String) -> NSImage? {
+        let image = NSImage(systemSymbolName: name, accessibilityDescription: accessibilityDescription)
+            ?? (NSImage.perform(NSSelectorFromString("imageWithPrivateSystemSymbolName:"), with: name)?
+                .takeUnretainedValue() as? NSImage)
+        image?.accessibilityDescription = accessibilityDescription
+        return image
+    }
+}
+
 /// A custom symbol whose images and palette paths come from one asset catalog.
 @MainActor
 final class DeviceSymbolResource {
