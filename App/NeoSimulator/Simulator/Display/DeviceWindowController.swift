@@ -1712,7 +1712,6 @@ private final class DeviceContentView: NSView, DisplayContentView {
             needsLayout = true
         }
     }
-    private var canvasControlsHeight: CGFloat { canvasControls?.isHidden == false ? 52 : 0 }
     var canvasControlsWidth: CGFloat {
         canvasControls.flatMap { $0.isHidden ? nil : $0.fittingSize.width + 24 } ?? 0
     }
@@ -1721,7 +1720,8 @@ private final class DeviceContentView: NSView, DisplayContentView {
         self.display.removeFromSuperview()
         self.display = display
         previousDisplaySize = nil
-        if usesViewport { canvasDocumentView.addSubview(display) } else { addSubview(display) }
+        if usesViewport { canvasDocumentView.addSubview(display) }
+        else { addSubview(display, positioned: .below, relativeTo: canvasControls) }
         needsLayout = true
     }
     private let canvasScrollView = NSScrollView()
@@ -1740,7 +1740,8 @@ private final class DeviceContentView: NSView, DisplayContentView {
         let parent = usesViewport ? canvasDocumentView : self
         if display.superview !== parent {
             display.removeFromSuperview()
-            parent.addSubview(display)
+            if usesViewport { parent.addSubview(display) }
+            else { addSubview(display, positioned: .below, relativeTo: canvasControls) }
         }
         canvasScrollView.isHidden = !usesViewport
         updateScrollMonitor()
@@ -1765,8 +1766,8 @@ private final class DeviceContentView: NSView, DisplayContentView {
         guard let window else { return 52 }
         return max(0, bounds.height - window.contentLayoutRect.height)
     }
-    /// The window space reserved for its header, display gap, and canvas controls.
-    var heightAboveDisplay: CGFloat { headerHeight + displayGap + canvasControlsHeight }
+    /// The window space reserved above the display for its header and display gap.
+    var heightAboveDisplay: CGFloat { headerHeight + displayGap }
     init(display: NSView, usesNativeCanvas: Bool) {
         self.usesNativeCanvas = usesNativeCanvas
         self.display = display
@@ -1848,7 +1849,7 @@ private final class DeviceContentView: NSView, DisplayContentView {
             let width = canvasControls.fittingSize.width
             canvasControls.frame = NSRect(x: (bounds.width - width) / 2, y: 8, width: width, height: 36)
         }
-        let available = NSRect(origin: NSPoint(x: 0, y: canvasControlsHeight), size: availableDisplaySize)
+        let available = NSRect(origin: .zero, size: availableDisplaySize)
         if usesViewport {
             let center = retainedCanvasCenter ?? canvasCenter ?? NSPoint(x: 0.5, y: 0.5)
             retainedCanvasCenter = nil

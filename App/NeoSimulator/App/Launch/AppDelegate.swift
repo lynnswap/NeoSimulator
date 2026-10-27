@@ -504,10 +504,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // These controls return to the main toolbar with the same screen.
             _ = screen.capturesKeyboard
             _ = screen.resizingApp
-            for action in ["resizeApp", "captureKeyboard"] + CanvasZoom.Action.allCases.map(\.rawValue) {
+            for action in ["resizeApp", "captureKeyboard"] {
                 _ = screen.supports(action)
                 _ = screen.isEnabled(action)
-                _ = screen.canvasZoomIsSelected(action)
+            }
+            if let controller = owner as? DeviceWindowController {
+                _ = controller.canvasZoom.scale
+                _ = controller.canvasZoom.fitScale
+                _ = controller.canvasZoom.mode
             }
             if mainWindow?.liveDeviceIdentifier == identifier { updateScreenToolbar() }
         } onChange: { [weak self, weak owner, weak session] in
