@@ -159,10 +159,10 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
                  willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
         if itemIdentifier == Self.nativeRotationItem,
-           let control = controller?.session.display.nativeRotationControl, control.isAvailable {
+           let control = controller?.session.display.nativePoseControls, control.isAvailable {
             let item = NSToolbarItem(itemIdentifier: itemIdentifier)
             item.label = "Rotate"
-            item.view = control.view
+            item.view = control.rotationView
             return item
         }
         if itemIdentifier == Self.mainWindowItem {
@@ -301,12 +301,12 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
     }
 
     func updateNativeRotation() {
-        let control = controller?.session.display.nativeRotationControl
+        let control = controller?.session.display.nativePoseControls
         let visible = controller?.isEmbedded == false && control?.isAvailable == true
         control?.isEnabled = controller?.session.canPerformCommands == true
         if let index = toolbar.items.firstIndex(where: { $0.itemIdentifier == Self.nativeRotationItem }) {
             if !visible { toolbar.removeItem(at: index) }
-            else if toolbar.items[index].view !== control?.view { toolbar.items[index].view = control?.view }
+            else if toolbar.items[index].view !== control?.rotationView { toolbar.items[index].view = control?.rotationView }
         } else if visible {
             toolbar.insertItem(withItemIdentifier: Self.nativeRotationItem, at: max(0, toolbar.items.count - 1))
         }

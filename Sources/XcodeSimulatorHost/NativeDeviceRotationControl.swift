@@ -3,29 +3,36 @@ import AppKit
 import Observation
 import SwiftUI
 
-/// Hosts the Duo plugin's rotation control and its native orientation state.
+/// Hosts the Duo plugin's rotation and posture controls with their native orientation state.
 @_spi(NeoSimulator)
 @MainActor @Observable
-public final class NativeDeviceRotationControl {
+public final class NativeDevicePoseControls {
     public var isEnabled = true
     public var isAvailable: Bool { content != nil }
     @ObservationIgnored public var onError: ((any Error) -> Void)?
-    private var content: AnyView?
-    @ObservationIgnored private var readControl: (() throws -> AnyView?)?
+    private struct Controls {
+        let rotation: AnyView
+        let postures: AnyView
+    }
+    private var content: Controls?
+    @ObservationIgnored private var readControl: (() throws -> Controls?)?
     @ObservationIgnored private var stopped = false
-    @ObservationIgnored public lazy var view: NSView = {
-        let host = NSHostingView(rootView: Content(model: self))
+    @ObservationIgnored public lazy var rotationView: NSView = makeView(postures: false)
+    @ObservationIgnored public lazy var postureView: NSView = makeView(postures: true)
+
+    private func makeView(postures: Bool) -> NSView {
+        let host = NSHostingView(rootView: Content(model: self, postures: postures))
         host.sizingOptions = [.intrinsicContentSize]
         host.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
-            host.widthAnchor.constraint(equalToConstant: 32),
+            host.widthAnchor.constraint(equalToConstant: postures ? 100 : 32),
             host.heightAnchor.constraint(equalToConstant: 28),
         ])
         return host
-    }()
+    }
 
-    static func connect(deviceIdentifier: UUID) async throws -> NativeDeviceRotationControl {
-        let result = NativeDeviceRotationControl()
+    static func connect(deviceIdentifier: UUID) async throws -> NativeDevicePoseControls {
+        let result = NativeDevicePoseControls()
         let runtime = ABIRuntime.shared
         let pluginsType = try await runtime.resolve(.swift(.type("DeviceKit.PluginManager")))
         let shared = try await pluginsType.resolve(.swift(.staticGetter("shared", as: (() -> NativeSwiftValue).self)))
@@ -52,7 +59,7 @@ public final class NativeDeviceRotationControl {
             let owner = try unsafe providers.unsafeInvoke(on: plugins)
             let values = try owner.withCopy { raw -> [Any] in
                 guard let sequence = raw as? any Sequence else {
-                    throw CLIError.unavailable("native-rotation-providers", "DeviceKit's action providers are unavailable.")
+                    throw CLIError.unavailable("native-pose-providers", "DeviceKit's action providers are unavailable.")
                 }
                 func elements<S: Sequence>(_ sequence: S) -> [Any] { sequence.map { $0 } }
                 return elements(sequence)
@@ -63,17 +70,22 @@ public final class NativeDeviceRotationControl {
                 let controls = try provider.type.resolveAndWait(.swift(.method(
                     "DeviceKit.ActionBarControlProvider.controls(deviceID:onError:)",
                     as: ((UUID, Failure) -> [NativeSwiftValue]).self)))
+                var rotation: AnyView?, postures: AnyView?
                 for control in try unsafe controls.unsafeInvoke(on: provider, deviceIdentifier, failure) {
                     let identifier = try unsafe readIdentifier.unsafeInvoke(on: control)
-                    guard try unsafe readName.unsafeInvoke(on: identifier) == "com.apple.dt.coredevicepop.actionbar.control.v68.rotate" else { continue }
+                    let name = try unsafe readName.unsafeInvoke(on: identifier)
+                    guard name == "com.apple.dt.coredevicepop.actionbar.control.v68.rotate" ||
+                            name == "com.apple.dt.coredevicepop.actionbar.control.v68.poses" else { continue }
                     let view = try unsafe readView.unsafeInvoke(on: control)
-                    return try view.withCopy { raw in
+                    let content = try view.withCopy { raw in
                         guard let content = raw as? AnyView else {
-                            throw CLIError.unavailable("native-rotation-view", "DeviceKit's rotation control is not a SwiftUI view.")
+                            throw CLIError.unavailable("native-pose-view", "DeviceKit's pose control is not a SwiftUI view.")
                         }
                         return content
                     }
+                    if name.hasSuffix(".rotate") { rotation = content } else { postures = content }
                 }
+                if let rotation, let postures { return Controls(rotation: rotation, postures: postures) }
             }
             return nil
         }
@@ -111,16 +123,26 @@ public final class NativeDeviceRotationControl {
         onError = nil
     }
 
+    // The provider inherits 32 × 28 button bounds from Device Hub's action bar.
+    private struct ActionButtonStyle: ButtonStyle {
+        func makeBody(configuration: Configuration) -> some View {
+            configuration.label
+                .frame(width: 32, height: 28)
+                .contentShape(Rectangle())
+        }
+    }
+
     private struct Content: View {
-        weak var model: NativeDeviceRotationControl?
+        weak var model: NativeDevicePoseControls?
+        let postures: Bool
         var body: some View {
             if let model, let content = model.content {
-                content
+                (postures ? content.postures : content.rotation)
                     .labelStyle(.iconOnly)
-                    .buttonStyle(.plain)
+                    .buttonStyle(ActionButtonStyle())
                     .font(.system(size: 15))
                     .disabled(!model.isEnabled)
-                    .frame(width: 32, height: 28)
+                    .frame(width: postures ? 100 : 32, height: 28)
             }
         }
     }

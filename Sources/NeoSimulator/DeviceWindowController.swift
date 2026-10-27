@@ -405,7 +405,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         toolbar.attach(to: window)
         toolbar.setShowsMainWindowAction(onShowInMainWindow != nil)
         session.display.onPropertiesChange = { [weak self] in self?.displayPropertiesChanged() }
-        session.display.nativeRotationControl?.onError = { [weak self] in self?.present($0) }
+        session.display.nativePoseControls?.onError = { [weak self] in self?.present($0) }
         session.onAppResizeError = { [weak self] in self?.present($0) }
         session.onDisplayWillChange = { [weak self] in
             guard let self else { return }
@@ -465,7 +465,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         content.isSizedToDisplay = false
         keyboard.display = session.display
         session.display.onPropertiesChange = { [weak self] in self?.displayPropertiesChanged() }
-        session.display.nativeRotationControl?.onError = { [weak self] in self?.present($0) }
+        session.display.nativePoseControls?.onError = { [weak self] in self?.present($0) }
         if !session.isResizingApp { session.display.setChromeVisible(preferences.showsDeviceBezels) }
         bezelChanged()
         connectTouchPressure()
