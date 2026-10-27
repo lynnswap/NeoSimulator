@@ -116,9 +116,9 @@ struct DeviceInformationView: View {
                 }
                 Divider()
                 HStack(spacing: 4) {
-                    PairingMenuButton(menu: pairingMenu(device),
-                                      isEnabled: manager.canAddPairing(for: device) && !inspection.isManaging &&
-                                          manager.canManage(.pair, deviceIDs: [device.inventoryID]))
+                    PairingMenuButton(menu: pairingMenu(device))
+                        .disabled(!manager.canAddPairing(for: device) || inspection.isManaging ||
+                                  !manager.canManage(.pair, deviceIDs: [device.inventoryID]))
                         .frame(width: 34, height: 24)
                     Button {
                         if let targetWatch { unpair(targetWatch) }
@@ -137,13 +137,12 @@ struct DeviceInformationView: View {
 
     private struct PairingMenuButton: NSViewRepresentable {
         let menu: NSMenu
-        let isEnabled: Bool
 
         func makeNSView(context: Context) -> NSPopUpButton {
             let image = NSImage(systemSymbolName: "plus", accessibilityDescription: "Add Paired Simulator")!
             let button = NSPopUpButton(image: image, pullDownMenu: menu)
             button.controlSize = .small
-            button.isEnabled = isEnabled
+            button.isEnabled = context.environment.isEnabled
             button.setAccessibilityLabel("Add Paired Simulator")
             button.toolTip = menu.title
             return button
@@ -151,7 +150,7 @@ struct DeviceInformationView: View {
 
         func updateNSView(_ button: NSPopUpButton, context: Context) {
             button.menu = menu
-            button.isEnabled = isEnabled
+            button.isEnabled = context.environment.isEnabled
             button.toolTip = menu.title
         }
     }

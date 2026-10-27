@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import Observation
+import SwiftUI
 import Testing
 @testable import XcodeSimulatorHost
 
@@ -678,11 +679,13 @@ struct ManagerModelTests {
         #expect(information.fields.first { $0.value == "External" }?.title == "Configuration / Displays — Item 2 / Name")
     }
 
-    @Test func pairedInfoResolvesThePartnerInItsDeviceSetAndUnpairsTheWatchFromEitherSide() throws {
+    @Test func pairedInfoResolvesThePartnerInItsDeviceSetAndUnpairsTheWatchFromEitherSide() async throws {
+        _ = NSApplication.shared
         func device(_ id: String, family: String, set: String? = nil, pairs: Set<String> = ["pair"]) -> SimulatorHostDevice {
             SimulatorHostDevice(identifier: id, name: id, descriptiveName: id,
                 runtimeIdentifier: "runtime", runtimeName: family == "Apple Watch" ? "watchOS" : "iOS",
-                productFamily: family, state: "Shutdown", deviceSetPath: set, pairIdentifiers: pairs)
+                productFamily: family, state: "Shutdown", deviceSetPath: set,
+                capabilities: ["com.apple.coredevice.feature.companiondevicepairing"], pairIdentifiers: pairs)
         }
         let phone = device("phone", family: "iPhone")
         let watch = device("watch", family: "Apple Watch")
@@ -695,6 +698,40 @@ struct ManagerModelTests {
         #expect(DeviceInformation.pairedSimulators(for: watch, in: inventory) == [phone])
         #expect(DeviceInformation.watchToUnpair(device: phone, partner: watch) == watch)
         #expect(DeviceInformation.watchToUnpair(device: watch, partner: phone) == watch)
+
+        let manager = SimulatorManagerModel(source: ManagerModelSource(devices: inventory))
+        await manager.refresh()
+        let inspection = DeviceInspectorModel()
+        inspection.device = .simulator(watch)
+        let target = NSObject()
+        let suite = "NeoSimulatorTests.PairedInfo.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let controller = NSHostingController(rootView: DeviceInformationView(
+            manager: manager, inspection: inspection, visibility: DeviceInfoVisibility(defaults: defaults),
+            pairingMenu: { SimulatorPairingMenu.make(for: $0, model: manager, target: target,
+                                                    action: #selector(NSApplication.terminate(_:))) },
+            unpair: { _ in Issue.record("Unpaired without a user action") }))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 320, height: 800),
+                              styleMask: .titled, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentViewController = controller
+        defer { window.close() }
+        let view = controller.view
+        view.layoutSubtreeIfNeeded()
+        window.displayIfNeeded()
+        func addButton(in view: NSView) -> NSPopUpButton? {
+            if let button = view as? NSPopUpButton,
+               button.accessibilityLabel() == "Add Paired Simulator" { return button }
+            return view.subviews.lazy.compactMap { addButton(in: $0) }.first
+        }
+        let add = try #require(addButton(in: view))
+        let canAddAnotherPhone = add.isEnabled
+        #expect(!canAddAnotherPhone)
+        inspection.device = .simulator(phone)
+        view.layoutSubtreeIfNeeded()
+        window.displayIfNeeded()
+        #expect(try #require(addButton(in: view)).isEnabled)
     }
 
     @Test func profilesFollowTheAvailableKindWhenChangingDevices() throws {
