@@ -304,6 +304,35 @@ struct CaptureAndImportTests {
         #expect(try Data(contentsOf: destination) == original)
         #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path) == ["movie.mov"])
     }
+
+    @Test(arguments: [true, false])
+    func recordingCleanupDistinguishesMissingOutputFromRemovalFailure(outputAlreadyRemoved: Bool) async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let store = RecordingStore()
+        var errors: [Error] = []
+        var output: URL?
+        store.onError = { errors.append($0) }
+        _ = try store.start(to: .file(directory.appendingPathComponent("movie.mov")), process: { url in
+            output = url
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/sh")
+            process.arguments = ["-c", (outputAlreadyRemoved ? "rm -- \"$1\"; " : "") + "echo recorder-denied >&2; exit 7", "sh", url.path]
+            return process
+        }, onFinished: {})
+        if !outputAlreadyRemoved {
+            try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: directory.path)
+        }
+        await store.finishAll()
+        let error = try #require(errors.first)
+        #expect(errors.count == 1 && error.localizedDescription.contains("recorder-denied"))
+        #expect(error.localizedDescription.contains("Temporary file remains") == !outputAlreadyRemoved)
+        #expect(FileManager.default.fileExists(atPath: try #require(output).path) == !outputAlreadyRemoved)
+    }
 }
 
 /// The active-thumbnail list is shared by all windows.

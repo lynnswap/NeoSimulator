@@ -163,7 +163,7 @@ final class RecordingStore {
         let recording: VideoRecording
         do { recording = try VideoRecording(process: process(temporary)) }
         catch {
-            do { try FileManager.default.removeItem(at: temporary) }
+            do { try Self.removeTemporaryFile(at: temporary) }
             catch let cleanup {
                 throw HostError.operation("\(error.localizedDescription) Temporary file remains at \(temporary.path): \(cleanup.localizedDescription)")
             }
@@ -192,7 +192,7 @@ final class RecordingStore {
             } catch {
                 var reported: Error = error
                 if !readyToSave {
-                    do { try FileManager.default.removeItem(at: temporary) }
+                    do { try Self.removeTemporaryFile(at: temporary) }
                     catch let cleanup {
                         reported = HostError.operation("\(error.localizedDescription) Temporary file remains at \(temporary.path): \(cleanup.localizedDescription)")
                     }
@@ -204,6 +204,11 @@ final class RecordingStore {
         }
         entries[identifier] = Entry(recording: recording, destinationKey: destinationKey, completion: completion)
         return recording
+    }
+
+    private static func removeTemporaryFile(at url: URL) throws {
+        do { try FileManager.default.removeItem(at: url) }
+        catch let error as CocoaError where error.code == .fileNoSuchFile {}
     }
 
     /// Identifies a file however its folder is spelled, and ignoring case on
