@@ -9342,7 +9342,7 @@ final class TestRemoteScreenTransport: RemoteScreenTransport {
     private(set) var buttons: [RemoteDeviceButtonState] = []
     private(set) var keys: [(usage: UInt16, state: RemoteDeviceButtonState)] = []
     private(set) var inputReleases = 0
-    var onReleaseInputs: (@MainActor () async -> Void)?
+    var onReleaseInputs: (@MainActor () async throws -> Void)?
     func start(events: @escaping @MainActor (RemoteScreenTransportEvent) -> Void) async throws {
         events(.connected)
         events(.attributes(.init(aspectRatio: CGSize(width: 400, height: 600), contentsRect: CGRect(x: 0, y: 0, width: 1, height: 1), scaleFactor: 1, orientation: .portrait)))
@@ -9354,7 +9354,7 @@ final class TestRemoteScreenTransport: RemoteScreenTransport {
     }
     func releaseInputs() async throws {
         inputReleases += 1
-        await onReleaseInputs?()
+        try await onReleaseInputs?()
     }
     func stop() async throws { nativeInputView?.removeFromSuperview() }
 }
