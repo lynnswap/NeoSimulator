@@ -24,7 +24,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         didSet { updateDevicePostureScreens(); mainWindow?.reloadDeviceArtwork() }
     }
     private var simulatorHosts: [URL: HostApplication] = [:]
-    private var simulatorWindows: [DeviceInventoryID: DeviceWindowController] = [:] {
+    var simulatorWindows: [DeviceInventoryID: DeviceWindowController] = [:] {
         didSet { updateDevicePostureScreens(); mainWindow?.reloadDeviceArtwork() }
     }
     private func updateDevicePostureScreens() {
@@ -33,7 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var displayXcodeURL: URL?
     private var presentationTask: Task<Void, any Error>?
     private var presentationGeneration = 0
-    private(set) var selectionRevision = 0
+    private(set) var presentationIntent: (revision: Int, placement: SimulatorScreenRestoration.Presentation) = (0, .main)
     private var remoteHostCleanup: Task<Void, Never>?
     private var lastRemoteHost: SimulatorHost?
     private lazy var pasteboardSync = PasteboardSync { [weak self] in
@@ -224,13 +224,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         try await task.value
     }
 
+    private func requestPresentation(_ placement: SimulatorScreenRestoration.Presentation) {
+        presentationIntent.revision += 1
+        presentationIntent.placement = placement
+    }
+
     private func showScreenInMainWindow(_ identifier: DeviceInventoryID) {
         selectDeviceForPresentation(identifier)
     }
 
     func selectDeviceForPresentation(_ identifier: DeviceInventoryID) {
         prepareMainWindow()
-        selectionRevision += 1
+        requestPresentation(.main)
         mainWindow?.selectDevice(identifier)
         selectedDeviceChanged(identifier, preservingFocus: false)
         mainWindow?.showWindow(nil)
@@ -238,7 +243,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func isCurrentPresentation(_ identifier: DeviceInventoryID, revision: Int) -> Bool {
-        !quitting && selectionRevision == revision && mainWindow?.selectedIdentifiers == [identifier]
+        !quitting && presentationIntent.revision == revision && mainWindow?.selectedIdentifiers == [identifier]
     }
 
     func embedScreen(_ identifier: DeviceInventoryID, revision: Int, preservingFocus: Bool = true) async throws {
@@ -286,8 +291,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func showCompactScreen(_ identifier: DeviceInventoryID) {
         guard mainWindow?.selectedIdentifiers == [identifier] else { return }
-        selectionRevision += 1
-        let revision = selectionRevision
+        requestPresentation(.compact)
+        let revision = presentationIntent.revision
         Task { [weak self] in
             guard let self else { return }
             do {
@@ -307,7 +312,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func selectedDeviceChanged(_ identifier: DeviceInventoryID?, preservingFocus: Bool = true) {
-        let revision = selectionRevision
+        let revision = presentationIntent.revision
         Task { [weak self] in
             guard let self else { return }
             do {
@@ -315,14 +320,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     try await self.embedScreen(identifier, revision: revision, preservingFocus: preservingFocus)
                 } else {
                     try await self.transitionPresentation {
-                        guard self.selectionRevision == revision else { return }
+                        guard self.presentationIntent.revision == revision else { return }
                         if let current = self.mainWindow?.liveDeviceIdentifier {
                             if let screen = self.screen(for: current) {
                                 try await screen.preparePresentationMove()
-                                guard self.selectionRevision == revision else { return }
+                                guard self.presentationIntent.revision == revision else { return }
                                 try await screen.detach()
                             }
-                            guard self.selectionRevision == revision else { return }
+                            guard self.presentationIntent.revision == revision else { return }
                             self.mainWindow?.showDevicePreview(ifDisplaying: current)
                         }
                     }
@@ -335,7 +340,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func openSimulatorPresentation(_ context: SimulatorPresentationContext) async throws {
         guard !quitting else { throw CancellationError() }
         prepareMainWindow()
-        let revision = selectionRevision
+        let revision = presentationIntent.revision
         let previousPresentation = screen(for: context.deviceID)?.presentation
         let displayURL = try await CoreDeviceRuntime.uiXcodeURL()
         displayXcodeURL = displayURL
@@ -392,24 +397,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func presentConnectedScreen(_ identifier: DeviceInventoryID,
                                 purpose: SimulatorPresentationContext.Purpose, revision: Int,
                                 preserving presentation: SimulatorScreenRestoration.Presentation? = nil) async throws {
-        guard !quitting, selectionRevision == revision, let mainWindow else { return }
-        if purpose == .automatic, let screen = screen(for: identifier) {
-            switch presentation ?? screen.presentation {
+        guard !quitting, presentationIntent.revision == revision, let mainWindow else { return }
+        if purpose == .requested, mainWindow.selectedIdentifiers != [identifier] { return }
+        if let screen = screen(for: identifier) {
+            let placement = purpose == .requested ? presentationIntent.placement
+                : purpose == .automatic ? presentation ?? screen.presentation : nil
+            switch placement {
             case .compact:
                 try await transitionPresentation {
-                    guard self.selectionRevision == revision else { return }
+                    guard self.presentationIntent.revision == revision else { return }
                     if screen.presentation != .compact { try await screen.showCompactWindow() }
                 }
                 return
-            case .hidden where presentation != nil: return
+            case .hidden where purpose == .requested || presentation != nil: return
             default: break
             }
         }
-        if mainWindow.selectedIdentifiers.isEmpty, selectionRevision == 0, purpose != .requested {
+        if mainWindow.selectedIdentifiers.isEmpty, presentationIntent.revision == 0, purpose != .requested {
             mainWindow.selectDevice(identifier)
-            selectionRevision += 1
+            requestPresentation(.main)
         }
-        try await embedScreen(identifier, revision: selectionRevision, preservingFocus: purpose == .automatic)
+        try await embedScreen(identifier, revision: presentationIntent.revision, preservingFocus: purpose == .automatic)
     }
 
     private func simulatorPresentationsChanged() {
@@ -487,8 +495,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller.isDeviceActivated = { [weak self] identifier in self?.screen(for: identifier) != nil }
         controller.preferredArtworkXcodeURL = { [weak self] in self?.displayXcodeURL }
         controller.onShowCompactWindow = { [weak self] identifier in self?.showCompactScreen(identifier) }
-        model.onSimulatorOpenRequested = { [weak self] identifier in self?.selectDeviceForPresentation(identifier) }
-        controller.onSelectionIntent = { [weak self] in self?.selectionRevision += 1 }
+        model.onOpenRemoteDevice = { [weak self] device in try await self?.openRemoteScreen(device) }
+        model.onDeviceOpenRequested = { [weak self] identifier in self?.selectDeviceForPresentation(identifier) }
+        controller.onSelectionIntent = { [weak self] in self?.requestPresentation(.main) }
         controller.onSelectionChange = { [weak self] identifier in self?.selectedDeviceChanged(identifier) }
         controller.onNewCompanion = { [weak self] device in self?.showNewSimulator(pairingWith: device) }
         controller.onScreenAction = { [weak self] action in
@@ -611,7 +620,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         installMenu()
         observeRemoteDevices()
-        model.onOpenRemoteDevice = { [weak self] device in self?.openRemoteScreen(device) }
         model.beforeStoppingScreens = { [weak self] in
             do {
                 try await self?.stopSimulatorPresentations()
@@ -758,22 +766,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 model.openDevice(.simulator(udid: identifier, deviceSetPath: query.first(where: { $0.name == "deviceSetPath" })?.value))
             case "restore-screen":
                 guard let restoration = SimulatorScreenRestoration(url: url) else { continue }
-                let revision = selectionRevision
+                let revision = presentationIntent.revision
                 model.restoreScreen(restoration) { [weak self] in
                     guard let self, let screen = self.screen(for: restoration.deviceID) else { return }
                     try await self.transitionPresentation {
                         switch restoration.presentation {
                         case .main: break // Opening the screen already embeds it in the main window.
                         case .compact:
-                            guard self.selectionRevision == revision else { return }
+                            guard self.presentationIntent.revision == revision
+                                || self.mainWindow?.selectedIdentifiers != [restoration.deviceID] else { return }
                             try await screen.showCompactWindow()
-                            guard self.selectionRevision == revision else { return }
+                            guard self.presentationIntent.revision == revision else { return }
                             self.mainWindow?.showDevicePreview(ifDisplaying: restoration.deviceID)
                             self.mainWindow?.window?.orderOut(nil)
                         case .hidden:
-                            guard self.selectionRevision == revision else { return }
+                            guard self.presentationIntent.revision == revision
+                                || self.mainWindow?.selectedIdentifiers != [restoration.deviceID] else { return }
                             try await screen.detach()
-                            guard self.selectionRevision == revision else { return }
+                            guard self.presentationIntent.revision == revision else { return }
                             self.mainWindow?.showDevicePreview(ifDisplaying: restoration.deviceID)
                         }
                     }
@@ -802,7 +812,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return menu
     }
 
-    private func openRemoteScreen(_ device: CoreDeviceDevice) {
+    private func openRemoteScreen(_ device: CoreDeviceDevice) async throws {
         let id = DeviceInventoryID.coreDevice(device.identifier)
         guard !quitting, !model.managingDeviceIDs.contains(id) else { return }
         let controller: RemoteDeviceWindowController
@@ -825,7 +835,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             observeScreenState(id)
         }
         controller.connectIfNeeded()
-        showScreenInMainWindow(id)
+        try await presentConnectedScreen(id, purpose: .requested, revision: presentationIntent.revision)
     }
 
     private func updateRemoteWindows() {
