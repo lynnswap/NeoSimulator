@@ -58,8 +58,10 @@ public struct SimulatorHostDevice: Sendable, Equatable {
     public let pairIdentifiers: Set<String>
     /// The active companion in the same simulator device set, when the catalog identifies one.
     public let activePairedDeviceID: DeviceInventoryID?
+    /// CoreDevice's matching default-set record, including host connection information.
+    public let coreDevice: CoreDeviceDevice?
 
-    public init(identifier: String, name: String, descriptiveName: String, runtimeIdentifier: String, runtimeName: String, productFamily: String, state: String, ownerXcodeURL: URL? = nil, deviceSetPath: String? = nil, modelIdentifier: String? = nil, deviceTypeIdentifier: String? = nil, isAvailable: Bool = true, lastUsedAt: Date? = nil, capabilities: Set<String> = [], pairIdentifiers: Set<String> = [], activePairedDeviceID: DeviceInventoryID? = nil) {
+    public init(identifier: String, name: String, descriptiveName: String, runtimeIdentifier: String, runtimeName: String, productFamily: String, state: String, ownerXcodeURL: URL? = nil, deviceSetPath: String? = nil, modelIdentifier: String? = nil, deviceTypeIdentifier: String? = nil, isAvailable: Bool = true, lastUsedAt: Date? = nil, capabilities: Set<String> = [], pairIdentifiers: Set<String> = [], activePairedDeviceID: DeviceInventoryID? = nil, coreDevice: CoreDeviceDevice? = nil) {
         self.identifier = identifier
         self.name = name
         self.descriptiveName = descriptiveName
@@ -76,6 +78,7 @@ public struct SimulatorHostDevice: Sendable, Equatable {
         self.capabilities = capabilities
         self.pairIdentifiers = pairIdentifiers
         self.activePairedDeviceID = activePairedDeviceID
+        self.coreDevice = coreDevice
     }
 }
 

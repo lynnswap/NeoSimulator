@@ -44,7 +44,8 @@ struct DeviceInventoryTests {
         #expect(await calls.coreDeviceReads == 1)
         let joined = try #require(snapshot.devices.first { $0.id == .simulator(udid: normal.identifier, deviceSetPath: nil) })
         #expect(joined.capabilities == ["com.apple.coredevice.feature.customizeuistyle"])
-        #expect(snapshot.devices.first { $0.id == .simulator(udid: clone.identifier, deviceSetPath: "/testing") }?.capabilities == [])
+        let joinedClone = try #require(snapshot.devices.first { $0.id == clone.inventoryID })
+        #expect(joinedClone.capabilities == [])
         #expect(snapshot.devices.contains { $0.id == .coreDevice("remote-command-id") })
         #expect(!snapshot.devices.contains { $0.id == .simulator(udid: "coredevice-only-simulator", deviceSetPath: nil) })
         if case .simulator(let retained) = joined {
@@ -52,6 +53,29 @@ struct DeviceInventoryTests {
             #expect(retained.name == normal.name && retained.modelIdentifier == normal.modelIdentifier)
             #expect(retained.deviceTypeIdentifier == "phone-type")
         } else { Issue.record("simctl record was replaced by a remote record") }
+        let transport = DeviceInspectorTransport(run: { command in
+            #expect(command.arguments == ["list", "--json"])
+            return CommandOutput(terminationStatus: 0, stdout: Data(#"""
+            {"devices":{"runtime":[{"udid":"simulator-udid","name":"Simulator Name"}]}}
+            """#.utf8), stderr: Data())
+        })
+        if case .simulator(let retained) = joined {
+            let info = await DeviceInspector(device: .simulator(retained.inventoryCopy(owners: [])),
+                simulatorXcodeURL: normal.ownerXcodeURL, transport: transport).info()
+            #expect(info.issues.isEmpty)
+            #expect(info.fields["connection"] == .object([
+                "state": .string("disconnected"), "pairingState": .string("paired"),
+                "transportType": .string("sameMachine"), "lastConnectionDate": .date(Date(timeIntervalSinceReferenceDate: 100)),
+            ]))
+            let failedInfo = await DeviceInspector(device: joined, simulatorXcodeURL: normal.ownerXcodeURL,
+                transport: .init(run: { _ in throw CLIError.io("info-fixture", "Catalog unavailable") })).info()
+            #expect(failedInfo.fields == ["connection": try #require(info.fields["connection"])])
+            #expect(failedInfo.issues.count == 1)
+            #expect((failedInfo.issues.first?.error as? CLIError)?.identifier == "info-fixture")
+        }
+        let cloneInfo = await DeviceInspector(device: joinedClone, simulatorXcodeURL: clone.ownerXcodeURL,
+                                              transport: transport).info()
+        #expect(cloneInfo.issues.isEmpty && cloneInfo.fields["connection"] == nil)
     }
 
     @Test(arguments: [true, false])
@@ -158,7 +182,8 @@ struct DeviceInventoryTests {
          "state":{"name":"Test VM"},"connection":{"state":"unavailable"}},
        "capabilities":[{"featureIdentifier":"com.apple.coredevice.feature.unpairdevice"}]},
       {"identifier":"simulator-udid","properties":{"hardware":{"reality":"simulated","udid":"simulator-udid"},
-         "state":{"name":"CoreDevice Simulator Name"}},
+         "state":{"name":"CoreDevice Simulator Name"},
+         "connection":{"state":"disconnected","pairingState":"paired","transportType":"sameMachine","lastConnectionDate":100}},
        "capabilities":[{"featureIdentifier":"com.apple.coredevice.feature.customizeuistyle"}]},
       {"identifier":"coredevice-only-simulator","properties":{"hardware":{"reality":"simulated","udid":"coredevice-only-simulator"}}}
     ]}}

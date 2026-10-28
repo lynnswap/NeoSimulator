@@ -232,7 +232,7 @@ struct DeviceInventoryReader: Sendable {
         let devices = snapshot.devices.map { item -> InventoryDevice in
             guard case .simulator(let device) = item, device.deviceSetPath == nil,
                   let record = simulated[device.identifier] else { return item }
-            return .simulator(device.inventoryCopy(ownerXcodeURL: device.ownerXcodeURL, capabilities: record.capabilities))
+            return .simulator(device.inventoryCopy(ownerXcodeURL: device.ownerXcodeURL, coreDevice: record))
         } + records.filter { $0.kind != .simulator }.map(InventoryDevice.remote)
         return DeviceInventorySnapshot(devices: devices, issues: snapshot.issues + issues)
     }
@@ -273,13 +273,13 @@ extension SimulatorHostDevice {
         return inventoryCopy(ownerXcodeURL: owner.map { URL(fileURLWithPath: $0.xcodePath) })
     }
 
-    func inventoryCopy(ownerXcodeURL: URL?, capabilities: Set<String>? = nil) -> Self {
+    func inventoryCopy(ownerXcodeURL: URL?, capabilities: Set<String>? = nil, coreDevice: CoreDeviceDevice? = nil) -> Self {
         Self(identifier: identifier, name: name, descriptiveName: descriptiveName, runtimeIdentifier: runtimeIdentifier,
              runtimeName: runtimeName, productFamily: productFamily, state: state, ownerXcodeURL: ownerXcodeURL,
              deviceSetPath: deviceSetPath, modelIdentifier: modelIdentifier, deviceTypeIdentifier: deviceTypeIdentifier,
              isAvailable: isAvailable,
-             lastUsedAt: lastUsedAt, capabilities: capabilities ?? self.capabilities, pairIdentifiers: pairIdentifiers,
-             activePairedDeviceID: activePairedDeviceID)
+             lastUsedAt: lastUsedAt, capabilities: capabilities ?? coreDevice?.capabilities ?? self.capabilities, pairIdentifiers: pairIdentifiers,
+             activePairedDeviceID: activePairedDeviceID, coreDevice: coreDevice ?? self.coreDevice)
     }
 }
 
