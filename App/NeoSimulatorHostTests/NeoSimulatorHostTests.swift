@@ -9,6 +9,48 @@ import IOKit.hidsystem
 
 @Suite(.serialized) @MainActor
 struct InputFocusTests {
+    @Test(arguments: ["search", "screen-to-search", "screen"])
+    func remoteAppResizeRestoresOnlyUnchangedScreenFocus(_ focus: String) async throws {
+        _ = NSApplication.shared
+        let data = Data(#"{"result":{"devices":[{"identifier":"fixture-command","properties":{"hardware":{"reality":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)
+        let device = try #require(CoreDeviceInventoryDecoder.decode(data).first)
+        let resize = TestAppResizeTransport()
+        let primary = TestRemoteScreenTransport(), dedicated = TestRemoteScreenTransport()
+        primary.nativeInputView = InputView()
+        dedicated.nativeInputView = InputView()
+        let session = RemoteDeviceScreenSession(device: device, makeResizeTransport: { _ in resize }) { _, content, target in
+            let transport = target == nil ? primary : dedicated
+            if let input = transport.nativeInputView { content.addSubview(input) }
+            return transport
+        }
+        let controller = RemoteDeviceWindowController(device: device, session: session, presentCompactWindow: { _ in })
+        let parent = NSViewController()
+        parent.view = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 600))
+        let window = KeyPresentationWindow(contentRect: parent.view.frame, styleMask: .titled, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentViewController = parent
+        defer { window.close() }
+        try await controller.embed(in: parent)
+        try await session.start()
+        try await wait { session.canResizeApp }
+        let search = NSSearchField(frame: NSRect(x: 0, y: 0, width: 200, height: 24))
+        parent.view.addSubview(search)
+        try #require(window.makeFirstResponder(search))
+        let editor = try #require(window.firstResponder)
+        if focus != "search" { try #require(window.makeFirstResponder(primary.nativeInputView)) }
+        resize.holdsStart = true
+        defer { resize.completeStart() }
+        controller.performScreenAction("resizeApp")
+        try await wait { resize.startContinuation != nil }
+        try #require(resize.startContinuation != nil)
+        if focus == "screen-to-search" { try #require(window.makeFirstResponder(search)) }
+        resize.completeStart()
+        try await wait { session.isResizingApp && controller.isScreenActionEnabled("resizeApp") }
+        try #require(session.isResizingApp && controller.isScreenActionEnabled("resizeApp"))
+        #expect(window.firstResponder === (focus == "screen" ? dedicated.nativeInputView : editor))
+        try await controller.stopAndClose()
+    }
+
     @Test func remoteWindowCoalescesLayoutSizesWithoutBlockingHID() async throws {
         _ = NSApplication.shared
         let data = Data(#"{"result":{"devices":[{"identifier":"fixture-command","properties":{"hardware":{"reality":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)
@@ -9006,6 +9048,7 @@ private final class RendererOwnerMonitorFixture: Sendable {
 
 @MainActor
 private final class TestRemoteScreenTransport: RemoteScreenTransport {
+    var nativeInputView: NSView?
     var inputCapabilities: Set<RemoteDeviceInputKind> { [.button] }
     private(set) var buttons: [RemoteDeviceButtonState] = []
     func start(events: @escaping @MainActor (RemoteScreenTransportEvent) -> Void) async throws {
@@ -9017,5 +9060,5 @@ private final class TestRemoteScreenTransport: RemoteScreenTransport {
         if case .button(_, _, let state) = input { buttons.append(state) }
     }
     func releaseInputs() async throws {}
-    func stop() async throws {}
+    func stop() async throws { nativeInputView?.removeFromSuperview() }
 }

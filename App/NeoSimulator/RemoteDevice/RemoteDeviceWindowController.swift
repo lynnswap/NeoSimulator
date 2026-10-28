@@ -649,15 +649,18 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
     private func toggleAppResize() {
         appResizeTask = Task { [weak self] in
             guard let self else { return }
+            let restoreScreenFocus = self.screenOwnsFocus
             self.changingPresentation = true
             self.relinquishScreenFocus()
+            let releasedResponder = self.presentationWindow?.firstResponder
             self.update()
             defer {
                 self.appResizeTask = nil
                 self.changingPresentation = false
                 self.requestedAppSize = nil
                 self.update()
-                if self.presentationWindow?.isKeyWindow == true { self.focusScreen() }
+                if restoreScreenFocus, self.presentationWindow?.isKeyWindow == true,
+                   self.presentationWindow?.firstResponder === releasedResponder { self.focusScreen() }
             }
             do {
                 try await self.captureTask?.value
