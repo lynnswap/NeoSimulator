@@ -1124,13 +1124,14 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         return menu
     }
 
-    private func updateDeviceMenu() {
-        if table.clickedRow >= 0 {
-            guard let row = table.item(atRow: table.clickedRow) as? DeviceRow else {
+    func updateDeviceMenu(for clickedRow: Int) {
+        if clickedRow >= 0 {
+            guard let row = table.item(atRow: clickedRow) as? DeviceRow else {
                 deviceMenu.removeAllItems()
                 return
             }
             if !selectedIdentifiers.contains(row.id) {
+                onSelectionIntent?()
                 selectedIdentifiers = [row.id]
                 updatingSelection = true
                 restoreVisibleSelection()
@@ -1355,7 +1356,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
-        if menu === deviceMenu { updateDeviceMenu(); return }
+        if menu === deviceMenu { updateDeviceMenu(for: table.clickedRow); return }
         if menu === moreItem?.menu { updateCanvasMenu(menu); return }
         guard menu === filterItem?.menu else { return }
         menu.removeAllItems()

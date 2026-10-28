@@ -145,6 +145,67 @@ struct ManagerModelTests {
         main.window?.close()
     }
 
+    @Test func contextMenuSelectionStartsMainIntentWithoutChangingRefreshOrSameRowIntent() async throws {
+        _ = NSApplication.shared
+        let devices = try CoreDeviceInventoryDecoder.decode(Data(#"{"result":{"devices":[{"identifier":"A","properties":{"hardware":{"reality":"physical"},"state":{"name":"A"}}},{"identifier":"B","properties":{"hardware":{"reality":"physical"},"state":{"name":"B"}}}]}}"#.utf8))
+        let a = try #require(devices.first), b = try #require(devices.last)
+        let model = SimulatorManagerModel(source: ManagerModelSource(devices: devices.map(InventoryDevice.remote)))
+        model.settings.setReadingSuspended(true)
+        await model.refresh()
+        let app = AppDelegate()
+        app.model = model
+        app.prepareMainWindow()
+        let main = try #require(app.mainWindow)
+        main.window?.setFrameAutosaveName("")
+        defer { main.window?.close() }
+        let aSession = RemoteDeviceScreenSession(device: a) { _, _, _ in TestRemoteScreenTransport() }
+        let bSession = RemoteDeviceScreenSession(device: b) { _, _, _ in TestRemoteScreenTransport() }
+        try await aSession.start()
+        try await bSession.start()
+        let aController = RemoteDeviceWindowController(device: a, session: aSession, presentCompactWindow: { _ in })
+        let bController = RemoteDeviceWindowController(device: b, session: bSession, presentCompactWindow: { _ in })
+        let aID = DeviceInventoryID.coreDevice(a.identifier), bID = DeviceInventoryID.coreDevice(b.identifier)
+        app.remoteWindows = [aID: aController, bID: bController]
+        main.selectDevice(aID)
+        try await app.presentConnectedScreen(aID, purpose: .requested)
+        main.onShowCompactWindow?(aID)
+        let compacted = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            MainActor.assumeIsolated { main.liveDeviceIdentifier == nil && !aController.isEmbedded }
+        }, object: nil)
+        try #require(await XCTWaiter.fulfillment(of: [compacted], timeout: 5) == .completed)
+        let compactIntent = app.presentationIntent
+        main.update()
+        let content = try #require(main.window?.contentView)
+        let fields = inspectorViews(content)
+        let search = try #require(fields.compactMap { $0 as? NSSearchField }.first { $0.placeholderString == "Search Devices" })
+        search.stringValue = "B"
+        main.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: search))
+        search.stringValue = ""
+        main.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: search))
+        #expect(app.presentationIntent.revision == compactIntent.revision && app.presentationIntent.placement == .compact)
+        let outline = try #require(fields.compactMap { $0 as? NSOutlineView }.first)
+        let aRow = outline.selectedRow
+        try #require(aRow >= 0)
+        main.updateDeviceMenu(for: aRow)
+        #expect(app.presentationIntent.revision == compactIntent.revision && app.presentationIntent.placement == .compact)
+        let bRow = try #require((0..<outline.numberOfRows).first { row in
+            row != aRow && outline.item(atRow: row).map { main.outlineView(outline, shouldSelectItem: $0) } == true
+        })
+        main.updateDeviceMenu(for: bRow)
+        let embedded = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            MainActor.assumeIsolated {
+                main.liveDeviceIdentifier == bID && bController.presentationViewController.parent === main.liveScreenContainer
+            }
+        }, object: nil)
+        try #require(await XCTWaiter.fulfillment(of: [embedded], timeout: 5) == .completed)
+        try await app.presentConnectedScreen(bID, purpose: .automatic)
+        #expect(main.selectedIdentifiers == [bID] && main.liveDeviceIdentifier == bID)
+        #expect(bController.presentationViewController.parent === main.liveScreenContainer)
+        #expect(model.settings.device?.id == bID && main.deviceInspector.inspection.device?.id == bID)
+        try await aSession.stop()
+        try await bSession.stop()
+    }
+
     @Test(arguments: [false, true])
     func automaticPresentationPreservesSelectionAndInitialPresentation(_ initial: Bool) async throws {
         _ = NSApplication.shared
