@@ -64,14 +64,19 @@ public final class RemoteDeviceScreenSession {
     private var resizeEligibilityTask: Task<Void, Never>?
     private var resizeUpdates: Task<Void, Never>?
     private var resizeInvalidation: Task<Void, Never>?
-    private var resizeOperation: Task<Void, any Error>?
+    private struct ResizeOperation {
+        enum Intent { case startResize, restorePrimary }
+        let intent: Intent
+        let task: Task<Void, any Error>
+    }
+    private var resizeOperation: ResizeOperation?
     private var resizeAdjustment: Task<Void, Never>?
     private var pendingAppSize: CGSize?
     private var frameWaiter: CheckedContinuation<Void, any Error>?
     private var frameWaitIdentifier: UUID?
     private var capturesInFlight = 0
     private var captureWaiters: [CheckedContinuation<Void, Never>] = []
-    @_spi(NeoSimulator) public private(set) var isChangingDisplay = false
+    @_spi(NeoSimulator) public var isChangingDisplay: Bool { resizeOperation != nil }
     @_spi(NeoSimulator) public var supportsAppResize: Bool { resizeTransport != nil || resizeSession != nil }
     @_spi(NeoSimulator) public var isResizingApp: Bool { resizeSession != nil }
     @_spi(NeoSimulator) public private(set) var appResizeGeometry: AppResizeGeometry?
@@ -99,7 +104,7 @@ public final class RemoteDeviceScreenSession {
 
     isolated deinit {
         starting?.cancel()
-        resizeOperation?.cancel()
+        resizeOperation?.task.cancel()
         resizeAdjustment?.cancel()
         resizeEligibilityTask?.cancel()
         resizeUpdates?.cancel()
@@ -127,57 +132,57 @@ public final class RemoteDeviceScreenSession {
         lastError = nil
         hasReceivedFrame = false
         state = .connecting
-        onStateChange?()
         let task = Task { [self] in
-            let transport = try await makeTransport(device, contentView, nil)
+            defer { starting = nil }
             do {
-                try Task.checkCancellation()
-                guard generation == token else { throw CancellationError() }
+                let transport = try await makeTransport(device, contentView, nil)
                 self.transport = transport
-                onStateChange?()
-                try await transport.start { [weak self] event in
-                    guard let self, self.generation == token else { return }
-                    self.receive(event)
-                }
-                try Task.checkCancellation()
-                guard generation == token else { throw CancellationError() }
                 do {
-                    resizeTransport = try await makeResizeTransport(device)
                     try Task.checkCancellation()
                     guard generation == token else { throw CancellationError() }
-                    if let resizeTransport { try await observeResizability(resizeTransport) }
-                } catch {
+                    onStateChange?()
+                    try await transport.start { [weak self] event in
+                        guard let self, self.generation == token else { return }
+                        self.receive(event)
+                    }
                     try Task.checkCancellation()
-                    if error is CancellationError { throw error }
-                    resizeTransport = nil
-                    resizeEligibility = .unavailable
-                    lastError = error
+                    guard generation == token else { throw CancellationError() }
+                    do {
+                        resizeTransport = try await makeResizeTransport(device)
+                        try Task.checkCancellation()
+                        guard generation == token else { throw CancellationError() }
+                        if let resizeTransport { try await observeResizability(resizeTransport) }
+                    } catch {
+                        try Task.checkCancellation()
+                        if error is CancellationError { throw error }
+                        resizeTransport = nil
+                        resizeEligibility = .unavailable
+                        lastError = error
+                    }
+                    try Task.checkCancellation()
+                    guard generation == token else { throw CancellationError() }
+                    onStateChange?()
+                } catch {
+                    if stopping != nil || recording.hasUnfinishedRecording { throw error }
+                    do {
+                        try await transport.stop()
+                        if self.transport === transport { self.transport = nil }
+                    }
+                    catch let cleanup { throw Self.combining(error, cleanup: cleanup) }
+                    throw error
                 }
-                try Task.checkCancellation()
-                guard generation == token else { throw CancellationError() }
-                onStateChange?()
             } catch {
-                do {
-                    try await transport.stop()
-                    if self.transport === transport { self.transport = nil }
+                if generation == token, !recording.hasUnfinishedRecording {
+                    state = error is CancellationError ? .stopped : .failed
+                    lastError = error is CancellationError ? nil : error
+                    onStateChange?()
                 }
-                catch let cleanup { throw Self.combining(error, cleanup: cleanup) }
                 throw error
             }
         }
         starting = task
-        defer { starting = nil }
-        do {
-            try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
-        }
-        catch {
-            if generation == token {
-                state = error is CancellationError ? .stopped : .failed
-                lastError = error is CancellationError ? nil : error
-                onStateChange?()
-            }
-            throw error
-        }
+        onStateChange?()
+        try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
     }
 
     public func stop() async throws {
@@ -185,68 +190,67 @@ public final class RemoteDeviceScreenSession {
         generation += 1
         let beginning = starting
         beginning?.cancel()
-        let resizing = resizeOperation
+        let resizing = resizeOperation?.task
         resizing?.cancel()
         finishFrameWait(.failure(CancellationError()))
         resizeEligibilityTask?.cancel()
         resizeEligibilityTask = nil
         state = .stopping
-        onStateChange?()
         let task = Task { [self] in
-            await finishResizeAdjustment()
-            _ = try await recording.stop()
-            await waitForCaptures()
-            var failure: (any Error)?
-            var cancellation: (any Error)?
-            var failedTransport: (any RemoteScreenTransport)?
-            if let transport {
-                do { try await transport.stop(); self.transport = nil }
-                catch { failure = error; failedTransport = transport }
+            defer { stopping = nil }
+            do {
+                await finishResizeAdjustment()
+                _ = try await recording.stop()
+                await waitForCaptures()
+                var failure: (any Error)?
+                var cancellation: (any Error)?
+                if starting != nil || resizeOperation != nil, let transport {
+                    do { try await transport.stop() }
+                    catch { failure = error }
+                }
+                do { try await resizing?.value }
+                catch {
+                    if error is CancellationError {
+                        if cancellation == nil {
+                            cancellation = error
+                            if let cleanup = failure { failure = Self.combining(error, cleanup: cleanup) }
+                        }
+                    } else { failure = failure.map { Self.combining(error, cleanup: $0) } ?? error }
+                }
+                do { try await beginning?.value }
+                catch {
+                    if error is CancellationError {
+                        if cancellation == nil {
+                            cancellation = error
+                            if let cleanup = failure { failure = Self.combining(error, cleanup: cleanup) }
+                        }
+                    } else { failure = failure.map { Self.combining(error, cleanup: $0) } ?? error }
+                }
+                // Startup can acquire resources after the early stop; finalize its retained owner after joining.
+                generation += 1
+                if let transport {
+                    do { try await transport.stop(); self.transport = nil }
+                    catch { failure = (failure ?? cancellation).map { Self.combining($0, cleanup: error) } ?? error }
+                }
+                if transport == nil {
+                    do { try endResizeAssertion() }
+                    catch { failure = (failure ?? cancellation).map { Self.combining($0, cleanup: error) } ?? error }
+                }
+                if let failure { throw failure }
+                resizeTransport = nil
+                resizeEligibility = .unavailable
+                state = .stopped
+                onStateChange?()
+            } catch {
+                lastError = error
+                state = .failed
+                onStateChange?()
+                throw error
             }
-            do { try await resizing?.value }
-            catch {
-                if error is CancellationError {
-                    if cancellation == nil {
-                        cancellation = error
-                        if let cleanup = failure { failure = Self.combining(error, cleanup: cleanup) }
-                    }
-                } else { failure = failure.map { Self.combining(error, cleanup: $0) } ?? error }
-            }
-            do { try await beginning?.value }
-            catch {
-                if error is CancellationError {
-                    if cancellation == nil {
-                        cancellation = error
-                        if let cleanup = failure { failure = Self.combining(error, cleanup: cleanup) }
-                    }
-                } else { failure = failure.map { Self.combining(error, cleanup: $0) } ?? error }
-            }
-            // A cancellation recovery can return a new transport after the first stop.
-            generation += 1
-            if let transport, transport !== failedTransport {
-                do { try await transport.stop(); self.transport = nil }
-                catch { failure = (failure ?? cancellation).map { Self.combining($0, cleanup: error) } ?? error }
-            }
-            if transport == nil {
-                do { try endResizeAssertion() }
-                catch { failure = (failure ?? cancellation).map { Self.combining($0, cleanup: error) } ?? error }
-            }
-            if let failure { throw failure }
         }
         stopping = task
-        defer { stopping = nil }
-        do {
-            try await task.value
-            resizeTransport = nil
-            resizeEligibility = .unavailable
-            state = .stopped
-            onStateChange?()
-        } catch {
-            lastError = error
-            state = .failed
-            onStateChange?()
-            throw error
-        }
+        onStateChange?()
+        try await task.value
     }
 
     /// Returns pixels copied from the remote screen, without rendering the local view hierarchy.
@@ -381,7 +385,7 @@ public final class RemoteDeviceScreenSession {
         guard canResizeApp, resizeSession == nil, let resizeTransport else {
             throw CLIError.unavailable("app-resize", "The foreground app is not currently available for resizing.")
         }
-        try await changeDisplay { [self] in
+        try await changeDisplay(intent: .startResize) { [self] in
             try await retireTransport()
             do {
                 let assertion = try await resizeTransport.start(size: size, cornerRadius: cornerRadius)
@@ -392,6 +396,7 @@ public final class RemoteDeviceScreenSession {
                 try await connectDisplay(assertion.displayUniqueID, waitForFrame: true)
             } catch {
                 let original = error
+                if stopping != nil { throw original }
                 do {
                     try await retireTransport()
                     try endResizeAssertion()
@@ -414,7 +419,7 @@ public final class RemoteDeviceScreenSession {
         guard canResizeApp, resizeSession != nil else {
             throw CLIError.unavailable("app-resize", "Finish recording before changing the app display.")
         }
-        try await changeDisplay { [self] in try await restorePrimary(finalizeRecording: false) }
+        try await changeDisplay(intent: .restorePrimary) { [self] in try await restorePrimary(finalizeRecording: false) }
     }
 
     /// Requests native point geometry, keeping only the latest pending size. Accepted
@@ -452,27 +457,30 @@ public final class RemoteDeviceScreenSession {
         resizeAdjustment = nil
     }
 
-    private func changeDisplay(_ operation: @escaping @MainActor () async throws -> Void) async throws {
+    private func changeDisplay(intent: ResizeOperation.Intent,
+                               _ operation: @escaping @MainActor () async throws -> Void) async throws {
         guard resizeOperation == nil else { throw CLIError.unavailable("app-resize", "The display is already changing.") }
-        isChangingDisplay = true
         lastError = nil
+        let task = Task { [self] in
+            defer { resizeOperation = nil; onStateChange?() }
+            do {
+                await finishResizeAdjustment()
+                await prepareForDisplayChange?()
+                try Task.checkCancellation()
+                try await operation()
+            } catch {
+                if stopping == nil {
+                    lastError = error is CancellationError ? nil : error
+                    if state != .connected || resizeSession != nil { state = .failed }
+                    onStateChange?()
+                }
+                throw error
+            }
+        }
+        resizeOperation = ResizeOperation(intent: intent, task: task)
         onInputCapabilitiesLost?([.keyboard, .pointer, .digitizer, .button])
         onStateChange?()
-        let task = Task { [self] in
-            await finishResizeAdjustment()
-            await prepareForDisplayChange?()
-            try Task.checkCancellation()
-            try await operation()
-        }
-        resizeOperation = task
-        defer { resizeOperation = nil; isChangingDisplay = false; onStateChange?() }
-        do { try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() } }
-        catch {
-            lastError = error is CancellationError ? nil : error
-            if state != .connected || resizeSession != nil { state = .failed }
-            onStateChange?()
-            throw error
-        }
+        try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
     }
 
     private func retireTransport() async throws {
@@ -539,21 +547,27 @@ public final class RemoteDeviceScreenSession {
 
     private func returnFromInvalidatedDisplay() {
         if let resizeOperation {
-            resizeOperation.cancel()
-            finishFrameWait(.failure(CLIError.unavailable("app-resize-ended", "The app resize session ended.")))
+            switch resizeOperation.intent {
+            case .startResize:
+                resizeOperation.task.cancel()
+                finishFrameWait(.failure(CLIError.unavailable("app-resize-ended", "The app resize session ended.")))
+            case .restorePrimary: break
+            }
             return
         }
         let cause = lastError
         Task { [weak self] in
             guard let self, self.resizeSession != nil, self.stopping == nil, self.resizeOperation == nil else { return }
             do {
-                try await self.changeDisplay { [self] in try await restorePrimary(finalizeRecording: true) }
-                self.lastError = cause
-                self.onStateChange?()
+                try await self.changeDisplay(intent: .restorePrimary) { [self] in
+                    do {
+                        try await restorePrimary(finalizeRecording: true)
+                        lastError = cause
+                        onStateChange?()
+                    } catch { throw cause.map { Self.combining($0, cleanup: error) } ?? error }
+                }
             } catch {
-                self.lastError = cause.map { Self.combining($0, cleanup: error) } ?? error
-                self.state = .failed
-                self.onStateChange?()
+                // The joined transition task publishes the failure through session state.
             }
         }
     }

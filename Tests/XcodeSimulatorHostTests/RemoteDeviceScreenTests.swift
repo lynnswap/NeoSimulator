@@ -592,6 +592,103 @@ struct RemoteDeviceScreenTests {
     }
 
     @Test(arguments: [false, true])
+    func shutdownReleasesAResourceAcquiredInsideLateStartup(failCleanup: Bool) async throws {
+        let primary = ScreenFixtureTransport(), dedicated = ScreenFixtureTransport()
+        let resize = ScreenResizeFixtureTransport()
+        let acquisition = ScreenFixtureGate()
+        let resource = ScreenFixtureResource()
+        resource.failRelease = failCleanup
+        dedicated.acquireResource = { await acquisition.hold(); return resource }
+        let session = RemoteDeviceScreenSession(device: try device(), makeResizeTransport: { _ in resize }) { _, _, target in
+            target == nil ? primary : dedicated
+        }
+        try await session.start()
+        await wait(session) { session.canResizeApp }
+        let switching = Task { try await session.startAppResize(size: CGSize(width: 400, height: 600)) }
+        await acquisition.wait()
+        var stops = dedicated.stopEvents.stream.makeAsyncIterator()
+        let shutdown = Task { try await session.stop() }
+        await stops.next()
+        #expect(dedicated.ownedResource == nil && !resource.released)
+        acquisition.resume()
+        if failCleanup {
+            do { try await shutdown.value; Issue.record("Late resource cleanup failure was lost") }
+            catch {
+                #expect(error.localizedDescription.contains("fixture cleanup failed"))
+                #expect(error.localizedDescription.contains(CancellationError().localizedDescription))
+            }
+            #expect(session.state == .failed && session.nativeInputView != nil)
+            #expect(dedicated.ownedResource === resource && !resource.released)
+            resource.failRelease = false
+            try await session.stop()
+        } else {
+            try await shutdown.value
+        }
+        await #expect(throws: CancellationError.self) { try await switching.value }
+        #expect(resource.released && dedicated.ownedResource == nil)
+        #expect(session.state == .stopped && session.nativeInputView == nil)
+    }
+
+    @Test func aCancelledPrimaryFactoryRetainsItsFailedCleanupOwner() async throws {
+        let connection = ScreenFixtureTransport()
+        let resource = ScreenFixtureResource()
+        resource.failRelease = true
+        connection.ownedResource = resource
+        let factory = ScreenFixtureGate()
+        let session = RemoteDeviceScreenSession(device: try device()) { _, _, _ in
+            await factory.hold()
+            return connection
+        }
+        let starting = Task { try await session.start() }
+        await factory.wait()
+        starting.cancel()
+        factory.resume()
+        do { try await starting.value; Issue.record("Cancelled startup cleanup failure was lost") }
+        catch {
+            #expect(error.localizedDescription.contains("fixture cleanup failed"))
+            #expect(error.localizedDescription.contains(CancellationError().localizedDescription))
+        }
+        #expect(session.nativeInputView != nil && connection.ownedResource === resource && !resource.released)
+        resource.failRelease = false
+        try await session.stop()
+        #expect(resource.released && connection.ownedResource == nil)
+        #expect(session.state == .stopped && session.nativeInputView == nil)
+    }
+
+    @Test func duplicateGuestEventsJoinTheRestoreWaitingForRecording() async throws {
+        let primary = ScreenFixtureTransport(), dedicated = ScreenFixtureTransport(), restored = ScreenFixtureTransport()
+        dedicated.automaticFrames = true
+        let resize = ScreenResizeFixtureTransport()
+        let recording = ScreenResizeRecordingHandle()
+        let finishing = ScreenFixtureGate()
+        recording.stopGate = finishing
+        dedicated.recordingHandle = recording
+        var primaryConnections = 0
+        let session = RemoteDeviceScreenSession(device: try device(), makeResizeTransport: { _ in resize }) { _, _, target in
+            if target != nil { return dedicated }
+            primaryConnections += 1
+            return primaryConnections == 1 ? primary : restored
+        }
+        try await session.start()
+        await wait(session) { session.canResizeApp }
+        try await session.startAppResize(size: CGSize(width: 400, height: 600))
+        try await session.startRecording()
+        dedicated.emit(.disconnected)
+        await finishing.wait()
+        #expect(session.isChangingDisplay && session.hasUnfinishedRecording)
+        dedicated.emit(.disconnected)
+        var invalidations = resize.assertion.invalidationReturns.stream.makeAsyncIterator()
+        resize.assertion.guestInvalidates()
+        await invalidations.next()
+        finishing.resume()
+        await wait(session) { !session.isChangingDisplay }
+        #expect(session.state == .connected && primaryConnections == 2)
+        #expect(session.nativeInputView === restored.nativeInputView && !session.isResizingApp)
+        #expect(session.completedRecording != nil && !session.hasUnfinishedRecording && recording.stops == 1)
+        try await session.stop()
+    }
+
+    @Test(arguments: [false, true])
     func shutdownReclaimsAPrimaryTransportReturnedAfterCancellation(failCleanup: Bool) async throws {
         let primary = ScreenFixtureTransport()
         let dedicated = ScreenFixtureTransport(suspendStart: true)
@@ -826,6 +923,9 @@ private final class ScreenFixtureTransport: RemoteScreenTransport {
     var automaticFrames = false
     var failStart = false
     var onCapture: (() async -> Void)?
+    var acquireResource: (() async -> ScreenFixtureResource)?
+    var ownedResource: ScreenFixtureResource?
+    let stopEvents = AsyncStream<Void>.makeStream()
     var recordingHandle: ScreenResizeRecordingHandle?
     var canRecordScreen: Bool { recordingHandle != nil }
     private(set) var recordedDisplay: String?
@@ -881,6 +981,10 @@ private final class ScreenFixtureTransport: RemoteScreenTransport {
         }
         waitingForStart?.resume()
         waitingForStart = nil
+        if let acquireResource {
+            ownedResource = await acquireResource()
+            try Task.checkCancellation()
+        }
         if failStart { throw ScreenFixtureError.stream }
         events(.connected)
         if automaticFrames {
@@ -911,11 +1015,14 @@ private final class ScreenFixtureTransport: RemoteScreenTransport {
     }
 
     func stop() async throws {
+        defer { stopEvents.continuation.yield(()) }
         await capabilityObservation?.stop()
         let continuation = pendingStart
         pendingStart = nil
         continuation?.resume(throwing: CancellationError())
         try await releaseInputs()
+        try ownedResource?.release()
+        ownedResource = nil
         closed = true
     }
 
@@ -994,6 +1101,7 @@ private final class ScreenResizeFixtureSession: AppResizeSession {
     private let stream: AsyncThrowingStream<AppResizeGeometry, any Error>
     private let continuation: AsyncThrowingStream<AppResizeGeometry, any Error>.Continuation
     private var invalidation: CheckedContinuation<Void, Never>?
+    let invalidationReturns = AsyncStream<Void>.makeStream()
     private(set) var invalidated = false
     let adjusted = AsyncStream<CGSize>.makeStream()
     var adjustmentError: (any Error)?
@@ -1005,6 +1113,7 @@ private final class ScreenResizeFixtureSession: AppResizeSession {
     }
     func emit(size: CGSize) { geometry.resolvedSize = size; continuation.yield(geometry) }
     func awaitInvalidation() async throws {
+        defer { invalidationReturns.continuation.yield(()) }
         if !invalidated { await withCheckedContinuation { invalidation = $0 } }
     }
     func invalidate() throws {
@@ -1018,9 +1127,11 @@ private final class ScreenResizeFixtureSession: AppResizeSession {
 @MainActor
 private final class ScreenResizeRecordingHandle: RemoteScreenRecordingHandle {
     var failStop = false
+    var stopGate: ScreenFixtureGate?
     private(set) var stops = 0
     func stop() async throws -> RemoteDeviceRecording {
         stops += 1
+        await stopGate?.hold()
         if failStop { throw ScreenFixtureError.cleanup }
         return RemoteDeviceRecording(data: Data([1]), duration: 3, codec: "fixture")
     }
@@ -1038,4 +1149,14 @@ private final class ScreenFixtureGate {
     }
     func wait() async { if !entered { await withCheckedContinuation { entering = $0 } } }
     func resume() { release?.resume(); release = nil }
+}
+
+@MainActor
+private final class ScreenFixtureResource {
+    var failRelease = false
+    private(set) var released = false
+    func release() throws {
+        if failRelease { throw ScreenFixtureError.cleanup }
+        released = true
+    }
 }

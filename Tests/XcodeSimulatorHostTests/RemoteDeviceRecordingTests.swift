@@ -50,10 +50,13 @@ import Testing
         #expect(session.completedRecording?.data == RecordingFixtureHandle.result.data)
     }
 
-    @Test func aFailedRecordingStopRetainsItsHandleAndScreenForRetry() async throws {
+    @Test(arguments: [false, true])
+    func aFailedRecordingStopRetainsItsHandleAndScreenForRetry(disconnect: Bool) async throws {
         let transport = RecordingFixtureTransport()
-        let session = try session(transport)
-        try await session.start()
+        let optionalSetup = RecordingFixtureGate()
+        let session = try session(transport, optionalSetup: optionalSetup)
+        let connection = Task { try await session.start() }
+        await optionalSetup.waitUntilEntered()
         var unfinishedAtLastNotification = false
         session.onStateChange = { [weak session] in
             unfinishedAtLastNotification = session?.hasUnfinishedRecording == true
@@ -67,13 +70,21 @@ import Testing
         }
         try await session.startRecording()
         transport.handle.failNextStop = true
-        do { try await session.stop(); Issue.record("Recording failure was ignored") }
+        connection.cancel()
+        do {
+            if disconnect { try await session.stop() }
+            else { _ = try await session.stopRecording() }
+            Issue.record("Recording failure was ignored")
+        }
         catch {
             #expect(session.recordingState == .failed && session.recordingError != nil)
             #expect(session.hasUnfinishedRecording && unfinishedAtLastNotification)
             #expect(session.recordingStartDate == nil)
             #expect(!transport.operations.contains("screen-stop"))
         }
+        optionalSetup.finish()
+        await #expect(throws: CancellationError.self) { try await connection.value }
+        #expect(session.hasUnfinishedRecording && !transport.operations.contains("screen-stop"))
         try await session.stop()
         #expect(transport.handle.stopAttempts == 2)
         #expect(transport.operations == ["record-start", "record-start", "record-stop", "record-stop", "screen-stop"])
@@ -98,10 +109,14 @@ import Testing
         try await session.stop()
     }
 
-    private func session(_ transport: RecordingFixtureTransport) throws -> RemoteDeviceScreenSession {
+    private func session(_ transport: RecordingFixtureTransport,
+                         optionalSetup: RecordingFixtureGate? = nil) throws -> RemoteDeviceScreenSession {
         let json = Data(#"{"result":{"devices":[{"identifier":"recording-command-id","properties":{"hardware":{"reality":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)
         let device = try #require(CoreDeviceInventoryDecoder.decode(json).first)
-        return RemoteDeviceScreenSession(device: device) { _, _, _ in transport }
+        return RemoteDeviceScreenSession(device: device, makeResizeTransport: { _ in
+            await optionalSetup?.hold()
+            return nil
+        }) { _, _, _ in transport }
     }
 }
 
