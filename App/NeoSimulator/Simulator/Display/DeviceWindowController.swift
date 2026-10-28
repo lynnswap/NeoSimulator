@@ -34,6 +34,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
             content.canvasControls = canvasControls
             canvasControls?.onLayoutChange = { [weak self] in
                 self?.content.needsLayout = true
+                self?.content.needsUpdateConstraints = true
                 self?.updateContentMinimumSize()
                 self?.fitCanvasControls()
             }
@@ -1717,20 +1718,25 @@ private final class DeviceContentView: NSView, DisplayContentView {
     private var usesNativeCanvas: Bool
     var canvasControls: DeviceCanvasControls? {
         didSet {
+            NSLayoutConstraint.deactivate(canvasConstraints)
+            canvasConstraints.removeAll()
             oldValue?.removeFromSuperview()
-            if let canvasControls { addSubview(canvasControls) }
+            if let canvasControls {
+                canvasControls.translatesAutoresizingMaskIntoConstraints = false
+                addSubview(canvasControls)
+            }
+            needsUpdateConstraints = true
             needsLayout = true
         }
     }
+    private let viewport = NSLayoutGuide()
+    private var canvasConstraints: [NSLayoutConstraint] = []
     // App resize owns an unscaled guest viewport; only Device Hub presentations inset their canvas.
     private var usesDeviceCanvasLayout: Bool {
         !scrollsDisplay && (isEmbedded || canvasControls != nil)
     }
     private var canvasInset: CGFloat { usesDeviceCanvasLayout ? 8 : 0 }
-    private var canvasControlsInset: CGFloat {
-        canvasControls.flatMap { $0.isHidden ? nil : $0.fittingSize.height + 8 } ?? 0
-    }
-    var horizontalDisplayPadding: CGFloat { canvasInset * 2 }
+    var horizontalDisplayPadding: CGFloat { bounds.width - availableDisplayRect.width }
     var canvasControlsWidth: CGFloat {
         canvasControls.flatMap { $0.isHidden ? nil : $0.fittingSize.width + 24 } ?? 0
     }
@@ -1764,6 +1770,7 @@ private final class DeviceContentView: NSView, DisplayContentView {
         }
         canvasScrollView.isHidden = !usesViewport
         updateScrollMonitor()
+        needsUpdateConstraints = true
         needsLayout = true
     }
     var onDisplaySizeChange: () -> Void = {}
@@ -1771,7 +1778,7 @@ private final class DeviceContentView: NSView, DisplayContentView {
     private var previousDisplaySize: NSSize?
     /// The space between the header and the display, which follows the bezel.
     var displayGap = WindowScale.displayGap(bezelPadding: nil) {
-        didSet { needsLayout = true }
+        didSet { needsUpdateConstraints = true; needsLayout = true }
     }
     /// Fills integral-frame rounding gaps when sized to the display.
     /// Otherwise centers the display at its own size, including after manual resizing.
@@ -1786,12 +1793,14 @@ private final class DeviceContentView: NSView, DisplayContentView {
         return max(0, bounds.height - window.contentLayoutRect.height)
     }
     /// The window space around the display, excluding its scaled size.
-    var heightAboveDisplay: CGFloat { headerHeight + displayGap + canvasControlsInset + canvasInset * 2 }
+    var heightAboveDisplay: CGFloat { bounds.height - availableDisplayRect.height }
     init(display: NSView, usesNativeCanvas: Bool) {
         self.usesNativeCanvas = usesNativeCanvas
         self.display = display
         super.init(frame: .zero)
         wantsLayer = true
+        viewport.identifier = NSUserInterfaceItemIdentifier("DeviceCanvasViewport")
+        addLayoutGuide(viewport)
         canvasScrollView.drawsBackground = false
         canvasScrollView.contentView.drawsBackground = false
         canvasScrollView.hasHorizontalScroller = true
@@ -1806,6 +1815,7 @@ private final class DeviceContentView: NSView, DisplayContentView {
         canvasScrollView.isHidden = true
         canvasScrollView.toolTip = "Use the scroll bars or Option-scroll to pan the device."
         addSubview(canvasScrollView)
+        needsUpdateConstraints = true
         addSubview(display)
         registerForDraggedTypes([.fileURL])
     }
@@ -1814,6 +1824,7 @@ private final class DeviceContentView: NSView, DisplayContentView {
     }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        needsUpdateConstraints = true
         updateScrollMonitor()
         onWindowChange()
     }
@@ -1839,12 +1850,41 @@ private final class DeviceContentView: NSView, DisplayContentView {
     }
     required init?(coder: NSCoder) { nil }
 
-    func displayRect(in bounds: NSRect) -> NSRect {
-        NSRect(x: bounds.minX + canvasInset, y: bounds.minY + canvasControlsInset + canvasInset,
-               width: max(1, bounds.width - horizontalDisplayPadding),
-               height: max(1, bounds.height - heightAboveDisplay))
+    override func updateConstraints() {
+        NSLayoutConstraint.deactivate(canvasConstraints)
+        let top: Any = isEmbedded ? self : (window?.contentLayoutGuide ?? self)
+        canvasConstraints = [
+            viewport.leadingAnchor.constraint(equalTo: leadingAnchor, constant: canvasInset),
+            viewport.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -canvasInset),
+            NSLayoutConstraint(item: viewport, attribute: .top, relatedBy: .equal,
+                               toItem: top, attribute: .top, multiplier: 1, constant: displayGap + canvasInset),
+        ]
+        if let canvasControls, !canvasControls.isHidden {
+            canvasConstraints += [
+                canvasControls.centerXAnchor.constraint(equalTo: centerXAnchor),
+                canvasControls.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8),
+                canvasControls.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 12),
+                canvasControls.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -12),
+                viewport.bottomAnchor.constraint(equalTo: canvasControls.topAnchor, constant: -canvasInset),
+            ]
+        } else {
+            canvasConstraints.append(viewport.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -canvasInset))
+        }
+        NSLayoutConstraint.activate(canvasConstraints)
+        super.updateConstraints()
     }
-    private var availableDisplayRect: NSRect { displayRect(in: bounds) }
+
+    func displayRect(in bounds: NSRect) -> NSRect {
+        let available = availableDisplayRect
+        return NSRect(x: bounds.minX + available.minX - self.bounds.minX,
+                      y: bounds.minY + available.minY - self.bounds.minY,
+                      width: max(1, bounds.width - (self.bounds.width - available.width)),
+                      height: max(1, bounds.height - (self.bounds.height - available.height)))
+    }
+    private var availableDisplayRect: NSRect {
+        if !isLayingOutCanvas { layoutSubtreeIfNeeded() }
+        return viewport.frame
+    }
     var availableDisplaySize: NSSize { availableDisplayRect.size }
 
     private var canvasCenter: NSPoint? {
@@ -1867,11 +1907,6 @@ private final class DeviceContentView: NSView, DisplayContentView {
         if previousDisplaySize != availableDisplaySize {
             previousDisplaySize = availableDisplaySize
             onDisplaySizeChange()
-        }
-        if let canvasControls, !canvasControls.isHidden {
-            let width = canvasControls.fittingSize.width
-            canvasControls.frame = NSRect(x: (bounds.width - width) / 2, y: 8,
-                                         width: width, height: canvasControls.fittingSize.height)
         }
         let available = availableDisplayRect
         if usesViewport {
