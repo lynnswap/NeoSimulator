@@ -759,21 +759,33 @@ struct RemoteDeviceScreenTests {
 
     @Test func reconnectSubscribesToTheNewResizeEligibilitySource() async throws {
         let first = ScreenResizeFixtureTransport()
+        let startingObservation = ScreenFixtureGate()
+        first.eligibilityGate = startingObservation
         let next = ScreenResizeFixtureTransport()
         next.initialEligibility = .unavailable
+        let primary = ScreenFixtureTransport()
         var connections = 0
         let session = RemoteDeviceScreenSession(device: try device(), makeResizeTransport: { _ in
             connections += 1
             return connections == 1 ? first : next
-        }) { _, _, _ in ScreenFixtureTransport() }
-        try await session.start()
-        await wait(session) { session.canResizeApp }
-        try await session.stop()
+        }) { _, _, _ in connections == 0 ? primary : ScreenFixtureTransport() }
+        let startup = Task { try await session.start() }
+        await startingObservation.wait()
+        var stops = primary.stopEvents.stream.makeAsyncIterator()
+        let shutdown = Task { try await session.stop() }
+        await stops.next()
+        startingObservation.resume()
+        await #expect(throws: CancellationError.self) { try await startup.value }
+        try await shutdown.value
         #expect(!session.supportsAppResize && !session.canResizeApp)
         try await session.start()
         #expect(connections == 2 && session.supportsAppResize && !session.canResizeApp)
-        next.eligibilityUpdates.continuation.yield(.eligible)
+        next.eligibilityUpdates.yield(.eligible)
         await wait(session) { session.canResizeApp }
+        if case .terminated = first.eligibilityUpdates.yield(.unavailable) {}
+        else { Issue.record("A cancelled startup left its old eligibility observer alive") }
+        first.eligibilityUpdates.finish(throwing: ScreenFixtureError.stream)
+        #expect(session.supportsAppResize && session.canResizeApp && session.lastError == nil)
         try await session.stop()
     }
 
@@ -1084,13 +1096,19 @@ private final class ScreenCapabilityFixtureSource: RemoteScreenInputCapabilitySo
 @MainActor
 private final class ScreenResizeFixtureTransport: AppResizeTransport {
     let assertion = ScreenResizeFixtureSession()
-    let eligibilityUpdates = AsyncThrowingStream<AppResizeEligibility, any Error>.makeStream()
+    private var eligibilityStream: AsyncThrowingStream<AppResizeEligibility, any Error>?
+    let eligibilityUpdates: AsyncThrowingStream<AppResizeEligibility, any Error>.Continuation
     var initialEligibility = AppResizeEligibility.eligible
     var eligibilityError: (any Error)?
+    var eligibilityGate: ScreenFixtureGate?
+    init() { (eligibilityStream, eligibilityUpdates) = AsyncThrowingStream.makeStream() }
     func eligibility() async throws -> AsyncThrowingStream<AppResizeEligibility, any Error> {
+        guard let stream = eligibilityStream else { throw ScreenFixtureError.stream }
+        eligibilityStream = nil
+        await eligibilityGate?.hold()
         if let eligibilityError { throw eligibilityError }
-        eligibilityUpdates.continuation.yield(initialEligibility)
-        return eligibilityUpdates.stream
+        eligibilityUpdates.yield(initialEligibility)
+        return stream
     }
     func start(size: CGSize, cornerRadius: CGFloat) async throws -> any AppResizeSession { assertion }
 }

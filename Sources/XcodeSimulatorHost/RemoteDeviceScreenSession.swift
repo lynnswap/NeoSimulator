@@ -358,17 +358,19 @@ public final class RemoteDeviceScreenSession {
 
     private func observeResizability(_ source: any AppResizeTransport) async throws {
         let stream = try await source.eligibility()
-        resizeEligibilityTask = Task { [weak self] in
+        try Task.checkCancellation()
+        guard resizeTransport === source, stopping == nil else { throw CancellationError() }
+        resizeEligibilityTask = Task { [weak self, weak source] in
             do {
                 for try await eligibility in stream {
-                    guard !Task.isCancelled, let self else { return }
+                    guard !Task.isCancelled, let self, let source, self.resizeTransport === source else { return }
                     self.resizeEligibility = eligibility
                     self.onStateChange?()
                 }
                 try Task.checkCancellation()
                 throw CLIError.unavailable("app-resize-observation", "App resize observation ended.")
             } catch {
-                guard !Task.isCancelled, let self else { return }
+                guard !Task.isCancelled, let self, let source, self.resizeTransport === source else { return }
                 self.resizeTransport = nil
                 self.resizeEligibility = .unavailable
                 self.lastError = error

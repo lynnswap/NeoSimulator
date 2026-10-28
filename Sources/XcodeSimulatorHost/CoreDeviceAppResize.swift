@@ -219,6 +219,7 @@ private struct NativeResizeStream {
                 valueABIs: abis, receiverABI: .opaque(named: iterator.type.name))))
             readNext = { try await unsafe next.unsafeInvoke(on: iterator) }
         }
+        try Task.checkCancellation()
         return AsyncThrowingStream { continuation in
             let task = Task { @MainActor in
                 do {
