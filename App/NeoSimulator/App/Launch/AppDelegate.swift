@@ -482,6 +482,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let available = model.inventory.first { $0.id == identifier }
             .map { DevicePostureModel.canInspect(capabilities: $0.capabilities) } ?? false
         controls.updatePosture(posture, isEnabled: enabled, available: available)
+        if mainWindow?.liveDeviceIdentifier == identifier {
+            mainWindow?.updateCanvasMinimumWidth(controls.isHidden ? 0 : controls.fittingSize.width + 24)
+        }
     }
 
     private func updateScreenToolbar() {
@@ -494,10 +497,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func observeScreenState(_ identifier: DeviceInventoryID) {
-        guard let owner = screen(for: identifier)?.commandTarget else { return }
+        guard let screen = screen(for: identifier) else { return }
+        let owner = screen.commandTarget
         let session = (owner as? DeviceWindowController)?.session
         withObservationTracking {
             updateCanvasControls(for: identifier)
+            // These controls return to the main toolbar with the same screen.
+            _ = screen.capturesKeyboard
+            _ = screen.resizingApp
+            for action in ["resizeApp", "captureKeyboard"] {
+                _ = screen.supports(action)
+                _ = screen.isEnabled(action)
+            }
+            if let controller = owner as? DeviceWindowController {
+                _ = controller.canvasZoom.scale
+                _ = controller.canvasZoom.fitScale
+                _ = controller.canvasZoom.mode
+            }
+            if mainWindow?.liveDeviceIdentifier == identifier { updateScreenToolbar() }
         } onChange: { [weak self, weak owner, weak session] in
             Task { @MainActor in
                 guard let self, let owner, self.screen(for: identifier)?.commandTarget === owner else { return }
@@ -505,7 +522,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.observeScreenState(identifier)
             }
         }
-        if mainWindow?.liveDeviceIdentifier == identifier { updateScreenToolbar() }
     }
 
     private func observeRemoteDevices() {

@@ -35,6 +35,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
             canvasControls?.onLayoutChange = { [weak self] in
                 self?.content.needsLayout = true
                 self?.updateContentMinimumSize()
+                self?.fitCanvasControls()
             }
             deviceToolbar?.setUsesCanvasControls(canvasControls != nil)
             bezelChanged()
@@ -791,6 +792,16 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         window.contentMinSize = minimum
     }
 
+    private func fitCanvasControls() {
+        guard !isEmbedded, !isFullScreen, let window,
+              let currentSize = window.contentView?.bounds.size,
+              currentSize.width < content.canvasControlsWidth else { return }
+        var frame = window.frameRect(forContentRect: NSRect(origin: .zero,
+            size: NSSize(width: content.canvasControlsWidth, height: currentSize.height)))
+        frame.origin = window.frame.origin
+        setFrame(around: frame)
+    }
+
     /// Rounds the header below a visible bezel outside full screen.
     private func updateHeaderShape() {
         (window as? DeviceWindow)?.roundHeader(session.display.chromePadding != nil && !isFullScreen)
@@ -1281,7 +1292,10 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         guard let scale = scale(for: mode), scale >= minimumScale else { return false }
         guard session.display.chromePadding == nil, let visible = window.screen?.visibleFrame else { return true }
         let size = session.display.size(for: scale)
-        return size.width <= visible.width && size.height <= visible.height - titleBarHeight(forDisplayWidth: size.width)
+        let width = max(size.width, content.canvasControlsWidth)
+        let header = titleBarHeight(forDisplayWidth: width)
+        let height = size.height + content.heightAboveDisplay + header - content.headerHeight
+        return width <= visible.width && height <= visible.height
     }
 
     /// Measures the title bar at the requested width, since scaling may change toolbar style.
@@ -1346,32 +1360,38 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     }
 
     /// Sizes the window to the scaled display, gap, and final toolbar height.
-    /// Keeps its bottom-left origin unless supplied and rounds outward to an integral frame.
+    /// Keeps its bottom-left origin and rounds outward to an integral frame.
     /// Full screen and live resize fit the display into the window instead.
-    private func updateWindowSize(origin: NSPoint? = nil) {
+    private func updateWindowSize() {
         guard !closed, let window, !fitting.fitsWindow else {
             resizeDisplay()
             return
         }
         let size = session.display.size(for: session.display.renderScale)
         let visible = (window.screen ?? NSScreen.main)?.visibleFrame
-        let width = fitting.scalesDisplay ? size.width : min(size.width, visible?.width ?? size.width)
+        let width = max(content.canvasControlsWidth,
+            fitting.scalesDisplay ? size.width : min(size.width, visible?.width ?? size.width))
         updateToolbarStyle(forWidth: width)
         var sized = window.frameRect(forContentRect: NSRect(x: 0, y: 0,
-            width: size.width, height: size.height + content.heightAboveDisplay))
+            width: max(size.width, content.canvasControlsWidth), height: size.height + content.heightAboveDisplay))
         if !fitting.scalesDisplay, let visible {
             sized.size.width = min(sized.width, visible.width)
             sized.size.height = min(sized.height, visible.height)
         }
         content.isSizedToDisplay = true
-        setFrame(around: NSRect(origin: origin ?? window.frame.origin, size: sized.size))
+        setFrame(around: NSRect(origin: window.frame.origin, size: sized.size))
         fitting.layout()
     }
 
     /// Rounds the frame outward and constrains its top edge.
     private func setFrame(around frame: NSRect) {
+        setFrame(NSIntegralRect(frame))
+    }
+
+    /// Applies the same top-edge constraint when resizing and repositioning.
+    private func setFrame(_ proposed: NSRect) {
         guard let window else { return }
-        var frame = NSIntegralRect(frame)
+        var frame = proposed
         if let visible = window.screen?.visibleFrame, visible.maxY < frame.maxY {
             frame.origin.y = visible.maxY - frame.height
         }
@@ -1408,11 +1428,14 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         let point = display.view.convert(event.locationInWindow, from: nil)
         guard let corner = display.resizeRects.first(where: { $0.rect.contains(point) })?.corner else { return false }
         let drag = BezelResize(corner: corner,
-                               start: NSRect(origin: window.frame.origin,
-                                             size: NSSize(width: window.frame.width, height: display.view.frame.height)),
+                               start: window.convertToScreen(display.view.convert(display.view.bounds, to: nil)),
                                pointer: Self.screenLocation(of: event, in: window))
-        let maximumScale = (window.screen ?? NSScreen.main).map {
-            display.scale(for: drag.largestSize(within: $0.visibleFrame))
+        let maximumScale = (window.screen ?? NSScreen.main).flatMap { screen in
+            displaySpace(on: screen).map { space in
+                let anchored = drag.largestSize(within: screen.visibleFrame)
+                return display.scale(for: NSSize(width: min(anchored.width, space.width),
+                                                 height: min(anchored.height, space.height)))
+            }
         } ?? 1000
         bezelResize = (drag, maximumScale)
         display.beginResize()
@@ -1425,7 +1448,11 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         let display = session.display
         let requested = resize.drag.requestedSize(pointerAt: Self.screenLocation(of: event, in: window))
         fitting.setScale(min(resize.maximumScale, max(minimumScale, display.scale(for: requested))))
-        updateWindowSize(origin: resize.drag.origin(for: display.size(for: display.renderScale)))
+        updateWindowSize()
+        let frame = window.convertToScreen(display.view.convert(display.view.bounds, to: nil))
+        let origin = resize.drag.origin(for: frame.size)
+        setFrame(NSRect(origin: NSPoint(x: window.frame.minX + origin.x - frame.minX,
+                                       y: window.frame.minY + origin.y - frame.minY), size: window.frame.size))
     }
 
     /// After the drag, keep the window within reach of the screen.
@@ -1694,14 +1721,16 @@ private final class DeviceContentView: NSView, DisplayContentView {
             needsLayout = true
         }
     }
-    private var canvasControlsHeight: CGFloat { canvasControls?.isHidden == false ? 52 : 0 }
-    var canvasControlsWidth: CGFloat { canvasControls.map { $0.fittingSize.width + 24 } ?? 0 }
+    var canvasControlsWidth: CGFloat {
+        canvasControls.flatMap { $0.isHidden ? nil : $0.fittingSize.width + 24 } ?? 0
+    }
     func setDisplay(_ display: NSView, usesNativeCanvas: Bool) {
         self.usesNativeCanvas = usesNativeCanvas
         self.display.removeFromSuperview()
         self.display = display
         previousDisplaySize = nil
-        if usesViewport { canvasDocumentView.addSubview(display) } else { addSubview(display) }
+        if usesViewport { canvasDocumentView.addSubview(display) }
+        else { addSubview(display, positioned: .below, relativeTo: canvasControls) }
         needsLayout = true
     }
     private let canvasScrollView = NSScrollView()
@@ -1720,7 +1749,8 @@ private final class DeviceContentView: NSView, DisplayContentView {
         let parent = usesViewport ? canvasDocumentView : self
         if display.superview !== parent {
             display.removeFromSuperview()
-            parent.addSubview(display)
+            if usesViewport { parent.addSubview(display) }
+            else { addSubview(display, positioned: .below, relativeTo: canvasControls) }
         }
         canvasScrollView.isHidden = !usesViewport
         updateScrollMonitor()
@@ -1745,8 +1775,8 @@ private final class DeviceContentView: NSView, DisplayContentView {
         guard let window else { return 52 }
         return max(0, bounds.height - window.contentLayoutRect.height)
     }
-    /// The window space reserved for its header, display gap, and canvas controls.
-    var heightAboveDisplay: CGFloat { headerHeight + displayGap + canvasControlsHeight }
+    /// The window space reserved above the display for its header and display gap.
+    var heightAboveDisplay: CGFloat { headerHeight + displayGap }
     init(display: NSView, usesNativeCanvas: Bool) {
         self.usesNativeCanvas = usesNativeCanvas
         self.display = display
@@ -1825,10 +1855,10 @@ private final class DeviceContentView: NSView, DisplayContentView {
             onDisplaySizeChange()
         }
         if let canvasControls, !canvasControls.isHidden {
-            let width = min(max(0, bounds.width - 24), canvasControls.fittingSize.width)
+            let width = canvasControls.fittingSize.width
             canvasControls.frame = NSRect(x: (bounds.width - width) / 2, y: 8, width: width, height: 36)
         }
-        let available = NSRect(origin: NSPoint(x: 0, y: canvasControlsHeight), size: availableDisplaySize)
+        let available = NSRect(origin: .zero, size: availableDisplaySize)
         if usesViewport {
             let center = retainedCanvasCenter ?? canvasCenter ?? NSPoint(x: 0.5, y: 0.5)
             retainedCanvasCenter = nil
@@ -1850,7 +1880,7 @@ private final class DeviceContentView: NSView, DisplayContentView {
             canvasScrollView.reflectScrolledClipView(clip)
             return
         }
-        if isSizedToDisplay || usesNativeCanvas {
+        if usesNativeCanvas || (isSizedToDisplay && canvasControls == nil) {
             display.frame = available
         } else {
             let intrinsic = display.intrinsicContentSize

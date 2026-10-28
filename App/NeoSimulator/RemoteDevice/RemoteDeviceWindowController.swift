@@ -36,7 +36,9 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
         didSet {
             oldValue?.removeFromSuperview()
             if let canvasControls { canvasControlsContainer.addArrangedSubview(canvasControls) }
+            canvasControls?.onLayoutChange = { [weak self] in self?.fitCanvasControls() }
             canvasControlsContainer.isHidden = canvasControls == nil
+            fitCanvasControls()
             update()
         }
     }
@@ -288,6 +290,16 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
         presentationViewController.view.translatesAutoresizingMaskIntoConstraints = true
         window?.contentViewController = presentationViewController
         if let frame { window?.setFrame(frame, display: false) }
+        fitCanvasControls()
+    }
+
+    private func fitCanvasControls() {
+        guard let window else { return }
+        let width = canvasControls.flatMap { $0.isHidden ? nil : $0.fittingSize.width + 24 } ?? 0
+        window.contentMinSize.width = max(240, width)
+        guard !isEmbedded, !window.styleMask.contains(.fullScreen),
+              let currentSize = window.contentView?.bounds.size, currentSize.width < width else { return }
+        window.setContentSize(NSSize(width: width, height: currentSize.height))
     }
 
     private var focusedScreenInputResponder: NSView? {
