@@ -1749,6 +1749,13 @@ private final class DeviceContentView: NSView, DisplayContentView {
         needsUpdateConstraints = true
         needsLayout = true
     }
+    override func willRemoveSubview(_ subview: NSView) {
+        super.willRemoveSubview(subview)
+        if subview === canvasControls {
+            needsUpdateConstraints = true
+            needsLayout = true
+        }
+    }
     private let viewport = NSLayoutGuide()
     private var canvasConstraints: [NSLayoutConstraint] = []
     // App resize owns an unscaled guest viewport; only Device Hub presentations inset their canvas.

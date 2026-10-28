@@ -334,6 +334,35 @@ struct InputFocusTests {
         window.contentView?.layoutSubtreeIfNeeded()
         #expect(controls.fittingSize.height == unpairedHeight)
         #expect(abs(viewport.frame.height - unpairedSpace.height) < 1)
+
+        controls.update(supports: { ["home", "capture", "record"].contains($0) },
+                        isEnabled: { _ in true }, recordingTitle: "Record Screen", pairedDeviceName: "Companion Watch")
+        let model = SimulatorManagerModel(source: ManagerModelSource(devices: []))
+        model.settings.setReadingSuspended(true)
+        let manager = ManagerWindowController(model: model)
+        let mainWindow = try #require(manager.window)
+        mainWindow.setFrameAutosaveName("")
+        defer { mainWindow.close() }
+        mainWindow.setContentSize(NSSize(width: 1040, height: 700))
+        mainWindow.contentView?.layoutSubtreeIfNeeded()
+        controller.embed(in: manager.liveScreenContainer)
+        let identifier = DeviceInventoryID.simulator(udid: controller.session.device.identifier,
+                                                     deviceSetPath: controller.session.device.deviceSetPath)
+        manager.showLiveScreen(for: identifier, controls: controls)
+        mainWindow.setContentSize(NSSize(width: 1040, height: 650))
+        mainWindow.contentView?.layoutSubtreeIfNeeded()
+        mainWindow.displayIfNeeded()
+        #expect(controls.superview !== canvas && controls.window === mainWindow)
+        #expect(viewport.frame.height > canvas.bounds.height - controls.bounds.height)
+        #expect(display.renderScale > 0)
+        #expect(canvas.convert(viewport.frame, to: nil).insetBy(dx: -1, dy: -1).contains(display.view.convert(display.view.bounds, to: nil)))
+
+        controller.showCompactWindow()
+        manager.showDevicePreview(ifDisplaying: identifier)
+        window.contentView?.layoutSubtreeIfNeeded()
+        #expect(controls.superview === canvas && controls.window === window)
+        #expect(viewport.frame.height > 0 && display.renderScale > 0)
+        #expect(canvas.convert(viewport.frame, to: nil).insetBy(dx: -1, dy: -1).contains(display.view.convert(display.view.bounds, to: nil)))
     }
 
     @Test func remoteControlsReturnFromAnAccessoryToTheSameCompactScreen() async throws {
