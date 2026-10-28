@@ -9,6 +9,35 @@ import IOKit.hidsystem
 
 @Suite(.serialized) @MainActor
 struct InputFocusTests {
+    @Test func remoteKeyboardForwardsJISLanguageKeysAndTheirReleases() async throws {
+        _ = NSApplication.shared
+        let data = Data(#"{"result":{"devices":[{"identifier":"fixture-command","properties":{"hardware":{"reality":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)
+        let device = try #require(CoreDeviceInventoryDecoder.decode(data).first)
+        let transport = TestRemoteScreenTransport()
+        transport.inputCapabilities = [.keyboard]
+        let session = RemoteDeviceScreenSession(device: device) { _, _, _ in transport }
+        try await session.start()
+        let input = RemoteDeviceInputView(session: session)
+        input.isInputEnabled = true
+        var operations: [@MainActor () async throws -> Void] = []
+        input.enqueue = { operations.append($0) }
+        for code in [UInt16(0x66), 0x68, 0] {
+            for type in [NSEvent.EventType.keyDown, .keyUp] {
+                let event = try #require(NSEvent.keyEvent(with: type, location: .zero, modifierFlags: [],
+                    timestamp: 0, windowNumber: 0, context: nil, characters: "", charactersIgnoringModifiers: "",
+                    isARepeat: false, keyCode: code))
+                if type == .keyDown { input.keyDown(with: event) }
+                else { input.keyUp(with: event) }
+            }
+        }
+        input.releaseFocus()
+        for operation in operations { try await operation() }
+        #expect(transport.keys.map(\.usage) == [0x91, 0x91, 0x90, 0x90, 4, 4])
+        #expect(transport.keys.map(\.state) == [.down, .up, .down, .up, .down, .up])
+        #expect(transport.inputReleases == 1)
+        try await session.stop()
+    }
+
     @Test(arguments: ["search", "screen-to-search", "screen"])
     func remoteAppResizeRestoresOnlyUnchangedScreenFocus(_ focus: String) async throws {
         _ = NSApplication.shared
@@ -9144,8 +9173,10 @@ private final class RendererOwnerMonitorFixture: Sendable {
 @MainActor
 private final class TestRemoteScreenTransport: RemoteScreenTransport {
     var nativeInputView: NSView?
-    var inputCapabilities: Set<RemoteDeviceInputKind> { [.button] }
+    var inputCapabilities: Set<RemoteDeviceInputKind> = [.button]
     private(set) var buttons: [RemoteDeviceButtonState] = []
+    private(set) var keys: [(usage: UInt16, state: RemoteDeviceButtonState)] = []
+    private(set) var inputReleases = 0
     func start(events: @escaping @MainActor (RemoteScreenTransportEvent) -> Void) async throws {
         events(.connected)
         events(.attributes(.init(aspectRatio: CGSize(width: 400, height: 600), contentsRect: CGRect(x: 0, y: 0, width: 1, height: 1), scaleFactor: 1, orientation: .portrait)))
@@ -9153,7 +9184,8 @@ private final class TestRemoteScreenTransport: RemoteScreenTransport {
     }
     func send(_ input: RemoteScreenInput) async throws {
         if case .button(_, _, let state) = input { buttons.append(state) }
+        if case .key(let usage, let state) = input { keys.append((usage, state)) }
     }
-    func releaseInputs() async throws {}
+    func releaseInputs() async throws { inputReleases += 1 }
     func stop() async throws { nativeInputView?.removeFromSuperview() }
 }
