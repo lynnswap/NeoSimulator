@@ -26,9 +26,11 @@ The compatibility gate checks:
   messages, Swift members, C symbols, and loaded-image provenance.
 
 The embedded renderer's internal `--validate-runtime` mode prepares the required
-Simulator interfaces without creating an application or device session. After
-those checks succeed, it writes a JSON report of optional native canvas, pose,
-app-resize, and display-HID binding preparation to stdout. Each result records
+Simulator interfaces without creating an application or device session. This
+required-only mode produces no stdout on success. Add `--include-native-bindings`
+to explicitly prepare optional native canvas, pose, app-resize, and display-HID
+bindings and write their JSON diagnostic report to stdout after the required
+checks succeed. Each result records
 its preparation stage, any unavailable declaration or failure, and the remaining
 device, provider, or service checks. Successful preparation does not establish
 device support or working rendering and I/O. Optional preparation failures do
