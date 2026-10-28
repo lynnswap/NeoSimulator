@@ -168,7 +168,6 @@ private struct CanvasActionBar: View {
             }
         }
         .fixedSize()
-        .accessibilityLabel("Device Actions")
     }
 
     @ViewBuilder private func button(_ action: CanvasAction) -> some View {
