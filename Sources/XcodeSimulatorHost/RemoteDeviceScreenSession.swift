@@ -65,6 +65,8 @@ public final class RemoteDeviceScreenSession {
     private var resizeUpdates: Task<Void, Never>?
     private var resizeInvalidation: Task<Void, Never>?
     private var resizeOperation: Task<Void, any Error>?
+    private var resizeAdjustment: Task<Void, Never>?
+    private var pendingAppSize: CGSize?
     private var frameWaiter: CheckedContinuation<Void, any Error>?
     private var frameWaitIdentifier: UUID?
     private var capturesInFlight = 0
@@ -98,6 +100,7 @@ public final class RemoteDeviceScreenSession {
     isolated deinit {
         starting?.cancel()
         resizeOperation?.cancel()
+        resizeAdjustment?.cancel()
         resizeEligibilityTask?.cancel()
         resizeUpdates?.cancel()
         resizeInvalidation?.cancel()
@@ -138,10 +141,18 @@ public final class RemoteDeviceScreenSession {
                 }
                 try Task.checkCancellation()
                 guard generation == token else { throw CancellationError() }
-                resizeTransport = try await makeResizeTransport(device)
-                try Task.checkCancellation()
-                guard generation == token else { throw CancellationError() }
-                if let resizeTransport { try await observeResizability(resizeTransport) }
+                do {
+                    resizeTransport = try await makeResizeTransport(device)
+                    try Task.checkCancellation()
+                    guard generation == token else { throw CancellationError() }
+                    if let resizeTransport { try await observeResizability(resizeTransport) }
+                } catch {
+                    try Task.checkCancellation()
+                    if error is CancellationError { throw error }
+                    resizeTransport = nil
+                    resizeEligibility = .unavailable
+                    lastError = error
+                }
                 try Task.checkCancellation()
                 guard generation == token else { throw CancellationError() }
                 onStateChange?()
@@ -172,7 +183,8 @@ public final class RemoteDeviceScreenSession {
     public func stop() async throws {
         if let stopping { try await stopping.value; return }
         generation += 1
-        starting?.cancel()
+        let beginning = starting
+        beginning?.cancel()
         let resizing = resizeOperation
         resizing?.cancel()
         finishFrameWait(.failure(CancellationError()))
@@ -181,25 +193,43 @@ public final class RemoteDeviceScreenSession {
         state = .stopping
         onStateChange?()
         let task = Task { [self] in
+            await finishResizeAdjustment()
             _ = try await recording.stop()
             await waitForCaptures()
             var failure: (any Error)?
+            var cancellation: (any Error)?
+            var failedTransport: (any RemoteScreenTransport)?
             if let transport {
                 do { try await transport.stop(); self.transport = nil }
-                catch { failure = error }
+                catch { failure = error; failedTransport = transport }
             }
             do { try await resizing?.value }
             catch {
-                if !(error is CancellationError) { failure = failure.map { Self.combining(error, cleanup: $0) } ?? error }
+                if error is CancellationError {
+                    if cancellation == nil {
+                        cancellation = error
+                        if let cleanup = failure { failure = Self.combining(error, cleanup: cleanup) }
+                    }
+                } else { failure = failure.map { Self.combining(error, cleanup: $0) } ?? error }
+            }
+            do { try await beginning?.value }
+            catch {
+                if error is CancellationError {
+                    if cancellation == nil {
+                        cancellation = error
+                        if let cleanup = failure { failure = Self.combining(error, cleanup: cleanup) }
+                    }
+                } else { failure = failure.map { Self.combining(error, cleanup: $0) } ?? error }
+            }
+            // A cancellation recovery can return a new transport after the first stop.
+            generation += 1
+            if let transport, transport !== failedTransport {
+                do { try await transport.stop(); self.transport = nil }
+                catch { failure = (failure ?? cancellation).map { Self.combining($0, cleanup: error) } ?? error }
             }
             if transport == nil {
-                do { try endResizeAssertion() } catch { failure = failure.map { Self.combining($0, cleanup: error) } ?? error }
-            }
-            do { try await starting?.value }
-            catch {
-                if !(error is CancellationError) {
-                    failure = failure.map { Self.combining(error, cleanup: $0) } ?? error
-                }
+                do { try endResizeAssertion() }
+                catch { failure = (failure ?? cancellation).map { Self.combining($0, cleanup: error) } ?? error }
             }
             if let failure { throw failure }
         }
@@ -369,7 +399,10 @@ public final class RemoteDeviceScreenSession {
                     if stopping == nil {
                         try await Task { @MainActor [self] in try await connectDisplay(nil, waitForFrame: false) }.value
                     }
-                } catch { throw Self.combining(original, cleanup: error) }
+                } catch {
+                    if stopping != nil, error is CancellationError { throw original }
+                    throw Self.combining(original, cleanup: error)
+                }
                 throw original
             }
         }
@@ -384,13 +417,39 @@ public final class RemoteDeviceScreenSession {
         try await changeDisplay { [self] in try await restorePrimary(finalizeRecording: false) }
     }
 
-    /// Requests a native size; accepted geometry is reported by appResizeGeometry.
+    /// Requests native point geometry, keeping only the latest pending size. Accepted
+    /// geometry comes from appResizeGeometry; adjustment errors are reported in lastError.
     @_spi(NeoSimulator)
-    public func adjustAppResize(size: CGSize) async throws {
-        guard !isChangingDisplay, let resizeSession, let geometry = appResizeGeometry else { return }
-        let size = CGSize(width: min(geometry.maximumSize.width, max(geometry.minimumSize.width, size.width)),
-                          height: min(geometry.maximumSize.height, max(geometry.minimumSize.height, size.height)))
-        try await resizeSession.adjust(size: size, cornerRadius: geometry.cornerRadius)
+    public func resizeApp(to size: CGSize) {
+        guard state == .connected, !isChangingDisplay, let assertion = resizeSession, let geometry = appResizeGeometry,
+              size.width.isFinite, size.height.isFinite, size.width > 0, size.height > 0 else { return }
+        pendingAppSize = CGSize(width: min(geometry.maximumSize.width, max(geometry.minimumSize.width, size.width)),
+                                height: min(geometry.maximumSize.height, max(geometry.minimumSize.height, size.height)))
+        guard resizeAdjustment == nil else { return }
+        resizeAdjustment = Task { [weak self] in
+            defer { if let self, self.resizeSession === assertion { self.resizeAdjustment = nil } }
+            do {
+                while !Task.isCancelled, let self, self.resizeSession === assertion,
+                      let size = self.pendingAppSize, let geometry = self.appResizeGeometry {
+                    self.pendingAppSize = nil
+                    try await assertion.adjust(size: size, cornerRadius: geometry.cornerRadius)
+                    try Task.checkCancellation()
+                }
+            } catch {
+                guard !Task.isCancelled, let self, self.resizeSession === assertion else { return }
+                self.pendingAppSize = nil
+                self.lastError = error
+                self.onStateChange?()
+            }
+        }
+    }
+
+    private func finishResizeAdjustment() async {
+        pendingAppSize = nil
+        let adjustment = resizeAdjustment
+        adjustment?.cancel()
+        await adjustment?.value
+        resizeAdjustment = nil
     }
 
     private func changeDisplay(_ operation: @escaping @MainActor () async throws -> Void) async throws {
@@ -400,6 +459,7 @@ public final class RemoteDeviceScreenSession {
         onInputCapabilitiesLost?([.keyboard, .pointer, .digitizer, .button])
         onStateChange?()
         let task = Task { [self] in
+            await finishResizeAdjustment()
             await prepareForDisplayChange?()
             try Task.checkCancellation()
             try await operation()
@@ -436,13 +496,16 @@ public final class RemoteDeviceScreenSession {
         let connection = try await makeTransport(device, contentView, identifier)
         transport = connection
         try Task.checkCancellation()
+        guard generation == token, stopping == nil else { throw CancellationError() }
         try await connection.start { [weak self] event in
-            guard let self, self.generation == token else { return }
+            guard let self, self.generation == token, self.stopping == nil else { return }
             self.receive(event)
         }
         try Task.checkCancellation()
+        guard generation == token, stopping == nil else { throw CancellationError() }
         if waitForFrame { try await waitForFirstFrame() }
-        guard generation == token, state == .connected else {
+        guard generation == token, stopping == nil else { throw CancellationError() }
+        guard state == .connected else {
             throw lastError ?? CLIError.unavailable("remote-display-ended", "The display connection ended while connecting.")
         }
     }

@@ -676,7 +676,7 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
         let size = viewport.bounds.size
         guard requestedAppSize != size else { return }
         requestedAppSize = size
-        enqueueInput { [session] in try await session.adjustAppResize(size: size) }
+        session.resizeApp(to: size)
     }
 
     func windowDidResize(_ notification: Notification) { layoutScreen() }

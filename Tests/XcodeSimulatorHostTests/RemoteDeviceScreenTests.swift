@@ -414,10 +414,15 @@ struct RemoteDeviceScreenTests {
         #expect(session.state == .connected && session.videoAttributes?.scaleFactor == 2)
         try await session.sendTouch(at: CGPoint(x: 0.2, y: 0.7), phase: .began)
         #expect(dedicated.pressed.touch != nil && primary.pressed.touch == nil)
-        try await session.adjustAppResize(size: CGSize(width: 900, height: 100))
-        #expect(resize.assertion.requestedSize == CGSize(width: 800, height: 200))
+        session.resizeApp(to: CGSize(width: 900, height: 100))
+        var adjustments = resize.assertion.adjusted.stream.makeAsyncIterator()
+        #expect(await adjustments.next() == CGSize(width: 800, height: 200))
         resize.assertion.emit(size: CGSize(width: 700, height: 300))
         await wait(session) { session.appResizeGeometry?.resolvedSize == CGSize(width: 700, height: 300) }
+        resize.assertion.adjustmentError = ScreenFixtureError.stream
+        session.resizeApp(to: CGSize(width: 400, height: 400))
+        await wait(session) { session.lastError is ScreenFixtureError }
+        #expect(session.state == .connected && session.isResizingApp)
         try await session.stopAppResize()
         #expect(dedicated.closed && dedicated.pressed.touch == nil && resize.assertion.invalidated)
         #expect(targets == [nil, resize.assertion.displayUniqueID, nil])
@@ -584,6 +589,75 @@ struct RemoteDeviceScreenTests {
         #expect(session.inputCapabilities.isEmpty && !session.canCaptureScreenshot)
         try await session.stop()
         #expect(restored.closed && session.state == .stopped)
+    }
+
+    @Test(arguments: [false, true])
+    func shutdownReclaimsAPrimaryTransportReturnedAfterCancellation(failCleanup: Bool) async throws {
+        let primary = ScreenFixtureTransport()
+        let dedicated = ScreenFixtureTransport(suspendStart: true)
+        let restored = ScreenFixtureTransport(failCleanup: failCleanup)
+        let resize = ScreenResizeFixtureTransport()
+        let restoration = ScreenFixtureGate()
+        var count = 0
+        let session = RemoteDeviceScreenSession(device: try device(), makeResizeTransport: { _ in resize }) { _, _, target in
+            count += 1
+            if count == 1 { return primary }
+            if target != nil { return dedicated }
+            await restoration.hold()
+            return restored
+        }
+        try await session.start()
+        await wait(session) { session.canResizeApp }
+        let switching = Task { try await session.startAppResize(size: CGSize(width: 400, height: 600)) }
+        await dedicated.waitUntilStarting()
+        switching.cancel()
+        dedicated.finishStarting()
+        await restoration.wait()
+        let shutdown = Task { try await session.stop() }
+        await wait(session) { session.state == .stopping }
+        restoration.resume()
+        if failCleanup {
+            do { try await shutdown.value; Issue.record("Cleanup failure was lost") }
+            catch {
+                #expect(error.localizedDescription.contains("fixture cleanup failed"))
+                #expect(error.localizedDescription.contains(CancellationError().localizedDescription))
+            }
+        } else {
+            try await shutdown.value
+            #expect(session.state == .stopped)
+        }
+        await #expect(throws: CancellationError.self) { try await switching.value }
+        #expect(restored.releases > 0)
+        if failCleanup {
+            #expect(session.state == .failed && !restored.closed && session.nativeInputView != nil)
+            #expect(session.lastError?.localizedDescription.contains("fixture cleanup failed") == true)
+            restored.failCleanup = false
+            try await session.stop()
+        }
+        #expect(session.state == .stopped && restored.closed && session.nativeInputView == nil)
+        restored.emit(.connected)
+        #expect(session.state != .connected && session.nativeInputView == nil)
+    }
+
+    @Test(arguments: [false, true])
+    func optionalResizePreparationFailureKeepsThePrimaryScreen(observationFailure: Bool) async throws {
+        let primary = ScreenFixtureTransport()
+        let resize = ScreenResizeFixtureTransport()
+        resize.eligibilityError = ScreenFixtureError.stream
+        let session = RemoteDeviceScreenSession(device: try device(), makeResizeTransport: { _ in
+            if !observationFailure { throw ScreenFixtureError.stream }
+            return resize
+        }) { _, _, _ in primary }
+        try await session.start()
+        #expect(session.state == .connected && !primary.closed && session.canCaptureScreenshot)
+        #expect(session.inputCapabilities == [.keyboard] && !session.supportsAppResize)
+        #expect(session.lastError is ScreenFixtureError)
+        if session.state == .connected {
+            try await session.sendKey(4, state: .down)
+            _ = try await session.captureScreenshot()
+            #expect(primary.downKeys == [4])
+        }
+        try await session.stop()
     }
 
     @Test func reconnectSubscribesToTheNewResizeEligibilitySource() async throws {
@@ -904,7 +978,9 @@ private final class ScreenResizeFixtureTransport: AppResizeTransport {
     let assertion = ScreenResizeFixtureSession()
     let eligibilityUpdates = AsyncThrowingStream<AppResizeEligibility, any Error>.makeStream()
     var initialEligibility = AppResizeEligibility.eligible
+    var eligibilityError: (any Error)?
     func eligibility() async throws -> AsyncThrowingStream<AppResizeEligibility, any Error> {
+        if let eligibilityError { throw eligibilityError }
         eligibilityUpdates.continuation.yield(initialEligibility)
         return eligibilityUpdates.stream
     }
@@ -919,10 +995,14 @@ private final class ScreenResizeFixtureSession: AppResizeSession {
     private let continuation: AsyncThrowingStream<AppResizeGeometry, any Error>.Continuation
     private var invalidation: CheckedContinuation<Void, Never>?
     private(set) var invalidated = false
-    private(set) var requestedSize: CGSize?
+    let adjusted = AsyncStream<CGSize>.makeStream()
+    var adjustmentError: (any Error)?
     init() { (stream, continuation) = AsyncThrowingStream.makeStream() }
     func updates() throws -> AsyncThrowingStream<AppResizeGeometry, any Error> { stream }
-    func adjust(size: CGSize, cornerRadius: CGFloat) async throws { requestedSize = size }
+    func adjust(size: CGSize, cornerRadius: CGFloat) async throws {
+        if let adjustmentError { throw adjustmentError }
+        adjusted.continuation.yield(size)
+    }
     func emit(size: CGSize) { geometry.resolvedSize = size; continuation.yield(geometry) }
     func awaitInvalidation() async throws {
         if !invalidated { await withCheckedContinuation { invalidation = $0 } }
