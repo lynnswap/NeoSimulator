@@ -1559,6 +1559,40 @@ struct InputFocusTests {
         }
         try #require(scroll.magnification > previousMagnification)
         #expect(display.view.frame.size == previousFrame && display.renderScale == 1)
+        let centerBeforeInterruptedZoom = display.view.convert(NSPoint(x: display.view.bounds.midX,
+                                                                       y: display.view.bounds.midY), to: content)
+        let initialMagnification = scroll.magnification
+        let firstTarget = initialMagnification * 1.25
+        let didRetarget = Mutex(false)
+        let retargetFinished = XCTestExpectation(description: "Mid-flight canvas zoom finishes")
+        let observation = scroll.observe(\.magnification, options: [.new]) { scroll, change in
+            MainActor.assumeIsolated {
+                guard let value = change.newValue, value > initialMagnification, value < firstTarget else { return }
+                let shouldRetarget = didRetarget.withLock { didRetarget in
+                    guard !didRetarget else { return false }
+                    didRetarget = true
+                    return true
+                }
+                guard shouldRetarget else { return }
+                Task { @MainActor in
+                    #expect(scroll.magnification > initialMagnification && scroll.magnification < firstTarget)
+                    NSAnimationContext.runAnimationGroup { _ in controller.performCanvasZoom(.zoomIn) }
+                        completionHandler: { retargetFinished.fulfill() }
+                }
+            }
+        }
+        controller.performCanvasZoom(.zoomIn)
+        try #require(await XCTWaiter.fulfillment(of: [retargetFinished], timeout: 5) == .completed)
+        observation.invalidate()
+        try #require(didRetarget.withLock { $0 })
+        let centerAfterInterruptedZoom = display.view.convert(NSPoint(x: display.view.bounds.midX,
+                                                                      y: display.view.bounds.midY), to: content)
+        let backingPixel = 1 / window.backingScaleFactor
+        #expect(abs(centerAfterInterruptedZoom.x - centerBeforeInterruptedZoom.x) <= backingPixel
+            && abs(centerAfterInterruptedZoom.y - centerBeforeInterruptedZoom.y) <= backingPixel,
+                "Canvas center moves from \(centerBeforeInterruptedZoom) to \(centerAfterInterruptedZoom)")
+        #expect(WindowScale.matches(scroll.magnification, controller.canvasZoom.scale))
+        try await animateCanvas { controller.performCanvasZoom(.fit) }
         // SimulatorKit can deliver a frame from before the latest scale change.
         display.view.setFrameSize(NSSize(width: previousFrame.width / 2, height: previousFrame.height / 2))
         try #require(display.view.frame.size != display.size(for: display.renderScale))
