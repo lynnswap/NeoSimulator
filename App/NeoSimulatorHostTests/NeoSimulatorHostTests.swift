@@ -1180,7 +1180,7 @@ struct InputFocusTests {
         parent.view.setFrameSize(NSSize(width: 300, height: 480))
         parent.view.layoutSubtreeIfNeeded()
         let content = controller.presentationViewController.view
-        #expect(content.bounds.contains(display.view.frame))
+        #expect(content.bounds.contains(display.view.convert(display.view.bounds, to: content)))
         let accessory = DeviceCanvasAccessoryViewController()
         var minimumWidth: CGFloat = 0
         accessory.onMinimumWidthChange = { minimumWidth = $0 }
