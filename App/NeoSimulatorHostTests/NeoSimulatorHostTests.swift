@@ -246,6 +246,16 @@ struct InputFocusTests {
         let viewport = try #require(canvas.layoutGuides.first { $0.identifier.rawValue == "DeviceCanvasViewport" })
         let window = try #require(controller.presentationWindow)
         window.contentView?.layoutSubtreeIfNeeded()
+        window.setContentSize(NSSize(width: window.contentView!.bounds.width + 120,
+                                     height: window.contentView!.bounds.height + 80))
+        window.contentView?.layoutSubtreeIfNeeded()
+        let manualSize = window.frame.size
+        let manualScale = display.renderScale
+        controls.update(supports: { ["home", "capture", "record"].contains($0) },
+                        isEnabled: { _ in true }, recordingTitle: "Record Screen")
+        window.contentView?.layoutSubtreeIfNeeded()
+        #expect(window.frame.size == manualSize)
+        #expect(display.renderScale == manualScale)
         let unpairedHeight = controls.fittingSize.height
         let unpairedSpace = viewport.frame.size
         let unpairedScale = display.renderScale

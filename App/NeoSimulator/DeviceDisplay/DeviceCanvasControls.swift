@@ -77,6 +77,8 @@ final class DeviceCanvasControls: NSView {
     }
 
     private func render(modifierFlags: NSEvent.ModifierFlags = NSEvent.modifierFlags) {
+        let previousSize = fittingSize
+        let wasHidden = isHidden
         let rotation = DeviceCommand.canvasRotation(modifierFlags: modifierFlags)
         for index in content.actions.indices where content.actions[index].id == "rotate" {
             content.actions[index].image = rotationImages[rotation]
@@ -91,7 +93,10 @@ final class DeviceCanvasControls: NSView {
         isHidden = content.pairedDeviceName == nil && content.actions.isEmpty && content.postures.isEmpty && content.nativePoses == nil
         host.invalidateIntrinsicContentSize()
         invalidateIntrinsicContentSize()
-        onLayoutChange?()
+        // Measure the hosting view's updated constraints before notifying the
+        // window owner; style-only renders must preserve manual window geometry.
+        updateConstraintsForSubtreeIfNeeded()
+        if wasHidden != isHidden || previousSize != fittingSize { onLayoutChange?() }
     }
 
     private func loadArtworkIfNeeded() {
