@@ -33,10 +33,16 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         didSet {
             content.canvasControls = canvasControls
             canvasControls?.onLayoutChange = { [weak self] in
-                self?.content.needsLayout = true
-                self?.content.needsUpdateConstraints = true
-                self?.updateContentMinimumSize()
-                self?.fitCanvasControls()
+                guard let self else { return }
+                self.content.needsLayout = true
+                self.content.needsUpdateConstraints = true
+                self.updateContentMinimumSize()
+                self.fitCanvasControls()
+                if !self.isEmbedded, !self.session.display.usesNativeCanvas,
+                   !self.session.isResizingApp, !self.isSizingWindow {
+                    self.content.layoutSubtreeIfNeeded()
+                    self.displayGeometryChanged()
+                }
             }
             deviceToolbar?.setUsesCanvasControls(canvasControls != nil)
             bezelChanged()
@@ -1875,10 +1881,9 @@ private final class DeviceContentView: NSView, DisplayContentView {
         ]
         if let canvasControls, canvasControls.superview === self, !canvasControls.isHidden {
             canvasConstraints += [
-                canvasControls.centerXAnchor.constraint(equalTo: centerXAnchor),
                 canvasControls.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8),
-                canvasControls.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 12),
-                canvasControls.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -12),
+                canvasControls.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+                canvasControls.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
                 viewport.bottomAnchor.constraint(equalTo: canvasControls.topAnchor, constant: -canvasInset),
             ]
         } else {

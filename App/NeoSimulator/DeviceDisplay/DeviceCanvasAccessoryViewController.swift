@@ -8,7 +8,7 @@ final class DeviceCanvasAccessoryViewController: NSSplitViewItemAccessoryViewCon
     init() {
         super.init(nibName: nil, bundle: nil)
         controlsStack.orientation = .vertical
-        controlsStack.alignment = .centerX
+        controlsStack.alignment = .width
         view = controlsStack
         isHidden = true
     }

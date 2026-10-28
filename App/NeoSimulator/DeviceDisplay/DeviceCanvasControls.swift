@@ -8,7 +8,7 @@ final class DeviceCanvasControls: NSView {
     var onAction: ((String) -> Void)?
     var onLayoutChange: (() -> Void)?
     var xcodeURL: URL?
-    private let host = NSHostingView(rootView: CanvasBottomContent())
+    private let host = CanvasControlsHostingView(rootView: CanvasBottomContent())
     private var content = CanvasBottomContent()
     private var modifierMonitor: Any?
     private var artworkXcodeURL: URL?
@@ -19,7 +19,7 @@ final class DeviceCanvasControls: NSView {
     init() {
         super.init(frame: .zero)
         isHidden = true
-        host.sizingOptions = [.intrinsicContentSize]
+        host.sizingOptions = [.minSize, .intrinsicContentSize]
         host.translatesAutoresizingMaskIntoConstraints = false
         addSubview(host)
         NSLayoutConstraint.activate([
@@ -138,6 +138,16 @@ private struct CanvasAction: Identifiable {
     var help: String? = nil
 }
 
+@MainActor
+private final class CanvasControlsHostingView: NSHostingView<CanvasBottomContent> {
+    override var intrinsicContentSize: NSSize {
+        let size = super.intrinsicContentSize
+        // The caption accepts the available width; SwiftUI still supplies the
+        // action bar's minimum width and the content's natural height.
+        return NSSize(width: NSView.noIntrinsicMetric, height: size.height)
+    }
+}
+
 private struct CanvasBottomContent: View {
     var pairedDeviceName: String?
     var actions: [CanvasAction] = []
@@ -152,7 +162,7 @@ private struct CanvasBottomContent: View {
             if let pairedDeviceName {
                 Button { onAction("pairedDevice") } label: {
                     HStack {
-                        Text("Paired with \(pairedDeviceName)")
+                        Text("Paired with \(pairedDeviceName)").lineLimit(1).truncationMode(.tail)
                         Image(systemName: "chevron.right").fontWeight(.semibold).foregroundStyle(.secondary)
                     }
                     .padding(.horizontal, 16)
@@ -166,7 +176,7 @@ private struct CanvasBottomContent: View {
             }
             actionBar
         }
-        .fixedSize()
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     private var actionBar: some View {

@@ -152,7 +152,7 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
         footer.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(footer)
         canvasControlsContainer.orientation = .vertical
-        canvasControlsContainer.alignment = .centerX
+        canvasControlsContainer.alignment = .width
         canvasControlsContainer.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
         canvasControlsContainer.translatesAutoresizingMaskIntoConstraints = false
         canvasControlsContainer.isHidden = true

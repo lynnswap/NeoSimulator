@@ -180,6 +180,7 @@ struct InputFocusTests {
         ])
         let item = NSSplitViewItem(viewController: pane)
         let accessory = DeviceCanvasAccessoryViewController()
+        accessory.onMinimumWidthChange = { item.minimumThickness = max(280, $0) }
         item.addBottomAlignedAccessoryViewController(accessory)
         split.addSplitViewItem(item)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 700),
@@ -194,6 +195,7 @@ struct InputFocusTests {
         split.view.layoutSubtreeIfNeeded()
         window.displayIfNeeded()
         let unpairedHeight = controls.fittingSize.height
+        let actionBarWidth = controls.fittingSize.width
         let unpairedSpace = viewport.frame.height
         try #require(unpairedSpace > 0)
         controls.update(supports: { $0 == "home" }, isEnabled: { _ in true }, recordingTitle: "Record Screen",
@@ -206,6 +208,18 @@ struct InputFocusTests {
         #expect(viewport.frame.height < unpairedSpace)
         #expect(!viewport.frame.intersects(accessory.view.convert(accessory.view.bounds, to: pane.view)))
         #expect(controls.bounds.height + 1 >= controls.fittingSize.height)
+        let pairedMinimumWidth = controls.fittingSize.width
+        #expect(controls.bounds.width > actionBarWidth)
+        controls.update(supports: { $0 == "home" }, isEnabled: { _ in true }, recordingTitle: "Record Screen",
+                        pairedDeviceName: String(repeating: "A long companion name ", count: 50))
+        accessory.refresh()
+        window.setContentSize(NSSize(width: 500, height: 700))
+        split.view.layoutSubtreeIfNeeded()
+        window.displayIfNeeded()
+        #expect(controls.fittingSize.width <= pairedMinimumWidth + 1)
+        #expect(controls.bounds.width + 1 >= actionBarWidth)
+        #expect(item.minimumThickness <= pane.view.bounds.width)
+        #expect(viewport.frame.width > 0 && controls.bounds.height + 1 >= controls.fittingSize.height)
         controls.update(supports: { $0 == "home" }, isEnabled: { _ in true }, recordingTitle: "Record Screen")
         accessory.refresh()
         window.setContentSize(NSSize(width: 500, height: 700))
@@ -215,10 +229,10 @@ struct InputFocusTests {
         #expect(abs(viewport.frame.height - unpairedSpace) < 1)
     }
 
-    @Test func pairedCanvasContentKeepsTheNativeCompactDisplayInsideItsViewport() throws {
+    @Test(arguments: [false, true]) func pairedCanvasContentKeepsTheCompactDisplayInsideItsViewport(native: Bool) throws {
         _ = NSApplication.shared
         let display = TestDisplay()
-        display.usesNativeCanvas = true
+        display.usesNativeCanvas = native
         let controller = try makeController(display, features: [DeviceCapabilities.keyboard],
             simctl: URL(fileURLWithPath: "/usr/bin/false"), devicectl: URL(fileURLWithPath: "/usr/bin/false"),
             keyboardCaptureTap: TestKeyboardEventTap(), presentCompactWindow: { _ in })
@@ -234,16 +248,23 @@ struct InputFocusTests {
         window.contentView?.layoutSubtreeIfNeeded()
         let unpairedHeight = controls.fittingSize.height
         let unpairedSpace = viewport.frame.size
+        let unpairedScale = display.renderScale
+        let unpairedWindowSize = window.frame.size
         controls.update(supports: { ["home", "capture", "record"].contains($0) },
                         isEnabled: { _ in true }, recordingTitle: "Record Screen", pairedDeviceName: "Companion Watch")
         window.contentView?.layoutSubtreeIfNeeded()
         #expect(controls.fittingSize.height > unpairedHeight)
         #expect(controls.bounds.height + 1 >= controls.fittingSize.height)
-        #expect(viewport.frame.height < unpairedSpace.height)
+        if native {
+            #expect(viewport.frame.height < unpairedSpace.height)
+        } else {
+            #expect(display.renderScale == unpairedScale)
+            #expect(window.frame.height > unpairedWindowSize.height)
+        }
         let controlsRect = controls.convert(controls.bounds, to: nil)
         #expect(window.contentView!.bounds.insetBy(dx: -1, dy: -1).contains(controlsRect))
         #expect(!canvas.convert(viewport.frame, to: nil).intersects(controlsRect))
-        #expect(display.view.frame.height <= viewport.frame.height + 1)
+        #expect(canvas.convert(viewport.frame, to: nil).insetBy(dx: -1, dy: -1).contains(display.view.convert(display.view.bounds, to: nil)))
         controls.update(supports: { ["home", "capture", "record"].contains($0) },
                         isEnabled: { _ in true }, recordingTitle: "Record Screen")
         window.contentView?.layoutSubtreeIfNeeded()
