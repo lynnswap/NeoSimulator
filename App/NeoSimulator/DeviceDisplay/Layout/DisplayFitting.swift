@@ -1,7 +1,7 @@
 import AppKit
 
-/// Fits a shared simulator display during full screen or manual resizing.
-/// SimulatorKit applies new screen dimensions asynchronously, requiring another fit afterward.
+/// Fits a simulator display to its presentation's available space.
+/// Refits when SimulatorKit asynchronously applies a new screen size.
 @MainActor
 final class DisplayFitting {
     private(set) var display: any SimulatorDisplay
@@ -61,7 +61,8 @@ final class DisplayFitting {
     }
 
     func resize(to size: NSSize) {
-        if scalesDisplay { display.resize(to: size) } else { setScale(1) }
+        // The display's frame can still reflect an earlier render scale.
+        if scalesDisplay { setScale(display.scale(for: size)) } else { setScale(1) }
     }
 
     /// Lays the display out in the content again.

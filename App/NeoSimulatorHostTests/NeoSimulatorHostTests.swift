@@ -1202,6 +1202,20 @@ struct InputFocusTests {
         let scroll = try #require(content.subviews.compactMap { $0 as? NSScrollView }.first)
         #expect(controller.canvasZoom.mode == .fit)
         #expect(WindowScale.matches(display.renderScale, display.scale(for: content.bounds.insetBy(dx: 8, dy: 8).size)))
+        let previousFrame = display.view.frame.size
+        parent.view.setFrameSize(NSSize(width: 400, height: 600))
+        parent.view.layoutSubtreeIfNeeded()
+        try #require(display.size(for: display.renderScale).height > previousFrame.height)
+        // SimulatorKit can deliver a frame from before the latest scale change.
+        display.view.setFrameSize(previousFrame)
+        try #require(display.view.frame.size != display.size(for: display.renderScale))
+        parent.view.setFrameSize(NSSize(width: 300, height: 400))
+        parent.view.layoutSubtreeIfNeeded()
+        let visible = scroll.documentVisibleRect
+        let pixel = 1 / window.backingScaleFactor
+        try #require(visible.width > 0 && visible.height > 0 && display.view.frame.width > 0 && display.view.frame.height > 0)
+        #expect(visible.insetBy(dx: -pixel, dy: -pixel).contains(display.view.frame))
+        #expect(min(abs(visible.width - display.view.frame.width), abs(visible.height - display.view.frame.height)) <= pixel)
         let fitScale = display.renderScale
         controller.performCanvasZoom(.zoomIn)
         #expect(display.renderScale > fitScale)
@@ -8230,7 +8244,6 @@ private final class TestDisplay: SimulatorDisplay {
         view.setFrameSize(self.size(for: renderScale))
     }
     func beginResize() { isResizing = true }
-    func resize(to size: NSSize) { setRenderScale(scale(for: size)) }
     func endResize() { isResizing = false }
     func disconnect() { disconnectCount += 1; onDisconnect() }
 }
