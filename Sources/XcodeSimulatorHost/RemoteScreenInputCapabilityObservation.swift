@@ -81,13 +81,17 @@ final class CoreDeviceInputCapabilitySource: RemoteScreenInputCapabilitySource {
     private let changes: NativeSwiftMethod<() -> NativeSwiftValue>
     private let markers: [RemoteDeviceInputKind: NativeSwiftValue]
 
-    init(remote: CoreDeviceRemoteScreenDevice) throws {
+    init(remote: CoreDeviceRemoteScreenDevice, dedicatedDisplay: Bool = false) throws {
         self.remote = remote
         let capability = try remote.runtime.resolveAndWait(.swift(.type("CoreDevice.Capability")))
-        let markerTypes: [RemoteDeviceInputKind: String] = [
+        var markerTypes: [RemoteDeviceInputKind: String] = [
             .keyboard: "CoreDevice.KeyboardHIDCapability", .pointer: "CoreDevice.PointerHIDCapability",
             .digitizer: "CoreDevice.DigitizerHIDCapability", .button: "CoreDevice.ButtonHIDCapability",
         ]
+        if dedicatedDisplay {
+            markerTypes.removeValue(forKey: .pointer)
+            markerTypes[.digitizer] = "CoreDevice.UniversalHIDServiceCapability"
+        }
         let capabilityABI = try NativeType.opaque(named: capability.name)
         markers = try markerTypes.mapValues { name in
             let type = try remote.runtime.resolveAndWait(.swift(.type(name)))

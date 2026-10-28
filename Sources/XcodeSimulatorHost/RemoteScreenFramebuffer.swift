@@ -12,6 +12,7 @@ final class RemoteScreenFramebuffer: NSView {
     struct Display: Equatable {
         let size: CGSize
         let angle: CGFloat
+        var identifier: UInt32? = nil
     }
 
     let sourceLayer = CALayer()

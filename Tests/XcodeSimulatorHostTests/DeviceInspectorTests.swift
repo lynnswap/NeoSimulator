@@ -3,6 +3,19 @@ import Testing
 @testable import XcodeSimulatorHost
 
 @Suite struct DeviceInspectorTests {
+    @Test func simulatorInfoUsesItsCatalogModelAndCompleteRuntimeVersion() async {
+        let calls = InspectorCalls { _ in Self.output(#"""
+        {"devices":{"runtime":[{"udid":"sim-udid","name":"Renamed Phone","deviceTypeIdentifier":"phone-type","dataPath":"/guest/Data"}]},
+         "devicetypes":[{"identifier":"phone-type","name":"iPhone 16e"}],
+         "runtimes":[{"identifier":"runtime","name":"iOS 18.3","version":"18.3.1"}]}
+        """#) }
+        let snapshot = await Self.simulator(transport: .init(run: { try await calls.run($0) })).info()
+        #expect(snapshot.issues.isEmpty)
+        #expect(snapshot.fields["modelName"] == .string("iPhone 16e"))
+        #expect(snapshot.fields["operatingSystem"] == .string("iOS 18.3.1"))
+        #expect(snapshot.fields["dataPath"] == .string("/guest/Data"))
+    }
+
     @Test func simulatorPlistAppsKeepIdentityVersionsFlagsAndCustomSet() async throws {
         let calls = InspectorCalls { _ in Self.output(#"""
         {"dev.example.fixture" = { CFBundleIdentifier = "dev.example.fixture"; CFBundleDisplayName = "Fixture App";

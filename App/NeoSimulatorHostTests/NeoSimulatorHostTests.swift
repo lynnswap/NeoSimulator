@@ -5,9 +5,106 @@ import Observation
 import Testing
 import Synchronization
 import IOKit.hidsystem
+@_spi(NeoSimulator) @testable import XcodeSimulatorHost
 
 @Suite(.serialized) @MainActor
 struct InputFocusTests {
+    @Test(arguments: ["search", "screen-to-search", "screen"])
+    func remoteAppResizeRestoresOnlyUnchangedScreenFocus(_ focus: String) async throws {
+        _ = NSApplication.shared
+        let data = Data(#"{"result":{"devices":[{"identifier":"fixture-command","properties":{"hardware":{"reality":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)
+        let device = try #require(CoreDeviceInventoryDecoder.decode(data).first)
+        let resize = TestAppResizeTransport()
+        let primary = TestRemoteScreenTransport(), dedicated = TestRemoteScreenTransport()
+        primary.nativeInputView = InputView()
+        dedicated.nativeInputView = InputView()
+        let session = RemoteDeviceScreenSession(device: device, makeResizeTransport: { _ in resize }) { _, content, target in
+            let transport = target == nil ? primary : dedicated
+            if let input = transport.nativeInputView { content.addSubview(input) }
+            return transport
+        }
+        let controller = RemoteDeviceWindowController(device: device, session: session, presentCompactWindow: { _ in })
+        let parent = NSViewController()
+        parent.view = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 600))
+        let window = KeyPresentationWindow(contentRect: parent.view.frame, styleMask: .titled, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentViewController = parent
+        defer { window.close() }
+        try await controller.embed(in: parent)
+        try await session.start()
+        try await wait { session.canResizeApp }
+        let search = NSSearchField(frame: NSRect(x: 0, y: 0, width: 200, height: 24))
+        parent.view.addSubview(search)
+        try #require(window.makeFirstResponder(search))
+        let editor = try #require(window.firstResponder)
+        if focus != "search" { try #require(window.makeFirstResponder(primary.nativeInputView)) }
+        resize.holdsStart = true
+        defer { resize.completeStart() }
+        controller.performScreenAction("resizeApp")
+        try await wait { resize.startContinuation != nil }
+        try #require(resize.startContinuation != nil)
+        if focus == "screen-to-search" { try #require(window.makeFirstResponder(search)) }
+        resize.completeStart()
+        try await wait { session.isResizingApp && controller.isScreenActionEnabled("resizeApp") }
+        try #require(session.isResizingApp && controller.isScreenActionEnabled("resizeApp"))
+        #expect(window.firstResponder === (focus == "screen" ? dedicated.nativeInputView : editor))
+        try await controller.stopAndClose()
+    }
+
+    @Test func remoteWindowCoalescesLayoutSizesWithoutBlockingHID() async throws {
+        _ = NSApplication.shared
+        let data = Data(#"{"result":{"devices":[{"identifier":"fixture-command","properties":{"hardware":{"reality":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)
+        let device = try #require(CoreDeviceInventoryDecoder.decode(data).first)
+        let resize = TestAppResizeTransport()
+        let primary = TestRemoteScreenTransport(), dedicated = TestRemoteScreenTransport()
+        let session = RemoteDeviceScreenSession(device: device, makeResizeTransport: { _ in resize }) { _, _, target in
+            target == nil ? primary : dedicated
+        }
+        let controller = RemoteDeviceWindowController(device: device, session: session, presentCompactWindow: { _ in })
+        let window = try #require(controller.window)
+        try await session.start()
+        try await wait { session.canResizeApp }
+        resize.lease.holdsAdjustment = true
+        defer { resize.lease.completeAdjustment() }
+        try await session.startAppResize(size: CGSize(width: 400, height: 600))
+        window.setContentSize(CGSize(width: 500, height: 600))
+        controller.presentationViewController.view.layoutSubtreeIfNeeded()
+        controller.layoutScreen()
+        try await wait { resize.lease.adjustmentContinuation != nil }
+        let first = try #require(resize.lease.adjustedSizes.first)
+        for size in [CGSize(width: 530, height: 650), CGSize(width: 570, height: 680), CGSize(width: 610, height: 720)] {
+            window.setContentSize(size)
+            controller.presentationViewController.view.layoutSubtreeIfNeeded()
+            controller.layoutScreen()
+        }
+        let latest = try #require(session.contentView.superview?.bounds.size)
+        controller.performScreenAction("home")
+        do { try await wait { dedicated.buttons == [.down, .up] } }
+        catch { Issue.record(error) }
+        #expect(dedicated.buttons == [.down, .up], "An in-flight geometry adjustment blocked accepted HID input")
+        resize.lease.holdsAdjustment = false
+        resize.lease.completeAdjustment()
+        try await wait { resize.lease.adjustedSizes.last == latest && dedicated.buttons == [.down, .up] }
+        #expect(resize.lease.adjustedSizes == [first, latest])
+        resize.lease.holdsAdjustment = true
+        window.setContentSize(CGSize(width: 620, height: 730))
+        controller.presentationViewController.view.layoutSubtreeIfNeeded()
+        controller.layoutScreen()
+        try await wait { resize.lease.adjustmentContinuation != nil }
+        let accepted = resize.lease.adjustedSizes
+        window.setContentSize(CGSize(width: 640, height: 750))
+        controller.presentationViewController.view.layoutSubtreeIfNeeded()
+        controller.layoutScreen()
+        controller.performScreenAction("resizeApp")
+        try await wait { session.isChangingDisplay }
+        #expect(session.isResizingApp && resize.lease.invalidations == 0)
+        resize.lease.holdsAdjustment = false
+        resize.lease.completeAdjustment()
+        try await wait { !session.isChangingDisplay && !session.isResizingApp }
+        #expect(resize.lease.adjustedSizes == accepted && resize.lease.invalidations == 1)
+        try await controller.stopAndClose()
+    }
+
     @Test(arguments: [false, true])
     func appResizePreservesTheEmbeddedInputFocus(screenFocused: Bool) async throws {
         _ = NSApplication.shared
@@ -271,6 +368,7 @@ struct InputFocusTests {
         content.layoutSubtreeIfNeeded()
         let scroll = try #require(content.subviews.compactMap { $0 as? NSScrollView }.first)
         #expect(app.renderScale == 1 && !controller.canPerformCanvasZoom(.zoomOut))
+        #expect(scroll.frame == content.bounds)
         let mainFrame = main.frame
         let local = NSPoint(x: app.naturalSize.width - 8, y: 300)
         func panToRightEdge() {
@@ -836,7 +934,16 @@ struct InputFocusTests {
             content.layoutSubtreeIfNeeded()
             let window = try #require(controller.presentationWindow)
             #expect(display.view.frame.size == display.size(for: display.renderScale))
-            if !controller.isEmbedded { #expect(display.view.frame.minY == 0) }
+            let header = controller.isEmbedded ? 0 : max(0, content.bounds.height - window.contentLayoutRect.height)
+            let gap = controller.isEmbedded ? 0 : WindowScale.displayGap(bezelPadding: display.chromePadding)
+            let available = try #require((content as? any DisplayContentView)?.availableDisplaySize)
+            let displayRect = display.view.convert(display.view.bounds, to: content)
+            #expect(displayRect.width <= available.width + 1 && displayRect.height <= available.height + 1)
+            #expect(abs(displayRect.midX - content.bounds.midX) < 1)
+            let below = displayRect.minY - controls.frame.maxY
+            let above = content.bounds.maxY - header - gap - displayRect.maxY
+            #expect(abs(below - above) < 2)
+            #expect(controls.frame.maxY + 8 <= displayRect.minY + 1)
             for identifier in ["home", "capture", "record", "rotate"] {
                 let button = try button(identifier)
                 #expect(controls.bounds.contains(button.convert(button.bounds, to: controls)))
@@ -929,6 +1036,13 @@ struct InputFocusTests {
         display.naturalSize = NSSize(width: 20, height: 20)
         let controller = try makeController(display)
         defer { controller.invalidate() }
+        let standalone = controller.presentationViewController.view
+        standalone.layoutSubtreeIfNeeded()
+        let standaloneWindow = try #require(controller.window)
+        let standaloneHeader = max(0, standalone.bounds.height - standaloneWindow.contentLayoutRect.height)
+        #expect((standalone as? any DisplayContentView)?.availableDisplaySize
+            == NSSize(width: standalone.bounds.width, height: standalone.bounds.height - standaloneHeader))
+        #expect(display.view.frame.origin == .zero)
         let controls = DeviceCanvasControls()
         controller.canvasControls = controls
         controls.update(supports: { _ in true }, isEnabled: { _ in true }, recordingTitle: "Record Screen")
@@ -945,11 +1059,11 @@ struct InputFocusTests {
         }
         let initialFrame = try #require(controller.window?.frame)
         #expect(initialFrame.width >= 500 && initialFrame.height >= 700)
-        display.naturalSize = NSSize(width: 900, height: 900)
+        display.naturalSize = NSSize(width: 336, height: 644.5)
         display.onPropertiesChange?()
         #expect(controller.window?.frame == initialFrame)
         let parent = NSViewController()
-        parent.view = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 400))
+        parent.view = NSView(frame: NSRect(x: 0, y: 0, width: 575, height: 673))
         let window = KeyPresentationWindow(contentRect: parent.view.frame, styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentViewController = parent
@@ -958,7 +1072,28 @@ struct InputFocusTests {
         parent.view.layoutSubtreeIfNeeded()
         let content = controller.presentationViewController.view
         let scroll = try #require(content.subviews.compactMap { $0 as? NSScrollView }.first)
+        #expect(scroll.frame.minX == 8 && scroll.frame.maxX == content.bounds.maxX - 8)
+        #expect(scroll.frame.minY == controls.frame.maxY + 8 && scroll.frame.maxY == content.bounds.maxY - 8)
+        #expect(WindowScale.matches(display.renderScale, display.scale(for: scroll.frame.size)))
         #expect(scroll.documentVisibleRect.contains(display.view.frame))
+        let previousControlsSize = controls.fittingSize
+        func setControlSize(_ size: NSControl.ControlSize, textStyle: NSFont.TextStyle, in view: NSView) {
+            if let button = view as? NSButton {
+                button.controlSize = size
+                button.font = .systemFont(ofSize: NSFont.systemFontSize(for: button.controlSize))
+                button.symbolConfiguration = .init(textStyle: textStyle)
+            }
+            for child in view.subviews { setControlSize(size, textStyle: textStyle, in: child) }
+        }
+        setControlSize(.extraLarge, textStyle: .largeTitle, in: controls)
+        content.layoutSubtreeIfNeeded()
+        #expect(controls.fittingSize.height > previousControlsSize.height)
+        #expect(scroll.frame.minY >= controls.frame.maxY)
+        #expect((content as? any DisplayContentView)?.availableDisplaySize == scroll.frame.size)
+        #expect(WindowScale.matches(display.renderScale, display.scale(for: scroll.frame.size)))
+        #expect(scroll.documentVisibleRect.contains(display.view.frame))
+        display.naturalSize = NSSize(width: 900, height: 900)
+        display.onPropertiesChange?()
         controller.setScale(.pointAccurate)
         let before = display.view.convert(NSPoint(x: 120, y: 400), to: content)
         let origin = scroll.contentView.bounds.origin
@@ -967,6 +1102,10 @@ struct InputFocusTests {
         let after = display.view.convert(NSPoint(x: 120, y: 400), to: content)
         #expect(before != after)
         #expect(after.y == before.y - (scroll.contentView.bounds.minY - origin.y))
+        setControlSize(.regular, textStyle: .body, in: controls)
+        controls.update(supports: { _ in true }, isEnabled: { _ in true }, recordingTitle: "Record Screen")
+        display.naturalSize = NSSize(width: 80, height: 900)
+        display.onPropertiesChange?()
         controller.showCompactWindow()
         try checkControls()
         let compact = try #require(controller.window)
@@ -976,6 +1115,19 @@ struct InputFocusTests {
         controller.setScale(.fitScreen)
         #expect(compact.frame != beforeFit)
         #expect(controller.scaleState(.fitScreen) == .on)
+        let fittedWindow = compact.frame
+        let shortControlsHeight = controls.fittingSize.height
+        // Controls discovered after connection can increase both intrinsic dimensions.
+        setControlSize(.extraLarge, textStyle: .largeTitle, in: controls)
+        controls.update(supports: { _ in true }, isEnabled: { _ in true }, recordingTitle: "Record Screen")
+        content.layoutSubtreeIfNeeded()
+        #expect(controls.fittingSize.height > shortControlsHeight)
+        let available = try #require((content as? any DisplayContentView)?.availableDisplaySize)
+        let renderedSize = display.size(for: display.renderScale)
+        #expect(renderedSize.width <= available.width + 0.001 && renderedSize.height <= available.height + 0.001)
+        #expect(compact.frame.height == fittedWindow.height && compact.frame.width > fittedWindow.width)
+        #expect(try #require(compact.screen).visibleFrame.contains(compact.frame))
+        try checkControls()
         controller.setDeviceBezelVisible(false)
         controller.setDeviceBezelVisible(true)
         #expect(compact.backgroundColor == .windowBackgroundColor)
@@ -1020,7 +1172,7 @@ struct InputFocusTests {
         let content = controller.presentationViewController.view
         let scroll = try #require(content.subviews.compactMap { $0 as? NSScrollView }.first)
         #expect(controller.canvasZoom.mode == .fit)
-        #expect(WindowScale.matches(display.renderScale, display.scale(for: content.bounds.size)))
+        #expect(WindowScale.matches(display.renderScale, display.scale(for: content.bounds.insetBy(dx: 8, dy: 8).size)))
         let fitScale = display.renderScale
         controller.performCanvasZoom(.zoomIn)
         #expect(display.renderScale > fitScale)
@@ -1055,10 +1207,10 @@ struct InputFocusTests {
         #expect(scroll.documentVisibleRect.contains(display.view.frame))
         parent.view.setFrameSize(NSSize(width: 220, height: 300))
         parent.view.layoutSubtreeIfNeeded()
-        #expect(WindowScale.matches(display.renderScale, display.scale(for: content.bounds.size)))
+        #expect(WindowScale.matches(display.renderScale, display.scale(for: content.bounds.insetBy(dx: 8, dy: 8).size)))
         display.takeScreenSize(NSSize(width: 844, height: 390))
         content.layoutSubtreeIfNeeded()
-        #expect(WindowScale.matches(display.renderScale, display.scale(for: content.bounds.size)))
+        #expect(WindowScale.matches(display.renderScale, display.scale(for: content.bounds.insetBy(dx: 8, dy: 8).size)))
         controller.performCanvasZoom(.physicalSize)
         let physicalScale = try #require(controller.scale(for: .physicalSize))
         #expect(controller.canvasZoomIsSelected(.physicalSize) && WindowScale.matches(display.renderScale, physicalScale))
@@ -3733,10 +3885,15 @@ struct InputFocusTests {
         controls.update(supports: { _ in true }, isEnabled: { _ in true }, recordingTitle: "Record Screen")
         controller.perform(.pointAccurate)
         let occupiedHeight = window.frame.height - display.view.frame.height
-        #expect(occupiedHeight == header)
+        #expect(occupiedHeight > header + controls.bounds.height)
+        #expect(display.view.frame.minY >= controls.frame.maxY)
         display.naturalSize = NSSize(width: 200, height: visible.height - occupiedHeight)
         #expect(controller.canSetScale(.pointAccurate))
         display.naturalSize.height += 1
+        #expect(!controller.canSetScale(.pointAccurate))
+        display.naturalSize = NSSize(width: visible.width - 16, height: 200)
+        #expect(controller.canSetScale(.pointAccurate))
+        display.naturalSize.width += 1
         #expect(!controller.canSetScale(.pointAccurate))
     }
 
@@ -3957,18 +4114,18 @@ struct InputFocusTests {
         try drag(window, from: try point(of: .lowerLeft, in: display), by: NSSize(width: -30, height: -55)) {
             let frame = displayRect()
             #expect(display.renderScale == 1.25)
-            #expect(abs(frame.maxX - start.maxX) < 0.001 && abs(frame.maxY - start.maxY) < 0.001)
+            // Natural control widths can be fractional; NSWindow rounds its new origin to points.
+            #expect(abs(frame.maxX - start.maxX) < 1 && abs(frame.maxY - start.maxY) < 1)
         }
         controller.perform(.pointAccurate)
         window.setFrameOrigin(NSPoint(x: visible.midX - window.frame.width / 2, y: visible.minY + 40))
         let beforeEdgeDrag = displayRect()
         try drag(window, from: try point(of: .lowerLeft, in: display), by: NSSize(width: -10_000, height: -10_000)) {
             let frame = displayRect()
-            let pixel = 1 / window.backingScaleFactor
-            #expect(abs(frame.maxX - beforeEdgeDrag.maxX) < pixel && abs(frame.maxY - beforeEdgeDrag.maxY) < pixel,
+            #expect(abs(frame.maxX - beforeEdgeDrag.maxX) < 1 && abs(frame.maxY - beforeEdgeDrag.maxY) < 1,
                     "display \(frame), before \(beforeEdgeDrag), window \(window.frame), backing \(window.backingScaleFactor)")
-            #expect(abs(frame.minY - visible.minY) < 0.001)
             let bar = window.convertToScreen(controls.convert(controls.bounds, to: nil))
+            #expect(frame.minY >= bar.maxY)
             #expect(visible.contains(bar))
             let point = controls.convert(NSPoint(x: controls.bounds.midX, y: controls.bounds.midY), to: nil)
             #expect(window.contentView?.superview?.hitTest(point)?.isDescendant(of: controls) == true)
@@ -6578,20 +6735,21 @@ struct InputFocusTests {
         #expect(!form.pairedWatchButton.isEnabled)
     }
 
-    /// Only the first watch is pairable; pairing checks are recorded in pairings.
+    /// Only the first watch and phone form a pair; checks are recorded in pairings.
     private func pairingCatalog(_ pairings: PairingChecks? = nil) -> SimulatorCatalog {
         SimulatorCatalog(
             deviceTypes: [.init(identifier: "phone", name: "iPhone A", productFamily: 1),
+                          .init(identifier: "incompatible-phone", name: "iPhone Incompatible", productFamily: 1),
                           .init(identifier: "pad", name: "iPad A", productFamily: 2),
                           .init(identifier: "w1", name: "Apple Watch One", productFamily: 4),
                           .init(identifier: "w2", name: "Apple Watch Two", productFamily: 4),
                           .init(identifier: "w3", name: "Apple Watch Old", productFamily: 4)],
             runtimes: [.init(identifier: "ios", name: "iOS 27.0"), .init(identifier: "old", name: "watchOS 10.0"),
                        .init(identifier: "new", name: "watchOS 27.0"), .init(identifier: "tv", name: "tvOS 27.0")],
-            supportedDeviceTypes: ["ios": ["phone", "pad"], "old": ["w3"], "new": ["w1", "w2"]],
+            supportedDeviceTypes: ["ios": ["phone", "incompatible-phone", "pad"], "old": ["w3"], "new": ["w1", "w2"]],
             canPair: { watchType, watchRuntime, phoneType, phoneRuntime in
                 pairings?.entries.append([watchType, watchRuntime, phoneType, phoneRuntime].joined(separator: " "))
-                return watchType == "w1"
+                return watchType == "w1" && watchRuntime == "new" && phoneType == "phone" && phoneRuntime == "ios"
             })
     }
 
@@ -6713,17 +6871,25 @@ struct InputFocusTests {
         #expect(!window.isVisible)
     }
 
-    @Test(.timeLimit(.minutes(1)), arguments: [false, true])
-    func newWatchUsesTheExistingPhoneAndRetainsItsIdentifierWhenPairingFails(pairingFails: Bool) async throws {
+    @Test(.timeLimit(.minutes(1)), arguments: [false, true], ["iPhone", "Apple Watch"])
+    func newCompanionCreatesOnlyTheOppositeDeviceAndRetainsItsIdentifierWhenPairingFails(
+        pairingFails: Bool, existingFamily: String
+    ) async throws {
         _ = NSApplication.shared
+        let createsPhone = existingFamily == "Apple Watch"
+        let existingName = createsPhone ? "Existing Watch" : "Existing Phone"
+        let existingID = createsPhone ? "existing-watch" : "existing-phone"
+        let createdName = createsPhone ? "My iPhone" : "My Watch"
+        let createdID = createsPhone ? "created-phone" : "created-watch"
         var operations: [String] = []
         let completed = AsyncStream<Void>.makeStream()
         var completion = completed.stream.makeAsyncIterator()
         let form = NewSimulatorWindowController(catalog: pairingCatalog(), pairingWith:
-            .init(identifier: "existing-phone", name: "Existing Phone", deviceType: "phone", runtime: "ios"),
+            .init(identifier: existingID, name: existingName, productFamily: existingFamily,
+                  deviceType: createsPhone ? "w1" : "phone", runtime: createsPhone ? "new" : "ios"),
             create: { name, type, runtime in
                 operations.append("create \(name) \(type) \(runtime)")
-                return "created-watch"
+                return createdID
             }, pair: { watch, phone in
                 operations.append("pair \(watch) \(phone)")
                 if pairingFails { throw HostError.operation("pairing failed") }
@@ -6739,18 +6905,28 @@ struct InputFocusTests {
             completed.continuation.finish()
         }
         form.showWindow(nil)
-        #expect(form.showsWatchPage && form.previousButton.isHidden)
-        #expect(form.watchDeviceTypes.itemTitles == ["Apple Watch One"])
-        #expect(form.watchRuntimes.itemTitles == ["watchOS 27.0"])
+        #expect(form.showsWatchPage == !createsPhone && form.previousButton.isHidden && form.pairedWatchButton.isHidden)
+        if createsPhone {
+            #expect(window.title == "New iPhone Simulator")
+            #expect(form.deviceTypes.itemTitles == ["iPhone A"])
+            #expect(form.runtimes.itemTitles == ["iOS 27.0"])
+            form.nameField.stringValue = createdName
+        } else {
+            #expect(window.title == "New Watch Simulator")
+            #expect(form.watchDeviceTypes.itemTitles == ["Apple Watch One"])
+            #expect(form.watchRuntimes.itemTitles == ["watchOS 27.0"])
+            form.watchNameField.stringValue = createdName
+        }
         #expect(form.forwardButton.title == "Create" && form.forwardButton.isEnabled)
-        form.watchNameField.stringValue = "My Watch"
         form.forwardButton.performClick(nil)
         _ = await completion.next()
-        #expect(operations == ["create My Watch w1 new", "pair created-watch existing-phone"])
+        let expectedCreate = createsPhone ? "create My iPhone phone ios" : "create My Watch w1 new"
+        let expectedPair = createsPhone ? "pair existing-watch created-phone" : "pair created-watch existing-phone"
+        #expect(operations == [expectedCreate, expectedPair])
         if pairingFails {
             let alert = try #require(window.attachedSheet)
             #expect(texts(in: alert.contentView).contains(
-                "Created “My Watch” (created-watch), but could not pair it with “Existing Phone”: pairing failed"))
+                "Created “\(createdName)” (\(createdID)), but could not pair it with “\(existingName)”: pairing failed"))
             #expect(window.isVisible && form.forwardButton.isEnabled)
         } else {
             #expect(!window.isVisible)
@@ -7319,7 +7495,7 @@ struct InputFocusTests {
                                 userInterfacePlugin: Bool = false,
                                 runtimeVersion: UInt32 = 0x1B_00_00,
                                 enhancedMultitasking: Bool = false,
-                                appResizeTransport: (@MainActor () async throws -> (any SimulatorAppResizeTransport)?)? = nil,
+                                appResizeTransport: (@MainActor () async throws -> (any AppResizeTransport)?)? = nil,
                                 userInterfacePluginLookUp: (attempts: Int, interval: Duration) = (5, .milliseconds(20)),
                                 keyboardCaptureTap: any KeyboardEventTap = SystemKeyboardEventTap(),
                                 applicationIsActive: @escaping () -> Bool = { NSApp.isActive },
@@ -7448,7 +7624,7 @@ struct InputFocusTests {
                              userInterfacePlugin: Bool = false,
                              runtimeVersion: UInt32 = 0x1B_00_00,
                              enhancedMultitasking: Bool = false,
-                             appResizeTransport: (@MainActor () async throws -> (any SimulatorAppResizeTransport)?)? = nil) throws -> DeviceSession {
+                             appResizeTransport: (@MainActor () async throws -> (any AppResizeTransport)?)? = nil) throws -> DeviceSession {
         // Keep the external-display timeout short enough to exercise expiry.
         DeviceSession(
             device: availableDevice(identifier, "Test iPhone", runtime: "iOS", state: 3, deviceSetPath: deviceSetPath),
@@ -7469,16 +7645,16 @@ struct InputFocusTests {
 }
 
 @MainActor
-private final class TestAppResizeTransport: SimulatorAppResizeTransport {
+private final class TestAppResizeTransport: AppResizeTransport {
     let lease = TestAppResizeLease()
     let eligibilityUpdates = AsyncThrowingStream<AppResizeEligibility, any Error>.makeStream()
     var holdsStart = false
-    var startContinuation: CheckedContinuation<any SimulatorAppResizeLease, Never>?
+    var startContinuation: CheckedContinuation<any AppResizeSession, Never>?
     func eligibility() async throws -> AsyncThrowingStream<AppResizeEligibility, any Error> {
         eligibilityUpdates.continuation.yield(.eligible)
         return eligibilityUpdates.stream
     }
-    func start(size: CGSize, cornerRadius: CGFloat) async throws -> any SimulatorAppResizeLease {
+    func start(size: CGSize, cornerRadius: CGFloat) async throws -> any AppResizeSession {
         if holdsStart { return await withCheckedContinuation { startContinuation = $0 } }
         return lease
     }
@@ -7486,7 +7662,7 @@ private final class TestAppResizeTransport: SimulatorAppResizeTransport {
 }
 
 @MainActor
-private final class TestAppResizeLease: SimulatorAppResizeLease {
+private final class TestAppResizeLease: AppResizeSession {
     let displayUniqueID = "dedicated-app-display"
     var geometry = AppResizeGeometry(minimumSize: CGSize(width: 200, height: 200), maximumSize: CGSize(width: 1000, height: 1000),
         preferredSize: CGSize(width: 500, height: 600), resolvedSize: CGSize(width: 500, height: 600), cornerRadius: 0)
@@ -7495,10 +7671,14 @@ private final class TestAppResizeLease: SimulatorAppResizeLease {
     var invalidations = 0
     var adjustedSizes: [CGSize] = []
     var adjustmentError: (any Error)?
+    var holdsAdjustment = false
+    var adjustmentContinuation: CheckedContinuation<Void, Never>?
+    func completeAdjustment() { adjustmentContinuation?.resume(); adjustmentContinuation = nil }
     func updates() throws -> AsyncThrowingStream<AppResizeGeometry, any Error> { geometryUpdates.stream }
     func adjust(size: CGSize, cornerRadius: CGFloat) async throws {
         if let adjustmentError { throw adjustmentError }
         adjustedSizes.append(size)
+        if holdsAdjustment { await withCheckedContinuation { adjustmentContinuation = $0 } }
     }
     func awaitInvalidation() async throws { for await _ in invalidation.stream { return } }
     func invalidate() throws {
@@ -8943,4 +9123,21 @@ private final class RendererOwnerMonitorFixture: Sendable {
         orphan.expireDeadline()
         #expect(orphan.state.withLock { $0.cleanupRequests == 1 && $0.forcedExits == 0 && $0.deadlineCancelled })
     }
+}
+
+@MainActor
+private final class TestRemoteScreenTransport: RemoteScreenTransport {
+    var nativeInputView: NSView?
+    var inputCapabilities: Set<RemoteDeviceInputKind> { [.button] }
+    private(set) var buttons: [RemoteDeviceButtonState] = []
+    func start(events: @escaping @MainActor (RemoteScreenTransportEvent) -> Void) async throws {
+        events(.connected)
+        events(.attributes(.init(aspectRatio: CGSize(width: 400, height: 600), contentsRect: CGRect(x: 0, y: 0, width: 1, height: 1), scaleFactor: 1, orientation: .portrait)))
+        events(.frameReceived)
+    }
+    func send(_ input: RemoteScreenInput) async throws {
+        if case .button(_, _, let state) = input { buttons.append(state) }
+    }
+    func releaseInputs() async throws {}
+    func stop() async throws { nativeInputView?.removeFromSuperview() }
 }

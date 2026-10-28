@@ -1,14 +1,16 @@
 import AppKit
 import Foundation
 import Observation
+import SwiftUI
 import Testing
 import XCTest
 @testable import XcodeSimulatorHost
 
 @Suite(.serialized, .timeLimit(.minutes(1))) @MainActor
 struct ManagerModelTests {
-    @Test(arguments: [DeviceInspectorModel.Content.applications, .configuration, .reports])
-    func sameDeviceInventoryUpdatesKeepInspectorRecordsAndSelection(content: DeviceInspectorModel.Content) async throws {
+    @Test(arguments: [(DeviceInspectorModel.Page.info, DeviceInspectorModel.Content.applications),
+                      (.info, .configuration), (.reports, .info)])
+    func sameDeviceInventoryUpdatesKeepInspectorRecordsAndSelection(selection: (page: DeviceInspectorModel.Page, content: DeviceInspectorModel.Content)) async throws {
         _ = NSApplication.shared
         let features: Set<String> = ["streamapplist", "installapp", "launchapplication", "configurationprofiles", "listFiles", "transferFiles"]
         func device(_ identifier: String = "inspected-device", name: String = "Phone", features: Set<String> = features) -> InventoryDevice {
@@ -18,10 +20,10 @@ struct ManagerModelTests {
                 capabilities: Set(features.map { "com.apple.coredevice.feature." + $0 }), lastConnectedAt: nil, visibilityClass: nil))
         }
         let response: String
-        switch content {
-        case .applications:
+        switch (selection.page, selection.content) {
+        case (.info, .applications):
             response = #"{"result":{"apps":[{"bundleIdentifier":"fixture.app","name":"Fixture"}]}}"#
-        case .reports:
+        case (.reports, _):
             response = #"{"result":{"files":[{"relativePath":"Fixture.ips","metadata":{},"resources":{"isDirectory":false}}]}}"#
         default:
             response = #"{"result":{"configurationProfiles":[{"payloadIdentifier":"fixture.profile","name":"Fixture"}]}}"#
@@ -29,7 +31,8 @@ struct ManagerModelTests {
         let source = ManagerModelSource(devices: [], inspectorResponse: response)
         var events = source.events.makeAsyncIterator()
         let controller = ManagerDeviceInspectorController(model: SimulatorManagerModel(source: source))
-        controller.inspection.content = content
+        controller.setPage(selection.page)
+        controller.inspection.select(selection.content)
         controller.update(device: device(), isManaging: false, isVisible: true)
         #expect(await events.next() == .inspect(device().id))
         await finishInspectorRead(controller.inspection)
@@ -44,7 +47,7 @@ struct ManagerModelTests {
         try #require(await XCTWaiter.fulfillment(of: [rowsPublished], timeout: 5) == .completed)
         table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
         let filter = try #require(views.compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == "Report Type" })
-        if content == .reports {
+        if selection.page == .reports {
             filter.selectItem(at: 1)
             NSApp.sendAction(try #require(filter.action), to: filter.target, from: filter)
         }
@@ -53,10 +56,10 @@ struct ManagerModelTests {
         controller.update(device: updated, isManaging: false, isVisible: true)
         #expect(await events.next() == .inspect(updated.id))
         #expect(table.numberOfRows == 1 && table.selectedRow == 0)
-        #expect(content != .reports || filter.indexOfSelectedItem == 1)
-        switch content {
-        case .applications: #expect(controller.inspection.applications.count == 1)
-        case .reports: #expect(controller.inspection.reports.count == 1)
+        #expect(selection.page != .reports || filter.indexOfSelectedItem == 1)
+        switch (selection.page, selection.content) {
+        case (.info, .applications): #expect(controller.inspection.applications.count == 1)
+        case (.reports, _): #expect(controller.inspection.reports.count == 1)
         default: #expect(controller.inspection.profiles.count == 1)
         }
         await source.completeInspectorRead()
@@ -67,7 +70,7 @@ struct ManagerModelTests {
         controller.update(device: device(name: "Renamed Phone", features: []), isManaging: false, isVisible: true)
         await finishInspectorRead(controller.inspection)
         #expect(controller.inspection.inspector?.device.capabilities.isEmpty == true)
-        let toolTip = content == .applications ? "Launch Application" : (content == .reports ? "Download Report…" : "Remove…")
+        let toolTip = selection.content == .applications ? "Launch Application" : (selection.page == .reports ? "Download Report…" : "Remove…")
         let action = try #require(views.compactMap { $0 as? NSButton }.first { $0.toolTip == toolTip })
         #expect(!action.isEnabled)
 
@@ -136,12 +139,15 @@ struct ManagerModelTests {
         let watch = device("unpaired-watch")
         let source = ManagerModelSource(devices: [phone, watch, device("paired-watch", pairs: ["existing-pair"]),
             device("unknown-watch", capabilities: []), device("other-set-watch", set: "/custom"),
-            device("unavailable-watch", available: false), device("other-phone", family: "iPhone")].map(InventoryDevice.simulator))
+            device("unavailable-watch", available: false), device("other-phone", family: "iPhone", pairs: ["other-pair"]),
+            device("unknown-phone", family: "iPhone", capabilities: []),
+            device("other-set-phone", family: "iPhone", set: "/custom"),
+            device("unavailable-phone", family: "iPhone", available: false)].map(InventoryDevice.simulator))
         let manager = SimulatorManagerModel(source: source)
         await manager.refresh()
         let target = NSObject()
         let menu = SimulatorPairingMenu.make(for: phone, model: manager, target: target, action: #selector(NSApplication.terminate(_:)))
-        #expect(manager.pairingWatches(for: phone).map(\.identifier) == [watch.identifier])
+        #expect(manager.pairingCandidates(for: phone).map(\.identifier) == [watch.identifier])
         let actions = menu.items.filter { $0.action != nil }
         #expect(actions.map(\.title) == ["unpaired-watch", "New Watch Simulator…"])
         #expect(actions.allSatisfy { $0.isEnabled })
@@ -150,6 +156,28 @@ struct ManagerModelTests {
             return
         }
         #expect(identifiers == [phone.inventoryID, watch.inventoryID])
+        let watchMenu = SimulatorPairingMenu.make(for: watch, model: manager, target: target,
+                                                 action: #selector(NSApplication.terminate(_:)))
+        #expect(manager.canAddPairing(for: watch))
+        #expect(manager.pairingCandidates(for: watch).map(\.identifier) == ["other-phone", "phone"])
+        #expect(watchMenu.title == "Pair iPhone")
+        #expect(watchMenu.items.filter { $0.action != nil }.map(\.title) == ["other-phone", "phone", "New iPhone Simulator…"])
+        guard case .pair(let watchIdentifiers) = watchMenu.items.first(where: { $0.action != nil })?.representedObject as? SimulatorPairingMenu.Action else {
+            Issue.record("Expected a phone pairing action for the existing watch")
+            return
+        }
+        #expect(watchIdentifiers == [watch.inventoryID, device("other-phone", family: "iPhone").inventoryID])
+        guard case .newCompanion(let existingID) = watchMenu.items.last?.representedObject as? SimulatorPairingMenu.Action else {
+            Issue.record("Expected an iPhone creation action for the existing watch")
+            return
+        }
+        #expect(existingID == watch.inventoryID)
+        let pairedWatch = device("paired-watch", pairs: ["existing-pair"])
+        #expect(!manager.canAddPairing(for: pairedWatch))
+        #expect(manager.pairingCandidates(for: pairedWatch).isEmpty)
+        let pairedMenu = SimulatorPairingMenu.make(for: pairedWatch, model: manager, target: target,
+                                                  action: #selector(NSApplication.terminate(_:)))
+        #expect(pairedMenu.items.filter { $0.action != nil }.allSatisfy { !$0.isEnabled })
         var events = source.events.makeAsyncIterator()
         manager.manage(.pair, devices: manager.inventory.filter { identifiers.contains($0.id) })
         #expect(await events.next() == .manage(.pair, [phone.inventoryID, watch.inventoryID]))
@@ -787,6 +815,223 @@ struct ManagerModelTests {
         cleanup.resume()
         #expect(await events.next() == .manage(.shutdown, [device.id]))
         try await manager.quitRenderer(keepingDevicesRunning: true)
+    }
+
+    @Test func infoCardsUseLiveValuesAndRetainKnownInventoryFallbacks() throws {
+        let information = DeviceInformation(device: simulator(), properties: [
+            "name": .string("Renamed Phone"), "operatingSystem": .string("iOS 27.2"),
+            "modelName": .string("iPhone 18 Pro"),
+            "hardware": .object(["serialNumber": .string("serial")]),
+        ])
+        func value(_ id: String) -> String? { information.fields.first { $0.id == [id] }?.value }
+        #expect(value("name") == "Renamed Phone")
+        #expect(value("operatingSystem") == "iOS 27.2")
+        #expect(value("modelName") == "iPhone 18 Pro")
+        #expect(value("udid") == "same-udid")
+        #expect(information.fields.filter { $0.id == ["modelName"] || $0.id == ["udid"] }.allSatisfy { $0.group == .hardware })
+        let serial = try #require(information.fields.first { $0.id == ["hardware", "serialNumber"] })
+        #expect(serial.value == "serial" && serial.group == .hardware)
+    }
+
+    @Test func remoteInfoUsesAvailablePropertiesWithoutSubstitutingItsCommandIDForUDID() {
+        let remote = CoreDeviceDevice(identifier: "command-id", udid: nil,
+            kind: .physical, name: "Known Phone", modelIdentifier: "iPhone19,2", modelName: "iPhone 18 Pro",
+            platform: "iOS", osVersion: "27.1", osBuild: nil, connectionState: "connected",
+            pairingState: "paired", transportType: nil, bootState: "booted", capabilities: [],
+            lastConnectedAt: nil, visibilityClass: nil)
+        let information = DeviceInformation(device: .remote(remote), properties: [
+            "state": .object(["name": .string("Current Phone")]),
+            "software": .object([
+                "osVersionNumber": .object(["stringValue": .string("27.2")]),
+                "osBuildVersions": .object(["buildVersion": .object(["name": .string("27C100")])]),
+            ]),
+            "configuration": .object(["displays": .array([
+                .object(["name": .string("Primary")]), .object(["name": .string("External")]),
+            ])]),
+        ])
+        #expect(information.fields.first { $0.id == ["name"] }?.value == "Current Phone")
+        #expect(information.fields.first { $0.id == ["operatingSystem"] }?.value == "iOS 27.2")
+        #expect(information.fields.first { $0.id == ["modelName"] }?.value == "iPhone 18 Pro")
+        #expect(!information.fields.contains { $0.id == ["udid"] })
+        #expect(information.fields.first { $0.value == "27C100" }?.title == "Software / OS Builds / Build / Name")
+        #expect(information.fields.first { $0.value == "Primary" }?.title == "Configuration / Displays — Item 1 / Name")
+        #expect(information.fields.first { $0.value == "External" }?.title == "Configuration / Displays — Item 2 / Name")
+    }
+
+    @Test func pairedInfoResolvesThePartnerInItsDeviceSetAndUnpairsTheWatchFromEitherSide() async throws {
+        _ = NSApplication.shared
+        func device(_ id: String, family: String, set: String? = nil, pairs: Set<String> = ["pair"]) -> SimulatorHostDevice {
+            SimulatorHostDevice(identifier: id, name: id, descriptiveName: id,
+                runtimeIdentifier: "runtime", runtimeName: family == "Apple Watch" ? "watchOS" : "iOS",
+                productFamily: family, state: "Shutdown", deviceSetPath: set,
+                deviceTypeIdentifier: "model",
+                capabilities: ["com.apple.coredevice.feature.companiondevicepairing"], pairIdentifiers: pairs)
+        }
+        let phone = device("phone", family: "iPhone")
+        let watch = device("watch", family: "Apple Watch")
+        let inventory: [InventoryDevice] = [
+            .simulator(phone), .simulator(watch),
+            .simulator(device("watch", family: "Apple Watch", set: "/other-set")),
+            .simulator(device("unpaired-watch", family: "Apple Watch", pairs: ["other-pair"])),
+        ]
+        #expect(DeviceInformation.pairedSimulators(for: phone, in: inventory) == [watch])
+        #expect(DeviceInformation.pairedSimulators(for: watch, in: inventory) == [phone])
+        #expect(DeviceInformation.watchToUnpair(device: phone, partner: watch) == watch)
+        #expect(DeviceInformation.watchToUnpair(device: watch, partner: phone) == watch)
+
+        let manager = SimulatorManagerModel(source: ManagerModelSource(devices: inventory))
+        await manager.refresh()
+        let inspection = DeviceInspectorModel()
+        inspection.device = .simulator(watch)
+        let target = NSObject()
+        let suite = "NeoSimulatorTests.PairedInfo.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let controller = NSHostingController(rootView: DeviceInformationView(
+            manager: manager, inspection: inspection, visibility: DeviceInfoVisibility(defaults: defaults),
+            pairingMenu: { SimulatorPairingMenu.make(for: $0, model: manager, target: target,
+                                                    action: #selector(NSApplication.terminate(_:))) },
+            deviceMenu: { device in
+                let menu = NSMenu(title: device.name)
+                menu.addItem(withTitle: "View Screen", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")
+                return menu
+            },
+            unpair: { _ in Issue.record("Unpaired without a user action") }))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 320, height: 800),
+                              styleMask: .titled, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentViewController = controller
+        defer { window.close() }
+        let view = controller.view
+        view.layoutSubtreeIfNeeded()
+        window.displayIfNeeded()
+        func tables(in view: NSView) -> [NSTableView] {
+            (view as? NSTableView).map { [$0] } ?? view.subviews.flatMap { tables(in: $0) }
+        }
+        let pairedTable = try #require(tables(in: view).first { $0.numberOfRows == 1 })
+        let pairedScroll = try #require(pairedTable.enclosingScrollView)
+        let viewport = pairedScroll.documentVisibleRect
+        let row = pairedTable.rect(ofRow: 0)
+        let backingPixel = 1 / window.backingScaleFactor
+        #expect(viewport.height > 0 && row.height > 0)
+        #expect(viewport.minY <= row.minY + backingPixel)
+        #expect(viewport.maxY >= row.maxY - backingPixel)
+        #expect(pairedScroll.frame.height < 120)
+        let pairedRow = try #require(pairedTable.view(atColumn: 0, row: 0, makeIfNecessary: true))
+        pairedRow.layoutSubtreeIfNeeded()
+        window.displayIfNeeded()
+        func popupButtons(in view: NSView) -> [NSPopUpButton] {
+            (view as? NSPopUpButton).map { [$0] } ?? view.subviews.flatMap { popupButtons(in: $0) }
+        }
+        let more = try #require(popupButtons(in: pairedRow).first {
+            $0.accessibilityLabel() == "More Actions for \(phone.name)"
+        })
+        #expect(more.menu?.items.contains {
+            $0.title == "View Screen" && $0.action == #selector(NSApplication.terminate(_:))
+        } == true)
+        func addButton(in view: NSView) -> NSPopUpButton? {
+            if let button = view as? NSPopUpButton,
+               button.accessibilityLabel() == "Add Paired Simulator" { return button }
+            return view.subviews.lazy.compactMap { addButton(in: $0) }.first
+        }
+        let add = try #require(addButton(in: view))
+        let canAddAnotherPhone = add.isEnabled
+        #expect(!canAddAnotherPhone)
+        let pairedPosition = pairedScroll.convert(pairedScroll.bounds, to: view).origin
+        inspection.device = .simulator(SimulatorHostDevice(identifier: watch.identifier,
+            name: String(repeating: "A long device name ", count: 20), descriptiveName: watch.descriptiveName,
+            runtimeIdentifier: watch.runtimeIdentifier, runtimeName: String(repeating: "A long OS name ", count: 20),
+            productFamily: watch.productFamily, state: watch.state,
+            deviceTypeIdentifier: String(repeating: "A long model name ", count: 20),
+            capabilities: watch.capabilities, pairIdentifiers: watch.pairIdentifiers))
+        view.layoutSubtreeIfNeeded()
+        window.displayIfNeeded()
+        let afterLongValues = try #require(tables(in: view).first { $0.numberOfRows == 1 }?.enclosingScrollView)
+        let longValuePosition = afterLongValues.convert(afterLongValues.bounds, to: view).origin
+        #expect(abs(longValuePosition.y - pairedPosition.y) < 1)
+        inspection.device = .simulator(phone)
+        view.layoutSubtreeIfNeeded()
+        window.displayIfNeeded()
+        #expect(try #require(addButton(in: view)).isEnabled)
+        inspection.device = .simulator(device("unpaired-phone", family: "iPhone", pairs: []))
+        view.layoutSubtreeIfNeeded()
+        window.displayIfNeeded()
+        #expect(tables(in: view).isEmpty)
+    }
+
+    @Test func profilesFollowTheAvailableKindWhenChangingDevices() throws {
+        guard case .simulator(let simulator) = simulator() else { return }
+        func device(_ features: [String]) -> InventoryDevice {
+            .simulator(simulator.inventoryCopy(ownerXcodeURL: nil, capabilities:
+                Set(features.map { "com.apple.coredevice.feature." + $0 })))
+        }
+        let inspection = DeviceInspectorModel()
+        inspection.device = device(["configurationprofiles", "provisioningprofiles"])
+        inspection.select(.provisioning)
+        inspection.device = device(["configurationprofiles"])
+        #expect(inspection.content == .configuration && inspection.canReadProfiles)
+        inspection.device = device(["provisioningprofiles"])
+        #expect(inspection.content == .provisioning && inspection.canReadProfiles)
+        inspection.select(.configuration)
+        #expect(inspection.content == .provisioning && inspection.canReadProfiles)
+    }
+
+    @Test func stoppedSimulatorDoesNotExposeAppAndProfileOperationsFromCachedCapabilities() {
+        let features = ["streamapplist", "installapp", "configurationprofiles"]
+        let inspection = DeviceInspectorModel()
+        inspection.device = .simulator(SimulatorHostDevice(identifier: "phone", name: "Phone", descriptiveName: "Phone",
+            runtimeIdentifier: "runtime", runtimeName: "iOS", productFamily: "iPhone", state: "Shutdown",
+            capabilities: Set(features.map { "com.apple.coredevice.feature." + $0 })))
+        inspection.select(.configuration)
+        #expect(!inspection.canReadApplications && !inspection.canInstallApplications && !inspection.canReadProfiles)
+    }
+
+    @Test func infoVisibilityStartsWithFourFieldsAndPersistsExplicitChoices() throws {
+        let suite = "NeoSimulatorTests.InfoVisibility.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let information = DeviceInformation(device: simulator(), properties: [
+            "modelName": .string("iPhone 18 Pro"), "hardware": .object(["serialNumber": .string("serial")]),
+        ])
+        let visibility = DeviceInfoVisibility(defaults: defaults)
+        #expect(Set(information.fields.filter { visibility.isVisible($0) }.map(\.id)) == DeviceInformation.defaultFields)
+        let serial = try #require(information.fields.first { $0.id == ["hardware", "serialNumber"] })
+        let os = try #require(information.fields.first { $0.id == ["operatingSystem"] })
+        visibility.setVisible(true, for: serial)
+        visibility.setVisible(false, for: os)
+        let restored = DeviceInfoVisibility(defaults: defaults)
+        #expect(restored.isVisible(serial) && !restored.isVisible(os))
+    }
+
+    @Test(arguments: [false, true])
+    func infoVisibilityMigratesLegacyShowAllAndAncestorHidingWithoutLosingUnseenChoices(hidesHardware: Bool) throws {
+        let suite = "NeoSimulatorTests.LegacyInfoVisibility.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(hidesHardware ? [["hardware"], ["future"]] : [],
+                     forKey: DeviceInfoVisibility.legacyPreferenceKey)
+        let information = DeviceInformation(device: simulator(), properties: [
+            "modelName": .string("iPhone 18 Pro"),
+            "hardware": .object(["serialNumber": .string("serial"), "cpuType": .string("arm64")]),
+        ])
+        let model = try #require(information.fields.first { $0.id == ["modelName"] })
+        let serial = try #require(information.fields.first { $0.id == ["hardware", "serialNumber"] })
+        let cpu = try #require(information.fields.first { $0.id == ["hardware", "cpuType"] })
+        let visibility = DeviceInfoVisibility(defaults: defaults)
+        #expect(visibility.isVisible(model) == !hidesHardware)
+        visibility.setVisible(true, for: model)
+        #expect(visibility.isVisible(model) && visibility.isVisible(cpu) == !hidesHardware)
+        visibility.setVisible(true, for: serial)
+        let restored = DeviceInfoVisibility(defaults: defaults)
+        #expect(restored.isVisible(model) && restored.isVisible(serial))
+        #expect(restored.isVisible(cpu) == !hidesHardware)
+        let later = DeviceInformation(device: simulator(), properties: [
+            "future": .object(["revision": .string("known later")]),
+            "hardware": .object(["vendorProperty": .string("known later")]),
+        ])
+        let future = try #require(later.fields.first { $0.id == ["future", "revision"] })
+        let sibling = try #require(later.fields.first { $0.id == ["hardware", "vendorProperty"] })
+        #expect(restored.isVisible(future) == !hidesHardware && restored.isVisible(sibling) == !hidesHardware)
     }
 
     private func simulator(deviceSet: String? = nil, name: String = "Test Phone", state: String = "Booted") -> InventoryDevice {

@@ -309,13 +309,20 @@ final class SimulatorManagerModel {
         try await controller.creationCatalog(for: deviceID)
     }
 
-    /// Device Hub pairs an unpaired companion exposed by CoreDevice in the same device set.
-    func pairingWatches(for phone: SimulatorHostDevice) -> [SimulatorHostDevice] {
+    func canAddPairing(for device: SimulatorHostDevice) -> Bool {
+        device.isAvailable && (device.productFamily == "iPhone" ||
+            (device.productFamily == "Apple Watch" && device.pairIdentifiers.isEmpty))
+    }
+
+    /// Device Hub pairs opposite roles exposed by CoreDevice; a Watch can have only one phone.
+    func pairingCandidates(for device: SimulatorHostDevice) -> [SimulatorHostDevice] {
         let feature = "com.apple.coredevice.feature.companiondevicepairing"
-        guard phone.isAvailable, phone.productFamily == "iPhone", phone.capabilities.contains(feature) else { return [] }
-        return devices.filter { watch in
-            watch.productFamily == "Apple Watch" && watch.deviceSetPath == phone.deviceSetPath
-                && watch.pairIdentifiers.isEmpty && watch.capabilities.contains(feature)
+        guard canAddPairing(for: device), device.capabilities.contains(feature) else { return [] }
+        let family = device.productFamily == "iPhone" ? "Apple Watch" : "iPhone"
+        return devices.filter { candidate in
+            candidate.productFamily == family && candidate.deviceSetPath == device.deviceSetPath
+                && (candidate.productFamily != "Apple Watch" || candidate.pairIdentifiers.isEmpty)
+                && candidate.capabilities.contains(feature)
         }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 

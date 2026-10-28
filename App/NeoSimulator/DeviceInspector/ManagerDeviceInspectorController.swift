@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import UniformTypeIdentifiers
 import Observation
 @_spi(NeoSimulator) import XcodeSimulatorHost
@@ -13,7 +14,7 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
     private var device: InventoryDevice? { get { inspection.device } set { inspection.device = newValue } }
     private var inspector: DeviceInspector? { get { inspection.inspector } set { inspection.inspector = newValue } }
     private var page: Page { get { inspection.page } set { inspection.page = newValue } }
-    private var content: Content { get { inspection.content } set { inspection.content = newValue } }
+    private var content: Content { get { inspection.content } set { inspection.select(newValue) } }
     private var isManaging: Bool { get { inspection.isManaging } set { inspection.isManaging = newValue } }
     private var isVisible: Bool { get { inspection.isVisible } set { inspection.isVisible = newValue } }
     private var generation: Int { inspection.generation }
@@ -40,12 +41,26 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
     private var profileRows: [DeviceProfile] = []
     private var selectedRecordID: String?
     private var reloadingTable = false
-    private let contentPicker = NSPopUpButton()
+    private let profileKindPicker = NSPopUpButton()
+    private let infoPicker = NSSegmentedControl(labels: ["Info", "Apps", "Profiles"], trackingMode: .selectOne, target: nil, action: nil)
+    private let profileHeading = NSTextField(labelWithString: "Configuration")
+    private let unavailableView = NSHostingView(rootView: AnyView(EmptyView()))
     private let search = NSSearchField()
     private let table = NSTableView()
     private let listScroll = NSScrollView()
     private let detail = ManagerInspectorPropertiesController()
-    private let info = ManagerInspectorPropertiesController(visibilityPreferenceKey: "DeviceInfoHiddenFields")
+    private let infoVisibility = DeviceInfoVisibility()
+    var onPairingMenu: ((SimulatorHostDevice) -> NSMenu)?
+    var onDeviceMenu: ((SimulatorHostDevice) -> NSMenu)?
+    private lazy var info = NSHostingController(rootView: DeviceInformationView(
+        manager: model, inspection: inspection, visibility: infoVisibility,
+        pairingMenu: { [weak self] in self?.onPairingMenu?($0) ?? NSMenu() },
+        deviceMenu: { [weak self] in self?.onDeviceMenu?($0) ?? NSMenu() },
+        unpair: { [weak self] in self?.model.manage(.unpair, devices: [.simulator($0)]) }))
+    private var showingInfo: Bool { page == .info && content == .info }
+    private var showingApplications: Bool { page == .info && content == .applications }
+    private var showingProfiles: Bool { page == .info && (content == .configuration || content == .provisioning) }
+    private var showingReports: Bool { page == .reports }
     private let headerImage = NSImageView()
     private let headerName = NSTextField(labelWithString: "")
     private let headerSubtitle = NSTextField(labelWithString: "")
@@ -69,10 +84,16 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
 
     override func loadView() {
         view = NSView()
-        contentPicker.addItems(withTitles: Content.allCases.map(\.title))
-        contentPicker.target = self
-        contentPicker.action = #selector(changeContent(_:))
-        contentPicker.setAccessibilityLabel("Device Content")
+        infoPicker.target = self
+        infoPicker.action = #selector(changeInfoCategory(_:))
+        infoPicker.segmentDistribution = .fill
+        infoPicker.setAccessibilityLabel("Inspector Subcategory")
+        profileKindPicker.addItems(withTitles: ["Configuration", "Provisioning"])
+        profileKindPicker.target = self
+        profileKindPicker.action = #selector(changeProfileKind(_:))
+        profileKindPicker.setAccessibilityLabel("Profile Type")
+        profileHeading.font = .systemFont(ofSize: 11, weight: .semibold)
+        profileHeading.textColor = .secondaryLabelColor
         search.placeholderString = "Search Applications"
         search.delegate = self
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("Record"))
@@ -138,7 +159,7 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
         reportFilter.target = self
         reportFilter.action = #selector(changeReportFilter(_:))
         reportFilter.setAccessibilityLabel("Report Type")
-        let contentStack = NSStackView(views: [contentPicker, search, reportFilter, contentSplit.view])
+        let contentStack = NSStackView(views: [profileHeading, profileKindPicker, search, reportFilter, contentSplit.view])
         contentStack.orientation = .vertical
         contentStack.distribution = .fill
         contentStack.alignment = .leading
@@ -178,7 +199,7 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
         status.font = .systemFont(ofSize: 11)
         status.textColor = .secondaryLabelColor
         status.setAccessibilityLabel("Inspector Status")
-        let stack = NSStackView(views: [contentView, infoView, buttons, footer])
+        let stack = NSStackView(views: [infoPicker, contentView, infoView, unavailableView, buttons, footer])
         stack.orientation = .vertical
         stack.distribution = .fill
         stack.alignment = .leading
@@ -186,17 +207,17 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
         stack.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(stack)
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 12),
-            stack.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -12),
-            stack.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
-            stack.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -12),
+            stack.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 8),
+            stack.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -8),
+            stack.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
+            stack.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8),
         ])
         for child in stack.views { child.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
         contentView.heightAnchor.constraint(greaterThanOrEqualToConstant: 260).isActive = true
         updateVisibility()
         updateControls()
         observeRecords()
-        observeInfo()
+        observeInspectionState()
     }
 
     private func pin(_ child: NSView, in parent: NSView, inset: CGFloat = 0) {
@@ -214,8 +235,7 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
         guard self.page != page else { return }
         self.page = page
         _ = view
-        updateVisibility()
-        reload()
+        changedContent()
     }
 
     func update(device: InventoryDevice?, isManaging: Bool, isVisible: Bool) {
@@ -234,11 +254,11 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
             rebuildReportFilter()
             selectedRecordID = nil
             lastIssue = nil
-            info.setProperties([:])
             updateRows()
         }
         if isVisible && (snapshotChanged || becameVisible) { reload() }
         else if !isVisible { stopReading(); dismissReportPreview() }
+        updateVisibility()
         updateControls()
     }
 
@@ -269,25 +289,77 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
         }
     }
 
-    private func observeInfo() {
-        withObservationTracking { _ = inspection.infoProperties } onChange: { [weak self] in
+    private func observeInspectionState() {
+        withObservationTracking {
+            _ = inspection.reading
+            _ = inspection.lastIssue
+            _ = inspection.isManaging
+        } onChange: { [weak self] in
             Task { @MainActor in
                 guard let self else { return }
-                self.info.setProperties(self.inspection.infoProperties)
-                self.observeInfo()
+                self.updateVisibility()
+                self.updateControls()
+                self.observeInspectionState()
             }
         }
     }
 
+    private var unavailableState: (title: String, message: String, symbol: String)? {
+        guard let device else { return ("No Selection", "Select one device to inspect it.", "cursorarrow") }
+        if showingApplications && !canReadApplications {
+            let message = device.kind == .simulator ? "Start the simulator to add or customize apps."
+                : inspection.canInstallApplications ? "Installed applications cannot be listed on this device."
+                : "Connect and unlock this device to inspect its applications."
+            return ("Apps", message, "app")
+        }
+        if showingProfiles && !canReadProfiles {
+            let message: String
+            if case .simulator(let simulator) = device {
+                if simulator.deviceSetPath != nil {
+                    message = "Profiles are unavailable for simulators in custom device sets."
+                } else if !simulatorIsRunning {
+                    message = "Start the simulator to edit configuration profiles."
+                } else {
+                    message = "This simulator does not currently support \(content.title.lowercased())."
+                }
+            } else { message = "This device does not currently support \(content.title.lowercased())." }
+            return ("Profiles", message, "checkmark.seal")
+        }
+        if showingReports && device.kind == .simulator {
+            return ("Reports", "Crash, log, spin, and diagnostic reports are unavailable for simulators.", "text.document")
+        }
+        if showingReports, let inspector, !inspector.supportsReportListing {
+            return ("Reports", "Connect and unlock this device to inspect its reports.", "text.document")
+        }
+        return nil
+    }
+
     private func updateVisibility() {
-        contentView.isHidden = page != .content
-        infoView.isHidden = page != .info
-        let showingReports = page == .content && content == .reports
-        for control in [addButton, removeButton, launchButton, actions] { control.isHidden = page != .content || showingReports }
-        previewButton.isHidden = !showingReports
-        downloadButton.isHidden = !showingReports
+        let unavailable = unavailableState
+        infoPicker.isHidden = page == .reports || device == nil
+        infoPicker.selectedSegment = content == .info ? 0 : (showingApplications ? 1 : 2)
+        contentView.isHidden = showingInfo || unavailable != nil
+        infoView.isHidden = !showingInfo || unavailable != nil
+        unavailableView.isHidden = unavailable == nil
+        if let unavailable {
+            unavailableView.rootView = AnyView(ContentUnavailableView {
+                Image(systemName: unavailable.symbol).accessibilityLabel(unavailable.title)
+            } description: { Text(unavailable.message) })
+        }
+        let hasBothProfileKinds = supports("configurationprofiles") && supports("provisioningprofiles")
+        profileKindPicker.isHidden = !showingProfiles || !hasBothProfileKinds
+        profileHeading.isHidden = !showingProfiles || hasBothProfileKinds
+        profileHeading.stringValue = content == .provisioning ? "Provisioning" : "Configuration"
+        profileKindPicker.selectItem(at: content == .provisioning ? 1 : 0)
+        addButton.isHidden = !showingApplications && !showingProfiles ||
+            unavailable != nil && !(showingApplications && inspection.canInstallApplications)
+        for control in [removeButton, launchButton, actions] {
+            control.isHidden = !showingApplications && !showingProfiles || unavailable != nil
+        }
+        previewButton.isHidden = !showingReports || unavailable != nil
+        downloadButton.isHidden = !showingReports || unavailable != nil
         reportFilter.isHidden = !showingReports
-        if page != .content { dismissReportPreview() }
+        if !showingReports { dismissReportPreview() }
     }
 
     private var selectedApp: DeviceApplication? { appRows.first { $0.id == selectedRecordID } }
@@ -304,13 +376,14 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
     private var available: Bool { device != nil && inspector != nil && !isManaging && !reading && !preparingToQuit }
 
     private func updateControls() {
-        let apps = content == .applications
-        contentPicker.isEnabled = !isManaging
-        addButton.isEnabled = available && (apps ? simulatorIsRunning || supports("installapp") : canReadProfiles)
+        let apps = showingApplications
+        infoPicker.isEnabled = !isManaging
+        profileKindPicker.isEnabled = !isManaging
+        addButton.isEnabled = available && (apps ? inspection.canInstallApplications : canReadProfiles)
         removeButton.isEnabled = available && (apps ? selectedApp != nil && selectedApp?.isRemovable != false && (simulatorIsRunning || supports("uninstallapp")) : selectedProfile != nil && canReadProfiles && selectedProfile?.metadata["removalDisallowed"]?.boolean != true)
-        launchButton.isHidden = page != .content || !apps
+        launchButton.isHidden = !apps || unavailableState != nil
         launchButton.isEnabled = available && selectedApp != nil && (simulatorIsRunning || supports("launchapplication") || supports("applicationcontrol"))
-        actions.isHidden = page != .content || !apps
+        actions.isHidden = !apps || unavailableState != nil
         actions.isEnabled = available && selectedApp != nil
         let reportTransfer = available && selectedReport?.resources.isReadable != false && inspector?.supportsReportDownload == true
         previewButton.isEnabled = reportTransfer && selectedReport != nil && selectedReport?.resources.isDirectory == false && activePreviewTask == nil
@@ -326,7 +399,7 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
         else if activePreviewTask != nil { message = "Preparing preview…" }
         else { message = lastIssue ?? "" }
         if status.stringValue != message { status.stringValue = message }
-        status.isHidden = status.stringValue.isEmpty
+        status.isHidden = status.stringValue.isEmpty || unavailableState != nil
     }
 
     func reload() {
@@ -335,14 +408,27 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
         inspection.reload { [model] in try await model.inspector(for: $0) }
     }
 
-    @objc private func changeContent(_ sender: NSPopUpButton) {
+    @objc private func changeInfoCategory(_ sender: NSSegmentedControl) {
+        switch sender.selectedSegment {
+        case 0: content = .info
+        case 1: content = .applications
+        default: if content != .provisioning { content = .configuration }
+        }
+        changedContent()
+    }
+
+    @objc private func changeProfileKind(_ sender: NSPopUpButton) {
+        content = sender.indexOfSelectedItem == 1 ? .provisioning : .configuration
+        changedContent()
+    }
+
+    private func changedContent() {
         dismissReportPreview()
-        content = Content(rawValue: sender.indexOfSelectedItem) ?? .applications
         updateVisibility()
         selectedRecordID = nil
         profiles = []
         search.stringValue = ""
-        search.placeholderString = content == .applications ? "Search Applications" : (content == .reports ? "Search Reports" : "Search Profiles")
+        search.placeholderString = showingApplications ? "Search Applications" : (showingReports ? "Search Reports" : "Search Profiles")
         updateRows()
         reload()
     }
@@ -351,36 +437,36 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
 
     private func updateRows() {
         let query = search.stringValue
-        appRows = content == .applications ? applications.filter { query.isEmpty || $0.name.localizedStandardContains(query) || $0.bundleIdentifier.localizedStandardContains(query) } : []
-        profileRows = content == .applications || content == .reports ? [] : profiles.filter { $0.kind == content.profileKind && (query.isEmpty || $0.name.localizedStandardContains(query) || $0.identifier.localizedStandardContains(query)) }
-        reportRows = content == .reports ? reports.filter { report in
+        appRows = showingApplications ? applications.filter { query.isEmpty || $0.name.localizedStandardContains(query) || $0.bundleIdentifier.localizedStandardContains(query) } : []
+        profileRows = showingApplications || showingReports ? [] : profiles.filter { $0.kind == content.profileKind && (query.isEmpty || $0.name.localizedStandardContains(query) || $0.identifier.localizedStandardContains(query)) }
+        reportRows = showingReports ? reports.filter { report in
             (reportTypeFilter == nil || reportType(report) == reportTypeFilter) && (query.isEmpty ||
                 [report.name, report.relativePath, report.type.fileExtension, report.type.recordedLogType, report.type.bugType]
                     .compactMap { $0 }.contains { $0.localizedStandardContains(query) })
         } : []
         reloadingTable = true
         table.reloadData()
-        let index = content == .applications ? appRows.firstIndex { $0.id == selectedRecordID }
-            : content == .reports ? reportRows.firstIndex { $0.relativePath == selectedRecordID } : profileRows.firstIndex { $0.id == selectedRecordID }
+        let index = showingApplications ? appRows.firstIndex { $0.id == selectedRecordID }
+            : showingReports ? reportRows.firstIndex { $0.relativePath == selectedRecordID } : profileRows.firstIndex { $0.id == selectedRecordID }
         if let index { table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false) }
         else { table.deselectAll(nil); selectedRecordID = nil; dismissReportPreview() }
         reloadingTable = false
         updateDetail()
     }
     func numberOfRows(in tableView: NSTableView) -> Int {
-        content == .applications ? appRows.count : (content == .reports ? reportRows.count : profileRows.count)
+        showingApplications ? appRows.count : (showingReports ? reportRows.count : profileRows.count)
     }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let id = NSUserInterfaceItemIdentifier("InspectorRecord")
         let cell = tableView.makeView(withIdentifier: id, owner: self) as? ManagerInspectorRecordCell ?? ManagerInspectorRecordCell()
         cell.identifier = id
-        if content == .applications {
+        if showingApplications {
             let app = appRows[row]
             cell.title.stringValue = app.name
             cell.subtitle.stringValue = app.bundleIdentifier
             if device?.kind == .simulator, let path = app.bundlePath { cell.icon.image = NSWorkspace.shared.icon(forFile: path) }
             else { cell.icon.image = NSImage(systemSymbolName: "app", accessibilityDescription: nil) }
-        } else if content == .reports {
+        } else if showingReports {
             let report = reportRows[row]
             cell.title.stringValue = report.name
             cell.subtitle.stringValue = [report.modificationDate?.formatted(date: .abbreviated, time: .shortened),
@@ -397,7 +483,7 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
     func tableViewSelectionDidChange(_ notification: Notification) {
         guard !reloadingTable else { return }
         let row = table.selectedRow
-        let id = row < 0 ? nil : (content == .applications ? appRows[row].id : (content == .reports ? reportRows[row].relativePath : profileRows[row].id))
+        let id = row < 0 ? nil : (showingApplications ? appRows[row].id : (showingReports ? reportRows[row].relativePath : profileRows[row].id))
         if selectedRecordID != id { dismissReportPreview() }
         selectedRecordID = id
         updateDetail()
@@ -407,7 +493,7 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
         iconTask?.cancel()
         iconTask = nil
         headerImage.image = nil
-        headerName.stringValue = content == .applications ? "Select an Application" : (content == .reports ? "Select a Report" : "Select a Profile")
+        headerName.stringValue = showingApplications ? "Select an Application" : (showingReports ? "Select a Report" : "Select a Profile")
         headerSubtitle.stringValue = ""
         headerSubtitle.toolTip = nil
         detail.setProperties([:])
@@ -496,8 +582,8 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
     }
 
     @objc private func openSelectedRecord(_ sender: Any?) {
-        if content == .reports { quickLookReport(sender) }
-        else if content == .applications { launch(sender) }
+        if showingReports { quickLookReport(sender) }
+        else if showingApplications { launch(sender) }
     }
 
     @objc private func downloadReport(_ sender: Any?) {
@@ -619,18 +705,19 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
     @objc private func install(_ sender: Any?) {
         guard available, let inspector, let window = view.window else { return }
         let content = self.content
+        let installsApplication = showingApplications
         let panel = NSOpenPanel()
-        panel.message = content == .applications ? "Choose an application to install on \(inspector.device.name)." : "Choose a profile to install on \(inspector.device.name)."
+        panel.message = installsApplication ? "Choose an application to install on \(inspector.device.name)." : "Choose a profile to install on \(inspector.device.name)."
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
         panel.treatsFilePackagesAsDirectories = false
-        panel.allowedContentTypes = content == .applications
+        panel.allowedContentTypes = installsApplication
             ? [UTType.applicationBundle]
             : [UTType(filenameExtension: content == .configuration ? "mobileconfig" : "mobileprovision") ?? .data]
         panel.beginSheetModal(for: window) { [weak self] response in
             guard response == .OK, let url = panel.url, let self else { return }
             self.mutate(using: inspector) { inspector in
-                if content == .applications { try await inspector.installApplication(at: url) }
+                if installsApplication { try await inspector.installApplication(at: url) }
                 else { try await inspector.installProfile(at: url, kind: content.profileKind) }
             }
         }

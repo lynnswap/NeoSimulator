@@ -24,7 +24,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     var onShowCompactWindow: ((DeviceInventoryID) -> Void)?
     var onSelectionChange: ((DeviceInventoryID?) -> Void)?
     var onScreenAction: ((String) -> Void)?
-    var onNewWatch: ((SimulatorHostDevice) -> Void)?
+    var onNewCompanion: ((SimulatorHostDevice) -> Void)?
     weak var activeScreenCommandTarget: NSResponder?
     private var selectionIdentifier: DeviceInventoryID?
     private var previewStack: NSStackView?
@@ -42,7 +42,16 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     private let progress = NSProgressIndicator()
     private var inspectorHost: NSHostingController<ManagerDeviceSettingsView>?
     private let inspectorContainer = NSViewController()
-    private lazy var deviceInspector = ManagerDeviceInspectorController(model: model)
+    private lazy var deviceInspector: ManagerDeviceInspectorController = {
+        let inspector = ManagerDeviceInspectorController(model: model)
+        inspector.onPairingMenu = { [weak self] in self?.pairingMenu(for: $0) ?? NSMenu() }
+        inspector.onDeviceMenu = { [weak self] device in
+            let menu = NSMenu(title: "Device Actions")
+            self?.populateDeviceMenu(menu, devices: [.simulator(device)])
+            return menu
+        }
+        return inspector
+    }()
     private var inspectorMode = 0
     private let inspectorIdentifier = NSToolbarItem.Identifier("DeviceInspector")
     private var updatingSelection = false
@@ -506,7 +515,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         inspectorMode = sender.selectedIndex
         if inspectorMode == 0, let inspectorHost { showInspectorController(inspectorHost) }
         else {
-            deviceInspector.setPage(inspectorMode == 1 ? .content : .info)
+            deviceInspector.setPage(inspectorMode == 1 ? .reports : .info)
             showInspectorController(deviceInspector)
         }
         updateDeviceSettings()
@@ -726,6 +735,14 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     func updateScreenToolbar(supports: (String) -> Bool, isEnabled: (String) -> Bool,
                              resizingApp: Bool = false, capturesKeyboard: Bool = false) {
         if let item = window?.toolbar?.items.first(where: { $0.itemIdentifier == resizeAppIdentifier }) {
+            let title = resizingApp ? "Stop Resize" : "Resize App"
+            item.label = title
+            item.toolTip = title
+            item.menuFormRepresentation?.title = title
+            if let button = item.view as? NSButton {
+                button.toolTip = title
+                button.setAccessibilityLabel(title)
+            }
             item.isHidden = liveDeviceIdentifier == nil || !supports("resizeApp")
             item.isEnabled = isEnabled("resizeApp")
             item.menuFormRepresentation?.isEnabled = item.isEnabled
@@ -954,7 +971,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [.toggleSidebar, .flexibleSpace, newSimulatorIdentifier, filterIdentifier, .sidebarTrackingSeparator,
-         .flexibleSpace, captureKeyboardIdentifier, resizeAppIdentifier, canvasZoomIdentifier, compactIdentifier, moreIdentifier, .inspectorTrackingSeparator, inspectorIdentifier]
+         .flexibleSpace, captureKeyboardIdentifier, resizeAppIdentifier, canvasZoomIdentifier, compactIdentifier, moreIdentifier, .inspectorTrackingSeparator, .flexibleSpace, inspectorIdentifier]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { toolbarDefaultItemIdentifiers(toolbar) }
@@ -1045,14 +1062,16 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             return item
         }
         if itemIdentifier == inspectorIdentifier {
-            let images = ["slider.horizontal.3", "doc", "info.circle"].compactMap {
+            let images = ["slider.horizontal.3", "text.document", "info"].compactMap {
                 NSImage(systemSymbolName: $0, accessibilityDescription: nil)
             }
             let item = NSToolbarItemGroup(itemIdentifier: itemIdentifier, images: images, selectionMode: .selectOne,
-                                          labels: ["Settings", "Content", "Info"], target: self, action: #selector(changeInspector(_:)))
+                                          labels: ["Settings", "Reports", "Info"], target: self, action: #selector(changeInspector(_:)))
             item.label = "Device Inspector"
             item.selectedIndex = inspectorMode
             item.visibilityPriority = .high
+            item.controlRepresentation = .expanded
+            for (subitem, title) in zip(item.subitems, ["Settings", "Reports", "Info"]) { subitem.toolTip = title }
             return item
         }
         if itemIdentifier == newSimulatorIdentifier {
@@ -1217,24 +1236,24 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         }
     }
 
-    func pairingMenu(for phone: SimulatorHostDevice) -> NSMenu {
-        SimulatorPairingMenu.make(for: phone, model: model, target: self, action: #selector(performPairingMenuAction(_:)))
+    func pairingMenu(for device: SimulatorHostDevice) -> NSMenu {
+        SimulatorPairingMenu.make(for: device, model: model, target: self, action: #selector(performPairingMenuAction(_:)))
     }
 
     @objc func performPairingMenuAction(_ sender: NSMenuItem) {
         switch sender.representedObject as? SimulatorPairingMenu.Action {
         case .pair(let identifiers):
             let devices = model.inventory.filter { identifiers.contains($0.id) }
-            guard devices.count == 2, supports(.pair, devices: devices),
+            guard supports(.pair, devices: devices),
                   let phone = devices.compactMap({ if case .simulator(let device) = $0, device.productFamily == "iPhone" { device } else { nil } }).first,
-                  model.pairingWatches(for: phone).contains(where: { identifiers.contains($0.inventoryID) }),
+                  model.pairingCandidates(for: phone).contains(where: { identifiers.contains($0.inventoryID) }),
                   model.canManage(.pair, deviceIDs: identifiers) else { return }
             model.manage(.pair, devices: devices)
-        case .newWatch(let identifier):
+        case .newCompanion(let identifier):
             guard let device = model.inventory.first(where: { $0.id == identifier }),
-                  case .simulator(let phone) = device, phone.productFamily == "iPhone", device.supports(.pair),
+                  case .simulator(let simulator) = device, model.canAddPairing(for: simulator),
                   model.canManage(.pair, deviceIDs: [identifier]) else { return }
-            onNewWatch?(phone)
+            onNewCompanion?(simulator)
         case nil: break
         }
     }
