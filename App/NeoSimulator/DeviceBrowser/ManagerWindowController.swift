@@ -695,7 +695,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
 
     func showLiveScreen(for identifier: DeviceInventoryID, controls: DeviceCanvasControls?) {
         liveDeviceIdentifier = identifier
-        updateCanvasControls(controls)
+        canvasAccessory.setControls(controls)
         liveScreenContainer.view.isHidden = false
         previewStack?.isHidden = true
         for item in window?.toolbar?.items ?? [] where item.itemIdentifier == compactIdentifier || item.itemIdentifier == moreIdentifier {
@@ -703,8 +703,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         }
     }
 
-    func updateCanvasControls(_ controls: DeviceCanvasControls?) {
-        canvasAccessory.setControls(controls)
+    func refreshCanvasControls() {
+        canvasAccessory.refresh()
     }
 
     private func updateCanvasMinimumWidth(_ width: CGFloat) {
@@ -716,7 +716,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     func showDevicePreview(ifDisplaying identifier: DeviceInventoryID) {
         guard liveDeviceIdentifier == identifier else { return }
         liveDeviceIdentifier = nil
-        updateCanvasControls(nil)
+        canvasAccessory.setControls(nil)
         activeScreenCommandTarget = nil
         liveScreenContainer.view.isHidden = true
         previewStack?.isHidden = false

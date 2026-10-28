@@ -26,17 +26,17 @@ final class DeviceCanvasAccessoryViewController: NSSplitViewItemAccessoryViewCon
                 controlsStack.addArrangedSubview(controls)
             }
         }
+        refresh()
+    }
+
+    func refresh() {
+        let controls = controlsStack.arrangedSubviews.first { $0.superview === controlsStack }
         isHidden = controls?.isHidden != false
-        updateMinimumWidth()
+        onMinimumWidthChange?(controls.flatMap { $0.isHidden ? nil : $0.fittingSize.width + 24 } ?? 0)
     }
 
     override func viewDidLayout() {
         super.viewDidLayout()
-        updateMinimumWidth()
-    }
-
-    private func updateMinimumWidth() {
-        let controls = controlsStack.arrangedSubviews.first
-        onMinimumWidthChange?(controls.flatMap { $0.isHidden ? nil : $0.fittingSize.width + 24 } ?? 0)
+        refresh()
     }
 }

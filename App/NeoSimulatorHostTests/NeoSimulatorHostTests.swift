@@ -123,7 +123,7 @@ struct InputFocusTests {
         accessory.setControls(controls)
         #expect(controls.isDescendant(of: accessory.view))
         controls.update(supports: { _ in false }, isEnabled: { _ in false }, recordingTitle: "Record Screen")
-        accessory.setControls(controls)
+        accessory.refresh()
         #expect(accessory.isHidden)
     }
 
@@ -139,17 +139,22 @@ struct InputFocusTests {
         controller.canvasControls = controls
         let parent = NSViewController()
         parent.view = NSView(frame: NSRect(x: 0, y: 0, width: 500, height: 700))
-        let host = NSStackView()
-        parent.view.addSubview(host)
+        let accessory = DeviceCanvasAccessoryViewController()
+        var minimumWidth: CGFloat = 0
+        accessory.onMinimumWidthChange = { minimumWidth = $0 }
+        parent.view.addSubview(accessory.view)
         try await session.start()
         try await controller.embed(in: parent)
-        host.addArrangedSubview(controls)
-        #expect(controller.canvasControls === controls && controls.superview === host)
+        accessory.setControls(controls)
+        controller.onChange = { accessory.refresh() }
+        #expect(controller.canvasControls === controls && controls.isDescendant(of: accessory.view))
         try await controller.showCompactWindow()
+        #expect(accessory.isHidden && minimumWidth == 0)
+        accessory.setControls(nil)
         #expect(controller.canvasControls === controls && controls.isDescendant(of: controller.presentationViewController.view))
         #expect(controls.window === controller.window && session.state == .connected)
         try await controller.embed(in: parent)
-        host.addArrangedSubview(controls)
+        accessory.setControls(controls)
         try await controller.detachPresentation()
         try await controller.showCompactWindow()
         #expect(controller.canvasControls === controls && controls.window === controller.window)

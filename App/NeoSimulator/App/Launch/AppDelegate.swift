@@ -485,7 +485,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .map { DevicePostureModel.canInspect(capabilities: $0.capabilities) } ?? false
         controls.updatePosture(posture, isEnabled: enabled, available: available)
         if mainWindow?.liveDeviceIdentifier == identifier {
-            mainWindow?.updateCanvasControls(controls)
+            mainWindow?.refreshCanvasControls()
         }
     }
 
