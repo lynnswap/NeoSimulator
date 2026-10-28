@@ -810,9 +810,16 @@ struct RemoteDeviceScreenTests {
 
     @Test func dedicatedReportsRoundTripThroughTheInstalledUniversalHIDValueAPIs() throws {
         let runtime = ABIRuntime.shared
+        let systemURL = URL(fileURLWithPath: "/System/Library/PrivateFrameworks/UniversalHID.framework/Versions/A/UniversalHID")
+        let coreDeviceURL = URL(fileURLWithPath: "/Library/Developer/PrivateFrameworks/CoreDevice.framework/Versions/A/Frameworks/UniversalHID.framework/Versions/A/UniversalHID")
+        try CoreDeviceRemoteScreenDevice.load(systemURL.path)
+        try CoreDeviceRemoteScreenDevice.load(coreDeviceURL.path)
+        let systemImage = try #require(runtime.resolveImagesAndWait(matching: .path(systemURL)).first)
+        let image = try #require(runtime.resolveImagesAndWait(matching: .path(coreDeviceURL)).first)
+        try #require(image != systemImage)
         let builder = try CoreDeviceDigitizerReports(runtime: runtime)
-        let digitizer = try runtime.resolveAndWait(.swift(.type("UniversalHID.DigitizerReport")))
-        let contact = try runtime.resolveAndWait(.swift(.type("UniversalHID.DigitizerContact")))
+        let digitizer = try runtime.resolveAndWait(.swift(.type("UniversalHID.DigitizerReport")), in: image, loading: .loadedOnly)
+        let contact = try runtime.resolveAndWait(.swift(.type("UniversalHID.DigitizerContact")), in: image, loading: .loadedOnly)
         let abis = builder.abis
         let make = try digitizer.resolveAndWait(.swift(.initializer("init(_report:)", as: ((NativeSwiftValue) -> NativeSwiftValue).self, valueABIs: abis)))
         let receiver = abis[digitizer]!
@@ -828,6 +835,7 @@ struct RemoteDeviceScreenTests {
         let edge = try digitizer.resolveAndWait(.swift(.method("contactSwipeLeft(atIndex:)", as: ((Int) -> Bool?).self, valueABIs: abis, receiverABI: receiver)))
         for phase in [RemoteDeviceTouchPhase.began, .ended] {
             let payload = try builder.make(point: CGPoint(x: 0.25, y: 0.75), second: CGPoint(x: 0.8, y: 0.2), phase: phase, edge: .left)
+            #expect(payload.type.image == image)
             let value = try unsafe make.unsafeInvoke(payload)
             #expect(try unsafe count.unsafeInvoke(on: value) == 2)
             for index in 0..<2 {
