@@ -202,6 +202,29 @@ struct InstallationInspectorTests {
         }
     }
 
+    @Test func optionalBindingDiagnosticsDoNotRejectASuccessfulRuntimeValidation() throws {
+        let fixture = try InstallationFixture()
+        let runner = FakeSystemCommandRunner()
+        runner.neoHostRuntimeValidationOutput = #"""
+        {"optionalBindings":[
+          {"surface":"nativeCanvas","stage":"preparingBindings","status":"prepared","unverified":["DeviceView construction and rendering"]},
+          {"surface":"nativePoseControls","stage":"loadingFramework","status":"unavailable","detail":"Optional framework unavailable","unverified":["Provider discovery"]},
+          {"surface":"appResize","stage":"preparingBindings","status":"failed","detail":"Optional binding preparation failed","unverified":["Device capability and implementation witnesses"]}
+        ]}
+        """#
+        let inspector = InstallationInspector(
+            runner: runner,
+            environment: ["DEVELOPER_DIR": fixture.developerDirectoryURL.path],
+            rendererApplicationURL: fixture.neoHostURL,
+            coreSimulatorFrameworkURL: fixture.coreSimulatorFrameworkURL,
+            coreDeviceFrameworkURL: fixture.coreDeviceFrameworkURL,
+            signatureValidator: .acceptingTestFixtures
+        )
+        let xcode = try inspector.validatedTargetXcode()
+
+        #expect(try inspector.validatedNeoHost(for: xcode).applicationURL == fixture.neoHostURL)
+    }
+
     @Test func neoHostRuntimeValidationFailureIsRejected() throws {
         let fixture = try InstallationFixture()
         let runner = FakeSystemCommandRunner()

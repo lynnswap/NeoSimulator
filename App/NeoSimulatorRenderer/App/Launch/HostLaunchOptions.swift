@@ -6,6 +6,7 @@ import Synchronization
 struct HostLaunchOptions {
     let xcodeURL: URL
     let validatesRuntime: Bool
+    let includesNativeBindings: Bool
     let readsCreationCatalog: Bool
     let startupResultURL: URL?
     let deviceIdentifier: String?
@@ -20,6 +21,7 @@ struct HostLaunchOptions {
         var device: String?
         var deviceSet: String?
         var validate = false
+        var includeNative = false
         var creationCatalog = false
         var managed = false
         var headless = false
@@ -27,7 +29,7 @@ struct HostLaunchOptions {
         var ownerLaunchDate: Date?
         var index = 0
         func invalid() -> HostError {
-            .invalidArguments("Expected [--managed --owner-pid PID --owner-launch-date SECONDS] [--validate-runtime] [--startup-result /absolute/path] [--device UDID] [--device-set /absolute/path] --xcode /absolute/path/to/Xcode.app")
+            .invalidArguments("Expected [--managed --owner-pid PID --owner-launch-date SECONDS] [--validate-runtime [--include-native-bindings]] [--startup-result /absolute/path] [--device UDID] [--device-set /absolute/path] --xcode /absolute/path/to/Xcode.app")
         }
         while index < arguments.count {
             switch arguments[index] {
@@ -50,6 +52,9 @@ struct HostLaunchOptions {
             case "--validate-runtime":
                 guard !validate else { throw invalid() }
                 validate = true
+            case "--include-native-bindings":
+                guard !includeNative else { throw invalid() }
+                includeNative = true
             case "--creation-catalog":
                 guard !creationCatalog else { throw invalid() }
                 creationCatalog = true
@@ -77,11 +82,13 @@ struct HostLaunchOptions {
             index += 1
         }
         guard let xcodePath, !(validate && resultPath != nil),
+              !includeNative || (validate && !creationCatalog),
               !headless || managed,
               managed ? (ownerPID != nil && ownerLaunchDate != nil) : (ownerPID == nil && ownerLaunchDate == nil)
         else { throw invalid() }
         xcodeURL = URL(fileURLWithPath: xcodePath, isDirectory: true).standardizedFileURL.resolvingSymlinksInPath()
         validatesRuntime = validate
+        includesNativeBindings = includeNative
         readsCreationCatalog = creationCatalog
         startupResultURL = resultPath.map { URL(fileURLWithPath: $0).standardizedFileURL }
         deviceIdentifier = device

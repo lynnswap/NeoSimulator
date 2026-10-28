@@ -46,11 +46,40 @@ public final class CoreDeviceAppResizeTransport: AppResizeTransport {
     private let remote: CoreDeviceRemoteScreenDevice
     private let implementation: NativeSwiftValue
     private let runtime: ABIRuntime
-    private let abis: [NativeSwiftType: NativeType]
-    private let stateType: NativeSwiftType
-    private let sceneType: NativeSwiftType
-    private let displayType: NativeSwiftType
+    private let bindings: Bindings
     private let failure: any Error
+
+    struct Bindings {
+        let abis: [NativeSwiftType: NativeType]
+        let stateType: NativeSwiftType
+        let sceneType: NativeSwiftType
+        let displayType: NativeSwiftType
+
+        init(runtime: ABIRuntime) throws {
+            stateType = try runtime.resolveAndWait(.swift(.type("CoreDeviceUtilities.ResizabilityState")))
+            sceneType = try runtime.resolveAndWait(.swift(.type("CoreDeviceUtilities.ResizableSceneState")))
+            displayType = try runtime.resolveAndWait(.swift(.type("CoreDeviceUtilities.ResizableDisplayInfo")))
+            abis = try Dictionary(uniqueKeysWithValues: [stateType, sceneType, displayType].map { ($0, try .opaque(named: $0.name)) })
+        }
+    }
+
+    struct GeometryBindings {
+        private let sizes: [NativeSwiftMethod<() -> CGSize>]
+        private let radius: NativeSwiftMethod<() -> CGFloat>
+
+        init(type: NativeSwiftType, abis: [NativeSwiftType: NativeType]) throws {
+            sizes = try ["minimumPossibleSize", "maximumPossibleSize", "preferredSize", "resolvedSize"].map { name in
+                try type.resolveAndWait(.swift(.getter(name, as: (() -> CGSize).self, valueABIs: abis)))
+            }
+            radius = try type.resolveAndWait(.swift(.getter("cornerRadius", as: (() -> CGFloat).self, valueABIs: abis)))
+        }
+
+        func read(_ value: NativeSwiftValue) throws -> AppResizeGeometry {
+            let values = try sizes.map { try unsafe $0.unsafeInvoke(on: value) }
+            return try AppResizeGeometry(minimumSize: values[0], maximumSize: values[1], preferredSize: values[2],
+                resolvedSize: values[3], cornerRadius: unsafe radius.unsafeInvoke(on: value))
+        }
+    }
 
     static let feature = "com.apple.coredevice.feature.resizableappmanagement"
 
@@ -79,10 +108,7 @@ public final class CoreDeviceAppResizeTransport: AppResizeTransport {
         self.implementation = implementation
         self.runtime = runtime
         self.failure = failure
-        stateType = try runtime.resolveAndWait(.swift(.type("CoreDeviceUtilities.ResizabilityState")))
-        sceneType = try runtime.resolveAndWait(.swift(.type("CoreDeviceUtilities.ResizableSceneState")))
-        displayType = try runtime.resolveAndWait(.swift(.type("CoreDeviceUtilities.ResizableDisplayInfo")))
-        abis = try Dictionary(uniqueKeysWithValues: [stateType, sceneType, displayType].map { ($0, try .opaque(named: $0.name)) })
+        bindings = try Bindings(runtime: runtime)
     }
 
     public func eligibility() async throws -> AsyncThrowingStream<AppResizeEligibility, any Error> {
@@ -90,6 +116,8 @@ public final class CoreDeviceAppResizeTransport: AppResizeTransport {
     }
 
     private func eligibility<Failure: Error>(failure: Failure) async throws -> AsyncThrowingStream<AppResizeEligibility, any Error> {
+        let stateType = bindings.stateType
+        let abis = bindings.abis
         let stream = try NativeResizeStream(runtime: runtime, element: stateType, throwing: true)
         let observe = try implementation.type.resolveAndWait(.swift(.method("CoreDevice.ResizableAppManagementProtocol.observeFrontmostAppResizability()",
             as: (() async throws(Failure) -> NativeSwiftValue).self, valueABIs: abis.merging(stream.abis) { a, _ in a })))
@@ -109,6 +137,8 @@ public final class CoreDeviceAppResizeTransport: AppResizeTransport {
     }
 
     private func start<Failure: Error>(size: CGSize, cornerRadius: CGFloat, failure: Failure) async throws -> any AppResizeSession {
+        let abis = bindings.abis
+        let displayType = bindings.displayType
         let getDisplay = try implementation.type.resolveAndWait(.swift(.method("CoreDevice.ResizableAppManagementProtocol.getDisplayForResizing()",
             as: (() async throws(Failure) -> NativeSwiftValue).self, valueABIs: abis)))
         let display = try await unsafe getDisplay.unsafeInvoke(on: implementation)
@@ -119,7 +149,7 @@ public final class CoreDeviceAppResizeTransport: AppResizeTransport {
             as: ((String, CGSize, CGFloat) async throws(Failure) -> NativeSwiftValue).self, valueABIs: abis)))
         let assertion = try await unsafe start.unsafeInvoke(on: implementation, identifier.unsafeInvoke(on: display), size, cornerRadius).copyUnderlyingValue()
         // Do not check cancellation until the returned assertion has an invalidation owner.
-        return try CoreDeviceAppResizeSession(assertion: assertion, runtime: runtime, sceneType: sceneType, abis: abis, failure: failure)
+        return try CoreDeviceAppResizeSession(assertion: assertion, runtime: runtime, sceneType: bindings.sceneType, abis: abis, failure: failure)
     }
 }
 
@@ -181,13 +211,7 @@ private final class CoreDeviceAppResizeSession: AppResizeSession {
 
     private static func geometry(_ value: NativeSwiftValue, type: NativeSwiftType,
                                  abis: [NativeSwiftType: NativeType]) throws -> AppResizeGeometry {
-        func size(_ name: String) throws -> CGSize {
-            let getter = try type.resolveAndWait(.swift(.getter(name, as: (() -> CGSize).self, valueABIs: abis)))
-            return try unsafe getter.unsafeInvoke(on: value)
-        }
-        let radius = try type.resolveAndWait(.swift(.getter("cornerRadius", as: (() -> CGFloat).self, valueABIs: abis)))
-        return try AppResizeGeometry(minimumSize: size("minimumPossibleSize"), maximumSize: size("maximumPossibleSize"),
-            preferredSize: size("preferredSize"), resolvedSize: size("resolvedSize"), cornerRadius: unsafe radius.unsafeInvoke(on: value))
+        try CoreDeviceAppResizeTransport.GeometryBindings(type: type, abis: abis).read(value)
     }
 }
 

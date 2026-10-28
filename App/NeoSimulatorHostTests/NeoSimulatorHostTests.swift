@@ -8907,6 +8907,22 @@ struct HostBehaviorTests {
         }
     }
 
+    @Test func nativeBindingValidationRequiresExplicitRuntimeValidation() throws {
+        let xcode = ["--xcode", "/Xcode.app"]
+        let plain = try HostLaunchOptions(arguments: xcode + ["--validate-runtime"])
+        #expect(plain.validatesRuntime && !plain.includesNativeBindings)
+        let included = try HostLaunchOptions(arguments: xcode + ["--validate-runtime", "--include-native-bindings"])
+        #expect(included.validatesRuntime && included.includesNativeBindings && !included.readsCreationCatalog)
+        for arguments in [
+            ["--include-native-bindings"],
+            ["--include-native-bindings", "--creation-catalog", "--validate-runtime"],
+            ["--validate-runtime", "--include-native-bindings", "--include-native-bindings"],
+            ["--validate-runtime", "--include-native-bindings", "--startup-result", "/tmp/result"],
+        ] {
+            #expect(throws: (any Error).self) { try HostLaunchOptions(arguments: xcode + arguments) }
+        }
+    }
+
     @Test func managerRequestsOpenTheExplicitDeviceAndKeepQuitChoices() throws {
         let identifier = UUID().uuidString
         let options = try HostLaunchOptions(arguments: ["--managed", "--headless", "--owner-pid", "123", "--owner-launch-date", "1234.5", "--xcode", "/Xcode.app", "--device", identifier, "--device-set", "/custom/XCTestDevices"])
