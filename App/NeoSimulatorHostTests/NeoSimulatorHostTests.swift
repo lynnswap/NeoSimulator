@@ -68,7 +68,7 @@ struct InputFocusTests {
         ])
         let item = NSSplitViewItem(viewController: content)
         let accessory = DeviceCanvasAccessoryViewController()
-        accessory.onMinimumWidthChange = { item.minimumThickness = max(280, $0) }
+        accessory.onMinimumWidthChange = { [weak item] in item?.minimumThickness = max(280, $0) }
         item.addBottomAlignedAccessoryViewController(accessory)
         split.addSplitViewItem(item)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 700),
@@ -92,6 +92,8 @@ struct InputFocusTests {
             #expect(!accessory.isHidden && accessoryFrame.height > 0)
             #expect(!canvasFrame.intersects(accessoryFrame))
             #expect(controls.isDescendant(of: accessory.view) && controls.window === window)
+            #expect(accessory.view.bounds.insetBy(dx: -1, dy: -1).contains(controls.convert(controls.bounds, to: accessory.view)))
+            #expect(controls.bounds.height + 1 >= controls.fittingSize.height)
         }
         let originalSize = controls.fittingSize
         func enlarge(_ view: NSView) {
@@ -107,6 +109,8 @@ struct InputFocusTests {
         window.displayIfNeeded()
         #expect(controls.fittingSize.width > originalSize.width && controls.fittingSize.height > originalSize.height)
         #expect(item.minimumThickness >= controls.fittingSize.width + 24)
+        #expect(accessory.view.bounds.insetBy(dx: -1, dy: -1).contains(controls.convert(controls.bounds, to: accessory.view)))
+        #expect(controls.bounds.height + 1 >= controls.fittingSize.height)
         #expect(!viewport.convert(viewport.bounds, to: split.view).intersects(accessory.view.convert(accessory.view.bounds, to: split.view)))
         accessory.setControls(controls)
         #expect((accessory.view as? NSStackView)?.arrangedSubviews.count == 1)
@@ -1237,6 +1241,12 @@ struct InputFocusTests {
         controller.setDeviceBezelVisible(true)
         #expect(compact.backgroundColor == .windowBackgroundColor)
         controller.embed(in: parent)
+        let accessoryHost = NSStackView()
+        parent.view.addSubview(accessoryHost)
+        accessoryHost.addArrangedSubview(controls)
+        content.layoutSubtreeIfNeeded()
+        #expect(controls.superview === accessoryHost && scroll.frame.minY == 8)
+        #expect((content as? any DisplayContentView)?.availableDisplaySize == scroll.frame.size)
         controller.performCanvasZoom(.fit)
         parent.view.setFrameSize(NSSize(width: 400, height: 300))
         parent.view.layoutSubtreeIfNeeded()
