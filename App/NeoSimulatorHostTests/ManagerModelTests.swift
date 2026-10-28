@@ -905,6 +905,44 @@ struct ManagerModelTests {
         #expect(information.fields.first { $0.value == "External" }?.title == "Configuration / Displays — Item 2 / Name")
     }
 
+    @Test func pairedCanvasLinkUsesFreshInventoryAndTheExistingExplicitOpenRoute() async throws {
+        let pairedID = DeviceInventoryID.simulator(udid: "watch", deviceSetPath: "/custom")
+        func phone(active: Bool = true, state: String = "Booted") -> InventoryDevice {
+            .simulator(SimulatorHostDevice(identifier: "phone", name: "Phone", descriptiveName: "Phone",
+                runtimeIdentifier: "runtime", runtimeName: "iOS", productFamily: "iPhone", state: state,
+                deviceSetPath: "/custom", pairIdentifiers: ["pair"], activePairedDeviceID: active ? pairedID : nil))
+        }
+        func watch(_ name: String, set: String? = "/custom") -> InventoryDevice {
+            .simulator(SimulatorHostDevice(identifier: "watch", name: name, descriptiveName: name,
+                runtimeIdentifier: "runtime", runtimeName: "watchOS", productFamily: "Apple Watch", state: "Shutdown",
+                deviceSetPath: set, pairIdentifiers: ["pair"]))
+        }
+        let source = ManagerModelSource(devices: [phone(), watch("Companion"), watch("Other Set", set: nil)])
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source)
+        await manager.refresh()
+        #expect(manager.activePairedDevice(for: phone().id)?.name == "Companion")
+        manager.openActivePairedDevice(for: phone().id)
+        #expect(await events.next() == .open(pairedID))
+        await source.setDevices([phone(), watch("Renamed Companion")])
+        await source.completeOpen()
+        let published = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            MainActor.assumeIsolated {
+                !manager.isBusy && manager.activePairedDevice(for: phone().id)?.name == "Renamed Companion"
+            }
+        }, object: nil)
+        try #require(await XCTWaiter.fulfillment(of: [published], timeout: 5) == .completed)
+        await source.setDevices([phone(active: false), watch("Renamed Companion")])
+        await manager.refresh()
+        #expect(manager.activePairedDevice(for: phone().id) == nil)
+        manager.openActivePairedDevice(for: phone().id)
+        #expect(!manager.isBusy)
+        await source.setDevices([phone(state: "Shutdown"), watch("Renamed Companion")])
+        await manager.refresh()
+        #expect(manager.activePairedDevice(for: phone().id) == nil)
+        try await manager.quitRenderer(keepingDevicesRunning: true)
+    }
+
     @Test func pairedInfoResolvesThePartnerInItsDeviceSetAndUnpairsTheWatchFromEitherSide() async throws {
         _ = NSApplication.shared
         func device(_ id: String, family: String, set: String? = nil, pairs: Set<String> = ["pair"]) -> SimulatorHostDevice {
@@ -1100,7 +1138,7 @@ private actor ManagerModelSource: SimulatorManagerSource {
     }
     nonisolated let events: AsyncStream<Event>
     private let continuation: AsyncStream<Event>.Continuation
-    private let devices: [InventoryDevice]
+    private var devices: [InventoryDevice]
     private var inspectorResponse: String?
     private var holdsInspectorReads = false
     private var inspectorRead: CheckedContinuation<CommandOutput, any Error>?
@@ -1138,6 +1176,7 @@ private actor ManagerModelSource: SimulatorManagerSource {
         installedXcodeReadCount += 1
         return [SimulatorXcode(url: URL(fileURLWithPath: "/Applications/Test Xcode.app"), version: "27.1", name: "Test Xcode")]
     }
+    func setDevices(_ devices: [InventoryDevice]) { self.devices = devices }
     func inventory() -> DeviceInventorySnapshot { DeviceInventorySnapshot(devices: devices, issues: []) }
     func status() -> SimulatorHostStatus { SimulatorHostStatus(host: .neo, restorationAvailable: false, rendererRunning: false) }
     func deviceSettings(for device: InventoryDevice) async throws -> SimulatorDeviceSettings {

@@ -52,8 +52,10 @@ public struct SimulatorHostDevice: Sendable, Equatable {
     public let lastUsedAt: Date?
     public let capabilities: Set<String>
     public let pairIdentifiers: Set<String>
+    /// The active companion in the same simulator device set, when the catalog identifies one.
+    public let activePairedDeviceID: DeviceInventoryID?
 
-    public init(identifier: String, name: String, descriptiveName: String, runtimeIdentifier: String, runtimeName: String, productFamily: String, state: String, ownerXcodeURL: URL? = nil, deviceSetPath: String? = nil, modelIdentifier: String? = nil, deviceTypeIdentifier: String? = nil, isAvailable: Bool = true, lastUsedAt: Date? = nil, capabilities: Set<String> = [], pairIdentifiers: Set<String> = []) {
+    public init(identifier: String, name: String, descriptiveName: String, runtimeIdentifier: String, runtimeName: String, productFamily: String, state: String, ownerXcodeURL: URL? = nil, deviceSetPath: String? = nil, modelIdentifier: String? = nil, deviceTypeIdentifier: String? = nil, isAvailable: Bool = true, lastUsedAt: Date? = nil, capabilities: Set<String> = [], pairIdentifiers: Set<String> = [], activePairedDeviceID: DeviceInventoryID? = nil) {
         self.identifier = identifier
         self.name = name
         self.descriptiveName = descriptiveName
@@ -69,6 +71,7 @@ public struct SimulatorHostDevice: Sendable, Equatable {
         self.lastUsedAt = lastUsedAt
         self.capabilities = capabilities
         self.pairIdentifiers = pairIdentifiers
+        self.activePairedDeviceID = activePairedDeviceID
     }
 }
 
@@ -765,6 +768,9 @@ enum SimulatorDeviceCatalog {
             struct Member: Decodable { let udid: String }
             let watch: Member
             let phone: Member
+            let state: String?
+
+            var isActive: Bool { state == "(active, connected)" || state == "(active, disconnected)" }
         }
         let pairs: [String: Pair]?
     }
@@ -810,7 +816,13 @@ enum SimulatorDeviceCatalog {
                     lastUsedAt: lastUsedAt,
                     pairIdentifiers: Set((catalog.pairs ?? [:]).compactMap { pairID, pair in
                         pair.watch.udid == device.udid || pair.phone.udid == device.udid ? pairID : nil
-                    })
+                    }),
+                    activePairedDeviceID: (catalog.pairs ?? [:]).values.first(where: {
+                        $0.isActive && ($0.watch.udid == device.udid || $0.phone.udid == device.udid)
+                    }).map { pair in
+                        .simulator(udid: pair.watch.udid == device.udid ? pair.phone.udid : pair.watch.udid,
+                                   deviceSetPath: deviceSetPath)
+                    }
                 )
             }
         }.sorted {

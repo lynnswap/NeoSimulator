@@ -92,6 +92,30 @@ struct DeviceInventoryTests {
         #expect(orphan.lastUsedAt == Date(timeIntervalSince1970: 0.25))
     }
 
+    @Test func activePairingUsesTheOppositeDeviceInTheSameSetWithoutDiscardingOtherPairs() throws {
+        var catalog = try #require(JSONSerialization.jsonObject(with: Self.simulatorJSON) as? [String: Any])
+        catalog["pairs"] = [
+            "active": ["watch": ["udid": "unavailable"], "phone": ["udid": "ready"], "state": "(active, disconnected)"],
+            "inactive": ["watch": ["udid": "orphan"], "phone": ["udid": "ready"], "state": "(inactive, connected)"],
+        ]
+        let data = try JSONSerialization.data(withJSONObject: catalog)
+        let devices = try SimulatorDeviceCatalog.decode(data, deviceSetPath: "/testing", includeUnavailable: true)
+        let phone = try #require(devices.first { $0.identifier == "ready" })
+        let watch = try #require(devices.first { $0.identifier == "unavailable" })
+        #expect(phone.activePairedDeviceID == .simulator(udid: watch.identifier, deviceSetPath: "/testing"))
+        #expect(watch.activePairedDeviceID == phone.inventoryID)
+        #expect(devices.first { $0.identifier == "orphan" }?.activePairedDeviceID == nil)
+        #expect(phone.pairIdentifiers == ["active", "inactive"])
+        let copied = phone.inventoryCopy(ownerXcodeURL: URL(fileURLWithPath: "/Applications/Owner.app"), capabilities: ["feature"])
+        #expect(copied.activePairedDeviceID == phone.activePairedDeviceID)
+        #expect(copied.capabilities == ["feature"])
+        // Older catalogs and unavailable pair records do not establish an active relationship.
+        #expect(try SimulatorDeviceCatalog.decode(Self.simulatorJSON).first?.activePairedDeviceID == nil)
+        catalog["pairs"] = ["unknown": ["watch": ["udid": "unavailable"], "phone": ["udid": "ready"], "state": "(unavailable)"]]
+        #expect(try SimulatorDeviceCatalog.decode(JSONSerialization.data(withJSONObject: catalog), includeUnavailable: true)
+            .allSatisfy { $0.activePairedDeviceID == nil })
+    }
+
     @Test func testingCatalogFailurePreservesNormalDevicesAndReportsItsExactSource() throws {
         let newer = URL(fileURLWithPath: "/Applications/Xcode-New.app")
         let older = URL(fileURLWithPath: "/Applications/Xcode-Old.app")

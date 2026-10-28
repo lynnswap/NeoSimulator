@@ -2,14 +2,14 @@ import AppKit
 import SwiftUI
 @_spi(NeoSimulator) import XcodeSimulatorHost
 
-/// Device actions retained with the screen across presentations.
+/// Bottom canvas content retained with the screen across presentations.
 @MainActor
 final class DeviceCanvasControls: NSView {
     var onAction: ((String) -> Void)?
     var onLayoutChange: (() -> Void)?
     var xcodeURL: URL?
-    private let host = NSHostingView(rootView: CanvasActionBar())
-    private var content = CanvasActionBar()
+    private let host = NSHostingView(rootView: CanvasBottomContent())
+    private var content = CanvasBottomContent()
     private var modifierMonitor: Any?
     private var artworkXcodeURL: URL?
     private var artworkTask: Task<Void, Never>?
@@ -44,7 +44,7 @@ final class DeviceCanvasControls: NSView {
     func update(supports: (String) -> Bool, isEnabled: (String) -> Bool, recordingTitle: String,
                 recordingStartDate: Date? = nil, nativePoses: NativeDevicePoseControls? = nil,
                 nativePosesEnabled: Bool = true, posture: DevicePostureModel? = nil,
-                postureEnabled: Bool = true, postureAvailable: Bool = true) {
+                postureEnabled: Bool = true, postureAvailable: Bool = true, pairedDeviceName: String? = nil) {
         content.actions = ["home", "capture", "record", "rotate"].filter(supports).map { identifier in
             let title = switch identifier {
             case "home": "Home"
@@ -62,6 +62,7 @@ final class DeviceCanvasControls: NSView {
                                 image: symbol.flatMap { NSImage.deviceControlSymbol(named: $0, accessibilityDescription: title) },
                                 enabled: isEnabled(identifier))
         }
+        content.pairedDeviceName = pairedDeviceName
         content.recordingStartDate = recordingStartDate
         content.nativePoses = nativePoses?.isAvailable == true ? nativePoses : nil
         content.nativePosesEnabled = nativePosesEnabled
@@ -87,7 +88,7 @@ final class DeviceCanvasControls: NSView {
         }
         content.onAction = { [weak self] in self?.onAction?($0) }
         host.rootView = content
-        isHidden = content.actions.isEmpty && content.postures.isEmpty && content.nativePoses == nil
+        isHidden = content.pairedDeviceName == nil && content.actions.isEmpty && content.postures.isEmpty && content.nativePoses == nil
         host.invalidateIntrinsicContentSize()
         invalidateIntrinsicContentSize()
         onLayoutChange?()
@@ -137,7 +138,8 @@ private struct CanvasAction: Identifiable {
     var help: String? = nil
 }
 
-private struct CanvasActionBar: View {
+private struct CanvasBottomContent: View {
+    var pairedDeviceName: String?
     var actions: [CanvasAction] = []
     var postures: [CanvasAction] = []
     var recordingStartDate: Date?
@@ -146,6 +148,28 @@ private struct CanvasActionBar: View {
     var onAction: (String) -> Void = { _ in }
 
     var body: some View {
+        VStack {
+            if let pairedDeviceName {
+                Button { onAction("pairedDevice") } label: {
+                    HStack {
+                        Text("Paired with \(pairedDeviceName)")
+                        Image(systemName: "chevron.right").fontWeight(.semibold).foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .foregroundStyle(.primary)
+                    .glassEffect(.regular, in: .capsule)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("pairedDevice")
+                .padding(.top, 8)
+            }
+            actionBar
+        }
+        .fixedSize()
+    }
+
+    private var actionBar: some View {
         HStack {
             let primary = actions.filter { $0.id != "rotate" }
             if !primary.isEmpty {

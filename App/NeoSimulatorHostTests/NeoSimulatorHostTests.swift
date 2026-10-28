@@ -164,6 +164,93 @@ struct InputFocusTests {
         #expect(accessory.isHidden)
     }
 
+    @Test func pairedCanvasContentChangesTheMainAccessorySafeArea() throws {
+        _ = NSApplication.shared
+        let split = NSSplitViewController()
+        let pane = NSViewController()
+        pane.view = NSView()
+        let viewport = NSView()
+        viewport.translatesAutoresizingMaskIntoConstraints = false
+        pane.view.addSubview(viewport)
+        NSLayoutConstraint.activate([
+            viewport.leadingAnchor.constraint(equalTo: pane.view.safeAreaLayoutGuide.leadingAnchor),
+            viewport.trailingAnchor.constraint(equalTo: pane.view.safeAreaLayoutGuide.trailingAnchor),
+            viewport.topAnchor.constraint(equalTo: pane.view.safeAreaLayoutGuide.topAnchor),
+            viewport.bottomAnchor.constraint(equalTo: pane.view.safeAreaLayoutGuide.bottomAnchor),
+        ])
+        let item = NSSplitViewItem(viewController: pane)
+        let accessory = DeviceCanvasAccessoryViewController()
+        item.addBottomAlignedAccessoryViewController(accessory)
+        split.addSplitViewItem(item)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 700),
+                              styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentViewController = split
+        defer { window.close() }
+        let controls = DeviceCanvasControls()
+        controls.update(supports: { $0 == "home" }, isEnabled: { _ in true }, recordingTitle: "Record Screen")
+        accessory.setControls(controls)
+        window.setContentSize(NSSize(width: 500, height: 700))
+        split.view.layoutSubtreeIfNeeded()
+        window.displayIfNeeded()
+        let unpairedHeight = controls.fittingSize.height
+        let unpairedSpace = viewport.frame.height
+        try #require(unpairedSpace > 0)
+        controls.update(supports: { $0 == "home" }, isEnabled: { _ in true }, recordingTitle: "Record Screen",
+                        pairedDeviceName: "Companion Watch")
+        accessory.refresh()
+        window.setContentSize(NSSize(width: 500, height: 700))
+        split.view.layoutSubtreeIfNeeded()
+        window.displayIfNeeded()
+        #expect(controls.fittingSize.height > unpairedHeight)
+        #expect(viewport.frame.height < unpairedSpace)
+        #expect(!viewport.frame.intersects(accessory.view.convert(accessory.view.bounds, to: pane.view)))
+        #expect(controls.bounds.height + 1 >= controls.fittingSize.height)
+        controls.update(supports: { $0 == "home" }, isEnabled: { _ in true }, recordingTitle: "Record Screen")
+        accessory.refresh()
+        window.setContentSize(NSSize(width: 500, height: 700))
+        split.view.layoutSubtreeIfNeeded()
+        window.displayIfNeeded()
+        #expect(controls.fittingSize.height == unpairedHeight)
+        #expect(abs(viewport.frame.height - unpairedSpace) < 1)
+    }
+
+    @Test func pairedCanvasContentKeepsTheNativeCompactDisplayInsideItsViewport() throws {
+        _ = NSApplication.shared
+        let display = TestDisplay()
+        display.usesNativeCanvas = true
+        let controller = try makeController(display, features: [DeviceCapabilities.keyboard],
+            simctl: URL(fileURLWithPath: "/usr/bin/false"), devicectl: URL(fileURLWithPath: "/usr/bin/false"),
+            keyboardCaptureTap: TestKeyboardEventTap(), presentCompactWindow: { _ in })
+        defer { controller.invalidate() }
+        let controls = DeviceCanvasControls()
+        controls.update(supports: { ["home", "capture", "record"].contains($0) },
+                        isEnabled: { _ in true }, recordingTitle: "Record Screen")
+        controller.canvasControls = controls
+        controller.showCompactWindow()
+        let canvas = controller.presentationViewController.view
+        let viewport = try #require(canvas.layoutGuides.first { $0.identifier.rawValue == "DeviceCanvasViewport" })
+        let window = try #require(controller.presentationWindow)
+        window.contentView?.layoutSubtreeIfNeeded()
+        let unpairedHeight = controls.fittingSize.height
+        let unpairedSpace = viewport.frame.size
+        controls.update(supports: { ["home", "capture", "record"].contains($0) },
+                        isEnabled: { _ in true }, recordingTitle: "Record Screen", pairedDeviceName: "Companion Watch")
+        window.contentView?.layoutSubtreeIfNeeded()
+        #expect(controls.fittingSize.height > unpairedHeight)
+        #expect(controls.bounds.height + 1 >= controls.fittingSize.height)
+        #expect(viewport.frame.height < unpairedSpace.height)
+        let controlsRect = controls.convert(controls.bounds, to: nil)
+        #expect(window.contentView!.bounds.insetBy(dx: -1, dy: -1).contains(controlsRect))
+        #expect(!canvas.convert(viewport.frame, to: nil).intersects(controlsRect))
+        #expect(display.view.frame.height <= viewport.frame.height + 1)
+        controls.update(supports: { ["home", "capture", "record"].contains($0) },
+                        isEnabled: { _ in true }, recordingTitle: "Record Screen")
+        window.contentView?.layoutSubtreeIfNeeded()
+        #expect(controls.fittingSize.height == unpairedHeight)
+        #expect(abs(viewport.frame.height - unpairedSpace.height) < 1)
+    }
+
     @Test func remoteControlsReturnFromAnAccessoryToTheSameCompactScreen() async throws {
         _ = NSApplication.shared
         let data = Data(#"{"result":{"devices":[{"identifier":"fixture-command","properties":{"hardware":{"reality":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)
