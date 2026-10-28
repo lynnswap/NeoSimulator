@@ -7,7 +7,7 @@ final class CoreDeviceDisplayInput {
     private let sendNative: (CGPoint, CGPoint?, RemoteDeviceTouchPhase, RemoteDeviceTouchEdge) throws -> Void
     private let resetNative: () throws -> Void
     private let removeNative: () async throws -> Void
-    private var removed = false
+    private(set) var isRemoved = false
 
     init(send: @escaping (CGPoint, CGPoint?, RemoteDeviceTouchPhase, RemoteDeviceTouchEdge) throws -> Void,
                  reset: @escaping () throws -> Void, remove: @escaping () async throws -> Void) {
@@ -80,15 +80,15 @@ final class CoreDeviceDisplayInput {
     }
 
     func send(_ point: CGPoint, second: CGPoint?, phase: RemoteDeviceTouchPhase, edge: RemoteDeviceTouchEdge) throws {
-        guard !removed else { throw CLIError.unavailable("remote-display-input", "The touchscreen service has ended.") }
+        guard !isRemoved else { throw CLIError.unavailable("remote-display-input", "The touchscreen service has ended.") }
         try sendNative(point, second, phase, edge)
     }
 
     func stop() async throws {
-        guard !removed else { return }
+        guard !isRemoved else { return }
         var failure: (any Error)?
         do { try resetNative() } catch { failure = error }
-        do { try await removeNative(); removed = true }
+        do { try await removeNative(); isRemoved = true }
         catch { failure = failure.map { RemoteDeviceScreenSession.combining($0, cleanup: error) } ?? error }
         if let failure { throw failure }
     }

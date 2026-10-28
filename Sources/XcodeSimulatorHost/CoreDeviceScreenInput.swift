@@ -108,8 +108,12 @@ final class CoreDeviceScreenInput {
         var failure: (any Error)?
         do { try await releaseInputs() } catch { failure = error }
         if let displayInput {
-            do { try await displayInput.stop(); self.displayInput = nil }
+            do { try await displayInput.stop() }
             catch { failure = failure.map { RemoteDeviceScreenSession.combining($0, cleanup: error) } ?? error }
+            if displayInput.isRemoved {
+                pressed.discard(for: [.digitizer])
+                self.displayInput = nil
+            }
         }
         if let failure { throw failure }
     }

@@ -837,18 +837,19 @@ struct RemoteDeviceScreenTests {
         var resets = 0
         let service = CoreDeviceDisplayInput(send: { _, _, _, _ in }, reset: {
             resets += 1
-            if resets == 1 { throw ScreenFixtureError.stream }
+            throw ScreenFixtureError.stream
         }, remove: {
             removes += 1
             if removes == 1 { throw ScreenFixtureError.cleanup }
         })
         do { try await service.stop(); Issue.record("Cleanup failure was lost") }
         catch { #expect(error.localizedDescription.contains("fixture stream failed") && error.localizedDescription.contains("fixture cleanup failed")) }
-        try await service.stop()
-        #expect(removes == 2 && resets == 2)
+        #expect(!service.isRemoved)
+        await #expect(throws: ScreenFixtureError.stream) { try await service.stop() }
+        #expect(service.isRemoved && removes == 2 && resets == 2)
         #expect(throws: CLIError.self) { try service.send(.zero, second: nil, phase: .began, edge: .none) }
         try await service.stop()
-        #expect(removes == 2)
+        #expect(removes == 2 && resets == 2)
     }
 
     private func wait(_ session: RemoteDeviceScreenSession, until condition: @escaping @MainActor () -> Bool) async {
