@@ -438,6 +438,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         session.onDisplayChange = { [weak self] in self?.appDisplayChanged() }
         session.onAppResizeGeometryChange = { [weak self] in self?.appGeometryChanged() }
         session.onExternalScreenChange = { [weak self] in self?.syncExternalDisplayWindow() }
+        content.canvasZoom = canvasZoom
         content.canImport = { [weak self] in self?.session.canPerformToolOperation == true }
         content.importFiles = { [weak self] in self?.importFiles($0) }
         content.onDisplaySizeChange = { [weak self] in
@@ -962,7 +963,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         let source = window.convertToScreen(screen.convert(screen.bounds, to: nil))
         let displayFrame = window.convertToScreen(display.convert(display.bounds, to: nil))
         // Thumbnail spacing follows scale, doubling for landscape, TV, and watch displays.
-        let scale = session.display.renderScale
+        let scale = isEmbedded ? content.canvasMagnification : session.display.renderScale
         let landscape = abs(session.displayAngle.truncatingRemainder(dividingBy: 180)) == 90
         let family = session.capabilities.family
         let base: CGFloat = landscape || family == .tv || family == .watch ? 20 : 10
@@ -1205,6 +1206,8 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
 
     // MARK: Window scale
 
+    private var presentationScale: CGFloat { isEmbedded ? canvasZoom.scale : session.display.renderScale }
+
     private var canvasFitScale: CGFloat { session.display.scale(for: content.availableDisplaySize) }
 
     private var canvasScaleRange: ClosedRange<CGFloat> {
@@ -1236,25 +1239,29 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
             content.centerCanvas()
         case .physicalSize: canvasZoom.mode = .physicalSize
         case .zoomOut:
-            canvasZoom.mode = .fixed(max(canvasScaleRange.lowerBound, session.display.renderScale / 1.25))
+            canvasZoom.mode = .fixed(max(canvasScaleRange.lowerBound, canvasZoom.scale / 1.25))
         case .zoomIn:
-            canvasZoom.mode = .fixed(min(canvasScaleRange.upperBound, session.display.renderScale * 1.25))
+            canvasZoom.mode = .fixed(min(canvasScaleRange.upperBound, canvasZoom.scale * 1.25))
         }
-        updateEmbeddedScale()
+        updateEmbeddedScale(animated: true)
     }
 
-    private func updateEmbeddedScale(layout: Bool = true) {
+    private func updateEmbeddedScale(layout: Bool = true, animated: Bool = false) {
         guard isEmbedded, !closed else { return }
-        canvasZoom.fitScale = canvasFitScale
-        switch canvasZoom.mode {
-        case .fit: fitting.resize(to: content.availableDisplaySize)
-        case .physicalSize:
-            if let scale = scale(for: .physicalSize) { fitting.setScale(scale) }
-        case .fixed(let scale): fitting.setScale(scale)
-        }
-        canvasZoom.scale = session.display.renderScale
-        content.needsLayout = true
-        if layout, !content.isLayingOutCanvas { content.layoutSubtreeIfNeeded() }
+        let available = content.availableDisplaySize
+        guard available.width > 0, available.height > 0 else { return }
+        canvasZoom.fitScale = session.display.scale(for: available)
+        if fitting.scalesDisplay {
+            switch canvasZoom.mode {
+            case .fit: canvasZoom.scale = canvasZoom.fitScale
+            case .physicalSize:
+                if let scale = scale(for: .physicalSize) { canvasZoom.scale = scale }
+            case .fixed(let scale): canvasZoom.scale = scale
+            }
+        } else { canvasZoom.scale = 1 }
+        if session.display.renderScale != 1 { fitting.setScale(1) }
+        content.applyCanvasMagnification(range: canvasScaleRange, animated: animated && fitting.scalesDisplay,
+                                         layout: layout)
     }
 
     /// Returns nil for Fit Screen when no host screen is available.
@@ -1322,7 +1329,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     /// Returns nil when prerequisite validation requires preserving the previous checkmark.
     func scaleState(_ mode: WindowScaleMode) -> NSControl.StateValue? {
         guard validatesScale(mode), let scale = scale(for: mode) else { return nil }
-        return WindowScale.matches(session.display.renderScale, scale) ? .on : .off
+        return WindowScale.matches(presentationScale, scale) ? .on : .off
     }
 
     /// Resizes below the top edge. Fit Screen centers; fixed scales keep the window on screen.
@@ -1334,7 +1341,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
             case .physicalSize: performCanvasZoom(.physicalSize)
             case .pointAccurate, .pixelAccurate:
                 canvasZoom.mode = .fixed(scale)
-                updateEmbeddedScale()
+                updateEmbeddedScale(animated: true)
             }
             return
         }
@@ -1776,10 +1783,13 @@ private final class DeviceContentView: NSView, DisplayContentView {
         else { addSubview(display, positioned: .below, relativeTo: canvasControls) }
         needsLayout = true
     }
+    var canvasZoom: CanvasZoom?
+    var canvasMagnification: CGFloat { canvasScrollView.magnification }
     private let canvasScrollView = NSScrollView()
     private let canvasDocumentView = NSView()
     private var canvasDisplayFrame = NSRect.zero
     private var retainedCanvasCenter: NSPoint?
+    private var canvasMagnificationRevision: UInt = 0
     private var scrollMonitor: Any?
     private(set) var isLayingOutCanvas = false
     var canImport: () -> Bool = { false }
@@ -1789,6 +1799,12 @@ private final class DeviceContentView: NSView, DisplayContentView {
     private var usesViewport: Bool { isEmbedded || scrollsDisplay }
     private func updateViewport() {
         retainedCanvasCenter = canvasCenter
+        if !isEmbedded || scrollsDisplay {
+            setCanvasMagnification(1, animated: false) {
+                let clip = canvasScrollView.contentView
+                return NSPoint(x: clip.bounds.midX, y: clip.bounds.midY)
+            }
+        }
         let parent = usesViewport ? canvasDocumentView : self
         if display.superview !== parent {
             display.removeFromSuperview()
@@ -1927,6 +1943,43 @@ private final class DeviceContentView: NSView, DisplayContentView {
         needsLayout = true
     }
 
+    func applyCanvasMagnification(range: ClosedRange<CGFloat>, animated: Bool, layout: Bool) {
+        guard isEmbedded, let canvasZoom else { return }
+        setCanvasMagnification(canvasZoom.scale, animated: animated) {
+            let center = retainedCanvasCenter ?? canvasCenter ?? NSPoint(x: 0.5, y: 0.5)
+            retainedCanvasCenter = center
+            needsLayout = true
+            if layout, !isLayingOutCanvas { layoutSubtreeIfNeeded() }
+            // Admit the retained target and current value, including a compact/app-resize reset to one.
+            canvasScrollView.minMagnification = min(range.lowerBound, canvasZoom.scale, canvasScrollView.magnification, 1)
+            canvasScrollView.maxMagnification = max(range.upperBound, canvasZoom.scale, canvasScrollView.magnification, 1)
+            let documentPoint = NSPoint(x: canvasDisplayFrame.minX + canvasDisplayFrame.width * center.x,
+                                        y: canvasDisplayFrame.minY + canvasDisplayFrame.height * center.y)
+            return canvasScrollView.contentView.convert(documentPoint, from: canvasDocumentView)
+        }
+    }
+
+    private func setCanvasMagnification(_ scale: CGFloat, animated: Bool, centeredAt point: () -> NSPoint) {
+        canvasMagnificationRevision &+= 1
+        let revision = canvasMagnificationRevision
+        NSAnimationContext.runAnimationGroup { context in
+            // A zero-duration animator write replaces an in-flight zoom during geometry or presentation changes.
+            if !animated { context.duration = 0 }
+            let point = point()
+            guard canvasMagnificationRevision == revision else { return }
+            canvasScrollView.animator().setMagnification(scale, centeredAt: point)
+        } completionHandler: { [weak self] in
+            // Cancelled animations also complete, after a newer request may have prepared its document geometry.
+            guard let self, self.canvasMagnificationRevision == revision else { return }
+            self.finishCanvasMagnification()
+        }
+    }
+
+    private func finishCanvasMagnification() {
+        needsLayout = true
+        if !isLayingOutCanvas { layoutSubtreeIfNeeded() }
+    }
+
     override func layout() {
         guard !isLayingOutCanvas else { return }
         isLayingOutCanvas = true
@@ -1943,7 +1996,11 @@ private final class DeviceContentView: NSView, DisplayContentView {
             canvasScrollView.frame = available
             let intrinsic = display.intrinsicContentSize
             let size = intrinsic.width > 0 && intrinsic.height > 0 ? intrinsic : display.frame.size
-            let viewport = canvasScrollView.contentSize
+            // Keep enough document space for both ends until AppKit finishes magnifying.
+            let magnification = isEmbedded && !scrollsDisplay
+                ? min(canvasZoom?.scale ?? 1, canvasScrollView.magnification) : 1
+            let viewport = NSSize(width: canvasScrollView.contentSize.width / magnification,
+                                  height: canvasScrollView.contentSize.height / magnification)
             let documentSize = NSSize(width: max(viewport.width, size.width), height: max(viewport.height, size.height))
             canvasDocumentView.setFrameSize(documentSize)
             canvasDisplayFrame = NSRect(x: (documentSize.width - size.width) / 2,

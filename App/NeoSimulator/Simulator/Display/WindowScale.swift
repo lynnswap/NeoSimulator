@@ -14,6 +14,7 @@ final class CanvasZoom {
     }
 
     var mode = Mode.fit
+    /// Target visual magnification of the embedded scroll view.
     var scale: CGFloat = 1
     var fitScale: CGFloat = 1
 }
