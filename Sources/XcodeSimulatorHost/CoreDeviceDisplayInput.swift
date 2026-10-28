@@ -101,12 +101,14 @@ struct CoreDeviceDigitizerReports {
     private let build: (CGPoint, CGPoint?, RemoteDeviceTouchPhase, RemoteDeviceTouchEdge) throws -> NativeSwiftValue
 
     init(runtime: ABIRuntime) throws {
-        try CoreDeviceRemoteScreenDevice.load("/Library/Developer/PrivateFrameworks/CoreDevice.framework/Versions/A/Frameworks/UniversalHID.framework/Versions/A/UniversalHID")
-        let reportType = try runtime.resolveAndWait(.swift(.type("UniversalHID.HIDReport")))
-        let digitizerType = try runtime.resolveAndWait(.swift(.type("UniversalHID.DigitizerReport")))
-        let contactType = try runtime.resolveAndWait(.swift(.type("UniversalHID.DigitizerContact")))
-        let descriptorType = try runtime.resolveAndWait(.swift(.type("UniversalHID.HIDReportDescriptor")))
-        let reportIDType = try runtime.resolveAndWait(.swift(.type("UniversalHID.ReportID")))
+        // CoreDevice consumes its bundled module; DeviceKit can also load the system module with the same name.
+        let libraryURL = URL(fileURLWithPath: "/Library/Developer/PrivateFrameworks/CoreDevice.framework/Versions/A/Frameworks/UniversalHID.framework/Versions/A/UniversalHID")
+        try CoreDeviceRemoteScreenDevice.load(libraryURL.path)
+        let reportType = try runtime.resolveAndWait(.swift(.type("UniversalHID.HIDReport")), in: .path(libraryURL), loading: .loadedOnly)
+        let digitizerType = try runtime.resolveAndWait(.swift(.type("UniversalHID.DigitizerReport")), in: .path(libraryURL), loading: .loadedOnly)
+        let contactType = try runtime.resolveAndWait(.swift(.type("UniversalHID.DigitizerContact")), in: .path(libraryURL), loading: .loadedOnly)
+        let descriptorType = try runtime.resolveAndWait(.swift(.type("UniversalHID.HIDReportDescriptor")), in: .path(libraryURL), loading: .loadedOnly)
+        let reportIDType = try runtime.resolveAndWait(.swift(.type("UniversalHID.ReportID")), in: .path(libraryURL), loading: .loadedOnly)
         // These exported constructors pass the two-word Data representation directly;
         // native value witnesses still own and copy their payloads.
         abis = [
