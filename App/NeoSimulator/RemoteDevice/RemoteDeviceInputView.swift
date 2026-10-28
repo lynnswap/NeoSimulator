@@ -195,6 +195,7 @@ final class RemoteDeviceInputView: NSView {
             (kVK_ANSI_Semicolon, kHIDUsage_KeyboardSemicolon), (kVK_ANSI_Quote, kHIDUsage_KeyboardQuote),
             (kVK_ANSI_Grave, kHIDUsage_KeyboardGraveAccentAndTilde), (kVK_ANSI_Comma, kHIDUsage_KeyboardComma),
             (kVK_ANSI_Period, kHIDUsage_KeyboardPeriod), (kVK_ANSI_Slash, kHIDUsage_KeyboardSlash), (kVK_CapsLock, kHIDUsage_KeyboardCapsLock),
+            (kVK_JIS_Eisu, kHIDUsage_KeyboardLANG2), (kVK_JIS_Kana, kHIDUsage_KeyboardLANG1),
             (kVK_F1, kHIDUsage_KeyboardF1), (kVK_F2, kHIDUsage_KeyboardF2), (kVK_F3, kHIDUsage_KeyboardF3), (kVK_F4, kHIDUsage_KeyboardF4),
             (kVK_F5, kHIDUsage_KeyboardF5), (kVK_F6, kHIDUsage_KeyboardF6), (kVK_F7, kHIDUsage_KeyboardF7), (kVK_F8, kHIDUsage_KeyboardF8),
             (kVK_F9, kHIDUsage_KeyboardF9), (kVK_F10, kHIDUsage_KeyboardF10), (kVK_F11, kHIDUsage_KeyboardF11), (kVK_F12, kHIDUsage_KeyboardF12),
