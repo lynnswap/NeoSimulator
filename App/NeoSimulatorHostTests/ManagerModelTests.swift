@@ -383,6 +383,67 @@ struct ManagerModelTests {
         #expect(model.settings?.contentSize == "large")
     }
 
+    @Test func sameDeviceMetadataKeepsLoadedValuesAndAnInFlightRead() async throws {
+        let device = simulator()
+        let renamed = simulator(name: "Renamed Phone")
+        let source = ManagerModelSource(devices: [device])
+        var events = source.events.makeAsyncIterator()
+        let model = DeviceSettingsModel(source: source)
+        model.inspect(device, selectionCount: 1)
+        #expect(await events.next() == .read(device.id))
+        await source.completeRead(settings(appearance: "light"))
+        await model.finishReading()
+
+        model.requestRefresh()
+        #expect(await events.next() == .read(device.id))
+        model.inspect(renamed, selectionCount: 1)
+        #expect(model.device == renamed && model.settings?.appearance == "light")
+        await source.completeRead(settings(appearance: "dark"))
+        #expect(await events.next() == .read(device.id))
+        #expect(model.settings?.appearance == "dark")
+        await source.completeRead(settings(appearance: "light", contentSize: "large"))
+        await model.finishReading()
+        #expect(model.settings?.contentSize == "large")
+
+        model.inspect(simulator(name: "Renamed Phone", state: "Shutdown"), selectionCount: 1)
+        #expect(model.device?.canInspectSettings == false && model.settings?.contentSize == "large")
+        model.inspect(renamed, selectionCount: 1)
+        #expect(await events.next() == .read(device.id))
+        await source.completeRead(settings(appearance: "dark", contentSize: "large"))
+        await model.finishReading()
+        #expect(model.device?.canInspectSettings == true && model.settings?.appearance == "dark")
+    }
+
+    @Test func sameDeviceMetadataKeepsAcceptedEditsAndTheirConfirmation() async throws {
+        let device = simulator()
+        let source = ManagerModelSource(devices: [device])
+        var events = source.events.makeAsyncIterator()
+        let model = DeviceSettingsModel(source: source)
+        model.inspect(device, selectionCount: 1)
+        #expect(await events.next() == .read(device.id))
+        await source.completeRead(settings(appearance: "light", contentSize: "medium"))
+        await model.finishReading()
+
+        model.setReadingSuspended(true)
+        let edit = model.accept(.contentSize("large"), for: device)
+        model.inspect(simulator(name: "Renamed Phone"), selectionCount: 1)
+        #expect(model.settings?.appearance == "light" && model.settings?.contentSize == "large")
+        let applying = Task { try await model.apply(edit) }
+        #expect(await events.next() == .write(device.id))
+        #expect(await source.writeInputs.last??.appearance == "light")
+        let latest = simulator(name: "Latest Phone")
+        model.inspect(latest, selectionCount: 1)
+        await source.completeWrite()
+        try await applying.value
+        #expect(model.device == latest && model.settings?.contentSize == "large")
+
+        model.setReadingSuspended(false)
+        #expect(await events.next() == .read(device.id))
+        await source.completeRead(settings(appearance: "dark", contentSize: "large"))
+        await model.finishReading()
+        #expect(model.settings?.appearance == "dark" && model.settings?.contentSize == "large")
+    }
+
     @Test func switchingDeviceSetsDiscardsTheCancelledResult() async throws {
         let first = simulator(deviceSet: "/first")
         let second = simulator(deviceSet: "/second")
@@ -612,9 +673,9 @@ struct ManagerModelTests {
         try await manager.quitRenderer(keepingDevicesRunning: true)
     }
 
-    private func simulator(deviceSet: String? = nil) -> InventoryDevice {
-        .simulator(SimulatorHostDevice(identifier: "same-udid", name: "Test Phone", descriptiveName: "Test Phone",
-            runtimeIdentifier: "test-runtime", runtimeName: "iOS", productFamily: "iPhone", state: "Booted",
+    private func simulator(deviceSet: String? = nil, name: String = "Test Phone", state: String = "Booted") -> InventoryDevice {
+        .simulator(SimulatorHostDevice(identifier: "same-udid", name: name, descriptiveName: name,
+            runtimeIdentifier: "test-runtime", runtimeName: "iOS", productFamily: "iPhone", state: state,
             deviceSetPath: deviceSet, capabilities: ["com.apple.dt.coredevice.device.shutdown"]))
     }
 

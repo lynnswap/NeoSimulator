@@ -44,12 +44,15 @@ final class DeviceSettingsModel {
     func inspect(_ device: InventoryDevice?, selectionCount: Int) {
         self.selectionCount = selectionCount
         if self.device != device {
+            let selectionChanged = self.device?.id != device?.id
             self.device = device
-            generation += 1
-            confirmedSettings = nil
-            issue = nil
+            if selectionChanged {
+                generation += 1
+                confirmedSettings = nil
+                issue = nil
+                readTask?.cancel()
+            }
             refreshRequested = true
-            readTask?.cancel()
         }
         if device?.canInspectSettings != true { refreshRequested = false }
         beginReadingIfNeeded()
@@ -102,19 +105,19 @@ final class DeviceSettingsModel {
         generation += 1
         let request = generation
         do {
-            if device == destination, let settings = confirmedSettings {
+            if device?.id == destination.id, let settings = confirmedSettings {
                 let updated = try await source.setDeviceSetting(setting, for: destination, updating: settings)
-                guard generation == request, device == destination else { return }
+                guard generation == request, device?.id == destination.id else { return }
                 self.confirmedSettings = updated
                 if interruptedRead { refreshRequested = true }
                 issue = nil
                 logIssues(updated)
             } else {
                 try await source.setDeviceSetting(setting, for: destination)
-                if device == destination { refreshRequested = true }
+                if device?.id == destination.id { refreshRequested = true }
             }
         } catch {
-            if device == destination {
+            if device?.id == destination.id {
                 generation += 1
                 refreshRequested = true
             }
