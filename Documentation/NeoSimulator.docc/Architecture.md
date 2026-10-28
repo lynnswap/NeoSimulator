@@ -133,7 +133,8 @@ Hub mode.
 | `HostApplication` | Observe device sets, own sessions and windows, and coordinate launch and shutdown. |
 | `DeviceSession` | Device connection, input, pasteboard, audio, external-display state, and device operations. |
 | `DeviceWindowController` | Present the device and forward user actions. |
-| `RemoteDeviceScreenSession` | Own one physical-device or VM screen connection, input resources, and unfinished or completed recordings. |
+| `RemoteDeviceScreenSession` | Own one active physical-device or VM screen transport, its resize assertion and input resources, and unfinished or completed recordings. |
+| `CoreDeviceAppResizeTransport` | Bridge native app-resize eligibility and assertions for Simulator and remote sessions. |
 | `RemoteDeviceWindowController` | Present a remote screen and drain accepted captures, recording saves, and input before disconnecting. |
 | `ExternalDisplayWindowController` | Present a device's external display. |
 | `DeviceCommand`, `MenuController` | Define commands and derive menu state from the active window. |

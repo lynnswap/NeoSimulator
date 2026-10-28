@@ -4,6 +4,11 @@ import AppKit
 final class RemoteDevicePresentationViewController: NSViewController {
     weak var owner: RemoteDeviceWindowController?
 
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        owner?.layoutScreen()
+    }
+
     override func supplementalTarget(forAction action: Selector, sender: Any?) -> Any? {
         if let owner {
             switch action {

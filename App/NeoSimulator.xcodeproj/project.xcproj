@@ -327,13 +327,6 @@
                     "NeoSimulatorHostTests/compile-sources",
                   ],
                 }, {
-                  "path": "SimulatorAppResize.swift",
-                  "target-membership": [
-                    "NeoSimulator/compile-sources",
-                    "NeoSimulatorRenderer/compile-sources",
-                    "NeoSimulatorHostTests/compile-sources",
-                  ],
-                }, {
                   "path": "WindowScale.swift",
                   "target-membership": [
                     "NeoSimulator/compile-sources",

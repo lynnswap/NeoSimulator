@@ -14,6 +14,9 @@ final class CoreDeviceDisplayGeometry {
     private let displays: NativeSwiftMethod<() -> [NativeSwiftValue]>
     private let orientation: NativeSwiftMethod<() -> NativeSwiftValue?>
     private let primary: NativeSwiftMethod<() -> Bool>
+    private let uniqueID: NativeSwiftMethod<() -> String?>
+    private let identifier: NativeSwiftMethod<() -> UInt32>
+    private let displayUniqueID: String?
     private let makeDisplay: NativeSwiftFunction<(NativeSwiftValue, NativeSwiftValue?) -> NativeSwiftValue>
     private let normalizedOrientation: NativeSwiftMethod<() -> Measurement<UnitAngle>>
     private let displaySize: NativeSwiftMethod<() -> NativeSwiftValue>
@@ -36,8 +39,9 @@ final class CoreDeviceDisplayGeometry {
             .appendingPathComponent("Versions/A/DeviceKit")
     }
 
-    init(remote: CoreDeviceRemoteScreenDevice) throws {
+    init(remote: CoreDeviceRemoteScreenDevice, displayUniqueID: String? = nil) throws {
         self.remote = remote
+        self.displayUniqueID = displayUniqueID
         let runtime = remote.runtime
         readDeviceInfo = try remote.type.resolveAndWait(.swift(.getter("deviceInfo", as: (() -> NativeSwiftValue).self)))
         let info = try runtime.resolveAndWait(.swift(.type("CoreDeviceProtocols.DeviceInfo")))
@@ -56,6 +60,8 @@ final class CoreDeviceDisplayGeometry {
         displays = try displayInfo.resolveAndWait(.swift(.getter("displays", as: (() -> [NativeSwiftValue]).self, valueABIs: abis)))
         orientation = try displayInfo.resolveAndWait(.swift(.getter("orientation", as: (() -> NativeSwiftValue?).self, valueABIs: abis)))
         primary = try display.resolveAndWait(.swift(.getter("primary", as: (() -> Bool).self, valueABIs: abis)))
+        uniqueID = try display.resolveAndWait(.swift(.getter("uniqueId", as: (() -> String?).self, valueABIs: abis)))
+        identifier = try display.resolveAndWait(.swift(.getter("displayId", as: (() -> UInt32).self, valueABIs: abis)))
         makeDisplay = try normalized.resolveAndWait(.swift(.initializer("init(display:orientation:)",
             as: ((NativeSwiftValue, NativeSwiftValue?) -> NativeSwiftValue).self, valueABIs: abis)))
         normalizedOrientation = try normalized.resolveAndWait(.swift(.getter("normalizedCurrentOrientation",
@@ -101,12 +107,15 @@ final class CoreDeviceDisplayGeometry {
 
     private func project(_ displayInfo: NativeSwiftValue) throws -> RemoteScreenFramebuffer.Display? {
         let candidates = try unsafe displays.unsafeInvoke(on: displayInfo)
-        guard let display = try candidates.first(where: { try unsafe primary.unsafeInvoke(on: $0) }) else { return nil }
+        guard let display = try candidates.first(where: {
+            if let displayUniqueID { return try unsafe uniqueID.unsafeInvoke(on: $0) == displayUniqueID }
+            return try unsafe primary.unsafeInvoke(on: $0)
+        }) else { return nil }
         let value = try unsafe makeDisplay.unsafeInvoke(display, orientation.unsafeInvoke(on: displayInfo))
         let angle = try unsafe normalizedOrientation.unsafeInvoke(on: value).converted(to: .degrees).value
         let size = try unsafe pointSize.unsafeInvoke(on: displaySize.unsafeInvoke(on: value))
         guard size.width > 0, size.height > 0, angle.isFinite else { return nil }
-        return RemoteScreenFramebuffer.Display(size: size, angle: angle)
+        return try unsafe RemoteScreenFramebuffer.Display(size: size, angle: angle, identifier: identifier.unsafeInvoke(on: display))
     }
 }
 

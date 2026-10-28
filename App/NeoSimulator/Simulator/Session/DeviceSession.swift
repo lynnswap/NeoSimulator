@@ -1,5 +1,6 @@
 import AppKit
 import Observation
+@_spi(NeoSimulator) import XcodeSimulatorHost
 
 /// Capabilities used for command visibility and availability.
 struct DeviceCapabilities {
@@ -391,14 +392,14 @@ final class DeviceSession {
     @ObservationIgnored var onDisplayChange: (() -> Void)?
     @ObservationIgnored var onAppResizeGeometryChange: (() -> Void)?
     @ObservationIgnored var onAppResizeError: ((any Error) -> Void)?
-    @ObservationIgnored private var resizeTransport: (any SimulatorAppResizeTransport)?
+    @ObservationIgnored private var resizeTransport: (any AppResizeTransport)?
     @ObservationIgnored private var resizePreparation: Task<Void, Never>?
     @ObservationIgnored private var resizeObservation: Task<Void, Never>?
     @ObservationIgnored private var resizeStart: Task<Void, Never>?
     @ObservationIgnored private var resizeUpdates: Task<Void, Never>?
     @ObservationIgnored private var resizeInvalidation: Task<Void, Never>?
     @ObservationIgnored private var resizeAdjustment: Task<Void, Never>?
-    @ObservationIgnored private var resizeLease: (any SimulatorAppResizeLease)?
+    @ObservationIgnored private var resizeLease: (any AppResizeSession)?
     @ObservationIgnored private var resizeGeneration = 0
     @ObservationIgnored private var pendingAppSize: CGSize?
     private(set) var supportsAppResize = false
@@ -479,7 +480,7 @@ final class DeviceSession {
          pasteboard: NSPasteboard? = nil, pasteboardSync: PasteboardSync? = nil,
          externalDisplayChanges: ExternalDisplayChanges = ExternalDisplayChanges(),
          externalScreenTimeout: Duration = .seconds(10),
-         appResizeTransport: (@MainActor () async throws -> (any SimulatorAppResizeTransport)?)? = nil) {
+         appResizeTransport: (@MainActor () async throws -> (any AppResizeTransport)?)? = nil) {
         self.device = device
         self.externalDisplayChanges = externalDisplayChanges
         self.externalScreenTimeout = externalScreenTimeout
@@ -498,7 +499,7 @@ final class DeviceSession {
         if let appResizeTransport { prepareAppResize(appResizeTransport) }
     }
 
-    private func prepareAppResize(_ make: @escaping @MainActor () async throws -> (any SimulatorAppResizeTransport)?) {
+    private func prepareAppResize(_ make: @escaping @MainActor () async throws -> (any AppResizeTransport)?) {
         resizePreparation = Task { [weak self] in
             do {
                 guard let transport = try await make() else { return }
@@ -540,7 +541,7 @@ final class DeviceSession {
         let token = resizeGeneration
         isStartingAppResize = true
         resizeStart = Task { [weak self, primaryDisplay] in
-            var lease: (any SimulatorAppResizeLease)?
+            var lease: (any AppResizeSession)?
             var display: (any SimulatorDisplay)?
             do {
                 let created = try await resizeTransport.start(size: size, cornerRadius: 0)

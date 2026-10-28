@@ -6,6 +6,10 @@ import Observation
 @MainActor
 final class CoreDeviceScreenInput {
     private let remote: CoreDeviceRemoteScreenDevice
+    private let displayUniqueID: String?
+    private var displayInput: CoreDeviceDisplayInput?
+    private var displayIdentifier: UInt32?
+    private var displayInputNeedsReconnect = false
     private var implementations: [RemoteDeviceInputKind: NativeSwiftValue] = [:]
     private var pressed = RemoteScreenPressedInputs()
     private var generations: [RemoteDeviceInputKind: UInt] = [:]
@@ -18,11 +22,28 @@ final class CoreDeviceScreenInput {
         .digitizer: "com.apple.coredevice.feature.remote.hid.digitizer",
         .button: "com.apple.coredevice.feature.remote.hid.button",
     ]
+    static let universalHIDFeature = "com.apple.coredevice.feature.remote.universalhidservice"
 
-    init(remote: CoreDeviceRemoteScreenDevice) { self.remote = remote }
+    init(remote: CoreDeviceRemoteScreenDevice, displayUniqueID: String? = nil) {
+        self.remote = remote
+        self.displayUniqueID = displayUniqueID
+    }
+
+    func connectDisplay(identifier: UInt32) async throws {
+        guard let displayUniqueID else { return }
+        displayInput = try await CoreDeviceDisplayInput.connect(remote: remote, displayID: identifier, uniqueID: displayUniqueID)
+        displayIdentifier = identifier
+        displayInputNeedsReconnect = false
+    }
 
     func capabilities() throws -> Set<RemoteDeviceInputKind> {
-        Set(try Self.features.compactMap { try remote.supports($0.value) ? $0.key : nil })
+        var result = Set(try Self.features.compactMap { try remote.supports($0.value) ? $0.key : nil })
+        if displayUniqueID != nil {
+            result.remove(.pointer)
+            if try remote.supports(Self.universalHIDFeature) { result.insert(.digitizer) }
+            else { result.remove(.digitizer) }
+        }
+        return result
     }
 
     func send(_ input: RemoteScreenInput) async throws {
@@ -45,6 +66,7 @@ final class CoreDeviceScreenInput {
         // their local state and handles; this does not claim an up event was delivered.
         // Other services retain their pressed state and continue normally.
         pressed.discard(for: kinds)
+        if displayUniqueID != nil, kinds.contains(.digitizer) { displayInputNeedsReconnect = true }
         for kind in kinds {
             generations[kind, default: 0] += 1
             implementations.removeValue(forKey: kind)
@@ -80,6 +102,16 @@ final class CoreDeviceScreenInput {
         }
         if !failures.isEmpty { throw CLIError.io("remote-input-release", failures.joined(separator: "\n")) }
         implementations.removeAll()
+    }
+
+    func stop() async throws {
+        var failure: (any Error)?
+        do { try await releaseInputs() } catch { failure = error }
+        if let displayInput {
+            do { try await displayInput.stop(); self.displayInput = nil }
+            catch { failure = failure.map { RemoteDeviceScreenSession.combining($0, cleanup: error) } ?? error }
+        }
+        if let failure { throw failure }
     }
 
     private func beginOperation() async {
@@ -125,17 +157,32 @@ final class CoreDeviceScreenInput {
                 as: ((Int, Int, NativeSwiftValue) throws -> Void).self)))
             try unsafe send.unsafeInvoke(on: implementation, page, usage, buttonState.makeEnumCase(named: state.rawValue))
         case .pointer(let point):
+            guard displayUniqueID == nil else { throw CLIError.unavailable("remote-display-input", "This display has no pointer connection.") }
             let implementation = try await implementation(.pointer, named: "PointerHIDCapability")
             let send = try implementation.type.resolveAndWait(.swift(.method("CoreDevice.HIDPointer.send(movedTo:)",
                 as: ((CGPoint) async throws -> Void).self)))
             try await unsafe send.unsafeInvoke(on: implementation, point)
         case .pointerButton(let button, let phase, let clicks, let point):
+            guard displayUniqueID == nil else { throw CLIError.unavailable("remote-display-input", "This display has no pointer connection.") }
             let implementation = try await implementation(.pointer, named: "PointerHIDCapability")
             let pointerPhase = try runtime.resolveAndWait(.swift(.type("CoreDevice.HIDPointerButtonPhase")))
             let send = try implementation.type.resolveAndWait(.swift(.method("CoreDevice.HIDPointer.send(button:phase:clicks:at:)",
                 as: ((Int, NativeSwiftValue, Int, CGPoint) async throws -> Void).self)))
             try await unsafe send.unsafeInvoke(on: implementation, button, pointerPhase.makeEnumCase(named: phase.rawValue), clicks, point)
         case .touch(let point, let second, let phase, let edge):
+            if displayUniqueID != nil {
+                guard try remote.supports(Self.universalHIDFeature) else {
+                    throw CLIError.unavailable("remote-input-capability", "The device no longer exposes the display touchscreen service.")
+                }
+                if displayInputNeedsReconnect, let identifier = displayIdentifier {
+                    try await displayInput?.stop()
+                    displayInput = nil
+                    try await connectDisplay(identifier: identifier)
+                }
+                guard let displayInput else { throw CLIError.unavailable("remote-display-input", "The display touchscreen has not connected.") }
+                try displayInput.send(point, second: second, phase: phase, edge: edge)
+                return
+            }
             let implementation = try await implementation(.digitizer, named: "DigitizerHIDCapability")
             let eventType = try runtime.resolveAndWait(.swift(.type("CoreDevice.DigitizerEventType")))
             let nativeEdge = try runtime.resolveAndWait(.swift(.type("CoreDevice.DigitizerEdge")))

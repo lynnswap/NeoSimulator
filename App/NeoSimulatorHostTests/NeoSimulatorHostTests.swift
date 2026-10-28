@@ -5,6 +5,7 @@ import Observation
 import Testing
 import Synchronization
 import IOKit.hidsystem
+@_spi(NeoSimulator) import XcodeSimulatorHost
 
 @Suite(.serialized) @MainActor
 struct InputFocusTests {
@@ -7319,7 +7320,7 @@ struct InputFocusTests {
                                 userInterfacePlugin: Bool = false,
                                 runtimeVersion: UInt32 = 0x1B_00_00,
                                 enhancedMultitasking: Bool = false,
-                                appResizeTransport: (@MainActor () async throws -> (any SimulatorAppResizeTransport)?)? = nil,
+                                appResizeTransport: (@MainActor () async throws -> (any AppResizeTransport)?)? = nil,
                                 userInterfacePluginLookUp: (attempts: Int, interval: Duration) = (5, .milliseconds(20)),
                                 keyboardCaptureTap: any KeyboardEventTap = SystemKeyboardEventTap(),
                                 applicationIsActive: @escaping () -> Bool = { NSApp.isActive },
@@ -7448,7 +7449,7 @@ struct InputFocusTests {
                              userInterfacePlugin: Bool = false,
                              runtimeVersion: UInt32 = 0x1B_00_00,
                              enhancedMultitasking: Bool = false,
-                             appResizeTransport: (@MainActor () async throws -> (any SimulatorAppResizeTransport)?)? = nil) throws -> DeviceSession {
+                             appResizeTransport: (@MainActor () async throws -> (any AppResizeTransport)?)? = nil) throws -> DeviceSession {
         // Keep the external-display timeout short enough to exercise expiry.
         DeviceSession(
             device: availableDevice(identifier, "Test iPhone", runtime: "iOS", state: 3, deviceSetPath: deviceSetPath),
@@ -7469,16 +7470,16 @@ struct InputFocusTests {
 }
 
 @MainActor
-private final class TestAppResizeTransport: SimulatorAppResizeTransport {
+private final class TestAppResizeTransport: AppResizeTransport {
     let lease = TestAppResizeLease()
     let eligibilityUpdates = AsyncThrowingStream<AppResizeEligibility, any Error>.makeStream()
     var holdsStart = false
-    var startContinuation: CheckedContinuation<any SimulatorAppResizeLease, Never>?
+    var startContinuation: CheckedContinuation<any AppResizeSession, Never>?
     func eligibility() async throws -> AsyncThrowingStream<AppResizeEligibility, any Error> {
         eligibilityUpdates.continuation.yield(.eligible)
         return eligibilityUpdates.stream
     }
-    func start(size: CGSize, cornerRadius: CGFloat) async throws -> any SimulatorAppResizeLease {
+    func start(size: CGSize, cornerRadius: CGFloat) async throws -> any AppResizeSession {
         if holdsStart { return await withCheckedContinuation { startContinuation = $0 } }
         return lease
     }
@@ -7486,7 +7487,7 @@ private final class TestAppResizeTransport: SimulatorAppResizeTransport {
 }
 
 @MainActor
-private final class TestAppResizeLease: SimulatorAppResizeLease {
+private final class TestAppResizeLease: AppResizeSession {
     let displayUniqueID = "dedicated-app-display"
     var geometry = AppResizeGeometry(minimumSize: CGSize(width: 200, height: 200), maximumSize: CGSize(width: 1000, height: 1000),
         preferredSize: CGSize(width: 500, height: 600), resolvedSize: CGSize(width: 500, height: 600), cornerRadius: 0)

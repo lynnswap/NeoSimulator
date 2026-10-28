@@ -101,7 +101,7 @@ import Testing
     private func session(_ transport: RecordingFixtureTransport) throws -> RemoteDeviceScreenSession {
         let json = Data(#"{"result":{"devices":[{"identifier":"recording-command-id","properties":{"hardware":{"reality":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)
         let device = try #require(CoreDeviceInventoryDecoder.decode(json).first)
-        return RemoteDeviceScreenSession(device: device) { _, _ in transport }
+        return RemoteDeviceScreenSession(device: device) { _, _, _ in transport }
     }
 }
 

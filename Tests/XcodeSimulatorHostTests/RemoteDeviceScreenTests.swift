@@ -3,7 +3,8 @@ import ImageIO
 import UniformTypeIdentifiers
 import Testing
 import IOKit
-@testable import XcodeSimulatorHost
+import ABIBridge
+@_spi(NeoSimulator) @testable import XcodeSimulatorHost
 
 @MainActor
 @Suite
@@ -102,7 +103,7 @@ struct RemoteDeviceScreenTests {
         let transport = ScreenFixtureTransport()
         let device = try device()
         var receivedID: String?
-        let session = RemoteDeviceScreenSession(device: device) { target, _ in
+        let session = RemoteDeviceScreenSession(device: device) { target, _, _ in
             receivedID = target.identifier
             return transport
         }
@@ -147,7 +148,7 @@ struct RemoteDeviceScreenTests {
     @Test func nativeCapabilityChangesReachTheSessionAndRetireOnlyTheLostInputService() async throws {
         let source = ScreenCapabilityFixtureSource()
         let transport = ScreenFixtureTransport(capabilitySource: source)
-        let session = RemoteDeviceScreenSession(device: try device()) { _, _ in transport }
+        let session = RemoteDeviceScreenSession(device: try device()) { _, _, _ in transport }
         var visible: Set<RemoteDeviceInputKind> = []
         var lostServices: [Set<RemoteDeviceInputKind>] = []
         session.onInputCapabilitiesLost = { lostServices.append($0) }
@@ -186,7 +187,7 @@ struct RemoteDeviceScreenTests {
     @Test func capabilitySnapshotFailureReachesTheSessionAndStoppingDrainsTheObserver() async throws {
         let source = ScreenCapabilityFixtureSource()
         let transport = ScreenFixtureTransport(capabilitySource: source)
-        let session = RemoteDeviceScreenSession(device: try device()) { _, _ in transport }
+        let session = RemoteDeviceScreenSession(device: try device()) { _, _, _ in transport }
         try await session.start()
         let error: any Error = await withCheckedContinuation { received in
             session.onStateChange = {
@@ -204,7 +205,7 @@ struct RemoteDeviceScreenTests {
     @Test func cancellationDisconnectsAStartThatCompletesAfterTheWindowStops() async throws {
         let source = ScreenCapabilityFixtureSource()
         let transport = ScreenFixtureTransport(suspendStart: true, capabilitySource: source)
-        let session = RemoteDeviceScreenSession(device: try device()) { _, _ in transport }
+        let session = RemoteDeviceScreenSession(device: try device()) { _, _, _ in transport }
         let start = Task { try await session.start() }
         await transport.waitUntilStarting()
         try await session.stop()
@@ -220,7 +221,7 @@ struct RemoteDeviceScreenTests {
 
     @Test func callerCancellationAndCleanupFailureRemainVisibleTogether() async throws {
         let transport = ScreenFixtureTransport(suspendStart: true, failCleanup: true)
-        let session = RemoteDeviceScreenSession(device: try device()) { _, _ in transport }
+        let session = RemoteDeviceScreenSession(device: try device()) { _, _, _ in transport }
         let start = Task { try await session.start() }
         await transport.waitUntilStarting()
         start.cancel()
@@ -239,7 +240,7 @@ struct RemoteDeviceScreenTests {
         let old = ScreenFixtureTransport()
         let replacement = ScreenFixtureTransport()
         var attempts = 0
-        let session = RemoteDeviceScreenSession(device: try device()) { _, _ in
+        let session = RemoteDeviceScreenSession(device: try device()) { _, _, _ in
             attempts += 1
             if attempts > 1 { #expect(old.closed) }
             return attempts == 1 ? old : replacement
@@ -389,6 +390,305 @@ struct RemoteDeviceScreenTests {
         #expect(framebuffer.inputLocations(at: CGPoint(x: 300, y: 300), from: container, clampingToDisplay: true) == nil)
     }
 
+    @Test func appResizeReplacesOneTransportAndRetiresOldFramesAndInputs() async throws {
+        let primary = ScreenFixtureTransport()
+        let dedicated = ScreenFixtureTransport()
+        dedicated.automaticFrames = true
+        dedicated.inputCapabilities = [.digitizer]
+        let restored = ScreenFixtureTransport()
+        let resize = ScreenResizeFixtureTransport()
+        var targets: [String?] = []
+        let session = RemoteDeviceScreenSession(device: try device(), makeResizeTransport: { _ in resize }) { _, _, target in
+            targets.append(target)
+            return targets.count == 1 ? primary : target == nil ? restored : dedicated
+        }
+        try await session.start()
+        await wait(session) { session.canResizeApp }
+        try await session.sendKey(4, state: .down)
+        try await session.startAppResize(size: CGSize(width: 400, height: 600))
+        #expect(primary.closed && primary.downKeys.isEmpty)
+        #expect(targets == [nil, resize.assertion.displayUniqueID])
+        #expect(session.isResizingApp && session.hasReceivedFrame && session.canResizeApp)
+        primary.emit(.attributes(RemoteDeviceVideoAttributes(aspectRatio: .zero, contentsRect: .zero, scaleFactor: 0, orientation: nil)))
+        primary.emit(.failure(ScreenFixtureError.stream))
+        #expect(session.state == .connected && session.videoAttributes?.scaleFactor == 2)
+        try await session.sendTouch(at: CGPoint(x: 0.2, y: 0.7), phase: .began)
+        #expect(dedicated.pressed.touch != nil && primary.pressed.touch == nil)
+        try await session.adjustAppResize(size: CGSize(width: 900, height: 100))
+        #expect(resize.assertion.requestedSize == CGSize(width: 800, height: 200))
+        resize.assertion.emit(size: CGSize(width: 700, height: 300))
+        await wait(session) { session.appResizeGeometry?.resolvedSize == CGSize(width: 700, height: 300) }
+        try await session.stopAppResize()
+        #expect(dedicated.closed && dedicated.pressed.touch == nil && resize.assertion.invalidated)
+        #expect(targets == [nil, resize.assertion.displayUniqueID, nil])
+        #expect(session.state == .connected && !session.isResizingApp && !session.hasReceivedFrame && session.videoAttributes == nil)
+        dedicated.emit(.frameReceived)
+        #expect(!session.hasReceivedFrame)
+        try await session.stop()
+    }
+
+    @Test func resizeWaitsForDecodedPixelsAndAcceptedCaptureBeforeReplacingTheDisplay() async throws {
+        let primary = ScreenFixtureTransport()
+        let dedicated = ScreenFixtureTransport()
+        let resize = ScreenResizeFixtureTransport()
+        let capture = ScreenFixtureGate()
+        primary.onCapture = { await capture.hold() }
+        let session = RemoteDeviceScreenSession(device: try device(), makeResizeTransport: { _ in resize }) { _, _, target in
+            target == nil ? primary : dedicated
+        }
+        try await session.start()
+        await wait(session) { session.canResizeApp }
+        let screenshot = Task { try await session.captureScreenshot() }
+        await capture.wait()
+        let switching = Task { try await session.startAppResize(size: CGSize(width: 400, height: 600)) }
+        await wait(session) { session.isChangingDisplay }
+        #expect(!primary.closed && !session.canCaptureScreenshot && session.inputCapabilities.isEmpty)
+        capture.resume()
+        _ = try await screenshot.value
+        await dedicated.waitUntilStarting()
+        #expect(session.isChangingDisplay && !session.canRecordScreen)
+        dedicated.emit(.frameReceived)
+        #expect(session.isChangingDisplay)
+        dedicated.emit(.attributes(.init(aspectRatio: CGSize(width: 400, height: 600), contentsRect: CGRect(x: 0, y: 0, width: 1, height: 1), scaleFactor: 2, orientation: .portrait)))
+        try await switching.value
+        #expect(!session.isChangingDisplay && session.hasReceivedFrame)
+        try await session.stop()
+    }
+
+    @Test func recordingUsesTheResizeIdentityAndBlocksBothExplicitSwitches() async throws {
+        let primary = ScreenFixtureTransport()
+        let dedicated = ScreenFixtureTransport()
+        dedicated.automaticFrames = true
+        let restored = ScreenFixtureTransport()
+        let handle = ScreenResizeRecordingHandle()
+        primary.recordingHandle = handle
+        dedicated.recordingHandle = handle
+        let resize = ScreenResizeFixtureTransport()
+        var count = 0
+        let session = RemoteDeviceScreenSession(device: try device(), makeResizeTransport: { _ in resize }) { _, _, target in
+            count += 1
+            return count == 1 ? primary : target == nil ? restored : dedicated
+        }
+        try await session.start()
+        await wait(session) { session.canResizeApp }
+        try await session.startRecording()
+        await #expect(throws: CLIError.self) { try await session.startAppResize(size: CGSize(width: 400, height: 600)) }
+        #expect(!primary.closed && handle.stops == 0)
+        try await session.stopRecording()
+        session.discardCompletedRecording()
+        try await session.startAppResize(size: CGSize(width: 400, height: 600))
+        await #expect(throws: CLIError.self) { try await session.startRecording(displayUniqueID: "another-display") }
+        try await session.startRecording()
+        #expect(dedicated.recordedDisplay == resize.assertion.displayUniqueID && !session.canResizeApp)
+        await #expect(throws: CLIError.self) { try await session.stopAppResize() }
+        #expect(!dedicated.closed && handle.stops == 1)
+        handle.failStop = true
+        let drain = ScreenFixtureGate()
+        session.prepareForDisplayChange = { await drain.hold() }
+        let releases = dedicated.releases
+        resize.assertion.guestInvalidates()
+        await drain.wait()
+        #expect(session.isChangingDisplay && !dedicated.closed && dedicated.releases == releases && handle.stops == 1)
+        drain.resume()
+        await wait(session) { session.state == .failed && !session.isChangingDisplay }
+        #expect(session.hasUnfinishedRecording && !dedicated.closed)
+        session.prepareForDisplayChange = nil
+        handle.failStop = false
+        try await session.stopRecording()
+        try await session.stopAppResize()
+        #expect(!session.hasUnfinishedRecording && session.completedRecording != nil && dedicated.closed)
+        try await session.stop()
+    }
+
+    @Test func failedResizeCleanupKeepsTheAssertionAndTransportUntilRetry() async throws {
+        let primary = ScreenFixtureTransport()
+        let dedicated = ScreenFixtureTransport()
+        let restored = ScreenFixtureTransport()
+        let resize = ScreenResizeFixtureTransport()
+        dedicated.failStart = true
+        dedicated.failCleanup = true
+        var count = 0
+        let session = RemoteDeviceScreenSession(device: try device(), makeResizeTransport: { _ in resize }) { _, _, target in
+            count += 1
+            return count == 1 ? primary : target == nil ? restored : dedicated
+        }
+        try await session.start()
+        await wait(session) { session.canResizeApp }
+        do {
+            try await session.startAppResize(size: CGSize(width: 400, height: 600))
+            Issue.record("Failed dedicated startup was accepted")
+        } catch {
+            #expect(error.localizedDescription.contains("fixture stream failed") && error.localizedDescription.contains("fixture cleanup failed"))
+        }
+        #expect(session.state == .failed && session.isResizingApp && !resize.assertion.invalidated && count == 2)
+        dedicated.failCleanup = false
+        try await session.stopAppResize()
+        #expect(dedicated.closed && resize.assertion.invalidated && session.state == .connected && count == 3)
+        try await session.stop()
+    }
+
+    @Test func cancellationAfterAssertionAcquisitionUnwindsAndRestoresPrimary() async throws {
+        let primary = ScreenFixtureTransport()
+        let dedicated = ScreenFixtureTransport(suspendStart: true)
+        let restored = ScreenFixtureTransport()
+        let resize = ScreenResizeFixtureTransport()
+        var count = 0
+        let session = RemoteDeviceScreenSession(device: try device(), makeResizeTransport: { _ in resize }) { _, _, target in
+            count += 1
+            return count == 1 ? primary : target == nil ? restored : dedicated
+        }
+        try await session.start()
+        await wait(session) { session.canResizeApp }
+        let switching = Task { try await session.startAppResize(size: CGSize(width: 400, height: 600)) }
+        await dedicated.waitUntilStarting()
+        switching.cancel()
+        dedicated.finishStarting()
+        await #expect(throws: CancellationError.self) { try await switching.value }
+        #expect(dedicated.closed && resize.assertion.invalidated && session.state == .connected && !session.isResizingApp)
+        try await session.stop()
+    }
+
+    @Test func screenShutdownCancelsAndDrainsADedicatedTransportThatIsStillStarting() async throws {
+        let primary = ScreenFixtureTransport()
+        let dedicated = ScreenFixtureTransport(suspendStart: true)
+        let resize = ScreenResizeFixtureTransport()
+        let session = RemoteDeviceScreenSession(device: try device(), makeResizeTransport: { _ in resize }) { _, _, target in
+            target == nil ? primary : dedicated
+        }
+        try await session.start()
+        await wait(session) { session.canResizeApp }
+        let switching = Task { try await session.startAppResize(size: CGSize(width: 400, height: 600)) }
+        await dedicated.waitUntilStarting()
+        try await session.stop()
+        await #expect(throws: CancellationError.self) { try await switching.value }
+        #expect(dedicated.closed && resize.assertion.invalidated && session.state == .stopped && !session.isResizingApp)
+    }
+
+    @Test func aFailedPrimaryRestorationDoesNotReportTheScreenAsConnected() async throws {
+        let primary = ScreenFixtureTransport()
+        let dedicated = ScreenFixtureTransport()
+        dedicated.automaticFrames = true
+        let restored = ScreenFixtureTransport()
+        restored.failStart = true
+        let resize = ScreenResizeFixtureTransport()
+        var count = 0
+        let session = RemoteDeviceScreenSession(device: try device(), makeResizeTransport: { _ in resize }) { _, _, target in
+            count += 1
+            return count == 1 ? primary : target == nil ? restored : dedicated
+        }
+        try await session.start()
+        await wait(session) { session.canResizeApp }
+        try await session.startAppResize(size: CGSize(width: 400, height: 600))
+        await #expect(throws: ScreenFixtureError.self) { try await session.stopAppResize() }
+        #expect(session.state == .failed && !session.isResizingApp && dedicated.closed && resize.assertion.invalidated)
+        #expect(session.inputCapabilities.isEmpty && !session.canCaptureScreenshot)
+        try await session.stop()
+        #expect(restored.closed && session.state == .stopped)
+    }
+
+    @Test func reconnectSubscribesToTheNewResizeEligibilitySource() async throws {
+        let first = ScreenResizeFixtureTransport()
+        let next = ScreenResizeFixtureTransport()
+        next.initialEligibility = .unavailable
+        var connections = 0
+        let session = RemoteDeviceScreenSession(device: try device(), makeResizeTransport: { _ in
+            connections += 1
+            return connections == 1 ? first : next
+        }) { _, _, _ in ScreenFixtureTransport() }
+        try await session.start()
+        await wait(session) { session.canResizeApp }
+        try await session.stop()
+        #expect(!session.supportsAppResize && !session.canResizeApp)
+        try await session.start()
+        #expect(connections == 2 && session.supportsAppResize && !session.canResizeApp)
+        next.eligibilityUpdates.continuation.yield(.eligible)
+        await wait(session) { session.canResizeApp }
+        try await session.stop()
+    }
+
+    @Test func nativeTouchscreenDescriptorsPreserveANonLegacyDisplayIdentity() async throws {
+        try CoreDeviceRemoteScreenDevice.load("/Library/Developer/PrivateFrameworks/CoreDeviceUtilities.framework/Versions/A/CoreDeviceUtilities")
+        let runtime = ABIRuntime.shared
+        let descriptor = try await CoreDeviceDisplayInput.descriptor(displayID: 0x35, uniqueID: "resized-app-display", runtime: runtime)
+        let descriptorType = try runtime.resolveAndWait(.swift(.type("CoreDevice.HIDServiceDescriptor")))
+        let serviceIDType = try runtime.resolveAndWait(.swift(.type("CoreDevice.HIDServiceID")))
+        let abis: [NativeSwiftType: NativeType] = [descriptorType: try .opaque(named: descriptorType.name),
+            serviceIDType: try .opaque(named: serviceIDType.name)]
+        let serviceID = try descriptorType.resolveAndWait(.swift(.getter("serviceID", as: (() -> NativeSwiftValue).self,
+            valueABIs: abis, receiverABI: abis[descriptorType])))
+        let uniqueID = try descriptorType.resolveAndWait(.swift(.getter("displayIdentifier", as: (() -> String?).self,
+            valueABIs: abis, receiverABI: abis[descriptorType])))
+        let displayID = try serviceIDType.resolveAndWait(.swift(.getter("touchscreenDisplayID", as: (() -> UInt32?).self,
+            valueABIs: abis, receiverABI: abis[serviceIDType])))
+        let actual = try unsafe displayID.unsafeInvoke(on: serviceID.unsafeInvoke(on: descriptor))
+        #expect(actual == 0x35, "Actual display ID: \(String(describing: actual))")
+        #expect(try unsafe uniqueID.unsafeInvoke(on: descriptor) == "resized-app-display")
+    }
+
+    @Test func dedicatedReportsRoundTripThroughTheInstalledUniversalHIDValueAPIs() throws {
+        let runtime = ABIRuntime.shared
+        let builder = try CoreDeviceDigitizerReports(runtime: runtime)
+        let digitizer = try runtime.resolveAndWait(.swift(.type("UniversalHID.DigitizerReport")))
+        let contact = try runtime.resolveAndWait(.swift(.type("UniversalHID.DigitizerContact")))
+        let abis = builder.abis
+        let make = try digitizer.resolveAndWait(.swift(.initializer("init(_report:)", as: ((NativeSwiftValue) -> NativeSwiftValue).self, valueABIs: abis)))
+        let receiver = abis[digitizer]!
+        let count = try digitizer.resolveAndWait(.swift(.getter("contactCount", as: (() -> UInt8).self, valueABIs: abis, receiverABI: receiver)))
+        let readContact = try digitizer.resolveAndWait(.swift(.method("contact(atIndex:)", as: ((Int) -> NativeSwiftValue).self, valueABIs: abis, receiverABI: receiver)))
+        let contactReceiver = abis[contact]!
+        let x = try contact.resolveAndWait(.swift(.getter("x", as: (() -> Double).self, valueABIs: abis, receiverABI: contactReceiver)))
+        let y = try contact.resolveAndWait(.swift(.getter("y", as: (() -> Double).self, valueABIs: abis, receiverABI: contactReceiver)))
+        let touch = try contact.resolveAndWait(.swift(.getter("touch", as: (() -> Bool).self, valueABIs: abis, receiverABI: contactReceiver)))
+        let range = try contact.resolveAndWait(.swift(.getter("range", as: (() -> Bool).self, valueABIs: abis, receiverABI: contactReceiver)))
+        let indexValue = try contact.resolveAndWait(.swift(.getter("index", as: (() -> Int).self, valueABIs: abis, receiverABI: contactReceiver)))
+        let identity = try digitizer.resolveAndWait(.swift(.method("contactIdentity(atIndex:)", as: ((Int) -> UInt8?).self, valueABIs: abis, receiverABI: receiver)))
+        let edge = try digitizer.resolveAndWait(.swift(.method("contactSwipeLeft(atIndex:)", as: ((Int) -> Bool?).self, valueABIs: abis, receiverABI: receiver)))
+        for phase in [RemoteDeviceTouchPhase.began, .ended] {
+            let payload = try builder.make(point: CGPoint(x: 0.25, y: 0.75), second: CGPoint(x: 0.8, y: 0.2), phase: phase, edge: .left)
+            let value = try unsafe make.unsafeInvoke(payload)
+            #expect(try unsafe count.unsafeInvoke(on: value) == 2)
+            for index in 0..<2 {
+                let valueContact = try unsafe readContact.unsafeInvoke(on: value, index)
+                let expected = index == 0 ? CGPoint(x: 0.25, y: 0.75) : CGPoint(x: 0.8, y: 0.2)
+                #expect(abs(try unsafe x.unsafeInvoke(on: valueContact) - Double(expected.x)) < 0.001)
+                #expect(abs(try unsafe y.unsafeInvoke(on: valueContact) - Double(expected.y)) < 0.001)
+                #expect(try unsafe touch.unsafeInvoke(on: valueContact) == (phase != .ended))
+                #expect(try unsafe range.unsafeInvoke(on: valueContact) == (phase != .ended))
+                #expect(try unsafe indexValue.unsafeInvoke(on: valueContact) == index + 1)
+                #expect(try unsafe identity.unsafeInvoke(on: value, index) == UInt8(index + 1))
+                #expect(try unsafe edge.unsafeInvoke(on: value, index) == true)
+            }
+        }
+    }
+
+    @Test func failedHIDServiceRemovalKeepsTheOwnedServiceForCleanupRetry() async throws {
+        var removes = 0
+        var resets = 0
+        let service = CoreDeviceDisplayInput(send: { _, _, _, _ in }, reset: {
+            resets += 1
+            if resets == 1 { throw ScreenFixtureError.stream }
+        }, remove: {
+            removes += 1
+            if removes == 1 { throw ScreenFixtureError.cleanup }
+        })
+        do { try await service.stop(); Issue.record("Cleanup failure was lost") }
+        catch { #expect(error.localizedDescription.contains("fixture stream failed") && error.localizedDescription.contains("fixture cleanup failed")) }
+        try await service.stop()
+        #expect(removes == 2 && resets == 2)
+        #expect(throws: CLIError.self) { try service.send(.zero, second: nil, phase: .began, edge: .none) }
+        try await service.stop()
+        #expect(removes == 2)
+    }
+
+    private func wait(_ session: RemoteDeviceScreenSession, until condition: @escaping @MainActor () -> Bool) async {
+        if condition() { return }
+        await withCheckedContinuation { continuation in
+            session.onStateChange = {
+                if condition() { session.onStateChange = nil; continuation.resume() }
+            }
+        }
+    }
+
     private func device() throws -> CoreDeviceDevice {
         let data = Data(#"{"result":{"devices":[{"identifier":"command-identifier","properties":{"hardware":{"reality":"physical","udid":"hardware-identifier"},"state":{"name":"Fixture Device"},"connection":{"state":"connected"}},"capabilities":[]}]}}"#.utf8)
         return try #require(CoreDeviceInventoryDecoder.decode(data).first)
@@ -449,7 +749,18 @@ private final class ScreenFixtureTransport: RemoteScreenTransport {
     var inputCapabilities: Set<RemoteDeviceInputKind> = [.keyboard]
     let nativeInputView: NSView? = NSView()
     var canCaptureScreenshot: Bool { !closed }
+    var automaticFrames = false
+    var failStart = false
+    var onCapture: (() async -> Void)?
+    var recordingHandle: ScreenResizeRecordingHandle?
+    var canRecordScreen: Bool { recordingHandle != nil }
+    private(set) var recordedDisplay: String?
+    func startRecording(displayUniqueID: String?) async throws -> any RemoteScreenRecordingHandle {
+        recordedDisplay = displayUniqueID
+        return try #require(recordingHandle)
+    }
     func captureScreenshot() async throws -> CGImage {
+        await onCapture?()
         let context = try #require(CGContext(data: nil, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
             space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
         return try #require(context.makeImage())
@@ -457,6 +768,7 @@ private final class ScreenFixtureTransport: RemoteScreenTransport {
     private let suspendStart: Bool
     var failCleanup: Bool
     private(set) var closed = false
+    private(set) var releases = 0
     private(set) var pressed = RemoteScreenPressedInputs()
     var downKeys: Set<UInt16> { pressed.keys }
     private let capabilitySource: ScreenCapabilityFixtureSource?
@@ -493,7 +805,14 @@ private final class ScreenFixtureTransport: RemoteScreenTransport {
                 waitingForStart = nil
             }
         }
+        waitingForStart?.resume()
+        waitingForStart = nil
+        if failStart { throw ScreenFixtureError.stream }
         events(.connected)
+        if automaticFrames {
+            events(.attributes(.init(aspectRatio: CGSize(width: 400, height: 600), contentsRect: CGRect(x: 0, y: 0, width: 1, height: 1), scaleFactor: 2, orientation: .portrait)))
+            events(.frameReceived)
+        }
     }
 
     func waitUntilStarting() async {
@@ -512,6 +831,7 @@ private final class ScreenFixtureTransport: RemoteScreenTransport {
     }
 
     func releaseInputs() async throws {
+        releases += 1
         if failCleanup { throw ScreenFixtureError.cleanup }
         pressed = RemoteScreenPressedInputs()
     }
@@ -577,4 +897,65 @@ private final class ScreenCapabilityFixtureSource: RemoteScreenInputCapabilitySo
         }
     }
     func lateChange() { onChange?([]) }
+}
+
+@MainActor
+private final class ScreenResizeFixtureTransport: AppResizeTransport {
+    let assertion = ScreenResizeFixtureSession()
+    let eligibilityUpdates = AsyncThrowingStream<AppResizeEligibility, any Error>.makeStream()
+    var initialEligibility = AppResizeEligibility.eligible
+    func eligibility() async throws -> AsyncThrowingStream<AppResizeEligibility, any Error> {
+        eligibilityUpdates.continuation.yield(initialEligibility)
+        return eligibilityUpdates.stream
+    }
+    func start(size: CGSize, cornerRadius: CGFloat) async throws -> any AppResizeSession { assertion }
+}
+
+@MainActor
+private final class ScreenResizeFixtureSession: AppResizeSession {
+    let displayUniqueID = "dedicated-non-primary-display"
+    var geometry = AppResizeGeometry(minimumSize: CGSize(width: 200, height: 200), maximumSize: CGSize(width: 800, height: 1000), preferredSize: CGSize(width: 400, height: 600), resolvedSize: CGSize(width: 400, height: 600), cornerRadius: 12)
+    private let stream: AsyncThrowingStream<AppResizeGeometry, any Error>
+    private let continuation: AsyncThrowingStream<AppResizeGeometry, any Error>.Continuation
+    private var invalidation: CheckedContinuation<Void, Never>?
+    private(set) var invalidated = false
+    private(set) var requestedSize: CGSize?
+    init() { (stream, continuation) = AsyncThrowingStream.makeStream() }
+    func updates() throws -> AsyncThrowingStream<AppResizeGeometry, any Error> { stream }
+    func adjust(size: CGSize, cornerRadius: CGFloat) async throws { requestedSize = size }
+    func emit(size: CGSize) { geometry.resolvedSize = size; continuation.yield(geometry) }
+    func awaitInvalidation() async throws {
+        if !invalidated { await withCheckedContinuation { invalidation = $0 } }
+    }
+    func invalidate() throws {
+        invalidated = true
+        continuation.finish()
+        invalidation?.resume(); invalidation = nil
+    }
+    func guestInvalidates() { try? invalidate() }
+}
+
+@MainActor
+private final class ScreenResizeRecordingHandle: RemoteScreenRecordingHandle {
+    var failStop = false
+    private(set) var stops = 0
+    func stop() async throws -> RemoteDeviceRecording {
+        stops += 1
+        if failStop { throw ScreenFixtureError.cleanup }
+        return RemoteDeviceRecording(data: Data([1]), duration: 3, codec: "fixture")
+    }
+}
+
+@MainActor
+private final class ScreenFixtureGate {
+    private var entered = false
+    private var entering: CheckedContinuation<Void, Never>?
+    private var release: CheckedContinuation<Void, Never>?
+    func hold() async {
+        await withCheckedContinuation {
+            entered = true; release = $0; entering?.resume(); entering = nil
+        }
+    }
+    func wait() async { if !entered { await withCheckedContinuation { entering = $0 } } }
+    func resume() { release?.resume(); release = nil }
 }

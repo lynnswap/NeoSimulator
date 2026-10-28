@@ -1,25 +1,36 @@
 import ABIBridge
 import AppKit
-@_spi(NeoSimulator) import XcodeSimulatorHost
 
-enum AppResizeEligibility: Equatable, Sendable { case eligible, resizing, unavailable }
+@_spi(NeoSimulator)
+public enum AppResizeEligibility: Equatable, Sendable { case eligible, resizing, unavailable }
 
-struct AppResizeGeometry: Equatable, Sendable {
-    var minimumSize: CGSize
-    var maximumSize: CGSize
-    var preferredSize: CGSize
-    var resolvedSize: CGSize
-    var cornerRadius: CGFloat
+@_spi(NeoSimulator)
+public struct AppResizeGeometry: Equatable, Sendable {
+    public var minimumSize: CGSize
+    public var maximumSize: CGSize
+    public var preferredSize: CGSize
+    public var resolvedSize: CGSize
+    public var cornerRadius: CGFloat
+
+    public init(minimumSize: CGSize, maximumSize: CGSize, preferredSize: CGSize, resolvedSize: CGSize, cornerRadius: CGFloat) {
+        self.minimumSize = minimumSize
+        self.maximumSize = maximumSize
+        self.preferredSize = preferredSize
+        self.resolvedSize = resolvedSize
+        self.cornerRadius = cornerRadius
+    }
 }
 
+@_spi(NeoSimulator)
 @MainActor
-protocol SimulatorAppResizeTransport: AnyObject {
+public protocol AppResizeTransport: AnyObject {
     func eligibility() async throws -> AsyncThrowingStream<AppResizeEligibility, any Error>
-    func start(size: CGSize, cornerRadius: CGFloat) async throws -> any SimulatorAppResizeLease
+    func start(size: CGSize, cornerRadius: CGFloat) async throws -> any AppResizeSession
 }
 
+@_spi(NeoSimulator)
 @MainActor
-protocol SimulatorAppResizeLease: AnyObject {
+public protocol AppResizeSession: AnyObject {
     var displayUniqueID: String { get }
     var geometry: AppResizeGeometry { get }
     func updates() throws -> AsyncThrowingStream<AppResizeGeometry, any Error>
@@ -28,13 +39,11 @@ protocol SimulatorAppResizeLease: AnyObject {
     func invalidate() throws
 }
 
-/// CoreDevice identifies simulators by DeviceInfo.udid. Its DeviceManager dictionary
-/// is keyed by a different identifier; the selected SimulatorKit device remains the
-/// authority for the Xcode, device set, screen, and input connection.
+/// Connects native app resizing for a CoreDevice device or a mapped Simulator UDID.
+@_spi(NeoSimulator)
 @MainActor
-final class NativeSimulatorAppResizeTransport: SimulatorAppResizeTransport {
-    private let manager: NativeSwiftValue
-    private let remote: NativeSwiftValue
+public final class CoreDeviceAppResizeTransport: AppResizeTransport {
+    private let remote: CoreDeviceRemoteScreenDevice
     private let implementation: NativeSwiftValue
     private let runtime: ABIRuntime
     private let abis: [NativeSwiftType: NativeType]
@@ -45,49 +54,27 @@ final class NativeSimulatorAppResizeTransport: SimulatorAppResizeTransport {
 
     static let feature = "com.apple.coredevice.feature.resizableappmanagement"
 
-    static func make(simulatorUDID: String) async throws -> (any SimulatorAppResizeTransport)? {
-        let manager = try CoreDeviceRuntime.deviceManagerIncludingSimulators()
-        let runtime = ABIRuntime.shared
-        let managerType = try runtime.resolveAndWait(.swift(.type("CoreDevice.DeviceManager")))
-        let initialize = try managerType.resolveAndWait(.swift(.method("awaitFullInitialization()", as: (() async -> Void).self)))
-        try await unsafe initialize.unsafeInvoke(on: manager)
-        try Task.checkCancellation()
-        let devices = try managerType.resolveAndWait(.swift(.getter("devices", as: (() -> [UUID: NativeSwiftValue]).self)))
-        let remoteType = try runtime.resolveAndWait(.swift(.type("CoreDevice.RemoteDevice")))
-        let infoType = try runtime.resolveAndWait(.swift(.type("CoreDeviceProtocols.DeviceInfo")))
-        let info = try remoteType.resolveAndWait(.swift(.getter("deviceInfo", as: (() -> NativeSwiftValue).self)))
-        let udid = try infoType.resolveAndWait(.swift(.getter("udid", as: (() -> String?).self)))
-        let matches = try unsafe devices.unsafeInvoke(on: manager).values.filter {
-            try unsafe udid.unsafeInvoke(on: info.unsafeInvoke(on: $0))?.caseInsensitiveCompare(simulatorUDID) == .orderedSame
-        }
-        guard matches.count <= 1 else {
-            throw HostError.unavailable("More than one CoreDevice device matches this simulator.")
-        }
-        guard let remote = matches.first else { return nil }
-        let supports = try remoteType.resolveAndWait(.swift(.method("supportsFeature(identifiedBy:)", as: ((String) -> Bool).self)))
-        guard try unsafe supports.unsafeInvoke(on: remote, feature) else { return nil }
-        let capability = try runtime.resolveAndWait(.swift(.type("CoreDevice.ResizableAppManagementCapability")))
-        let markerType = try runtime.resolveAndWait(.swift(.type("CoreDevice.CapabilityStaticMember", genericArguments: [.type(capability)])))
-        let markerABIs = [markerType: try NativeType.opaque(named: markerType.name)]
-        let marker = try markerType.resolveAndWait(.swift(.initializer("init()", as: (() -> NativeSwiftValue).self, valueABIs: markerABIs)))
-        let get = try remoteType.resolveAndWait(.swift(.method("getImplementation(for:)",
-            as: ((NativeSwiftValue) async throws -> NativeSwiftValue).self,
-            genericArguments: [.type(capability)], valueABIs: markerABIs)))
-        let implementation = try await unsafe get.unsafeInvoke(on: remote, marker.unsafeInvoke()).copyUnderlyingValue()
+    public static func make(simulatorUDID: String) async throws -> CoreDeviceAppResizeTransport? {
+        guard let identifier = try await CoreDeviceRemoteScreenDevice.simulatorIdentifier(udid: simulatorUDID) else { return nil }
+        return try await make(deviceIdentifier: identifier)
+    }
+
+    public static func make(deviceIdentifier: String) async throws -> CoreDeviceAppResizeTransport? {
+        let remote = try await CoreDeviceRemoteScreenDevice(identifier: deviceIdentifier)
+        guard try remote.supports(feature) else { return nil }
+        let runtime = remote.runtime
+        let implementation = try await remote.implementation(capability: "ResizableAppManagementCapability", feature: feature)
         let errorType = try runtime.resolveAndWait(.swift(.type("CoreDevice.CoreDeviceError")))
         let sampleError = try errorType.resolveAndWait(.swift(.staticGetter("ioError", as: (() -> NativeSwiftValue).self,
             valueABIs: [errorType: try .opaque(named: errorType.name)])))
         let owner = try unsafe sampleError.unsafeInvoke()
-        // Open the framework's actual Error type to preserve its typed throws convention.
         guard let failure = try owner.withCopy({ $0 as? any Error }) else {
-            throw HostError.unavailable("The native app resize error type could not be resolved.")
+            throw CLIError.unavailable("app-resize-error", "The native app resize error type could not be resolved.")
         }
-        return try NativeSimulatorAppResizeTransport(manager: manager, remote: remote, implementation: implementation,
-                                                     runtime: runtime, failure: failure)
+        return try CoreDeviceAppResizeTransport(remote: remote, implementation: implementation, runtime: runtime, failure: failure)
     }
 
-    private init(manager: NativeSwiftValue, remote: NativeSwiftValue, implementation: NativeSwiftValue, runtime: ABIRuntime, failure: any Error) throws {
-        self.manager = manager
+    private init(remote: CoreDeviceRemoteScreenDevice, implementation: NativeSwiftValue, runtime: ABIRuntime, failure: any Error) throws {
         self.remote = remote
         self.implementation = implementation
         self.runtime = runtime
@@ -98,7 +85,7 @@ final class NativeSimulatorAppResizeTransport: SimulatorAppResizeTransport {
         abis = try Dictionary(uniqueKeysWithValues: [stateType, sceneType, displayType].map { ($0, try .opaque(named: $0.name)) })
     }
 
-    func eligibility() async throws -> AsyncThrowingStream<AppResizeEligibility, any Error> {
+    public func eligibility() async throws -> AsyncThrowingStream<AppResizeEligibility, any Error> {
         try await eligibility(failure: failure)
     }
 
@@ -108,7 +95,7 @@ final class NativeSimulatorAppResizeTransport: SimulatorAppResizeTransport {
             as: (() async throws(Failure) -> NativeSwiftValue).self, valueABIs: abis.merging(stream.abis) { a, _ in a })))
         let value = try await unsafe observe.unsafeInvoke(on: implementation)
         guard let resizing = try stateType.makeEnumCase(named: "resizing").withCopy({ $0 as? AnyHashable }) else {
-            throw HostError.unavailable("CoreDevice resizability state does not support equality.")
+            throw CLIError.unavailable("app-resize", "CoreDevice resizability state does not support equality.")
         }
         return try stream.values(value) { value in
             if try value.copyEnumPayloadAndWait(forCase: "hasResizableForegroundApplication") != nil { return .eligible }
@@ -117,11 +104,11 @@ final class NativeSimulatorAppResizeTransport: SimulatorAppResizeTransport {
         }
     }
 
-    func start(size: CGSize, cornerRadius: CGFloat) async throws -> any SimulatorAppResizeLease {
+    public func start(size: CGSize, cornerRadius: CGFloat) async throws -> any AppResizeSession {
         try await start(size: size, cornerRadius: cornerRadius, failure: failure)
     }
 
-    private func start<Failure: Error>(size: CGSize, cornerRadius: CGFloat, failure: Failure) async throws -> any SimulatorAppResizeLease {
+    private func start<Failure: Error>(size: CGSize, cornerRadius: CGFloat, failure: Failure) async throws -> any AppResizeSession {
         let getDisplay = try implementation.type.resolveAndWait(.swift(.method("CoreDevice.ResizableAppManagementProtocol.getDisplayForResizing()",
             as: (() async throws(Failure) -> NativeSwiftValue).self, valueABIs: abis)))
         let display = try await unsafe getDisplay.unsafeInvoke(on: implementation)
@@ -132,12 +119,12 @@ final class NativeSimulatorAppResizeTransport: SimulatorAppResizeTransport {
             as: ((String, CGSize, CGFloat) async throws(Failure) -> NativeSwiftValue).self, valueABIs: abis)))
         let assertion = try await unsafe start.unsafeInvoke(on: implementation, identifier.unsafeInvoke(on: display), size, cornerRadius).copyUnderlyingValue()
         // Do not check cancellation until the returned assertion has an invalidation owner.
-        return try NativeSimulatorAppResizeLease(assertion: assertion, runtime: runtime, sceneType: sceneType, abis: abis, failure: failure)
+        return try CoreDeviceAppResizeSession(assertion: assertion, runtime: runtime, sceneType: sceneType, abis: abis, failure: failure)
     }
 }
 
 @MainActor
-private final class NativeSimulatorAppResizeLease: SimulatorAppResizeLease {
+private final class CoreDeviceAppResizeSession: AppResizeSession {
     let displayUniqueID: String
     let geometry: AppResizeGeometry
     private let assertion: NativeSwiftValue
@@ -166,7 +153,7 @@ private final class NativeSimulatorAppResizeLease: SimulatorAppResizeLease {
             wait = try assertion.type.resolveAndWait(.swift(.method("CoreDevice.ResizableAppSessionAssertion.awaitInvalidation()", as: (() async -> Void).self)))
         } catch {
             do { try unsafe invalidateNative.unsafeInvoke(on: assertion) }
-            catch let cleanup { throw HostError.operation("\(error.localizedDescription)\nResize cleanup failed: \(cleanup.localizedDescription)") }
+            catch let cleanup { throw CLIError.io("app-resize", "\(error.localizedDescription)\nResize cleanup failed: \(cleanup.localizedDescription)") }
             throw error
         }
     }
@@ -189,7 +176,7 @@ private final class NativeSimulatorAppResizeLease: SimulatorAppResizeLease {
         invalidated = true
     }
     isolated deinit {
-        do { try invalidate() } catch { hostLog("Could not finish app resizing: \(error.localizedDescription)") }
+        do { try invalidate() } catch { NSLog("Could not finish app resizing: %@", error.localizedDescription) }
     }
 
     private static func geometry(_ value: NativeSwiftValue, type: NativeSwiftType,

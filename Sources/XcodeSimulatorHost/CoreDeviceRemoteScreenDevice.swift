@@ -155,15 +155,22 @@ final class CoreDeviceRemoteScreenDevice {
 
 @MainActor
 enum CoreDeviceScreenTransport {
-    static func make(_ device: CoreDeviceDevice, contentView: NSView) async throws -> any RemoteScreenTransport {
+    static func make(_ device: CoreDeviceDevice, contentView: NSView, displayUniqueID: String?) async throws -> any RemoteScreenTransport {
         let remote = try await CoreDeviceRemoteScreenDevice(identifier: device.identifier)
-        if let url = try remote.vncURL() {
+        if displayUniqueID == nil, let url = try remote.vncURL() {
             return try ScreenSharingDeviceTransport(remote: remote, url: url, contentView: contentView)
         }
         guard try remote.supports("com.apple.coredevice.feature.viewdevicescreen") else {
             throw CLIError.unavailable("remote-screen-capability", "The device does not currently expose a screen connection.")
         }
         try await CoreDeviceDisplayGeometry.loadRuntime()
-        return try CoreDeviceMediaStreamTransport(remote: remote, contentView: contentView)
+        return try CoreDeviceMediaStreamTransport(remote: remote, contentView: contentView, displayUniqueID: displayUniqueID)
+    }
+
+    static func resizeTransport(_ device: CoreDeviceDevice) async throws -> (any AppResizeTransport)? {
+        let remote = try await CoreDeviceRemoteScreenDevice(identifier: device.identifier)
+        guard try remote.supports("com.apple.coredevice.feature.viewdevicescreen"),
+              try remote.supports(CoreDeviceScreenInput.universalHIDFeature) else { return nil }
+        return try await CoreDeviceAppResizeTransport.make(deviceIdentifier: device.identifier)
     }
 }

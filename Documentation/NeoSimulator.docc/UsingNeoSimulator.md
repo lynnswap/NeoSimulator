@@ -155,10 +155,17 @@ Option with the pointer over the toolbar to change the camera to Record Screen
 and rotation to Rotate Left. Watches and Apple TV omit rotation; supported
 watches also have an Always On control.
 
-Physical-device and VM screen windows support standard macOS tabs. Use the
-toolbar's **Compact Window** button to reduce a window, and click it again to
-restore its previous size. Home, Lock, and volume controls appear when the
+Physical-device and VM screen windows support standard macOS tabs. Moving a
+screen between the main and compact windows keeps its connection. Home, Lock,
+and volume controls appear when the
 device supports them. **Reconnect** retries a disconnected screen.
+
+On a remote connection that supports app resizing, choose **Resize App** in
+the main or compact window's toolbar. Resize the window to request a new app
+size; the footer shows the size accepted by the device. **Stop Resize** returns
+the same screen to its primary display. Moving between the main and compact
+window keeps the resize session. Finish recording before starting or stopping
+Resize App. Screenshots and recordings made while resizing use the app's display.
 
 ## Save screens and recordings
 

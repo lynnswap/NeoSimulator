@@ -726,6 +726,14 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     func updateScreenToolbar(supports: (String) -> Bool, isEnabled: (String) -> Bool,
                              resizingApp: Bool = false, capturesKeyboard: Bool = false) {
         if let item = window?.toolbar?.items.first(where: { $0.itemIdentifier == resizeAppIdentifier }) {
+            let title = resizingApp ? "Stop Resize" : "Resize App"
+            item.label = title
+            item.toolTip = title
+            item.menuFormRepresentation?.title = title
+            if let button = item.view as? NSButton {
+                button.toolTip = title
+                button.setAccessibilityLabel(title)
+            }
             item.isHidden = liveDeviceIdentifier == nil || !supports("resizeApp")
             item.isEnabled = isEnabled("resizeApp")
             item.menuFormRepresentation?.isEnabled = item.isEnabled
