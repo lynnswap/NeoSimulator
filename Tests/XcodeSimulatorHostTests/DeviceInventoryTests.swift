@@ -44,7 +44,8 @@ struct DeviceInventoryTests {
         #expect(await calls.coreDeviceReads == 1)
         let joined = try #require(snapshot.devices.first { $0.id == .simulator(udid: normal.identifier, deviceSetPath: nil) })
         #expect(joined.capabilities == ["com.apple.coredevice.feature.customizeuistyle"])
-        #expect(snapshot.devices.first { $0.id == .simulator(udid: clone.identifier, deviceSetPath: "/testing") }?.capabilities == [])
+        let joinedClone = try #require(snapshot.devices.first { $0.id == clone.inventoryID })
+        #expect(joinedClone.capabilities == [])
         #expect(snapshot.devices.contains { $0.id == .coreDevice("remote-command-id") })
         #expect(!snapshot.devices.contains { $0.id == .simulator(udid: "coredevice-only-simulator", deviceSetPath: nil) })
         if case .simulator(let retained) = joined {
@@ -72,7 +73,7 @@ struct DeviceInventoryTests {
             #expect(failedInfo.issues.count == 1)
             #expect((failedInfo.issues.first?.error as? CLIError)?.identifier == "info-fixture")
         }
-        let cloneInfo = await DeviceInspector(device: .simulator(clone), simulatorXcodeURL: clone.ownerXcodeURL,
+        let cloneInfo = await DeviceInspector(device: joinedClone, simulatorXcodeURL: clone.ownerXcodeURL,
                                               transport: transport).info()
         #expect(cloneInfo.issues.isEmpty && cloneInfo.fields["connection"] == nil)
     }
