@@ -318,7 +318,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         }
     }
 
-    private func releaseDevice(_ identifier: SimulatorDeviceIdentifier) async throws {
+    private func releaseDevice(_ identifier: SimulatorDeviceIdentifier,
+                               beforeInvalidating: ((DeviceWindowController) -> Void)? = nil) async throws {
         guard ownedDeviceIdentifiers.contains(identifier) || sessions[identifier] != nil
                 || connections[identifier] != nil || closingShutdowns[identifier] != nil else { return }
         guard !releasingDevices.contains(identifier) else {
@@ -342,6 +343,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                 recording.stop()
                 try await recording.waitUntilFinished()
             }
+            beforeInvalidating?(controller)
             controller.invalidate()
             sessions.removeValue(forKey: identifier)
         }
@@ -603,8 +605,9 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         return controller
     }
 
-    func releasePresentation(for identifier: SimulatorDeviceIdentifier) async throws {
-        try await releaseDevice(identifier)
+    func releasePresentation(for identifier: SimulatorDeviceIdentifier,
+                             beforeInvalidating: ((DeviceWindowController) -> Void)? = nil) async throws {
+        try await releaseDevice(identifier, beforeInvalidating: beforeInvalidating)
         onChange?()
     }
 

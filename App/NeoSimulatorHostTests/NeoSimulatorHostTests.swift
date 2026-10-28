@@ -4,12 +4,66 @@ import Darwin
 import Observation
 import XCTest
 import Testing
+import XCTest
 import Synchronization
 import IOKit.hidsystem
 @_spi(NeoSimulator) @testable import XcodeSimulatorHost
 
 @Suite(.serialized) @MainActor
 struct InputFocusTests {
+    @Test(arguments: [false, true])
+    func relaunchRestoresIndependentCompactWindowsAndHonorsNewerChoice(_ showsCompactDeviceInMain: Bool) async throws {
+        _ = NSApplication.shared
+        let ids = ["00000000-0000-0000-0000-000000000001", "00000000-0000-0000-0000-000000000002", "00000000-0000-0000-0000-000000000003"]
+        let devices = ids.map { id in InventoryDevice.simulator(SimulatorHostDevice(identifier: id,
+            name: id, descriptiveName: id, runtimeIdentifier: "fixture-runtime", runtimeName: "iOS",
+            productFamily: "iPhone", state: "Booted")) }
+        let source = ManagerModelSource(devices: devices)
+        var events = source.events.makeAsyncIterator()
+        let model = SimulatorManagerModel(source: source)
+        model.settings.setReadingSuspended(true)
+        await model.refresh()
+        let app = AppDelegate()
+        app.model = model
+        app.prepareMainWindow()
+        let main = try #require(app.mainWindow)
+        main.window?.setFrameAutosaveName("")
+        var compactPresentations: [String] = []
+        var controllers: [DeviceWindowController] = []
+        for id in ids {
+            let controller = try makeController(TestDisplay(), features: [], device: id,
+                keyboardLanguage: { nil }, keyboardCaptureTap: TestKeyboardEventTap(),
+                presentCompactWindow: { _ in compactPresentations.append(id) })
+            controllers.append(controller)
+            app.simulatorWindows[.simulator(udid: id, deviceSetPath: nil)] = controller
+        }
+        defer { controllers.forEach { $0.invalidate() }; main.window?.close() }
+        let xcode = URL(fileURLWithPath: "/Applications/Fixture Xcode.app")
+        let restorations = zip(ids, [SimulatorScreenRestoration.Presentation.hidden, .compact, .main]).map {
+            SimulatorScreenRestoration(device: SimulatorDeviceIdentifier($0.0), xcodeURL: xcode, presentation: $0.1)
+        }
+        app.application(NSApp, open: restorations.map(\.url))
+        #expect(await events.next() == .open(devices[0].id))
+        await source.completeOpen()
+        #expect(await events.next() == .open(devices[1].id))
+        if showsCompactDeviceInMain { app.selectDeviceForPresentation(devices[1].id) }
+        await source.completeOpen()
+        #expect(await events.next() == .open(devices[2].id))
+        await source.returnOnNextRead(SimulatorDeviceSettings())
+        await source.completeOpen()
+        let completed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            MainActor.assumeIsolated { !model.isBusy }
+        }, object: nil)
+        try #require(await XCTWaiter.fulfillment(of: [completed], timeout: 5) == .completed)
+        let selected = showsCompactDeviceInMain ? devices[1].id : devices[2].id
+        #expect(main.selectedIdentifiers == [selected] && main.liveDeviceIdentifier == selected)
+        #expect(model.settings.device?.id == selected && main.deviceInspector.inspection.device?.id == selected)
+        #expect(main.window?.isVisible == true)
+        #expect(compactPresentations == (showsCompactDeviceInMain ? [] : [ids[1]]))
+        #expect(controllers[0].window?.isVisible == false && !controllers[0].isEmbedded)
+        #expect(controllers[showsCompactDeviceInMain ? 1 : 2].presentationViewController.parent === main.liveScreenContainer)
+    }
+
     @Test func remoteKeyboardForwardsJISLanguageKeysAndTheirReleases() async throws {
         _ = NSApplication.shared
         let data = Data(#"{"result":{"devices":[{"identifier":"fixture-command","properties":{"hardware":{"reality":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)
@@ -9400,12 +9454,13 @@ private final class RendererOwnerMonitorFixture: Sendable {
 }
 
 @MainActor
-private final class TestRemoteScreenTransport: RemoteScreenTransport {
+final class TestRemoteScreenTransport: RemoteScreenTransport {
     var nativeInputView: NSView?
     var inputCapabilities: Set<RemoteDeviceInputKind> = [.button]
     private(set) var buttons: [RemoteDeviceButtonState] = []
     private(set) var keys: [(usage: UInt16, state: RemoteDeviceButtonState)] = []
     private(set) var inputReleases = 0
+    var onReleaseInputs: (@MainActor () async throws -> Void)?
     func start(events: @escaping @MainActor (RemoteScreenTransportEvent) -> Void) async throws {
         events(.connected)
         events(.attributes(.init(aspectRatio: CGSize(width: 400, height: 600), contentsRect: CGRect(x: 0, y: 0, width: 1, height: 1), scaleFactor: 1, orientation: .portrait)))
@@ -9415,6 +9470,9 @@ private final class TestRemoteScreenTransport: RemoteScreenTransport {
         if case .button(_, _, let state) = input { buttons.append(state) }
         if case .key(let usage, let state) = input { keys.append((usage, state)) }
     }
-    func releaseInputs() async throws { inputReleases += 1 }
+    func releaseInputs() async throws {
+        inputReleases += 1
+        try await onReleaseInputs?()
+    }
     func stop() async throws { nativeInputView?.removeFromSuperview() }
 }

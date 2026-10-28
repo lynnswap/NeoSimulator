@@ -143,7 +143,8 @@ final class SimulatorManagerModel {
     @ObservationIgnored private let makeDevicePosture: @MainActor (DeviceInventoryID) -> DevicePostureModel
     let frameworks: UIFrameworkSettings
     @ObservationIgnored var onError: ((any Error) -> Void)?
-    @ObservationIgnored var onOpenRemoteDevice: ((CoreDeviceDevice) -> Void)?
+    @ObservationIgnored var onDeviceOpenRequested: ((DeviceInventoryID) -> Void)?
+    @ObservationIgnored var onOpenRemoteDevice: ((CoreDeviceDevice) async throws -> Void)?
     @ObservationIgnored var beforeStoppingScreens: (() async throws -> Void)?
     @ObservationIgnored var beforeManagingRemoteDevices: ((Set<DeviceInventoryID>) async throws -> Void)?
     @ObservationIgnored var beforeManagingSimulators: ((DeviceManagementAction, [InventoryDevice]) async throws -> Void)?
@@ -202,6 +203,8 @@ final class SimulatorManagerModel {
     }
 
     func openDevice(_ identifier: DeviceInventoryID) {
+        guard !stopping else { return }
+        onDeviceOpenRequested?(identifier)
         perform("Opening simulator…") {
             try await self.controller.openDevice(identifier, xcodeURL: nil)
             await self.deviceScreenDidConnect(identifier)
@@ -210,6 +213,8 @@ final class SimulatorManagerModel {
 
     func restoreScreen(_ restoration: SimulatorScreenRestoration,
                        present: @escaping @MainActor () async throws -> Void) {
+        guard !stopping else { return }
+        if restoration.presentation == .main { onDeviceOpenRequested?(restoration.deviceID) }
         perform("Restoring simulator…") {
             await self.refreshCatalog()
             try await self.controller.openDevice(restoration.deviceID, xcodeURL: restoration.xcodeURL)
@@ -228,14 +233,15 @@ final class SimulatorManagerModel {
     }
 
     func openScreen(for device: InventoryDevice) {
-        guard !managingDeviceIDs.contains(device.id) else { return }
+        guard !stopping, !managingDeviceIDs.contains(device.id) else { return }
         switch device {
         case .simulator(let simulator): openDevice(simulator.inventoryID)
         case .remote:
+            onDeviceOpenRequested?(device.id)
             perform("Opening device screen…") {
                 guard !self.managingDeviceIDs.contains(device.id),
                       case .remote(let current)? = self.inventory.first(where: { $0.id == device.id }) else { return }
-                self.onOpenRemoteDevice?(current)
+                try await self.onOpenRemoteDevice?(current)
             }
         }
     }

@@ -22,6 +22,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     let liveScreenContainer = NSViewController()
     private(set) var liveDeviceIdentifier: DeviceInventoryID?
     var onShowCompactWindow: ((DeviceInventoryID) -> Void)?
+    var onSelectionIntent: (() -> Void)?
     var onSelectionChange: ((DeviceInventoryID?) -> Void)?
     var onScreenAction: ((String) -> Void)?
     var onNewCompanion: ((SimulatorHostDevice) -> Void)?
@@ -43,7 +44,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     private let progress = NSProgressIndicator()
     private var inspectorHost: NSHostingController<ManagerDeviceSettingsView>?
     private let inspectorContainer = NSViewController()
-    private lazy var deviceInspector: ManagerDeviceInspectorController = {
+    private(set) lazy var deviceInspector: ManagerDeviceInspectorController = {
         let inspector = ManagerDeviceInspectorController(model: model)
         inspector.onPairingMenu = { [weak self] in self?.pairingMenu(for: $0) ?? NSMenu() }
         inspector.onDeviceMenu = { [weak self] device in
@@ -62,7 +63,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     private var availableRows: [DeviceRow] = []
     private var unavailableRows: [DeviceRow] = []
     private var displayedManagingIDs: Set<DeviceInventoryID> = []
-    private var selectedIdentifiers = Set<DeviceInventoryID>()
+    private(set) var selectedIdentifiers = Set<DeviceInventoryID>()
     private let availableGroup = AvailabilityGroup(available: true)
     private let unavailableGroup = AvailabilityGroup(available: false)
     private var expandedGroups: Set<Bool> = [true, false]
@@ -186,6 +187,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     required init?(coder: NSCoder) { nil }
 
     func update() {
+        let previousIdentifier = selectionIdentifier
         selectedIdentifiers.formIntersection(Set(model.inventory.map(\.id)))
         if groupByAvailability, loadedRows {
             for group in availabilityGroups where table.row(forItem: group) >= 0 {
@@ -202,6 +204,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         updatingSelection = false
         loadedRows = true
         updateSelection()
+        if selectionIdentifier != previousIdentifier { onSelectionChange?(selectionIdentifier) }
         updateFilterItem()
         updateActivity()
     }
@@ -605,8 +608,10 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
 
     func outlineViewSelectionDidChange(_ notification: Notification) {
         guard !updatingSelection else { return }
+        onSelectionIntent?()
         selectedIdentifiers = Set(table.selectedRowIndexes.compactMap { (table.item(atRow: $0) as? DeviceRow)?.id })
         updateSelection()
+        onSelectionChange?(selectionIdentifier)
     }
 
     func controlTextDidChange(_ notification: Notification) { update() }
@@ -632,10 +637,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         window?.subtitle = selectedDevice?.operatingSystem ?? ""
         let identifier = selectedDevice?.id
         moreItem?.isHidden = selectedDevice == nil
-        if identifier != selectionIdentifier {
-            selectionIdentifier = identifier
-            onSelectionChange?(identifier)
-        }
+        selectionIdentifier = identifier
         if selectedDevice == nil {
             previewTask?.cancel()
             previewTask = nil
@@ -688,7 +690,6 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         }
         restoreVisibleSelection()
         updatingSelection = false
-        selectionIdentifier = identifier
         updateSelection()
         if let row = table.selectedRowIndexes.first { table.scrollRowToVisible(row) }
     }
@@ -1122,18 +1123,20 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         return menu
     }
 
-    private func updateDeviceMenu() {
-        if table.clickedRow >= 0 {
-            guard let row = table.item(atRow: table.clickedRow) as? DeviceRow else {
+    func updateDeviceMenu(for clickedRow: Int) {
+        if clickedRow >= 0 {
+            guard let row = table.item(atRow: clickedRow) as? DeviceRow else {
                 deviceMenu.removeAllItems()
                 return
             }
             if !selectedIdentifiers.contains(row.id) {
+                onSelectionIntent?()
                 selectedIdentifiers = [row.id]
                 updatingSelection = true
                 restoreVisibleSelection()
                 updatingSelection = false
                 updateSelection()
+                onSelectionChange?(selectionIdentifier)
             }
         }
         populateDeviceMenu(deviceMenu, devices: visibleSelectedDevices)
@@ -1353,7 +1356,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
-        if menu === deviceMenu { updateDeviceMenu(); return }
+        if menu === deviceMenu { updateDeviceMenu(for: table.clickedRow); return }
         if menu === moreItem?.menu { updateCanvasMenu(menu); return }
         guard menu === filterItem?.menu else { return }
         menu.removeAllItems()
