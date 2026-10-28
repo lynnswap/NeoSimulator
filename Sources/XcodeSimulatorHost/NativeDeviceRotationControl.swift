@@ -13,7 +13,14 @@ public final class NativeDevicePoseControls {
     private struct Controls {
         let rotation: AnyView
         let postures: AnyView
+        let divider: AnyView?
     }
+    /// Provider content without the standalone toolbar's sizing or button style.
+    public var actionBarControls: [AnyView] {
+        guard let content else { return [] }
+        return [content.rotation] + (content.divider.map { [$0] } ?? []) + [content.postures]
+    }
+
     private var content: Controls?
     @ObservationIgnored private var readControl: (() throws -> Controls?)?
     @ObservationIgnored private var stopped = false
@@ -87,12 +94,13 @@ public final class NativeDevicePoseControls {
                 let controls = try provider.type.resolveAndWait(.swift(.method(
                     "DeviceKit.ActionBarControlProvider.controls(deviceID:onError:)",
                     as: ((UUID, Failure) -> [NativeSwiftValue]).self)))
-                var rotation: AnyView?, postures: AnyView?
+                var rotation: AnyView?, postures: AnyView?, divider: AnyView?
                 for control in try unsafe controls.unsafeInvoke(on: provider, deviceIdentifier, failure) {
                     let identifier = try unsafe bindings.readIdentifier.unsafeInvoke(on: control)
                     let name = try unsafe bindings.readName.unsafeInvoke(on: identifier)
                     guard name == "com.apple.dt.coredevicepop.actionbar.control.v68.rotate" ||
-                            name == "com.apple.dt.coredevicepop.actionbar.control.v68.poses" else { continue }
+                            name == "com.apple.dt.coredevicepop.actionbar.control.v68.poses" ||
+                            name == "com.apple.dt.coredevicepop.actionbar.control.v68.rotateDivider" else { continue }
                     let view = try unsafe bindings.readView.unsafeInvoke(on: control)
                     let content = try view.withCopy { raw in
                         guard let content = raw as? AnyView else {
@@ -100,9 +108,11 @@ public final class NativeDevicePoseControls {
                         }
                         return content
                     }
-                    if name.hasSuffix(".rotate") { rotation = content } else { postures = content }
+                    if name.hasSuffix(".rotate") { rotation = content }
+                    else if name.hasSuffix(".rotateDivider") { divider = content }
+                    else { postures = content }
                 }
-                if let rotation, let postures { return Controls(rotation: rotation, postures: postures) }
+                if let rotation, let postures { return Controls(rotation: rotation, postures: postures, divider: divider) }
             }
             return nil
         }
@@ -140,8 +150,8 @@ public final class NativeDevicePoseControls {
         onError = nil
     }
 
-    // The provider inherits 32 × 28 button bounds from Device Hub's action bar.
-    private struct ActionButtonStyle: ButtonStyle {
+    // These bounds belong to the standalone renderer toolbar; the canvas styles raw controls.
+    private struct ToolbarButtonStyle: ButtonStyle {
         func makeBody(configuration: Configuration) -> some View {
             configuration.label
                 .frame(width: 32, height: 28)
@@ -156,7 +166,7 @@ public final class NativeDevicePoseControls {
             if let model, let content = model.content {
                 (postures ? content.postures : content.rotation)
                     .labelStyle(.iconOnly)
-                    .buttonStyle(ActionButtonStyle())
+                    .buttonStyle(ToolbarButtonStyle())
                     .font(.system(size: 15))
                     .disabled(!model.isEnabled)
                     .frame(width: postures ? 100 : 32, height: 28)

@@ -165,7 +165,6 @@ struct SimulatorDisplayInterface {
     let rotation: NativeSwiftMethod<(Measurement<UnitAngle>) -> Void>
     let disconnect: NativeSwiftMethod<(NativeSwiftClosure<() -> Void>) -> Void>
     let beginResize: NativeSwiftMethod<() -> Void>
-    let resize: NativeSwiftMethod<(CGSize) -> Void>
     let endResize: NativeSwiftMethod<() -> Void>
     /// `SimDisplayView.typedResizeRects`, an array of `SimDisplayView.TypedResizeRect`.
     let resizeRects: NativeSwiftMethod<() -> NativeSwiftValue>
@@ -301,7 +300,6 @@ struct SimulatorDisplayInterface {
             "disconnect(completion: (() -> ())?) -> ()",
             as: ((NativeSwiftClosure<() -> Void>) -> Void).self)))
         beginResize = try await view.resolve(.swift(.method("beginResize()", as: (() -> Void).self)))
-        resize = try await view.resolve(.swift(.method("resizeTo(size:)", as: ((CGSize) -> Void).self)))
         endResize = try await view.resolve(.swift(.method("endResize()", as: (() -> Void).self)))
         // The resize corners and their types are resilient, so they are passed
         // indirectly, and the array's own members read its elements.
@@ -1478,7 +1476,6 @@ protocol SimulatorDisplay: AnyObject {
     func setTouchIndicator(_ indicator: TouchIndicator, shown: Bool)
     func setRotation(degrees: Double)
     func beginResize()
-    func resize(to size: NSSize)
     func endResize()
     func disconnect()
 }
@@ -1832,11 +1829,6 @@ final class SimulatorConnection: SimulatorDisplay {
         view.invalidateIntrinsicContentSize()
     }
     func beginResize() { guard nativeCanvas == nil else { return }; perform("begin resizing") { try unsafe runtime.display.beginResize.unsafeInvoke(on: view) } }
-    func resize(to size: NSSize) {
-        if nativeCanvas != nil { setRenderScale(scale(for: size)); return }
-        perform("resize the display") { try unsafe runtime.display.resize.unsafeInvoke(on: view, size) }
-        view.invalidateIntrinsicContentSize()
-    }
     func endResize() { guard nativeCanvas == nil else { return }; perform("end resizing") { try unsafe runtime.display.endResize.unsafeInvoke(on: view) } }
     func disconnect() {
         guard !disconnected else { return }
