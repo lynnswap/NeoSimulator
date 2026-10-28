@@ -47,7 +47,7 @@ enum NeoSimulatorApp {
 #endif
         let arguments = Array(CommandLine.arguments.dropFirst())
         if arguments == ["--help"] {
-            print("usage: NeoSimulatorRenderer [--managed --owner-pid PID --owner-launch-date SECONDS] [--validate-runtime] [--startup-result /absolute/path] [--device UDID] [--device-set /absolute/path] --xcode /absolute/path/to/Xcode.app")
+            print("usage: NeoSimulatorRenderer [--managed --owner-pid PID --owner-launch-date SECONDS] [--validate-runtime [--include-native-bindings]] [--startup-result /absolute/path] [--device UDID] [--device-set /absolute/path] --xcode /absolute/path/to/Xcode.app")
             return
         }
         if arguments == ["--relaunch-manager"] {
@@ -86,8 +86,10 @@ enum NeoSimulatorApp {
                 try FileHandle.standardOutput.write(contentsOf: data)
             } else {
                 _ = try await SimulatorRuntime.load(xcodeURL: options.xcodeURL)
-                let report = await NativeRuntimeValidationReport.prepareOptionalBindings()
-                try FileHandle.standardOutput.write(contentsOf: JSONEncoder().encode(report))
+                if options.includesNativeBindings {
+                    let report = await NativeRuntimeValidationReport.prepareOptionalBindings()
+                    try FileHandle.standardOutput.write(contentsOf: JSONEncoder().encode(report))
+                }
             }
             exit(EX_OK)
         } catch { fail(error) }
