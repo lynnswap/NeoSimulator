@@ -24,8 +24,12 @@ public struct SimulatorCreationContext: Sendable {
 
 /// The simulator address and backend selected before presenting its screen.
 public struct SimulatorPresentationContext: Sendable {
+    /// Distinguishes a user request, background attachment, and initial launch selection.
+    public enum Purpose: Sendable { case requested, automatic, startup }
+
     public let deviceID: DeviceInventoryID
     public let xcodeURL: URL
+    public let purpose: Purpose
 }
 
 public struct SimulatorHostStatus: Sendable {
@@ -299,12 +303,13 @@ public actor SimulatorHostController {
             // An explicit request supersedes the saved startup selection.
             self.startupHandled = true
             self.startupDeviceIdentifier = nil
-            try await self.openDeviceBody(deviceID: deviceID, xcodeURL: xcodeURL)
+            try await self.openDeviceBody(deviceID: deviceID, xcodeURL: xcodeURL, purpose: .requested)
         }
     }
 
     private func openDeviceBody(deviceID: DeviceInventoryID, xcodeURL: URL?, bootIfNeeded: Bool = true,
-                                catalogs: [(xcode: XcodeInstallation, devices: [SimulatorHostDevice])] = []) async throws {
+                                catalogs: [(xcode: XcodeInstallation, devices: [SimulatorHostDevice])] = [],
+                                purpose: SimulatorPresentationContext.Purpose) async throws {
         let (identifier, _) = try deviceID.simulatorAddress
         let selection = try await self.hostSelectionStatus()
         let renderers = try await self.registeredRenderers()
@@ -313,24 +318,25 @@ public actor SimulatorHostController {
             if let xcodeURL, !sameURL(xcodeURL, URL(fileURLWithPath: owner.xcodePath)) {
                 let (xcode, _) = try await resolveDevice(deviceID: deviceID, preferredURL: xcodeURL, catalogs: catalogs)
                 try await RendererDeviceRequestWaiter().release(deviceID, from: owner)
-                try await openRendererDevice(deviceID, xcode: xcode, bootIfNeeded: bootIfNeeded)
+                try await openRendererDevice(deviceID, xcode: xcode, bootIfNeeded: bootIfNeeded, purpose: purpose)
             } else {
                 if bootIfNeeded { try await RendererDeviceRequestWaiter().open(deviceID, in: owner) }
                 else { try await RendererDeviceRequestWaiter().attach(deviceID, in: owner) }
-                try await self.present(deviceID, xcodeURL: URL(fileURLWithPath: owner.xcodePath))
+                try await self.present(deviceID, xcodeURL: URL(fileURLWithPath: owner.xcodePath), purpose: purpose)
             }
             return
         }
         let (xcode, device) = try await resolveDevice(deviceID: deviceID, preferredURL: xcodeURL, catalogs: catalogs)
         if selection.host == .neo {
-            try await self.openRendererDevice(deviceID, xcode: xcode, bootIfNeeded: bootIfNeeded)
+            try await self.openRendererDevice(deviceID, xcode: xcode, bootIfNeeded: bootIfNeeded, purpose: purpose)
         } else {
             if bootIfNeeded && device.state == "Shutdown" { _ = try await self.runSimctl(xcode: xcode, arguments: ["boot", identifier], deviceSetPath: device.deviceSetPath) }
             try await launchHost(.deviceHub, xcodeURL: xcode.applicationURL)
         }
     }
 
-    private func openRendererDevice(_ deviceID: DeviceInventoryID, xcode: XcodeInstallation, bootIfNeeded: Bool = true) async throws {
+    private func openRendererDevice(_ deviceID: DeviceInventoryID, xcode: XcodeInstallation, bootIfNeeded: Bool = true,
+                                    purpose: SimulatorPresentationContext.Purpose) async throws {
         let launchesRenderer = try await !registeredRenderers().contains(where: { sameURL(URL(fileURLWithPath: $0.xcodePath), xcode.applicationURL) })
         if launchesRenderer { try await launchHost(.neo, xcodeURL: xcode.applicationURL) }
         guard let target = try await registeredRenderers().first(where: { sameURL(URL(fileURLWithPath: $0.xcodePath), xcode.applicationURL) }) else {
@@ -339,15 +345,15 @@ public actor SimulatorHostController {
         do {
             if bootIfNeeded { try await RendererDeviceRequestWaiter().open(deviceID, in: target) }
             else { try await RendererDeviceRequestWaiter().attach(deviceID, in: target) }
-            try await self.present(deviceID, xcodeURL: xcode.applicationURL)
+            try await self.present(deviceID, xcodeURL: xcode.applicationURL, purpose: purpose)
         } catch {
             throw CLIError.temporary(launchesRenderer ? "neo-host-launch-partial-success" : "renderer-device-launch", error.localizedDescription)
         }
     }
 
-    private func present(_ deviceID: DeviceInventoryID, xcodeURL: URL) async throws {
+    private func present(_ deviceID: DeviceInventoryID, xcodeURL: URL, purpose: SimulatorPresentationContext.Purpose) async throws {
         guard let presentSimulator else { return }
-        try await presentSimulator(SimulatorPresentationContext(deviceID: deviceID, xcodeURL: xcodeURL))
+        try await presentSimulator(SimulatorPresentationContext(deviceID: deviceID, xcodeURL: xcodeURL, purpose: purpose))
     }
 
     /// Closes the presentation's backend ownership, optionally leaving the guest running.
@@ -400,7 +406,7 @@ public actor SimulatorHostController {
                         if self.sameURL(URL(fileURLWithPath: owner.xcodePath), xcode.applicationURL) { return }
                         try await RendererDeviceRequestWaiter().release(connection.deviceID, from: owner)
                     }
-                    try await self.openRendererDevice(connection.deviceID, xcode: xcode, bootIfNeeded: false)
+                    try await self.openRendererDevice(connection.deviceID, xcode: xcode, bootIfNeeded: false, purpose: .automatic)
                 }
             } catch { firstFailure = error }
             let observation = self.bootTracker.observe(catalog, attachInitially: attachInitially)
@@ -410,7 +416,7 @@ public actor SimulatorHostController {
             for deviceID in candidates {
                 if self.connectionTracker.hasPendingConnection(forDevice: deviceID) { continue }
                 do {
-                    if !ownedIdentifiers.contains(deviceID) { try await self.openDeviceBody(deviceID: deviceID, xcodeURL: nil, bootIfNeeded: false, catalogs: catalogs) }
+                    if !ownedIdentifiers.contains(deviceID) { try await self.openDeviceBody(deviceID: deviceID, xcodeURL: nil, bootIfNeeded: false, catalogs: catalogs, purpose: .automatic) }
                     self.bootTracker.didAttach(deviceID)
                     changed = true
                 } catch { if firstFailure == nil { firstFailure = error } }
@@ -432,7 +438,7 @@ public actor SimulatorHostController {
             }
             if let identifier = self.startupDeviceIdentifier {
                 do {
-                    try await self.openDeviceBody(deviceID: identifier, xcodeURL: nil, catalogs: catalogs)
+                    try await self.openDeviceBody(deviceID: identifier, xcodeURL: nil, catalogs: catalogs, purpose: .startup)
                     self.startupDeviceIdentifier = nil
                     changed = true
                 } catch { if firstFailure == nil { firstFailure = error } }
