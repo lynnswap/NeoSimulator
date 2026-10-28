@@ -75,7 +75,7 @@ final class DeviceCanvasControls: NSView {
             controls.alignment = .centerY
             controls.distribution = .fill
             controls.spacing = 2
-            controls.edgeInsets = NSEdgeInsets(top: 4, left: 4, bottom: 4, right: 4)
+            controls.edgeInsets = NSEdgeInsets(top: 0, left: 4, bottom: 0, right: 4)
             for identifier in identifiers {
                 if identifier == "record" {
                     screenRecordingTimer.isHidden = true
@@ -95,7 +95,7 @@ final class DeviceCanvasControls: NSView {
                 button.controlSize = .regular
                 button.font = .systemFont(ofSize: NSFont.systemFontSize(for: button.controlSize))
                 button.symbolConfiguration = .init(textStyle: .body, scale: .medium)
-                button.isBordered = false
+                button.isBordered = true
                 button.imageScaling = .scaleProportionallyDown
                 button.contentTintColor = .labelColor
                 button.toolTip = title
@@ -126,7 +126,7 @@ final class DeviceCanvasControls: NSView {
                     button.controlSize = .regular
                     button.font = .systemFont(ofSize: NSFont.systemFontSize(for: button.controlSize))
                     button.symbolConfiguration = .init(textStyle: .body, scale: .medium)
-                    button.isBordered = false
+                    button.isBordered = true
                     button.isHidden = true
                     button.toolTip = posture.title
                     button.setAccessibilityLabel(posture.title)
@@ -141,8 +141,8 @@ final class DeviceCanvasControls: NSView {
             NSLayoutConstraint.activate([
                 controls.leadingAnchor.constraint(equalTo: glass.leadingAnchor),
                 controls.trailingAnchor.constraint(equalTo: glass.trailingAnchor),
-                controls.topAnchor.constraint(equalTo: glass.topAnchor),
-                controls.bottomAnchor.constraint(equalTo: glass.bottomAnchor),
+                controls.topAnchor.constraint(equalTo: glass.topAnchor, constant: 4),
+                controls.bottomAnchor.constraint(equalTo: glass.bottomAnchor, constant: -4),
             ])
             screenActionBar.addArrangedSubview(glass)
         }

@@ -94,6 +94,14 @@ struct InputFocusTests {
             #expect(controls.isDescendant(of: accessory.view) && controls.window === window)
             #expect(accessory.view.bounds.insetBy(dx: -1, dy: -1).contains(controls.convert(controls.bounds, to: accessory.view)))
             #expect(controls.bounds.height + 1 >= controls.fittingSize.height)
+            for glass in descendants(controls).compactMap({ $0 as? NSGlassEffectView }) where !glass.isHidden {
+                let content = try #require(glass.contentView)
+                #expect(glass.bounds.height >= content.fittingSize.height)
+                for button in descendants(content).compactMap({ $0 as? NSButton }) where !button.isHidden {
+                    #expect(glass.bounds.contains(button.convert(button.bounds, to: glass)))
+                    #expect(button.visibleRect.contains(button.bounds))
+                }
+            }
         }
         let originalSize = controls.fittingSize
         func enlarge(_ view: NSView) {
