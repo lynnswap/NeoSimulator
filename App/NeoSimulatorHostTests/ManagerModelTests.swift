@@ -145,6 +145,66 @@ struct ManagerModelTests {
         main.window?.close()
     }
 
+    @Test func extendingMultipleSelectionReplacesThePendingDetach() async throws {
+        _ = NSApplication.shared
+        let devices = try CoreDeviceInventoryDecoder.decode(Data(#"{"result":{"devices":[{"identifier":"A","properties":{"hardware":{"reality":"physical"},"state":{"name":"A"}}},{"identifier":"B","properties":{"hardware":{"reality":"physical"},"state":{"name":"B"}}},{"identifier":"C","properties":{"hardware":{"reality":"physical"},"state":{"name":"C"}}}]}}"#.utf8))
+        let a = try #require(devices.first), c = try #require(devices.last)
+        let aID = DeviceInventoryID.coreDevice(a.identifier), cID = DeviceInventoryID.coreDevice(c.identifier)
+        let model = SimulatorManagerModel(source: ManagerModelSource(devices: devices.map(InventoryDevice.remote)))
+        model.settings.setReadingSuspended(true)
+        await model.refresh()
+        let app = AppDelegate()
+        app.model = model
+        app.prepareMainWindow()
+        let main = try #require(app.mainWindow)
+        main.window?.setFrameAutosaveName("")
+        defer { main.window?.close() }
+        let transport = TestRemoteScreenTransport()
+        let session = RemoteDeviceScreenSession(device: a) { _, _, _ in TestRemoteScreenTransport() }
+        let backgroundSession = RemoteDeviceScreenSession(device: c) { _, _, _ in transport }
+        try await session.start()
+        try await backgroundSession.start()
+        let controller = RemoteDeviceWindowController(device: a, session: session, presentCompactWindow: { _ in })
+        let background = RemoteDeviceWindowController(device: c, session: backgroundSession, presentCompactWindow: { _ in })
+        let backgroundParent = NSViewController()
+        backgroundParent.view = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 600))
+        try await background.embed(in: backgroundParent)
+        app.remoteWindows = [aID: controller, cID: background]
+        main.selectDevice(aID)
+        try await app.presentConnectedScreen(aID, purpose: .requested)
+        let content = try #require(main.window?.contentView)
+        let outline = try #require(inspectorViews(content).compactMap { $0 as? NSOutlineView }.first)
+        let rows = (0..<outline.numberOfRows).filter { row in
+            outline.item(atRow: row).map { main.outlineView(outline, shouldSelectItem: $0) } == true
+        }
+        try #require(rows.count == 3)
+        let releasing = AsyncStream<Void>.makeStream(), resume = AsyncStream<Void>.makeStream()
+        var releases = releasing.stream.makeAsyncIterator()
+        transport.onReleaseInputs = {
+            transport.onReleaseInputs = nil
+            releasing.continuation.yield(())
+            var permits = resume.stream.makeAsyncIterator()
+            _ = await permits.next()
+        }
+        let compacting = Task { try await app.presentConnectedScreen(cID, purpose: .automatic, preserving: .compact) }
+        try #require(await releases.next() != nil)
+        outline.selectRowIndexes(IndexSet(rows.prefix(2)), byExtendingSelection: false)
+        outline.selectRowIndexes(IndexSet(integer: rows[2]), byExtendingSelection: true)
+        try #require(main.selectedIdentifiers.count == 3)
+        resume.continuation.yield(())
+        try await compacting.value
+        let detached = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            MainActor.assumeIsolated {
+                main.liveDeviceIdentifier == nil && main.activeScreenCommandTarget == nil
+            }
+        }, object: nil)
+        #expect(await XCTWaiter.fulfillment(of: [detached], timeout: 5) == .completed)
+        #expect(controller.presentationViewController.parent == nil)
+        #expect(main.selectedIdentifiers.count == 3 && model.settings.device == nil)
+        try await session.stop()
+        try await backgroundSession.stop()
+    }
+
     @Test func contextMenuSelectionStartsMainIntentWithoutChangingRefreshOrSameRowIntent() async throws {
         _ = NSApplication.shared
         let devices = try CoreDeviceInventoryDecoder.decode(Data(#"{"result":{"devices":[{"identifier":"A","properties":{"hardware":{"reality":"physical"},"state":{"name":"A"}}},{"identifier":"B","properties":{"hardware":{"reality":"physical"},"state":{"name":"B"}}}]}}"#.utf8))

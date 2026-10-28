@@ -187,6 +187,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     required init?(coder: NSCoder) { nil }
 
     func update() {
+        let previousIdentifier = selectionIdentifier
         selectedIdentifiers.formIntersection(Set(model.inventory.map(\.id)))
         if groupByAvailability, loadedRows {
             for group in availabilityGroups where table.row(forItem: group) >= 0 {
@@ -203,6 +204,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         updatingSelection = false
         loadedRows = true
         updateSelection()
+        if selectionIdentifier != previousIdentifier { onSelectionChange?(selectionIdentifier) }
         updateFilterItem()
         updateActivity()
     }
@@ -609,6 +611,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         onSelectionIntent?()
         selectedIdentifiers = Set(table.selectedRowIndexes.compactMap { (table.item(atRow: $0) as? DeviceRow)?.id })
         updateSelection()
+        onSelectionChange?(selectionIdentifier)
     }
 
     func controlTextDidChange(_ notification: Notification) { update() }
@@ -634,10 +637,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         window?.subtitle = selectedDevice?.operatingSystem ?? ""
         let identifier = selectedDevice?.id
         moreItem?.isHidden = selectedDevice == nil
-        if identifier != selectionIdentifier {
-            selectionIdentifier = identifier
-            onSelectionChange?(identifier)
-        }
+        selectionIdentifier = identifier
         if selectedDevice == nil {
             previewTask?.cancel()
             previewTask = nil
@@ -690,7 +690,6 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         }
         restoreVisibleSelection()
         updatingSelection = false
-        selectionIdentifier = identifier
         updateSelection()
         if let row = table.selectedRowIndexes.first { table.scrollRowToVisible(row) }
     }
@@ -1137,6 +1136,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
                 restoreVisibleSelection()
                 updatingSelection = false
                 updateSelection()
+                onSelectionChange?(selectionIdentifier)
             }
         }
         populateDeviceMenu(deviceMenu, devices: visibleSelectedDevices)

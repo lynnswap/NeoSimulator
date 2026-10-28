@@ -353,7 +353,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func openSimulatorPresentation(_ context: SimulatorPresentationContext) async throws {
         guard !quitting else { throw CancellationError() }
         prepareMainWindow()
-        let previousPresentation = screen(for: context.deviceID)?.presentation
         let displayURL = try await CoreDeviceRuntime.uiXcodeURL()
         displayXcodeURL = displayURL
         let sourceURL = context.xcodeURL.standardizedFileURL.resolvingSymlinksInPath()
@@ -389,14 +388,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         guard case .simulator(let udid, let path) = context.deviceID else { return }
         let identifier = SimulatorDeviceIdentifier(udid, deviceSetPath: path)
+        var previousPresentation: SimulatorScreenRestoration.Presentation?
         for (url, previous) in simulatorHosts where url != sourceURL && previous.openedDeviceIdentifiers.contains(identifier) {
-            try await previous.releasePresentation(for: identifier)
+            try await previous.releasePresentation(for: identifier) { controller in
+                previousPresentation = Screen.simulator(controller).presentation
+            }
             simulatorWindows.removeValue(forKey: context.deviceID)
             mainWindow?.showDevicePreview(ifDisplaying: context.deviceID)
         }
         let controller = try await host.openPresentation(for: identifier, bootIfNeeded: false)
         controller.onShowInMainWindow = { [weak self] in self?.showScreenInMainWindow(context.deviceID) }
         let isNew = simulatorWindows[context.deviceID] !== controller
+        if let previous = simulatorWindows[context.deviceID] {
+            previousPresentation = Screen.simulator(previous).presentation
+        }
         simulatorWindows[context.deviceID] = controller
         if isNew {
             configureCanvasControls(for: context.deviceID, screen: .simulator(controller))
