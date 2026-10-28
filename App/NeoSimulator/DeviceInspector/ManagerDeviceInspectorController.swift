@@ -71,6 +71,7 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
     private let launchButton = NSButton(image: NSImage(systemSymbolName: "play", accessibilityDescription: "Launch Application")!, target: nil, action: nil)
     private let actions = NSPopUpButton(frame: .zero, pullsDown: true)
     private let reloadButton = NSButton(image: NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "Refresh Inspector")!, target: nil, action: nil)
+    private let buttons = NSStackView()
     private let contentView = NSView()
     private let infoView = NSView()
     private var lastIssue: String? { get { inspection.lastIssue } set { inspection.lastIssue = newValue } }
@@ -185,7 +186,9 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
         actions.image = NSImage(systemSymbolName: "ellipsis", accessibilityDescription: "Application Actions")
         actions.imagePosition = .imageOnly
         actions.setAccessibilityLabel("Application Actions")
-        let buttons = NSStackView(views: [addButton, removeButton, launchButton, actions, previewButton, downloadButton, NSView(), reloadButton])
+        for button in [addButton, removeButton, launchButton, actions, previewButton, downloadButton, NSView(), reloadButton] {
+            buttons.addArrangedSubview(button)
+        }
         buttons.orientation = .horizontal
         buttons.spacing = 6
         let footer = NSStackView(views: [progress, status])
@@ -342,6 +345,7 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
         infoPicker.selectedSegment = content == .info ? 0 : (showingApplications ? 1 : 2)
         contentView.isHidden = showingInfo || unavailable != nil
         infoView.isHidden = !showingInfo || unavailable != nil
+        buttons.isHidden = showingInfo
         unavailableView.isHidden = unavailable == nil
         if let unavailable {
             unavailableView.rootView = AnyView(ContentUnavailableView {

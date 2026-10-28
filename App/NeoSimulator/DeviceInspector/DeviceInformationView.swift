@@ -17,21 +17,17 @@ struct DeviceInformationView: View {
     var body: some View {
         if let device = inspection.device {
             let information = DeviceInformation(device: device, properties: inspection.infoProperties)
+            let pairingDevice: SimulatorHostDevice? = if case .simulator(let simulator) = device,
+                simulator.productFamily == "iPhone" || simulator.productFamily == "Apple Watch" {
+                simulator
+            } else { nil }
             Form {
                 if editsVisibility {
                     visibilityEditor(information)
                 } else {
-                    informationCards(information)
-                    if case .simulator(let simulator) = device,
-                       simulator.productFamily == "iPhone" || simulator.productFamily == "Apple Watch" {
+                    informationCards(information, includesPairing: pairingDevice != nil)
+                    if let simulator = pairingDevice {
                         pairedSimulators(simulator)
-                    }
-                    HStack {
-                        Spacer()
-                        Button("Edit Visibility") { editsVisibility = true }
-                            .buttonStyle(.bordered)
-                            .buttonBorderShape(.capsule)
-                        Spacer()
                     }
                 }
             }
@@ -51,13 +47,36 @@ struct DeviceInformationView: View {
     }
 
     @ViewBuilder
-    private func informationCards(_ information: DeviceInformation) -> some View {
-        ForEach(DeviceInformation.Group.allCases) { group in
-            let fields = information.fields.filter { $0.group == group && visibility.isVisible($0) }
-            if !fields.isEmpty {
-                Section { informationRows(fields) }
+    private func informationCards(_ information: DeviceInformation, includesPairing: Bool) -> some View {
+        let visibleFields = information.fields.filter { visibility.isVisible($0) }
+        let groups = DeviceInformation.Group.allCases.filter { group in visibleFields.contains { $0.group == group } }
+        ForEach(groups) { group in
+            Section {
+                informationRows(visibleFields.filter { $0.group == group })
+            } footer: {
+                if !includesPairing && group == groups.last { editVisibilityButton }
             }
         }
+        if groups.isEmpty && !includesPairing {
+            Section {} footer: { editVisibilityButton }
+        }
+    }
+
+    private var editVisibilityButton: some View {
+        HStack {
+            Spacer()
+            Button { editsVisibility = true } label: {
+                Text("Edit Visibility")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal)
+            }
+            .buttonStyle(.borderless)
+            .controlSize(.small)
+            .background(.quaternary, in: Capsule())
+            Spacer()
+        }
+        .padding(.vertical)
     }
 
     private func informationRows(_ fields: [DeviceInformation.Field]) -> some View {
@@ -71,6 +90,7 @@ struct DeviceInformationView: View {
 
     private func fieldValue(_ field: DeviceInformation.Field) -> some View {
         Text(field.value)
+            .foregroundStyle(.secondary)
             .textSelection(.enabled)
             .multilineTextAlignment(.trailing)
             .lineLimit(1)
@@ -105,7 +125,7 @@ struct DeviceInformationView: View {
         let paired = DeviceInformation.pairedSimulators(for: device, in: manager.inventory)
         let selectedPartner = paired.first { $0.inventoryID == selectedPairedSimulator }
         let targetWatch = selectedPartner.flatMap { DeviceInformation.watchToUnpair(device: device, partner: $0) }
-        return Section("Paired Simulators") {
+        return Section {
             Group {
                 if paired.isEmpty {
                     Text(device.productFamily == "Apple Watch" ? "No Paired iPhone Simulators" : "No Paired Watch Simulators")
@@ -132,23 +152,33 @@ struct DeviceInformationView: View {
                 }
             }
             .safeAreaBar(edge: .bottom, spacing: 0) {
-                HStack {
-                    DeviceMenuButton(menu: pairingMenu(device), symbol: "plus", label: "Add Paired Simulator")
-                        .disabled(!manager.canAddPairing(for: device) || inspection.isManaging ||
-                                  !manager.canManage(.pair, deviceIDs: [device.inventoryID]))
-                    Button {
-                        if let targetWatch { unpair(targetWatch) }
-                    } label: {
-                        Image(systemName: "minus")
+                VStack(spacing: 0) {
+                    Divider()
+                    HStack {
+                        DeviceMenuButton(menu: pairingMenu(device), symbol: "plus", label: "Add Paired Simulator")
+                            .disabled(!manager.canAddPairing(for: device) || inspection.isManaging ||
+                                      !manager.canManage(.pair, deviceIDs: [device.inventoryID]))
+                        Divider()
+                        Button {
+                            if let targetWatch { unpair(targetWatch) }
+                        } label: {
+                            Image(systemName: "minus")
+                        }
+                        .accessibilityLabel("Remove Paired Simulator")
+                        .disabled(targetWatch == nil || inspection.isManaging || manager.isBusy ||
+                                  targetWatch.map { manager.managingDeviceIDs.contains($0.inventoryID) } == true)
+                        Spacer()
                     }
-                    .accessibilityLabel("Remove Paired Simulator")
-                    .disabled(targetWatch == nil || inspection.isManaging || manager.isBusy ||
-                              targetWatch.map { manager.managingDeviceIDs.contains($0.inventoryID) } == true)
-                    Spacer()
+                    .fixedSize(horizontal: false, vertical: true)
+                    .buttonStyle(.accessoryBar)
+                    .controlSize(.small)
                 }
-                .buttonStyle(.accessoryBar)
-                .controlSize(.small)
+                .background(.bar)
             }
+        } header: {
+            Text("Paired Simulators")
+        } footer: {
+            editVisibilityButton
         }
     }
 
@@ -159,7 +189,6 @@ struct DeviceInformationView: View {
                     .lineLimit(1)
                     .layoutPriority(1)
                 configuration.content
-                    .foregroundStyle(.secondary)
                     .frame(minWidth: 0, maxWidth: .infinity, alignment: .trailing)
             }
         }
