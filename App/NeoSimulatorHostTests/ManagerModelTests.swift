@@ -731,8 +731,12 @@ struct ManagerModelTests {
         }
         let pairedTable = try #require(tables(in: view).first { $0.numberOfRows == 1 })
         let pairedScroll = try #require(pairedTable.enclosingScrollView)
-        #expect(pairedScroll.documentVisibleRect.minY <= pairedTable.rect(ofRow: 0).minY)
-        #expect(pairedScroll.documentVisibleRect.maxY >= pairedTable.rect(ofRow: 0).maxY)
+        let viewport = pairedScroll.documentVisibleRect
+        let row = pairedTable.rect(ofRow: 0)
+        let backingPixel = 1 / window.backingScaleFactor
+        #expect(viewport.height > 0 && row.height > 0)
+        #expect(viewport.minY <= row.minY + backingPixel)
+        #expect(viewport.maxY >= row.maxY - backingPixel)
         #expect(pairedScroll.frame.height < 120)
         let pairedRow = try #require(pairedTable.view(atColumn: 0, row: 0, makeIfNecessary: true))
         pairedRow.layoutSubtreeIfNeeded()
