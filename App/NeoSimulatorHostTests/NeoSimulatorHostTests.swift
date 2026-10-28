@@ -6713,6 +6713,50 @@ struct InputFocusTests {
         #expect(!window.isVisible)
     }
 
+    @Test(.timeLimit(.minutes(1)), arguments: [false, true])
+    func newWatchUsesTheExistingPhoneAndRetainsItsIdentifierWhenPairingFails(pairingFails: Bool) async throws {
+        _ = NSApplication.shared
+        var operations: [String] = []
+        let completed = AsyncStream<Void>.makeStream()
+        var completion = completed.stream.makeAsyncIterator()
+        let form = NewSimulatorWindowController(catalog: pairingCatalog(), pairingWith:
+            .init(identifier: "existing-phone", name: "Existing Phone", deviceType: "phone", runtime: "ios"),
+            create: { name, type, runtime in
+                operations.append("create \(name) \(type) \(runtime)")
+                return "created-watch"
+            }, pair: { watch, phone in
+                operations.append("pair \(watch) \(phone)")
+                if pairingFails { throw HostError.operation("pairing failed") }
+            }, onClose: { completed.continuation.yield(()) })
+        let window = try #require(form.window)
+        let sheetObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.willBeginSheetNotification, object: window, queue: .main
+        ) { _ in completed.continuation.yield(()) }
+        defer {
+            NotificationCenter.default.removeObserver(sheetObserver)
+            if let sheet = window.attachedSheet { window.endSheet(sheet) }
+            form.close()
+            completed.continuation.finish()
+        }
+        form.showWindow(nil)
+        #expect(form.showsWatchPage && form.previousButton.isHidden)
+        #expect(form.watchDeviceTypes.itemTitles == ["Apple Watch One"])
+        #expect(form.watchRuntimes.itemTitles == ["watchOS 27.0"])
+        #expect(form.forwardButton.title == "Create" && form.forwardButton.isEnabled)
+        form.watchNameField.stringValue = "My Watch"
+        form.forwardButton.performClick(nil)
+        _ = await completion.next()
+        #expect(operations == ["create My Watch w1 new", "pair created-watch existing-phone"])
+        if pairingFails {
+            let alert = try #require(window.attachedSheet)
+            #expect(texts(in: alert.contentView).contains(
+                "Created “My Watch” (created-watch), but could not pair it with “Existing Phone”: pairing failed"))
+            #expect(window.isVisible && form.forwardButton.isEnabled)
+        } else {
+            #expect(!window.isVisible)
+        }
+    }
+
     @Test func hardwareCommandsSendSimulatorAppEvents() throws {
         let display = TestDisplay()
         let controller = try makeController(display, features: [

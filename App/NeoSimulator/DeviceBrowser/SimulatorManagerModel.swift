@@ -98,6 +98,7 @@ protocol SimulatorManagerSource: DeviceSettingsSource {
     func openDevice(_ deviceID: DeviceInventoryID, xcodeURL: URL?) async throws
     func closeDevice(_ deviceID: DeviceInventoryID, keepingDeviceRunning: Bool) async throws
     func creationCatalog() async throws -> SimulatorCreationContext
+    func creationCatalog(for deviceID: DeviceInventoryID) async throws -> SimulatorCreationContext
     func createSimulator(named name: String, deviceType: String, runtime: String, context: SimulatorCreationContext) async throws -> String
     func pairSimulators(watch: String, phone: String, context: SimulatorCreationContext) async throws
     func manage(_ action: DeviceManagementAction, devices: [InventoryDevice],
@@ -302,6 +303,20 @@ final class SimulatorManagerModel {
 
     func creationCatalog() async throws -> SimulatorCreationContext {
         try await controller.creationCatalog()
+    }
+
+    func creationCatalog(for deviceID: DeviceInventoryID) async throws -> SimulatorCreationContext {
+        try await controller.creationCatalog(for: deviceID)
+    }
+
+    /// Device Hub pairs an unpaired companion exposed by CoreDevice in the same device set.
+    func pairingWatches(for phone: SimulatorHostDevice) -> [SimulatorHostDevice] {
+        let feature = "com.apple.coredevice.feature.companiondevicepairing"
+        guard phone.isAvailable, phone.productFamily == "iPhone", phone.capabilities.contains(feature) else { return [] }
+        return devices.filter { watch in
+            watch.productFamily == "Apple Watch" && watch.deviceSetPath == phone.deviceSetPath
+                && watch.pairIdentifiers.isEmpty && watch.capabilities.contains(feature)
+        }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 
     func createSimulator(named name: String, deviceType: String, runtime: String,

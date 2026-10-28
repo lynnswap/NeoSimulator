@@ -1,12 +1,14 @@
+import Foundation
+
 /// Creation catalog in CoreSimulator order.
 struct SimulatorCatalog {
-    struct DeviceType: Codable, Equatable {
+    struct DeviceType: Codable, Equatable, Sendable {
         let identifier: String
         let name: String
         let productFamily: Int
     }
 
-    struct Runtime: Codable, Equatable {
+    struct Runtime: Codable, Equatable, Sendable {
         let identifier: String
         let name: String
     }
@@ -28,8 +30,8 @@ struct SimulatorCatalog {
 
 extension SimulatorCatalog {
     /// Transfers the read-only catalog across the Xcode-isolated utility process.
-    struct Snapshot: Codable {
-        struct Pairing: Codable, Hashable {
+    struct Snapshot: Codable, Sendable {
+        struct Pairing: Codable, Hashable, Sendable {
             let watchType: String
             let watchRuntime: String
             let phoneType: String
@@ -40,6 +42,11 @@ extension SimulatorCatalog {
         let runtimes: [Runtime]
         let supportedDeviceTypes: [String: Set<String>]
         let pairings: Set<Pairing>
+
+        @concurrent
+        static func decode(_ data: Data) async throws -> Self {
+            try JSONDecoder().decode(Self.self, from: data)
+        }
 
         @MainActor
         init(catalog: SimulatorCatalog) {
