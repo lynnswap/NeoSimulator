@@ -84,6 +84,53 @@ struct ManagerModelTests {
         controller.stopReading()
     }
 
+    @Test func changingProfileCapabilityClearsTheOldKindEvenWhenTheRefreshFails() async throws {
+        _ = NSApplication.shared
+        func device(features: Set<String>) -> InventoryDevice {
+            .remote(CoreDeviceDevice(identifier: "inspected-device", udid: nil, kind: .physical, name: "Phone",
+                modelIdentifier: nil, modelName: nil, platform: "iOS", osVersion: nil, osBuild: nil,
+                connectionState: "connected", pairingState: "paired", transportType: nil, bootState: "booted",
+                capabilities: Set(features.map { "com.apple.coredevice.feature." + $0 }), lastConnectedAt: nil, visibilityClass: nil))
+        }
+        let original = device(features: ["provisioningprofiles", "configurationprofiles"])
+        let source = ManagerModelSource(devices: [], inspectorResponse:
+            #"{"result":{"provisioningProfiles":[{"uuid":"fixture.profile","name":"Fixture"}]}}"#)
+        var events = source.events.makeAsyncIterator()
+        let controller = ManagerDeviceInspectorController(model: SimulatorManagerModel(source: source))
+        controller.inspection.select(.provisioning)
+        controller.update(device: original, isManaging: false, isVisible: true)
+        #expect(await events.next() == .inspect(original.id))
+        await finishInspectorRead(controller.inspection)
+        let views = inspectorViews(controller.view)
+        let table = try #require(views.compactMap { $0 as? NSTableView }.first {
+            $0.accessibilityLabel() == "Installed Applications, Profiles, and Reports"
+        })
+        let rowsPublished = XCTNSPredicateExpectation(predicate: NSPredicate { object, _ in
+            MainActor.assumeIsolated { (object as? NSTableView)?.numberOfRows == 1 }
+        }, object: table)
+        try #require(await XCTWaiter.fulfillment(of: [rowsPublished], timeout: 5) == .completed)
+        table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        let remove = try #require(views.compactMap { $0 as? NSButton }.first { $0.toolTip == "Remove…" })
+        try #require(remove.isEnabled)
+
+        await source.holdInspectorReads()
+        controller.update(device: device(features: ["configurationprofiles"]), isManaging: false, isVisible: true)
+        #expect(controller.inspection.content == .configuration)
+        #expect(table.numberOfRows == 0 && table.selectedRow == -1)
+        #expect(controller.inspection.profiles.isEmpty)
+        #expect(await events.next() == .inspect(original.id))
+        await source.failInspectorRead()
+        await finishInspectorRead(controller.inspection)
+        let status = try #require(views.compactMap { $0 as? NSTextField }.first { $0.accessibilityLabel() == "Inspector Status" })
+        let failurePublished = XCTNSPredicateExpectation(predicate: NSPredicate { object, _ in
+            MainActor.assumeIsolated { (object as? NSTextField)?.stringValue.contains("Unavailable") == true }
+        }, object: status)
+        try #require(await XCTWaiter.fulfillment(of: [failurePublished], timeout: 5) == .completed)
+        #expect(table.numberOfRows == 0 && table.selectedRow == -1)
+        #expect(!remove.isEnabled)
+        controller.stopReading()
+    }
+
     @Test func sameDeviceInventoryRenameKeepsInfoUntilTheFreshDetailsArrive() async throws {
         _ = NSApplication.shared
         let original = simulator()
@@ -1229,6 +1276,12 @@ private actor ManagerModelSource: SimulatorManagerSource {
         let waiting = inspectorRead
         inspectorRead = nil
         waiting?.resume(returning: CommandOutput(terminationStatus: 0, stdout: Data((inspectorResponse ?? "").utf8), stderr: Data()))
+    }
+    func failInspectorRead() {
+        holdsInspectorReads = false
+        let waiting = inspectorRead
+        inspectorRead = nil
+        waiting?.resume(throwing: Failure.unavailable)
     }
     func restore(force: Bool) throws { throw Failure.unavailable }
     func synchronizeXcodeConnections() -> Bool { false }

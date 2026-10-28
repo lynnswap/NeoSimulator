@@ -243,6 +243,7 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
         let selectionChanged = self.device?.id != device?.id
         let snapshotChanged = self.device != device
         let becameVisible = !self.isVisible && isVisible
+        let previousContent = content
         self.device = device
         self.isManaging = isManaging
         self.isVisible = isVisible
@@ -256,7 +257,8 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
             lastIssue = nil
             updateRows()
         }
-        if isVisible && (snapshotChanged || becameVisible) { reload() }
+        if page == .info && content != previousContent { changedContent() }
+        else if isVisible && (snapshotChanged || becameVisible) { reload() }
         else if !isVisible { stopReading(); dismissReportPreview() }
         updateVisibility()
         updateControls()
