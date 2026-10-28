@@ -685,6 +685,7 @@ struct ManagerModelTests {
             SimulatorHostDevice(identifier: id, name: id, descriptiveName: id,
                 runtimeIdentifier: "runtime", runtimeName: family == "Apple Watch" ? "watchOS" : "iOS",
                 productFamily: family, state: "Shutdown", deviceSetPath: set,
+                deviceTypeIdentifier: "model",
                 capabilities: ["com.apple.coredevice.feature.companiondevicepairing"], pairIdentifiers: pairs)
         }
         let phone = device("phone", family: "iPhone")
@@ -711,6 +712,11 @@ struct ManagerModelTests {
             manager: manager, inspection: inspection, visibility: DeviceInfoVisibility(defaults: defaults),
             pairingMenu: { SimulatorPairingMenu.make(for: $0, model: manager, target: target,
                                                     action: #selector(NSApplication.terminate(_:))) },
+            deviceMenu: { device in
+                let menu = NSMenu(title: device.name)
+                menu.addItem(withTitle: "View Screen", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")
+                return menu
+            },
             unpair: { _ in Issue.record("Unpaired without a user action") }))
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 320, height: 800),
                               styleMask: .titled, backing: .buffered, defer: false)
@@ -720,6 +726,26 @@ struct ManagerModelTests {
         let view = controller.view
         view.layoutSubtreeIfNeeded()
         window.displayIfNeeded()
+        func tables(in view: NSView) -> [NSTableView] {
+            (view as? NSTableView).map { [$0] } ?? view.subviews.flatMap { tables(in: $0) }
+        }
+        let pairedTable = try #require(tables(in: view).first { $0.numberOfRows == 1 })
+        let pairedScroll = try #require(pairedTable.enclosingScrollView)
+        #expect(pairedScroll.documentVisibleRect.minY <= pairedTable.rect(ofRow: 0).minY)
+        #expect(pairedScroll.documentVisibleRect.maxY >= pairedTable.rect(ofRow: 0).maxY)
+        #expect(pairedScroll.frame.height < 120)
+        let pairedRow = try #require(pairedTable.view(atColumn: 0, row: 0, makeIfNecessary: true))
+        pairedRow.layoutSubtreeIfNeeded()
+        window.displayIfNeeded()
+        func popupButtons(in view: NSView) -> [NSPopUpButton] {
+            (view as? NSPopUpButton).map { [$0] } ?? view.subviews.flatMap { popupButtons(in: $0) }
+        }
+        let more = try #require(popupButtons(in: pairedRow).first {
+            $0.accessibilityLabel() == "More Actions for \(phone.name)"
+        })
+        #expect(more.menu?.items.contains {
+            $0.title == "View Screen" && $0.action == #selector(NSApplication.terminate(_:))
+        } == true)
         func addButton(in view: NSView) -> NSPopUpButton? {
             if let button = view as? NSPopUpButton,
                button.accessibilityLabel() == "Add Paired Simulator" { return button }
@@ -728,10 +754,26 @@ struct ManagerModelTests {
         let add = try #require(addButton(in: view))
         let canAddAnotherPhone = add.isEnabled
         #expect(!canAddAnotherPhone)
+        let pairedPosition = pairedScroll.convert(pairedScroll.bounds, to: view).origin
+        inspection.device = .simulator(SimulatorHostDevice(identifier: watch.identifier,
+            name: String(repeating: "A long device name ", count: 20), descriptiveName: watch.descriptiveName,
+            runtimeIdentifier: watch.runtimeIdentifier, runtimeName: String(repeating: "A long OS name ", count: 20),
+            productFamily: watch.productFamily, state: watch.state,
+            deviceTypeIdentifier: String(repeating: "A long model name ", count: 20),
+            capabilities: watch.capabilities, pairIdentifiers: watch.pairIdentifiers))
+        view.layoutSubtreeIfNeeded()
+        window.displayIfNeeded()
+        let afterLongValues = try #require(tables(in: view).first { $0.numberOfRows == 1 }?.enclosingScrollView)
+        let longValuePosition = afterLongValues.convert(afterLongValues.bounds, to: view).origin
+        #expect(abs(longValuePosition.y - pairedPosition.y) < 1)
         inspection.device = .simulator(phone)
         view.layoutSubtreeIfNeeded()
         window.displayIfNeeded()
         #expect(try #require(addButton(in: view)).isEnabled)
+        inspection.device = .simulator(device("unpaired-phone", family: "iPhone", pairs: []))
+        view.layoutSubtreeIfNeeded()
+        window.displayIfNeeded()
+        #expect(tables(in: view).isEmpty)
     }
 
     @Test func profilesFollowTheAvailableKindWhenChangingDevices() throws {

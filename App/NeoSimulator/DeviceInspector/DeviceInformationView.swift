@@ -8,6 +8,7 @@ struct DeviceInformationView: View {
     let inspection: DeviceInspectorModel
     let visibility: DeviceInfoVisibility
     let pairingMenu: (SimulatorHostDevice) -> NSMenu
+    let deviceMenu: (SimulatorHostDevice) -> NSMenu
     let unpair: (_ targetWatch: SimulatorHostDevice) -> Void
 
     @State private var editsVisibility = false
@@ -63,6 +64,9 @@ struct DeviceInformationView: View {
                 Text(field.value)
                     .textSelection(.enabled)
                     .multilineTextAlignment(.trailing)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(field.value)
             }
         }
     }
@@ -90,36 +94,36 @@ struct DeviceInformationView: View {
         let selectedPartner = paired.first { $0.inventoryID == selectedPairedSimulator }
         let targetWatch = selectedPartner.flatMap { DeviceInformation.watchToUnpair(device: device, partner: $0) }
         return Section("Paired Simulators") {
-            VStack(alignment: .leading, spacing: 0) {
+            Group {
                 if paired.isEmpty {
                     Text(device.productFamily == "Apple Watch" ? "No Paired iPhone Simulators" : "No Paired Watch Simulators")
                         .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, minHeight: 128, maxHeight: 128, alignment: .center)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 120)
                 } else {
                     List(selection: $selectedPairedSimulator) {
                         ForEach(paired, id: \.inventoryID) { partner in
-                            HStack(spacing: 8) {
-                                Image(systemName: partner.productFamily == "Apple Watch" ? "applewatch" : "iphone")
-                                    .frame(width: 24)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(partner.name)
-                                    Text(partner.runtimeName)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
+                            LabeledContent {
+                                DeviceMenuButton(menu: deviceMenu(partner), symbol: "ellipsis",
+                                                 label: "More Actions for \(partner.name)", isBordered: false)
+                            } label: {
+                                Text(partner.name)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                    .help(partner.name)
                             }
                             .tag(partner.inventoryID)
                         }
                     }
                     .listStyle(.plain)
-                    .frame(height: max(128, CGFloat(min(paired.count, 3)) * 44))
+                    .frame(maxWidth: .infinity)
                 }
-                Divider()
-                HStack(spacing: 4) {
-                    PairingMenuButton(menu: pairingMenu(device))
+            }
+            .safeAreaBar(edge: .bottom, spacing: 0) {
+                HStack {
+                    DeviceMenuButton(menu: pairingMenu(device), symbol: "plus", label: "Add Paired Simulator")
                         .disabled(!manager.canAddPairing(for: device) || inspection.isManaging ||
                                   !manager.canManage(.pair, deviceIDs: [device.inventoryID]))
-                        .frame(width: 34, height: 24)
                     Button {
                         if let targetWatch { unpair(targetWatch) }
                     } label: {
@@ -130,28 +134,40 @@ struct DeviceInformationView: View {
                               targetWatch.map { manager.managingDeviceIDs.contains($0.inventoryID) } == true)
                     Spacer()
                 }
-                .padding(.top, 4)
+                .buttonStyle(.accessoryBar)
+                .controlSize(.small)
             }
         }
     }
 
-    private struct PairingMenuButton: NSViewRepresentable {
+    private struct DeviceMenuButton: NSViewRepresentable {
         let menu: NSMenu
+        let symbol: String
+        let label: String
+        var isBordered = true
 
         func makeNSView(context: Context) -> NSPopUpButton {
-            let image = NSImage(systemSymbolName: "plus", accessibilityDescription: "Add Paired Simulator")!
+            let image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)!
             let button = NSPopUpButton(image: image, pullDownMenu: menu)
             button.controlSize = .small
+            button.bezelStyle = .accessoryBarAction
+            button.isBordered = isBordered
             button.isEnabled = context.environment.isEnabled
-            button.setAccessibilityLabel("Add Paired Simulator")
+            button.setAccessibilityLabel(label)
             button.toolTip = menu.title
             return button
         }
 
         func updateNSView(_ button: NSPopUpButton, context: Context) {
             button.menu = menu
+            button.isBordered = isBordered
             button.isEnabled = context.environment.isEnabled
+            button.setAccessibilityLabel(label)
             button.toolTip = menu.title
+        }
+
+        func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSPopUpButton, context: Context) -> NSSize? {
+            nsView.fittingSize
         }
     }
 }

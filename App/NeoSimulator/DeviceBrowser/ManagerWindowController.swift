@@ -45,6 +45,11 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     private lazy var deviceInspector: ManagerDeviceInspectorController = {
         let inspector = ManagerDeviceInspectorController(model: model)
         inspector.onPairingMenu = { [weak self] in self?.pairingMenu(for: $0) ?? NSMenu() }
+        inspector.onDeviceMenu = { [weak self] device in
+            let menu = NSMenu(title: "Device Actions")
+            self?.populateDeviceMenu(menu, devices: [.simulator(device)])
+            return menu
+        }
         return inspector
     }()
     private var inspectorMode = 0

@@ -51,9 +51,11 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
     private let detail = ManagerInspectorPropertiesController()
     private let infoVisibility = DeviceInfoVisibility()
     var onPairingMenu: ((SimulatorHostDevice) -> NSMenu)?
+    var onDeviceMenu: ((SimulatorHostDevice) -> NSMenu)?
     private lazy var info = NSHostingController(rootView: DeviceInformationView(
         manager: model, inspection: inspection, visibility: infoVisibility,
         pairingMenu: { [weak self] in self?.onPairingMenu?($0) ?? NSMenu() },
+        deviceMenu: { [weak self] in self?.onDeviceMenu?($0) ?? NSMenu() },
         unpair: { [weak self] in self?.model.manage(.unpair, devices: [.simulator($0)]) }))
     private var showingInfo: Bool { page == .info && content == .info }
     private var showingApplications: Bool { page == .info && content == .applications }
