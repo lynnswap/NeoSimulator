@@ -315,6 +315,18 @@ final class SimulatorManagerModel {
         try await controller.creationCatalog(for: deviceID)
     }
 
+    func activePairedDevice(for identifier: DeviceInventoryID) -> SimulatorHostDevice? {
+        guard case .simulator(let device)? = inventory.first(where: { $0.id == identifier }),
+              device.state == "Booted", let pairedID = device.activePairedDeviceID,
+              case .simulator(let paired)? = inventory.first(where: { $0.id == pairedID }) else { return nil }
+        return paired
+    }
+
+    func openActivePairedDevice(for identifier: DeviceInventoryID) {
+        guard let paired = activePairedDevice(for: identifier) else { return }
+        openScreen(for: .simulator(paired))
+    }
+
     func canAddPairing(for device: SimulatorHostDevice) -> Bool {
         device.isAvailable && (device.productFamily == "iPhone" ||
             (device.productFamily == "Apple Watch" && device.pairIdentifiers.isEmpty))

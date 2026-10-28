@@ -152,8 +152,8 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
         footer.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(footer)
         canvasControlsContainer.orientation = .vertical
-        canvasControlsContainer.alignment = .centerX
-        canvasControlsContainer.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
+        canvasControlsContainer.alignment = .width
+        canvasControlsContainer.edgeInsets = NSEdgeInsets(top: 0, left: 8, bottom: 8, right: 8)
         canvasControlsContainer.translatesAutoresizingMaskIntoConstraints = false
         canvasControlsContainer.isHidden = true
         let bottom = NSStackView(views: [footer, canvasControlsContainer])
@@ -310,7 +310,7 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
 
     private func fitCanvasControls() {
         guard let window else { return }
-        let width = canvasControls.flatMap { $0.isHidden ? nil : $0.fittingSize.width + 24 } ?? 0
+        let width = canvasControls.flatMap { $0.isHidden ? nil : $0.fittingSize.width + canvasControlsContainer.edgeInsets.left + canvasControlsContainer.edgeInsets.right } ?? 0
         window.contentMinSize.width = max(240, width)
         guard !isEmbedded, !window.styleMask.contains(.fullScreen),
               let currentSize = window.contentView?.bounds.size, currentSize.width < width else { return }

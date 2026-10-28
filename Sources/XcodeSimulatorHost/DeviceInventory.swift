@@ -278,7 +278,8 @@ extension SimulatorHostDevice {
              runtimeName: runtimeName, productFamily: productFamily, state: state, ownerXcodeURL: ownerXcodeURL,
              deviceSetPath: deviceSetPath, modelIdentifier: modelIdentifier, deviceTypeIdentifier: deviceTypeIdentifier,
              isAvailable: isAvailable,
-             lastUsedAt: lastUsedAt, capabilities: capabilities ?? self.capabilities, pairIdentifiers: pairIdentifiers)
+             lastUsedAt: lastUsedAt, capabilities: capabilities ?? self.capabilities, pairIdentifiers: pairIdentifiers,
+             activePairedDeviceID: activePairedDeviceID)
     }
 }
 

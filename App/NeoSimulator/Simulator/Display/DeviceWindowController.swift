@@ -33,10 +33,16 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         didSet {
             content.canvasControls = canvasControls
             canvasControls?.onLayoutChange = { [weak self] in
-                self?.content.needsLayout = true
-                self?.content.needsUpdateConstraints = true
-                self?.updateContentMinimumSize()
-                self?.fitCanvasControls()
+                guard let self else { return }
+                self.content.needsLayout = true
+                self.content.needsUpdateConstraints = true
+                self.updateContentMinimumSize()
+                self.fitCanvasControls()
+                if !self.isEmbedded, !self.session.display.usesNativeCanvas,
+                   !self.session.isResizingApp, !self.isSizingWindow {
+                    self.content.layoutSubtreeIfNeeded()
+                    self.displayGeometryChanged()
+                }
             }
             deviceToolbar?.setUsesCanvasControls(canvasControls != nil)
             bezelChanged()
@@ -1743,6 +1749,13 @@ private final class DeviceContentView: NSView, DisplayContentView {
         needsUpdateConstraints = true
         needsLayout = true
     }
+    override func willRemoveSubview(_ subview: NSView) {
+        super.willRemoveSubview(subview)
+        if subview === canvasControls {
+            needsUpdateConstraints = true
+            needsLayout = true
+        }
+    }
     private let viewport = NSLayoutGuide()
     private var canvasConstraints: [NSLayoutConstraint] = []
     // App resize owns an unscaled guest viewport; only Device Hub presentations inset their canvas.
@@ -1752,7 +1765,7 @@ private final class DeviceContentView: NSView, DisplayContentView {
     private var canvasInset: CGFloat { usesDeviceCanvasLayout ? 8 : 0 }
     var horizontalDisplayPadding: CGFloat { bounds.width - availableDisplayRect.width }
     var canvasControlsWidth: CGFloat {
-        canvasControls.flatMap { $0.isHidden ? nil : $0.fittingSize.width + 24 } ?? 0
+        canvasControls.flatMap { $0.isHidden ? nil : $0.fittingSize.width + 16 } ?? 0
     }
     func setDisplay(_ display: NSView, usesNativeCanvas: Bool) {
         self.usesNativeCanvas = usesNativeCanvas
@@ -1875,12 +1888,13 @@ private final class DeviceContentView: NSView, DisplayContentView {
         ]
         if let canvasControls, canvasControls.superview === self, !canvasControls.isHidden {
             canvasConstraints += [
-                canvasControls.centerXAnchor.constraint(equalTo: centerXAnchor),
                 canvasControls.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8),
-                canvasControls.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 12),
-                canvasControls.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -12),
-                viewport.bottomAnchor.constraint(equalTo: canvasControls.topAnchor, constant: -canvasInset),
+                canvasControls.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+                canvasControls.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+                viewport.bottomAnchor.constraint(equalTo: canvasControls.topAnchor),
             ]
+        } else if let canvasControls, !canvasControls.isHidden {
+            canvasConstraints.append(viewport.bottomAnchor.constraint(equalTo: bottomAnchor))
         } else {
             canvasConstraints.append(viewport.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -canvasInset))
         }

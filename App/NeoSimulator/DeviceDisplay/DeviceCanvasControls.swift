@@ -2,14 +2,14 @@ import AppKit
 import SwiftUI
 @_spi(NeoSimulator) import XcodeSimulatorHost
 
-/// Device actions retained with the screen across presentations.
+/// Bottom canvas content retained with the screen across presentations.
 @MainActor
 final class DeviceCanvasControls: NSView {
     var onAction: ((String) -> Void)?
     var onLayoutChange: (() -> Void)?
     var xcodeURL: URL?
-    private let host = NSHostingView(rootView: CanvasActionBar())
-    private var content = CanvasActionBar()
+    private let host = CanvasControlsHostingView(rootView: CanvasBottomContent())
+    private var content = CanvasBottomContent()
     private var modifierMonitor: Any?
     private var artworkXcodeURL: URL?
     private var artworkTask: Task<Void, Never>?
@@ -19,7 +19,7 @@ final class DeviceCanvasControls: NSView {
     init() {
         super.init(frame: .zero)
         isHidden = true
-        host.sizingOptions = [.intrinsicContentSize]
+        host.sizingOptions = [.minSize, .intrinsicContentSize]
         host.translatesAutoresizingMaskIntoConstraints = false
         addSubview(host)
         NSLayoutConstraint.activate([
@@ -44,7 +44,7 @@ final class DeviceCanvasControls: NSView {
     func update(supports: (String) -> Bool, isEnabled: (String) -> Bool, recordingTitle: String,
                 recordingStartDate: Date? = nil, nativePoses: NativeDevicePoseControls? = nil,
                 nativePosesEnabled: Bool = true, posture: DevicePostureModel? = nil,
-                postureEnabled: Bool = true, postureAvailable: Bool = true) {
+                postureEnabled: Bool = true, postureAvailable: Bool = true, pairedDeviceName: String? = nil) {
         content.actions = ["home", "capture", "record", "rotate"].filter(supports).map { identifier in
             let title = switch identifier {
             case "home": "Home"
@@ -62,6 +62,7 @@ final class DeviceCanvasControls: NSView {
                                 image: symbol.flatMap { NSImage.deviceControlSymbol(named: $0, accessibilityDescription: title) },
                                 enabled: isEnabled(identifier))
         }
+        content.pairedDeviceName = pairedDeviceName
         content.recordingStartDate = recordingStartDate
         content.nativePoses = nativePoses?.isAvailable == true ? nativePoses : nil
         content.nativePosesEnabled = nativePosesEnabled
@@ -76,6 +77,8 @@ final class DeviceCanvasControls: NSView {
     }
 
     private func render(modifierFlags: NSEvent.ModifierFlags = NSEvent.modifierFlags) {
+        let previousSize = fittingSize
+        let wasHidden = isHidden
         let rotation = DeviceCommand.canvasRotation(modifierFlags: modifierFlags)
         for index in content.actions.indices where content.actions[index].id == "rotate" {
             content.actions[index].image = rotationImages[rotation]
@@ -87,10 +90,13 @@ final class DeviceCanvasControls: NSView {
         }
         content.onAction = { [weak self] in self?.onAction?($0) }
         host.rootView = content
-        isHidden = content.actions.isEmpty && content.postures.isEmpty && content.nativePoses == nil
+        isHidden = content.pairedDeviceName == nil && content.actions.isEmpty && content.postures.isEmpty && content.nativePoses == nil
         host.invalidateIntrinsicContentSize()
         invalidateIntrinsicContentSize()
-        onLayoutChange?()
+        // Measure the hosting view's updated constraints before notifying the
+        // window owner; style-only renders must preserve manual window geometry.
+        updateConstraintsForSubtreeIfNeeded()
+        if wasHidden != isHidden || previousSize != fittingSize { onLayoutChange?() }
     }
 
     private func loadArtworkIfNeeded() {
@@ -137,7 +143,18 @@ private struct CanvasAction: Identifiable {
     var help: String? = nil
 }
 
-private struct CanvasActionBar: View {
+@MainActor
+private final class CanvasControlsHostingView: NSHostingView<CanvasBottomContent> {
+    override var intrinsicContentSize: NSSize {
+        let size = super.intrinsicContentSize
+        // The caption accepts the available width; SwiftUI still supplies the
+        // action bar's minimum width and the content's natural height.
+        return NSSize(width: NSView.noIntrinsicMetric, height: size.height)
+    }
+}
+
+private struct CanvasBottomContent: View {
+    var pairedDeviceName: String?
     var actions: [CanvasAction] = []
     var postures: [CanvasAction] = []
     var recordingStartDate: Date?
@@ -146,6 +163,28 @@ private struct CanvasActionBar: View {
     var onAction: (String) -> Void = { _ in }
 
     var body: some View {
+        VStack(spacing: 0) {
+            if let pairedDeviceName {
+                Button { onAction("pairedDevice") } label: {
+                    HStack {
+                        Text("Paired with \(pairedDeviceName)").lineLimit(1).truncationMode(.tail)
+                        Image(systemName: "chevron.right").fontWeight(.semibold).foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .foregroundStyle(.primary)
+                    .glassEffect(.regular, in: .capsule)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("pairedDevice")
+                .padding(.top, 8)
+            }
+            actionBar
+        }
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var actionBar: some View {
         HStack {
             let primary = actions.filter { $0.id != "rotate" }
             if !primary.isEmpty {
@@ -168,6 +207,7 @@ private struct CanvasActionBar: View {
             }
         }
         .fixedSize()
+        .safeAreaPadding(.top, 8)
     }
 
     @ViewBuilder private func button(_ action: CanvasAction) -> some View {

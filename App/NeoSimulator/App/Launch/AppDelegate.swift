@@ -538,6 +538,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func performScreenAction(_ action: String, for identifier: DeviceInventoryID) {
         guard let screen = screen(for: identifier) else { return }
+        if action == "pairedDevice" {
+            model.openActivePairedDevice(for: identifier)
+            return
+        }
         if action.hasPrefix("posture."), let posture = DevicePosture(rawValue: String(action.dropFirst("posture.".count))),
            let source = model.devicePostures[identifier], screen.canControlDevice,
            !model.managingDeviceIDs.contains(identifier) {
@@ -566,7 +570,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             action == "rotate" && posture?.isSupported == true ? false : screen.supports(action)
         }, isEnabled: screen.isEnabled, recordingTitle: screen.recordingTitle,
                         recordingStartDate: screen.recordingStartDate, nativePoses: screen.nativePoseControls,
-                        nativePosesEnabled: enabled, posture: posture, postureEnabled: enabled, postureAvailable: available)
+                        nativePosesEnabled: enabled, posture: posture, postureEnabled: enabled, postureAvailable: available,
+                        pairedDeviceName: model.activePairedDevice(for: identifier)?.name)
         if mainWindow?.liveDeviceIdentifier == identifier {
             mainWindow?.refreshCanvasControls()
         }
