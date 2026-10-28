@@ -3,10 +3,175 @@ import Foundation
 import Observation
 import SwiftUI
 import Testing
+import XCTest
 @testable import XcodeSimulatorHost
 
 @Suite(.serialized, .timeLimit(.minutes(1))) @MainActor
 struct ManagerModelTests {
+    @Test(arguments: [(DeviceInspectorModel.Page.info, DeviceInspectorModel.Content.applications),
+                      (.info, .configuration), (.reports, .info)])
+    func sameDeviceInventoryUpdatesKeepInspectorRecordsAndSelection(selection: (page: DeviceInspectorModel.Page, content: DeviceInspectorModel.Content)) async throws {
+        _ = NSApplication.shared
+        let features: Set<String> = ["streamapplist", "installapp", "launchapplication", "configurationprofiles", "listFiles", "transferFiles"]
+        func device(_ identifier: String = "inspected-device", name: String = "Phone", features: Set<String> = features) -> InventoryDevice {
+            .remote(CoreDeviceDevice(identifier: identifier, udid: nil, kind: .physical, name: name,
+                modelIdentifier: nil, modelName: nil, platform: "iOS", osVersion: nil, osBuild: nil,
+                connectionState: "connected", pairingState: "paired", transportType: nil, bootState: "booted",
+                capabilities: Set(features.map { "com.apple.coredevice.feature." + $0 }), lastConnectedAt: nil, visibilityClass: nil))
+        }
+        let response: String
+        switch (selection.page, selection.content) {
+        case (.info, .applications):
+            response = #"{"result":{"apps":[{"bundleIdentifier":"fixture.app","name":"Fixture"}]}}"#
+        case (.reports, _):
+            response = #"{"result":{"files":[{"relativePath":"Fixture.ips","metadata":{},"resources":{"isDirectory":false}}]}}"#
+        default:
+            response = #"{"result":{"configurationProfiles":[{"payloadIdentifier":"fixture.profile","name":"Fixture"}]}}"#
+        }
+        let source = ManagerModelSource(devices: [], inspectorResponse: response)
+        var events = source.events.makeAsyncIterator()
+        let controller = ManagerDeviceInspectorController(model: SimulatorManagerModel(source: source))
+        controller.setPage(selection.page)
+        controller.inspection.select(selection.content)
+        controller.update(device: device(), isManaging: false, isVisible: true)
+        #expect(await events.next() == .inspect(device().id))
+        await finishInspectorRead(controller.inspection)
+        let views = inspectorViews(controller.view)
+        let table = try #require(views.compactMap { $0 as? NSTableView }.first {
+            $0.accessibilityLabel() == "Installed Applications, Profiles, and Reports"
+        })
+        // The controller publishes rows in a separate observation callback after the model finishes reading.
+        let rowsPublished = XCTNSPredicateExpectation(predicate: NSPredicate { object, _ in
+            MainActor.assumeIsolated { (object as? NSTableView)?.numberOfRows == 1 }
+        }, object: table)
+        try #require(await XCTWaiter.fulfillment(of: [rowsPublished], timeout: 5) == .completed)
+        table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        let filter = try #require(views.compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == "Report Type" })
+        if selection.page == .reports {
+            filter.selectItem(at: 1)
+            NSApp.sendAction(try #require(filter.action), to: filter.target, from: filter)
+        }
+        await source.holdInspectorReads()
+        let updated = device(name: "Renamed Phone")
+        controller.update(device: updated, isManaging: false, isVisible: true)
+        #expect(await events.next() == .inspect(updated.id))
+        #expect(table.numberOfRows == 1 && table.selectedRow == 0)
+        #expect(selection.page != .reports || filter.indexOfSelectedItem == 1)
+        switch (selection.page, selection.content) {
+        case (.info, .applications): #expect(controller.inspection.applications.count == 1)
+        case (.reports, _): #expect(controller.inspection.reports.count == 1)
+        default: #expect(controller.inspection.profiles.count == 1)
+        }
+        await source.completeInspectorRead()
+        await finishInspectorRead(controller.inspection)
+        #expect(controller.inspection.inspector?.device == updated)
+        #expect(table.selectedRow == 0)
+
+        controller.update(device: device(name: "Renamed Phone", features: []), isManaging: false, isVisible: true)
+        await finishInspectorRead(controller.inspection)
+        #expect(controller.inspection.inspector?.device.capabilities.isEmpty == true)
+        let toolTip = selection.content == .applications ? "Launch Application" : (selection.page == .reports ? "Download Report…" : "Remove…")
+        let action = try #require(views.compactMap { $0 as? NSButton }.first { $0.toolTip == toolTip })
+        #expect(!action.isEnabled)
+
+        await source.holdInspectorReads()
+        controller.update(device: device("other-device"), isManaging: false, isVisible: true)
+        #expect(table.numberOfRows == 0 && table.selectedRow == -1)
+        #expect(controller.inspection.applications.isEmpty && controller.inspection.profiles.isEmpty && controller.inspection.reports.isEmpty)
+        #expect(await events.next() == .inspect(device("other-device").id))
+        await source.completeInspectorRead()
+        await finishInspectorRead(controller.inspection)
+        controller.stopReading()
+    }
+
+    @Test func changingProfileCapabilityClearsTheOldKindEvenWhenTheRefreshFails() async throws {
+        _ = NSApplication.shared
+        func device(features: Set<String>) -> InventoryDevice {
+            .remote(CoreDeviceDevice(identifier: "inspected-device", udid: nil, kind: .physical, name: "Phone",
+                modelIdentifier: nil, modelName: nil, platform: "iOS", osVersion: nil, osBuild: nil,
+                connectionState: "connected", pairingState: "paired", transportType: nil, bootState: "booted",
+                capabilities: Set(features.map { "com.apple.coredevice.feature." + $0 }), lastConnectedAt: nil, visibilityClass: nil))
+        }
+        let original = device(features: ["provisioningprofiles", "configurationprofiles"])
+        let source = ManagerModelSource(devices: [], inspectorResponse:
+            #"{"result":{"provisioningProfiles":[{"uuid":"fixture.profile","name":"Fixture"}]}}"#)
+        var events = source.events.makeAsyncIterator()
+        let controller = ManagerDeviceInspectorController(model: SimulatorManagerModel(source: source))
+        controller.inspection.select(.provisioning)
+        controller.update(device: original, isManaging: false, isVisible: true)
+        #expect(await events.next() == .inspect(original.id))
+        await finishInspectorRead(controller.inspection)
+        let views = inspectorViews(controller.view)
+        let table = try #require(views.compactMap { $0 as? NSTableView }.first {
+            $0.accessibilityLabel() == "Installed Applications, Profiles, and Reports"
+        })
+        let rowsPublished = XCTNSPredicateExpectation(predicate: NSPredicate { object, _ in
+            MainActor.assumeIsolated { (object as? NSTableView)?.numberOfRows == 1 }
+        }, object: table)
+        try #require(await XCTWaiter.fulfillment(of: [rowsPublished], timeout: 5) == .completed)
+        table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        let remove = try #require(views.compactMap { $0 as? NSButton }.first { $0.toolTip == "Remove…" })
+        try #require(remove.isEnabled)
+
+        await source.holdInspectorReads()
+        controller.update(device: device(features: ["configurationprofiles"]), isManaging: false, isVisible: true)
+        #expect(controller.inspection.content == .configuration)
+        #expect(table.numberOfRows == 0 && table.selectedRow == -1)
+        #expect(controller.inspection.profiles.isEmpty)
+        #expect(await events.next() == .inspect(original.id))
+        await source.failInspectorRead()
+        await finishInspectorRead(controller.inspection)
+        let status = try #require(views.compactMap { $0 as? NSTextField }.first { $0.accessibilityLabel() == "Inspector Status" })
+        let failurePublished = XCTNSPredicateExpectation(predicate: NSPredicate { object, _ in
+            MainActor.assumeIsolated { (object as? NSTextField)?.stringValue.contains("Unavailable") == true }
+        }, object: status)
+        try #require(await XCTWaiter.fulfillment(of: [failurePublished], timeout: 5) == .completed)
+        #expect(table.numberOfRows == 0 && table.selectedRow == -1)
+        #expect(!remove.isEnabled)
+        controller.stopReading()
+    }
+
+    @Test func sameDeviceInventoryRenameKeepsInfoUntilTheFreshDetailsArrive() async throws {
+        _ = NSApplication.shared
+        let original = simulator()
+        guard case .simulator(let previous) = original else { return }
+        let updated = InventoryDevice.simulator(SimulatorHostDevice(identifier: previous.identifier, name: "Inventory Rename",
+            descriptiveName: "Inventory Rename", runtimeIdentifier: previous.runtimeIdentifier, runtimeName: previous.runtimeName,
+            productFamily: previous.productFamily, state: previous.state))
+        func response(_ name: String) -> String {
+            "{\"devices\":{\"test-runtime\":[{\"udid\":\"same-udid\",\"name\":\"\(name)\"}]}}"
+        }
+        let source = ManagerModelSource(devices: [], inspectorResponse: response("Initial Details"))
+        var events = source.events.makeAsyncIterator()
+        let controller = ManagerDeviceInspectorController(model: SimulatorManagerModel(source: source))
+        controller.setPage(.info)
+        controller.update(device: original, isManaging: false, isVisible: true)
+        #expect(await events.next() == .inspect(original.id))
+        await finishInspectorRead(controller.inspection)
+        try #require(controller.inspection.infoProperties["name"] == .string("Initial Details"))
+        await source.holdInspectorReads()
+        controller.update(device: updated, isManaging: false, isVisible: true)
+        #expect(await events.next() == .inspect(updated.id))
+        #expect(controller.inspection.infoProperties["name"] == .string("Initial Details"))
+        await source.completeInspectorRead(response("Fresh Details"))
+        await finishInspectorRead(controller.inspection)
+        #expect(controller.inspection.infoProperties["name"] == .string("Fresh Details"))
+        #expect(controller.inspection.inspector?.device == updated)
+        controller.stopReading()
+    }
+
+    private func finishInspectorRead(_ inspection: DeviceInspectorModel) async {
+        while inspection.reading {
+            await withCheckedContinuation { continuation in
+                withObservationTracking { _ = inspection.reading } onChange: { continuation.resume() }
+            }
+        }
+    }
+
+    private func inspectorViews(_ view: NSView) -> [NSView] {
+        [view] + view.subviews.flatMap(inspectorViews)
+    }
+
     @Test func pairingMenuUsesCoreDeviceEligibilityAndTheSelectedDeviceSet() async throws {
         _ = NSApplication.shared
         let feature = "com.apple.coredevice.feature.companiondevicepairing"
@@ -407,6 +572,67 @@ struct ManagerModelTests {
 
         #expect(model.settings?.appearance == "dark")
         #expect(model.settings?.contentSize == "large")
+    }
+
+    @Test func sameDeviceMetadataKeepsLoadedValuesAndAnInFlightRead() async throws {
+        let device = simulator()
+        let renamed = simulator(name: "Renamed Phone")
+        let source = ManagerModelSource(devices: [device])
+        var events = source.events.makeAsyncIterator()
+        let model = DeviceSettingsModel(source: source)
+        model.inspect(device, selectionCount: 1)
+        #expect(await events.next() == .read(device.id))
+        await source.completeRead(settings(appearance: "light"))
+        await model.finishReading()
+
+        model.requestRefresh()
+        #expect(await events.next() == .read(device.id))
+        model.inspect(renamed, selectionCount: 1)
+        #expect(model.device == renamed && model.settings?.appearance == "light")
+        await source.completeRead(settings(appearance: "dark"))
+        #expect(await events.next() == .read(device.id))
+        #expect(model.settings?.appearance == "dark")
+        await source.completeRead(settings(appearance: "light", contentSize: "large"))
+        await model.finishReading()
+        #expect(model.settings?.contentSize == "large")
+
+        model.inspect(simulator(name: "Renamed Phone", state: "Shutdown"), selectionCount: 1)
+        #expect(model.device?.canInspectSettings == false && model.settings?.contentSize == "large")
+        model.inspect(renamed, selectionCount: 1)
+        #expect(await events.next() == .read(device.id))
+        await source.completeRead(settings(appearance: "dark", contentSize: "large"))
+        await model.finishReading()
+        #expect(model.device?.canInspectSettings == true && model.settings?.appearance == "dark")
+    }
+
+    @Test func sameDeviceMetadataKeepsAcceptedEditsAndTheirConfirmation() async throws {
+        let device = simulator()
+        let source = ManagerModelSource(devices: [device])
+        var events = source.events.makeAsyncIterator()
+        let model = DeviceSettingsModel(source: source)
+        model.inspect(device, selectionCount: 1)
+        #expect(await events.next() == .read(device.id))
+        await source.completeRead(settings(appearance: "light", contentSize: "medium"))
+        await model.finishReading()
+
+        model.setReadingSuspended(true)
+        let edit = model.accept(.contentSize("large"), for: device)
+        model.inspect(simulator(name: "Renamed Phone"), selectionCount: 1)
+        #expect(model.settings?.appearance == "light" && model.settings?.contentSize == "large")
+        let applying = Task { try await model.apply(edit) }
+        #expect(await events.next() == .write(device.id))
+        #expect(await source.writeInputs.last??.appearance == "light")
+        let latest = simulator(name: "Latest Phone")
+        model.inspect(latest, selectionCount: 1)
+        await source.completeWrite()
+        try await applying.value
+        #expect(model.device == latest && model.settings?.contentSize == "large")
+
+        model.setReadingSuspended(false)
+        #expect(await events.next() == .read(device.id))
+        await source.completeRead(settings(appearance: "dark", contentSize: "large"))
+        await model.finishReading()
+        #expect(model.settings?.appearance == "dark" && model.settings?.contentSize == "large")
     }
 
     @Test func switchingDeviceSetsDiscardsTheCancelledResult() async throws {
@@ -855,9 +1081,9 @@ struct ManagerModelTests {
         #expect(restored.isVisible(future) == !hidesHardware && restored.isVisible(sibling) == !hidesHardware)
     }
 
-    private func simulator(deviceSet: String? = nil) -> InventoryDevice {
-        .simulator(SimulatorHostDevice(identifier: "same-udid", name: "Test Phone", descriptiveName: "Test Phone",
-            runtimeIdentifier: "test-runtime", runtimeName: "iOS", productFamily: "iPhone", state: "Booted",
+    private func simulator(deviceSet: String? = nil, name: String = "Test Phone", state: String = "Booted") -> InventoryDevice {
+        .simulator(SimulatorHostDevice(identifier: "same-udid", name: name, descriptiveName: name,
+            runtimeIdentifier: "test-runtime", runtimeName: "iOS", productFamily: "iPhone", state: state,
             deviceSetPath: deviceSet, capabilities: ["com.apple.dt.coredevice.device.shutdown"]))
     }
 
@@ -867,7 +1093,7 @@ struct ManagerModelTests {
 }
 
 private actor ManagerModelSource: SimulatorManagerSource {
-    enum Event: Equatable, Sendable { case read(DeviceInventoryID), write(DeviceInventoryID), open(DeviceInventoryID), close(DeviceInventoryID), quit, manage(DeviceManagementAction, [DeviceInventoryID]) }
+    enum Event: Equatable, Sendable { case read(DeviceInventoryID), write(DeviceInventoryID), open(DeviceInventoryID), close(DeviceInventoryID), inspect(DeviceInventoryID), quit, manage(DeviceManagementAction, [DeviceInventoryID]) }
     enum Failure: LocalizedError {
         case unavailable, native
         var errorDescription: String? { self == .native ? "Native shutdown failed" : "Unavailable" }
@@ -875,6 +1101,9 @@ private actor ManagerModelSource: SimulatorManagerSource {
     nonisolated let events: AsyncStream<Event>
     private let continuation: AsyncStream<Event>.Continuation
     private let devices: [InventoryDevice]
+    private var inspectorResponse: String?
+    private var holdsInspectorReads = false
+    private var inspectorRead: CheckedContinuation<CommandOutput, any Error>?
     private var holdsManagement = false
     private var immediateRead: SimulatorDeviceSettings?
     private var readContinuation: CheckedContinuation<SimulatorDeviceSettings, any Error>?
@@ -892,10 +1121,12 @@ private actor ManagerModelSource: SimulatorManagerSource {
     private var managementWaiters: [(DeviceManagementAction, CheckedContinuation<Void, Never>)] = []
     private var admittedManagement: Set<UUID> = []
 
-    init(devices: [InventoryDevice], managementFailureID: DeviceInventoryID? = nil, holdsManagement: Bool = false) {
+    init(devices: [InventoryDevice], managementFailureID: DeviceInventoryID? = nil, holdsManagement: Bool = false,
+         inspectorResponse: String? = nil) {
         self.managementFailureID = managementFailureID
         self.holdsManagement = holdsManagement
         self.devices = devices
+        self.inspectorResponse = inspectorResponse
         (events, continuation) = AsyncStream.makeStream()
     }
 
@@ -1023,7 +1254,35 @@ private actor ManagerModelSource: SimulatorManagerSource {
         managementWaiters.remove(at: index).1.resume()
         holdsManagement = false
     }
-    func inspector(for device: InventoryDevice) throws -> DeviceInspector { throw Failure.unavailable }
+    func inspector(for device: InventoryDevice) throws -> DeviceInspector {
+        guard inspectorResponse != nil else { throw Failure.unavailable }
+        return DeviceInspector(device: device, simulatorXcodeURL: URL(fileURLWithPath: "/Fixture.app"),
+            transport: .init(run: { command in try await self.readInspector(device.id) }))
+    }
+    private func readInspector(_ identifier: DeviceInventoryID) async throws -> CommandOutput {
+        if holdsInspectorReads {
+            return try await withCheckedThrowingContinuation { waiting in
+                inspectorRead = waiting
+                continuation.yield(.inspect(identifier))
+            }
+        }
+        continuation.yield(.inspect(identifier))
+        return CommandOutput(terminationStatus: 0, stdout: Data((inspectorResponse ?? "").utf8), stderr: Data())
+    }
+    func holdInspectorReads() { holdsInspectorReads = true }
+    func completeInspectorRead(_ response: String? = nil) {
+        if let response { inspectorResponse = response }
+        holdsInspectorReads = false
+        let waiting = inspectorRead
+        inspectorRead = nil
+        waiting?.resume(returning: CommandOutput(terminationStatus: 0, stdout: Data((inspectorResponse ?? "").utf8), stderr: Data()))
+    }
+    func failInspectorRead() {
+        holdsInspectorReads = false
+        let waiting = inspectorRead
+        inspectorRead = nil
+        waiting?.resume(throwing: Failure.unavailable)
+    }
     func restore(force: Bool) throws { throw Failure.unavailable }
     func synchronizeXcodeConnections() -> Bool { false }
     func testingDeviceVisibilityDidChange() {}

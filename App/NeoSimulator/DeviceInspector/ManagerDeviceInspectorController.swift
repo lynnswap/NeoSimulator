@@ -9,7 +9,7 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
                                                        NSSearchFieldDelegate, NSMenuDelegate {
     typealias Page = DeviceInspectorModel.Page
     private typealias Content = DeviceInspectorModel.Content
-    private let inspection = DeviceInspectorModel()
+    let inspection = DeviceInspectorModel()
     private let model: SimulatorManagerModel
     private var device: InventoryDevice? { get { inspection.device } set { inspection.device = newValue } }
     private var inspector: DeviceInspector? { get { inspection.inspector } set { inspection.inspector = newValue } }
@@ -240,12 +240,14 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
 
     func update(device: InventoryDevice?, isManaging: Bool, isVisible: Bool) {
         _ = view
-        let changed = self.device != device
+        let selectionChanged = self.device?.id != device?.id
+        let snapshotChanged = self.device != device
         let becameVisible = !self.isVisible && isVisible
+        let previousContent = content
         self.device = device
         self.isManaging = isManaging
         self.isVisible = isVisible
-        if changed {
+        if selectionChanged {
             dismissReportPreview()
             stopReading()
             inspection.reset()
@@ -255,7 +257,8 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
             lastIssue = nil
             updateRows()
         }
-        if isVisible && (changed || becameVisible) { reload() }
+        if page == .info && content != previousContent { changedContent() }
+        else if isVisible && (snapshotChanged || becameVisible) { reload() }
         else if !isVisible { stopReading(); dismissReportPreview() }
         updateVisibility()
         updateControls()
