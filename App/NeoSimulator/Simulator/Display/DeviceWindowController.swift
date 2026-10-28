@@ -1943,13 +1943,25 @@ private final class DeviceContentView: NSView, DisplayContentView {
         retainedCanvasCenter = center
         needsLayout = true
         if layout, !isLayingOutCanvas { layoutSubtreeIfNeeded() }
-        // Compact and app resize reset magnification to one before reusing the display.
-        canvasScrollView.minMagnification = min(range.lowerBound, 1)
-        canvasScrollView.maxMagnification = range.upperBound
-        let point = NSPoint(x: canvasDisplayFrame.minX + canvasDisplayFrame.width * center.x,
-                            y: canvasDisplayFrame.minY + canvasDisplayFrame.height * center.y)
-        if animated { canvasScrollView.animator().setMagnification(canvasZoom.scale, centeredAt: point) }
-        else { canvasScrollView.setMagnification(canvasZoom.scale, centeredAt: point) }
+        // Admit the retained target and current value, including a compact/app-resize reset to one.
+        canvasScrollView.minMagnification = min(range.lowerBound, canvasZoom.scale, canvasScrollView.magnification, 1)
+        canvasScrollView.maxMagnification = max(range.upperBound, canvasZoom.scale, canvasScrollView.magnification, 1)
+        let documentPoint = NSPoint(x: canvasDisplayFrame.minX + canvasDisplayFrame.width * center.x,
+                                    y: canvasDisplayFrame.minY + canvasDisplayFrame.height * center.y)
+        let point = canvasScrollView.contentView.convert(documentPoint, from: canvasDocumentView)
+        if animated {
+            NSAnimationContext.runAnimationGroup { _ in
+                canvasScrollView.animator().setMagnification(canvasZoom.scale, centeredAt: point)
+            } completionHandler: { [weak self] in self?.finishCanvasMagnification() }
+        } else {
+            canvasScrollView.setMagnification(canvasZoom.scale, centeredAt: point)
+            finishCanvasMagnification()
+        }
+    }
+
+    private func finishCanvasMagnification() {
+        needsLayout = true
+        if !isLayingOutCanvas { layoutSubtreeIfNeeded() }
     }
 
     override func layout() {
@@ -1968,7 +1980,9 @@ private final class DeviceContentView: NSView, DisplayContentView {
             canvasScrollView.frame = available
             let intrinsic = display.intrinsicContentSize
             let size = intrinsic.width > 0 && intrinsic.height > 0 ? intrinsic : display.frame.size
-            let magnification = isEmbedded && !scrollsDisplay ? (canvasZoom?.scale ?? 1) : 1
+            // Keep enough document space for both ends until AppKit finishes magnifying.
+            let magnification = isEmbedded && !scrollsDisplay
+                ? min(canvasZoom?.scale ?? 1, canvasScrollView.magnification) : 1
             let viewport = NSSize(width: canvasScrollView.contentSize.width / magnification,
                                   height: canvasScrollView.contentSize.height / magnification)
             let documentSize = NSSize(width: max(viewport.width, size.width), height: max(viewport.height, size.height))

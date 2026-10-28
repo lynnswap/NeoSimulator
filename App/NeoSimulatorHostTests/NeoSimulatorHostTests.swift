@@ -1553,8 +1553,23 @@ struct InputFocusTests {
         #expect(visible.insetBy(dx: -pixel, dy: -pixel).contains(display.view.frame))
         #expect(min(abs(visible.width - display.view.frame.width), abs(visible.height - display.view.frame.height)) <= pixel)
         let fitScale = scroll.magnification
+        let deviceCenter = NSPoint(x: display.view.bounds.midX, y: display.view.bounds.midY)
+        let centerAtFit = display.view.convert(deviceCenter, to: content)
         try await animateCanvas { controller.performCanvasZoom(.zoomIn) }
+        let centerAfterZoom = display.view.convert(deviceCenter, to: content)
+        #expect(abs(centerAfterZoom.x - centerAtFit.x) <= pixel && abs(centerAfterZoom.y - centerAtFit.y) <= pixel)
         #expect(scroll.magnification > fitScale && display.renderScale == 1)
+        try await animateCanvas {
+            controller.performCanvasZoom(.zoomIn)
+            controller.performCanvasZoom(.zoomIn)
+            controller.performCanvasZoom(.zoomOut)
+        }
+        let centerAfterRetarget = display.view.convert(deviceCenter, to: content)
+        let visibleCenter = display.view.convert(NSPoint(x: scroll.contentView.bounds.midX,
+                                                         y: scroll.contentView.bounds.midY), from: scroll.contentView)
+        #expect(abs(centerAfterRetarget.x - centerAtFit.x) <= pixel && abs(centerAfterRetarget.y - centerAtFit.y) <= pixel)
+        #expect(abs(visibleCenter.x - deviceCenter.x) * scroll.magnification <= pixel
+            && abs(visibleCenter.y - deviceCenter.y) * scroll.magnification <= pixel)
         try await animateCanvas { controller.setScale(.pointAccurate) }
         #expect(controller.canvasZoom.mode == .fixed(1) && display.renderScale == 1)
         #expect(window.frame == outerFrame && controller.window?.frame == compactFrame)
@@ -1613,6 +1628,17 @@ struct InputFocusTests {
         #expect(scroll.documentVisibleRect.insetBy(dx: -pixel, dy: -pixel).contains(display.view.frame))
         #expect(controller.canvasZoomIsSelected(.fit) && display.renderScale == 1)
         #expect(window.firstResponder === display.inputView)
+        try await animateCanvas { controller.performCanvasZoom(.zoomIn) }
+        try await animateCanvas { controller.performCanvasZoom(.zoomOut) }
+        let fixedScale = controller.canvasZoom.scale
+        try #require(fixedScale < 0.4)
+        let fixedExtent = display.view.convert(display.view.bounds, to: content).size
+        parent.view.setFrameSize(NSSize(width: 400, height: 600))
+        parent.view.layoutSubtreeIfNeeded()
+        let grownExtent = display.view.convert(display.view.bounds, to: content).size
+        #expect(controller.canvasZoom.mode == .fixed(fixedScale))
+        #expect(WindowScale.matches(scroll.magnification, fixedScale))
+        #expect(abs(grownExtent.width - fixedExtent.width) <= pixel && abs(grownExtent.height - fixedExtent.height) <= pixel)
     }
 
     @Test func commandsAndActivationRestoreTheNativeInputOwner() throws {
