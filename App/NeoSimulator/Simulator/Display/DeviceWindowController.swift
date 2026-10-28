@@ -1798,7 +1798,10 @@ private final class DeviceContentView: NSView, DisplayContentView {
     private var usesViewport: Bool { isEmbedded || scrollsDisplay }
     private func updateViewport() {
         retainedCanvasCenter = canvasCenter
-        if !isEmbedded || scrollsDisplay { canvasScrollView.magnification = 1 }
+        if !isEmbedded || scrollsDisplay {
+            let clip = canvasScrollView.contentView
+            setCanvasMagnification(1, centeredAt: NSPoint(x: clip.bounds.midX, y: clip.bounds.midY), animated: false)
+        }
         let parent = usesViewport ? canvasDocumentView : self
         if display.superview !== parent {
             display.removeFromSuperview()
@@ -1949,14 +1952,15 @@ private final class DeviceContentView: NSView, DisplayContentView {
         let documentPoint = NSPoint(x: canvasDisplayFrame.minX + canvasDisplayFrame.width * center.x,
                                     y: canvasDisplayFrame.minY + canvasDisplayFrame.height * center.y)
         let point = canvasScrollView.contentView.convert(documentPoint, from: canvasDocumentView)
-        if animated {
-            NSAnimationContext.runAnimationGroup { _ in
-                canvasScrollView.animator().setMagnification(canvasZoom.scale, centeredAt: point)
-            } completionHandler: { [weak self] in self?.finishCanvasMagnification() }
-        } else {
-            canvasScrollView.setMagnification(canvasZoom.scale, centeredAt: point)
-            finishCanvasMagnification()
-        }
+        setCanvasMagnification(canvasZoom.scale, centeredAt: point, animated: animated)
+    }
+
+    private func setCanvasMagnification(_ scale: CGFloat, centeredAt point: NSPoint, animated: Bool) {
+        NSAnimationContext.runAnimationGroup { context in
+            // A zero-duration animator write replaces an in-flight zoom during geometry or presentation changes.
+            if !animated { context.duration = 0 }
+            canvasScrollView.animator().setMagnification(scale, centeredAt: point)
+        } completionHandler: { [weak self] in self?.finishCanvasMagnification() }
     }
 
     private func finishCanvasMagnification() {
