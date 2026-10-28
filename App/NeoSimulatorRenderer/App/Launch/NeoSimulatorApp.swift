@@ -86,6 +86,8 @@ enum NeoSimulatorApp {
                 try FileHandle.standardOutput.write(contentsOf: data)
             } else {
                 _ = try await SimulatorRuntime.load(xcodeURL: options.xcodeURL)
+                let report = await NativeRuntimeValidationReport.prepareOptionalBindings()
+                try FileHandle.standardOutput.write(contentsOf: JSONEncoder().encode(report))
             }
             exit(EX_OK)
         } catch { fail(error) }

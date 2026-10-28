@@ -789,6 +789,32 @@ struct RemoteDeviceScreenTests {
         try await session.stop()
     }
 
+    @Test func optionalBindingDiagnosticsPreserveFailuresAndUnverifiedBoundaries() async throws {
+        typealias Preparation = NativeRuntimeValidationReport.Preparation
+        let unchecked = ["device capability and service I/O"]
+        let prepared = await Preparation.check("prepared", unverified: unchecked, load: {}, prepare: {})
+        let missing = await Preparation.check("missing", unverified: unchecked, load: {}, prepare: {
+            throw ABIResolutionError.imageNotLoaded
+        })
+        var attemptedPreparation = false
+        let failed = await Preparation.check("failed", unverified: unchecked, load: {
+            throw ScreenFixtureError.stream
+        }, prepare: { attemptedPreparation = true })
+        #expect(!attemptedPreparation)
+        #expect(prepared.status == .prepared && prepared.detail == nil)
+        #expect(missing.status == .unavailable && missing.stage == .preparingBindings && missing.detail != nil)
+        #expect(failed.status == .failed && failed.stage == .loadingFramework && failed.detail != nil)
+        let report = NativeRuntimeValidationReport(optionalBindings: [prepared, missing, failed])
+        let decoded = try JSONDecoder().decode(NativeRuntimeValidationReport.self, from: JSONEncoder().encode(report))
+        #expect(decoded == report && decoded.optionalBindings.allSatisfy { $0.unverified == unchecked })
+    }
+
+    @Test func resizeGeometryBindingsPrepareWithoutADeviceOrAssertion() throws {
+        try CoreDeviceRemoteScreenDevice.load("/Library/Developer/PrivateFrameworks/CoreDeviceUtilities.framework/Versions/A/CoreDeviceUtilities")
+        let bindings = try CoreDeviceAppResizeTransport.Bindings(runtime: .shared)
+        _ = try CoreDeviceAppResizeTransport.GeometryBindings(type: bindings.sceneType, abis: bindings.abis)
+    }
+
     @Test func nativeTouchscreenDescriptorsPreserveANonLegacyDisplayIdentity() async throws {
         try CoreDeviceRemoteScreenDevice.load("/Library/Developer/PrivateFrameworks/CoreDeviceUtilities.framework/Versions/A/CoreDeviceUtilities")
         let runtime = ABIRuntime.shared

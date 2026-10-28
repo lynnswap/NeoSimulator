@@ -142,6 +142,52 @@ public final class NativeDeviceCanvas {
         return find(in: hosting) ?? hosting
     }
 
+    struct Bindings {
+        let make: NativeSwiftFunction<(UUID) -> NativeSwiftValue>
+        let start: NativeSwiftMethod<(NativeSwiftValue) -> NativeSwiftValue>
+        let chrome: NativeSwiftMethod<(NativeSwiftValue) -> NativeSwiftValue>
+        let behavior: NativeSwiftValue
+        let visible: NativeSwiftValue
+        let hidden: NativeSwiftValue
+        let canvasPath: WritableKeyPath<EnvironmentValues, Bool>
+        let zoomPath: WritableKeyPath<EnvironmentValues, CGFloat>
+        let environmentValues: [NativeSwiftValue]
+
+        init(runtime: ABIRuntime) async throws {
+            let type = try await runtime.resolve(.swift(.type("DeviceKit.DeviceView")))
+            let make = try await type.resolve(.swift(.initializer("init(deviceIdentifier:)",
+                as: ((UUID) -> NativeSwiftValue).self, valueABIs: [type: try .opaque(named: type.name)])))
+            let behaviorType = try await runtime.resolve(.swift(.type("DeviceKit.DeviceView.AutoStartBehavior")))
+            let start = try await type.resolve(.swift(.method("liveDeviceAutoStart(_:)",
+                as: ((NativeSwiftValue) -> NativeSwiftValue).self,
+                valueABIs: [behaviorType: try .opaque(named: behaviorType.name), type: try .opaque(named: type.name)])))
+            let visibilityType = try await runtime.resolve(.swift(.type("SwiftUI.Visibility")))
+            let chrome = try await type.resolve(.swift(.method("chromeVisibility(_:)",
+                as: ((NativeSwiftValue) -> NativeSwiftValue).self,
+                valueABIs: [visibilityType: try .opaque(named: visibilityType.name), type: try .opaque(named: type.name)])))
+            let environment = try await runtime.resolve(.swift(.type("SwiftUI.EnvironmentValues")))
+            let bool = try await runtime.resolve(.swift(.type("Swift.Bool")))
+            let canvasKey = try await environment.resolve(.swift(.writableKeyPath(
+                "(extension in DeviceKit):SwiftUI.EnvironmentValues.isInDeviceCanvas", valueType: bool)))
+            let scalar = try await runtime.resolve(.swift(.type("CoreGraphics.CGFloat")))
+            let zoomKey = try await environment.resolve(.swift(.writableKeyPath(
+                "(extension in DeviceKit):SwiftUI.EnvironmentValues.deviceCanvasZoom", valueType: scalar)))
+            guard let canvasPath = try canvasKey.withCopy({ $0 as? WritableKeyPath<EnvironmentValues, Bool> }),
+                  let zoomPath = try zoomKey.withCopy({ $0 as? WritableKeyPath<EnvironmentValues, CGFloat> }) else {
+                throw CLIError.unavailable("native-device-environment", "DeviceKit's canvas environment is unavailable.")
+            }
+            self.make = make
+            self.start = start
+            self.chrome = chrome
+            behavior = try behaviorType.makeEnumCase(named: "yes")
+            visible = try visibilityType.makeEnumCase(named: "visible")
+            hidden = try visibilityType.makeEnumCase(named: "hidden")
+            self.canvasPath = canvasPath
+            self.zoomPath = zoomPath
+            environmentValues = [canvasKey, zoomKey]
+        }
+    }
+
     public static func connect(simulatorUDID: String) async throws -> NativeDeviceCanvas {
         try await CoreDeviceDisplayGeometry.loadRuntime()
         guard let identifier = try await CoreDeviceRemoteScreenDevice.simulatorIdentifier(udid: simulatorUDID),
@@ -157,21 +203,11 @@ public final class NativeDeviceCanvas {
         let up = try buttonState.makeEnumCase(named: "up")
         let send = try await button.type.resolve(.swift(.method("CoreDevice.HIDButton.sendCustomButton(usagePage:usageCode:state:)",
             as: ((Int, Int, NativeSwiftValue) throws -> Void).self)))
-        let type = try await runtime.resolve(.swift(.type("DeviceKit.DeviceView")))
-        let make = try await type.resolve(.swift(.initializer("init(deviceIdentifier:)",
-            as: ((UUID) -> NativeSwiftValue).self, valueABIs: [type: try .opaque(named: type.name)])))
-        let base = try unsafe make.unsafeInvoke(uuid)
-        let behaviorType = try await runtime.resolve(.swift(.type("DeviceKit.DeviceView.AutoStartBehavior")))
-        let start = try await type.resolve(.swift(.method("liveDeviceAutoStart(_:)",
-            as: ((NativeSwiftValue) -> NativeSwiftValue).self,
-            valueABIs: [behaviorType: try .opaque(named: behaviorType.name), type: try .opaque(named: type.name)])))
-        let activation = try unsafe start.unsafeInvoke(on: base, behaviorType.makeEnumCase(named: "yes"))
-        let visibilityType = try await runtime.resolve(.swift(.type("SwiftUI.Visibility")))
-        let chrome = try await type.resolve(.swift(.method("chromeVisibility(_:)",
-            as: ((NativeSwiftValue) -> NativeSwiftValue).self,
-            valueABIs: [visibilityType: try .opaque(named: visibilityType.name), type: try .opaque(named: type.name)])))
-        let shown = try unsafe chrome.unsafeInvoke(on: base, visibilityType.makeEnumCase(named: "visible"))
-        let hidden = try unsafe chrome.unsafeInvoke(on: base, visibilityType.makeEnumCase(named: "hidden"))
+        let bindings = try await Bindings(runtime: runtime)
+        let base = try unsafe bindings.make.unsafeInvoke(uuid)
+        let activation = try unsafe bindings.start.unsafeInvoke(on: base, bindings.behavior)
+        let shown = try unsafe bindings.chrome.unsafeInvoke(on: base, bindings.visible)
+        let hidden = try unsafe bindings.chrome.unsafeInvoke(on: base, bindings.hidden)
         func content(_ value: NativeSwiftValue) throws -> AnyView {
             try value.withCopy { raw in
                 guard let content = raw as? any View else {
@@ -188,26 +224,15 @@ public final class NativeDeviceCanvas {
                 return modified.apply(to: content)
             }
         }
-        let environment = try await runtime.resolve(.swift(.type("SwiftUI.EnvironmentValues")))
-        let bool = try await runtime.resolve(.swift(.type("Swift.Bool")))
-        let canvasKey = try await environment.resolve(.swift(.writableKeyPath(
-            "(extension in DeviceKit):SwiftUI.EnvironmentValues.isInDeviceCanvas", valueType: bool)))
-        let scalar = try await runtime.resolve(.swift(.type("CoreGraphics.CGFloat")))
-        let zoomKey = try await environment.resolve(.swift(.writableKeyPath(
-            "(extension in DeviceKit):SwiftUI.EnvironmentValues.deviceCanvasZoom", valueType: scalar)))
-        guard let canvasPath = try canvasKey.withCopy({ $0 as? WritableKeyPath<EnvironmentValues, Bool> }),
-              let zoomPath = try zoomKey.withCopy({ $0 as? WritableKeyPath<EnvironmentValues, CGFloat> }) else {
-            throw CLIError.unavailable("native-device-environment", "DeviceKit's canvas environment is unavailable.")
-        }
         try Task.checkCancellation()
         let presentation = NativeCanvasPresentation()
         let root = NativeCanvasRoot(presentation: presentation, shown: try activated(content(shown)),
-            hidden: try activated(content(hidden)), canvasPath: canvasPath, zoomPath: zoomPath)
+            hidden: try activated(content(hidden)), canvasPath: bindings.canvasPath, zoomPath: bindings.zoomPath)
         let poses = try await NativeDevicePoseControls.connect(deviceIdentifier: uuid)
         let captureDisplay = try await captureDisplayReader(for: remote)
         return NativeDeviceCanvas(root: AnyView(root), presentation: presentation, poseControls: poses,
             captureDisplay: captureDisplay,
-            values: [base, activation, shown, hidden, canvasKey, zoomKey]) { page, usage, state in
+            values: [base, activation, shown, hidden] + bindings.environmentValues) { page, usage, state in
                 try unsafe send.unsafeInvoke(on: button, page, usage, state == .down ? down : up)
             }
     }
