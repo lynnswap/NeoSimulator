@@ -113,7 +113,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case .simulator(let controller):
                 guard let id = simulatorCommand(identifier, for: controller) else { return false }
                 return id == .resizeApp ? controller.session.supportsAppResize : DeviceCommand.command(id).isSupported(controller.session.capabilities)
-            case .remote: return identifier != "rotate" && identifier != "resizeApp"
+            case .remote(let controller):
+                return identifier == "resizeApp" ? controller.session.supportsAppResize : identifier != "rotate"
             }
         }
 
@@ -143,8 +144,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         var resizingApp: Bool {
             if case .simulator(let controller) = self { return controller.session.isResizingApp || controller.session.isStartingAppResize }
+            if case .remote(let controller) = self { return controller.session.isResizingApp || controller.session.isChangingDisplay }
             return false
-    }
+        }
 
         func canvasZoomIsSelected(_ identifier: String) -> Bool {
             guard let action = CanvasZoom.Action(rawValue: identifier), case .simulator(let controller) = self else { return false }

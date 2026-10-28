@@ -260,10 +260,10 @@
           "kind": "group",
           "path": "RemoteDevice",
           "children": [
-            { "path": "RemoteDeviceWindowError.swift", "target-membership": [ "NeoSimulator/compile-sources" ] },
-            { "path": "RemoteDevicePresentationViewController.swift", "target-membership": [ "NeoSimulator/compile-sources" ] },
-            { "path": "RemoteDeviceWindowController.swift", "target-membership": [ "NeoSimulator/compile-sources" ] },
-            { "path": "RemoteDeviceInputView.swift", "target-membership": [ "NeoSimulator/compile-sources" ] },
+            { "path": "RemoteDeviceWindowError.swift", "target-membership": [ "NeoSimulator/compile-sources", "NeoSimulatorHostTests/compile-sources" ] },
+            { "path": "RemoteDevicePresentationViewController.swift", "target-membership": [ "NeoSimulator/compile-sources", "NeoSimulatorHostTests/compile-sources" ] },
+            { "path": "RemoteDeviceWindowController.swift", "target-membership": [ "NeoSimulator/compile-sources", "NeoSimulatorHostTests/compile-sources" ] },
+            { "path": "RemoteDeviceInputView.swift", "target-membership": [ "NeoSimulator/compile-sources", "NeoSimulatorHostTests/compile-sources" ] },
           ],
         }, {
           "kind": "group",
@@ -336,13 +336,6 @@
                   ],
                 }, {
                   "path": "ExternalDisplayWindowController.swift",
-                  "target-membership": [
-                    "NeoSimulator/compile-sources",
-                    "NeoSimulatorRenderer/compile-sources",
-                    "NeoSimulatorHostTests/compile-sources",
-                  ],
-                }, {
-                  "path": "SimulatorAppResize.swift",
                   "target-membership": [
                     "NeoSimulator/compile-sources",
                     "NeoSimulatorRenderer/compile-sources",

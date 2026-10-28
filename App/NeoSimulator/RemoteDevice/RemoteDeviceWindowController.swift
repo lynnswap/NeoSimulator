@@ -24,7 +24,7 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
     var isEmbedded: Bool { presentationViewController.parent != nil }
     private var presentationWindow: NSWindow? { presentationViewController.view.window }
     var canMovePresentation: Bool {
-        guard !closing, !mayClose, stoppingTask == nil else { return false }
+        guard !closing, !mayClose, stoppingTask == nil, appResizeTask == nil else { return false }
         guard let window = presentationWindow else { return true }
         return window.attachedSheet == nil && !window.styleMask.contains(.fullScreen)
     }
@@ -75,6 +75,8 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
     private var stoppingTask: Task<Void, any Error>?
     private var inputTask: Task<Void, Never>?
     private var captureTask: Task<Void, any Error>?
+    private var appResizeTask: Task<Void, Never>?
+    private var requestedAppSize: CGSize?
     private var completedScreenshot: CGImage?
     private var capturePanel: NSSavePanel?
     private var recordingTask: Task<Void, any Error>?
@@ -185,6 +187,10 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
         inputView.enqueue = { [weak self] operation in self?.enqueueInput(operation) }
         session.onInputCapabilitiesLost = { [weak self] kinds in self?.inputView.invalidateInputs(for: kinds) }
         session.onStateChange = { [weak self] in self?.update() }
+        session.prepareForDisplayChange = { [weak self] in
+            let acceptedInput = self?.inputTask
+            await acceptedInput?.value
+        }
         keyboardCapture.failure = { [weak self] in self?.showIssue($0) }
         keyboardCapture.didStop = { [weak self] in
             self?.capturedKeyboardResponder = nil
@@ -370,9 +376,9 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
     }
 
     private func update() {
-        let connected = session.state == .connected && !closing && !changingPresentation
+        let connected = session.state == .connected && !session.isChangingDisplay && !closing && !changingPresentation
         if !connected || !session.inputCapabilities.contains(.keyboard) { keyboardCapture.stop() }
-        let busy = session.state == .connecting || session.state == .stopping || captureTask != nil || recordingTask != nil
+        let busy = session.state == .connecting || session.state == .stopping || session.isChangingDisplay || captureTask != nil || recordingTask != nil
         let native = session.nativeInputView
         inputView.isHidden = native != nil
         native?.isHidden = closing
@@ -381,6 +387,7 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
         inputView.isInputEnabled = connected && !changingPresentation && presentationWindow != nil
         for (identifier, item) in toolbarItems {
             item.isHidden = canvasControls != nil && ["home", "capture", "record"].contains(identifier)
+                || identifier == "resizeApp" && !session.supportsAppResize && !session.isResizingApp
             item.isEnabled = isScreenActionEnabled(identifier)
             if let presentation = screenActionPresentation(identifier) {
                 item.label = presentation.title
@@ -404,6 +411,7 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
         if let transportIssue = session.lastError?.localizedDescription {
             statusLabel.stringValue = issue.map { $0 == transportIssue ? $0 : "\($0)\n\(transportIssue)" } ?? transportIssue
         }
+        else if session.isChangingDisplay { statusLabel.stringValue = "Changing app display…" }
         else if captureTask != nil { statusLabel.stringValue = "Saving screenshot…" }
         else if session.recordingState == .starting { statusLabel.stringValue = "Starting recording…" }
         else if session.recordingState == .stopping { statusLabel.stringValue = "Finishing recording…" }
@@ -413,6 +421,9 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
         else if session.hasUnfinishedRecording { statusLabel.stringValue = "Recording" }
         else if completedScreenshot != nil { statusLabel.stringValue = "Screenshot ready to save." }
         else if session.completedRecording != nil { statusLabel.stringValue = "Recording ready to save." }
+        else if let geometry = session.appResizeGeometry {
+            statusLabel.stringValue = "App size: \(Double(geometry.resolvedSize.width).formatted(.number.precision(.fractionLength(0)))) × \(Double(geometry.resolvedSize.height).formatted(.number.precision(.fractionLength(0))))"
+        }
         else if !inventoryAvailable { statusLabel.stringValue = "The device is unavailable." }
         else {
             statusLabel.stringValue = switch session.state {
@@ -454,6 +465,7 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
         let restoreScreenFocus = screenOwnsFocus || !isEmbedded
         relinquishScreenFocus()
         connectionTask?.cancel()
+        appResizeTask?.cancel()
         let acceptedCapture = captureTask
         let acceptedRecording = recordingTask
         update()
@@ -527,7 +539,7 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        ["captureKeyboard", "home", "lock", "volumeDown", "volumeUp", NSToolbarItem.Identifier.flexibleSpace.rawValue, "capture", "record", "compact", "reconnect"].map { NSToolbarItem.Identifier($0) }
+        ["captureKeyboard", "resizeApp", "home", "lock", "volumeDown", "volumeUp", NSToolbarItem.Identifier.flexibleSpace.rawValue, "capture", "record", "compact", "reconnect"].map { NSToolbarItem.Identifier($0) }
     }
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { toolbarDefaultItemIdentifiers(toolbar) }
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
@@ -564,6 +576,7 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
     }
 
     func screenActionPresentation(_ identifier: String) -> (title: String, symbolName: String)? {
+        if identifier == "resizeApp" { return (session.isResizingApp ? "Stop Resize" : "Resize App", "arrow.up.left.and.arrow.down.right") }
         if identifier == "captureKeyboard" { return (capturesKeyboard ? "Release Keyboard" : "Capture Keyboard", "keyboard") }
         if identifier == "record" {
             if session.hasUnfinishedRecording { return ("Stop Recording", "stop.circle") }
@@ -582,6 +595,7 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
     func isScreenActionEnabled(_ identifier: String) -> Bool {
         guard !closing, !mayClose, !changingPresentation else { return false }
         switch identifier {
+        case "resizeApp": return session.canResizeApp && appResizeTask == nil && recordingTask == nil && capturePanel == nil && recordingPanel == nil
         case "captureKeyboard": return session.state == .connected && session.inputCapabilities.contains(.keyboard)
         case "home", "lock", "volumeDown", "volumeUp":
             return session.state == .connected && session.inputCapabilities.contains(.button)
@@ -608,6 +622,7 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
                 do { try startKeyboardCapture() } catch { showIssue(error) }
             }
             update()
+        case "resizeApp": toggleAppResize()
         case "compact": onShowInMainWindow?()
         case "reconnect": reconnect(nil)
         case "capture": saveScreenshot()
@@ -630,6 +645,44 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
             }
         }
     }
+
+    private func toggleAppResize() {
+        appResizeTask = Task { [weak self] in
+            guard let self else { return }
+            let restoreScreenFocus = self.screenOwnsFocus
+            self.changingPresentation = true
+            self.relinquishScreenFocus()
+            let releasedResponder = self.presentationWindow?.firstResponder
+            self.update()
+            defer {
+                self.appResizeTask = nil
+                self.changingPresentation = false
+                self.requestedAppSize = nil
+                self.update()
+                if restoreScreenFocus, self.presentationWindow?.isKeyWindow == true,
+                   self.presentationWindow?.firstResponder === releasedResponder { self.focusScreen() }
+            }
+            do {
+                try await self.captureTask?.value
+                try Task.checkCancellation()
+                if self.session.isResizingApp { try await self.session.stopAppResize() }
+                else { try await self.session.startAppResize(size: self.viewport.bounds.size) }
+            } catch is CancellationError {}
+            catch { self.showIssue(error) }
+        }
+        update()
+    }
+
+    func layoutScreen() {
+        guard !changingPresentation, session.isResizingApp, !session.isChangingDisplay,
+              viewport.bounds.width > 0, viewport.bounds.height > 0 else { return }
+        let size = viewport.bounds.size
+        guard requestedAppSize != size else { return }
+        requestedAppSize = size
+        session.resizeApp(to: size)
+    }
+
+    func windowDidResize(_ notification: Notification) { layoutScreen() }
 
     private var canStartRecording: Bool {
         !closing && !changingPresentation && inventoryAvailable && session.canRecordScreen && !session.hasUnfinishedRecording

@@ -5,9 +5,106 @@ import Observation
 import Testing
 import Synchronization
 import IOKit.hidsystem
+@_spi(NeoSimulator) @testable import XcodeSimulatorHost
 
 @Suite(.serialized) @MainActor
 struct InputFocusTests {
+    @Test(arguments: ["search", "screen-to-search", "screen"])
+    func remoteAppResizeRestoresOnlyUnchangedScreenFocus(_ focus: String) async throws {
+        _ = NSApplication.shared
+        let data = Data(#"{"result":{"devices":[{"identifier":"fixture-command","properties":{"hardware":{"reality":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)
+        let device = try #require(CoreDeviceInventoryDecoder.decode(data).first)
+        let resize = TestAppResizeTransport()
+        let primary = TestRemoteScreenTransport(), dedicated = TestRemoteScreenTransport()
+        primary.nativeInputView = InputView()
+        dedicated.nativeInputView = InputView()
+        let session = RemoteDeviceScreenSession(device: device, makeResizeTransport: { _ in resize }) { _, content, target in
+            let transport = target == nil ? primary : dedicated
+            if let input = transport.nativeInputView { content.addSubview(input) }
+            return transport
+        }
+        let controller = RemoteDeviceWindowController(device: device, session: session, presentCompactWindow: { _ in })
+        let parent = NSViewController()
+        parent.view = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 600))
+        let window = KeyPresentationWindow(contentRect: parent.view.frame, styleMask: .titled, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentViewController = parent
+        defer { window.close() }
+        try await controller.embed(in: parent)
+        try await session.start()
+        try await wait { session.canResizeApp }
+        let search = NSSearchField(frame: NSRect(x: 0, y: 0, width: 200, height: 24))
+        parent.view.addSubview(search)
+        try #require(window.makeFirstResponder(search))
+        let editor = try #require(window.firstResponder)
+        if focus != "search" { try #require(window.makeFirstResponder(primary.nativeInputView)) }
+        resize.holdsStart = true
+        defer { resize.completeStart() }
+        controller.performScreenAction("resizeApp")
+        try await wait { resize.startContinuation != nil }
+        try #require(resize.startContinuation != nil)
+        if focus == "screen-to-search" { try #require(window.makeFirstResponder(search)) }
+        resize.completeStart()
+        try await wait { session.isResizingApp && controller.isScreenActionEnabled("resizeApp") }
+        try #require(session.isResizingApp && controller.isScreenActionEnabled("resizeApp"))
+        #expect(window.firstResponder === (focus == "screen" ? dedicated.nativeInputView : editor))
+        try await controller.stopAndClose()
+    }
+
+    @Test func remoteWindowCoalescesLayoutSizesWithoutBlockingHID() async throws {
+        _ = NSApplication.shared
+        let data = Data(#"{"result":{"devices":[{"identifier":"fixture-command","properties":{"hardware":{"reality":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)
+        let device = try #require(CoreDeviceInventoryDecoder.decode(data).first)
+        let resize = TestAppResizeTransport()
+        let primary = TestRemoteScreenTransport(), dedicated = TestRemoteScreenTransport()
+        let session = RemoteDeviceScreenSession(device: device, makeResizeTransport: { _ in resize }) { _, _, target in
+            target == nil ? primary : dedicated
+        }
+        let controller = RemoteDeviceWindowController(device: device, session: session, presentCompactWindow: { _ in })
+        let window = try #require(controller.window)
+        try await session.start()
+        try await wait { session.canResizeApp }
+        resize.lease.holdsAdjustment = true
+        defer { resize.lease.completeAdjustment() }
+        try await session.startAppResize(size: CGSize(width: 400, height: 600))
+        window.setContentSize(CGSize(width: 500, height: 600))
+        controller.presentationViewController.view.layoutSubtreeIfNeeded()
+        controller.layoutScreen()
+        try await wait { resize.lease.adjustmentContinuation != nil }
+        let first = try #require(resize.lease.adjustedSizes.first)
+        for size in [CGSize(width: 530, height: 650), CGSize(width: 570, height: 680), CGSize(width: 610, height: 720)] {
+            window.setContentSize(size)
+            controller.presentationViewController.view.layoutSubtreeIfNeeded()
+            controller.layoutScreen()
+        }
+        let latest = try #require(session.contentView.superview?.bounds.size)
+        controller.performScreenAction("home")
+        do { try await wait { dedicated.buttons == [.down, .up] } }
+        catch { Issue.record(error) }
+        #expect(dedicated.buttons == [.down, .up], "An in-flight geometry adjustment blocked accepted HID input")
+        resize.lease.holdsAdjustment = false
+        resize.lease.completeAdjustment()
+        try await wait { resize.lease.adjustedSizes.last == latest && dedicated.buttons == [.down, .up] }
+        #expect(resize.lease.adjustedSizes == [first, latest])
+        resize.lease.holdsAdjustment = true
+        window.setContentSize(CGSize(width: 620, height: 730))
+        controller.presentationViewController.view.layoutSubtreeIfNeeded()
+        controller.layoutScreen()
+        try await wait { resize.lease.adjustmentContinuation != nil }
+        let accepted = resize.lease.adjustedSizes
+        window.setContentSize(CGSize(width: 640, height: 750))
+        controller.presentationViewController.view.layoutSubtreeIfNeeded()
+        controller.layoutScreen()
+        controller.performScreenAction("resizeApp")
+        try await wait { session.isChangingDisplay }
+        #expect(session.isResizingApp && resize.lease.invalidations == 0)
+        resize.lease.holdsAdjustment = false
+        resize.lease.completeAdjustment()
+        try await wait { !session.isChangingDisplay && !session.isResizingApp }
+        #expect(resize.lease.adjustedSizes == accepted && resize.lease.invalidations == 1)
+        try await controller.stopAndClose()
+    }
+
     @Test(arguments: [false, true])
     func appResizePreservesTheEmbeddedInputFocus(screenFocused: Bool) async throws {
         _ = NSApplication.shared
@@ -7398,7 +7495,7 @@ struct InputFocusTests {
                                 userInterfacePlugin: Bool = false,
                                 runtimeVersion: UInt32 = 0x1B_00_00,
                                 enhancedMultitasking: Bool = false,
-                                appResizeTransport: (@MainActor () async throws -> (any SimulatorAppResizeTransport)?)? = nil,
+                                appResizeTransport: (@MainActor () async throws -> (any AppResizeTransport)?)? = nil,
                                 userInterfacePluginLookUp: (attempts: Int, interval: Duration) = (5, .milliseconds(20)),
                                 keyboardCaptureTap: any KeyboardEventTap = SystemKeyboardEventTap(),
                                 applicationIsActive: @escaping () -> Bool = { NSApp.isActive },
@@ -7527,7 +7624,7 @@ struct InputFocusTests {
                              userInterfacePlugin: Bool = false,
                              runtimeVersion: UInt32 = 0x1B_00_00,
                              enhancedMultitasking: Bool = false,
-                             appResizeTransport: (@MainActor () async throws -> (any SimulatorAppResizeTransport)?)? = nil) throws -> DeviceSession {
+                             appResizeTransport: (@MainActor () async throws -> (any AppResizeTransport)?)? = nil) throws -> DeviceSession {
         // Keep the external-display timeout short enough to exercise expiry.
         DeviceSession(
             device: availableDevice(identifier, "Test iPhone", runtime: "iOS", state: 3, deviceSetPath: deviceSetPath),
@@ -7548,16 +7645,16 @@ struct InputFocusTests {
 }
 
 @MainActor
-private final class TestAppResizeTransport: SimulatorAppResizeTransport {
+private final class TestAppResizeTransport: AppResizeTransport {
     let lease = TestAppResizeLease()
     let eligibilityUpdates = AsyncThrowingStream<AppResizeEligibility, any Error>.makeStream()
     var holdsStart = false
-    var startContinuation: CheckedContinuation<any SimulatorAppResizeLease, Never>?
+    var startContinuation: CheckedContinuation<any AppResizeSession, Never>?
     func eligibility() async throws -> AsyncThrowingStream<AppResizeEligibility, any Error> {
         eligibilityUpdates.continuation.yield(.eligible)
         return eligibilityUpdates.stream
     }
-    func start(size: CGSize, cornerRadius: CGFloat) async throws -> any SimulatorAppResizeLease {
+    func start(size: CGSize, cornerRadius: CGFloat) async throws -> any AppResizeSession {
         if holdsStart { return await withCheckedContinuation { startContinuation = $0 } }
         return lease
     }
@@ -7565,7 +7662,7 @@ private final class TestAppResizeTransport: SimulatorAppResizeTransport {
 }
 
 @MainActor
-private final class TestAppResizeLease: SimulatorAppResizeLease {
+private final class TestAppResizeLease: AppResizeSession {
     let displayUniqueID = "dedicated-app-display"
     var geometry = AppResizeGeometry(minimumSize: CGSize(width: 200, height: 200), maximumSize: CGSize(width: 1000, height: 1000),
         preferredSize: CGSize(width: 500, height: 600), resolvedSize: CGSize(width: 500, height: 600), cornerRadius: 0)
@@ -7574,10 +7671,14 @@ private final class TestAppResizeLease: SimulatorAppResizeLease {
     var invalidations = 0
     var adjustedSizes: [CGSize] = []
     var adjustmentError: (any Error)?
+    var holdsAdjustment = false
+    var adjustmentContinuation: CheckedContinuation<Void, Never>?
+    func completeAdjustment() { adjustmentContinuation?.resume(); adjustmentContinuation = nil }
     func updates() throws -> AsyncThrowingStream<AppResizeGeometry, any Error> { geometryUpdates.stream }
     func adjust(size: CGSize, cornerRadius: CGFloat) async throws {
         if let adjustmentError { throw adjustmentError }
         adjustedSizes.append(size)
+        if holdsAdjustment { await withCheckedContinuation { adjustmentContinuation = $0 } }
     }
     func awaitInvalidation() async throws { for await _ in invalidation.stream { return } }
     func invalidate() throws {
@@ -9022,4 +9123,21 @@ private final class RendererOwnerMonitorFixture: Sendable {
         orphan.expireDeadline()
         #expect(orphan.state.withLock { $0.cleanupRequests == 1 && $0.forcedExits == 0 && $0.deadlineCancelled })
     }
+}
+
+@MainActor
+private final class TestRemoteScreenTransport: RemoteScreenTransport {
+    var nativeInputView: NSView?
+    var inputCapabilities: Set<RemoteDeviceInputKind> { [.button] }
+    private(set) var buttons: [RemoteDeviceButtonState] = []
+    func start(events: @escaping @MainActor (RemoteScreenTransportEvent) -> Void) async throws {
+        events(.connected)
+        events(.attributes(.init(aspectRatio: CGSize(width: 400, height: 600), contentsRect: CGRect(x: 0, y: 0, width: 1, height: 1), scaleFactor: 1, orientation: .portrait)))
+        events(.frameReceived)
+    }
+    func send(_ input: RemoteScreenInput) async throws {
+        if case .button(_, _, let state) = input { buttons.append(state) }
+    }
+    func releaseInputs() async throws {}
+    func stop() async throws { nativeInputView?.removeFromSuperview() }
 }

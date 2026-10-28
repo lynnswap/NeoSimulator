@@ -19,21 +19,25 @@ final class CoreDeviceMediaStreamTransport: RemoteScreenTransport {
     private var observationFinished = false
     private var observationFailure: (any Error)?
     private let capabilityObservation: RemoteScreenInputCapabilityObservation
+    private let displayUniqueID: String?
+    private var displayWaiter: CheckedContinuation<UInt32, any Error>?
+    private var videoDisplayID: UInt32?
     var inputCapabilities: Set<RemoteDeviceInputKind> {
         framebuffer.isReady ? capabilityObservation.capabilities : capabilityObservation.capabilities.subtracting([.pointer, .digitizer])
     }
     var canCaptureScreenshot: Bool { !stopped && stream != nil }
     private(set) var canRecordScreen = false
 
-    init(remote: CoreDeviceRemoteScreenDevice, contentView: NSView) throws {
+    init(remote: CoreDeviceRemoteScreenDevice, contentView: NSView, displayUniqueID: String? = nil) throws {
         self.remote = remote
         self.contentView = contentView
-        let input = CoreDeviceScreenInput(remote: remote)
+        self.displayUniqueID = displayUniqueID
+        let input = CoreDeviceScreenInput(remote: remote, displayUniqueID: displayUniqueID)
         self.input = input
-        capabilityObservation = RemoteScreenInputCapabilityObservation(source: try CoreDeviceInputCapabilitySource(remote: remote),
+        capabilityObservation = RemoteScreenInputCapabilityObservation(source: try CoreDeviceInputCapabilitySource(remote: remote, dedicatedDisplay: displayUniqueID != nil),
             read: { try input.capabilities() }, invalidateInputs: { input.discardInputs(for: $0) })
         bindings = try MediaStreamBindings(runtime: remote.runtime)
-        displayGeometry = try CoreDeviceDisplayGeometry(remote: remote)
+        displayGeometry = try CoreDeviceDisplayGeometry(remote: remote, displayUniqueID: displayUniqueID)
         framebuffer.autoresizingMask = [.width, .height]
     }
 
@@ -52,7 +56,14 @@ final class CoreDeviceMediaStreamTransport: RemoteScreenTransport {
             guard let self, !self.stopped else { return }
             switch result {
             case .success(let display):
+                if let videoDisplayID, display?.identifier != videoDisplayID {
+                    Task { @MainActor [weak self] in
+                        await self?.finishObservation(error: CLIError.unavailable("remote-display-changed", "The dedicated display disconnected or changed identity."))
+                    }
+                    return
+                }
                 self.framebuffer.update(display: display)
+                if let id = display?.identifier { self.finishDisplayWait(.success(id)) }
                 self.events?(.inputGeometryChanged)
             case .failure(let error):
                 self.framebuffer.update(display: nil)
@@ -60,9 +71,20 @@ final class CoreDeviceMediaStreamTransport: RemoteScreenTransport {
             }
         }
         try checkConnection()
+        if displayUniqueID != nil {
+            let identifier = try await waitForDisplay()
+            videoDisplayID = identifier
+            try await input.connectDisplay(identifier: identifier)
+            try Task.checkCancellation()
+            try checkConnection()
+        }
         let session = try unsafe bindings.makeSession.unsafeInvoke(UUID())
         self.session = session
-        let configuration = try unsafe bindings.makeConfiguration.unsafeInvoke(framebuffer.sourceLayer, 30)
+        let configuration: NativeSwiftValue
+        if let videoDisplayID {
+            let make = try bindings.displayConfiguration()
+            configuration = try unsafe make.unsafeInvoke(videoDisplayID, framebuffer.sourceLayer, 30)
+        } else { configuration = try unsafe bindings.makeConfiguration.unsafeInvoke(framebuffer.sourceLayer, 30) }
         let created = try await unsafe bindings.makeVideoStream.unsafeInvoke(on: session, configuration, remote.object).copyUnderlyingValue()
         stream = created
         try Task.checkCancellation()
@@ -114,6 +136,7 @@ final class CoreDeviceMediaStreamTransport: RemoteScreenTransport {
 
     func stop() async throws {
         stopped = true
+        finishDisplayWait(.failure(CancellationError()))
         displayGeometry.stop()
         events = nil
         capture.fail(CancellationError())
@@ -133,12 +156,17 @@ final class CoreDeviceMediaStreamTransport: RemoteScreenTransport {
         guard !stopped, !observationFinished else { return }
         observationFinished = true
         observationFailure = error
+        finishDisplayWait(.failure(error ?? CLIError.unavailable("remote-display-ended", "The display connection ended.")))
         observation?.cancel()
         await capabilityObservation.stop()
         displayGeometry.stop()
         var failure = error
-        do { try await disconnectNative() }
-        catch { failure = failure.map { RemoteDeviceScreenSession.combining($0, cleanup: error) } ?? error }
+        // A resize session must finish its recording before relinquishing this display.
+        // Its session owner performs teardown after receiving this event.
+        if displayUniqueID == nil {
+            do { try await disconnectNative() }
+            catch { failure = failure.map { RemoteDeviceScreenSession.combining($0, cleanup: error) } ?? error }
+        }
         observationFailure = failure
         capture.fail(failure ?? CLIError.unavailable("remote-screen-disconnected", "The remote screen connection ended before its screenshot arrived."))
         if let failure { events?(.failure(failure)) }
@@ -156,7 +184,7 @@ final class CoreDeviceMediaStreamTransport: RemoteScreenTransport {
         if let disconnecting { try await disconnecting.value; return }
         let task = Task { [self] in
             var failure: (any Error)?
-            do { try await input.releaseInputs() } catch { failure = error }
+            do { try await input.stop() } catch { failure = error }
             if let stream {
                 do {
                     let invalidate = try stream.type.resolveAndWait(.swift(.method("CoreDeviceMediaStreamSupport.MediaStreamProtocol.invalidate()",
@@ -173,6 +201,27 @@ final class CoreDeviceMediaStreamTransport: RemoteScreenTransport {
         disconnecting = task
         defer { disconnecting = nil }
         try await task.value
+    }
+
+    private func waitForDisplay() async throws -> UInt32 {
+        if let identifier = framebuffer.display?.identifier { return identifier }
+        let timeout = Task { @MainActor [weak self] in
+            do { try await Task.sleep(for: .seconds(30)) } catch { return }
+            self?.finishDisplayWait(.failure(CLIError.unavailable("remote-display-timeout", "The dedicated display did not become available.")))
+        }
+        defer { timeout.cancel() }
+        return try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            return try await withCheckedThrowingContinuation { displayWaiter = $0 }
+        } onCancel: {
+            Task { @MainActor [weak self] in self?.finishDisplayWait(.failure(CancellationError())) }
+        }
+    }
+
+    private func finishDisplayWait(_ result: Result<UInt32, any Error>) {
+        let waiter = displayWaiter
+        displayWaiter = nil
+        waiter?.resume(with: result)
     }
 
     private func observe(_ sequence: NativeSwiftValue) async throws {
@@ -201,6 +250,7 @@ final class CoreDeviceMediaStreamTransport: RemoteScreenTransport {
 
 @MainActor
 private final class MediaStreamBindings {
+    private let runtime: ABIRuntime
     let makeSession: NativeSwiftFunction<(UUID) -> NativeSwiftValue>
     let makeConfiguration: NativeSwiftFunction<(CALayer, UInt) -> NativeSwiftValue>
     let makeVideoStream: NativeSwiftMethod<(NativeSwiftValue, NativeSwiftValue) async throws -> NativeSwiftValue>
@@ -212,6 +262,7 @@ private final class MediaStreamBindings {
     private let orientationRawValue: NativeSwiftMethod<() -> String>
 
     init(runtime: ABIRuntime) throws {
+        self.runtime = runtime
         try CoreDeviceRemoteScreenDevice.load("/Library/Developer/PrivateFrameworks/CoreDevice.framework/Versions/A/Frameworks/CoreDeviceMediaStreamSupport.framework/Versions/A/CoreDeviceMediaStreamSupport")
         let session = try runtime.resolveAndWait(.swift(.type("CoreDeviceMediaStreamSupport.MediaStreamSession")))
         makeSession = try session.resolveAndWait(.swift(.initializer("init(clientSessionID:)", as: ((UUID) -> NativeSwiftValue).self)))
@@ -234,6 +285,12 @@ private final class MediaStreamBindings {
         orientation = try attributes.resolveAndWait(.swift(.getter("orientation", as: (() -> NativeSwiftValue).self, receiverABI: abi)))
         let direction = try runtime.resolveAndWait(.swift(.type("CoreDevice.DeviceOrientation")))
         orientationRawValue = try direction.resolveAndWait(.swift(.getter("rawValue", as: (() -> String).self)))
+    }
+
+    func displayConfiguration() throws -> NativeSwiftFunction<(UInt32, CALayer, UInt) -> NativeSwiftValue> {
+        let type = try runtime.resolveAndWait(.swift(.type("CoreDeviceMediaStreamSupport.VideoStreamConfiguration")))
+        return try type.resolveAndWait(.swift(.staticMethod("receiveMirroredDisplayByIdentifier(_:layer:timeout:)",
+            as: ((UInt32, CALayer, UInt) -> NativeSwiftValue).self)))
     }
 
     func attributes(_ value: NativeSwiftValue) throws -> RemoteDeviceVideoAttributes {
