@@ -57,13 +57,19 @@ class BuildScriptSigningTests(unittest.TestCase):
     def test_signing_choice_reaches_renderer_and_manager(self):
         identity = "Developer ID Application: Fixture Identity (ABCDEFGHIJ)"
         cases = [
-            ("build-release.sh", ["--version", "v1.2.3"], None, "-"),
-            ("build-local.sh", ["--signing-identity", identity], "ignored-environment-identity", identity),
-            ("build-release.sh", ["--version", "v1.2.3"], "A" * 40, "A" * 40),
+            ("build-release.sh", ["--version", "v1.2.3"], None, "-", None),
+            ("build-local.sh", ["--signing-identity", identity], "ignored-environment-identity", identity, None),
+            ("build-release.sh", ["--version", "v1.2.3"], "A" * 40, "A" * 40, None),
+            ("build-local.sh", ["--build-number", "17"], None, "-", False),
+            ("build-local.sh", [], None, "-", True),
         ]
-        for script, arguments, environment_identity, expected_identity in cases:
-            with self.subTest(script=script, identity=expected_identity), tempfile.TemporaryDirectory() as directory:
+        for script, arguments, environment_identity, expected_identity, absolute_staging in cases:
+            with self.subTest(script=script, identity=expected_identity, absolute_staging=absolute_staging), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
+                destination = root / ("dist" if script == "build-release.sh" else ".build/local")
+                if absolute_staging is not None:
+                    destination = root / "custom staging"
+                    arguments = [*arguments, "--dist-root", str(destination) if absolute_staging else "custom staging"]
                 scripts = root / "scripts"
                 scripts.mkdir()
                 for name in ("build-local.sh", "build-release.sh"):
@@ -81,7 +87,8 @@ app = products / "NeoSimulator.app"
 for bundle, name in [(app, "NeoSimulator"), (app / "Contents/Applications/NeoSimulatorRenderer.app", "NeoSimulatorRenderer")]:
     (bundle / "Contents/MacOS").mkdir(parents=True)
     (bundle / "Contents/MacOS" / name).write_bytes(b"fixture")
-    (bundle / "Contents/Info.plist").write_bytes(plistlib.dumps({"CFBundleExecutable": name}))
+    build_number = next(value.split("=", 1)[1] for value in args if value.startswith("CURRENT_PROJECT_VERSION="))
+    (bundle / "Contents/Info.plist").write_bytes(plistlib.dumps({"CFBundleExecutable": name, "CFBundleVersion": build_number}))
 ''',
                 }
                 for name, body in bodies.items():
@@ -98,6 +105,13 @@ for bundle, name in [(app, "NeoSimulator"), (app / "Contents/Applications/NeoSim
                 result = subprocess.run(["bash", str(scripts / script), *arguments], env=environment,
                                         capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                staged_app = destination / "arm64/NeoSimulator.app"
+                self.assertIn(f"Staged app: {staged_app}", result.stdout.splitlines())
+                for line in result.stdout.splitlines():
+                    if line.startswith("  open "):
+                        self.assertEqual(line, f"  open '{staged_app}'")
+                info = plistlib.loads((staged_app / "Contents/Info.plist").read_bytes())
+                self.assertEqual(info["CFBundleVersion"], "17" if "--build-number" in arguments else "1")
                 calls = [json.loads(line) for line in log.read_text().splitlines()]
                 signing = [call for call in calls if "--sign" in call]
                 self.assertEqual(len(signing), 2)
