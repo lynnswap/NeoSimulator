@@ -39,7 +39,7 @@ unpaired watch offered by CoreDevice. **New Watch Simulator…** creates a compa
 watch in that iPhone's simulator set and pairs it with the existing phone.
 Creation does not boot the new devices. If creation or pairing fails after a
 device was created, the error names the devices kept. If pairing with an existing
-iPhone fails, the error includes the new watch's identifier. Install runtimes in Xcode.
+simulator fails, the error includes the new device's identifier. Install runtimes in Xcode.
 
 Neo supports iPhone, iPad, Apple Watch, Apple TV, and Apple Vision Pro. Menus show
 the controls supported by the active device. Device association with Xcode is automatic.
@@ -67,11 +67,16 @@ right side of the toolbar:
 | Page | Contents |
 | --- | --- |
 | Settings | The selected device's available appearance, accessibility, location, and sound controls. |
-| Content | Installed applications, configuration profiles, and provisioning profiles. |
-| Info | Available device properties, with expandable groups for details. |
+| Reports | Reports from physical devices and VMs that support report access. |
+| Info | Grouped device information and the Info, Apps, and Profiles categories. |
 
-In **Info**, open **Visible Fields** to choose the properties or groups to show.
-NeoSimulator remembers these choices. Choose **Show All Fields** to reset them.
+In **Info → Info**, choose **Edit Visibility** to select the fields to show, then
+choose **Done**. NeoSimulator remembers these choices. The Info cards also show
+paired simulators and their pairing controls when applicable. Use **Add** to pair
+an existing iPhone or an unpaired Apple Watch with a simulator offered by
+CoreDevice. On a watch, **New iPhone Simulator…** creates only a compatible iPhone
+in the watch's simulator set and pairs it with that watch. Add is disabled when
+the selected watch is already paired.
 
 Start a simulator before inspecting its apps or profiles. For physical devices
 and virtual machines, actions depend on the connected device's capabilities.
@@ -80,7 +85,7 @@ device as needed, then use the inspector's refresh button.
 
 ### Applications
 
-Choose **Content → Applications** and select an app to see its details. Use
+Choose **Info → Apps** and select an app to see its details. Use
 **+** to install an app, **−** to remove the selected app and its data, or the
 play button to launch it. The search field filters the installed apps.
 
@@ -100,7 +105,8 @@ only after the new download completes.
 
 ### Profiles
 
-Choose **Content → Configuration Profiles** or **Provisioning Profiles**.
+Choose **Info → Profiles**. Devices supporting both profile kinds expose a
+**Configuration / Provisioning** selector.
 Select a profile to view its installed metadata. Use **+** to install a
 `.mobileconfig` configuration profile or `.mobileprovision` provisioning profile,
 or **−** to remove the selected profile after confirmation. Unavailable
@@ -224,9 +230,9 @@ custom app URL schemes in the active device.
 
 ## Browse device reports
 
-Select a physical device or virtual machine in the main window, choose
-**Content** in the right inspector's toolbar, then **Reports**. Report listing
-and downloads depend on the connected device's capabilities. Reports are
+Select a device in the main window and choose **Reports** in the right
+inspector's toolbar. Physical-device and VM report operations depend on the
+connected device's capabilities. Crash, log, spin, and diagnostic reports are
 unavailable for simulators.
 
 Search by report name, path, file extension, or recorded type. **All Report

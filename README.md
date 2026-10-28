@@ -25,7 +25,7 @@ menus group devices by OS version.
 
 Use the main window's right inspector to view device information, manage
 installed apps and profiles, or export and replace app data. Choose **Settings**,
-**Content**, or **Info** in its toolbar. Available actions depend on the selected
+**Reports**, or **Info** in its toolbar. Available actions depend on the selected
 device; see the [user guide](Documentation/NeoSimulator.docc/UsingNeoSimulator.md).
 
 NeoSimulator uses private Apple frameworks and undocumented Xcode preferences.
