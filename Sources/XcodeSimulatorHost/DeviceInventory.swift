@@ -276,7 +276,8 @@ extension SimulatorHostDevice {
     func inventoryCopy(ownerXcodeURL: URL?, capabilities: Set<String>? = nil) -> Self {
         Self(identifier: identifier, name: name, descriptiveName: descriptiveName, runtimeIdentifier: runtimeIdentifier,
              runtimeName: runtimeName, productFamily: productFamily, state: state, ownerXcodeURL: ownerXcodeURL,
-             deviceSetPath: deviceSetPath, modelIdentifier: modelIdentifier, isAvailable: isAvailable,
+             deviceSetPath: deviceSetPath, modelIdentifier: modelIdentifier, deviceTypeIdentifier: deviceTypeIdentifier,
+             isAvailable: isAvailable,
              lastUsedAt: lastUsedAt, capabilities: capabilities ?? self.capabilities, pairIdentifiers: pairIdentifiers)
     }
 }

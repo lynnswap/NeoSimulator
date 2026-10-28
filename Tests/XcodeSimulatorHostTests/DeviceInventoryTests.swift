@@ -50,6 +50,7 @@ struct DeviceInventoryTests {
         if case .simulator(let retained) = joined {
             #expect(retained.ownerXcodeURL == normal.ownerXcodeURL)
             #expect(retained.name == normal.name && retained.modelIdentifier == normal.modelIdentifier)
+            #expect(retained.deviceTypeIdentifier == "phone-type")
         } else { Issue.record("simctl record was replaced by a remote record") }
     }
 
@@ -84,6 +85,7 @@ struct DeviceInventoryTests {
         #expect(inventory.allSatisfy { $0.deviceSetPath == "/testing" })
         #expect(inventory.first { $0.identifier == "unavailable" }?.isAvailable == false)
         #expect(inventory.first { $0.identifier == "ready" }?.pairIdentifiers == ["pair-id"])
+        #expect(inventory.first { $0.identifier == "ready" }?.deviceTypeIdentifier == "phone-type")
         #expect(inventory.first { $0.identifier == "unavailable" }?.pairIdentifiers == ["pair-id"])
         let orphan = try #require(inventory.first { $0.identifier == "orphan" })
         #expect(!orphan.isAvailable && orphan.runtimeIdentifier == "removed-runtime")
@@ -115,7 +117,8 @@ struct DeviceInventoryTests {
     private static func simulator(_ identifier: String, path: String? = nil) -> SimulatorHostDevice {
         SimulatorHostDevice(identifier: identifier, name: "Simulator Name", descriptiveName: "Simulator Name — iOS 27.0",
             runtimeIdentifier: "runtime", runtimeName: "iOS 27.0", productFamily: "iPhone", state: "Booted",
-            ownerXcodeURL: URL(fileURLWithPath: "/Applications/Xcode.app"), deviceSetPath: path, modelIdentifier: "iPhone99,2")
+            ownerXcodeURL: URL(fileURLWithPath: "/Applications/Xcode.app"), deviceSetPath: path, modelIdentifier: "iPhone99,2",
+            deviceTypeIdentifier: "phone-type")
     }
 
     private static let coreDeviceJSON = Data(#"""

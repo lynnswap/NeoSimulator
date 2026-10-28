@@ -8,9 +8,18 @@ public struct SimulatorXcode: Sendable, Equatable {
     public let name: String
 }
 
+/// The catalog and destination selected for a simulator creation session.
 public struct SimulatorCreationContext: Sendable {
     public let xcodeURL: URL
     public let data: Data
+    /// A custom simulator set, or `nil` for the default set. Creation and pairing retain this destination.
+    public let deviceSetPath: String?
+
+    init(xcodeURL: URL, data: Data, deviceSetPath: String? = nil) {
+        self.xcodeURL = xcodeURL
+        self.data = data
+        self.deviceSetPath = deviceSetPath
+    }
 }
 
 /// The simulator address and backend selected before presenting its screen.
@@ -37,12 +46,14 @@ public struct SimulatorHostDevice: Sendable, Equatable {
     public let ownerXcodeURL: URL?
     public let deviceSetPath: String?
     public let modelIdentifier: String?
+    /// CoreSimulator's device-type identifier, used with a runtime to validate companion creation.
+    public let deviceTypeIdentifier: String?
     public let isAvailable: Bool
     public let lastUsedAt: Date?
     public let capabilities: Set<String>
     public let pairIdentifiers: Set<String>
 
-    public init(identifier: String, name: String, descriptiveName: String, runtimeIdentifier: String, runtimeName: String, productFamily: String, state: String, ownerXcodeURL: URL? = nil, deviceSetPath: String? = nil, modelIdentifier: String? = nil, isAvailable: Bool = true, lastUsedAt: Date? = nil, capabilities: Set<String> = [], pairIdentifiers: Set<String> = []) {
+    public init(identifier: String, name: String, descriptiveName: String, runtimeIdentifier: String, runtimeName: String, productFamily: String, state: String, ownerXcodeURL: URL? = nil, deviceSetPath: String? = nil, modelIdentifier: String? = nil, deviceTypeIdentifier: String? = nil, isAvailable: Bool = true, lastUsedAt: Date? = nil, capabilities: Set<String> = [], pairIdentifiers: Set<String> = []) {
         self.identifier = identifier
         self.name = name
         self.descriptiveName = descriptiveName
@@ -53,6 +64,7 @@ public struct SimulatorHostDevice: Sendable, Equatable {
         self.ownerXcodeURL = ownerXcodeURL
         self.deviceSetPath = deviceSetPath
         self.modelIdentifier = modelIdentifier
+        self.deviceTypeIdentifier = deviceTypeIdentifier
         self.isAvailable = isAvailable
         self.lastUsedAt = lastUsedAt
         self.capabilities = capabilities
@@ -174,22 +186,35 @@ public actor SimulatorHostController {
         try await operation { try await self.readCreationCatalog() }
     }
 
+    /// Uses the selected simulator's Xcode and device set for companion creation.
+    public func creationCatalog(for deviceID: DeviceInventoryID) async throws -> SimulatorCreationContext {
+        let address = try deviceID.simulatorAddress
+        return try await operation {
+            let xcodeURL = try await self.resolvedXcodeURL(for: deviceID)
+            return try await self.readCreationCatalog(xcodeURL: xcodeURL, deviceSetPath: address.deviceSetPath)
+        }
+    }
+
     @concurrent
-    private func readCreationCatalog() async throws -> SimulatorCreationContext {
+    private func readCreationCatalog(xcodeURL: URL? = nil, deviceSetPath: String? = nil) async throws -> SimulatorCreationContext {
         guard let bundle = Bundle(url: rendererApplicationURL), bundle.bundleIdentifier == ToolConstants.neoHostBundleIdentifier,
               let executable = bundle.executableURL else {
             throw CLIError.unavailable("neo-host-bundle", "The embedded simulator display could not be found.")
         }
         var candidates: [XcodeInstallation] = []
-        if let selected = try? makeInspector().selectedXcode() { candidates.append(selected) }
-        candidates.append(contentsOf: try await availableXcodes())
+        if let xcodeURL {
+            candidates = [try await resolveXcode(xcodeURL)]
+        } else {
+            if let selected = try? makeInspector().selectedXcode() { candidates.append(selected) }
+            candidates.append(contentsOf: try await availableXcodes())
+        }
         var seen = Set<URL>()
         var firstFailure: (any Error)?
         for xcode in candidates where seen.insert(xcode.applicationURL).inserted {
             do {
                 let output = try SystemCommandRunner().run(executable: executable, arguments: ["--creation-catalog", "--xcode", xcode.applicationURL.path])
                 guard output.terminationStatus == 0 else { throw CLIError.unavailable("creation-catalog", output.stderrText) }
-                return SimulatorCreationContext(xcodeURL: xcode.applicationURL, data: output.stdout)
+                return SimulatorCreationContext(xcodeURL: xcode.applicationURL, data: output.stdout, deviceSetPath: deviceSetPath)
             } catch {
                 if firstFailure == nil { firstFailure = error }
                 catalogLogger.warning("Simulator creation catalog unavailable for \(xcode.applicationURL.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
@@ -202,7 +227,7 @@ public actor SimulatorHostController {
     public func createSimulator(named name: String, deviceType: String, runtime: String, context: SimulatorCreationContext) async throws -> String {
         try await operation {
             let xcode = try await self.resolveXcode(context.xcodeURL)
-            let output = try await self.runSimctl(xcode: xcode, arguments: ["create", name, deviceType, runtime])
+            let output = try await self.runSimctl(xcode: xcode, arguments: ["create", name, deviceType, runtime], deviceSetPath: context.deviceSetPath)
             return String(decoding: output, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
         }
     }
@@ -210,7 +235,7 @@ public actor SimulatorHostController {
     public func pairSimulators(watch: String, phone: String, context: SimulatorCreationContext) async throws {
         try await operation {
             let xcode = try await self.resolveXcode(context.xcodeURL)
-            _ = try await self.runSimctl(xcode: xcode, arguments: ["pair", watch, phone])
+            _ = try await self.runSimctl(xcode: xcode, arguments: ["pair", watch, phone], deviceSetPath: context.deviceSetPath)
         }
     }
 
@@ -539,12 +564,14 @@ public actor SimulatorHostController {
 
     public func xcodeURL(forDevice deviceID: DeviceInventoryID) async throws -> URL {
         _ = try deviceID.simulatorAddress
-        return try await operation {
-            if let owner = try await self.registeredRenderers().first(where: { $0.deviceIdentifiers.contains(deviceID) }) {
-                return URL(fileURLWithPath: owner.xcodePath, isDirectory: true)
-            }
-            return try await self.resolveDevice(deviceID: deviceID, preferredURL: nil).xcode.applicationURL
+        return try await operation { try await self.resolvedXcodeURL(for: deviceID) }
+    }
+
+    private func resolvedXcodeURL(for deviceID: DeviceInventoryID) async throws -> URL {
+        if let owner = try await registeredRenderers().first(where: { $0.deviceIdentifiers.contains(deviceID) }) {
+            return URL(fileURLWithPath: owner.xcodePath, isDirectory: true)
         }
+        return try await resolveDevice(deviceID: deviceID, preferredURL: nil).xcode.applicationURL
     }
 
     // Settings reads remain available while a renderer command waits for a screen.
@@ -778,6 +805,7 @@ enum SimulatorDeviceCatalog {
                     state: device.state,
                     deviceSetPath: deviceSetPath,
                     modelIdentifier: type?.modelIdentifier,
+                    deviceTypeIdentifier: device.deviceTypeIdentifier,
                     isAvailable: available,
                     lastUsedAt: lastUsedAt,
                     pairIdentifiers: Set((catalog.pairs ?? [:]).compactMap { pairID, pair in
