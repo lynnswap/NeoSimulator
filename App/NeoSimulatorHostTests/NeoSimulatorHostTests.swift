@@ -925,10 +925,13 @@ struct InputFocusTests {
         parent.view.layoutSubtreeIfNeeded()
         let content = controller.presentationViewController.view
         #expect(content.bounds.contains(display.view.frame))
-        let accessoryHost = NSStackView()
-        parent.view.addSubview(accessoryHost)
-        accessoryHost.addArrangedSubview(controls)
-        #expect(controls.superview === accessoryHost)
+        let accessory = DeviceCanvasAccessoryViewController()
+        var minimumWidth: CGFloat = 0
+        accessory.onMinimumWidthChange = { minimumWidth = $0 }
+        parent.view.addSubview(accessory.view)
+        accessory.setControls(controls)
+        controller.onSessionChange = { accessory.refresh() }
+        #expect(controls.isDescendant(of: accessory.view))
         controller.detachPresentation()
         #expect(controller.presentationViewController.parent == nil && content.superview == nil)
         #expect(display.disconnectCount == 0 && closes == 0)
@@ -965,6 +968,8 @@ struct InputFocusTests {
         NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
         #expect(window.firstResponder === editor)
         controller.focusInput()
+        accessory.setControls(controls)
+        #expect(!accessory.isHidden && minimumWidth > 0)
         await controller.prepareForRestart()
         let replacement = TestDisplay()
         let replacementSession = try makeSession(replacement, features: [DeviceCapabilities.keyboard])
@@ -973,7 +978,7 @@ struct InputFocusTests {
         #expect(controller.session === replacementSession && compactPresentations == 2)
         #expect(replacement.disconnectCount == 0 && display.disconnectCount == 1 && closes == 0)
         #expect(controller.canvasControls === controls && controls.window === window)
-        #expect(controls.isDescendant(of: controller.presentationViewController.view))
+        #expect(controls.isDescendant(of: accessory.view) && !accessory.isHidden && minimumWidth > 0)
         #expect(window.firstResponder === replacement.inputView && replacement.keyboard.last == true)
         let sheet = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 100),
                              styleMask: .titled, backing: .buffered, defer: false)
@@ -1269,6 +1274,7 @@ struct InputFocusTests {
         replacement.onPropertiesChange?()
         #expect(compact.frame == beforeRestart)
         #expect(replacement.view.window === compact && display.disconnectCount == 1)
+        #expect(controls.superview === controller.presentationViewController.view)
         try checkControls()
     }
 

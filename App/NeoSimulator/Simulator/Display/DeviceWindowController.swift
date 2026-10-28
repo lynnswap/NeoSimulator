@@ -588,6 +588,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         let restoreInputFocus = !isEmbedded || presentationWindow?.firstResponder === self.session.display.inputView
         isRestarting = false
         self.session = session
+        content.canvasControls = nil
         content.removeFromSuperview()
         content = DeviceContentView(display: session.display.view, usesNativeCanvas: session.display.usesNativeCanvas)
         fitting.attach(session.display, content: content)
@@ -1723,8 +1724,10 @@ private final class DeviceContentView: NSView, DisplayContentView {
         didSet {
             NSLayoutConstraint.deactivate(canvasConstraints)
             canvasConstraints.removeAll()
-            if oldValue !== canvasControls {
+            if oldValue !== canvasControls, oldValue?.superview === self {
                 oldValue?.removeFromSuperview()
+            }
+            if let canvasControls, canvasControls.superview == nil {
                 attachCanvasControls()
             }
             needsUpdateConstraints = true
