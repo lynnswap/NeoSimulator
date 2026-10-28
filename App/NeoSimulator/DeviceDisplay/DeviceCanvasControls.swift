@@ -163,7 +163,7 @@ private struct CanvasBottomContent: View {
     var onAction: (String) -> Void = { _ in }
 
     var body: some View {
-        VStack {
+        VStack(spacing: 0) {
             if let pairedDeviceName {
                 Button { onAction("pairedDevice") } label: {
                     HStack {
@@ -207,6 +207,7 @@ private struct CanvasBottomContent: View {
             }
         }
         .fixedSize()
+        .safeAreaPadding(.top, 8)
     }
 
     @ViewBuilder private func button(_ action: CanvasAction) -> some View {

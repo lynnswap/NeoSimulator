@@ -187,7 +187,7 @@ struct InputFocusTests {
         window.displayIfNeeded()
         #expect(controls.fittingSize.width > originalSize.width)
         #expect(controls.fittingSize.height == originalSize.height)
-        #expect(item.minimumThickness >= controls.fittingSize.width + 24)
+        #expect(item.minimumThickness >= controls.fittingSize.width)
         #expect(accessory.view.bounds.insetBy(dx: -1, dy: -1).contains(controls.convert(controls.bounds, to: accessory.view)))
         accessory.setControls(controls)
         #expect((accessory.view as? NSStackView)?.arrangedSubviews.count == 1)
@@ -252,6 +252,7 @@ struct InputFocusTests {
         let actionBarWidth = controls.fittingSize.width
         let unpairedSpace = viewport.frame.height
         try #require(unpairedSpace > 0)
+        #expect(abs(viewport.frame.minY - controls.fittingSize.height - 8) < 1)
         controls.update(supports: { $0 == "home" }, isEnabled: { _ in true }, recordingTitle: "Record Screen",
                         pairedDeviceName: "Companion Watch")
         accessory.refresh()
@@ -326,6 +327,8 @@ struct InputFocusTests {
             #expect(window.frame.height > unpairedWindowSize.height)
         }
         let controlsRect = controls.convert(controls.bounds, to: nil)
+        #expect(abs(canvas.convert(viewport.frame, to: nil).minY - controlsRect.maxY) < 1)
+        #expect(abs(canvas.convert(viewport.frame, to: nil).minX - controlsRect.minX) < 1)
         #expect(window.contentView!.bounds.insetBy(dx: -1, dy: -1).contains(controlsRect))
         #expect(!canvas.convert(viewport.frame, to: nil).intersects(controlsRect))
         #expect(canvas.convert(viewport.frame, to: nil).insetBy(dx: -1, dy: -1).contains(display.view.convert(display.view.bounds, to: nil)))
@@ -353,6 +356,7 @@ struct InputFocusTests {
         mainWindow.contentView?.layoutSubtreeIfNeeded()
         mainWindow.displayIfNeeded()
         #expect(controls.superview !== canvas && controls.window === mainWindow)
+        #expect(abs(canvas.convert(viewport.frame, to: nil).minY - controls.convert(controls.bounds, to: nil).maxY) < 1)
         #expect(viewport.frame.height > canvas.bounds.height - controls.bounds.height)
         #expect(display.renderScale > 0)
         #expect(canvas.convert(viewport.frame, to: nil).insetBy(dx: -1, dy: -1).contains(display.view.convert(display.view.bounds, to: nil)))
@@ -391,6 +395,9 @@ struct InputFocusTests {
         accessory.setControls(nil)
         #expect(controller.canvasControls === controls && controls.isDescendant(of: controller.presentationViewController.view))
         #expect(controls.window === controller.window && session.state == .connected)
+        let container = try #require(controls.superview)
+        container.layoutSubtreeIfNeeded()
+        #expect(abs(controls.frame.maxY - container.bounds.maxY) < 1)
         try await controller.embed(in: parent)
         accessory.setControls(controls)
         try await controller.detachPresentation()
@@ -1279,16 +1286,13 @@ struct InputFocusTests {
             content.layoutSubtreeIfNeeded()
             let window = try #require(controller.presentationWindow)
             #expect(display.view.frame.size == display.size(for: display.renderScale))
-            let header = controller.isEmbedded ? 0 : max(0, content.bounds.height - window.contentLayoutRect.height)
-            let gap = controller.isEmbedded ? 0 : WindowScale.displayGap(bezelPadding: display.chromePadding)
             let available = try #require((content as? any DisplayContentView)?.availableDisplaySize)
             let displayRect = display.view.convert(display.view.bounds, to: content)
             #expect(displayRect.width <= available.width + 1 && displayRect.height <= available.height + 1)
             #expect(abs(displayRect.midX - content.bounds.midX) < 1)
-            let below = displayRect.minY - controls.frame.maxY
-            let above = content.bounds.maxY - header - gap - displayRect.maxY
-            #expect(abs(below - above) < 2)
-            #expect(controls.frame.maxY + 8 <= displayRect.minY + 1)
+            let viewport = try #require(content.layoutGuides.first { $0.identifier.rawValue == "DeviceCanvasViewport" }).frame
+            #expect(abs(displayRect.midY - viewport.midY) < 1)
+            #expect(controls.frame.maxY <= displayRect.minY + 1)
             let bar = controls.convert(controls.bounds, to: content)
             #expect(content.bounds.insetBy(dx: -1, dy: -1).contains(bar))
             let center = controls.convert(NSPoint(x: controls.bounds.midX, y: controls.bounds.midY), to: nil)
@@ -1404,7 +1408,7 @@ struct InputFocusTests {
         let content = controller.presentationViewController.view
         let scroll = try #require(content.subviews.compactMap { $0 as? NSScrollView }.first)
         #expect(scroll.frame.minX == 8 && scroll.frame.maxX == content.bounds.maxX - 8)
-        #expect(scroll.frame.minY == controls.frame.maxY + 8 && scroll.frame.maxY == content.bounds.maxY - 8)
+        #expect(scroll.frame.minY == controls.frame.maxY && scroll.frame.maxY == content.bounds.maxY - 8)
         #expect(WindowScale.matches(display.renderScale, display.scale(for: scroll.frame.size)))
         #expect(scroll.documentVisibleRect.contains(display.view.frame))
         let previousControlsSize = controls.fittingSize
@@ -1461,7 +1465,7 @@ struct InputFocusTests {
         // AppDelegate refreshes the screen controls after moving them to the accessory.
         controls.update(supports: { _ in true }, isEnabled: { _ in true }, recordingTitle: "Record Screen")
         parent.view.layoutSubtreeIfNeeded()
-        #expect(controls.isDescendant(of: accessory.view) && scroll.frame.minY == 8)
+        #expect(controls.isDescendant(of: accessory.view) && scroll.frame.minY == content.bounds.minY)
         #expect((content as? any DisplayContentView)?.availableDisplaySize == scroll.frame.size)
         controller.performCanvasZoom(.fit)
         parent.view.setFrameSize(NSSize(width: 400, height: 300))

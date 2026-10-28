@@ -7,6 +7,8 @@ final class DeviceCanvasAccessoryViewController: NSSplitViewItemAccessoryViewCon
 
     init() {
         super.init(nibName: nil, bundle: nil)
+        automaticallyAppliesContentInsets = false
+        controlsStack.edgeInsets = NSEdgeInsets(top: 0, left: 8, bottom: 8, right: 8)
         controlsStack.orientation = .vertical
         controlsStack.alignment = .width
         view = controlsStack
@@ -32,7 +34,7 @@ final class DeviceCanvasAccessoryViewController: NSSplitViewItemAccessoryViewCon
     func refresh() {
         let controls = controlsStack.arrangedSubviews.first { $0.superview === controlsStack }
         isHidden = controls?.isHidden != false
-        onMinimumWidthChange?(controls.flatMap { $0.isHidden ? nil : $0.fittingSize.width + 24 } ?? 0)
+        onMinimumWidthChange?(controls.flatMap { $0.isHidden ? nil : $0.fittingSize.width + controlsStack.edgeInsets.left + controlsStack.edgeInsets.right } ?? 0)
     }
 
     override func viewDidLayout() {
