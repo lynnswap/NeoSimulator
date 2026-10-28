@@ -17,33 +17,35 @@ struct DeviceInformationView: View {
     var body: some View {
         if let device = inspection.device {
             let information = DeviceInformation(device: device, properties: inspection.infoProperties)
-            VStack(spacing: 0) {
-                Form {
-                    if editsVisibility {
-                        visibilityEditor(information)
-                    } else {
-                        informationCards(information)
-                        if case .simulator(let simulator) = device,
-                           simulator.productFamily == "iPhone" || simulator.productFamily == "Apple Watch" {
-                            pairedSimulators(simulator)
-                        }
+            Form {
+                if editsVisibility {
+                    visibilityEditor(information)
+                } else {
+                    informationCards(information)
+                    if case .simulator(let simulator) = device,
+                       simulator.productFamily == "iPhone" || simulator.productFamily == "Apple Watch" {
+                        pairedSimulators(simulator)
                     }
-                }
-                .formStyle(.grouped)
-                HStack {
-                    Spacer()
-                    if editsVisibility {
-                        Button("Done") { editsVisibility = false }
-                            .buttonStyle(.borderedProminent)
-                            .keyboardShortcut(.defaultAction)
-                    } else {
+                    HStack {
+                        Spacer()
                         Button("Edit Visibility") { editsVisibility = true }
                             .buttonStyle(.bordered)
-                            .controlSize(.mini)
+                            .buttonBorderShape(.capsule)
+                        Spacer()
                     }
-                    Spacer()
                 }
-                .padding(.vertical, 8)
+            }
+            .formStyle(.grouped)
+            .safeAreaBar(edge: .bottom, spacing: 0) {
+                if editsVisibility {
+                    Button("Done") { editsVisibility = false }
+                        .buttonStyle(.borderedProminent)
+                        .buttonBorderShape(.capsule)
+                        .buttonSizing(.flexible)
+                        .controlSize(.large)
+                        .keyboardShortcut(.defaultAction)
+                        .padding()
+                }
             }
         }
     }
@@ -61,14 +63,19 @@ struct DeviceInformationView: View {
     private func informationRows(_ fields: [DeviceInformation.Field]) -> some View {
         ForEach(fields) { field in
             LabeledContent(field.title) {
-                Text(field.value)
-                    .textSelection(.enabled)
-                    .multilineTextAlignment(.trailing)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .help(field.value)
+                fieldValue(field)
             }
+            .labeledContentStyle(InformationRowStyle())
         }
+    }
+
+    private func fieldValue(_ field: DeviceInformation.Field) -> some View {
+        Text(field.value)
+            .textSelection(.enabled)
+            .multilineTextAlignment(.trailing)
+            .lineLimit(1)
+            .truncationMode(.middle)
+            .help(field.value)
     }
 
     @ViewBuilder
@@ -78,11 +85,16 @@ struct DeviceInformationView: View {
             if !fields.isEmpty {
                 Section(group.title) {
                     ForEach(fields) { field in
-                        Toggle(field.title, isOn: Binding(
-                            get: { visibility.isVisible(field) },
-                            set: { visibility.setVisible($0, for: field) }
-                        ))
-                        .toggleStyle(.checkbox)
+                        LabeledContent {
+                            fieldValue(field)
+                        } label: {
+                            Toggle(field.title, isOn: Binding(
+                                get: { visibility.isVisible(field) },
+                                set: { visibility.setVisible($0, for: field) }
+                            ))
+                            .toggleStyle(.checkbox)
+                        }
+                        .labeledContentStyle(InformationRowStyle())
                     }
                 }
             }
@@ -105,7 +117,7 @@ struct DeviceInformationView: View {
                         ForEach(paired, id: \.inventoryID) { partner in
                             LabeledContent {
                                 DeviceMenuButton(menu: deviceMenu(partner), symbol: "ellipsis",
-                                                 label: "More Actions for \(partner.name)", isBordered: false)
+                                                 label: "More Actions for \(partner.name)")
                             } label: {
                                 Text(partner.name)
                                     .lineLimit(1)
@@ -140,18 +152,31 @@ struct DeviceInformationView: View {
         }
     }
 
+    private struct InformationRowStyle: LabeledContentStyle {
+        func makeBody(configuration: Configuration) -> some View {
+            HStack(alignment: .firstTextBaseline) {
+                configuration.label
+                    .lineLimit(1)
+                    .layoutPriority(1)
+                configuration.content
+                    .foregroundStyle(.secondary)
+                    .frame(minWidth: 0, maxWidth: .infinity, alignment: .trailing)
+            }
+        }
+    }
+
     private struct DeviceMenuButton: NSViewRepresentable {
         let menu: NSMenu
         let symbol: String
         let label: String
-        var isBordered = true
 
         func makeNSView(context: Context) -> NSPopUpButton {
             let image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)!
             let button = NSPopUpButton(image: image, pullDownMenu: menu)
             button.controlSize = .small
             button.bezelStyle = .accessoryBarAction
-            button.isBordered = isBordered
+            button.isBordered = false
+            (button.cell as? NSPopUpButtonCell)?.arrowPosition = .noArrow
             button.isEnabled = context.environment.isEnabled
             button.setAccessibilityLabel(label)
             button.toolTip = menu.title
@@ -160,7 +185,6 @@ struct DeviceInformationView: View {
 
         func updateNSView(_ button: NSPopUpButton, context: Context) {
             button.menu = menu
-            button.isBordered = isBordered
             button.isEnabled = context.environment.isEnabled
             button.setAccessibilityLabel(label)
             button.toolTip = menu.title
