@@ -980,15 +980,15 @@ struct InputFocusTests {
         #expect(WindowScale.matches(display.renderScale, display.scale(for: scroll.frame.size)))
         #expect(scroll.documentVisibleRect.contains(display.view.frame))
         let previousControlsSize = controls.fittingSize
-        func enlargeControls(in view: NSView) {
+        func setControlSize(_ size: NSControl.ControlSize, textStyle: NSFont.TextStyle, in view: NSView) {
             if let button = view as? NSButton {
-                button.controlSize = .extraLarge
+                button.controlSize = size
                 button.font = .systemFont(ofSize: NSFont.systemFontSize(for: button.controlSize))
-                button.symbolConfiguration = .init(textStyle: .largeTitle)
+                button.symbolConfiguration = .init(textStyle: textStyle)
             }
-            for child in view.subviews { enlargeControls(in: child) }
+            for child in view.subviews { setControlSize(size, textStyle: textStyle, in: child) }
         }
-        enlargeControls(in: controls)
+        setControlSize(.extraLarge, textStyle: .largeTitle, in: controls)
         content.layoutSubtreeIfNeeded()
         #expect(controls.fittingSize.height > previousControlsSize.height)
         #expect(scroll.frame.minY >= controls.frame.maxY)
@@ -1005,6 +1005,10 @@ struct InputFocusTests {
         let after = display.view.convert(NSPoint(x: 120, y: 400), to: content)
         #expect(before != after)
         #expect(after.y == before.y - (scroll.contentView.bounds.minY - origin.y))
+        setControlSize(.regular, textStyle: .body, in: controls)
+        controls.update(supports: { _ in true }, isEnabled: { _ in true }, recordingTitle: "Record Screen")
+        display.naturalSize = NSSize(width: 80, height: 900)
+        display.onPropertiesChange?()
         controller.showCompactWindow()
         try checkControls()
         let compact = try #require(controller.window)
@@ -1014,6 +1018,19 @@ struct InputFocusTests {
         controller.setScale(.fitScreen)
         #expect(compact.frame != beforeFit)
         #expect(controller.scaleState(.fitScreen) == .on)
+        let fittedWindow = compact.frame
+        let shortControlsHeight = controls.fittingSize.height
+        // Controls discovered after connection can increase both intrinsic dimensions.
+        setControlSize(.extraLarge, textStyle: .largeTitle, in: controls)
+        controls.update(supports: { _ in true }, isEnabled: { _ in true }, recordingTitle: "Record Screen")
+        content.layoutSubtreeIfNeeded()
+        #expect(controls.fittingSize.height > shortControlsHeight)
+        let available = try #require((content as? any DisplayContentView)?.availableDisplaySize)
+        let renderedSize = display.size(for: display.renderScale)
+        #expect(renderedSize.width <= available.width + 0.001 && renderedSize.height <= available.height + 0.001)
+        #expect(compact.frame.height == fittedWindow.height && compact.frame.width > fittedWindow.width)
+        #expect(try #require(compact.screen).visibleFrame.contains(compact.frame))
+        try checkControls()
         controller.setDeviceBezelVisible(false)
         controller.setDeviceBezelVisible(true)
         #expect(compact.backgroundColor == .windowBackgroundColor)

@@ -437,6 +437,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
             guard let self else { return }
             if self.session.isResizingApp { self.session.resizeApp(to: self.content.availableDisplaySize) }
             else if self.isEmbedded { self.updateEmbeddedScale(layout: false) }
+            else if self.session.display.usesNativeCanvas, !self.isSizingWindow { self.displayGeometryChanged() }
         }
         fitting.onNaturalSizeChange = { [weak self] in
             guard let self, self.isEmbedded else { return }
@@ -801,6 +802,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
             size: NSSize(width: content.canvasControlsWidth, height: currentSize.height)))
         frame.origin = window.frame.origin
         setFrame(around: frame)
+        if session.display.usesNativeCanvas { displayGeometryChanged() }
     }
 
     /// Rounds the header below a visible bezel outside full screen.
