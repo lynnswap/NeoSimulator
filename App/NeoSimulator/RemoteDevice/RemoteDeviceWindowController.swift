@@ -36,7 +36,11 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
         didSet {
             oldValue?.removeFromSuperview()
             if let canvasControls { canvasControlsContainer.addArrangedSubview(canvasControls) }
-            canvasControls?.onLayoutChange = { [weak self] in self?.fitCanvasControls() }
+            canvasControls?.onLayoutChange = { [weak self] in
+                guard let self else { return }
+                self.canvasControlsContainer.isHidden = self.canvasControls?.superview !== self.canvasControlsContainer
+                self.fitCanvasControls()
+            }
             canvasControlsContainer.isHidden = canvasControls == nil
             fitCanvasControls()
             update()
@@ -295,6 +299,11 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
         removePresentation()
         presentationViewController.view.translatesAutoresizingMaskIntoConstraints = true
         window?.contentViewController = presentationViewController
+        if let canvasControls, canvasControls.superview !== canvasControlsContainer {
+            canvasControls.removeFromSuperview()
+            canvasControlsContainer.addArrangedSubview(canvasControls)
+        }
+        canvasControlsContainer.isHidden = canvasControls == nil
         if let frame { window?.setFrame(frame, display: false) }
         fitCanvasControls()
     }

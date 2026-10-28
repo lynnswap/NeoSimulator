@@ -258,7 +258,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             if selectDevice { mainWindow.selectDevice(identifier) }
             mainWindow.activeScreenCommandTarget = screen.commandTarget
-            mainWindow.showLiveScreen(for: identifier)
+            mainWindow.showLiveScreen(for: identifier, controls: screen.canvasControls)
             updateScreenToolbar()
             mainWindow.showWindow(nil)
             mainWindow.window?.makeKeyAndOrderFront(nil)
@@ -476,16 +476,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let posture = model.devicePostures[identifier]
         let enabled = screen.canControlDevice && !model.managingDeviceIDs.contains(identifier)
         controls.xcodeURL = displayXcodeURL
+        let available = model.inventory.first { $0.id == identifier }
+            .map { DevicePostureModel.canInspect(capabilities: $0.capabilities) } ?? false
         controls.update(supports: { action in
             action == "rotate" && posture?.isSupported == true ? false : screen.supports(action)
         }, isEnabled: screen.isEnabled, recordingTitle: screen.recordingTitle,
                         recordingStartDate: screen.recordingStartDate, nativePoses: screen.nativePoseControls,
-                        nativePosesEnabled: enabled)
-        let available = model.inventory.first { $0.id == identifier }
-            .map { DevicePostureModel.canInspect(capabilities: $0.capabilities) } ?? false
-        controls.updatePosture(posture, isEnabled: enabled, available: available)
+                        nativePosesEnabled: enabled, posture: posture, postureEnabled: enabled, postureAvailable: available)
         if mainWindow?.liveDeviceIdentifier == identifier {
-            mainWindow?.updateCanvasMinimumWidth(controls.isHidden ? 0 : controls.fittingSize.width + 24)
+            mainWindow?.refreshCanvasControls()
         }
     }
 

@@ -34,6 +34,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     private let canvasZoomIdentifier = NSToolbarItem.Identifier("CanvasZoom")
     private let moreIdentifier = NSToolbarItem.Identifier("CanvasMoreActions")
     private var moreItem: NSMenuToolbarItem?
+    private let canvasAccessory = DeviceCanvasAccessoryViewController()
     private let deviceFooter = NSStackView()
     private let activityStack = NSStackView()
     private var canvasBottomToPane: NSLayoutConstraint?
@@ -405,6 +406,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         let liveView = liveScreenContainer.view
         liveView.translatesAutoresizingMaskIntoConstraints = false
         liveView.isHidden = true
+        liveView.clipsToBounds = true
         view.addSubview(liveView)
         canvasBottomToPane = liveView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor)
         canvasBottomToFooter = liveView.bottomAnchor.constraint(equalTo: deviceFooter.topAnchor, constant: -12)
@@ -476,6 +478,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         let content = NSSplitViewItem(viewController: controller)
         content.minimumThickness = 280
         content.holdingPriority = .defaultLow
+        canvasAccessory.onMinimumWidthChange = { [weak self] in self?.updateCanvasMinimumWidth($0) }
+        content.addBottomAlignedAccessoryViewController(canvasAccessory)
         splitController.addSplitViewItem(content)
     }
 
@@ -689,8 +693,9 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         if let row = table.selectedRowIndexes.first { table.scrollRowToVisible(row) }
     }
 
-    func showLiveScreen(for identifier: DeviceInventoryID) {
+    func showLiveScreen(for identifier: DeviceInventoryID, controls: DeviceCanvasControls?) {
         liveDeviceIdentifier = identifier
+        canvasAccessory.setControls(controls)
         liveScreenContainer.view.isHidden = false
         previewStack?.isHidden = true
         for item in window?.toolbar?.items ?? [] where item.itemIdentifier == compactIdentifier || item.itemIdentifier == moreIdentifier {
@@ -698,14 +703,20 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         }
     }
 
-    func updateCanvasMinimumWidth(_ width: CGFloat) {
-        splitController.splitViewItems[1].minimumThickness = max(280, width)
+    func refreshCanvasControls() {
+        canvasAccessory.refresh()
+    }
+
+    private func updateCanvasMinimumWidth(_ width: CGFloat) {
+        let item = splitController.splitViewItems[1]
+        let minimum = max(280, width)
+        if item.minimumThickness != minimum { item.minimumThickness = minimum }
     }
 
     func showDevicePreview(ifDisplaying identifier: DeviceInventoryID) {
         guard liveDeviceIdentifier == identifier else { return }
         liveDeviceIdentifier = nil
-        updateCanvasMinimumWidth(0)
+        canvasAccessory.setControls(nil)
         activeScreenCommandTarget = nil
         liveScreenContainer.view.isHidden = true
         previewStack?.isHidden = false
