@@ -258,7 +258,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             if selectDevice { mainWindow.selectDevice(identifier) }
             mainWindow.activeScreenCommandTarget = screen.commandTarget
-            mainWindow.showLiveScreen(for: identifier)
+            mainWindow.showLiveScreen(for: identifier, controls: screen.canvasControls)
             updateScreenToolbar()
             mainWindow.showWindow(nil)
             mainWindow.window?.makeKeyAndOrderFront(nil)
@@ -485,7 +485,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .map { DevicePostureModel.canInspect(capabilities: $0.capabilities) } ?? false
         controls.updatePosture(posture, isEnabled: enabled, available: available)
         if mainWindow?.liveDeviceIdentifier == identifier {
-            mainWindow?.updateCanvasMinimumWidth(controls.isHidden ? 0 : controls.fittingSize.width + 24)
+            mainWindow?.updateCanvasControls(controls)
         }
     }
 

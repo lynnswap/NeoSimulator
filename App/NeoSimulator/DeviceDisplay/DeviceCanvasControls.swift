@@ -44,6 +44,11 @@ final class DeviceCanvasControls: NSView {
 
     required init?(coder: NSCoder) { nil }
 
+    override func viewDidMoveToSuperview() {
+        super.viewDidMoveToSuperview()
+        onLayoutChange?()
+    }
+
     override func layout() {
         super.layout()
         for glass in [primaryScreenActions, profileScreenActions] {

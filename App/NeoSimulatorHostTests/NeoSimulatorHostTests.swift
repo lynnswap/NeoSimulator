@@ -51,6 +51,107 @@ struct InputFocusTests {
         try await controller.stopAndClose()
     }
 
+    @Test func canvasAccessoryKeepsControlsOutsideTheNativeContentSafeArea() throws {
+        _ = NSApplication.shared
+        let split = NSSplitViewController()
+        let content = NSViewController()
+        content.view = NSView()
+        let viewport = NSView()
+        viewport.clipsToBounds = true
+        viewport.translatesAutoresizingMaskIntoConstraints = false
+        content.view.addSubview(viewport)
+        NSLayoutConstraint.activate([
+            viewport.leadingAnchor.constraint(equalTo: content.view.safeAreaLayoutGuide.leadingAnchor),
+            viewport.trailingAnchor.constraint(equalTo: content.view.safeAreaLayoutGuide.trailingAnchor),
+            viewport.topAnchor.constraint(equalTo: content.view.safeAreaLayoutGuide.topAnchor),
+            viewport.bottomAnchor.constraint(equalTo: content.view.safeAreaLayoutGuide.bottomAnchor),
+        ])
+        let item = NSSplitViewItem(viewController: content)
+        let accessory = DeviceCanvasAccessoryViewController()
+        accessory.onMinimumWidthChange = { item.minimumThickness = max(280, $0) }
+        item.addBottomAlignedAccessoryViewController(accessory)
+        split.addSplitViewItem(item)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 700),
+                              styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentViewController = split
+        defer { window.close() }
+        #expect(accessory.isHidden)
+        let controls = DeviceCanvasControls()
+        var actions: [String] = []
+        controls.onAction = { actions.append($0) }
+        controls.update(supports: { ["home", "capture", "record", "rotate"].contains($0) },
+                        isEnabled: { _ in true }, recordingTitle: "Record Screen")
+        accessory.setControls(controls)
+        for size in [NSSize(width: 500, height: 700), NSSize(width: 600, height: 600)] {
+            window.setContentSize(size)
+            split.view.layoutSubtreeIfNeeded()
+            window.displayIfNeeded()
+            let canvasFrame = viewport.convert(viewport.bounds, to: split.view)
+            let accessoryFrame = accessory.view.convert(accessory.view.bounds, to: split.view)
+            #expect(!accessory.isHidden && accessoryFrame.height > 0)
+            #expect(!canvasFrame.intersects(accessoryFrame))
+            #expect(controls.isDescendant(of: accessory.view) && controls.window === window)
+        }
+        let originalSize = controls.fittingSize
+        func enlarge(_ view: NSView) {
+            if let button = view as? NSButton {
+                button.controlSize = .extraLarge
+                button.font = .systemFont(ofSize: NSFont.systemFontSize(for: .extraLarge))
+                button.symbolConfiguration = .init(textStyle: .largeTitle)
+            }
+            for child in view.subviews { enlarge(child) }
+        }
+        enlarge(controls)
+        split.view.layoutSubtreeIfNeeded()
+        window.displayIfNeeded()
+        #expect(controls.fittingSize.width > originalSize.width && controls.fittingSize.height > originalSize.height)
+        #expect(item.minimumThickness >= controls.fittingSize.width + 24)
+        #expect(!viewport.convert(viewport.bounds, to: split.view).intersects(accessory.view.convert(accessory.view.bounds, to: split.view)))
+        accessory.setControls(controls)
+        #expect((accessory.view as? NSStackView)?.arrangedSubviews.count == 1)
+        func descendants(_ view: NSView) -> [NSView] { view.subviews.flatMap { [$0] + descendants($0) } }
+        let home = try #require(descendants(controls).compactMap { $0 as? NSButton }.first { $0.identifier?.rawValue == "home" })
+        #expect(NSApp.sendAction(try #require(home.action), to: home.target, from: home))
+        #expect(actions == ["home"])
+        accessory.setControls(nil)
+        #expect(accessory.isHidden && controls.superview == nil)
+        accessory.setControls(controls)
+        #expect(controls.isDescendant(of: accessory.view))
+        controls.update(supports: { _ in false }, isEnabled: { _ in false }, recordingTitle: "Record Screen")
+        accessory.setControls(controls)
+        #expect(accessory.isHidden)
+    }
+
+    @Test func remoteControlsReturnFromAnAccessoryToTheSameCompactScreen() async throws {
+        _ = NSApplication.shared
+        let data = Data(#"{"result":{"devices":[{"identifier":"fixture-command","properties":{"hardware":{"reality":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)
+        let device = try #require(CoreDeviceInventoryDecoder.decode(data).first)
+        let transport = TestRemoteScreenTransport()
+        let session = RemoteDeviceScreenSession(device: device) { _, _, _ in transport }
+        let controller = RemoteDeviceWindowController(device: device, session: session, presentCompactWindow: { _ in })
+        let controls = DeviceCanvasControls()
+        controls.update(supports: { _ in true }, isEnabled: { _ in true }, recordingTitle: "Record Screen")
+        controller.canvasControls = controls
+        let parent = NSViewController()
+        parent.view = NSView(frame: NSRect(x: 0, y: 0, width: 500, height: 700))
+        let host = NSStackView()
+        parent.view.addSubview(host)
+        try await session.start()
+        try await controller.embed(in: parent)
+        host.addArrangedSubview(controls)
+        #expect(controller.canvasControls === controls && controls.superview === host)
+        try await controller.showCompactWindow()
+        #expect(controller.canvasControls === controls && controls.isDescendant(of: controller.presentationViewController.view))
+        #expect(controls.window === controller.window && session.state == .connected)
+        try await controller.embed(in: parent)
+        host.addArrangedSubview(controls)
+        try await controller.detachPresentation()
+        try await controller.showCompactWindow()
+        #expect(controller.canvasControls === controls && controls.window === controller.window)
+        try await controller.stopAndClose()
+    }
+
     @Test func remoteWindowCoalescesLayoutSizesWithoutBlockingHID() async throws {
         _ = NSApplication.shared
         let data = Data(#"{"result":{"devices":[{"identifier":"fixture-command","properties":{"hardware":{"reality":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)
@@ -815,6 +916,10 @@ struct InputFocusTests {
         parent.view.layoutSubtreeIfNeeded()
         let content = controller.presentationViewController.view
         #expect(content.bounds.contains(display.view.frame))
+        let accessoryHost = NSStackView()
+        parent.view.addSubview(accessoryHost)
+        accessoryHost.addArrangedSubview(controls)
+        #expect(controls.superview === accessoryHost)
         controller.detachPresentation()
         #expect(controller.presentationViewController.parent == nil && content.superview == nil)
         #expect(display.disconnectCount == 0 && closes == 0)
@@ -828,7 +933,7 @@ struct InputFocusTests {
         #expect(controller.window?.level == .floating)
         controller.perform(.stayOnTop)
         #expect(controller.window?.level == .normal)
-        #expect(controller.window?.contentView === content)
+        #expect(controller.window?.contentView === content && controls.superview === content)
         controller.setScale(.physicalSize)
         let compactScale = display.renderScale
         compactWindow.setFrameOrigin(NSPoint(x: visible.minX + 20, y: visible.minY + 20))

@@ -332,6 +332,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         embeddedContainer = nil
         if Self.embeddedController === self { Self.embeddedController = nil }
         content.isEmbedded = false
+        content.attachCanvasControls()
         deviceToolbar?.updateNativeRotation()
         content.autoresizingMask = []
         window?.contentView = content
@@ -1722,14 +1723,22 @@ private final class DeviceContentView: NSView, DisplayContentView {
         didSet {
             NSLayoutConstraint.deactivate(canvasConstraints)
             canvasConstraints.removeAll()
-            oldValue?.removeFromSuperview()
-            if let canvasControls {
-                canvasControls.translatesAutoresizingMaskIntoConstraints = false
-                addSubview(canvasControls)
+            if oldValue !== canvasControls {
+                oldValue?.removeFromSuperview()
+                attachCanvasControls()
             }
             needsUpdateConstraints = true
             needsLayout = true
         }
+    }
+    func attachCanvasControls() {
+        if let canvasControls, canvasControls.superview !== self {
+            canvasControls.removeFromSuperview()
+            canvasControls.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(canvasControls)
+        }
+        needsUpdateConstraints = true
+        needsLayout = true
     }
     private let viewport = NSLayoutGuide()
     private var canvasConstraints: [NSLayoutConstraint] = []
@@ -1861,7 +1870,7 @@ private final class DeviceContentView: NSView, DisplayContentView {
             NSLayoutConstraint(item: viewport, attribute: .top, relatedBy: .equal,
                                toItem: top, attribute: .top, multiplier: 1, constant: displayGap + canvasInset),
         ]
-        if let canvasControls, !canvasControls.isHidden {
+        if let canvasControls, canvasControls.superview === self, !canvasControls.isHidden {
             canvasConstraints += [
                 canvasControls.centerXAnchor.constraint(equalTo: centerXAnchor),
                 canvasControls.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8),
