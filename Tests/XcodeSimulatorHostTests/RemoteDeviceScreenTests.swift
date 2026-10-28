@@ -789,6 +789,32 @@ struct RemoteDeviceScreenTests {
         try await session.stop()
     }
 
+    @Test func optionalBindingDiagnosticsPreserveFailuresAndUnverifiedBoundaries() async throws {
+        typealias Preparation = NativeRuntimeValidationReport.Preparation
+        let unchecked = ["device capability and service I/O"]
+        let prepared = await Preparation.check("prepared", unverified: unchecked, load: {}, prepare: {})
+        let missing = await Preparation.check("missing", unverified: unchecked, load: {}, prepare: {
+            throw ABIResolutionError.imageNotLoaded
+        })
+        var attemptedPreparation = false
+        let failed = await Preparation.check("failed", unverified: unchecked, load: {
+            throw ScreenFixtureError.stream
+        }, prepare: { attemptedPreparation = true })
+        #expect(!attemptedPreparation)
+        #expect(prepared.status == .prepared && prepared.detail == nil)
+        #expect(missing.status == .unavailable && missing.stage == .preparingBindings && missing.detail != nil)
+        #expect(failed.status == .failed && failed.stage == .loadingFramework && failed.detail != nil)
+        let report = NativeRuntimeValidationReport(optionalBindings: [prepared, missing, failed])
+        let decoded = try JSONDecoder().decode(NativeRuntimeValidationReport.self, from: JSONEncoder().encode(report))
+        #expect(decoded == report && decoded.optionalBindings.allSatisfy { $0.unverified == unchecked })
+    }
+
+    @Test func resizeGeometryBindingsPrepareWithoutADeviceOrAssertion() throws {
+        try CoreDeviceRemoteScreenDevice.load("/Library/Developer/PrivateFrameworks/CoreDeviceUtilities.framework/Versions/A/CoreDeviceUtilities")
+        let bindings = try CoreDeviceAppResizeTransport.Bindings(runtime: .shared)
+        _ = try CoreDeviceAppResizeTransport.GeometryBindings(type: bindings.sceneType, abis: bindings.abis)
+    }
+
     @Test func nativeTouchscreenDescriptorsPreserveANonLegacyDisplayIdentity() async throws {
         try CoreDeviceRemoteScreenDevice.load("/Library/Developer/PrivateFrameworks/CoreDeviceUtilities.framework/Versions/A/CoreDeviceUtilities")
         let runtime = ABIRuntime.shared
@@ -810,9 +836,16 @@ struct RemoteDeviceScreenTests {
 
     @Test func dedicatedReportsRoundTripThroughTheInstalledUniversalHIDValueAPIs() throws {
         let runtime = ABIRuntime.shared
+        let systemURL = URL(fileURLWithPath: "/System/Library/PrivateFrameworks/UniversalHID.framework/Versions/A/UniversalHID")
+        let coreDeviceURL = URL(fileURLWithPath: "/Library/Developer/PrivateFrameworks/CoreDevice.framework/Versions/A/Frameworks/UniversalHID.framework/Versions/A/UniversalHID")
+        try CoreDeviceRemoteScreenDevice.load(systemURL.path)
+        try CoreDeviceRemoteScreenDevice.load(coreDeviceURL.path)
+        let systemImage = try #require(runtime.resolveImagesAndWait(matching: .path(systemURL)).first)
+        let image = try #require(runtime.resolveImagesAndWait(matching: .path(coreDeviceURL)).first)
+        try #require(image != systemImage)
         let builder = try CoreDeviceDigitizerReports(runtime: runtime)
-        let digitizer = try runtime.resolveAndWait(.swift(.type("UniversalHID.DigitizerReport")))
-        let contact = try runtime.resolveAndWait(.swift(.type("UniversalHID.DigitizerContact")))
+        let digitizer = try runtime.resolveAndWait(.swift(.type("UniversalHID.DigitizerReport")), in: image, loading: .loadedOnly)
+        let contact = try runtime.resolveAndWait(.swift(.type("UniversalHID.DigitizerContact")), in: image, loading: .loadedOnly)
         let abis = builder.abis
         let make = try digitizer.resolveAndWait(.swift(.initializer("init(_report:)", as: ((NativeSwiftValue) -> NativeSwiftValue).self, valueABIs: abis)))
         let receiver = abis[digitizer]!
@@ -828,6 +861,7 @@ struct RemoteDeviceScreenTests {
         let edge = try digitizer.resolveAndWait(.swift(.method("contactSwipeLeft(atIndex:)", as: ((Int) -> Bool?).self, valueABIs: abis, receiverABI: receiver)))
         for phase in [RemoteDeviceTouchPhase.began, .ended] {
             let payload = try builder.make(point: CGPoint(x: 0.25, y: 0.75), second: CGPoint(x: 0.8, y: 0.2), phase: phase, edge: .left)
+            #expect(payload.type.image == image)
             let value = try unsafe make.unsafeInvoke(payload)
             #expect(try unsafe count.unsafeInvoke(on: value) == 2)
             for index in 0..<2 {

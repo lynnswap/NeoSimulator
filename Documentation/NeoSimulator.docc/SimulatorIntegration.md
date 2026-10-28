@@ -25,14 +25,25 @@ The compatibility gate checks:
 - The packaged renderer and its private runtime contract, including Objective-C
   messages, Swift members, C symbols, and loaded-image provenance.
 
-The embedded renderer's internal `--validate-runtime` mode resolves the same
-interfaces used by the GUI without creating an application or device session. The gate inspects tool
-wrappers but does not execute them, avoiding their implicit first-launch setup.
+The embedded renderer's internal `--validate-runtime` mode prepares the required
+Simulator interfaces without creating an application or device session. This
+required-only mode produces no stdout on success. Add `--include-native-bindings`
+to explicitly prepare optional native canvas, pose, app-resize, and display-HID
+bindings and write their JSON diagnostic report to stdout after the required
+checks succeed. Each result records
+its preparation stage, any unavailable declaration or failure, and the remaining
+device, provider, or service checks. Successful preparation does not establish
+device support or working rendering and I/O. Optional preparation failures do
+not change the required gate's successful exit status. Normal feature operations
+prepare these bindings at their existing lazy boundaries and report their own
+failures.
+
+The gate inspects tool wrappers but does not execute them, avoiding their implicit first-launch setup.
 Device UI plugins such as `XROS.simdeviceui` load when SimulatorKit connects a
 display; their provenance is checked then.
 
 Xcode 27 is the minimum generation. Later versions are accepted only when the
-required contracts still match. An unavailable interface stops the operation;
+required contracts still match. An unavailable required interface stops the operation;
 there is no compatibility bypass or Device Hub fallback.
 
 ## Reference evidence

@@ -41,6 +41,7 @@ final class FakeSystemCommandRunner: CommandRunning, PreferenceDomainAccessing {
     var failFirstPreferenceReadAfterMutationCount: Int?
     var failPreferenceReads = false
     var neoHostRuntimeValidationStatus: Int32 = 0
+    var neoHostRuntimeValidationOutput = ""
     var neoHostRuntimeValidationError = ""
     var failureTiming: FailureTiming = .beforeMutation
     var beforeRun: ((Call) -> Void)?
@@ -72,7 +73,7 @@ final class FakeSystemCommandRunner: CommandRunning, PreferenceDomainAccessing {
             }
             return CommandOutput(
                 terminationStatus: neoHostRuntimeValidationStatus,
-                stdout: Data(),
+                stdout: Data(neoHostRuntimeValidationOutput.utf8),
                 stderr: Data(neoHostRuntimeValidationError.utf8)
             )
         }
