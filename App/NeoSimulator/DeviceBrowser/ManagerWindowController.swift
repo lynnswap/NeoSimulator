@@ -22,6 +22,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     let liveScreenContainer = NSViewController()
     private(set) var liveDeviceIdentifier: DeviceInventoryID?
     var onShowCompactWindow: ((DeviceInventoryID) -> Void)?
+    var onSelectionIntent: (() -> Void)?
     var onSelectionChange: ((DeviceInventoryID?) -> Void)?
     var onScreenAction: ((String) -> Void)?
     var onNewCompanion: ((SimulatorHostDevice) -> Void)?
@@ -42,7 +43,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     private let progress = NSProgressIndicator()
     private var inspectorHost: NSHostingController<ManagerDeviceSettingsView>?
     private let inspectorContainer = NSViewController()
-    private lazy var deviceInspector: ManagerDeviceInspectorController = {
+    private(set) lazy var deviceInspector: ManagerDeviceInspectorController = {
         let inspector = ManagerDeviceInspectorController(model: model)
         inspector.onPairingMenu = { [weak self] in self?.pairingMenu(for: $0) ?? NSMenu() }
         inspector.onDeviceMenu = { [weak self] device in
@@ -61,7 +62,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     private var availableRows: [DeviceRow] = []
     private var unavailableRows: [DeviceRow] = []
     private var displayedManagingIDs: Set<DeviceInventoryID> = []
-    private var selectedIdentifiers = Set<DeviceInventoryID>()
+    private(set) var selectedIdentifiers = Set<DeviceInventoryID>()
     private let availableGroup = AvailabilityGroup(available: true)
     private let unavailableGroup = AvailabilityGroup(available: false)
     private var expandedGroups: Set<Bool> = [true, false]
@@ -601,6 +602,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
 
     func outlineViewSelectionDidChange(_ notification: Notification) {
         guard !updatingSelection else { return }
+        onSelectionIntent?()
         selectedIdentifiers = Set(table.selectedRowIndexes.compactMap { (table.item(atRow: $0) as? DeviceRow)?.id })
         updateSelection()
     }

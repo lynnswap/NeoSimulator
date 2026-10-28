@@ -96,7 +96,7 @@
               "kind": "group",
               "path": "Launch",
               "children": [
-                { "path": "AppDelegate.swift", "target-membership": [ "NeoSimulator/compile-sources" ] },
+                { "path": "AppDelegate.swift", "target-membership": [ "NeoSimulator/compile-sources", "NeoSimulatorHostTests/compile-sources" ] },
                 { "path": "NeoSimulatorApplication.swift", "target-membership": [ "NeoSimulator/compile-sources" ] },
                 {
                   "path": "ManagerRelaunch.swift",
@@ -111,8 +111,8 @@
               "kind": "group",
               "path": "Menus",
               "children": [
-                { "path": "SimulatorDevicesMenu.swift", "target-membership": [ "NeoSimulator/compile-sources" ] },
-                { "path": "SelectedDeviceMenu.swift", "target-membership": [ "NeoSimulator/compile-sources" ] },
+                { "path": "SimulatorDevicesMenu.swift", "target-membership": [ "NeoSimulator/compile-sources", "NeoSimulatorHostTests/compile-sources" ] },
+                { "path": "SelectedDeviceMenu.swift", "target-membership": [ "NeoSimulator/compile-sources", "NeoSimulatorHostTests/compile-sources" ] },
               ],
             }, {
               "kind": "group",
@@ -167,9 +167,9 @@
                 },
               ],
             },
-            { "path": "ManagerWindowController.swift", "target-membership": [ "NeoSimulator/compile-sources" ] },
-            { "path": "SimulatorSidebarRowView.swift", "target-membership": [ "NeoSimulator/compile-sources" ] },
-            { "path": "SimulatorSidebarCellView.swift", "target-membership": [ "NeoSimulator/compile-sources" ] },
+            { "path": "ManagerWindowController.swift", "target-membership": [ "NeoSimulator/compile-sources", "NeoSimulatorHostTests/compile-sources" ] },
+            { "path": "SimulatorSidebarRowView.swift", "target-membership": [ "NeoSimulator/compile-sources", "NeoSimulatorHostTests/compile-sources" ] },
+            { "path": "SimulatorSidebarCellView.swift", "target-membership": [ "NeoSimulator/compile-sources", "NeoSimulatorHostTests/compile-sources" ] },
             {
               "path": "SimulatorManagerModel.swift",
               "target-membership": [
@@ -215,8 +215,8 @@
           "kind": "group",
           "path": "DeviceSettings",
           "children": [
-            { "path": "ManagerDeviceSettingsView.swift", "target-membership": [ "NeoSimulator/compile-sources" ] },
-            { "path": "ManagerSettingSlider.swift", "target-membership": [ "NeoSimulator/compile-sources" ] },
+            { "path": "ManagerDeviceSettingsView.swift", "target-membership": [ "NeoSimulator/compile-sources", "NeoSimulatorHostTests/compile-sources" ] },
+            { "path": "ManagerSettingSlider.swift", "target-membership": [ "NeoSimulator/compile-sources", "NeoSimulatorHostTests/compile-sources" ] },
             {
               "path": "DeviceSettingsModel.swift",
               "target-membership": [
@@ -269,7 +269,7 @@
           "kind": "group",
           "path": "Settings",
           "children": [
-            { "path": "SettingsWindowController.swift", "target-membership": [ "NeoSimulator/compile-sources" ] },
+            { "path": "SettingsWindowController.swift", "target-membership": [ "NeoSimulator/compile-sources", "NeoSimulatorHostTests/compile-sources" ] },
             {
               "kind": "group",
               "path": "Preferences",

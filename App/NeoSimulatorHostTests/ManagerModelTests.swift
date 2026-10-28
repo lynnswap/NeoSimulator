@@ -8,6 +8,103 @@ import XCTest
 
 @Suite(.serialized, .timeLimit(.minutes(1))) @MainActor
 struct ManagerModelTests {
+    @Test func pendingPresentationKeepsTheLaterSelectionAndCanvas() async throws {
+        _ = NSApplication.shared
+        let devices = try CoreDeviceInventoryDecoder.decode(Data(#"{"result":{"devices":[{"identifier":"A","properties":{"hardware":{"reality":"physical"},"state":{"name":"A"}}},{"identifier":"B","properties":{"hardware":{"reality":"physical"},"state":{"name":"B"}}}]}}"#.utf8))
+        let a = try #require(devices.first), b = try #require(devices.last)
+        let source = ManagerModelSource(devices: devices.map(InventoryDevice.remote))
+        let model = SimulatorManagerModel(source: source)
+        model.settings.setReadingSuspended(true)
+        await model.refresh()
+        let app = AppDelegate()
+        app.model = model
+        app.prepareMainWindow()
+        let main = try #require(app.mainWindow)
+        main.window?.setFrameAutosaveName("")
+        let aTransport = TestRemoteScreenTransport(), bTransport = TestRemoteScreenTransport()
+        let aSession = RemoteDeviceScreenSession(device: a) { _, _, _ in aTransport }
+        let bSession = RemoteDeviceScreenSession(device: b) { _, _, _ in bTransport }
+        try await aSession.start()
+        try await bSession.start()
+        let aController = RemoteDeviceWindowController(device: a, session: aSession, presentCompactWindow: { _ in })
+        let bController = RemoteDeviceWindowController(device: b, session: bSession, presentCompactWindow: { _ in })
+        let aID = DeviceInventoryID.coreDevice(a.identifier), bID = DeviceInventoryID.coreDevice(b.identifier)
+        app.remoteWindows = [aID: aController, bID: bController]
+        main.selectDevice(aID)
+        let releasing = AsyncStream<Void>.makeStream(), resume = AsyncStream<Void>.makeStream()
+        var releases = releasing.stream.makeAsyncIterator()
+        aTransport.onReleaseInputs = {
+            aTransport.onReleaseInputs = nil
+            releasing.continuation.yield(())
+            var permits = resume.stream.makeAsyncIterator()
+            _ = await permits.next()
+        }
+        let revision = app.selectionRevision
+        let opening = Task { try await app.presentConnectedScreen(aID, purpose: .requested, revision: revision) }
+        #expect(await releases.next() != nil)
+        let content = try #require(main.window?.contentView)
+        let outline = try #require(inspectorViews(content).compactMap { $0 as? NSOutlineView }.first)
+        let bRow = try #require((0..<outline.numberOfRows).first { row in
+            row != outline.selectedRow && outline.item(atRow: row).map { main.outlineView(outline, shouldSelectItem: $0) } == true
+        })
+        outline.selectRowIndexes(IndexSet(integer: bRow), byExtendingSelection: false)
+        #expect(main.selectedIdentifiers == [bID])
+        resume.continuation.yield(())
+        try await opening.value
+        let presented = XCTNSPredicateExpectation(predicate: NSPredicate { object, _ in
+            MainActor.assumeIsolated { (object as? ManagerWindowController)?.liveDeviceIdentifier == bID }
+        }, object: main)
+        try #require(await XCTWaiter.fulfillment(of: [presented], timeout: 5) == .completed)
+        #expect(main.selectedIdentifiers == [bID])
+        #expect(model.settings.device?.id == bID && main.deviceInspector.inspection.device?.id == bID)
+        #expect(main.liveDeviceIdentifier == bID)
+        #expect(bController.presentationViewController.parent === main.liveScreenContainer)
+        #expect(aController.presentationViewController.parent == nil)
+        #expect(aSession.state == .connected && app.remoteWindows[aID] === aController)
+        try await aSession.stop()
+        try await bSession.stop()
+        main.window?.close()
+    }
+
+    @Test(arguments: [false, true])
+    func automaticPresentationPreservesSelectionAndInitialPresentation(_ initial: Bool) async throws {
+        _ = NSApplication.shared
+        let devices = try CoreDeviceInventoryDecoder.decode(Data(#"{"result":{"devices":[{"identifier":"A","properties":{"hardware":{"reality":"physical"},"state":{"name":"A"}}},{"identifier":"B","properties":{"hardware":{"reality":"physical"},"state":{"name":"B"}}}]}}"#.utf8))
+        let a = try #require(devices.first), b = try #require(devices.last)
+        let aID = DeviceInventoryID.coreDevice(a.identifier), bID = DeviceInventoryID.coreDevice(b.identifier)
+        let model = SimulatorManagerModel(source: ManagerModelSource(devices: devices.map(InventoryDevice.remote)))
+        model.settings.setReadingSuspended(true)
+        await model.refresh()
+        let app = AppDelegate()
+        app.model = model
+        app.prepareMainWindow()
+        let main = try #require(app.mainWindow)
+        main.window?.setFrameAutosaveName("")
+        let transport = TestRemoteScreenTransport()
+        let session = RemoteDeviceScreenSession(device: a) { _, _, _ in transport }
+        try await session.start()
+        let controller = RemoteDeviceWindowController(device: a, session: session, presentCompactWindow: { _ in })
+        app.remoteWindows[aID] = controller
+        if !initial { main.selectDevice(bID) }
+        try await app.presentConnectedScreen(aID, purpose: initial ? .startup : .automatic, revision: app.selectionRevision)
+        let selected = initial ? aID : bID
+        #expect(main.selectedIdentifiers == [selected])
+        #expect(model.settings.device?.id == selected && main.deviceInspector.inspection.device?.id == selected)
+        #expect(main.liveDeviceIdentifier == (initial ? aID : nil))
+        #expect((controller.presentationViewController.parent === main.liveScreenContainer) == initial)
+        #expect(session.state == .connected && app.remoteWindows[aID] === controller)
+        if initial {
+            try await controller.showCompactWindow()
+            main.showDevicePreview(ifDisplaying: aID)
+            try await app.presentConnectedScreen(aID, purpose: .automatic, revision: app.selectionRevision, preserving: .compact)
+            #expect(main.liveDeviceIdentifier == nil && !controller.isEmbedded)
+            try await app.presentConnectedScreen(aID, purpose: .requested, revision: app.selectionRevision)
+            #expect(main.liveDeviceIdentifier == aID && controller.presentationViewController.parent === main.liveScreenContainer)
+        }
+        try await session.stop()
+        main.window?.close()
+    }
+
     @Test(arguments: [(DeviceInspectorModel.Page.info, DeviceInspectorModel.Content.applications),
                       (.info, .configuration), (.reports, .info)])
     func sameDeviceInventoryUpdatesKeepInspectorRecordsAndSelection(selection: (page: DeviceInspectorModel.Page, content: DeviceInspectorModel.Content)) async throws {
@@ -241,8 +338,11 @@ struct ManagerModelTests {
         var failureEvents = failures.stream.makeAsyncIterator()
         let manager = SimulatorManagerModel(source: source, makeDevicePosture: postures.model)
         manager.onError = { _ in failures.continuation.yield(()) }
+        var requested: [DeviceInventoryID] = []
+        manager.onSimulatorOpenRequested = { requested.append($0) }
         await manager.refresh()
         manager.openDevice(device.id)
+        #expect(requested == [device.id])
         #expect(await events.next() == .open(device.id))
         manager.setOpenDeviceScreens([device.id])
         #expect(manager.isBusy && manager.devicePostures.isEmpty)

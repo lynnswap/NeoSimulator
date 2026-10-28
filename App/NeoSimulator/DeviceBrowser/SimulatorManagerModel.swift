@@ -143,6 +143,7 @@ final class SimulatorManagerModel {
     @ObservationIgnored private let makeDevicePosture: @MainActor (DeviceInventoryID) -> DevicePostureModel
     let frameworks: UIFrameworkSettings
     @ObservationIgnored var onError: ((any Error) -> Void)?
+    @ObservationIgnored var onSimulatorOpenRequested: ((DeviceInventoryID) -> Void)?
     @ObservationIgnored var onOpenRemoteDevice: ((CoreDeviceDevice) -> Void)?
     @ObservationIgnored var beforeStoppingScreens: (() async throws -> Void)?
     @ObservationIgnored var beforeManagingRemoteDevices: ((Set<DeviceInventoryID>) async throws -> Void)?
@@ -202,6 +203,8 @@ final class SimulatorManagerModel {
     }
 
     func openDevice(_ identifier: DeviceInventoryID) {
+        guard !stopping else { return }
+        onSimulatorOpenRequested?(identifier)
         perform("Opening simulator…") {
             try await self.controller.openDevice(identifier, xcodeURL: nil)
             await self.deviceScreenDidConnect(identifier)
@@ -210,6 +213,8 @@ final class SimulatorManagerModel {
 
     func restoreScreen(_ restoration: SimulatorScreenRestoration,
                        present: @escaping @MainActor () async throws -> Void) {
+        guard !stopping else { return }
+        if restoration.presentation == .main { onSimulatorOpenRequested?(restoration.deviceID) }
         perform("Restoring simulator…") {
             await self.refreshCatalog()
             try await self.controller.openDevice(restoration.deviceID, xcodeURL: restoration.xcodeURL)
