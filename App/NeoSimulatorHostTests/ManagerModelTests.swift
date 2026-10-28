@@ -1239,6 +1239,8 @@ struct ManagerModelTests {
             "name": .string("Renamed Phone"), "operatingSystem": .string("iOS 27.2"),
             "modelName": .string("iPhone 18 Pro"),
             "hardware": .object(["serialNumber": .string("serial")]),
+            "connection": .object(["state": .string("disconnected"), "pairingState": .string("paired"),
+                "transportType": .string("sameMachine"), "lastConnectionDate": .date(Date(timeIntervalSinceReferenceDate: 100))]),
         ])
         func value(_ id: String) -> String? { information.fields.first { $0.id == [id] }?.value }
         #expect(value("name") == "Renamed Phone")
@@ -1248,6 +1250,12 @@ struct ManagerModelTests {
         #expect(information.fields.filter { $0.id == ["modelName"] || $0.id == ["udid"] }.allSatisfy { $0.group == .hardware })
         let serial = try #require(information.fields.first { $0.id == ["hardware", "serialNumber"] })
         #expect(serial.value == "serial" && serial.group == .hardware)
+        let connection = information.fields.filter { $0.group == .connection }
+        #expect(Set(connection.map(\.title)) == ["Tunnel State", "Pairing State", "Transport Type", "Last Connection Date"])
+        #expect(connection.first { $0.id == ["connection", "state"] }?.value == "Disconnected")
+        #expect(connection.first { $0.id == ["connection", "pairingState"] }?.value == "Paired")
+        #expect(connection.first { $0.id == ["connection", "transportType"] }?.value == "Same Machine")
+        #expect(connection.first { $0.id == ["connection", "lastConnectionDate"] }?.value == Date(timeIntervalSinceReferenceDate: 100).formatted())
     }
 
     @Test func remoteInfoUsesAvailablePropertiesWithoutSubstitutingItsCommandIDForUDID() {
@@ -1258,6 +1266,7 @@ struct ManagerModelTests {
             lastConnectedAt: nil, visibilityClass: nil)
         let information = DeviceInformation(device: .remote(remote), properties: [
             "state": .object(["name": .string("Current Phone")]),
+            "connection": .object(["transportType": .string("USB"), "state": .string("futureRawState")]),
             "software": .object([
                 "osVersionNumber": .object(["stringValue": .string("27.2")]),
                 "osBuildVersions": .object(["buildVersion": .object(["name": .string("27C100")])]),
@@ -1270,6 +1279,8 @@ struct ManagerModelTests {
         #expect(information.fields.first { $0.id == ["operatingSystem"] }?.value == "iOS 27.2")
         #expect(information.fields.first { $0.id == ["modelName"] }?.value == "iPhone 18 Pro")
         #expect(!information.fields.contains { $0.id == ["udid"] })
+        #expect(information.fields.first { $0.id == ["connection", "transportType"] }?.value == "USB")
+        #expect(information.fields.first { $0.id == ["connection", "state"] }?.value == "futureRawState")
         #expect(information.fields.first { $0.value == "27C100" }?.title == "Software / OS Builds / Build / Name")
         #expect(information.fields.first { $0.value == "Primary" }?.title == "Configuration / Displays — Item 1 / Name")
         #expect(information.fields.first { $0.value == "External" }?.title == "Configuration / Displays — Item 2 / Name")

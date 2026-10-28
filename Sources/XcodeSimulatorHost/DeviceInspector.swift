@@ -95,7 +95,7 @@ public struct DeviceInfoSnapshot: Sendable {
     public let deviceID: DeviceInventoryID
     /// The known inventory values remain available when a live query fails.
     public let device: InventoryDevice
-    /// CoreDevice property categories, or simctl's device record and runtime information.
+    /// CoreDevice property categories, or simctl's device record with runtime and known CoreDevice connection information.
     public let fields: [String: DeviceInspectorValue]
     public let issues: [DeviceInspectorFailure]
 }
@@ -152,8 +152,16 @@ public struct DeviceInspector: Sendable {
     }
 
     @concurrent public func info() async -> DeviceInfoSnapshot {
+        var fields: [String: DeviceInspectorValue] = [:]
+        if case .simulator(let simulator) = device, let coreDevice = simulator.coreDevice {
+            var connection: [String: DeviceInspectorValue] = [:]
+            if let state = coreDevice.connectionState { connection["state"] = .string(state) }
+            if let pairing = coreDevice.pairingState { connection["pairingState"] = .string(pairing) }
+            if let transport = coreDevice.transportType { connection["transportType"] = .string(transport) }
+            if let date = coreDevice.lastConnectedAt { connection["lastConnectionDate"] = .date(date) }
+            if !connection.isEmpty { fields["connection"] = .object(connection) }
+        }
         do {
-            let fields: [String: DeviceInspectorValue]
             switch device {
             case .simulator(let simulator):
                 let data = try await simctl(["list", "--json"], operation: "Read Device Info")
@@ -182,14 +190,14 @@ public struct DeviceInspector: Sendable {
                     }
                     if let platform { result["operatingSystem"] = .string("\(platform) \(version)") }
                 }
-                fields = result
+                fields.merge(result) { known, _ in known }
             case .remote:
                 fields = try await coreDeviceResult(["device", "info", "details"], operation: "Read Device Info")["properties"]?.object
                     ?? { throw DeviceInspectorError.invalidResponse("Device details omitted the properties dictionary.") }()
             }
             return DeviceInfoSnapshot(deviceID: device.id, device: device, fields: fields, issues: [])
         } catch {
-            return DeviceInfoSnapshot(deviceID: device.id, device: device, fields: [:], issues: [failure(error, operation: "Read Device Info")])
+            return DeviceInfoSnapshot(deviceID: device.id, device: device, fields: fields, issues: [failure(error, operation: "Read Device Info")])
         }
     }
 

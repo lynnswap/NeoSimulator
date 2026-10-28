@@ -74,7 +74,10 @@ struct DeviceInformation {
             switch value {
             case .object(let children) where !children.isEmpty:
                 for key in children.keys.sorted(by: { $0.localizedStandardCompare($1) == .orderedAscending }) {
-                    visit(children[key]!, path: path + [key], title: "\(title) / \(Self.title(for: key))")
+                    let childTitle = path == ["connection"]
+                        ? key == "state" ? "Tunnel State" : Self.title(for: key)
+                        : "\(title) / \(Self.title(for: key))"
+                    visit(children[key]!, path: path + [key], title: childTitle)
                 }
             case .array(let children) where !children.isEmpty:
                 for (index, child) in children.enumerated() {
@@ -82,8 +85,13 @@ struct DeviceInformation {
                 }
             default:
                 guard !Self.defaultFields.contains(path) else { return }
-                values.append(Field(id: path, title: title, value: Self.display(value),
-                                    group: Self.group(for: path)))
+                let displayed: String
+                if path.count == 2, path[0] == "connection",
+                   ["state", "pairingState", "transportType"].contains(path[1]), case .string(let text) = value {
+                    let names = ["disconnected": "Disconnected", "paired": "Paired", "sameMachine": "Same Machine"]
+                    displayed = names[text] ?? text
+                } else { displayed = Self.display(value) }
+                values.append(Field(id: path, title: title, value: displayed, group: Self.group(for: path)))
             }
         }
         for key in properties.keys.sorted(by: { $0.localizedStandardCompare($1) == .orderedAscending }) {
