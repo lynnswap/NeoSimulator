@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 import Observation
 import Testing
+import XCTest
 @testable import XcodeSimulatorHost
 
 @Suite(.serialized, .timeLimit(.minutes(1))) @MainActor
@@ -36,7 +37,11 @@ struct ManagerModelTests {
         let table = try #require(views.compactMap { $0 as? NSTableView }.first {
             $0.accessibilityLabel() == "Installed Applications, Profiles, and Reports"
         })
-        try #require(table.numberOfRows == 1)
+        // The controller publishes rows in a separate observation callback after the model finishes reading.
+        let rowsPublished = XCTNSPredicateExpectation(predicate: NSPredicate { object, _ in
+            MainActor.assumeIsolated { (object as? NSTableView)?.numberOfRows == 1 }
+        }, object: table)
+        try #require(await XCTWaiter.fulfillment(of: [rowsPublished], timeout: 5) == .completed)
         table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
         let filter = try #require(views.compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == "Report Type" })
         if content == .reports {
