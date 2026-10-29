@@ -47,13 +47,8 @@ struct DeviceBrowserPresentation {
 
     /// Sidebar classification is independent of device-operation eligibility.
     static func isAvailable(_ device: InventoryDevice) -> Bool {
-        let coreDevice: CoreDeviceDevice?
-        switch device {
-        case .simulator(let simulator): coreDevice = simulator.coreDevice
-        case .remote(let remote): coreDevice = remote
-        }
-        guard let coreDevice else { return device.isAvailable }
-        if coreDevice.visibilityClass == "devicesBeingProvisioned"
+        guard let coreDevice = coreDevice(device) else { return device.isAvailable }
+        if isBeingProvisioned(device)
             || coreDevice.capabilities.contains("com.apple.dt.coredevice.device.boot")
             || coreDevice.capabilities.contains("com.apple.dt.coredevice.virtualmachineplugin.resumeFromPause") {
             return true
@@ -75,10 +70,15 @@ struct DeviceBrowserPresentation {
         formatter.timeStyle = .none
         formatter.doesRelativeDateFormatting = true
 
+        // DeviceKit files a device being provisioned under the current date.
+        func recentDate(_ device: InventoryDevice) -> Date? {
+            Self.isBeingProvisioned(device) ? now : device.lastConnectionDate
+        }
+
         func key(_ device: InventoryDevice) -> String {
             switch sortOrder {
             case .availability: Self.isAvailable(device) ? "available" : "unavailable"
-            case .recent: device.lastConnectionDate.map(formatter.string(from:)) ?? "Other"
+            case .recent: recentDate(device).map(formatter.string(from:)) ?? "Other"
             case .name: Self.nameGroup(Self.reportedName(device))
             case .fidelity: Self.reality(device)
             case .platform: Self.platform(device)?.raw ?? "unknown"
@@ -93,8 +93,8 @@ struct DeviceBrowserPresentation {
         case .availability: keys.sort { $0 == "available" && $1 != "available" }
         case .recent:
             keys.sort {
-                let lhs = grouped[$0]?.first?.lastConnectionDate ?? .distantPast
-                let rhs = grouped[$1]?.first?.lastConnectionDate ?? .distantPast
+                let lhs = grouped[$0]?.first.flatMap(recentDate) ?? .distantPast
+                let rhs = grouped[$1]?.first.flatMap(recentDate) ?? .distantPast
                 return lhs > rhs
             }
         case .fidelity: keys.sort { Self.realityTitle($0) < Self.realityTitle($1) }
@@ -136,6 +136,17 @@ struct DeviceBrowserPresentation {
         case .simulator(let simulator): simulator.name
         case .remote(let remote): remote.reportedName
         }
+    }
+
+    private static func coreDevice(_ device: InventoryDevice) -> CoreDeviceDevice? {
+        switch device {
+        case .simulator(let simulator): simulator.coreDevice
+        case .remote(let remote): remote
+        }
+    }
+
+    private static func isBeingProvisioned(_ device: InventoryDevice) -> Bool {
+        coreDevice(device)?.visibilityClass == "devicesBeingProvisioned"
     }
 
     private static func reality(_ device: InventoryDevice) -> String {
@@ -209,6 +220,8 @@ struct DeviceBrowserPresentation {
         let aAvailable = isAvailable(lhs), bAvailable = isAvailable(rhs)
         if aAvailable != bAvailable { return aAvailable }
         if order != .recent {
+            let aProvisioning = isBeingProvisioned(lhs), bProvisioning = isBeingProvisioned(rhs)
+            if aProvisioning != bProvisioning { return aProvisioning }
             let a = calendar.startOfDay(for: lhs.lastConnectionDate ?? now)
             let b = calendar.startOfDay(for: rhs.lastConnectionDate ?? now)
             if a != b { return a > b }
