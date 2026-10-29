@@ -225,8 +225,14 @@ public struct DeviceInspector: Sendable {
         return application
     }
 
+    /// Installs an `.app` bundle or the application in an `.ipa` package.
     @concurrent public func installApplication(at url: URL) async throws {
-        try await mutateApplication(simulator: ["install", simulatorID, url.path], remote: ["device", "install", "app", url.path], operation: "Install Application")
+        do {
+            try await withInstallableApplication(at: url) { application in
+                try await mutateApplication(simulator: ["install", simulatorID, application.path],
+                                            remote: ["device", "install", "app", application.path], operation: "Install Application")
+            }
+        } catch { throw failure(error, operation: "Install Application", source: .file(url)) }
     }
 
     @concurrent public func uninstallApplication(bundleIdentifier: String) async throws {

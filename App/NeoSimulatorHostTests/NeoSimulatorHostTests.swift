@@ -9612,6 +9612,7 @@ struct DeviceToolTests {
         try """
             #!/bin/sh
             printf '%s\\n' "$@" > "\(log.path)"
+            if [ "$3" = install ]; then cat "$5/Info.plist" >> "\(log.path)"; fi
             """.write(to: simctl, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: simctl.path)
         let tools = try DeviceTools(identifier: "test-device", xcodeURL: URL(fileURLWithPath: "/Applications/Xcode.app"),
@@ -9619,6 +9620,18 @@ struct DeviceToolTests {
         try await tools.boot()
         #expect(try String(contentsOf: log, encoding: .utf8).split(separator: "\n")
                 == ["--set", "/tmp/XCTestDevices", "boot", "test-device"])
+        let bundle = directory.appendingPathComponent("Contents/Payload/App.app")
+        try FileManager.default.createDirectory(at: bundle, withIntermediateDirectories: true)
+        try Data("fixture".utf8).write(to: bundle.appendingPathComponent("Info.plist"))
+        let package = directory.appendingPathComponent("App.ipa")
+        _ = try await DeviceToolRunner().run(URL(fileURLWithPath: "/usr/bin/ditto"),
+            arguments: ["-c", "-k", directory.appendingPathComponent("Contents").path, package.path])
+        try await tools.installApplication(at: package)
+        let install = try String(contentsOf: log, encoding: .utf8).split(separator: "\n").map(String.init)
+        try #require(install.count == 6)
+        #expect(install == ["--set", "/tmp/XCTestDevices", "install", "test-device", install[4], "fixture"]
+                && install[4].hasSuffix("/Payload/App.app"))
+        #expect(!FileManager.default.fileExists(atPath: URL(fileURLWithPath: install[4]).deletingLastPathComponent().deletingLastPathComponent().path))
         try await tools.screenshot(to: directory.appendingPathComponent("screen.png"), mask: .ignored, displayID: 47)
         #expect(try String(contentsOf: log, encoding: .utf8).split(separator: "\n").contains("--display=47"))
         let recording = tools.recordingProcess(to: URL(fileURLWithPath: "/tmp/video.mov"), mask: .ignored, codec: .h264, displayID: 47)

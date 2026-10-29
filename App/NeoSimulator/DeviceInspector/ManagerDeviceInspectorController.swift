@@ -728,7 +728,7 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
         panel.canChooseDirectories = false
         panel.treatsFilePackagesAsDirectories = false
         panel.allowedContentTypes = installsApplication
-            ? [UTType.applicationBundle]
+            ? SimulatorFileImport.applicationTypes
             : [UTType(filenameExtension: content == .configuration ? "mobileconfig" : "mobileprovision") ?? .data]
         panel.beginSheetModal(for: window) { [weak self] response in
             guard response == .OK, let url = panel.url, let self else { return }
