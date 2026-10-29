@@ -1789,7 +1789,27 @@ private final class DeviceContentView: NSView, DisplayContentView {
     private let canvasDocumentView = NSView()
     private var canvasDisplayFrame = NSRect.zero
     private var retainedCanvasCenter: NSPoint?
-    private var canvasMagnificationRevision: UInt = 0
+    private struct CanvasMagnificationRequest {
+        enum Preparation {
+            case canvas(range: ClosedRange<CGFloat>, layout: Bool)
+            case reset
+        }
+
+        let id = UUID()
+        let animated: Bool
+        let preparation: Preparation
+    }
+    private struct CanvasMagnificationOperation {
+        enum Animation: Equatable {
+            case zoom(UUID)
+            case cancelling
+        }
+
+        var latest: CanvasMagnificationRequest
+        var animation: Animation?
+        var pendingCompletions = 0
+    }
+    private var canvasMagnificationOperation: CanvasMagnificationOperation?
     private var scrollMonitor: Any?
     private(set) var isLayingOutCanvas = false
     var canImport: () -> Bool = { false }
@@ -1800,10 +1820,7 @@ private final class DeviceContentView: NSView, DisplayContentView {
     private func updateViewport() {
         retainedCanvasCenter = canvasCenter
         if !isEmbedded || scrollsDisplay {
-            setCanvasMagnification(1, animated: false) {
-                let clip = canvasScrollView.contentView
-                return NSPoint(x: clip.bounds.midX, y: clip.bounds.midY)
-            }
+            requestCanvasMagnification(.init(animated: false, preparation: .reset))
         }
         let parent = usesViewport ? canvasDocumentView : self
         if display.superview !== parent {
@@ -1944,40 +1961,95 @@ private final class DeviceContentView: NSView, DisplayContentView {
     }
 
     func applyCanvasMagnification(range: ClosedRange<CGFloat>, animated: Bool, layout: Bool) {
-        guard isEmbedded, let canvasZoom else { return }
-        setCanvasMagnification(canvasZoom.scale, animated: animated) {
+        guard isEmbedded, canvasZoom != nil else { return }
+        requestCanvasMagnification(.init(animated: animated, preparation: .canvas(range: range, layout: layout)))
+    }
+
+    private func requestCanvasMagnification(_ request: CanvasMagnificationRequest) {
+        if canvasMagnificationOperation == nil {
+            canvasMagnificationOperation = .init(latest: request)
+        } else {
+            canvasMagnificationOperation?.latest = request
+        }
+        // A zero-duration proxy write still completes later and can reapply its captured target.
+        if case .cancelling = canvasMagnificationOperation?.animation { return }
+        if case .zoom = canvasMagnificationOperation?.animation, !request.animated {
+            canvasMagnificationOperation?.animation = .cancelling
+            canvasMagnificationOperation?.pendingCompletions += 1
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0
+                let clip = canvasScrollView.contentView
+                canvasScrollView.animator().setMagnification(canvasScrollView.magnification,
+                    centeredAt: NSPoint(x: clip.bounds.midX, y: clip.bounds.midY))
+            } completionHandler: { [weak self] in
+                self?.completeCanvasMagnification()
+            }
+            return
+        }
+        performCanvasMagnification(request, animated: request.animated)
+    }
+
+    private func prepareCanvasMagnification(_ request: CanvasMagnificationRequest) -> (scale: CGFloat, point: NSPoint)? {
+        guard canvasMagnificationOperation?.latest.id == request.id else { return nil }
+        switch request.preparation {
+        case .reset:
+            let clip = canvasScrollView.contentView
+            return (1, NSPoint(x: clip.bounds.midX, y: clip.bounds.midY))
+        case .canvas(let range, let layout):
+            guard isEmbedded, let canvasZoom else { return nil }
             let center = retainedCanvasCenter ?? canvasCenter ?? NSPoint(x: 0.5, y: 0.5)
             retainedCanvasCenter = center
             needsLayout = true
             if layout, !isLayingOutCanvas { layoutSubtreeIfNeeded() }
+            guard canvasMagnificationOperation?.latest.id == request.id else { return nil }
             // Admit the retained target and current value, including a compact/app-resize reset to one.
             canvasScrollView.minMagnification = min(range.lowerBound, canvasZoom.scale, canvasScrollView.magnification, 1)
             canvasScrollView.maxMagnification = max(range.upperBound, canvasZoom.scale, canvasScrollView.magnification, 1)
             let documentPoint = NSPoint(x: canvasDisplayFrame.minX + canvasDisplayFrame.width * center.x,
                                         y: canvasDisplayFrame.minY + canvasDisplayFrame.height * center.y)
-            return canvasScrollView.contentView.convert(documentPoint, from: canvasDocumentView)
+            return (canvasZoom.scale, canvasScrollView.contentView.convert(documentPoint, from: canvasDocumentView))
         }
     }
 
-    private func setCanvasMagnification(_ scale: CGFloat, animated: Bool, centeredAt point: () -> NSPoint) {
-        canvasMagnificationRevision &+= 1
-        let revision = canvasMagnificationRevision
-        NSAnimationContext.runAnimationGroup { context in
-            // A zero-duration animator write replaces an in-flight zoom during geometry or presentation changes.
-            if !animated { context.duration = 0 }
-            let point = point()
-            guard canvasMagnificationRevision == revision else { return }
-            canvasScrollView.animator().setMagnification(scale, centeredAt: point)
+    private func performCanvasMagnification(_ request: CanvasMagnificationRequest, animated: Bool) {
+        guard let prepared = prepareCanvasMagnification(request),
+              canvasMagnificationOperation?.latest.id == request.id else { return }
+        if !animated {
+            // Readiness/geometry updates must not allocate an AppKit magnification animation.
+            canvasScrollView.setMagnification(prepared.scale, centeredAt: prepared.point)
+            finishCanvasMagnification(request)
+            return
+        }
+        canvasMagnificationOperation?.animation = .zoom(request.id)
+        canvasMagnificationOperation?.pendingCompletions += 1
+        NSAnimationContext.runAnimationGroup { _ in
+            guard canvasMagnificationOperation?.latest.id == request.id,
+                  canvasMagnificationOperation?.animation == .zoom(request.id) else { return }
+            canvasScrollView.animator().setMagnification(prepared.scale, centeredAt: prepared.point)
         } completionHandler: { [weak self] in
-            // Cancelled animations also complete, after a newer request may have prepared its document geometry.
-            guard let self, self.canvasMagnificationRevision == revision else { return }
-            self.finishCanvasMagnification()
+            self?.completeCanvasMagnification()
         }
     }
 
-    private func finishCanvasMagnification() {
+    private func completeCanvasMagnification() {
+        guard var operation = canvasMagnificationOperation else { return }
+        operation.pendingCompletions -= 1
+        canvasMagnificationOperation = operation
+        // A superseded group's private completion can still reapply its captured target.
+        guard operation.pendingCompletions == 0 else { return }
+        canvasMagnificationOperation?.animation = nil
+        let animated: Bool
+        if operation.animation == .zoom(operation.latest.id) { animated = false }
+        else { animated = operation.latest.animated }
+        performCanvasMagnification(operation.latest, animated: animated)
+    }
+
+    private func finishCanvasMagnification(_ request: CanvasMagnificationRequest) {
+        guard canvasMagnificationOperation?.latest.id == request.id else { return }
         needsLayout = true
         if !isLayingOutCanvas { layoutSubtreeIfNeeded() }
+        if canvasMagnificationOperation?.latest.id == request.id,
+           canvasMagnificationOperation?.pendingCompletions == 0 { canvasMagnificationOperation = nil }
     }
 
     override func layout() {

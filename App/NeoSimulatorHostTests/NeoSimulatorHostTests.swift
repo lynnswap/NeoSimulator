@@ -1518,6 +1518,35 @@ struct InputFocusTests {
         try checkControls()
     }
 
+    @Test(.timeLimit(.minutes(1)))
+    func startupGeometryRefitsKeepTheLatestNativeSizeWithoutAnimation() async throws {
+        _ = NSApplication.shared
+        let display = TestDisplay()
+        display.usesNativeCanvas = true
+        let controller = try makeController(display, features: [],
+            keyboardCaptureTap: TestKeyboardEventTap(), presentCompactWindow: { _ in })
+        defer { controller.invalidate() }
+        let parent = NSViewController()
+        parent.view = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 600))
+        let window = KeyPresentationWindow(contentRect: parent.view.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentViewController = parent
+        defer { window.close() }
+        try await animateCanvas {
+            controller.embed(in: parent)
+            parent.view.layoutSubtreeIfNeeded()
+            // Native readiness can deliver multiple valid sizes before the AppKit transaction completes.
+            for height in 844...1144 {
+                display.naturalSize = NSSize(width: 390, height: height)
+                display.onPropertiesChange?()
+            }
+        }
+        let scroll = try #require(controller.presentationViewController.view.subviews.compactMap { $0 as? NSScrollView }.first)
+        #expect(controller.canvasZoom.mode == .fit && display.renderScale == 1)
+        #expect(WindowScale.matches(scroll.magnification, controller.canvasZoom.fitScale))
+        #expect(controller.canvasZoom.fitScale == display.scale(for: scroll.frame.size))
+    }
+
     private func animateCanvas(_ operation: @escaping @MainActor () -> Void) async throws {
         let completed = XCTestExpectation(description: "Canvas magnification finishes")
         NSAnimationContext.runAnimationGroup { _ in operation() } completionHandler: { completed.fulfill() }
@@ -1592,6 +1621,31 @@ struct InputFocusTests {
             && abs(centerAfterInterruptedZoom.y - centerBeforeInterruptedZoom.y) <= backingPixel,
                 "Canvas center moves from \(centerBeforeInterruptedZoom) to \(centerAfterInterruptedZoom)")
         #expect(WindowScale.matches(scroll.magnification, controller.canvasZoom.scale))
+        let interruptedTarget = controller.canvasZoom.scale * 1.25
+        let latestTarget = interruptedTarget * 1.25
+        let progressedAfterCancellation = Mutex(false)
+        let geometryObservation = scroll.observe(\.magnification, options: [.new]) { _, change in
+            if let value = change.newValue, value > interruptedTarget, value < latestTarget {
+                progressedAfterCancellation.withLock { $0 = true }
+            }
+        }
+        try await animateCanvas {
+            controller.performCanvasZoom(.zoomIn)
+            parent.view.setFrameSize(NSSize(width: 420, height: 620))
+            parent.view.layoutSubtreeIfNeeded()
+            parent.view.setFrameSize(NSSize(width: 400, height: 600))
+            parent.view.layoutSubtreeIfNeeded()
+            controller.performCanvasZoom(.zoomIn)
+        }
+        let latestZoom = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            MainActor.assumeIsolated { WindowScale.matches(scroll.magnification, controller.canvasZoom.scale) }
+        }, object: nil)
+        try #require(await XCTWaiter.fulfillment(of: [latestZoom], timeout: 5) == .completed)
+        geometryObservation.invalidate()
+        #expect(progressedAfterCancellation.withLock { $0 })
+        let centerAfterGeometryInterruption = display.view.convert(NSPoint(x: display.view.bounds.midX, y: display.view.bounds.midY), to: content)
+        #expect(abs(centerAfterGeometryInterruption.x - centerBeforeInterruptedZoom.x) <= backingPixel
+            && abs(centerAfterGeometryInterruption.y - centerBeforeInterruptedZoom.y) <= backingPixel)
         try await animateCanvas { controller.performCanvasZoom(.fit) }
         // SimulatorKit can deliver a frame from before the latest scale change.
         display.view.setFrameSize(NSSize(width: previousFrame.width / 2, height: previousFrame.height / 2))
