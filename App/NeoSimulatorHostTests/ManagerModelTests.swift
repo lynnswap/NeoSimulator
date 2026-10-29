@@ -1435,6 +1435,7 @@ struct ManagerModelTests {
             return view.subviews.lazy.compactMap { addButton(in: $0) }.first
         }
         let add = try #require(addButton(in: view))
+        #expect(add.frame.width >= 24 && add.frame.height >= 24)
         let canAddAnotherPhone = add.isEnabled
         #expect(!canAddAnotherPhone)
         let pairedPosition = pairedScroll.convert(pairedScroll.bounds, to: view).origin

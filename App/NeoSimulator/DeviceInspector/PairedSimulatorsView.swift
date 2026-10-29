@@ -146,8 +146,10 @@ struct PairedSimulatorsView: NSViewRepresentable {
 
     private final class PartnerCell: NSTableCellView {
         let title = NSTextField(labelWithString: "")
-        let more = NSPopUpButton(image: NSImage(systemSymbolName: "ellipsis", accessibilityDescription: "More Actions")!,
-                                 pullDownMenu: NSMenu())
+        let more = NSPopUpButton(image: NSImage(systemSymbolName: "ellipsis", accessibilityDescription: "More Actions")!
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(
+                pointSize: NSFont.preferredFont(forTextStyle: .body).pointSize, weight: .bold))!,
+            pullDownMenu: NSMenu())
 
         override init(frame frameRect: NSRect) {
             super.init(frame: frameRect)
@@ -155,7 +157,6 @@ struct PairedSimulatorsView: NSViewRepresentable {
             title.maximumNumberOfLines = 1
             title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
             more.isBordered = false
-            more.controlSize = .small
             (more.cell as? NSPopUpButtonCell)?.arrowPosition = .noArrow
             let stack = NSStackView(views: [title])
             stack.addView(more, in: .trailing)

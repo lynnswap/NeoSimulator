@@ -137,7 +137,7 @@ struct DeviceInformationView: View {
                         menu: deviceMenu)
                     .frame(maxWidth: .infinity)
                     Divider()
-                    HStack {
+                    HStack(spacing: 0) {
                         DeviceMenuButton(menu: pairingMenu(device), symbol: "plus", label: "Add Paired Simulator", isBordered: false)
                             .disabled(!manager.canAddPairing(for: device) || inspection.isManaging ||
                                       !manager.canManage(.pair, deviceIDs: [device.inventoryID]))
@@ -145,7 +145,7 @@ struct DeviceInformationView: View {
                         Button {
                             if let targetWatch { unpair(targetWatch) }
                         } label: {
-                            Image(systemName: "minus")
+                            PairingAccessoryLabel(symbol: "minus")
                         }
                         .accessibilityLabel("Remove Paired Simulator")
                         .disabled(targetWatch == nil || inspection.isManaging || manager.isBusy ||
@@ -155,7 +155,6 @@ struct DeviceInformationView: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .buttonStyle(.borderless)
                     .controlSize(.regular)
-                    .padding(4)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(.regularMaterial)
                 }
@@ -164,6 +163,17 @@ struct DeviceInformationView: View {
             }
             .groupBoxStyle(InformationCardStyle())
             editVisibilityButton
+        }
+    }
+
+    private struct PairingAccessoryLabel: View {
+        static let minimumDimension: CGFloat = 24
+        let symbol: String
+
+        var body: some View {
+            Image(systemName: symbol)
+                .font(.system(.subheadline, weight: .semibold))
+                .frame(minWidth: Self.minimumDimension, minHeight: Self.minimumDimension)
         }
     }
 
@@ -209,7 +219,7 @@ struct DeviceInformationView: View {
                 configuration.content
                     .font(.body)
                     .foregroundStyle(Color.primary)
-                    .background(Color(nsColor: .quinarySystemFill))
+                    .background(Color(nsColor: .quaternarySystemFill))
                     .clipShape(RoundedRectangle(cornerRadius: 8))
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -236,7 +246,10 @@ struct DeviceInformationView: View {
         var isBordered = true
 
         func makeNSView(context: Context) -> NSPopUpButton {
+            let configuration = NSImage.SymbolConfiguration(
+                pointSize: NSFont.preferredFont(forTextStyle: .subheadline).pointSize, weight: .semibold)
             let image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)!
+                .withSymbolConfiguration(configuration)!
             let button = NSPopUpButton(image: image, pullDownMenu: menu)
             button.controlSize = controlSize(context.environment.controlSize)
             button.bezelStyle = .accessoryBarAction
@@ -258,7 +271,9 @@ struct DeviceInformationView: View {
         }
 
         func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSPopUpButton, context: Context) -> NSSize? {
-            nsView.fittingSize
+            let size = nsView.fittingSize
+            return NSSize(width: max(size.width, PairingAccessoryLabel.minimumDimension),
+                          height: max(size.height, PairingAccessoryLabel.minimumDimension))
         }
 
         private func controlSize(_ size: SwiftUI.ControlSize) -> NSControl.ControlSize {
