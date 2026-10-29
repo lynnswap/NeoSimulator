@@ -23,6 +23,10 @@ struct DeviceInformation {
         let title: String
         let value: String
         let group: Group
+
+        var visibilityPaths: [[String]] {
+            id == ["hardware", "cpuType"] ? [id + ["type"], id + ["subtype"]] : [id]
+        }
     }
 
     static let defaultFields: Set<[String]> = [
@@ -92,22 +96,22 @@ struct DeviceInformation {
                 guard !Self.defaultFields.contains(path) else { return }
                 let fieldTitle: String = switch path {
                 case ["coreDeviceIdentifier"]: "CoreDevice ID"
-                case ["state", "bootState"]: "Boot State"
-                case ["state", "preparednessState"]: "DDI Services"
+                case ["bootState"], ["state", "bootState"]: "Boot State"
+                case ["preparednessState"], ["state", "preparednessState"]: "DDI Services"
                 case ["hardware", "platform"]: "Platform"
                 case ["hardware", "productType"]: "Product Type"
                 case ["hardware", "reality"]: "Fidelity"
                 default: title
                 }
                 let displayed: String
-                if path == ["state", "preparednessState"], case .integer(let raw) = value {
+                if (path == ["preparednessState"] || path == ["state", "preparednessState"]), case .integer(let raw) = value {
                     // CoreDevice's developerDiskImageServicesEnabled flag is bit 1.
                     displayed = raw & 0x2 == 0x2 ? "Enabled" : "Disabled"
                 } else if case .string(let text) = value {
                     let names: [String: String] = switch path {
                     case ["connection", "state"], ["connection", "pairingState"], ["connection", "transportType"]:
                         ["disconnected": "Disconnected", "paired": "Paired", "sameMachine": "Same Machine"]
-                    case ["state", "bootState"]: ["shutdown": "ShutDown", "booted": "Booted"]
+                    case ["bootState"], ["state", "bootState"]: ["shutdown": "ShutDown", "booted": "Booted"]
                     case ["hardware", "reality"]: ["simulated": "Simulated", "physical": "Physical", "virtual": "Virtual"]
                     default: [:]
                     }

@@ -162,10 +162,8 @@ public struct DeviceInspector: Sendable {
             if let platform = coreDevice.platform { hardware["platform"] = .string(platform) }
             if let product = coreDevice.modelIdentifier { hardware["productType"] = .string(product) }
             fields["hardware"] = .object(hardware)
-            var state: [String: DeviceInspectorValue] = [:]
-            if let boot = coreDevice.bootState { state["bootState"] = .string(boot) }
-            if let preparedness = coreDevice.preparednessState { state["preparednessState"] = .integer(Int64(preparedness)) }
-            if !state.isEmpty { fields["state"] = .object(state) }
+            if let boot = coreDevice.bootState { fields["bootState"] = .string(boot) }
+            if let preparedness = coreDevice.preparednessState { fields["preparednessState"] = .integer(Int64(preparedness)) }
             var connection: [String: DeviceInspectorValue] = [:]
             if let state = coreDevice.connectionState { connection["state"] = .string(state) }
             if let pairing = coreDevice.pairingState { connection["pairingState"] = .string(pairing) }

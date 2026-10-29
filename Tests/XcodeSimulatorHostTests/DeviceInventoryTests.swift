@@ -56,7 +56,7 @@ struct DeviceInventoryTests {
         let transport = DeviceInspectorTransport(run: { command in
             #expect(command.arguments == ["list", "--json"])
             return CommandOutput(terminationStatus: 0, stdout: Data(#"""
-            {"devices":{"runtime":[{"udid":"simulator-udid","name":"Simulator Name"}]}}
+            {"devices":{"runtime":[{"udid":"simulator-udid","name":"Simulator Name","state":"Booted"}]}}
             """#.utf8), stderr: Data())
         })
         if case .simulator(let retained) = joined {
@@ -67,11 +67,12 @@ struct DeviceInventoryTests {
                 "coreDeviceIdentifier": .string("simulator-command-id"),
                 "hardware": .object(["cpuType": .object(["type": .integer(16777228), "subtype": .integer(0)]),
                     "platform": .string("iOS"), "productType": .string("iPhone99,2"), "reality": .string("simulated")]),
-                "state": .object(["bootState": .string("shutdown"), "preparednessState": .integer(0)]),
+                "bootState": .string("shutdown"), "preparednessState": .integer(0),
                 "connection": .object(["state": .string("disconnected"), "pairingState": .string("paired"),
                     "transportType": .string("sameMachine"), "lastConnectionDate": .date(Date(timeIntervalSinceReferenceDate: 100))]),
             ]
             #expect(info.fields.filter { knownFields[$0.key] != nil } == knownFields)
+            #expect(info.fields["state"] == .string("Booted"))
             let failedInfo = await DeviceInspector(device: joined, simulatorXcodeURL: normal.ownerXcodeURL,
                 transport: .init(run: { _ in throw CLIError.io("info-fixture", "Catalog unavailable") })).info()
             #expect(failedInfo.fields == knownFields)
@@ -81,7 +82,7 @@ struct DeviceInventoryTests {
         let cloneInfo = await DeviceInspector(device: joinedClone, simulatorXcodeURL: clone.ownerXcodeURL,
                                               transport: transport).info()
         #expect(cloneInfo.issues.isEmpty)
-        #expect(["connection", "coreDeviceIdentifier", "hardware", "state"].allSatisfy { cloneInfo.fields[$0] == nil })
+        #expect(["connection", "coreDeviceIdentifier", "hardware", "bootState", "preparednessState"].allSatisfy { cloneInfo.fields[$0] == nil })
     }
 
     @Test(arguments: [true, false])

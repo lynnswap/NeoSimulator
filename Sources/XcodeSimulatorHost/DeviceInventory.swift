@@ -68,8 +68,6 @@ public struct CoreDeviceDevice: Equatable, Sendable {
     public let identifier: String
     public let udid: String?
     public let kind: DeviceInventoryKind
-    /// The actual hardware reality string, including values not recognized by this app.
-    public let reality: String
     public let name: String
     public let modelIdentifier: String?
     public let modelName: String?
@@ -86,6 +84,16 @@ public struct CoreDeviceDevice: Equatable, Sendable {
     public let capabilities: Set<String>
     public let lastConnectedAt: Date?
     public let visibilityClass: String?
+
+    /// The hardware reality represented by the classification, including unrecognized raw values.
+    public var reality: String {
+        switch kind {
+        case .simulator: "simulated"
+        case .physical: "physical"
+        case .virtualMachine: "virtual"
+        case .other(let raw): raw
+        }
+    }
 
     /// A disconnected but discoverable device can expose the explicit connect operation.
     public var isAvailable: Bool { connectionState == "connected" || connectionState == "disconnected" }
@@ -361,7 +369,7 @@ enum CoreDeviceInventoryDecoder {
             case let reality: .other(reality)
             }
             return CoreDeviceDevice(
-                identifier: device.identifier, udid: properties.hardware.udid, kind: kind, reality: properties.hardware.reality,
+                identifier: device.identifier, udid: properties.hardware.udid, kind: kind,
                 name: properties.state?.name ?? properties.hardware.marketingName ?? properties.hardware.productType ?? device.identifier,
                 modelIdentifier: properties.hardware.productType, modelName: properties.hardware.marketingName,
                 cpuType: properties.hardware.cpuType.map { .init(type: $0.type, subtype: $0.subtype) },

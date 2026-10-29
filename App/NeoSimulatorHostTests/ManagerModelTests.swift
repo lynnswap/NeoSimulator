@@ -381,7 +381,7 @@ struct ManagerModelTests {
         _ = NSApplication.shared
         let features: Set<String> = ["streamapplist", "installapp", "launchapplication", "configurationprofiles", "listFiles", "transferFiles"]
         func device(_ identifier: String = "inspected-device", name: String = "Phone", features: Set<String> = features) -> InventoryDevice {
-            .remote(CoreDeviceDevice(identifier: identifier, udid: nil, kind: .physical, reality: "physical", name: name,
+            .remote(CoreDeviceDevice(identifier: identifier, udid: nil, kind: .physical, name: name,
                 modelIdentifier: nil, modelName: nil, cpuType: nil, platform: "iOS", osVersion: nil, osBuild: nil,
                 connectionState: "connected", pairingState: "paired", transportType: nil, bootState: "booted", preparednessState: nil,
                 capabilities: Set(features.map { "com.apple.coredevice.feature." + $0 }), lastConnectedAt: nil, visibilityClass: nil))
@@ -454,7 +454,7 @@ struct ManagerModelTests {
     @Test func changingProfileCapabilityClearsTheOldKindEvenWhenTheRefreshFails() async throws {
         _ = NSApplication.shared
         func device(features: Set<String>) -> InventoryDevice {
-            .remote(CoreDeviceDevice(identifier: "inspected-device", udid: nil, kind: .physical, reality: "physical", name: "Phone",
+            .remote(CoreDeviceDevice(identifier: "inspected-device", udid: nil, kind: .physical, name: "Phone",
                 modelIdentifier: nil, modelName: nil, cpuType: nil, platform: "iOS", osVersion: nil, osBuild: nil,
                 connectionState: "connected", pairingState: "paired", transportType: nil, bootState: "booted", preparednessState: nil,
                 capabilities: Set(features.map { "com.apple.coredevice.feature." + $0 }), lastConnectedAt: nil, visibilityClass: nil))
@@ -1150,7 +1150,7 @@ struct ManagerModelTests {
 
     @Test func remoteDuoResolvesInstalledArtworkWithoutOpeningAScreen() async {
         let device = InventoryDevice.remote(CoreDeviceDevice(identifier: "remote-duo", udid: nil,
-            kind: .physical, reality: "physical", name: "Duo", modelIdentifier: "iPhone19,4", modelName: "iPhone Duo", cpuType: nil,
+            kind: .physical, name: "Duo", modelIdentifier: "iPhone19,4", modelName: "iPhone Duo", cpuType: nil,
             platform: "iOS", osVersion: nil, osBuild: nil, connectionState: "connected",
             pairingState: "paired", transportType: nil, bootState: "booted", preparednessState: nil, capabilities: [],
             lastConnectedAt: nil, visibilityClass: nil))
@@ -1242,7 +1242,7 @@ struct ManagerModelTests {
             "hardware": .object(["serialNumber": .string("serial"),
                 "cpuType": .object(["type": .integer(16777228), "subtype": .integer(0)]),
                 "platform": .string("iOS"), "productType": .string("iPhone99,2"), "reality": .string("simulated")]),
-            "state": .object(["bootState": .string("shutdown"), "preparednessState": .integer(0)]),
+            "state": .string("Booted"), "bootState": .string("shutdown"), "preparednessState": .integer(0),
             "connection": .object(["state": .string("disconnected"), "pairingState": .string("paired"),
                 "transportType": .string("sameMachine"), "lastConnectionDate": .date(Date(timeIntervalSinceReferenceDate: 100))]),
         ])
@@ -1259,8 +1259,9 @@ struct ManagerModelTests {
         let hardware = Dictionary(uniqueKeysWithValues: information.fields.filter { $0.group == .hardware }.map { ($0.title, $0.value) })
         #expect(hardware["CPU Type"] == "arm64" && hardware["Platform"] == "iOS")
         #expect(hardware["Product Type"] == "iPhone99,2" && hardware["Fidelity"] == "Simulated")
-        #expect(information.fields.first { $0.id == ["state", "bootState"] }?.value == "ShutDown")
+        #expect(information.fields.first { $0.id == ["bootState"] }?.value == "ShutDown")
         #expect(information.fields.first { $0.title == "DDI Services" }?.value == "Disabled")
+        #expect(information.fields.first { $0.id == ["state"] }?.value == "Booted")
         let connection = information.fields.filter { $0.group == .connection }
         #expect(Set(connection.map(\.title)) == ["Tunnel State", "Pairing State", "Transport Type", "Last Connection Date"])
         #expect(connection.first { $0.id == ["connection", "state"] }?.value == "Disconnected")
@@ -1279,7 +1280,7 @@ struct ManagerModelTests {
 
     @Test func remoteInfoUsesAvailablePropertiesWithoutSubstitutingItsCommandIDForUDID() {
         let remote = CoreDeviceDevice(identifier: "command-id", udid: nil,
-            kind: .physical, reality: "physical", name: "Known Phone", modelIdentifier: "iPhone19,2", modelName: "iPhone 18 Pro", cpuType: nil,
+            kind: .physical, name: "Known Phone", modelIdentifier: "iPhone19,2", modelName: "iPhone 18 Pro", cpuType: nil,
             platform: "iOS", osVersion: "27.1", osBuild: nil, connectionState: "connected",
             pairingState: "paired", transportType: nil, bootState: "booted", preparednessState: nil, capabilities: [],
             lastConnectedAt: nil, visibilityClass: nil)
@@ -1493,6 +1494,37 @@ struct ManagerModelTests {
         visibility.setVisible(false, for: os)
         let restored = DeviceInfoVisibility(defaults: defaults)
         #expect(restored.isVisible(serial) && !restored.isVisible(os))
+    }
+
+    @Test(arguments: [true, false])
+    func cpuVisibilityKeepsComponentChoicesWhenFieldsCollapse(legacyHiddenFields: Bool) throws {
+        let suite = "NeoSimulatorTests.CPUVisibility.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let cpuPath = ["hardware", "cpuType"]
+        if legacyHiddenFields {
+            defaults.set([cpuPath + ["type"], cpuPath + ["subtype"], ["future"]],
+                         forKey: DeviceInfoVisibility.legacyPreferenceKey)
+        } else {
+            defaults.set(["defaultVisible": false, "overrides": [
+                ["path": cpuPath + ["type"], "visible": true],
+                ["path": cpuPath + ["subtype"], "visible": false],
+                ["path": ["future"], "visible": false],
+            ]], forKey: DeviceInfoVisibility.preferenceKey)
+        }
+        let information = DeviceInformation(device: simulator(), properties: [
+            "hardware": .object(["cpuType": .object(["type": .integer(16777228), "subtype": .integer(0)])]),
+            "future": .object(["value": .string("retained choice")]),
+        ])
+        let cpu = try #require(information.fields.first { $0.id == cpuPath })
+        let future = try #require(information.fields.first { $0.id == ["future", "value"] })
+        let visibility = DeviceInfoVisibility(defaults: defaults)
+        #expect(visibility.isVisible(cpu) == !legacyHiddenFields)
+        visibility.setVisible(true, for: cpu)
+        let restored = DeviceInfoVisibility(defaults: defaults)
+        #expect(restored.isVisible(cpu) && !restored.isVisible(future))
+        restored.setVisible(false, for: cpu)
+        #expect(!DeviceInfoVisibility(defaults: defaults).isVisible(cpu))
     }
 
     @Test(arguments: [false, true])
