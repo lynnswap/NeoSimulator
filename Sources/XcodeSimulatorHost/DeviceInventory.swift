@@ -323,7 +323,7 @@ enum CoreDeviceInventoryDecoder {
 
     private struct Properties: Decodable {
         struct Hardware: Decodable {
-            struct CPU: Decodable { let type: Int32; let subtype: Int32 }
+            struct CPU: Decodable { let type: UInt64; let subtype: UInt64 }
             let reality: String
             let udid: String?
             let productType: String?
@@ -372,7 +372,10 @@ enum CoreDeviceInventoryDecoder {
                 identifier: device.identifier, udid: properties.hardware.udid, kind: kind,
                 name: properties.state?.name ?? properties.hardware.marketingName ?? properties.hardware.productType ?? device.identifier,
                 modelIdentifier: properties.hardware.productType, modelName: properties.hardware.marketingName,
-                cpuType: properties.hardware.cpuType.map { .init(type: $0.type, subtype: $0.subtype) },
+                // CoreDevice can sign-extend Mach CPU identifiers into unsigned 64-bit JSON values.
+                cpuType: properties.hardware.cpuType.map {
+                    .init(type: Int32(truncatingIfNeeded: $0.type), subtype: Int32(truncatingIfNeeded: $0.subtype))
+                },
                 platform: properties.hardware.platform, osVersion: properties.software?.osVersionNumber?.stringValue,
                 osBuild: properties.software?.osBuildVersions?.buildVersion?.name,
                 connectionState: properties.connection?.state, pairingState: properties.connection?.pairingState,

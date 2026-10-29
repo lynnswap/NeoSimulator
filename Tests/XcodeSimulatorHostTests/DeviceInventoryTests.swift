@@ -13,6 +13,8 @@ struct DeviceInventoryTests {
         #expect(phone.name == "Test Phone")
         #expect(phone.modelIdentifier == "iPhone99,1")
         #expect(phone.modelName == "Test Hardware")
+        #expect(phone.cpuType?.type == 16777228)
+        #expect(phone.cpuType?.subtype == Int32(bitPattern: 0x80000002))
         #expect(phone.platform == "iOS" && phone.osVersion == "27.0" && phone.osBuild == "27A100")
         #expect(phone.connectionState == "connected" && phone.pairingState == "paired")
         #expect(phone.transportType == "wired" && phone.bootState == "booted")
@@ -180,7 +182,7 @@ struct DeviceInventoryTests {
     {"result":{"devices":[
       {"identifier":"remote-command-id","hardwareProperties":{"udid":"wrong-deprecated-value"},
        "deviceProperties":{"name":"Wrong Deprecated Name"},"connectionProperties":{"lastConnectionDate":"invalid"},
-       "properties":{"hardware":{"reality":"physical","udid":"hardware-udid","productType":"iPhone99,1","marketingName":"Test Hardware","platform":"iOS"},
+       "properties":{"hardware":{"reality":"physical","udid":"hardware-udid","productType":"iPhone99,1","marketingName":"Test Hardware","cpuType":{"type":16777228,"subtype":18446744071562067970},"platform":"iOS"},
          "state":{"name":"Test Phone","bootState":"booted"},
          "software":{"osVersionNumber":{"stringValue":"27.0"},"osBuildVersions":{"buildVersion":{"name":"27A100"}}},
          "connection":{"state":"connected","pairingState":"paired","transportType":"wired","lastConnectionDate":100}},
