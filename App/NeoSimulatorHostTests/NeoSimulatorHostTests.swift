@@ -1144,6 +1144,29 @@ struct InputFocusTests {
         }
     }
 
+    @Test(.timeLimit(.minutes(1)), arguments: [false, true])
+    func cancelledOpenCleansUpALateAttachmentWithoutClosingAnExistingScreen(_ preservingExisting: Bool) async throws {
+        let display = TestDisplay()
+        let entered = AsyncStream<Void>.makeStream()
+        var events = entered.stream.makeAsyncIterator()
+        var finish: CheckedContinuation<Void, Never>?
+        let opening = Task {
+            try await withScreenOpenCleanup(preservingExisting: preservingExisting, operation: {
+                await withCheckedContinuation { continuation in
+                    finish = continuation
+                    entered.continuation.yield(())
+                }
+                return display
+            }, cleanup: { display.disconnect() })
+        }
+        await events.next()
+        opening.cancel()
+        finish?.resume()
+        do { _ = try await opening.value; Issue.record("A cancelled attachment was published") }
+        catch is CancellationError {}
+        #expect(display.disconnectCount == (preservingExisting ? 0 : 1))
+    }
+
     @Test func embeddedAndCompactPresentationsKeepOneSessionAndInputOwner() async throws {
         _ = NSApplication.shared
         let display = TestDisplay()
@@ -1631,7 +1654,7 @@ struct InputFocusTests {
                 "Canvas center moves from \(centerBeforeInterruptedZoom) to \(centerAfterInterruptedZoom)")
         #expect(WindowScale.matches(scroll.magnification, controller.canvasZoom.scale))
         let interruptedTarget = controller.canvasZoom.scale * 1.25
-        let latestTarget = interruptedTarget * 1.25
+        let latestTarget = interruptedTarget * 1.25 * 1.25 * 1.25
         let progressedAfterCancellation = Mutex(false)
         let geometryObservation = scroll.observe(\.magnification, options: [.new]) { _, change in
             if let value = change.newValue, value > interruptedTarget, value < latestTarget {
@@ -1645,16 +1668,36 @@ struct InputFocusTests {
             parent.view.setFrameSize(NSSize(width: 400, height: 600))
             parent.view.layoutSubtreeIfNeeded()
             controller.performCanvasZoom(.zoomIn)
+            controller.performCanvasZoom(.zoomIn)
+            controller.performCanvasZoom(.zoomIn)
         }
         let latestZoom = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            MainActor.assumeIsolated { WindowScale.matches(scroll.magnification, controller.canvasZoom.scale) }
+            MainActor.assumeIsolated { !controller.isMagnifyingCanvas }
         }, object: nil)
         try #require(await XCTWaiter.fulfillment(of: [latestZoom], timeout: 5) == .completed)
         geometryObservation.invalidate()
         #expect(progressedAfterCancellation.withLock { $0 })
+        #expect(WindowScale.matches(scroll.magnification, controller.canvasZoom.scale))
         let centerAfterGeometryInterruption = display.view.convert(NSPoint(x: display.view.bounds.midX, y: display.view.bounds.midY), to: content)
         #expect(abs(centerAfterGeometryInterruption.x - centerBeforeInterruptedZoom.x) <= backingPixel
             && abs(centerAfterGeometryInterruption.y - centerBeforeInterruptedZoom.y) <= backingPixel)
+        var midflightPannedCenter = NSPoint.zero
+        try await animateCanvas {
+            controller.performCanvasZoom(.zoomIn)
+            let clip = scroll.contentView
+            clip.scroll(to: NSPoint(x: clip.bounds.minX + 10, y: clip.bounds.minY + 20))
+            scroll.reflectScrolledClipView(clip)
+            NotificationCenter.default.post(name: NSScrollView.didLiveScrollNotification, object: scroll)
+            midflightPannedCenter = display.view.convert(NSPoint(x: clip.bounds.midX, y: clip.bounds.midY), from: clip)
+        }
+        let pannedZoom = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            MainActor.assumeIsolated { !controller.isMagnifyingCanvas }
+        }, object: nil)
+        try #require(await XCTWaiter.fulfillment(of: [pannedZoom], timeout: 5) == .completed)
+        let settledPanCenter = display.view.convert(NSPoint(x: scroll.contentView.bounds.midX,
+                                                            y: scroll.contentView.bounds.midY), from: scroll.contentView)
+        #expect(abs(settledPanCenter.x - midflightPannedCenter.x) * scroll.magnification <= backingPixel
+            && abs(settledPanCenter.y - midflightPannedCenter.y) * scroll.magnification <= backingPixel)
         try await animateCanvas { controller.performCanvasZoom(.fit) }
         // SimulatorKit can deliver a frame from before the latest scale change.
         display.view.setFrameSize(NSSize(width: previousFrame.width / 2, height: previousFrame.height / 2))

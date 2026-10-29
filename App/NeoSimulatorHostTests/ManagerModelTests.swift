@@ -5,6 +5,7 @@ import SwiftUI
 import Testing
 import XCTest
 @_spi(NeoSimulator) @testable import XcodeSimulatorHost
+import Synchronization
 
 @Suite(.serialized, .timeLimit(.minutes(1))) @MainActor
 struct ManagerModelTests {
@@ -43,6 +44,36 @@ struct ManagerModelTests {
         if order == .name { #expect(presentation.sections[0].devices[0].name == "Fallback Name") }
     }
 
+    @Test func sidebarAvailabilityUsesRetainedCoreDeviceClassification() throws {
+        let data = Data(#"""
+        {"result":{"devices":[
+          {"identifier":"connecting","properties":{"hardware":{"reality":"physical"},
+            "state":{"name":"Connecting"},"connection":{"state":"connecting"}}},
+          {"identifier":"boot","properties":{"hardware":{"reality":"virtual"},
+            "connection":{"state":"unavailable"}},
+            "capabilities":[{"featureIdentifier":"com.apple.dt.coredevice.device.boot"}]},
+          {"identifier":"resume","properties":{"hardware":{"reality":"virtual"},
+            "connection":{"state":"unavailable"}},
+            "capabilities":[{"featureIdentifier":"com.apple.dt.coredevice.virtualmachineplugin.resumeFromPause"}]},
+          {"identifier":"provisioning","properties":{"hardware":{"reality":"physical"},
+            "state":{"visibilityClass":"devicesBeingProvisioned"},"connection":{"state":"unavailable"}}},
+          {"identifier":"unavailable","properties":{"hardware":{"reality":"physical"},
+            "connection":{"state":"unavailable"}}},
+          {"identifier":"future","properties":{"hardware":{"reality":"physical"},
+            "connection":{"state":"future-state"}}},
+          {"identifier":"missing","properties":{"hardware":{"reality":"physical"}}}
+        ]}}
+        """#.utf8)
+        let devices = try CoreDeviceInventoryDecoder.decode(data).map(InventoryDevice.remote)
+        let grouped = DeviceBrowserPresentation(devices: devices, sortOrder: .availability)
+        #expect(Set(grouped.sections.first?.devices.map(\.id) ?? []) ==
+            Set(["connecting", "boot", "resume", "provisioning"].map(DeviceInventoryID.coreDevice)))
+        #expect(Set(grouped.sections.last?.devices.map(\.id) ?? []) ==
+            Set(["unavailable", "future", "missing"].map(DeviceInventoryID.coreDevice)))
+        let recent = DeviceBrowserPresentation(devices: devices, sortOrder: .recent)
+        #expect(Set(recent.devices.prefix(4).map(\.id)) == Set(grouped.sections[0].devices.map(\.id)))
+    }
+
     @Test(arguments: [(nil as String?, "Other"), ("  ßeta  ", "SS"), ("\nAlpha", "#"), ("", "#")])
     func sidebarNameGroupsUseTheReportedFirstCharacter(_ name: String?, _ expected: String) throws {
         var state: [String: String] = [:]
@@ -60,7 +91,7 @@ struct ManagerModelTests {
         let payload = Data(#"""
         {"result":{"devices":[{"identifier":"core-record","properties":{
           "hardware":{"reality":"simulated","udid":"same-udid"},"state":{"name":"Default"},
-          "connection":{"state":"connected","lastConnectionDate":100}}}]}}
+          "connection":{"state":"unavailable","lastConnectionDate":100}}}]}}
         """#.utf8)
         let snapshot = await DeviceInventoryReader(
             readSimulators: { DeviceInventorySnapshot(devices: [defaultDevice, customDevice], issues: []) },
@@ -72,6 +103,9 @@ struct ManagerModelTests {
         #expect(presentation.sections.count == 2)
         #expect(presentation.sections.last?.id == "Other")
         #expect(presentation.sections.last?.devices.map(\.id) == [customDevice.id])
+        let availability = DeviceBrowserPresentation(devices: snapshot.devices, sortOrder: .availability)
+        #expect(availability.sections.first?.devices.map(\.id) == [customDevice.id])
+        #expect(availability.sections.last?.devices.map(\.id) == [defaultDevice.id])
     }
 
     @Test func operatingSystemSectionsUseNumericVersionsWithMissingVersionLast() throws {
@@ -103,10 +137,11 @@ struct ManagerModelTests {
         let domain = "NeoSimulator.SidebarFixture.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: domain))
         defer { defaults.removePersistentDomain(forName: domain) }
-        func devices(firstDate: Double = 100) throws -> [InventoryDevice] {
+        func devices(firstDate: Double = 100, firstConnection: String = "connected") throws -> [InventoryDevice] {
             let data = try JSONSerialization.data(withJSONObject: ["result": ["devices": [
                 ["identifier": "A", "properties": ["hardware": ["reality": "physical"], "state": ["name": "Alpha"],
-                    "connection": ["state": "connected", "lastConnectionDate": firstDate]]],
+                    "connection": ["state": firstConnection, "lastConnectionDate": firstDate]],
+                    "capabilities": [["featureIdentifier": "com.apple.coredevice.feature.viewdevicescreen"]]],
                 ["identifier": "B", "properties": ["hardware": ["reality": "physical"], "state": ["name": "Beta"],
                     "connection": ["state": "connected", "lastConnectionDate": 200_000]]],
             ]]])
@@ -125,7 +160,7 @@ struct ManagerModelTests {
             .first { $0.itemIdentifier.rawValue == "FilterSimulators" }?.menu)
         func choose(_ title: String) throws {
             controller.menuNeedsUpdate(menu)
-            let item = try #require(menu.items.first { $0.title == title })
+            let item = try #require(menu.items.first { $0.title == title && !$0.isSectionHeader })
             #expect(NSApp.sendAction(try #require(item.action), to: item.target, from: item))
         }
         #expect(controller.outlineView(outline, numberOfChildrenOfItem: nil) == 1)
@@ -172,6 +207,19 @@ struct ManagerModelTests {
         controller.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: search))
         #expect(controller.outlineView(outline, numberOfChildrenOfItem: nil) == 1)
         #expect(controller.selectedIdentifiers == [.coreDevice("A")])
+        try choose("Availability")
+        try choose("Available")
+        let viewScreen = try #require(inspectorViews(content).compactMap { $0 as? NSButton }
+            .first { $0.title == "View Screen" })
+        #expect(viewScreen.isEnabled)
+        await source.setDevices(try devices(firstDate: 200_000, firstConnection: "connecting"))
+        await model.refresh()
+        controller.update()
+        #expect(controller.selectedIdentifiers == [.coreDevice("A")])
+        #expect(outline.item(atRow: outline.selectedRow) as? NSObject === selectedRow)
+        #expect(!viewScreen.isEnabled)
+        let row = try #require(controller.outlineView(outline, viewFor: outline.tableColumns.first, item: selectedRow))
+        #expect(row.accessibilityLabel()?.hasSuffix(", Available") == true)
     }
 
     @Test func sidebarOptionsRestoreAndUseNativeFallbacks() throws {
@@ -948,14 +996,18 @@ struct ManagerModelTests {
         var events = source.events.makeAsyncIterator()
         let manager = SimulatorManagerModel(source: source)
         var presented = false
+        let presentations = AsyncStream<Void>.makeStream()
+        var presentationEvents = presentations.stream.makeAsyncIterator()
         manager.restoreScreen(decoded) {
             #expect(!manager.inventory.isEmpty)
             presented = true
+            presentations.continuation.yield(())
         }
         #expect(await events.next() == .open(decoded.deviceID))
         #expect(await source.lastOpenXcodeURL == xcode)
         #expect(!presented)
         await source.completeOpen()
+        await presentationEvents.next()
         try await manager.quitRenderer(keepingDevicesRunning: true)
         #expect(presented)
     }
@@ -1052,7 +1104,8 @@ struct ManagerModelTests {
 
     @Test func acceptedEditsMergeSnapshotsAndDrainBeforeQuit() async throws {
         let device = simulator()
-        let source = ManagerModelSource(devices: [device])
+        let queued = simulator(deviceSet: "/queued-device-set")
+        let source = ManagerModelSource(devices: [device, queued])
         var events = source.events.makeAsyncIterator()
         let manager = SimulatorManagerModel(source: source)
         await manager.refresh()
@@ -1061,11 +1114,21 @@ struct ManagerModelTests {
         await source.completeRead(settings(appearance: "light", contentSize: "medium"))
         await manager.settings.finishReading()
 
+        manager.openDevice(device.id)
+        #expect(await events.next() == .open(device.id))
+        manager.openDevice(queued.id)
+        #expect(manager.openingDeviceIDs == [device.id, queued.id])
         manager.setDeviceSetting(.appearance("dark"), for: device.id)
         manager.setDeviceSetting(.contentSize("large"), for: device.id)
         #expect(manager.settings.settings?.appearance == "dark")
         #expect(manager.settings.settings?.contentSize == "large")
+        manager.cancelOpening(queued.id)
+        manager.cancelOpening(device.id)
+        #expect(source.cancelledOpenIDs == [device.id, queued.id])
+        // The lower IPC deliberately returns success after cancellation.
+        await source.completeOpen()
         #expect(await events.next() == .write(device.id))
+        #expect(manager.openingDeviceIDs.isEmpty)
         await source.completeWrite()
         #expect(await events.next() == .write(device.id))
         let inputs = await source.writeInputs
@@ -1092,6 +1155,55 @@ struct ManagerModelTests {
         await source.completeOpen()
         try await manager.quitRenderer(keepingDevicesRunning: true)
         #expect(await events.next() == .quit)
+    }
+
+    @Test func failedOpenCancellationPreventsQuitAndAllowsRetry() async throws {
+        let device = simulator()
+        let source = ManagerModelSource(devices: [device])
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source)
+        manager.openDevice(device.id)
+        #expect(await events.next() == .open(device.id))
+        let quitting = Task.immediate { try await manager.quitRenderer(keepingDevicesRunning: true) }
+        await source.failOpen()
+        do { try await quitting.value; Issue.record("Quit ignored failed open cleanup") }
+        catch {}
+        #expect(await source.quitCount == 0)
+        manager.openDevice(device.id)
+        #expect(await events.next() == .open(device.id))
+        await source.completeOpen()
+        try await manager.quitRenderer(keepingDevicesRunning: true)
+        #expect(await source.quitCount == 1)
+    }
+
+    @Test(.timeLimit(.minutes(1)), arguments: [false, true])
+    func retiringAnOpenPublishesInventoryEventsDeferredWhileBusy(_ cancelled: Bool) async throws {
+        func remote(_ name: String) throws -> InventoryDevice {
+            let data = try JSONSerialization.data(withJSONObject: ["result": ["devices": [["identifier": "remote",
+                "properties": ["hardware": ["reality": "physical"], "state": ["name": name]]]]]])
+            return .remote(try #require(CoreDeviceInventoryDecoder.decode(data).first))
+        }
+        let device = simulator()
+        let next = simulator(deviceSet: "/next-set")
+        let source = ManagerModelSource(devices: [device, next, try remote("Original")])
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source)
+        await manager.refresh()
+        manager.openDevice(device.id)
+        #expect(await events.next() == .open(device.id))
+        manager.openDevice(next.id)
+        await source.setDevices([device, next, try remote("Updated")])
+        await manager.inventoryDidChange()
+        #expect(manager.isBusy && manager.inventory.last?.name == "Original")
+        if cancelled {
+            manager.cancelOpening(device.id)
+            await source.completeOpen()
+        } else { await source.failOpen() }
+        // Admission of the next FIFO operation follows retirement of the first open and its refresh.
+        #expect(await events.next() == .open(next.id))
+        #expect(manager.inventory.last?.name == "Updated")
+        await source.completeOpen()
+        try await manager.quitRenderer(keepingDevicesRunning: true)
     }
 
     @Test func editingDuringRefreshStillReadsExternalChanges() async throws {
@@ -1800,6 +1912,8 @@ struct ManagerModelTests {
 }
 
 actor ManagerModelSource: SimulatorManagerSource {
+    private nonisolated let cancelledOpens = Mutex<Set<DeviceInventoryID>>([])
+    nonisolated var cancelledOpenIDs: Set<DeviceInventoryID> { cancelledOpens.withLock { $0 } }
     enum Event: Equatable, Sendable { case read(DeviceInventoryID), write(DeviceInventoryID), open(DeviceInventoryID), close(DeviceInventoryID), inspect(DeviceInventoryID), quit, manage(DeviceManagementAction, [DeviceInventoryID]) }
     enum Failure: LocalizedError {
         case unavailable, native
@@ -1819,6 +1933,7 @@ actor ManagerModelSource: SimulatorManagerSource {
     private var pendingWrite: SimulatorDeviceSettings?
     private(set) var writeInputs: [SimulatorDeviceSettings?] = []
     private(set) var readCount = 0
+    private(set) var quitCount = 0
     private(set) var lastOpenXcodeURL: URL?
     private(set) var artworkXcodeRequests: [DeviceInventoryID] = []
     private(set) var installedXcodeReadCount = 0
@@ -1910,9 +2025,13 @@ actor ManagerModelSource: SimulatorManagerSource {
             waiting?.resume(throwing: Failure.unavailable)
         }
     }
-    func quitRenderer(keepingDevicesRunning: Bool?) { continuation.yield(.quit) }
+    func quitRenderer(keepingDevicesRunning: Bool?) { quitCount += 1; continuation.yield(.quit) }
     func selectHost(_ host: SimulatorHost, xcodeURL: URL?) throws { throw Failure.unavailable }
-    func openDevice(_ deviceID: DeviceInventoryID, xcodeURL: URL?) async throws {
+    nonisolated func makeScreenOpenRequest(for deviceID: DeviceInventoryID) -> SimulatorScreenOpenRequest {
+        SimulatorScreenOpenRequest(deviceID: deviceID) { self.cancelledOpens.withLock { $0.insert(deviceID) } }
+    }
+    func openDevice(_ request: SimulatorScreenOpenRequest, xcodeURL: URL?) async throws {
+        let deviceID = request.deviceID
         lastOpenXcodeURL = xcodeURL
         try await withCheckedThrowingContinuation { waiting in
             openContinuation = waiting

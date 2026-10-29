@@ -31,6 +31,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     private let makeExternalDisplayWindow: @MainActor (NSRect) -> NSWindow
     private let applicationIsActive: () -> Bool
     private var deviceToolbar: DeviceToolbar?
+    var isMagnifyingCanvas: Bool { content.isMagnifyingCanvas }
     var canvasControls: DeviceCanvasControls? {
         didSet {
             content.canvasControls = canvasControls
@@ -1813,11 +1814,15 @@ private final class DeviceContentView: NSView, DisplayContentView {
         }
 
         var latest: CanvasMagnificationRequest
+        // Retargeting must preserve the intended anchor, not resample pixel-rounded animation geometry.
+        var center: NSPoint
         var animation: Animation?
         var pendingCompletions = 0
     }
     private var canvasMagnificationOperation: CanvasMagnificationOperation?
+    var isMagnifyingCanvas: Bool { canvasMagnificationOperation != nil }
     private var scrollMonitor: Any?
+    private var liveScrollObserver: (any NSObjectProtocol)?
     private(set) var isLayingOutCanvas = false
     var canImport: () -> Bool = { false }
     var importFiles: ([URL]) -> Void = { _ in }
@@ -1879,6 +1884,14 @@ private final class DeviceContentView: NSView, DisplayContentView {
         canvasScrollView.usesPredominantAxisScrolling = false
         canvasScrollView.automaticallyAdjustsContentInsets = false
         canvasScrollView.documentView = canvasDocumentView
+        liveScrollObserver = NotificationCenter.default.addObserver(
+            forName: NSScrollView.didLiveScrollNotification, object: canvasScrollView, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    if let center = self.canvasCenter { self.canvasMagnificationOperation?.center = center }
+                    self.retainedCanvasCenter = nil
+                }
+            }
         canvasScrollView.isHidden = true
         canvasScrollView.toolTip = "Use the scroll bars or Option-scroll to pan the device."
         addSubview(canvasScrollView)
@@ -1888,6 +1901,7 @@ private final class DeviceContentView: NSView, DisplayContentView {
     }
     isolated deinit {
         if let scrollMonitor { NSEvent.removeMonitor(scrollMonitor) }
+        if let liveScrollObserver { NotificationCenter.default.removeObserver(liveScrollObserver) }
     }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
@@ -1964,6 +1978,7 @@ private final class DeviceContentView: NSView, DisplayContentView {
 
     func centerCanvas() {
         retainedCanvasCenter = NSPoint(x: 0.5, y: 0.5)
+        canvasMagnificationOperation?.center = NSPoint(x: 0.5, y: 0.5)
         needsLayout = true
     }
 
@@ -1974,7 +1989,8 @@ private final class DeviceContentView: NSView, DisplayContentView {
 
     private func requestCanvasMagnification(_ request: CanvasMagnificationRequest) {
         if canvasMagnificationOperation == nil {
-            canvasMagnificationOperation = .init(latest: request)
+            canvasMagnificationOperation = .init(latest: request,
+                center: retainedCanvasCenter ?? canvasCenter ?? NSPoint(x: 0.5, y: 0.5))
         } else {
             canvasMagnificationOperation?.latest = request
         }
@@ -1997,14 +2013,14 @@ private final class DeviceContentView: NSView, DisplayContentView {
     }
 
     private func prepareCanvasMagnification(_ request: CanvasMagnificationRequest) -> (scale: CGFloat, point: NSPoint)? {
-        guard canvasMagnificationOperation?.latest.id == request.id else { return nil }
+        guard let operation = canvasMagnificationOperation, operation.latest.id == request.id else { return nil }
         switch request.preparation {
         case .reset:
             let clip = canvasScrollView.contentView
             return (1, NSPoint(x: clip.bounds.midX, y: clip.bounds.midY))
         case .canvas(let range, let layout):
             guard isEmbedded, let canvasZoom else { return nil }
-            let center = retainedCanvasCenter ?? canvasCenter ?? NSPoint(x: 0.5, y: 0.5)
+            let center = operation.center
             retainedCanvasCenter = center
             needsLayout = true
             if layout, !isLayingOutCanvas { layoutSubtreeIfNeeded() }
@@ -2070,7 +2086,7 @@ private final class DeviceContentView: NSView, DisplayContentView {
         }
         let available = availableDisplayRect
         if usesViewport {
-            let center = retainedCanvasCenter ?? canvasCenter ?? NSPoint(x: 0.5, y: 0.5)
+            let center = canvasMagnificationOperation?.center ?? retainedCanvasCenter ?? canvasCenter ?? NSPoint(x: 0.5, y: 0.5)
             retainedCanvasCenter = nil
             canvasScrollView.frame = available
             let intrinsic = display.intrinsicContentSize

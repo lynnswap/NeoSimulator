@@ -38,6 +38,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     private let canvasAccessory = DeviceCanvasAccessoryViewController()
     private let deviceFooter = NSStackView()
     private let activityStack = NSStackView()
+    private let cancelOpening = NSButton(title: "Cancel Opening Screens", target: nil, action: nil)
     private var canvasBottomToPane: NSLayoutConstraint?
     private var canvasBottomToFooter: NSLayoutConstraint?
     private let activity = NSTextField(labelWithString: "")
@@ -129,8 +130,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         func includes(_ device: InventoryDevice) -> Bool {
             switch self {
             case .all: true
-            case .available: device.isAvailable
-            case .unavailable: !device.isAvailable
+            case .available: DeviceBrowserPresentation.isAvailable(device)
+            case .unavailable: !DeviceBrowserPresentation.isAvailable(device)
             }
         }
     }
@@ -210,6 +211,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         withObservationTracking {
             _ = model.managingDeviceIDs
             _ = model.isBusy
+            _ = model.openingDeviceIDs
         } onChange: { [weak self] in
             Task { @MainActor in
                 guard let self else { return }
@@ -218,9 +220,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
                 for identifier in changed {
                     if let row = self.rowsByID[identifier] { self.table.reloadItem(row) }
                 }
-                let selection = self.selectedDevices
-                self.viewScreen.isEnabled = selection.count == 1 && selection.first.map(self.canViewScreen) == true
-                self.updateDeviceSettings()
+                self.updateSelection()
                 self.observeManagement()
             }
         }
@@ -232,7 +232,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         activity.isHidden = activity.stringValue.isEmpty
         progress.isHidden = !model.isBusy
         if model.isBusy { progress.startAnimation(nil) } else { progress.stopAnimation(nil) }
-        activityStack.isHidden = activity.isHidden && progress.isHidden
+        cancelOpening.isHidden = model.openingDeviceIDs.isEmpty
+        activityStack.isHidden = activity.isHidden && progress.isHidden && cancelOpening.isHidden
         updateDeviceFooter()
     }
 
@@ -426,6 +427,12 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         activity.lineBreakMode = .byTruncatingTail
         activityStack.addArrangedSubview(progress)
         activityStack.addArrangedSubview(activity)
+        cancelOpening.controlSize = .small
+        cancelOpening.bezelStyle = .rounded
+        cancelOpening.target = self
+        cancelOpening.action = #selector(cancelPendingScreenOpens(_:))
+        cancelOpening.isHidden = true
+        activityStack.addArrangedSubview(cancelOpening)
         activityStack.orientation = .horizontal
         activityStack.alignment = .centerY
         activityStack.spacing = 7
@@ -576,7 +583,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         let managing = model.managingDeviceIDs.contains(device.id)
         cell.progress.isHidden = !managing
         if managing { cell.progress.startAnimation(nil) } else { cell.progress.stopAnimation(nil) }
-        cell.setAccessibilityLabel("\(device.name), \(device.operatingSystem ?? kindTitle(device)), \(device.isAvailable ? "Available" : "Unavailable")")
+        cell.setAccessibilityLabel("\(device.name), \(device.operatingSystem ?? kindTitle(device)), \(DeviceBrowserPresentation.isAvailable(device) ? "Available" : "Unavailable")")
         return cell
     }
 
@@ -646,8 +653,9 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             deviceImage.image = NSImage(systemSymbolName: "square.stack.3d.up", accessibilityDescription: nil)
         }
         deviceImage.contentTintColor = nil
+        let isOpening = identifier.map { model.openingDeviceIDs.contains($0) } == true
         let isShutdown = selectedSimulator?.state == "Shutdown"
-        viewScreen.title = isShutdown ? "Start" : "View Screen"
+        viewScreen.title = isOpening ? "Cancel Opening" : (isShutdown ? "Start" : "View Screen")
         viewScreen.image = isShutdown ? nil : NSImage(systemSymbolName: "rectangle.badge.person.crop", accessibilityDescription: nil)
         viewScreen.isHidden = selections.count != 1
         viewScreen.isEnabled = selections.count == 1 && selections.first.map(canViewScreen) == true
@@ -908,6 +916,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     }
 
     private func canViewScreen(_ device: InventoryDevice) -> Bool {
+        if model.openingDeviceIDs.contains(device.id) { return true }
         guard !model.isBusy, !model.managingDeviceIDs.contains(device.id) else { return false }
         switch device {
         case .simulator(let simulator):
@@ -917,10 +926,13 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         }
     }
 
+    @objc private func cancelPendingScreenOpens(_ sender: Any?) { model.cancelPendingOpens() }
+
     @objc private func openSelectedDevice(_ sender: Any?) {
         let selection = sender is NSOutlineView ? visibleSelectedDevices : selectedDevices
         guard selection.count == 1, let device = selection.first, canViewScreen(device) else { return }
-        model.openScreen(for: device)
+        if model.openingDeviceIDs.contains(device.id) { model.cancelOpening(device.id) }
+        else { model.openScreen(for: device) }
     }
 
     private func updateToolbarAppearance() {

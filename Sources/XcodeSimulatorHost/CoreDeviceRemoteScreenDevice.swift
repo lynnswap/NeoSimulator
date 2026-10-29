@@ -20,12 +20,43 @@ public enum CoreDeviceRuntime {
 
     /// Uses one installation for SimulatorKit and DeviceKit throughout this process.
     public static func uiXcodeURL() async throws -> URL {
-        if let uiXcodePreparation { return try await uiXcodePreparation.value }
+        try Task.checkCancellation()
+        if let uiXcodePreparation { return try await preparedValue(of: uiXcodePreparation) }
         let override = uiXcodeOverride
-        let task = Task { try await resolveUIXcode(override: override) }
+        let task = Task {
+            do { return try await resolveUIXcode(override: override) }
+            catch { uiXcodePreparation = nil; throw error }
+        }
         uiXcodePreparation = task
-        do { return try await task.value }
-        catch { uiXcodePreparation = nil; throw error }
+        return try await preparedValue(of: task)
+    }
+
+    /// Cancels only this consumer's wait; the shared runtime preparation keeps its other consumers.
+    public static func preparedValue<Value: Sendable>(of preparation: Task<Value, any Error>) async throws -> Value {
+        try await PreparationWaiter<Value>().value(of: preparation)
+    }
+
+    @MainActor
+    private final class PreparationWaiter<Value: Sendable> {
+        private var continuation: CheckedContinuation<Value, any Error>?
+
+        func value(of preparation: Task<Value, any Error>) async throws -> Value {
+            try await withTaskCancellationHandler {
+                try Task.checkCancellation()
+                return try await withCheckedThrowingContinuation { continuation in
+                    self.continuation = continuation
+                    Task { self.finish(await preparation.result) }
+                }
+            } onCancel: {
+                Task { @MainActor in self.finish(.failure(CancellationError())) }
+            }
+        }
+
+        private func finish(_ result: Result<Value, any Error>) {
+            guard let continuation else { return }
+            self.continuation = nil
+            continuation.resume(with: result)
+        }
     }
 
     @concurrent
