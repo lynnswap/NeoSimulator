@@ -638,6 +638,42 @@ struct XcodeConnectionsTests {
                     userInfo: ["udid": "device-id", "deviceSetPath": "/custom-set"])
     }
 
+    @Test(.timeLimit(.minutes(1)), arguments: [false, true]) @MainActor
+    func aRendererExitFinishesRequestsThatItCanNoLongerAcknowledge(_ cancelled: Bool) async throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        process.arguments = ["60"]
+        try process.run()
+        defer { if process.isRunning { process.terminate() } }
+        let device = DeviceInventoryID.simulator(udid: "device-id", deviceSetPath: "/custom-set")
+        let renderer = RendererRegistration(processIdentifier: process.processIdentifier, applicationPath: "/Renderer.app",
+                                            xcodePath: "/Xcode.app", sessionIdentifier: "session", deviceIdentifiers: [])
+        let sent = AsyncStream<String?>.makeStream()
+        var actions = sent.stream.makeAsyncIterator()
+        // Stands in for the 450 s and 120 s request deadlines. Reaching it means the exit was not observed.
+        let waiter = RendererDeviceRequestWaiter(acknowledgements: NotificationCenter(), scheduleTimeout: { _, expire in
+            let deadline = Task { try await Task.sleep(for: .seconds(10)); expire() }
+            return { deadline.cancel() }
+        }) { info, _ in sent.continuation.yield(info["action"]) }
+        let opening = Task { try await waiter.open(device, in: renderer) }
+        #expect(await actions.next() == "open-device")
+        if cancelled {
+            opening.cancel()
+            #expect(await actions.next() == "cancel-open")
+        }
+        process.terminate()
+        do {
+            try await opening.value
+            Issue.record("An open succeeded without its renderer")
+        } catch is CancellationError { #expect(cancelled) }
+        catch let error as CLIError { #expect(!cancelled && error.identifier == "renderer-device-exit") }
+        // The cleanup after a cancelled open addresses the same renderer after it has exited.
+        do {
+            try await waiter.release(device, from: renderer)
+            Issue.record("A release succeeded without its renderer")
+        } catch let error as CLIError { #expect(error.identifier == "renderer-device-exit") }
+    }
+
     @Test @MainActor func closeDeviceAcknowledgementPreservesFailureAndAllowsRetry() async throws {
         let center = NotificationCenter()
         let target = DeviceInventoryID.simulator(udid: "device-id", deviceSetPath: nil)
