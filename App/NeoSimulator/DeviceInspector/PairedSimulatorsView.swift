@@ -157,6 +157,7 @@ struct PairedSimulatorsView: NSViewRepresentable {
             more.symbolConfiguration = NSImage.SymbolConfiguration(
                 pointSize: NSFont.preferredFont(forTextStyle: .body).pointSize, weight: .bold)
             more.isBordered = false
+            more.imageScaling = .scaleNone
             (more.cell as? NSPopUpButtonCell)?.arrowPosition = .noArrow
             let stack = NSStackView(views: [title])
             stack.addView(more, in: .trailing)

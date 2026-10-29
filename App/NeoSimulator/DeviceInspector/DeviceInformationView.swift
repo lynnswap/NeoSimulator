@@ -206,7 +206,7 @@ struct DeviceInformationView: View {
                     }
                 }
                 .padding(.horizontal, 10)
-                .padding(.vertical)
+                .padding(.vertical, 10)
             }
         }
     }
