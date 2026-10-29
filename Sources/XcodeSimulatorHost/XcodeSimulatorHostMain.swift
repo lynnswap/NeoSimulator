@@ -354,6 +354,7 @@ public actor SimulatorHostController {
             else { try await RendererDeviceRequestWaiter().attach(deviceID, in: target) }
             try await self.present(deviceID, xcodeURL: xcode.applicationURL, purpose: purpose)
         } catch is CancellationError {
+            self.bootTracker.didCancelAttachment(deviceID)
             if !preservesOwnership {
                 // Cancellation can win after the renderer emitted its original open acknowledgement.
                 try await Task { try await RendererDeviceRequestWaiter().release(deviceID, from: target) }.value
@@ -1023,14 +1024,24 @@ final class SimulatorBootTracker {
 
     private var catalog: [DeviceInventoryID: SimulatorHostDevice] = [:]
     private var pending: Set<DeviceInventoryID> = []
+    /// A cancelled open may have booted before the catalog observed it. Retire only that boot's automatic attach.
+    private var cancelledAttachments: Set<DeviceInventoryID> = []
     private var initialized = false
 
-    func reset() { pending = []; initialized = false }
+    func reset() { pending = []; cancelledAttachments = []; initialized = false }
     func didAttach(_ identifier: DeviceInventoryID) { pending.remove(identifier) }
+    func didCancelAttachment(_ identifier: DeviceInventoryID) {
+        pending.remove(identifier)
+        cancelledAttachments.insert(identifier)
+    }
     func forgetTestingDevices() {
         let identifiers = Set(catalog.filter { $0.value.deviceSetPath != nil }.keys)
         catalog = catalog.filter { $0.value.deviceSetPath == nil }
         pending.subtract(identifiers)
+        cancelledAttachments = cancelledAttachments.filter {
+            if case .simulator(_, let path) = $0 { return path == nil }
+            return true
+        }
     }
 
     func observe(_ devices: [SimulatorHostDevice], attachInitially: Bool, allowsAttachments: Bool = true) -> Observation {
@@ -1041,9 +1052,11 @@ final class SimulatorBootTracker {
             reset()
             return Observation(catalogChanged: changed, devicesToAttach: [])
         }
+        cancelledAttachments = cancelledAttachments.filter { current[$0] != nil && current[$0]?.state != "Shutdown" }
         let booted = Set(current.filter { $0.value.state == "Booted" }.keys)
         pending.formIntersection(booted)
-        for identifier in booted {
+        pending.subtract(cancelledAttachments)
+        for identifier in booted where !cancelledAttachments.contains(identifier) {
             if initialized {
                 if catalog[identifier]?.state != "Booted" { pending.insert(identifier) }
             } else if attachInitially { pending.insert(identifier) }

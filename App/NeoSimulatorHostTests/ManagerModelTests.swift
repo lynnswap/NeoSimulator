@@ -1127,6 +1127,36 @@ struct ManagerModelTests {
         #expect(await source.quitCount == 1)
     }
 
+    @Test(.timeLimit(.minutes(1)), arguments: [false, true])
+    func retiringAnOpenPublishesInventoryEventsDeferredWhileBusy(_ cancelled: Bool) async throws {
+        func remote(_ name: String) throws -> InventoryDevice {
+            let data = try JSONSerialization.data(withJSONObject: ["result": ["devices": [["identifier": "remote",
+                "properties": ["hardware": ["reality": "physical"], "state": ["name": name]]]]]])
+            return .remote(try #require(CoreDeviceInventoryDecoder.decode(data).first))
+        }
+        let device = simulator()
+        let next = simulator(deviceSet: "/next-set")
+        let source = ManagerModelSource(devices: [device, next, try remote("Original")])
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source)
+        await manager.refresh()
+        manager.openDevice(device.id)
+        #expect(await events.next() == .open(device.id))
+        manager.openDevice(next.id)
+        await source.setDevices([device, next, try remote("Updated")])
+        await manager.inventoryDidChange()
+        #expect(manager.isBusy && manager.inventory.last?.name == "Original")
+        if cancelled {
+            manager.cancelOpening(device.id)
+            await source.completeOpen()
+        } else { await source.failOpen() }
+        // Admission of the next FIFO operation follows retirement of the first open and its refresh.
+        #expect(await events.next() == .open(next.id))
+        #expect(manager.inventory.last?.name == "Updated")
+        await source.completeOpen()
+        try await manager.quitRenderer(keepingDevicesRunning: true)
+    }
+
     @Test func editingDuringRefreshStillReadsExternalChanges() async throws {
         let device = simulator()
         let source = ManagerModelSource(devices: [device])

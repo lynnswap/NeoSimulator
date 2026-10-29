@@ -736,6 +736,31 @@ struct XcodeConnectionsTests {
         #expect(tracker.observe([device("A", "Booted"), device("B", "Booted")], attachInitially: true).devicesToAttach == [.simulator(udid: "A", deviceSetPath: nil), .simulator(udid: "B", deviceSetPath: nil)])
     }
 
+    @Test func aCancelledAttachmentStaysRetiredForOnlyItsBootAndDeviceSet() {
+        let tracker = SimulatorBootTracker()
+        func device(_ state: String, set: String? = nil) -> SimulatorHostDevice {
+            .init(identifier: "A", name: "A", descriptiveName: "A", runtimeIdentifier: "runtime", runtimeName: "iOS",
+                  productFamily: "iPhone", state: state, deviceSetPath: set)
+        }
+        let normal = device("Booted")
+        let clone = device("Booted", set: "/custom-set")
+        _ = tracker.observe([device("Shutdown"), device("Shutdown", set: "/custom-set")], attachInitially: false)
+        // Cleanup can finish before the booted state reaches the next catalog snapshot.
+        tracker.didCancelAttachment(normal.inventoryID)
+        #expect(tracker.observe([normal, clone], attachInitially: true).devicesToAttach == [clone.inventoryID])
+        tracker.didAttach(clone.inventoryID)
+        #expect(tracker.observe([normal, clone], attachInitially: true).devicesToAttach.isEmpty)
+        _ = tracker.observe([device("Shutdown"), clone], attachInitially: true)
+        #expect(tracker.observe([normal, clone], attachInitially: true).devicesToAttach == [normal.inventoryID])
+        tracker.didCancelAttachment(normal.inventoryID)
+        tracker.reset()
+        #expect(tracker.observe([normal, clone], attachInitially: true).devicesToAttach == [normal.inventoryID, clone.inventoryID])
+        tracker.didCancelAttachment(clone.inventoryID)
+        tracker.didAttach(normal.inventoryID)
+        tracker.forgetTestingDevices()
+        #expect(tracker.observe([normal, clone], attachInitially: true).devicesToAttach == [clone.inventoryID])
+    }
+
     @Test func testingVisibilityChangesReattachClonesAndPreserveNormalWindowChoices() {
         let tracker = SimulatorBootTracker()
         func device(_ identifier: String, _ state: String = "Booted", testing: Bool = false) -> SimulatorHostDevice {

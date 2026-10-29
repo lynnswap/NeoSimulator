@@ -662,7 +662,9 @@ final class SimulatorManagerModel {
                     do { try await next.run() }
                     catch { failure = error }
                 }
-                if next.openDevice == nil, (next.refreshCatalog || self.inventoryRefreshRequested), !self.stopping { await self.refreshCatalog() }
+                if !self.stopping, self.inventoryRefreshRequested || (next.openDevice == nil && next.refreshCatalog) {
+                    await self.refreshCatalog()
+                }
                 if let failure, next.openDevice == nil || !self.stopping { self.onError?(failure) }
             }
         }
