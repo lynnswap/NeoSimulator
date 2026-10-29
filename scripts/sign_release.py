@@ -372,10 +372,13 @@ def temporary_credentials(tools: NativeTools, parent: Path, configuration: dict[
                     os.environ.pop(name, None)
 
 
-def sign(tools: NativeTools, path: Path, credentials: SigningCredentials, *, app: bool, entitlements: Path | None = None) -> None:
+def sign(tools: NativeTools, path: Path, credentials: SigningCredentials, *, app: bool, entitlements: Path | None = None,
+         identifier: str | None = None) -> None:
     arguments = ["/usr/bin/codesign", "--force", "--timestamp", "--keychain", str(credentials.keychain),
                  "--sign", credentials.certificate_sha1]
     arguments += ["--options", "runtime"] if app else ["--identifier", f"{APP_IDENTIFIER}.dmg"]
+    if identifier:
+        arguments += ["--identifier", identifier]
     if entitlements:
         arguments += ["--entitlements", str(entitlements)]
     tools.run([*arguments, str(path)], "Sign release app" if app else "Sign release DMG")
@@ -404,7 +407,8 @@ def sign_application(tools: NativeTools, app: Path, credentials: SigningCredenti
     helper = app / "Contents" / "Helpers" / "NeoSimulatorGuestSettings"
     for bundle, identifier in ((helper, "NeoSimulatorGuestSettings"), (renderer, RENDERER_IDENTIFIER), (app, APP_IDENTIFIER)):
         entitlements = GUEST_SETTINGS_ENTITLEMENTS_PATH if bundle == helper else None
-        sign(tools, bundle, credentials, app=True, entitlements=entitlements)
+        sign(tools, bundle, credentials, app=True, entitlements=entitlements,
+             identifier=GUEST_SETTINGS_NAME if bundle == helper else None)
         verify_developer_id(tools, bundle, team, app=True, identifier=identifier)
         validate_entitlements(tools, bundle, guest_helper=bundle == helper)
 

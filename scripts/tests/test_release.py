@@ -71,12 +71,30 @@ class ReleaseSigningTests(unittest.TestCase):
 
     def test_resigning_uses_the_helper_profile_without_app_exceptions(self):
         credentials = sign_release.SigningCredentials(Path("fixture.keychain"), "A" * 40, Path("fixture.p8"))
-        with patch.object(self.tools, "run", side_effect=self.native_result) as run, patch.object(sign_release, "verify_developer_id"):
+        identifiers = {self.helper: "NeoSimulatorGuestSettings-generated-uuid", self.renderer: sign_release.RENDERER_IDENTIFIER,
+                       self.app: sign_release.APP_IDENTIFIER}
+        profiles = {}
+        flags = {}
+        def result(arguments, operation, **kwargs):
+            path = Path(arguments[-1])
+            if "--sign" in arguments:
+                if "--identifier" in arguments:
+                    identifiers[path] = arguments[arguments.index("--identifier") + 1]
+                profiles[path] = plistlib.loads(Path(arguments[arguments.index("--entitlements") + 1]).read_bytes()) if "--entitlements" in arguments else {}
+                flags[path] = "0x10000" if "--options" in arguments and arguments[arguments.index("--options") + 1] == "runtime" else "0x0"
+            if "--verbose=4" in arguments:
+                metadata = f"Identifier={identifiers[path]}\nTeamIdentifier=ABCDEFGHIJ\nAuthority=Developer ID Application: Fixture (ABCDEFGHIJ)\nTimestamp=2026-10-29\nflags={flags[path]}\n"
+                return sign_release.NativeResult(b"", metadata.encode(), 0)
+            if "--display" in arguments and "--entitlements" in arguments:
+                return sign_release.NativeResult(plistlib.dumps(profiles[path]), b"", 0)
+            return self.native_result(arguments, operation, **kwargs)
+        with patch.object(self.tools, "run", side_effect=result) as run:
             sign_release.sign_application(self.tools, self.app, credentials, "ABCDEFGHIJ")
         signing = [call.args[0] for call in run.call_args_list if "--sign" in call.args[0]]
         self.assertEqual([Path(call[-1]) for call in signing], [self.helper, self.renderer, self.app])
         self.assertEqual(Path(signing[0][signing[0].index("--entitlements") + 1]), sign_release.GUEST_SETTINGS_ENTITLEMENTS_PATH)
-        self.assertTrue(all("--entitlements" not in call for call in signing[1:]))
+        self.assertEqual(signing[0][signing[0].index("--identifier") + 1], sign_release.GUEST_SETTINGS_NAME)
+        self.assertTrue(all("--identifier" not in call and "--entitlements" not in call for call in signing[1:]))
 
 
 class BuildScriptSigningTests(unittest.TestCase):
@@ -156,7 +174,8 @@ helper.write_bytes(b"fixture")
                     self.assertNotIn("--timestamp" if expected_identity == "-" else "--timestamp=none", call)
                 self.assertEqual(Path(signing[0][signing[0].index("--entitlements") + 1]), entitlements)
                 self.assertEqual(plistlib.loads(entitlements.read_bytes()), {sign_release.GUEST_SETTINGS_ENTITLEMENT: True})
-                self.assertTrue(all("--entitlements" not in call for call in signing[1:]))
+                self.assertEqual(signing[0][signing[0].index("--identifier") + 1], sign_release.GUEST_SETTINGS_NAME)
+                self.assertTrue(all("--identifier" not in call and "--entitlements" not in call for call in signing[1:]))
                 self.assertEqual(calls[-1][:-1], ["--verify", "--deep", "--strict"])
 
 

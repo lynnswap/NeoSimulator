@@ -79,7 +79,8 @@ fi
 timestamp_option="--timestamp=none"
 if [[ "$signing_identity" != - ]]; then timestamp_option="--timestamp"; fi
 # Simulator executables need DYLD_ROOT_PATH to select their runtime libraries.
-codesign --force --options runtime --entitlements "$repo_root/App/NeoSimulatorGuestSettings/GuestSettings.entitlements" \
+codesign --force --options runtime --identifier NeoSimulatorGuestSettings \
+  --entitlements "$repo_root/App/NeoSimulatorGuestSettings/GuestSettings.entitlements" \
   --sign "$signing_identity" "$timestamp_option" "$helper"
 for bundle in "$renderer" "$app"; do
   executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$bundle/Contents/Info.plist")"
