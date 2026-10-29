@@ -207,7 +207,7 @@ struct DeviceInformationView: View {
                 configuration.content
                     .font(.body)
                     .foregroundStyle(Color.primary)
-                    .background(.background.secondary)
+                    .background(Color(nsColor: .quinarySystemFill))
                     .clipShape(RoundedRectangle(cornerRadius: 8))
             }
             .frame(maxWidth: .infinity, alignment: .leading)
