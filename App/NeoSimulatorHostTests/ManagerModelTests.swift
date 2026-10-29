@@ -1422,7 +1422,9 @@ struct ManagerModelTests {
         inspection.device = .simulator(device("unpaired-phone", family: "iPhone", pairs: []))
         view.layoutSubtreeIfNeeded()
         window.displayIfNeeded()
-        #expect(tables(in: view).isEmpty)
+        let emptyPairedTable = try #require(tables(in: view).first)
+        #expect(emptyPairedTable.numberOfRows == 1)
+        #expect(emptyPairedTable.selectedRow == -1)
     }
 
     @Test func profilesFollowTheAvailableKindWhenChangingDevices() throws {
