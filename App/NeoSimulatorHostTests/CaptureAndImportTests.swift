@@ -4,6 +4,7 @@ import Foundation
 import ImageIO
 import QuartzCore
 import Testing
+import XcodeSimulatorHost
 
 @Suite @MainActor
 struct CaptureAndImportTests {
@@ -52,22 +53,27 @@ struct CaptureAndImportTests {
     }
 
     @Test func failedImportsKeepSuccessfulResultsAndContinue() async throws {
-        let urls = ["First.app", "Rejected.app", "Photo.png", "Unsupported.txt"].map {
+        let urls = ["First.app", "Package.ipa", "Rejected.app", "Installed.ipa", "Photo.png", "Unsupported.txt"].map {
             URL(fileURLWithPath: "/tmp/\($0)")
         }
         var imported: [String] = []
         do {
-            try await SimulatorFileImport.perform(urls) { url, _ in
+            try await SimulatorFileImport.perform(urls) { url, kind in
                 if url.lastPathComponent == "Rejected.app" { throw HostError.operation("Not a simulator app") }
-                imported.append(url.lastPathComponent)
+                if url.lastPathComponent == "Installed.ipa" {
+                    throw DeviceInspectorError.cleanupFailed(directory: URL(fileURLWithPath: "/tmp/Staging"), operationError: nil,
+                                                             cleanupError: CocoaError(.fileWriteNoPermission))
+                }
+                imported.append("\(url.lastPathComponent) \(kind)")
             }
             Issue.record("Expected partial failure")
         } catch {
-            #expect(error.localizedDescription.contains("First.app, Photo.png"))
+            #expect(error.localizedDescription.contains("First.app, Package.ipa, Installed.ipa, Photo.png"))
             #expect(error.localizedDescription.contains("Rejected.app: Not a simulator app"))
+            #expect(error.localizedDescription.contains("Installed.ipa: Could not remove /tmp/Staging"))
             #expect(error.localizedDescription.contains("Unsupported.txt"))
         }
-        #expect(imported == ["First.app", "Photo.png"])
+        #expect(imported == ["First.app application", "Package.ipa application", "Photo.png media"])
     }
 
     @Test func concurrentRecordingsCannotOverwriteTheSameDestination() async throws {

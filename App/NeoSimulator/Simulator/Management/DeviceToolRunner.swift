@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import XcodeSimulatorHost
 
 @MainActor
 final class DeviceToolRunner {
@@ -196,7 +197,9 @@ final class DeviceTools {
     }
 
     func installApplication(at url: URL) async throws {
-        _ = try await simctl(["install", identifier, url.path])
+        try await withInstallableApplication(at: url) { application in
+            _ = try await simctl(["install", identifier, application.path])
+        }
     }
     func importMedia(at url: URL) async throws {
         _ = try await simctl(["addmedia", identifier, url.path])

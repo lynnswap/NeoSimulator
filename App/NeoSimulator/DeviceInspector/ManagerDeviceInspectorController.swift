@@ -424,6 +424,12 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
         inspection.reload { [model] in try await model.inspector(for: $0) }
     }
 
+    /// Reloads listed applications that an operation outside the inspector changed.
+    func applicationsChanged(on deviceID: DeviceInventoryID) {
+        guard device?.id == deviceID, showingApplications else { return }
+        reload()
+    }
+
     @objc private func changeInfoCategory(_ sender: NSSegmentedControl) {
         switch sender.selectedSegment {
         case 0: content = .info
@@ -728,7 +734,7 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
         panel.canChooseDirectories = false
         panel.treatsFilePackagesAsDirectories = false
         panel.allowedContentTypes = installsApplication
-            ? [UTType.applicationBundle]
+            ? SimulatorFileImport.applicationTypes
             : [UTType(filenameExtension: content == .configuration ? "mobileconfig" : "mobileprovision") ?? .data]
         panel.beginSheetModal(for: window) { [weak self] response in
             guard response == .OK, let url = panel.url, let self else { return }

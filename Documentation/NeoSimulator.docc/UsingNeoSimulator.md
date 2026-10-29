@@ -86,8 +86,10 @@ device as needed, then use the inspector's refresh button.
 ### Applications
 
 Choose **Info → Apps** and select an app to see its details. Use
-**+** to install an app, **−** to remove the selected app and its data, or the
-play button to launch it. The search field filters the installed apps.
+**+** to install an `.app` bundle or `.ipa` package, **−** to remove the
+selected app and its data, or the play button to launch it. The search field
+filters the installed apps. The app must be built for the selected device; the
+device's installer reports platform and signing errors.
 
 The ellipsis button opens these application actions:
 
@@ -230,10 +232,11 @@ removes a retained recording after confirmation.
 
 ## Install apps and import media
 
-Drop simulator `.app` bundles, images, videos, or vCards onto a device window,
-or choose **File → Install App or Import Media…**. Partial failures list both
-completed imports and failed files. **I/O → Open URL…** opens web addresses and
-custom app URL schemes in the active device.
+Drop simulator `.app` bundles or `.ipa` packages, images, videos, or vCards
+onto a device window, or choose **File → Install App or Import Media…**.
+Partial failures list both completed imports and failed files.
+**I/O → Open URL…** opens web addresses and custom app URL schemes in the
+active device.
 
 ## Browse device reports
 

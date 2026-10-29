@@ -512,6 +512,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     func stopInspectorReads() { deviceInspector.stopReading() }
     func finishInspectorPreviews() async throws { try await deviceInspector.finishPreviews() }
     func resumeInspectorAfterCancelledQuit() { deviceInspector.resumeAfterCancelledQuit() }
+    func applicationsChanged(on deviceID: DeviceInventoryID) { deviceInspector.applicationsChanged(on: deviceID) }
 
     private func makeDeviceSettingsView() -> ManagerDeviceSettingsView {
         ManagerDeviceSettingsView(manager: model, model: model.settings, customLocation: { [weak self] in

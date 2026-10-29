@@ -1083,7 +1083,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         let panel = NSOpenPanel()
         panel.title = "Install App or Import Media"
         panel.prompt = "Import"
-        panel.allowedContentTypes = [.applicationBundle, .image, .movie, .vCard]
+        panel.allowedContentTypes = SimulatorFileImport.applicationTypes + [.image, .movie, .vCard]
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
         panel.beginSheetModal(for: window) { [weak self] response in

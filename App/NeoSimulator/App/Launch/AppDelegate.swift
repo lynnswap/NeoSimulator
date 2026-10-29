@@ -385,6 +385,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }) else { return }
                 self.model.manage(.shutdown, devices: [device])
             }
+            host.onApplicationsChange = { [weak self] identifier in
+                self?.mainWindow?.applicationsChanged(on: .simulator(udid: identifier.identifier, deviceSetPath: identifier.deviceSetPath))
+            }
             try host.start()
             simulatorHosts[sourceURL] = host
         }

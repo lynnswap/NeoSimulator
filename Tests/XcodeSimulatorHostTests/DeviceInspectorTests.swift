@@ -297,6 +297,97 @@ import Testing
         #expect(await calls.commands.count == 4)
     }
 
+    @Test func packageInstallsItsExtractedMainApplicationOnTheSelectedDestination() async throws {
+        let directory = try TemporaryTestDirectory()
+        let package = try Self.applicationPackage(in: directory, bundles: ["Payload/App.app", "Payload/App.app/Watch/Watch.app"])
+        let calls = InspectorCalls { command in
+            let application = try #require(command.arguments.first { $0.hasSuffix(".app") })
+            #expect(try String(contentsOfFile: application + "/Info.plist", encoding: .utf8) == "Payload/App.app")
+            return Self.output("")
+        }
+        let transport = DeviceInspectorTransport(run: { try await calls.run($0) })
+        try await Self.simulator(transport: transport).installApplication(at: package)
+        try await Self.remote(transport: transport).installApplication(at: package)
+        let commands = await calls.commands
+        let simulator = try #require(commands.first), remote = try #require(commands.last)
+        let staged = try #require(simulator.arguments.last)
+        #expect(simulator.source == .simulator(xcodeURL: Self.xcode, deviceSetPath: "/fixture-device-set"))
+        #expect(simulator.arguments == ["install", "sim-udid", staged] && staged.hasSuffix("/Payload/App.app"))
+        #expect(remote.source == .coreDevice && remote.arguments.starts(with: ["device", "install", "app"]) && remote.arguments.contains("core-command-id"))
+        #expect(commands.count == 2)
+        for command in commands { try Self.expectStagingRemoved(for: command) }
+        #expect(FileManager.default.fileExists(atPath: package.path))
+    }
+
+    @Test func packageWithoutOneApplicationIsNotSentToTheInstaller() async throws {
+        let directory = try TemporaryTestDirectory()
+        let corrupt = directory.url.appendingPathComponent("Corrupt.ipa")
+        try Data("not an archive".utf8).write(to: corrupt)
+        let unpackaged = try Self.applicationPackage(in: directory, bundles: ["App.app"])
+        let calls = InspectorCalls { _ in Self.output("") }
+        let inspector = Self.simulator(transport: .init(run: { try await calls.run($0) }))
+        do { try await inspector.installApplication(at: corrupt); Issue.record("A corrupt package was installed") }
+        catch let failure as DeviceInspectorFailure {
+            guard case .commandFailed(_, _, let stderr) = failure.error as? DeviceInspectorError else { Issue.record("Lost the extraction diagnostics"); return }
+            #expect(!stderr.isEmpty && failure.source == .file(corrupt))
+        }
+        do { try await inspector.installApplication(at: unpackaged); Issue.record("A package without a payload application was installed") }
+        catch let failure as DeviceInspectorFailure { #expect((failure.error as? CocoaError)?.code == .fileReadCorruptFile) }
+        #expect(await calls.commands.isEmpty)
+    }
+
+    @Test func packageInstallerOutcomesKeepTheirErrorsAndRemoveStaging() async throws {
+        let directory = try TemporaryTestDirectory()
+        let package = try Self.applicationPackage(in: directory, bundles: ["Payload/App.app"])
+        let calls = InspectorCalls { command in
+            if command.source == .coreDevice { throw CancellationError() }
+            return CommandOutput(terminationStatus: 1, stdout: Data(), stderr: Data("Incompatible platform".utf8))
+        }
+        let transport = DeviceInspectorTransport(run: { try await calls.run($0) })
+        do { try await Self.simulator(transport: transport).installApplication(at: package); Issue.record("Installer failure was ignored") }
+        catch let failure as DeviceInspectorFailure {
+            guard case .commandFailed(1, _, "Incompatible platform") = failure.error as? DeviceInspectorError else { Issue.record("Lost the installer diagnostics"); return }
+            #expect(failure.source == .simulator(xcodeURL: Self.xcode, deviceSetPath: "/fixture-device-set"))
+        }
+        do { try await Self.remote(transport: transport).installApplication(at: package); Issue.record("Cancellation was ignored") }
+        catch let failure as DeviceInspectorFailure { #expect(failure.error is CancellationError) }
+        for command in await calls.commands { try Self.expectStagingRemoved(for: command) }
+
+        // The installed application must remain distinguishable from a failed installation.
+        let locking = InspectorCalls { command in
+            let payload = URL(fileURLWithPath: try #require(command.arguments.last)).deletingLastPathComponent()
+            try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: payload.path)
+            return Self.output("")
+        }
+        do {
+            try await Self.simulator(transport: .init(run: { try await locking.run($0) })).installApplication(at: package)
+            Issue.record("Cleanup failure was ignored")
+        } catch let failure as DeviceInspectorFailure {
+            guard case .cleanupFailed(let staging, let operationError, _) = failure.error as? DeviceInspectorError else { Issue.record("Lost the cleanup failure"); return }
+            #expect(operationError == nil)
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: staging.appendingPathComponent("Payload").path)
+            try FileManager.default.removeItem(at: staging)
+        }
+    }
+
+    /// Archives each bundle, with an Info.plist naming its path, as an application package.
+    private static func applicationPackage(in directory: TemporaryTestDirectory, bundles: [String]) throws -> URL {
+        let contents = directory.url.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        for bundle in bundles {
+            let url = contents.appendingPathComponent(bundle, isDirectory: true)
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+            try Data(bundle.utf8).write(to: url.appendingPathComponent("Info.plist"))
+        }
+        let package = directory.url.appendingPathComponent("\(UUID().uuidString).ipa")
+        let output = try SystemCommandRunner().run(executable: URL(fileURLWithPath: "/usr/bin/ditto"), arguments: ["-c", "-k", contents.path, package.path])
+        try #require(output.terminationStatus == 0, "\(output.stderrText)")
+        return package
+    }
+    private static func expectStagingRemoved(for command: DeviceInspectorCommand) throws {
+        let application = URL(fileURLWithPath: try #require(command.arguments.first { $0.hasSuffix(".app") }))
+        #expect(!FileManager.default.fileExists(atPath: application.deletingLastPathComponent().deletingLastPathComponent().path))
+    }
+
     private static let xcode = URL(fileURLWithPath: "/Applications/FixtureXcode.app")
     private static func simulator(deviceSetPath: String? = "/fixture-device-set", transport: DeviceInspectorTransport) -> DeviceInspector {
         let item = SimulatorHostDevice(identifier: "sim-udid", name: "Simulator", descriptiveName: "Simulator", runtimeIdentifier: "runtime", runtimeName: "iOS 27.2", productFamily: "iPhone", state: "Booted", ownerXcodeURL: xcode, deviceSetPath: deviceSetPath)
