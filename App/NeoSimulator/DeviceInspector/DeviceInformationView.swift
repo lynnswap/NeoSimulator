@@ -138,7 +138,7 @@ struct DeviceInformationView: View {
                         ForEach(paired, id: \.inventoryID) { partner in
                             LabeledContent {
                                 DeviceMenuButton(menu: deviceMenu(partner), symbol: "ellipsis",
-                                                 label: "More Actions for \(partner.name)")
+                                                 label: "More Actions for \(partner.name)", isBordered: false)
                             } label: {
                                 Text(partner.name)
                                     .lineLimit(1)
@@ -153,51 +153,27 @@ struct DeviceInformationView: View {
                 }
             }
             .safeAreaBar(edge: .bottom, spacing: 0) {
-                PairingAccessoryBar {
-                    HStack {
-                        DeviceMenuButton(menu: pairingMenu(device), symbol: "plus", label: "Add Paired Simulator", controlSize: .regular)
-                            .disabled(!manager.canAddPairing(for: device) || inspection.isManaging ||
-                                      !manager.canManage(.pair, deviceIDs: [device.inventoryID]))
-                        Divider()
-                        Button {
-                            if let targetWatch { unpair(targetWatch) }
-                        } label: {
-                            Image(systemName: "minus")
-                        }
-                        .accessibilityLabel("Remove Paired Simulator")
-                        .disabled(targetWatch == nil || inspection.isManaging || manager.isBusy ||
-                                  targetWatch.map { manager.managingDeviceIDs.contains($0.inventoryID) } == true)
-                        Spacer()
+                HStack {
+                    DeviceMenuButton(menu: pairingMenu(device), symbol: "plus", label: "Add Paired Simulator")
+                        .disabled(!manager.canAddPairing(for: device) || inspection.isManaging ||
+                                  !manager.canManage(.pair, deviceIDs: [device.inventoryID]))
+                    Button {
+                        if let targetWatch { unpair(targetWatch) }
+                    } label: {
+                        Image(systemName: "minus")
                     }
+                    .accessibilityLabel("Remove Paired Simulator")
+                    .disabled(targetWatch == nil || inspection.isManaging || manager.isBusy ||
+                              targetWatch.map { manager.managingDeviceIDs.contains($0.inventoryID) } == true)
+                    Spacer()
                 }
+                .buttonStyle(.accessoryBar)
+                .controlSize(.small)
             }
-            .listRowInsets(EdgeInsets())
         } header: {
             Text("Paired Simulators")
         } footer: {
             editVisibilityButton
-        }
-    }
-
-    private struct PairingAccessoryBar<Content: View>: View {
-        @Environment(\.defaultMinListRowHeight) private var minimumRowHeight
-        let content: Content
-
-        init(@ViewBuilder content: () -> Content) {
-            self.content = content()
-        }
-
-        var body: some View {
-            VStack(spacing: 0) {
-                Divider()
-                content
-                    .fixedSize(horizontal: false, vertical: true)
-                    .buttonStyle(.borderless)
-                    .controlSize(.regular)
-                    .padding(4)
-                    .frame(minHeight: minimumRowHeight)
-            }
-            .background(.regularMaterial)
         }
     }
 
@@ -217,14 +193,14 @@ struct DeviceInformationView: View {
         let menu: NSMenu
         let symbol: String
         let label: String
-        var controlSize: NSControl.ControlSize = .small
+        var isBordered = true
 
         func makeNSView(context: Context) -> NSPopUpButton {
             let image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)!
             let button = NSPopUpButton(image: image, pullDownMenu: menu)
-            button.controlSize = controlSize
-            button.isBordered = false
-            (button.cell as? NSPopUpButtonCell)?.arrowPosition = .noArrow
+            button.controlSize = .small
+            button.bezelStyle = .accessoryBarAction
+            button.isBordered = isBordered
             button.isEnabled = context.environment.isEnabled
             button.setAccessibilityLabel(label)
             button.toolTip = menu.title
@@ -233,6 +209,7 @@ struct DeviceInformationView: View {
 
         func updateNSView(_ button: NSPopUpButton, context: Context) {
             button.menu = menu
+            button.isBordered = isBordered
             button.isEnabled = context.environment.isEnabled
             button.setAccessibilityLabel(label)
             button.toolTip = menu.title

@@ -353,7 +353,6 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
         contentView.isHidden = showingInfo || unavailable != nil
         infoView.isHidden = !showingInfo || unavailable != nil
         buttons.isHidden = showingInfo
-        stackBottomConstraint?.constant = showingInfo ? 0 : -8
         unavailableView.isHidden = unavailable == nil
         if let unavailable {
             unavailableView.rootView = AnyView(ContentUnavailableView {
@@ -415,6 +414,7 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
         if status.stringValue != message { status.stringValue = message }
         status.isHidden = status.stringValue.isEmpty || unavailableState != nil
         footer.isHidden = showingInfo && progress.isHidden && status.isHidden
+        stackBottomConstraint?.constant = showingInfo && footer.isHidden ? 0 : -8
     }
 
     func reload() {
