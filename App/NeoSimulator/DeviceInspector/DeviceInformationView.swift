@@ -21,17 +21,20 @@ struct DeviceInformationView: View {
                 simulator.productFamily == "iPhone" || simulator.productFamily == "Apple Watch" {
                 simulator
             } else { nil }
-            Form {
+            Group {
                 if editsVisibility {
-                    visibilityEditor(information)
+                    Form { visibilityEditor(information) }
+                        .formStyle(.grouped)
                 } else {
-                    informationCards(information, includesPairing: pairingDevice != nil)
-                    if let simulator = pairingDevice {
-                        pairedSimulators(simulator)
+                    Form {
+                        informationCards(information, includesPairing: pairingDevice != nil)
+                        if let simulator = pairingDevice {
+                            pairedSimulators(simulator)
+                        }
                     }
+                    .formStyle(InformationFormStyle())
                 }
             }
-            .formStyle(.grouped)
             .safeAreaBar(edge: .bottom, spacing: 0) {
                 if editsVisibility {
                     Button("Done") { editsVisibility = false }
@@ -126,54 +129,97 @@ struct DeviceInformationView: View {
         let paired = DeviceInformation.pairedSimulators(for: device, in: manager.inventory)
         let selectedPartner = paired.first { $0.inventoryID == selectedPairedSimulator }
         let targetWatch = selectedPartner.flatMap { DeviceInformation.watchToUnpair(device: device, partner: $0) }
-        return Section {
-            Group {
-                if paired.isEmpty {
-                    Text(device.productFamily == "Apple Watch" ? "No Paired iPhone Simulators" : "No Paired Watch Simulators")
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 120)
-                } else {
-                    List(selection: $selectedPairedSimulator) {
-                        ForEach(paired, id: \.inventoryID) { partner in
-                            LabeledContent {
-                                DeviceMenuButton(menu: deviceMenu(partner), symbol: "ellipsis",
-                                                 label: "More Actions for \(partner.name)", isBordered: false)
-                            } label: {
-                                Text(partner.name)
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                                    .help(partner.name)
-                            }
-                            .tag(partner.inventoryID)
-                        }
-                    }
-                    .listStyle(.plain)
-                    .frame(maxWidth: .infinity)
-                }
-            }
-            .safeAreaBar(edge: .bottom, spacing: 0) {
-                HStack {
-                    DeviceMenuButton(menu: pairingMenu(device), symbol: "plus", label: "Add Paired Simulator")
-                        .disabled(!manager.canAddPairing(for: device) || inspection.isManaging ||
-                                  !manager.canManage(.pair, deviceIDs: [device.inventoryID]))
-                    Button {
-                        if let targetWatch { unpair(targetWatch) }
-                    } label: {
-                        Image(systemName: "minus")
-                    }
-                    .accessibilityLabel("Remove Paired Simulator")
-                    .disabled(targetWatch == nil || inspection.isManaging || manager.isBusy ||
-                              targetWatch.map { manager.managingDeviceIDs.contains($0.inventoryID) } == true)
-                    Spacer()
-                }
-                .buttonStyle(.accessoryBar)
-                .controlSize(.small)
-            }
-        } header: {
+        return Section {} header: {
             Text("Paired Simulators")
         } footer: {
+            GroupBox {
+                VStack(spacing: 0) {
+                    PairedSimulatorsView(devices: paired, selection: $selectedPairedSimulator,
+                        emptyLabel: device.productFamily == "Apple Watch" ? "No Paired iPhone Simulators" : "No Paired Watch Simulators",
+                        menu: deviceMenu)
+                    .frame(maxWidth: .infinity)
+                    Divider()
+                    HStack(spacing: 0) {
+                        DeviceMenuButton(menu: pairingMenu(device), symbol: "plus", label: "Add Paired Simulator", isBordered: false)
+                            .disabled(!manager.canAddPairing(for: device) || inspection.isManaging ||
+                                      !manager.canManage(.pair, deviceIDs: [device.inventoryID]))
+                        Divider()
+                            .padding(.vertical, 4)
+                        Button {
+                            if let targetWatch { unpair(targetWatch) }
+                        } label: {
+                            PairingAccessoryLabel(symbol: "minus")
+                        }
+                        .accessibilityLabel("Remove Paired Simulator")
+                        .disabled(targetWatch == nil || inspection.isManaging || manager.isBusy ||
+                                  targetWatch.map { manager.managingDeviceIDs.contains($0.inventoryID) } == true)
+                        Spacer()
+                    }
+                    .fixedSize(horizontal: false, vertical: true)
+                    .buttonStyle(.borderless)
+                    .controlSize(.regular)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.regularMaterial)
+                }
+            }
+            .groupBoxStyle(InformationCardStyle())
             editVisibilityButton
+        }
+    }
+
+    private struct PairingAccessoryLabel: View {
+        static let minimumDimension: CGFloat = 24
+        let symbol: String
+
+        var body: some View {
+            Image(systemName: symbol)
+                .font(.system(.subheadline, weight: .semibold))
+                .frame(minWidth: Self.minimumDimension, minHeight: Self.minimumDimension)
+        }
+    }
+
+    private struct InformationFormStyle: FormStyle {
+        func makeBody(configuration: Configuration) -> some View {
+            ScrollView {
+                VStack(alignment: .leading) {
+                    ForEach(sections: configuration.content) { section in
+                        if !section.header.isEmpty {
+                            section.header
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(Color.secondary)
+                                .accessibilityAddTraits(.isHeader)
+                        }
+                        if !section.content.isEmpty {
+                            GroupBox {
+                                VStack(spacing: 0) {
+                                    ForEach(subviews: section.content) { row in
+                                        row.padding(10)
+                                        if row.id != section.content.last?.id {
+                                            Divider().padding(.horizontal, 10)
+                                        }
+                                    }
+                                }
+                            }
+                            .groupBoxStyle(InformationCardStyle())
+                        }
+                        section.footer
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 10)
+            }
+        }
+    }
+
+    private struct InformationCardStyle: GroupBoxStyle {
+        func makeBody(configuration: Configuration) -> some View {
+            configuration.content
+                .font(.body)
+                .foregroundStyle(Color.primary)
+                .background(Color(nsColor: .quaternarySystemFill))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityElement(children: .contain)
         }
     }
 
@@ -196,11 +242,15 @@ struct DeviceInformationView: View {
         var isBordered = true
 
         func makeNSView(context: Context) -> NSPopUpButton {
+            let configuration = NSImage.SymbolConfiguration(
+                pointSize: NSFont.preferredFont(forTextStyle: .subheadline).pointSize, weight: .semibold)
             let image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)!
             let button = NSPopUpButton(image: image, pullDownMenu: menu)
-            button.controlSize = .small
+            button.symbolConfiguration = configuration
+            button.controlSize = controlSize(context.environment.controlSize)
             button.bezelStyle = .accessoryBarAction
             button.isBordered = isBordered
+            (button.cell as? NSPopUpButtonCell)?.arrowPosition = .noArrow
             button.isEnabled = context.environment.isEnabled
             button.setAccessibilityLabel(label)
             button.toolTip = menu.title
@@ -209,6 +259,7 @@ struct DeviceInformationView: View {
 
         func updateNSView(_ button: NSPopUpButton, context: Context) {
             button.menu = menu
+            button.controlSize = controlSize(context.environment.controlSize)
             button.isBordered = isBordered
             button.isEnabled = context.environment.isEnabled
             button.setAccessibilityLabel(label)
@@ -216,7 +267,20 @@ struct DeviceInformationView: View {
         }
 
         func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSPopUpButton, context: Context) -> NSSize? {
-            nsView.fittingSize
+            let size = nsView.fittingSize
+            return NSSize(width: max(size.width, PairingAccessoryLabel.minimumDimension),
+                          height: max(size.height, PairingAccessoryLabel.minimumDimension))
+        }
+
+        private func controlSize(_ size: SwiftUI.ControlSize) -> NSControl.ControlSize {
+            switch size {
+            case .mini: .mini
+            case .small: .small
+            case .regular: .regular
+            case .large: .large
+            case .extraLarge: .extraLarge
+            @unknown default: .regular
+            }
         }
     }
 }

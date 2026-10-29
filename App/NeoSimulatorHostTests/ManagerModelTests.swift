@@ -1394,12 +1394,13 @@ struct ManagerModelTests {
                 return menu
             },
             unpair: { _ in Issue.record("Unpaired without a user action") }))
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 320, height: 800),
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 280, height: 800),
                               styleMask: .titled, backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentViewController = controller
         defer { window.close() }
         let view = controller.view
+        window.setContentSize(NSSize(width: 280, height: 800))
         view.layoutSubtreeIfNeeded()
         window.displayIfNeeded()
         func tables(in view: NSView) -> [NSTableView] {
@@ -1413,6 +1414,7 @@ struct ManagerModelTests {
         #expect(viewport.height > 0 && row.height > 0)
         #expect(viewport.minY <= row.minY + backingPixel)
         #expect(viewport.maxY >= row.maxY - backingPixel)
+        #expect(row.height >= 40)
         #expect(pairedScroll.frame.height < 120)
         let pairedRow = try #require(pairedTable.view(atColumn: 0, row: 0, makeIfNecessary: true))
         pairedRow.layoutSubtreeIfNeeded()
@@ -1423,6 +1425,7 @@ struct ManagerModelTests {
         let more = try #require(popupButtons(in: pairedRow).first {
             $0.accessibilityLabel() == "More Actions for \(phone.name)"
         })
+        #expect(more.convert(more.bounds, to: pairedRow).minX > pairedRow.bounds.midX)
         #expect(more.menu?.items.contains {
             $0.title == "View Screen" && $0.action == #selector(NSApplication.terminate(_:))
         } == true)
@@ -1432,6 +1435,7 @@ struct ManagerModelTests {
             return view.subviews.lazy.compactMap { addButton(in: $0) }.first
         }
         let add = try #require(addButton(in: view))
+        #expect(add.frame.width >= 24 && add.frame.height >= 24)
         let canAddAnotherPhone = add.isEnabled
         #expect(!canAddAnotherPhone)
         let pairedPosition = pairedScroll.convert(pairedScroll.bounds, to: view).origin
@@ -1453,7 +1457,33 @@ struct ManagerModelTests {
         inspection.device = .simulator(device("unpaired-phone", family: "iPhone", pairs: []))
         view.layoutSubtreeIfNeeded()
         window.displayIfNeeded()
-        #expect(tables(in: view).isEmpty)
+        let emptyPairedTable = try #require(tables(in: view).first)
+        #expect(emptyPairedTable.numberOfRows == 1)
+        #expect(emptyPairedTable.selectedRow == -1)
+        let emptyScroll = try #require(emptyPairedTable.enclosingScrollView)
+        let emptyRow = emptyPairedTable.rect(ofRow: 0)
+        #expect(emptyRow.height >= 120)
+        #expect(emptyScroll.documentVisibleRect.minY <= emptyRow.minY + backingPixel)
+        #expect(emptyScroll.documentVisibleRect.maxY >= emptyRow.maxY - backingPixel)
+
+        var selected: DeviceInventoryID?
+        let selectionController = NSHostingController(rootView: PairedSimulatorsView(
+            devices: [phone], selection: Binding(get: { selected }, set: { selected = $0 }),
+            emptyLabel: "No Paired iPhone Simulators", menu: { _ in NSMenu() }))
+        window.contentViewController = selectionController
+        let selectionView = selectionController.view
+        selectionView.layoutSubtreeIfNeeded()
+        window.displayIfNeeded()
+        let selectionTable = try #require(tables(in: selectionView).first)
+        selectionTable.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        #expect(selected == phone.inventoryID)
+        selectionController.rootView = PairedSimulatorsView(
+            devices: [], selection: Binding(get: { selected }, set: { selected = $0 }),
+            emptyLabel: "No Paired iPhone Simulators", menu: { _ in NSMenu() })
+        selectionView.layoutSubtreeIfNeeded()
+        window.displayIfNeeded()
+        #expect(selectionTable.numberOfRows == 1)
+        #expect(selectionTable.selectedRow == -1)
     }
 
     @Test func profilesFollowTheAvailableKindWhenChangingDevices() throws {

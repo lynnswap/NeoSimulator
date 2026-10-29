@@ -210,6 +210,7 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
         stack.distribution = .fill
         stack.alignment = .centerX
         stack.spacing = 10
+        stack.setCustomSpacing(8, after: infoPicker)
         stack.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(stack)
         let bottom = stack.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8)
