@@ -2039,7 +2039,12 @@ private final class DeviceContentView: NSView, DisplayContentView {
               canvasMagnificationOperation?.latest.id == request.id else { return }
         if !animated {
             // Readiness/geometry updates must not allocate an AppKit magnification animation.
-            canvasScrollView.setMagnification(prepared.scale, centeredAt: prepared.point)
+            // The setter resets the clip bounds even at the current magnification; the backing change
+            // makes DeviceKit's AppKit views measure again and report another natural size.
+            // Layout applies the retained anchor either way.
+            if canvasScrollView.magnification != prepared.scale {
+                canvasScrollView.setMagnification(prepared.scale, centeredAt: prepared.point)
+            }
             finishCanvasMagnification(request)
             return
         }

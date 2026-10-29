@@ -1579,6 +1579,45 @@ struct InputFocusTests {
         #expect(controller.canvasZoom.fitScale == display.scale(for: scroll.frame.size))
     }
 
+    @Test(.timeLimit(.minutes(1)))
+    func nativeRemeasurementAtUnchangedFitSettles() async throws {
+        _ = NSApplication.shared
+        let display = TestDisplay()
+        display.usesNativeCanvas = true
+        // Width limits Fit, so a taller measurement keeps the same magnification.
+        display.naturalSize = NSSize(width: 120, height: 40)
+        let controller = try makeController(display, features: [],
+            keyboardCaptureTap: TestKeyboardEventTap(), presentCompactWindow: { _ in })
+        defer { controller.invalidate() }
+        // DeviceKit's AppKit-backed loading content measures again after each backing change
+        // of the magnified canvas, differing in the last bits of its height.
+        let limit = 50
+        var measurements = 0
+        let view = try #require(display.view as? TestDisplayView)
+        view.onBackingPropertiesChange = { [unowned display] in
+            guard measurements < limit else { return }
+            measurements += 1
+            display.naturalSize.height = display.naturalSize.height.nextUp
+            display.onPropertiesChange?()
+        }
+        let parent = NSViewController()
+        parent.view = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 600))
+        let window = KeyPresentationWindow(contentRect: parent.view.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentViewController = parent
+        defer { window.close() }
+        try await animateCanvas {
+            controller.embed(in: parent)
+            parent.view.layoutSubtreeIfNeeded()
+        }
+        #expect(measurements < limit, "Natural size was measured \(measurements) times")
+        let scroll = try #require(controller.presentationViewController.view.subviews.compactMap { $0 as? NSScrollView }.first)
+        #expect(controller.canvasZoom.mode == .fit && display.renderScale == 1)
+        #expect(controller.canvasZoom.fitScale == display.scale(for: scroll.frame.size))
+        #expect(WindowScale.matches(scroll.magnification, controller.canvasZoom.fitScale))
+        #expect(scroll.documentVisibleRect.insetBy(dx: -1 / window.backingScaleFactor, dy: -1 / window.backingScaleFactor).contains(display.view.frame))
+    }
+
     private func animateCanvas(_ operation: @escaping @MainActor () -> Void) async throws {
         let completed = XCTestExpectation(description: "Canvas magnification finishes")
         NSAnimationContext.runAnimationGroup { _ in operation() } completionHandler: { completed.fulfill() }
@@ -8524,7 +8563,12 @@ private enum AppliedLocation: Equatable {
 @MainActor
 private final class TestDisplayView: NSView {
     var displaySize: () -> NSSize = { .zero }
+    var onBackingPropertiesChange: () -> Void = {}
     override var intrinsicContentSize: NSSize { displaySize() }
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        onBackingPropertiesChange()
+    }
 }
 
 @MainActor
