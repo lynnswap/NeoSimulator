@@ -5,9 +5,9 @@ usage() {
   cat <<'USAGE'
 Usage: scripts/build-release.sh --version <tag> [--build-number <positive-integer>] [--dist-root <dir>] [--signing-identity <identity>]
 
-Builds the arm64 NeoSimulator.app, including its renderer.
+Builds the arm64 NeoSimulator.app, including its renderer and guest settings helper.
 Signing defaults to ad hoc (-). Use --signing-identity or CODE_SIGN_IDENTITY
-to sign both bundles with a certificate name or SHA-1 hash.
+to sign the app and its nested code with a certificate name or SHA-1 hash.
 Public Developer ID signing and notarization run separately in release.yml.
 USAGE
 }
@@ -71,8 +71,14 @@ xcodebuild \
 app="$staging/NeoSimulator.app"
 ditto "$derived_data/Build/Products/Release/NeoSimulator.app" "$app"
 renderer="$app/Contents/Applications/NeoSimulatorRenderer.app"
+helper="$app/Contents/Helpers/NeoSimulatorGuestSettings"
+if [[ "$(lipo -archs "$helper")" != arm64 ]]; then
+  echo "Expected an arm64 guest settings helper." >&2
+  exit 1
+fi
 timestamp_option="--timestamp=none"
 if [[ "$signing_identity" != - ]]; then timestamp_option="--timestamp"; fi
+codesign --force --options runtime --sign "$signing_identity" "$timestamp_option" "$helper"
 for bundle in "$renderer" "$app"; do
   executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$bundle/Contents/Info.plist")"
   if [[ "$(lipo -archs "$bundle/Contents/MacOS/$executable")" != arm64 ]]; then

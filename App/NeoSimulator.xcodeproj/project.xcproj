@@ -25,6 +25,10 @@
   "files": [
     {
       "kind": "group",
+      "path": "NeoSimulatorGuestSettings",
+      "children": [ { "path": "main.m", "target-membership": [ "NeoSimulatorGuestSettings/compile-sources" ] } ],
+    }, {
+      "kind": "group",
       "path": "NeoSimulatorRenderer",
       "children": [
         { "path": "Settings.bundle", "target-membership": [ "NeoSimulatorRenderer/resources" ] },
@@ -79,6 +83,7 @@
       "kind": "group",
       "name": "Products",
       "children": [
+        { "path": "<PRODUCTS>/NeoSimulatorGuestSettings", "type": "compiled.mach-o.executable", "index": false, "target-membership": [ { "build-phase": "NeoSimulator/copy/Embed Guest Settings", "code-sign-on-copy": true } ] },
         { "path": "<PRODUCTS>/NeoSimulator.app", "id": "52678CF6A775A386BE4B4373", "type": "wrapper.application", "index": false },
         { "path": "<PRODUCTS>/NeoSimulatorHostTests.xctest", "id": "AB6705CF3060FBFC007E9CFA", "type": "wrapper.cfbundle", "index": false },
         { "path": "<PRODUCTS>/NeoSimulatorRenderer.app", "id": "DB53DA24AE8041B1A82D0570", "type": "wrapper.application", "index": false, "target-membership": [ { "build-phase": "NeoSimulator/copy/Embed Renderer", "code-sign-on-copy": true } ] },
@@ -623,6 +628,24 @@
   ],
   "targets": [
     {
+      "name": "NeoSimulatorGuestSettings",
+      "id": "2BD2B139D214453FA1723960",
+      "product": "Products/NeoSimulatorGuestSettings",
+      "product-type": "tool",
+      "build-phases": [ "compile-sources", "frameworks" ],
+      "build-settings": {
+        "ARCHS": "arm64",
+        "SDKROOT": "iphonesimulator",
+        "SUPPORTED_PLATFORMS": "iphonesimulator",
+        "IPHONEOS_DEPLOYMENT_TARGET": "17.0",
+        "SKIP_INSTALL": "YES",
+        "CODE_SIGN_IDENTITY": "-",
+        "CODE_SIGN_STYLE": "Manual",
+        "PRODUCT_NAME": "NeoSimulatorGuestSettings",
+        "CLANG_ENABLE_OBJC_ARC": "YES",
+      },
+    },
+    {
       "name": "NeoSimulator",
       "id": "0B7837795C8C6DC7CC39C54C",
       "product": "Products/NeoSimulator.app",
@@ -630,11 +653,18 @@
       "legacy-provisioning-style": "manual",
       "dependencies": [
         "NeoSimulatorRenderer",
+        "NeoSimulatorGuestSettings",
       ],
       "build-phases": [
         "compile-sources",
         "frameworks",
         "resources",
+        {
+          "kind": "copy",
+          "name": "Embed Guest Settings",
+          "bundle-base-path": "contents-directory",
+          "relative-path": "Helpers",
+        },
         {
           "kind": "copy",
           "name": "Embed Renderer",

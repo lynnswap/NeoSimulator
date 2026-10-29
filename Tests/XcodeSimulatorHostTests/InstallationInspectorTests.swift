@@ -536,6 +536,7 @@ struct XcodeConnectionsTests {
         var commands: [[String]] = []
         let backend = SimulatorSettingsBackend(run: { tool, arguments in
             if case .devicectl = tool { throw CLIError.io("wrong-device", "devicectl cannot distinguish this device set") }
+            if tool == .guestSettings { return Data(#"{"success":true,"modes":[],"current":null}"#.utf8) }
             commands.append(arguments)
             if arguments.first == "spawn" { return Data(#"<plist version="1.0"><dict/></plist>"#.utf8) }
             let output = switch arguments.last {
@@ -842,6 +843,7 @@ struct SimulatorSettingsBackendTests {
         let microphone = SimulatorAudioDevice(identifier: "mic-uid", name: "Microphone")
         let speaker = SimulatorAudioDevice(identifier: "speaker-uid", name: "Speaker")
         let backend = SimulatorSettingsBackend(run: { tool, arguments in
+            if tool == .guestSettings { return Data(#"{"success":true,"modes":[],"current":null}"#.utf8) }
             if tool == .simctl {
                 if arguments.first == "spawn" { return Data(#"<plist version="1.0"><dict><key>EnhancedTextLegibilityEnabled</key><integer>1</integer></dict></plist>"#.utf8) }
                 return Data((arguments.last == "appearance" ? "dark" : arguments.last == "content_size" ? "large" : "enabled").utf8)
@@ -875,6 +877,7 @@ struct SimulatorSettingsBackendTests {
     @Test func unavailableExtendedQueriesPreserveLegacySettingsAndLocationWithDiagnostics() async {
         var queried: [[String]] = []
         let backend = SimulatorSettingsBackend(run: { tool, arguments in
+            if tool == .guestSettings { return Data(#"{"success":true,"modes":[],"current":null}"#.utf8) }
             if tool == .devicectl {
                 queried.append(arguments)
                 throw CLIError.unavailable("unsupported", "This device is unavailable to CoreDevice.")
@@ -966,6 +969,38 @@ struct SimulatorSettingsBackendTests {
         #expect(recovered.issues == ["audio: Unavailable."])
     }
 
+
+    @Test func displayZoomRetainsNativeModesAndReportsPartialApplyFailures() async throws {
+        let modes = #"[{"rawMode":0,"nativeName":"Default","width":1170,"height":2532},{"rawMode":1,"nativeName":"Larger Text","width":960,"height":2079}]"#
+        var response = Data(("{\"success\":true,\"modes\":" + modes + ",\"current\":{\"rawMode\":0,\"nativeName\":\"Default\",\"width\":1170,\"height\":2532}}").utf8)
+        var commands: [[String]] = []
+        let backend = SimulatorSettingsBackend(run: { tool, arguments in
+            #expect(tool == .guestSettings)
+            commands.append(arguments)
+            return response
+        }, audioDevices: { Issue.record("An unrelated query ran."); return ([], []) })
+        let device = simulator("device-A", deviceSetPath: "/custom/Devices")
+        let original = SimulatorDeviceSettings(volume: 60, issues: ["audio: Unavailable.", "Display Zoom: Previous failure."])
+        let read = await backend.refresh(original, after: .displayZoom(0), device: device)
+        #expect(read.displayZoom?.rawMode == 0 && read.supportedDisplayZoomModes.map(\.rawMode) == [0, 1])
+        #expect(read.applying(.displayZoom(1)).displayZoom?.nativeName == "Larger Text")
+        #expect(read.volume == 60 && read.issues == ["audio: Unavailable."])
+        try backend.set(.displayZoom(1), device: device)
+        #expect(commands == [["device-A", "display-zoom", "read"], ["device-A", "display-zoom", "set", "1"]])
+        response = Data(#"{"success":false,"modes":[],"current":null,"canvasApplied":true,"error":{"description":"The relaunch request failed."}}"#.utf8)
+        do { try backend.set(.displayZoom(1), device: device); Issue.record("The partial failure was lost.") }
+        catch { #expect(error.localizedDescription.contains("was applied") && error.localizedDescription.contains("relaunch request failed")) }
+        let failed = await backend.refresh(read, after: .displayZoom(1), device: device)
+        #expect(failed.displayZoom == nil && failed.supportedDisplayZoomModes.isEmpty)
+        #expect(failed.volume == 60 && failed.issues.last?.hasPrefix("Display Zoom: ") == true)
+        response = Data(#"{"success":true,"modes":[],"current":null}"#.utf8)
+        let noModes = await backend.refresh(read, after: .displayZoom(0), device: device)
+        #expect(noModes.displayZoom == nil && noModes.issues == ["audio: Unavailable."])
+        let unsupported = try remote("physical", features: [])
+        let count = commands.count
+        #expect(throws: CLIError.self) { try backend.set(.displayZoom(1), device: unsupported) }
+        #expect(commands.count == count)
+    }
 
     @Test func boldTextUsesTheSimulatorPreferenceAndScopedConfirmation() async throws {
         var commands: [[String]] = []

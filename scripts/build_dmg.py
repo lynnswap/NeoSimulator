@@ -137,6 +137,9 @@ def validate_image(archive: Path, expected_app: dict[str, tuple], background: Pa
                 ).strip()
                 if architectures != "arm64":
                     raise ValueError("The packaged app is not arm64-only.")
+            helper = app / "Contents" / "Helpers" / "NeoSimulatorGuestSettings"
+            if subprocess.check_output(["lipo", "-archs", str(helper)], text=True).strip() != "arm64":
+                raise ValueError("The packaged guest settings helper is not arm64-only.")
             validate_layout(mount, background)
         finally:
             if os.path.ismount(mount):

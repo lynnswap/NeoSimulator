@@ -31,6 +31,9 @@ class ReleaseSigningTests(unittest.TestCase):
                 "CFBundlePackageType": "APPL", "CFBundleShortVersionString": "1.2.3",
                 "CFBundleVersion": "7",
             }))
+        helper = self.app / "Contents/Helpers/NeoSimulatorGuestSettings"
+        helper.parent.mkdir(parents=True)
+        helper.write_bytes(bytes.fromhex("cffaedfe") + b"fixture")
         self.tools = sign_release.NativeTools()
 
     @staticmethod
@@ -89,6 +92,9 @@ for bundle, name in [(app, "NeoSimulator"), (app / "Contents/Applications/NeoSim
     (bundle / "Contents/MacOS" / name).write_bytes(b"fixture")
     build_number = next(value.split("=", 1)[1] for value in args if value.startswith("CURRENT_PROJECT_VERSION="))
     (bundle / "Contents/Info.plist").write_bytes(plistlib.dumps({"CFBundleExecutable": name, "CFBundleVersion": build_number}))
+helper = app / "Contents/Helpers/NeoSimulatorGuestSettings"
+helper.parent.mkdir(parents=True)
+helper.write_bytes(b"fixture")
 ''',
                 }
                 for name, body in bodies.items():
@@ -114,9 +120,9 @@ for bundle, name in [(app, "NeoSimulator"), (app / "Contents/Applications/NeoSim
                 self.assertEqual(info["CFBundleVersion"], "17" if "--build-number" in arguments else "1")
                 calls = [json.loads(line) for line in log.read_text().splitlines()]
                 signing = [call for call in calls if "--sign" in call]
-                self.assertEqual(len(signing), 2)
+                self.assertEqual(len(signing), 3)
                 self.assertEqual([Path(call[-1]).name for call in signing],
-                                 ["NeoSimulatorRenderer.app", "NeoSimulator.app"])
+                                 ["NeoSimulatorGuestSettings", "NeoSimulatorRenderer.app", "NeoSimulator.app"])
                 for call in signing:
                     self.assertEqual(call[call.index("--sign") + 1], expected_identity)
                     self.assertEqual(call[call.index("--options") + 1], "runtime")

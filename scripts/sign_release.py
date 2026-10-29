@@ -230,9 +230,10 @@ def validate_app(tools: NativeTools, mount: Path, version: str, build_number: st
     }.items():
         if renderer_info.get(name) != expected:
             raise ReleaseError(f"The renderer {name} does not match the release contract.")
-    if set(machos) != {executable, renderer_executable}:
-        raise ReleaseError("The app must contain its manager and embedded renderer executables.")
-    for bundle, binary in ((renderer, renderer_executable), (app, executable)):
+    helper = app / "Contents" / "Helpers" / "NeoSimulatorGuestSettings"
+    if set(machos) != {executable, renderer_executable, helper}:
+        raise ReleaseError("The app must contain its manager, renderer, and guest settings helper executables.")
+    for bundle, binary in ((helper, helper), (renderer, renderer_executable), (app, executable)):
         architectures = tools.run(["/usr/bin/lipo", "-archs", str(binary)], "Validate app architecture").stdout.strip()
         if architectures != b"arm64":
             raise ReleaseError("The release app must be arm64-only.")
@@ -387,7 +388,8 @@ def sign_application(tools: NativeTools, app: Path, credentials: SigningCredenti
     renderer = app / "Contents" / "Applications" / f"{RENDERER_NAME}.app"
     # Seal nested code before its containing bundle; --deep signing can silently
     # apply the manager's signing profile to the renderer.
-    for bundle, identifier in ((renderer, RENDERER_IDENTIFIER), (app, APP_IDENTIFIER)):
+    helper = app / "Contents" / "Helpers" / "NeoSimulatorGuestSettings"
+    for bundle, identifier in ((helper, "NeoSimulatorGuestSettings"), (renderer, RENDERER_IDENTIFIER), (app, APP_IDENTIFIER)):
         sign(tools, bundle, credentials, app=True)
         verify_developer_id(tools, bundle, team, app=True, identifier=identifier)
 

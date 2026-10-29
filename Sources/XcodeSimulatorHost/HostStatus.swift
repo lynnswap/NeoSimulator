@@ -64,12 +64,21 @@ public struct SimulatorLocationScenario: Sendable, Equatable {
     public let displayName: String
 }
 
+public struct SimulatorDisplayZoomMode: Sendable, Equatable, Decodable {
+    public let rawMode: UInt64
+    public let nativeName: String
+    public let width: Double
+    public let height: Double
+}
+
 /// A snapshot of the guest settings. Nil means a value is unavailable; query failures are retained in `issues`.
 public struct SimulatorDeviceSettings: Sendable {
     public static let contentSizes = ["extra-small", "small", "medium", "large", "extra-large", "extra-extra-large", "extra-extra-extra-large", "accessibility-medium", "accessibility-large", "accessibility-extra-large", "accessibility-extra-extra-large", "accessibility-extra-extra-extra-large"]
     public internal(set) var appearance: String?
     public internal(set) var contentSize: String?
     public internal(set) var boldText: Bool?
+    public internal(set) var displayZoom: SimulatorDisplayZoomMode?
+    public internal(set) var supportedDisplayZoomModes: [SimulatorDisplayZoomMode] = []
     public internal(set) var increaseContrast: Bool?
     public internal(set) var lookAndFeel: String?
     public internal(set) var supportedLooksAndFeels: [SimulatorLookAndFeel] = []
@@ -98,6 +107,7 @@ public enum SimulatorDeviceSetting: Sendable {
     case appearance(String)
     case contentSize(String)
     case boldText(Bool)
+    case displayZoom(UInt64)
     case increaseContrast(Bool)
     case lookAndFeel(SimulatorLookAndFeel)
     case liquidGlassOpacity(Double)
@@ -122,6 +132,7 @@ extension SimulatorDeviceSettings {
         case .appearance(let value): result.appearance = value
         case .contentSize(let value): result.contentSize = value
         case .boldText(let value): result.boldText = value
+        case .displayZoom(let value): result.displayZoom = result.supportedDisplayZoomModes.first { $0.rawMode == value }
         case .increaseContrast(let value): result.increaseContrast = value
         case .lookAndFeel(let value): result.lookAndFeel = value.rawValue
         case .liquidGlassOpacity(let value): result.liquidGlassOpacity = value
@@ -192,18 +203,21 @@ private extension InventoryDevice {
         }
     }
 
-    var supportsBoldText: Bool {
+    var supportsIOSDisplaySettings: Bool {
         guard case .simulator(let device) = self else { return false }
         return ["iPhone", "iPad"].contains(device.productFamily)
     }
 
     func checkSettingsWrite(_ setting: SimulatorDeviceSetting) throws {
-        if case .boldText = setting, !supportsBoldText {
+        if case .boldText = setting, !supportsIOSDisplaySettings {
             throw CLIError.unavailable("bold-text-unavailable", "Bold Text is available only for iOS simulators.")
+        }
+        if case .displayZoom = setting, !supportsIOSDisplaySettings {
+            throw CLIError.unavailable("display-zoom-unavailable", "Display Zoom is available only for iOS simulators.")
         }
         if case .simulator(let device) = self {
             switch setting {
-            case .appearance, .contentSize, .boldText, .increaseContrast, .location, .locationScenario, .clearLocation: return
+            case .appearance, .contentSize, .boldText, .displayZoom, .increaseContrast, .location, .locationScenario, .clearLocation: return
             default:
                 guard device.deviceSetPath == nil else {
                     throw CLIError.unavailable("custom-set-setting", "This setting is not available for simulators in a custom device set.")
@@ -216,7 +230,7 @@ private extension InventoryDevice {
         }
         let feature: String? = switch setting {
         case .appearance: "customizeuistyle"
-        case .boldText: nil
+        case .boldText, .displayZoom: nil
         case .liquidGlassOpacity: "customizeliquidglass"
         case .contentSize, .increaseContrast, .lookAndFeel, .colorFilter, .reduceMotion, .showBorders, .reduceTransparency: "customizeappearancesettings"
         case .voiceOver: "voiceover"
@@ -368,16 +382,16 @@ extension SimulatorHostController {
     private static func readSettings(device: InventoryDevice, xcodeURL: URL?) async -> SimulatorDeviceSettings {
         let backend = settingsBackend(device: device, xcodeURL: xcodeURL, readCommand: { tool, arguments in
             let result: CommandOutput
-            if tool == .simctl {
+            if tool != .devicectl {
                 guard case .simulator(let simulator) = device, let xcodeURL else {
                     throw CLIError.configuration("device-setting-source", "simctl requires a simulator destination and its developer tools.")
                 }
                 result = try await SystemCommandRunner.runSimctlCancellable(
-                    xcodeURL: xcodeURL, arguments: arguments, deviceSetPath: simulator.deviceSetPath)
+                    xcodeURL: xcodeURL, arguments: try settingsArguments(tool, arguments), deviceSetPath: simulator.deviceSetPath)
             } else {
                 result = try await SystemCommandRunner.runDevicectlCancellable(xcodeURL: xcodeURL, arguments: arguments)
             }
-            guard result.terminationStatus == 0 else {
+            guard result.terminationStatus == 0 || (tool == .guestSettings && !result.stdout.isEmpty) else {
                 throw CLIError.io("device-setting", result.stderrText.isEmpty ? result.stdoutText : result.stderrText)
             }
             return result.stdout
@@ -396,22 +410,31 @@ extension SimulatorHostController {
         try settingsBackend(device: device, xcodeURL: xcodeURL).set(setting, device: device)
     }
 
+    private static func settingsArguments(_ tool: SimulatorSettingsBackend.Tool, _ arguments: [String]) throws -> [String] {
+        guard tool == .guestSettings else { return arguments }
+        let helper = Bundle.main.bundleURL.appending(path: "Contents/Helpers/NeoSimulatorGuestSettings")
+        guard FileManager.default.isExecutableFile(atPath: helper.path) else {
+            throw CLIError.unavailable("guest-settings-helper", "The app's guest settings helper is unavailable.")
+        }
+        return ["spawn", arguments[0], helper.path] + arguments.dropFirst()
+    }
+
     private static func settingsBackend(device: InventoryDevice, xcodeURL: URL?,
                                         readCommand: ((SimulatorSettingsBackend.Tool, [String]) async throws -> Data)? = nil) -> SimulatorSettingsBackend {
         SimulatorSettingsBackend(run: { tool, arguments in
             let runner = SystemCommandRunner()
             let result: CommandOutput
-            if tool == .simctl {
+            if tool != .devicectl {
                 guard case .simulator(let simulator) = device, let xcodeURL else {
                     throw CLIError.configuration("device-setting-source", "simctl requires a simulator destination and its developer tools.")
                 }
-                result = try runner.runSimctl(xcodeURL: xcodeURL, arguments: arguments, deviceSetPath: simulator.deviceSetPath)
+                result = try runner.runSimctl(xcodeURL: xcodeURL, arguments: try settingsArguments(tool, arguments), deviceSetPath: simulator.deviceSetPath)
             } else if let xcodeURL {
                 result = try runner.runDevicectl(xcodeURL: xcodeURL, arguments: arguments)
             } else {
                 result = try runner.run(executable: URL(fileURLWithPath: "/Library/Developer/PrivateFrameworks/CoreDevice.framework/Versions/A/Resources/bin/devicectl"), arguments: arguments)
             }
-            guard result.terminationStatus == 0 else {
+            guard result.terminationStatus == 0 || (tool == .guestSettings && !result.stdout.isEmpty) else {
                 throw CLIError.io("device-setting", result.stderrText.isEmpty ? result.stdoutText : result.stderrText)
             }
             return result.stdout
@@ -421,7 +444,7 @@ extension SimulatorHostController {
 
 /// Keeps the command transport replaceable while tests exercise the same partial-result and write paths.
 struct SimulatorSettingsBackend {
-    enum Tool { case simctl, devicectl }
+    enum Tool { case simctl, devicectl, guestSettings }
     var run: (Tool, [String]) throws -> Data
     var readCommand: (Tool, [String]) async throws -> Data
     var audioDevices: () throws -> (input: [SimulatorAudioDevice], output: [SimulatorAudioDevice])
@@ -435,7 +458,7 @@ struct SimulatorSettingsBackend {
     }
 
     private enum Query: CaseIterable {
-        case simulatorAppearance, simulatorContentSize, simulatorContrast, boldText, appearance, voiceOver, audio, location
+        case simulatorAppearance, simulatorContentSize, simulatorContrast, boldText, displayZoom, appearance, voiceOver, audio, location
 
         var issueNames: [String] {
             switch self {
@@ -443,6 +466,7 @@ struct SimulatorSettingsBackend {
             case .simulatorContentSize: ["content_size"]
             case .simulatorContrast: ["increase_contrast"]
             case .boldText: ["Bold Text"]
+            case .displayZoom: ["Display Zoom"]
             case .appearance: ["appearance settings", "color filter"]
             case .voiceOver: ["VoiceOver"]
             case .audio: ["audio"]
@@ -466,6 +490,7 @@ struct SimulatorSettingsBackend {
         case .increaseContrast:
             if case .simulator = device { query = .simulatorContrast } else { query = .appearance }
         case .boldText: query = .boldText
+        case .displayZoom: query = .displayZoom
         case .lookAndFeel, .liquidGlassOpacity, .colorFilter, .reduceMotion, .showBorders, .reduceTransparency: query = .appearance
         case .voiceOver: query = .voiceOver
         case .volume, .audioInputDevice, .audioOutputDevice: query = .audio
@@ -485,6 +510,9 @@ struct SimulatorSettingsBackend {
             case .simulatorContentSize: settings.contentSize = nil
             case .simulatorContrast: settings.increaseContrast = nil
             case .boldText: settings.boldText = nil
+            case .displayZoom:
+                settings.displayZoom = nil
+                settings.supportedDisplayZoomModes = []
             case .appearance:
                 if case .remote = device {
                     settings.appearance = nil
@@ -537,7 +565,14 @@ struct SimulatorSettingsBackend {
             }
         }
 
-        if queries.contains(.boldText), device.supportsBoldText {
+        if queries.contains(.displayZoom), device.supportsIOSDisplaySettings,
+           let zoom = await capture("Display Zoom", {
+               try Self.displayZoomResult(await readCommand(.guestSettings, [identifier, "display-zoom", "read"]))
+           }) {
+            settings.displayZoom = zoom.current
+            settings.supportedDisplayZoomModes = zoom.modes
+        }
+        if queries.contains(.boldText), device.supportsIOSDisplaySettings {
             settings.boldText = await capture("Bold Text") {
                 let data = try await readCommand(.simctl, ["spawn", identifier, "defaults", "export", Self.boldTextDomain, "-"])
                 let values = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
@@ -629,6 +664,8 @@ struct SimulatorSettingsBackend {
                 if value.hasPrefix("accessibility-") { options += ["--larger-accessibility-sizes", "on"] }
                 _ = try run(.devicectl, command(["device", "settings", "appearance"] + options, identifier))
             }
+        case .displayZoom(let mode):
+            _ = try Self.displayZoomResult(run(.guestSettings, [identifier, "display-zoom", "set", String(mode)]))
         case .boldText(let enabled):
             _ = try run(.simctl, ["spawn", identifier, "defaults", "write", Self.boldTextDomain, Self.boldTextKey, "-int", enabled ? "1" : "0"])
             do {
@@ -665,6 +702,25 @@ struct SimulatorSettingsBackend {
             if case .simulator = device { _ = try run(.simctl, ["location", identifier, "clear"]) }
             else { _ = try run(.devicectl, command(["device", "simulate", "location", "clear"], identifier)) }
         }
+    }
+
+    private struct DisplayZoomResult: Decodable {
+        struct Failure: Decodable { let description: String }
+        let success: Bool
+        let modes: [SimulatorDisplayZoomMode]
+        let current: SimulatorDisplayZoomMode?
+        let canvasApplied: Bool?
+        let error: Failure?
+    }
+
+    private static func displayZoomResult(_ data: Data) throws -> DisplayZoomResult {
+        let result = try JSONDecoder().decode(DisplayZoomResult.self, from: data)
+        guard result.success else {
+            let message = result.error?.description ?? "The device did not return a Display Zoom result."
+            throw CLIError.io("display-zoom", result.canvasApplied == true
+                ? "Display Zoom was applied, but its remaining apply steps failed: \(message)" : message)
+        }
+        return result
     }
 
     // libAccessibility's _AXSSetEnhanceTextLegibilityEnabled uses this preference and cache notification.
