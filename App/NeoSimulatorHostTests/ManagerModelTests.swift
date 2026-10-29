@@ -159,7 +159,7 @@ struct ManagerModelTests {
             .first { $0.itemIdentifier.rawValue == "FilterSimulators" }?.menu)
         func choose(_ title: String) throws {
             controller.menuNeedsUpdate(menu)
-            let item = try #require(menu.items.first { $0.title == title })
+            let item = try #require(menu.items.first { $0.title == title && !$0.isSectionHeader })
             #expect(NSApp.sendAction(try #require(item.action), to: item.target, from: item))
         }
         #expect(controller.outlineView(outline, numberOfChildrenOfItem: nil) == 1)
