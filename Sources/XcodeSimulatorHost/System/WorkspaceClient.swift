@@ -680,9 +680,13 @@ final class RendererDeviceRequestWaiter {
                 }
                 cancelExitObservation = Self.observeExit(of: renderer.processIdentifier) { [weak self] in
                     guard let self, self.activeRequestIdentifier == requestIdentifier else { return }
-                    // An exited renderer can no longer acknowledge the request or the cancellation of an open.
-                    self.finish(.failure(self.cancelledOpen ? CancellationError()
-                        : CLIError.temporary("renderer-device-exit", "The simulator display exited before finishing the device request.")))
+                    // A release retires only presentation state owned by the renderer process, which its exit also retires.
+                    if action == "release-device" { self.finish(.success(())) }
+                    // Other requests and the cancellation of an open can no longer be completed.
+                    else {
+                        self.finish(.failure(self.cancelledOpen ? CancellationError()
+                            : CLIError.temporary("renderer-device-exit", "The simulator display exited before finishing the device request.")))
+                    }
                 }
                 var info = ["action": action, "udid": identifier, "requestIdentifier": requestIdentifier]
                 info.merge(additionalInfo) { _, additional in additional }

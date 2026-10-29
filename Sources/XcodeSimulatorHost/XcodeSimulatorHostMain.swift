@@ -524,15 +524,24 @@ public actor SimulatorHostController {
         guard let target = try await registeredRenderers().first(where: { sameURL(URL(fileURLWithPath: $0.xcodePath), xcode.applicationURL) }) else {
             throw CLIError.temporary("renderer-startup", "The simulator display exited before opening the device.")
         }
+        try await Self.openRendererDevice(deviceID, in: target, bootIfNeeded: bootIfNeeded, launchesRenderer: launchesRenderer) {
+            try await self.present(deviceID, xcodeURL: xcode.applicationURL, purpose: purpose)
+        }
+    }
+
+    @MainActor static func openRendererDevice(_ deviceID: DeviceInventoryID, in target: RendererRegistration, bootIfNeeded: Bool,
+                                              launchesRenderer: Bool,
+                                              makeWaiter: @escaping @MainActor () -> RendererDeviceRequestWaiter = { RendererDeviceRequestWaiter() },
+                                              present: @Sendable () async throws -> Void) async throws {
         let preservesOwnership = target.deviceIdentifiers.contains(deviceID)
         do {
-            if bootIfNeeded { try await RendererDeviceRequestWaiter().open(deviceID, in: target) }
-            else { try await RendererDeviceRequestWaiter().attach(deviceID, in: target) }
-            try await self.present(deviceID, xcodeURL: xcode.applicationURL, purpose: purpose)
+            if bootIfNeeded { try await makeWaiter().open(deviceID, in: target) }
+            else { try await makeWaiter().attach(deviceID, in: target) }
+            try await present()
         } catch is CancellationError {
             if !preservesOwnership {
                 // Cancellation can win after the renderer emitted its original open acknowledgement.
-                try await Task { try await RendererDeviceRequestWaiter().release(deviceID, from: target) }.value
+                try await Task { try await makeWaiter().release(deviceID, from: target) }.value
             }
             throw CancellationError()
         } catch {
