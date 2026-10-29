@@ -33,6 +33,9 @@ RENDERER_IDENTIFIER = f"{APP_IDENTIFIER}.Renderer"
 GUEST_SETTINGS_NAME = "NeoSimulatorGuestSettings"
 GUEST_SETTINGS_ENTITLEMENT = "com.apple.security.cs.allow-dyld-environment-variables"
 GUEST_SETTINGS_ENTITLEMENTS_PATH = Path(__file__).resolve().parents[1] / "App" / GUEST_SETTINGS_NAME / "GuestSettings.entitlements"
+# Simulator Security reads these from the helper's __TEXT,__entitlements section
+# and does not merge them with the macOS signature.
+GUEST_SETTINGS_SIMULATOR_ENTITLEMENTS = ("com.apple.frontboard.launchapplications", "com.apple.frontboard.shutdown")
 APPLICATIONS_LINK = "\u200b"
 SECRET_NAMES = ("DEVELOPER_ID_P12_BASE64", "DEVELOPER_ID_P12_PASSWORD", "NOTARY_API_PRIVATE_KEY")
 VERSION_PATTERN = r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*)?"
@@ -253,6 +256,14 @@ def validate_entitlements(tools: NativeTools, path: Path, *, guest_helper: bool 
     if guest_helper:
         if set(values) != {GUEST_SETTINGS_ENTITLEMENT} or values[GUEST_SETTINGS_ENTITLEMENT] is not True:
             raise ReleaseError("The guest settings helper requires only its allow-DYLD environment entitlement.")
+        with tempfile.TemporaryDirectory(prefix="guest-entitlements-") as directory:
+            section = Path(directory) / "entitlements.plist"
+            tools.run(["/usr/bin/segedit", str(path), "-extract", "__TEXT", "__entitlements", str(section)],
+                      "Inspect guest settings simulator entitlements")
+            simulated = parse_plist(section.read_bytes(), "Inspect guest settings simulator entitlements")
+        if (set(simulated) != set(GUEST_SETTINGS_SIMULATOR_ENTITLEMENTS)
+                or any(simulated[name] is not True for name in GUEST_SETTINGS_SIMULATOR_ENTITLEMENTS)):
+            raise ReleaseError("The guest settings helper requires only its simulator service entitlements.")
     elif values:
         raise ReleaseError("The manager and renderer signing profiles do not use entitlements.")
 

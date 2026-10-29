@@ -76,6 +76,15 @@ if [[ "$(lipo -archs "$helper")" != arm64 ]]; then
   echo "Expected an arm64 guest settings helper." >&2
   exit 1
 fi
+# The simulator authorizes guest service requests from this Mach-O section; the
+# macOS signature applied below cannot provide those entitlements.
+guest_entitlements="$staging/guest-entitlements.plist"
+segedit "$helper" -extract __TEXT __entitlements "$guest_entitlements"
+if ! cmp -s "$guest_entitlements" "$repo_root/App/NeoSimulatorGuestSettings/GuestVirtual.entitlements"; then
+  echo "Expected the guest settings helper to embed GuestVirtual.entitlements." >&2
+  exit 1
+fi
+rm "$guest_entitlements"
 timestamp_option="--timestamp=none"
 if [[ "$signing_identity" != - ]]; then timestamp_option="--timestamp"; fi
 # Simulator executables need DYLD_ROOT_PATH to select their runtime libraries.

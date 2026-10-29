@@ -29,6 +29,7 @@
       "children": [
         { "path": "main.m", "target-membership": [ "NeoSimulatorGuestSettings/compile-sources" ] },
         { "path": "GuestSettings.entitlements" },
+        { "path": "GuestVirtual.entitlements" },
       ],
     }, {
       "kind": "group",
@@ -645,7 +646,8 @@
         "CODE_SIGN_IDENTITY": "-",
         "CODE_SIGN_STYLE": "Manual",
         "PRODUCT_NAME": "NeoSimulatorGuestSettings",
-        "CODE_SIGN_ENTITLEMENTS": "NeoSimulatorGuestSettings/GuestSettings.entitlements",
+        "CODE_SIGN_ENTITLEMENTS": "NeoSimulatorGuestSettings/GuestVirtual.entitlements",
+        "LD_ENTITLEMENTS_SECTION": "$(SRCROOT)/NeoSimulatorGuestSettings/GuestVirtual.entitlements",
         "CLANG_ENABLE_OBJC_ARC": "YES",
       },
     },
