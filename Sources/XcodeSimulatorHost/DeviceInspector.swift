@@ -95,7 +95,7 @@ public struct DeviceInfoSnapshot: Sendable {
     public let deviceID: DeviceInventoryID
     /// The known inventory values remain available when a live query fails.
     public let device: InventoryDevice
-    /// CoreDevice property categories, or simctl's device record with runtime and known CoreDevice connection information.
+    /// CoreDevice property categories, or simctl's device record with runtime and known CoreDevice properties.
     public let fields: [String: DeviceInspectorValue]
     public let issues: [DeviceInspectorFailure]
 }
@@ -154,6 +154,18 @@ public struct DeviceInspector: Sendable {
     @concurrent public func info() async -> DeviceInfoSnapshot {
         var fields: [String: DeviceInspectorValue] = [:]
         if case .simulator(let simulator) = device, let coreDevice = simulator.coreDevice {
+            fields["coreDeviceIdentifier"] = .string(coreDevice.identifier)
+            var hardware: [String: DeviceInspectorValue] = ["reality": .string(coreDevice.reality)]
+            if let cpu = coreDevice.cpuType {
+                hardware["cpuType"] = .object(["type": .integer(Int64(cpu.type)), "subtype": .integer(Int64(cpu.subtype))])
+            }
+            if let platform = coreDevice.platform { hardware["platform"] = .string(platform) }
+            if let product = coreDevice.modelIdentifier { hardware["productType"] = .string(product) }
+            fields["hardware"] = .object(hardware)
+            var state: [String: DeviceInspectorValue] = [:]
+            if let boot = coreDevice.bootState { state["bootState"] = .string(boot) }
+            if let preparedness = coreDevice.preparednessState { state["preparednessState"] = .integer(Int64(preparedness)) }
+            if !state.isEmpty { fields["state"] = .object(state) }
             var connection: [String: DeviceInspectorValue] = [:]
             if let state = coreDevice.connectionState { connection["state"] = .string(state) }
             if let pairing = coreDevice.pairingState { connection["pairingState"] = .string(pairing) }

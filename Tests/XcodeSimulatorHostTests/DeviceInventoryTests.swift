@@ -63,19 +63,25 @@ struct DeviceInventoryTests {
             let info = await DeviceInspector(device: .simulator(retained.inventoryCopy(owners: [])),
                 simulatorXcodeURL: normal.ownerXcodeURL, transport: transport).info()
             #expect(info.issues.isEmpty)
-            #expect(info.fields["connection"] == .object([
-                "state": .string("disconnected"), "pairingState": .string("paired"),
-                "transportType": .string("sameMachine"), "lastConnectionDate": .date(Date(timeIntervalSinceReferenceDate: 100)),
-            ]))
+            let knownFields: [String: DeviceInspectorValue] = [
+                "coreDeviceIdentifier": .string("simulator-command-id"),
+                "hardware": .object(["cpuType": .object(["type": .integer(16777228), "subtype": .integer(0)]),
+                    "platform": .string("iOS"), "productType": .string("iPhone99,2"), "reality": .string("simulated")]),
+                "state": .object(["bootState": .string("shutdown"), "preparednessState": .integer(0)]),
+                "connection": .object(["state": .string("disconnected"), "pairingState": .string("paired"),
+                    "transportType": .string("sameMachine"), "lastConnectionDate": .date(Date(timeIntervalSinceReferenceDate: 100))]),
+            ]
+            #expect(info.fields.filter { knownFields[$0.key] != nil } == knownFields)
             let failedInfo = await DeviceInspector(device: joined, simulatorXcodeURL: normal.ownerXcodeURL,
                 transport: .init(run: { _ in throw CLIError.io("info-fixture", "Catalog unavailable") })).info()
-            #expect(failedInfo.fields == ["connection": try #require(info.fields["connection"])])
+            #expect(failedInfo.fields == knownFields)
             #expect(failedInfo.issues.count == 1)
             #expect((failedInfo.issues.first?.error as? CLIError)?.identifier == "info-fixture")
         }
         let cloneInfo = await DeviceInspector(device: joinedClone, simulatorXcodeURL: clone.ownerXcodeURL,
                                               transport: transport).info()
-        #expect(cloneInfo.issues.isEmpty && cloneInfo.fields["connection"] == nil)
+        #expect(cloneInfo.issues.isEmpty)
+        #expect(["connection", "coreDeviceIdentifier", "hardware", "state"].allSatisfy { cloneInfo.fields[$0] == nil })
     }
 
     @Test(arguments: [true, false])
@@ -181,8 +187,9 @@ struct DeviceInventoryTests {
       {"identifier":"vm-command-id","properties":{"hardware":{"reality":"virtual","udid":"vm-hardware-udid","productType":"iPhone99,11"},
          "state":{"name":"Test VM"},"connection":{"state":"unavailable"}},
        "capabilities":[{"featureIdentifier":"com.apple.coredevice.feature.unpairdevice"}]},
-      {"identifier":"simulator-udid","properties":{"hardware":{"reality":"simulated","udid":"simulator-udid"},
-         "state":{"name":"CoreDevice Simulator Name"},
+      {"identifier":"simulator-command-id","properties":{"hardware":{"reality":"simulated","udid":"simulator-udid",
+         "cpuType":{"type":16777228,"subtype":0},"platform":"iOS","productType":"iPhone99,2"},
+         "state":{"name":"CoreDevice Simulator Name","bootState":"shutdown","preparednessState":0},
          "connection":{"state":"disconnected","pairingState":"paired","transportType":"sameMachine","lastConnectionDate":100}},
        "capabilities":[{"featureIdentifier":"com.apple.coredevice.feature.customizeuistyle"}]},
       {"identifier":"coredevice-only-simulator","properties":{"hardware":{"reality":"simulated","udid":"coredevice-only-simulator"}}}

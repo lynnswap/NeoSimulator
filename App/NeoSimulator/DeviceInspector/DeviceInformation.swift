@@ -1,4 +1,5 @@
 import Foundation
+import MachO.dyld.utils
 import XcodeSimulatorHost
 
 /// Presents known device information without replacing the inventory or inspector state.
@@ -71,6 +72,10 @@ struct DeviceInformation {
         append("udid", title: "UDID", value: udid, group: .hardware)
 
         func visit(_ value: DeviceInspectorValue, path: [String], title: String) {
+            if path == ["hardware", "cpuType"], let cpu = Self.cpuName(value) {
+                values.append(Field(id: path, title: "CPU Type", value: cpu, group: .hardware))
+                return
+            }
             switch value {
             case .object(let children) where !children.isEmpty:
                 for key in children.keys.sorted(by: { $0.localizedStandardCompare($1) == .orderedAscending }) {
@@ -85,13 +90,30 @@ struct DeviceInformation {
                 }
             default:
                 guard !Self.defaultFields.contains(path) else { return }
+                let fieldTitle: String = switch path {
+                case ["coreDeviceIdentifier"]: "CoreDevice ID"
+                case ["state", "bootState"]: "Boot State"
+                case ["state", "preparednessState"]: "DDI Services"
+                case ["hardware", "platform"]: "Platform"
+                case ["hardware", "productType"]: "Product Type"
+                case ["hardware", "reality"]: "Fidelity"
+                default: title
+                }
                 let displayed: String
-                if path.count == 2, path[0] == "connection",
-                   ["state", "pairingState", "transportType"].contains(path[1]), case .string(let text) = value {
-                    let names = ["disconnected": "Disconnected", "paired": "Paired", "sameMachine": "Same Machine"]
+                if path == ["state", "preparednessState"], case .integer(let raw) = value {
+                    // CoreDevice's developerDiskImageServicesEnabled flag is bit 1.
+                    displayed = raw & 0x2 == 0x2 ? "Enabled" : "Disabled"
+                } else if case .string(let text) = value {
+                    let names: [String: String] = switch path {
+                    case ["connection", "state"], ["connection", "pairingState"], ["connection", "transportType"]:
+                        ["disconnected": "Disconnected", "paired": "Paired", "sameMachine": "Same Machine"]
+                    case ["state", "bootState"]: ["shutdown": "ShutDown", "booted": "Booted"]
+                    case ["hardware", "reality"]: ["simulated": "Simulated", "physical": "Physical", "virtual": "Virtual"]
+                    default: [:]
+                    }
                     displayed = names[text] ?? text
                 } else { displayed = Self.display(value) }
-                values.append(Field(id: path, title: title, value: displayed, group: Self.group(for: path)))
+                values.append(Field(id: path, title: fieldTitle, value: displayed, group: Self.group(for: path)))
             }
         }
         for key in properties.keys.sorted(by: { $0.localizedStandardCompare($1) == .orderedAscending }) {
@@ -122,6 +144,7 @@ struct DeviceInformation {
 
     private static func group(for path: [String]) -> Group {
         switch path.first {
+        case "coreDeviceIdentifier": .essential
         case "hardware", "deviceTypeIdentifier", "modelIdentifier": .hardware
         case "connection", "connectionState", "pairingState", "transportType": .connection
         case "software", "runtime", "runtimeIdentifier", "isAvailable", "availabilityError",
@@ -140,6 +163,16 @@ struct DeviceInformation {
         ]
         return names[key] ?? key.replacingOccurrences(of: "([a-z])([A-Z])", with: "$1 $2",
                                                      options: .regularExpression).capitalized
+    }
+
+    private static func cpuName(_ value: DeviceInspectorValue) -> String? {
+        guard case .object(let parts) = value,
+              case .integer(let type) = parts["type"], case .integer(let subtype) = parts["subtype"] else { return nil }
+        if let type = Int32(exactly: type), let subtype = Int32(exactly: subtype),
+           let name = macho_arch_name_for_cpu_type(type, subtype) {
+            return String(cString: name)
+        }
+        return "type \(type), subtype \(subtype)"
     }
 
     private static func display(_ value: DeviceInspectorValue) -> String {

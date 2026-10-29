@@ -58,13 +58,22 @@ public enum DeviceInventoryKind: Equatable, Sendable {
 
 /// A CoreDevice record from `properties`, without the deprecated parallel JSON fields.
 public struct CoreDeviceDevice: Equatable, Sendable {
+    /// The Mach CPU identifiers reported by the device's hardware properties.
+    public struct CPUType: Equatable, Sendable {
+        public let type: Int32
+        public let subtype: Int32
+    }
+
     /// The CoreDevice identifier passed to devicectl, which can differ from `udid`.
     public let identifier: String
     public let udid: String?
     public let kind: DeviceInventoryKind
+    /// The actual hardware reality string, including values not recognized by this app.
+    public let reality: String
     public let name: String
     public let modelIdentifier: String?
     public let modelName: String?
+    public let cpuType: CPUType?
     public let platform: String?
     public let osVersion: String?
     public let osBuild: String?
@@ -72,6 +81,8 @@ public struct CoreDeviceDevice: Equatable, Sendable {
     public let pairingState: String?
     public let transportType: String?
     public let bootState: String?
+    /// CoreDevice's raw preparedness bitset, when supplied by the inventory.
+    public let preparednessState: Int?
     public let capabilities: Set<String>
     public let lastConnectedAt: Date?
     public let visibilityClass: String?
@@ -304,10 +315,12 @@ enum CoreDeviceInventoryDecoder {
 
     private struct Properties: Decodable {
         struct Hardware: Decodable {
+            struct CPU: Decodable { let type: Int32; let subtype: Int32 }
             let reality: String
             let udid: String?
             let productType: String?
             let marketingName: String?
+            let cpuType: CPU?
             let platform: String?
         }
         struct Software: Decodable {
@@ -322,6 +335,7 @@ enum CoreDeviceInventoryDecoder {
         struct State: Decodable {
             let name: String?
             let bootState: String?
+            let preparednessState: Int?
             let visibilityClass: String?
         }
         struct Connection: Decodable {
@@ -347,13 +361,15 @@ enum CoreDeviceInventoryDecoder {
             case let reality: .other(reality)
             }
             return CoreDeviceDevice(
-                identifier: device.identifier, udid: properties.hardware.udid, kind: kind,
+                identifier: device.identifier, udid: properties.hardware.udid, kind: kind, reality: properties.hardware.reality,
                 name: properties.state?.name ?? properties.hardware.marketingName ?? properties.hardware.productType ?? device.identifier,
                 modelIdentifier: properties.hardware.productType, modelName: properties.hardware.marketingName,
+                cpuType: properties.hardware.cpuType.map { .init(type: $0.type, subtype: $0.subtype) },
                 platform: properties.hardware.platform, osVersion: properties.software?.osVersionNumber?.stringValue,
                 osBuild: properties.software?.osBuildVersions?.buildVersion?.name,
                 connectionState: properties.connection?.state, pairingState: properties.connection?.pairingState,
                 transportType: properties.connection?.transportType, bootState: properties.state?.bootState,
+                preparednessState: properties.state?.preparednessState,
                 capabilities: Set((device.capabilities ?? []).map(\.featureIdentifier)),
                 lastConnectedAt: properties.connection?.lastConnectionDate.map(Date.init(timeIntervalSinceReferenceDate:)),
                 visibilityClass: properties.state?.visibilityClass ?? device.visibilityClass
