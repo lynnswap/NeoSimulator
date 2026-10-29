@@ -7,7 +7,9 @@ import Observation
 final class DeviceToolbar: NSObject, NSToolbarDelegate {
     private static let mainWindowItem = NSToolbarItem.Identifier("ShowInMainWindow")
     private static let nativeRotationItem = NSToolbarItem.Identifier("NativeDeviceRotation")
-    let toolbar = NSToolbar(identifier: "DeviceToolbar")
+    /// Each window's items follow its own device. AppKit propagates insertions and
+    /// removals to every toolbar with the same identifier, so none is shared.
+    let toolbar = NSToolbar(identifier: "DeviceToolbar.\(UUID().uuidString)")
     private weak var controller: DeviceWindowController?
     private var pluginDelegate: PluginToolbarDelegate?
     private var showsMainWindowAction = false
