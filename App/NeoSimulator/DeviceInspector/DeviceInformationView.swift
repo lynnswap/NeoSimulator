@@ -17,58 +17,86 @@ struct DeviceInformationView: View {
     var body: some View {
         if let device = inspection.device {
             let information = DeviceInformation(device: device, properties: inspection.infoProperties)
-            VStack(spacing: 0) {
-                Form {
-                    if editsVisibility {
-                        visibilityEditor(information)
-                    } else {
-                        informationCards(information)
-                        if case .simulator(let simulator) = device,
-                           simulator.productFamily == "iPhone" || simulator.productFamily == "Apple Watch" {
-                            pairedSimulators(simulator)
-                        }
+            let pairingDevice: SimulatorHostDevice? = if case .simulator(let simulator) = device,
+                simulator.productFamily == "iPhone" || simulator.productFamily == "Apple Watch" {
+                simulator
+            } else { nil }
+            Form {
+                if editsVisibility {
+                    visibilityEditor(information)
+                } else {
+                    informationCards(information, includesPairing: pairingDevice != nil)
+                    if let simulator = pairingDevice {
+                        pairedSimulators(simulator)
                     }
                 }
-                .formStyle(.grouped)
-                HStack {
-                    Spacer()
-                    if editsVisibility {
-                        Button("Done") { editsVisibility = false }
-                            .buttonStyle(.borderedProminent)
-                            .keyboardShortcut(.defaultAction)
-                    } else {
-                        Button("Edit Visibility") { editsVisibility = true }
-                            .buttonStyle(.bordered)
-                            .controlSize(.mini)
-                    }
-                    Spacer()
+            }
+            .formStyle(.grouped)
+            .safeAreaBar(edge: .bottom, spacing: 0) {
+                if editsVisibility {
+                    Button("Done") { editsVisibility = false }
+                        .buttonStyle(.borderedProminent)
+                        .buttonBorderShape(.capsule)
+                        .buttonSizing(.flexible)
+                        .controlSize(.large)
+                        .keyboardShortcut(.defaultAction)
+                        .padding()
                 }
-                .padding(.vertical, 8)
             }
         }
     }
 
     @ViewBuilder
-    private func informationCards(_ information: DeviceInformation) -> some View {
-        ForEach(DeviceInformation.Group.allCases) { group in
-            let fields = information.fields.filter { $0.group == group && visibility.isVisible($0) }
-            if !fields.isEmpty {
-                Section { informationRows(fields) }
+    private func informationCards(_ information: DeviceInformation, includesPairing: Bool) -> some View {
+        let visibleFields = information.fields.filter { visibility.isVisible($0) }
+        let groups = DeviceInformation.Group.allCases.filter { group in visibleFields.contains { $0.group == group } }
+        ForEach(groups) { group in
+            Section {
+                informationRows(visibleFields.filter { $0.group == group })
+            } footer: {
+                if !includesPairing && group == groups.last { editVisibilityButton }
             }
         }
+        if groups.isEmpty && !includesPairing {
+            Section {} footer: { editVisibilityButton }
+        }
+    }
+
+    private var editVisibilityButton: some View {
+        HStack {
+            Spacer()
+            Button { editsVisibility = true } label: {
+                Text("Edit Visibility")
+                    .font(.caption)
+                    .foregroundStyle(Color.secondary)
+                    .padding(.vertical, 4)
+                    .padding(.horizontal, 10)
+            }
+            .buttonStyle(.borderless)
+            .controlSize(.small)
+            .background(.quaternary, in: Capsule())
+            Spacer()
+        }
+        .padding(.vertical)
     }
 
     private func informationRows(_ fields: [DeviceInformation.Field]) -> some View {
         ForEach(fields) { field in
             LabeledContent(field.title) {
-                Text(field.value)
-                    .textSelection(.enabled)
-                    .multilineTextAlignment(.trailing)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .help(field.value)
+                fieldValue(field)
             }
+            .labeledContentStyle(InformationRowStyle())
         }
+    }
+
+    private func fieldValue(_ field: DeviceInformation.Field) -> some View {
+        Text(field.value)
+            .foregroundStyle(Color.secondary)
+            .textSelection(.enabled)
+            .multilineTextAlignment(.trailing)
+            .lineLimit(1)
+            .truncationMode(.middle)
+            .help(field.value)
     }
 
     @ViewBuilder
@@ -78,11 +106,16 @@ struct DeviceInformationView: View {
             if !fields.isEmpty {
                 Section(group.title) {
                     ForEach(fields) { field in
-                        Toggle(field.title, isOn: Binding(
-                            get: { visibility.isVisible(field) },
-                            set: { visibility.setVisible($0, for: field) }
-                        ))
-                        .toggleStyle(.checkbox)
+                        LabeledContent {
+                            fieldValue(field)
+                        } label: {
+                            Toggle(field.title, isOn: Binding(
+                                get: { visibility.isVisible(field) },
+                                set: { visibility.setVisible($0, for: field) }
+                            ))
+                            .toggleStyle(.checkbox)
+                        }
+                        .labeledContentStyle(InformationRowStyle())
                     }
                 }
             }
@@ -93,7 +126,7 @@ struct DeviceInformationView: View {
         let paired = DeviceInformation.pairedSimulators(for: device, in: manager.inventory)
         let selectedPartner = paired.first { $0.inventoryID == selectedPairedSimulator }
         let targetWatch = selectedPartner.flatMap { DeviceInformation.watchToUnpair(device: device, partner: $0) }
-        return Section("Paired Simulators") {
+        return Section {
             Group {
                 if paired.isEmpty {
                     Text(device.productFamily == "Apple Watch" ? "No Paired iPhone Simulators" : "No Paired Watch Simulators")
@@ -136,6 +169,22 @@ struct DeviceInformationView: View {
                 }
                 .buttonStyle(.accessoryBar)
                 .controlSize(.small)
+            }
+        } header: {
+            Text("Paired Simulators")
+        } footer: {
+            editVisibilityButton
+        }
+    }
+
+    private struct InformationRowStyle: LabeledContentStyle {
+        func makeBody(configuration: Configuration) -> some View {
+            HStack(alignment: .firstTextBaseline) {
+                configuration.label
+                    .lineLimit(1)
+                    .layoutPriority(1)
+                configuration.content
+                    .frame(minWidth: 0, maxWidth: .infinity, alignment: .trailing)
             }
         }
     }
