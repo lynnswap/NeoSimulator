@@ -1278,32 +1278,37 @@ struct ManagerModelTests {
         #expect(information.fields.first { $0.title == "DDI Services" }?.value == expected)
     }
 
-    @Test func remoteInfoUsesAvailablePropertiesWithoutSubstitutingItsCommandIDForUDID() {
+    @Test func remoteInfoUsesAvailablePropertiesWithoutSubstitutingItsCommandIDForUDID() async throws {
         let remote = CoreDeviceDevice(identifier: "command-id", udid: nil,
             kind: .physical, name: "Known Phone", modelIdentifier: "iPhone19,2", modelName: "iPhone 18 Pro", cpuType: nil,
             platform: "iOS", osVersion: "27.1", osBuild: nil, connectionState: "connected",
             pairingState: "paired", transportType: nil, bootState: "booted", preparednessState: nil, capabilities: [],
             lastConnectedAt: nil, visibilityClass: nil)
-        let information = DeviceInformation(device: .remote(remote), properties: [
-            "state": .object(["name": .string("Current Phone"), "bootState": .string("futureBoot")]),
-            "hardware": .object(["cpuType": .object(["type": .integer(Int64(Int32.max)), "subtype": .integer(0)]),
-                "reality": .string("futureReality")]),
-            "connection": .object(["transportType": .string("USB"), "state": .string("futureRawState")]),
-            "software": .object([
-                "osVersionNumber": .object(["stringValue": .string("27.2")]),
-                "osBuildVersions": .object(["buildVersion": .object(["name": .string("27C100")])]),
-            ]),
-            "configuration": .object(["displays": .array([
-                .object(["name": .string("Primary")]), .object(["name": .string("External")]),
-            ])]),
-        ])
+        let payload = Data(#"""
+        {"result":{"properties":{
+          "state":{"name":"Current Phone","bootState":"futureBoot"},
+          "hardware":{"cpuType":{"type":16777228,"subtype":18446744071562067970},"reality":"futureReality"},
+          "connection":{"transportType":"USB","state":"futureRawState"},
+          "software":{"osVersionNumber":{"stringValue":"27.2"},"osBuildVersions":{"buildVersion":{"name":"27C100"}}},
+          "configuration":{"displays":[{"name":"Primary"},{"name":"External"}]}
+        }}}
+        """#.utf8)
+        let snapshot = await DeviceInspector(device: .remote(remote), simulatorXcodeURL: nil, transport: .init(run: { command in
+            #expect(command.arguments.starts(with: ["device", "info", "details"]))
+            return CommandOutput(terminationStatus: 0, stdout: payload, stderr: Data())
+        })).info()
+        #expect(snapshot.issues.isEmpty)
+        let information = DeviceInformation(device: snapshot.device, properties: snapshot.fields)
         #expect(information.fields.first { $0.id == ["name"] }?.value == "Current Phone")
         #expect(information.fields.first { $0.id == ["operatingSystem"] }?.value == "iOS 27.2")
         #expect(information.fields.first { $0.id == ["modelName"] }?.value == "iPhone 18 Pro")
         #expect(!information.fields.contains { $0.id == ["udid"] })
         #expect(information.fields.first { $0.id == ["connection", "transportType"] }?.value == "USB")
         #expect(information.fields.first { $0.id == ["connection", "state"] }?.value == "futureRawState")
-        #expect(information.fields.first { $0.id == ["hardware", "cpuType"] }?.value == "type 2147483647, subtype 0")
+        #expect(information.fields.filter { $0.id.starts(with: ["hardware", "cpuType"]) }.map(\.value) == ["arm64e"])
+        let unknown = try JSONDecoder().decode(DeviceInspectorValue.self, from: Data(#"{"hardware":{"cpuType":{"type":2147483647,"subtype":18446744071562067970}}}"#.utf8))
+        let unknownInfo = DeviceInformation(device: .remote(remote), properties: try #require(unknown.object))
+        #expect(unknownInfo.fields.first { $0.id == ["hardware", "cpuType"] }?.value == "type 2147483647, subtype 18446744071562067970")
         #expect(information.fields.first { $0.id == ["hardware", "reality"] }?.value == "futureReality")
         #expect(information.fields.first { $0.id == ["state", "bootState"] }?.value == "futureBoot")
         #expect(!information.fields.contains { $0.title == "DDI Services" })

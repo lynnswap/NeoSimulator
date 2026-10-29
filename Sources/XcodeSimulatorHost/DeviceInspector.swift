@@ -3,13 +3,14 @@ import CoreFoundation
 
 /// A JSON or property-list value exposed by the device's command-line tools.
 public indirect enum DeviceInspectorValue: Equatable, Sendable, Decodable {
-    case object([String: Self]), array([Self]), string(String), integer(Int64), number(Double), boolean(Bool), data(Data), date(Date), null
+    case object([String: Self]), array([Self]), string(String), integer(Int64), unsignedInteger(UInt64), number(Double), boolean(Bool), data(Data), date(Date), null
 
     public init(from decoder: any Decoder) throws {
         let container = try decoder.singleValueContainer()
         if container.decodeNil() { self = .null }
         else if let value = try? container.decode(Bool.self) { self = .boolean(value) }
         else if let value = try? container.decode(Int64.self) { self = .integer(value) }
+        else if let value = try? container.decode(UInt64.self) { self = .unsignedInteger(value) }
         else if let value = try? container.decode(Double.self) { self = .number(value) }
         else if let value = try? container.decode(String.self) { self = .string(value) }
         else if let value = try? container.decode([String: Self].self) { self = .object(value) }
@@ -22,8 +23,8 @@ public indirect enum DeviceInspectorValue: Equatable, Sendable, Decodable {
     public var boolean: Bool? {
         switch self {
         case .boolean(let value): value
-        case .integer(0), .string("0"): false
-        case .integer(1), .string("1"): true
+        case .integer(0), .unsignedInteger(0), .string("0"): false
+        case .integer(1), .unsignedInteger(1), .string("1"): true
         default: nil
         }
     }
@@ -38,8 +39,10 @@ public indirect enum DeviceInspectorValue: Equatable, Sendable, Decodable {
         case let date as Date: return .date(date)
         case let number as NSNumber:
             if CFGetTypeID(number) == CFBooleanGetTypeID() { return .boolean(number.boolValue) }
-            return String(cString: number.objCType).contains("f") || String(cString: number.objCType).contains("d")
-                ? .number(number.doubleValue) : .integer(number.int64Value)
+            let type = String(cString: number.objCType)
+            if type == "f" || type == "d" { return .number(number.doubleValue) }
+            if type == "Q", number.uint64Value > UInt64(Int64.max) { return .unsignedInteger(number.uint64Value) }
+            return .integer(number.int64Value)
         default: throw DeviceInspectorError.invalidResponse("The device returned an unsupported property-list value.")
         }
     }

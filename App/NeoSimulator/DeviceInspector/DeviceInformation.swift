@@ -170,13 +170,17 @@ struct DeviceInformation {
     }
 
     private static func cpuName(_ value: DeviceInspectorValue) -> String? {
-        guard case .object(let parts) = value,
-              case .integer(let type) = parts["type"], case .integer(let subtype) = parts["subtype"] else { return nil }
-        if let type = Int32(exactly: type), let subtype = Int32(exactly: subtype),
-           let name = macho_arch_name_for_cpu_type(type, subtype) {
-            return String(cString: name)
+        func component(_ value: DeviceInspectorValue?) -> (bits: Int32, raw: String)? {
+            switch value {
+            case .integer(let value): (Int32(truncatingIfNeeded: value), String(value))
+            case .unsignedInteger(let value): (Int32(truncatingIfNeeded: value), String(value))
+            default: nil
+            }
         }
-        return "type \(type), subtype \(subtype)"
+        guard case .object(let parts) = value,
+              let type = component(parts["type"]), let subtype = component(parts["subtype"]) else { return nil }
+        if let name = macho_arch_name_for_cpu_type(type.bits, subtype.bits) { return String(cString: name) }
+        return "type \(type.raw), subtype \(subtype.raw)"
     }
 
     private static func display(_ value: DeviceInspectorValue) -> String {
@@ -185,6 +189,7 @@ struct DeviceInformation {
         case .array(let values): "\(values.count) items"
         case .string(let value): value
         case .integer(let value): String(value)
+        case .unsignedInteger(let value): String(value)
         case .number(let value): String(value)
         case .boolean(let value): value ? "Yes" : "No"
         case .date(let value): value.formatted()
