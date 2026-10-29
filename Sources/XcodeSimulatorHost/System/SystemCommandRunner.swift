@@ -49,6 +49,26 @@ struct SystemCommandRunner: CommandRunning {
                        arguments: arguments, environment: environment)
     }
 
+    static func runSimctlCancellable(xcodeURL: URL, arguments: [String], deviceSetPath: String? = nil) async throws -> CommandOutput {
+        var environment = ProcessInfo.processInfo.environment
+        environment["DEVELOPER_DIR"] = xcodeURL.appendingPathComponent("Contents/Developer", isDirectory: true).path
+        return try await runCancellable(
+            executable: URL(fileURLWithPath: ToolConstants.coreSimulatorFrameworkPath, isDirectory: true)
+                .appendingPathComponent(ToolConstants.simctlBinaryPath),
+            arguments: deviceSetPath.map { ["--set", $0] + arguments } ?? arguments, environment: environment)
+    }
+
+    static func runDevicectlCancellable(xcodeURL: URL?, arguments: [String]) async throws -> CommandOutput {
+        var environment = ProcessInfo.processInfo.environment
+        if let xcodeURL {
+            environment["DEVELOPER_DIR"] = xcodeURL.appendingPathComponent("Contents/Developer", isDirectory: true).path
+        }
+        return try await runCancellable(
+            executable: URL(fileURLWithPath: ToolConstants.coreDeviceFrameworkPath, isDirectory: true)
+                .appendingPathComponent(ToolConstants.devicectlBinaryPath),
+            arguments: arguments, environment: environment)
+    }
+
     func run(executable: URL, arguments: [String]) throws -> CommandOutput {
         try run(executable: executable, arguments: arguments, environment: nil)
     }

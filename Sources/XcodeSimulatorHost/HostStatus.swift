@@ -354,13 +354,29 @@ extension SimulatorHostController {
 
     @concurrent
     private static func readSettings(device: InventoryDevice, xcodeURL: URL?) async -> SimulatorDeviceSettings {
-        settingsBackend(device: device, xcodeURL: xcodeURL).read(device: device)
+        let backend = settingsBackend(device: device, xcodeURL: xcodeURL, readCommand: { tool, arguments in
+            let result: CommandOutput
+            if tool == .simctl {
+                guard case .simulator(let simulator) = device, let xcodeURL else {
+                    throw CLIError.configuration("device-setting-source", "simctl requires a simulator destination and its developer tools.")
+                }
+                result = try await SystemCommandRunner.runSimctlCancellable(
+                    xcodeURL: xcodeURL, arguments: arguments, deviceSetPath: simulator.deviceSetPath)
+            } else {
+                result = try await SystemCommandRunner.runDevicectlCancellable(xcodeURL: xcodeURL, arguments: arguments)
+            }
+            guard result.terminationStatus == 0 else {
+                throw CLIError.io("device-setting", result.stderrText.isEmpty ? result.stdoutText : result.stderrText)
+            }
+            return result.stdout
+        })
+        return await backend.read(device: device)
     }
 
     @concurrent
     private static func refreshSettings(_ settings: SimulatorDeviceSettings, after setting: SimulatorDeviceSetting,
                                         device: InventoryDevice, xcodeURL: URL?) async -> SimulatorDeviceSettings {
-        settingsBackend(device: device, xcodeURL: xcodeURL).refresh(settings, after: setting, device: device)
+        await settingsBackend(device: device, xcodeURL: xcodeURL).refresh(settings, after: setting, device: device)
     }
 
     @concurrent
@@ -368,7 +384,8 @@ extension SimulatorHostController {
         try settingsBackend(device: device, xcodeURL: xcodeURL).set(setting, device: device)
     }
 
-    private static func settingsBackend(device: InventoryDevice, xcodeURL: URL?) -> SimulatorSettingsBackend {
+    private static func settingsBackend(device: InventoryDevice, xcodeURL: URL?,
+                                        readCommand: ((SimulatorSettingsBackend.Tool, [String]) async throws -> Data)? = nil) -> SimulatorSettingsBackend {
         SimulatorSettingsBackend(run: { tool, arguments in
             let runner = SystemCommandRunner()
             let result: CommandOutput
@@ -386,7 +403,7 @@ extension SimulatorHostController {
                 throw CLIError.io("device-setting", result.stderrText.isEmpty ? result.stdoutText : result.stderrText)
             }
             return result.stdout
-        }, audioDevices: SimulatorSettingsBackend.hostAudioDevices)
+        }, readCommand: readCommand, audioDevices: SimulatorSettingsBackend.hostAudioDevices)
     }
 }
 
@@ -394,7 +411,16 @@ extension SimulatorHostController {
 struct SimulatorSettingsBackend {
     enum Tool { case simctl, devicectl }
     var run: (Tool, [String]) throws -> Data
+    var readCommand: (Tool, [String]) async throws -> Data
     var audioDevices: () throws -> (input: [SimulatorAudioDevice], output: [SimulatorAudioDevice])
+
+    init(run: @escaping (Tool, [String]) throws -> Data,
+         readCommand: ((Tool, [String]) async throws -> Data)? = nil,
+         audioDevices: @escaping () throws -> (input: [SimulatorAudioDevice], output: [SimulatorAudioDevice])) {
+        self.run = run
+        self.readCommand = readCommand ?? { try run($0, $1) }
+        self.audioDevices = audioDevices
+    }
 
     private enum Query: CaseIterable {
         case simulatorAppearance, simulatorContentSize, simulatorContrast, appearance, voiceOver, audio, location
@@ -412,12 +438,12 @@ struct SimulatorSettingsBackend {
         }
     }
 
-    func read(device: InventoryDevice) -> SimulatorDeviceSettings {
-        read(device: device, updating: SimulatorDeviceSettings(), queries: Set(Query.allCases), refreshAudioDevices: true)
+    func read(device: InventoryDevice) async -> SimulatorDeviceSettings {
+        await read(device: device, updating: SimulatorDeviceSettings(), queries: Set(Query.allCases), refreshAudioDevices: true)
     }
 
     func refresh(_ settings: SimulatorDeviceSettings, after setting: SimulatorDeviceSetting,
-                 device: InventoryDevice) -> SimulatorDeviceSettings {
+                 device: InventoryDevice) async -> SimulatorDeviceSettings {
         let query: Query
         switch setting {
         case .appearance:
@@ -431,11 +457,11 @@ struct SimulatorSettingsBackend {
         case .volume, .audioInputDevice, .audioOutputDevice: query = .audio
         case .location, .locationScenario, .clearLocation: return settings
         }
-        return read(device: device, updating: settings, queries: [query], refreshAudioDevices: false)
+        return await read(device: device, updating: settings, queries: [query], refreshAudioDevices: false)
     }
 
     private func read(device: InventoryDevice, updating original: SimulatorDeviceSettings, queries: Set<Query>,
-                      refreshAudioDevices: Bool) -> SimulatorDeviceSettings {
+                      refreshAudioDevices: Bool) async -> SimulatorDeviceSettings {
         guard device.settingsAvailable else { return SimulatorDeviceSettings() }
         var settings = original
         for query in queries {
@@ -470,33 +496,33 @@ struct SimulatorSettingsBackend {
             }
         }
         let identifier = device.settingsIdentifier
-        func capture<T>(_ name: String, _ operation: () throws -> T) -> T? {
+        func capture<T>(_ name: String, _ operation: () async throws -> T) async -> T? {
             guard !Task.isCancelled else { return nil }
-            do { return try operation() }
+            do { return try await operation() }
             catch {
                 if !Task.isCancelled { settings.issues.append("\(name): \(error.localizedDescription)") }
                 return nil
             }
         }
-        func ui(_ name: String) -> String? {
-            capture(name) { String(decoding: try run(.simctl, ["ui", identifier, name]), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) }
+        func ui(_ name: String) async -> String? {
+            await capture(name) { String(decoding: try await readCommand(.simctl, ["ui", identifier, name]), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) }
         }
         if case .simulator = device {
             if queries.contains(.simulatorAppearance) {
-                let appearance = ui("appearance")
+                let appearance = await ui("appearance")
                 settings.appearance = appearance.flatMap { ["light", "dark"].contains($0) ? $0 : nil }
             }
             if queries.contains(.simulatorContentSize) {
-                let size = ui("content_size")
+                let size = await ui("content_size")
                 settings.contentSize = size.flatMap { SimulatorDeviceSettings.contentSizes.contains($0) ? $0 : nil }
             }
             if queries.contains(.simulatorContrast) {
-                let contrast = ui("increase_contrast")
+                let contrast = await ui("increase_contrast")
                 settings.increaseContrast = contrast == "enabled" ? true : contrast == "disabled" ? false : nil
             }
         }
 
-        if queries.contains(.appearance), device.supportsSettingsQuery(.appearance), let appearance = capture("appearance settings", { try query(Appearance.self, ["device", "info", "appearance"], identifier) }) {
+        if queries.contains(.appearance), device.supportsSettingsQuery(.appearance), let appearance = await capture("appearance settings", { try await query(Appearance.self, ["device", "info", "appearance"], identifier) }) {
             settings.lookAndFeel = appearance.lookAndFeel
             settings.supportedLooksAndFeels = (appearance.supportedLooksAndFeels ?? []).compactMap(Self.lookAndFeel)
             settings.liquidGlassOpacity = appearance.liquidGlassOpacity
@@ -513,22 +539,22 @@ struct SimulatorSettingsBackend {
                 settings.colorFilterIntensity = filter.intensity
             }
         }
-        if queries.contains(.voiceOver), device.supportsSettingsQuery(.voiceOver), let voice = capture("VoiceOver", { try query(VoiceOver.self, ["device", "info", "voiceover"], identifier) }) {
+        if queries.contains(.voiceOver), device.supportsSettingsQuery(.voiceOver), let voice = await capture("VoiceOver", { try await query(VoiceOver.self, ["device", "info", "voiceover"], identifier) }) {
             settings.voiceOver = voice.enabled
         }
-        if queries.contains(.audio), device.supportsSettingsQuery(.audio), let audio = capture("audio", { try query(Audio.self, ["device", "info", "audio"], identifier) }) {
+        if queries.contains(.audio), device.supportsSettingsQuery(.audio), let audio = await capture("audio", { try await query(Audio.self, ["device", "info", "audio"], identifier) }) {
             settings.volume = audio.volume
             settings.audioInputDevice = audio.audioInputDevice?.identifier
             settings.audioOutputDevice = audio.audioOutputDevice?.identifier
-            if refreshAudioDevices, let devices = capture("audio devices", audioDevices) {
+            if refreshAudioDevices, let devices = await capture("audio devices", { try audioDevices() }) {
                 settings.audioInputDevices = devices.input
                 settings.audioOutputDevices = devices.output
             }
         }
-        if queries.contains(.location), device.supportsSettingsQuery(.location), let scenarios = capture("location scenarios", { try query(Scenarios.self, ["device", "simulate", "location", "list"], identifier) }) {
+        if queries.contains(.location), device.supportsSettingsQuery(.location), let scenarios = await capture("location scenarios", { try await query(Scenarios.self, ["device", "simulate", "location", "list"], identifier) }) {
             settings.locationAvailable = true
             settings.locationScenarios = scenarios.availableScenarios.map { SimulatorLocationScenario(name: $0.name, displayName: $0.localizedName ?? $0.name) }
-        } else if queries.contains(.location), case .simulator = device, let text = capture("location", { String(decoding: try run(.simctl, ["location", identifier, "list"]), as: UTF8.self) }) {
+        } else if queries.contains(.location), case .simulator = device, let text = await capture("location", { String(decoding: try await readCommand(.simctl, ["location", identifier, "list"]), as: UTF8.self) }) {
             settings.locationAvailable = true
             settings.locationScenarios = Self.locationScenarios(text)
         }
@@ -615,8 +641,8 @@ struct SimulatorSettingsBackend {
         arguments + ["--device", identifier, "--quiet", "--timeout", "10", "--json-output", "-"]
     }
 
-    private func query<T: Decodable>(_ type: T.Type, _ arguments: [String], _ identifier: String) throws -> T {
-        try JSONDecoder().decode(Response<T>.self, from: run(.devicectl, command(arguments, identifier))).result
+    private func query<T: Decodable>(_ type: T.Type, _ arguments: [String], _ identifier: String) async throws -> T {
+        try JSONDecoder().decode(Response<T>.self, from: await readCommand(.devicectl, command(arguments, identifier))).result
     }
 
     private struct Response<T: Decodable>: Decodable { let result: T }
