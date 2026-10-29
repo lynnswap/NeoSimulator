@@ -2,6 +2,7 @@ import Foundation
 import Darwin
 import Testing
 import XCTest
+import Synchronization
 
 @_spi(NeoSimulator) @testable import XcodeSimulatorHost
 
@@ -61,6 +62,102 @@ struct HostModeControllerTests {
         do { _ = try await beforeRegistration.value; Issue.record("A cancelled consumer registered a runtime wait") }
         catch is CancellationError {}
         #expect(try await CoreDeviceRuntime.preparedValue(of: preparation) == 42)
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func cancellingAQueuedIntentAlsoRetiresAnOlderAutomaticOpen() async throws {
+        let controller = SimulatorHostController(rendererApplicationURL: URL(fileURLWithPath: "/Renderer.app"))
+        let device = DeviceInventoryID.simulator(udid: "A", deviceSetPath: nil)
+        let automatic = controller.makeScreenOpenRequest(for: device)
+        let entered = AsyncStream<Void>.makeStream()
+        let release = AsyncStream<Void>.makeStream()
+        let completed = XCTestExpectation(description: "Older automatic open retired")
+        let presented = Mutex(false)
+        let opening = Task {
+            defer { completed.fulfill() }
+            try await controller.operation { @Sendable in
+                try await controller.screenOpen(automatic) {
+                    entered.continuation.yield(())
+                    for await _ in release.stream { break }
+                    try Task.checkCancellation()
+                    presented.withLock { $0 = true }
+                }
+            }
+        }
+        var events = entered.stream.makeAsyncIterator()
+        await events.next()
+        // This request is still in the manager's queue, so it has never entered the controller.
+        let queued = controller.makeScreenOpenRequest(for: device)
+        let clone = controller.makeScreenOpenRequest(for: .simulator(udid: "A", deviceSetPath: "/other-set"))
+        queued.cancel()
+        let retired = await XCTWaiter.fulfillment(of: [completed], timeout: 2)
+        #expect(retired == .completed)
+        release.continuation.yield(())
+        do { try await opening.value; Issue.record("The older automatic intent survived cancellation") }
+        catch is CancellationError {}
+        #expect(!presented.withLock { $0 })
+
+        do {
+            try await controller.operation { @Sendable in try await controller.screenOpen(queued) { presented.withLock { $0 = true } } }
+            Issue.record("A cancelled queued intent entered the open pipeline")
+        } catch is CancellationError {}
+        #expect(!presented.withLock { $0 })
+        // A new explicit request and a different device set are independent of the retired intent.
+        let reopened = controller.makeScreenOpenRequest(for: device)
+        try await controller.operation { @Sendable in try await controller.screenOpen(reopened) {} }
+        try await controller.operation { @Sendable in try await controller.screenOpen(clone) {} }
+    }
+
+    @Test func cancellingAnOpenConsumesOnlyOlderXcodeConnections() async throws {
+        let controller = SimulatorHostController(rendererApplicationURL: URL(fileURLWithPath: "/Renderer.app"))
+        let tracker = XcodeConnectionTracker()
+        let device = DeviceInventoryID.simulator(udid: "A", deviceSetPath: nil)
+        let old = XcodeSimulatorConnection(event: .init(processIdentifier: 1, startSeconds: 1, startMicroseconds: 0),
+                                          deviceIdentifier: "A", xcodeURL: URL(fileURLWithPath: "/Xcode.app"))
+        let clone = XcodeSimulatorConnection(event: old.event, deviceIdentifier: "A", xcodeURL: old.xcodeURL, deviceSetPath: "/other-set")
+        let newer = XcodeSimulatorConnection(event: .init(processIdentifier: 2, startSeconds: UInt64(Date().timeIntervalSince1970) + 1, startMicroseconds: 0),
+                                            deviceIdentifier: "A", xcodeURL: old.xcodeURL)
+        controller.makeScreenOpenRequest(for: device).cancel()
+        var transferred: [XcodeSimulatorConnection] = []
+        _ = try await tracker.synchronize(observations: [old, clone],
+            runningDeviceIdentifiers: [device, clone.deviceID], testingDeviceSetPath: "/other-set",
+            isCancelled: { controller.isCancelledScreenConnection($0) }) { transferred.append($0) }
+        #expect(transferred == [clone])
+        #expect(!tracker.hasPendingConnection(forDevice: device, isCancelled: { controller.isCancelledScreenConnection($0) }))
+        _ = try await tracker.synchronize(observations: [newer], runningDeviceIdentifiers: [device, clone.deviceID],
+            testingDeviceSetPath: "/other-set", isCancelled: { controller.isCancelledScreenConnection($0) }) { transferred.append($0) }
+        #expect(transferred == [clone, newer])
+    }
+
+    @Test(.timeLimit(.minutes(1)), arguments: [false, true])
+    func cancelledLaunchWaitsForExitAndPreservesCleanupFailure(_ cleanupFails: Bool) async throws {
+        let launch = AsyncStream<Void>.makeStream()
+        let exit = AsyncStream<Void>.makeStream()
+        let cleanupStarted = XCTestExpectation(description: "Renderer termination started")
+        var finished = false
+        let opening = Task.immediate {
+            for await _ in launch.stream { break }
+            defer { finished = true }
+            try await WorkspaceClient.finishFailedNeoHostLaunch(CancellationError(), processIdentifier: 123) {
+                cleanupStarted.fulfill()
+                try Task.checkCancellation()
+                for await _ in exit.stream { break }
+                if cleanupFails { throw CLIError.temporary("termination", "Renderer did not exit") }
+            }
+        }
+        opening.cancel()
+        launch.continuation.yield(())
+        let started = await XCTWaiter.fulfillment(of: [cleanupStarted], timeout: 5)
+        #expect(started == .completed)
+        #expect(!finished)
+        exit.continuation.yield(())
+        do { try await opening.value; Issue.record("A cancelled launch succeeded") }
+        catch is CancellationError { #expect(!cleanupFails) }
+        catch let error as CLIError {
+            #expect(cleanupFails)
+            #expect(error.identifier == "neo-host-launch-cleanup")
+            #expect(error.message.contains("Renderer did not exit"))
+        }
     }
 
     @Test func anExitedRendererRetainsItsStartupFailureAndRecovery() async throws {

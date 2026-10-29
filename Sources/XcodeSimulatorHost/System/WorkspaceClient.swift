@@ -303,6 +303,7 @@ struct WorkspaceClient: Sendable {
                     )
                 }
                 try await waitForNeoHostStartup(resultURL: startupResultURL, isTerminated: { application.isTerminated })
+                try Task.checkCancellation()
                 return observed
             } catch let launchError {
                 guard application.bundleIdentifier == ToolConstants.neoHostBundleIdentifier,
@@ -312,16 +313,9 @@ struct WorkspaceClient: Sendable {
                     identity: identity,
                     timeoutInterval: 10
                 )
-                do {
+                try await finishFailedNeoHostLaunch(launchError, processIdentifier: application.processIdentifier) {
                     try await waiter.terminate()
-                } catch let terminationError {
-                    let message = "NeoSimulator launch failed (\(launchError.localizedDescription)), and pid \(application.processIdentifier) could not be terminated (\(terminationError.localizedDescription))"
-                    let failure = launchError as? any LocalizedError
-                    throw CLIError(category: .temporary, identifier: "neo-host-launch-cleanup", message: message,
-                                   failureReason: failure?.failureReason == nil ? nil : message,
-                                   recoverySuggestion: failure?.recoverySuggestion)
                 }
-                throw launchError
             }
         },
         openDeviceHub: { applicationURL in
@@ -523,6 +517,23 @@ struct WorkspaceClient: Sendable {
             )
         }
         return directory
+    }
+
+    @MainActor static func finishFailedNeoHostLaunch(
+        _ launchError: any Error,
+        processIdentifier: pid_t,
+        terminate: @escaping @MainActor @Sendable () async throws -> Void
+    ) async throws -> Never {
+        do {
+            try await Task { try await terminate() }.value
+        } catch let terminationError {
+            let message = "NeoSimulator launch failed (\(launchError.localizedDescription)), and pid \(processIdentifier) could not be terminated (\(terminationError.localizedDescription))"
+            let failure = launchError as? any LocalizedError
+            throw CLIError(category: .temporary, identifier: "neo-host-launch-cleanup", message: message,
+                           failureReason: failure?.failureReason == nil ? nil : message,
+                           recoverySuggestion: failure?.recoverySuggestion)
+        }
+        throw launchError
     }
 
     @MainActor static func waitForNeoHostStartup(

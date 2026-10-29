@@ -4,7 +4,8 @@ import Observation
 import SwiftUI
 import Testing
 import XCTest
-@testable import XcodeSimulatorHost
+@_spi(NeoSimulator) @testable import XcodeSimulatorHost
+import Synchronization
 
 @Suite(.serialized, .timeLimit(.minutes(1))) @MainActor
 struct ManagerModelTests {
@@ -1076,6 +1077,7 @@ struct ManagerModelTests {
         #expect(manager.settings.settings?.contentSize == "large")
         manager.cancelOpening(queued.id)
         manager.cancelOpening(device.id)
+        #expect(source.cancelledOpenIDs == [device.id, queued.id])
         // The lower IPC deliberately returns success after cancellation.
         await source.completeOpen()
         #expect(await events.next() == .write(device.id))
@@ -1850,6 +1852,8 @@ struct ManagerModelTests {
 }
 
 actor ManagerModelSource: SimulatorManagerSource {
+    private nonisolated let cancelledOpens = Mutex<Set<DeviceInventoryID>>([])
+    nonisolated var cancelledOpenIDs: Set<DeviceInventoryID> { cancelledOpens.withLock { $0 } }
     enum Event: Equatable, Sendable { case read(DeviceInventoryID), write(DeviceInventoryID), open(DeviceInventoryID), close(DeviceInventoryID), inspect(DeviceInventoryID), quit, manage(DeviceManagementAction, [DeviceInventoryID]) }
     enum Failure: LocalizedError {
         case unavailable, native
@@ -1956,7 +1960,11 @@ actor ManagerModelSource: SimulatorManagerSource {
     }
     func quitRenderer(keepingDevicesRunning: Bool?) { quitCount += 1; continuation.yield(.quit) }
     func selectHost(_ host: SimulatorHost, xcodeURL: URL?) throws { throw Failure.unavailable }
-    func openDevice(_ deviceID: DeviceInventoryID, xcodeURL: URL?) async throws {
+    nonisolated func makeScreenOpenRequest(for deviceID: DeviceInventoryID) -> SimulatorScreenOpenRequest {
+        SimulatorScreenOpenRequest(deviceID: deviceID) { self.cancelledOpens.withLock { $0.insert(deviceID) } }
+    }
+    func openDevice(_ request: SimulatorScreenOpenRequest, xcodeURL: URL?) async throws {
+        let deviceID = request.deviceID
         lastOpenXcodeURL = xcodeURL
         try await withCheckedThrowingContinuation { waiting in
             openContinuation = waiting
