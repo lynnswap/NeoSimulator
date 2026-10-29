@@ -1206,6 +1206,27 @@ struct ManagerModelTests {
         try await manager.quitRenderer(keepingDevicesRunning: true)
     }
 
+    @Test func anOpenedScreenIsNoLongerCancellableWhileItsInventoryRefreshes() async throws {
+        let device = simulator()
+        let queued = simulator(deviceSet: "/queued-device-set")
+        let source = ManagerModelSource(devices: [device, queued])
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source)
+        manager.openDevice(device.id)
+        #expect(await events.next() == .open(device.id))
+        manager.openDevice(queued.id)
+        await source.holdInventoryReads()
+        await source.completeOpen()
+        #expect(await events.next() == .inventory)
+        #expect(manager.openingDeviceIDs == [queued.id])
+        let quitting = Task.immediate { try await manager.quitRenderer(keepingDevicesRunning: true) }
+        #expect(source.cancelledOpenIDs == [queued.id])
+        await source.completeInventoryRead()
+        try await quitting.value
+        // Quit withdrew the queued open before admission and did not close the opened screen.
+        #expect(await events.next() == .quit)
+    }
+
     @Test func editingDuringRefreshStillReadsExternalChanges() async throws {
         let device = simulator()
         let source = ManagerModelSource(devices: [device])
@@ -1914,7 +1935,7 @@ struct ManagerModelTests {
 actor ManagerModelSource: SimulatorManagerSource {
     private nonisolated let cancelledOpens = Mutex<Set<DeviceInventoryID>>([])
     nonisolated var cancelledOpenIDs: Set<DeviceInventoryID> { cancelledOpens.withLock { $0 } }
-    enum Event: Equatable, Sendable { case read(DeviceInventoryID), write(DeviceInventoryID), open(DeviceInventoryID), close(DeviceInventoryID), inspect(DeviceInventoryID), quit, manage(DeviceManagementAction, [DeviceInventoryID]) }
+    enum Event: Equatable, Sendable { case read(DeviceInventoryID), write(DeviceInventoryID), open(DeviceInventoryID), close(DeviceInventoryID), inspect(DeviceInventoryID), inventory, quit, manage(DeviceManagementAction, [DeviceInventoryID]) }
     enum Failure: LocalizedError {
         case unavailable, native
         var errorDescription: String? { self == .native ? "Native shutdown failed" : "Unavailable" }
@@ -1925,6 +1946,8 @@ actor ManagerModelSource: SimulatorManagerSource {
     private var inspectorResponse: String?
     private var holdsInspectorReads = false
     private var inspectorRead: CheckedContinuation<CommandOutput, any Error>?
+    private var holdsInventoryReads = false
+    private var inventoryRead: CheckedContinuation<Void, Never>?
     private var holdsManagement = false
     private var immediateRead: SimulatorDeviceSettings?
     private var readContinuation: CheckedContinuation<SimulatorDeviceSettings, any Error>?
@@ -1961,7 +1984,21 @@ actor ManagerModelSource: SimulatorManagerSource {
         return [SimulatorXcode(url: URL(fileURLWithPath: "/Applications/Test Xcode.app"), version: "27.1", name: "Test Xcode")]
     }
     func setDevices(_ devices: [InventoryDevice]) { self.devices = devices }
-    func inventory() -> DeviceInventorySnapshot { DeviceInventorySnapshot(devices: devices, issues: []) }
+    func inventory() async -> DeviceInventorySnapshot {
+        if holdsInventoryReads {
+            await withCheckedContinuation { waiting in
+                inventoryRead = waiting
+                continuation.yield(.inventory)
+            }
+        }
+        return DeviceInventorySnapshot(devices: devices, issues: [])
+    }
+    func holdInventoryReads() { holdsInventoryReads = true }
+    func completeInventoryRead() {
+        holdsInventoryReads = false
+        inventoryRead?.resume()
+        inventoryRead = nil
+    }
     func status() -> SimulatorHostStatus { SimulatorHostStatus(host: .neo, restorationAvailable: false, rendererRunning: false) }
     func deviceSettings(for device: InventoryDevice) async throws -> SimulatorDeviceSettings {
         readCount += 1
