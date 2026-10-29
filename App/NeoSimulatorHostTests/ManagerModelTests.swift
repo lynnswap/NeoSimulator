@@ -8,6 +8,187 @@ import XCTest
 
 @Suite(.serialized, .timeLimit(.minutes(1))) @MainActor
 struct ManagerModelTests {
+    @Test(arguments: DeviceBrowserPresentation.SortOrder.allCases)
+    func sidebarSortsOwnTheirSections(_ order: DeviceBrowserPresentation.SortOrder) throws {
+        let records = try CoreDeviceInventoryDecoder.decode(Data(#"""
+        {"result":{"devices":[
+          {"identifier":"phone","properties":{"hardware":{"reality":"physical","platform":"iOS"},
+            "state":{"name":"Beta"},"software":{"osVersionNumber":{"stringValue":"27.2"}},
+            "connection":{"state":"connected","lastConnectionDate":200}}},
+          {"identifier":"vm","properties":{"hardware":{"reality":"virtual","platform":"macOS"},
+            "state":{"name":"Alpha"},"software":{"osVersionNumber":{"stringValue":"15.10"}},
+            "connection":{"state":"connected","lastConnectionDate":100}}},
+          {"identifier":"other","properties":{"hardware":{"reality":"future","marketingName":"Fallback Name"}}},
+          {"identifier":"symbol","properties":{"hardware":{"reality":"future"},"state":{"name":"42"}}}
+        ]}}
+        """#.utf8))
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try #require(TimeZone(secondsFromGMT: 0))
+        let presentation = DeviceBrowserPresentation(devices: records.map(InventoryDevice.remote), sortOrder: order,
+                                                     calendar: calendar, locale: Locale(identifier: "en_US_POSIX"))
+        let expected: [String] = switch order {
+        case .availability: ["Available", "Unavailable"]
+        case .recent: ["Jan 1, 2001", "Other"]
+        case .name: ["Other", "A", "B", "#"]
+        case .fidelity: ["Other", "Physical Devices", "Virtual Machines"]
+        case .platform: ["iOS", "macOS", "Other"]
+        case .operatingSystem: ["Other Other", "iOS 27.2", "macOS 15.10"]
+        }
+        #expect(presentation.sections.map(\.title) == expected)
+        #expect(Set(presentation.devices.map(\.id)) == Set(records.map { .coreDevice($0.identifier) }))
+        if order == .recent {
+            // Full timestamps run Beta -> Alpha; the same-day name order runs Alpha -> Beta.
+            #expect(presentation.sections[0].devices.map(\.name) == ["Alpha", "Beta"])
+        }
+        if order == .name { #expect(presentation.sections[0].devices[0].name == "Fallback Name") }
+    }
+
+    @Test(arguments: [(nil as String?, "Other"), ("  ßeta  ", "SS"), ("\nAlpha", "#"), ("", "#")])
+    func sidebarNameGroupsUseTheReportedFirstCharacter(_ name: String?, _ expected: String) throws {
+        var state: [String: String] = [:]
+        state["name"] = name
+        let data = try JSONSerialization.data(withJSONObject: ["result": ["devices": [["identifier": "phone",
+            "properties": ["hardware": ["reality": "physical", "marketingName": "Fallback"], "state": state]]]]])
+        let device = InventoryDevice.remote(try #require(CoreDeviceInventoryDecoder.decode(data).first))
+        let presentation = DeviceBrowserPresentation(devices: [device], sortOrder: .name)
+        #expect(presentation.sections.map(\.id) == [expected])
+    }
+
+    @Test func recentUsesJoinedConnectionTimeWithoutBorrowingCustomSetMetadata() async throws {
+        let defaultDevice = simulator(name: "Default", lastUsedAt: .distantFuture)
+        let customDevice = simulator(deviceSet: "/tmp/sidebar-custom-set", name: "Custom", lastUsedAt: .distantFuture)
+        let payload = Data(#"""
+        {"result":{"devices":[{"identifier":"core-record","properties":{
+          "hardware":{"reality":"simulated","udid":"same-udid"},"state":{"name":"Default"},
+          "connection":{"state":"connected","lastConnectionDate":100}}}]}}
+        """#.utf8)
+        let snapshot = await DeviceInventoryReader(
+            readSimulators: { DeviceInventorySnapshot(devices: [defaultDevice, customDevice], issues: []) },
+            readCoreDevices: { payload }).read()
+        #expect(snapshot.issues.isEmpty)
+        #expect(snapshot.devices.first { $0.id == defaultDevice.id }?.lastConnectionDate == Date(timeIntervalSinceReferenceDate: 100))
+        #expect(snapshot.devices.first { $0.id == customDevice.id }?.lastConnectionDate == nil)
+        let presentation = DeviceBrowserPresentation(devices: snapshot.devices, sortOrder: .recent)
+        #expect(presentation.sections.count == 2)
+        #expect(presentation.sections.last?.id == "Other")
+        #expect(presentation.sections.last?.devices.map(\.id) == [customDevice.id])
+    }
+
+    @Test func operatingSystemSectionsUseNumericVersionsWithMissingVersionLast() throws {
+        let payload = Data(#"""
+        {"result":{"devices":[
+          {"identifier":"older","properties":{"hardware":{"reality":"physical","platform":"iOS"},
+            "software":{"osVersionNumber":{"stringValue":"27.2"}}}},
+          {"identifier":"newer","properties":{"hardware":{"reality":"physical","platform":"iOS"},
+            "software":{"osVersionNumber":{"stringValue":"27.10"}}}},
+          {"identifier":"unknown","properties":{"hardware":{"reality":"physical","platform":"iOS"}}},
+          {"identifier":"watch","properties":{"hardware":{"reality":"physical","platform":"watchOS"},
+            "software":{"osVersionNumber":{"stringValue":"27.2"}}}},
+          {"identifier":"vision","properties":{"hardware":{"reality":"physical","platform":"visionOS"},
+            "software":{"osVersionNumber":{"stringValue":"27.2"}}}},
+          {"identifier":"future","properties":{"hardware":{"reality":"physical","platform":"futureOS"},
+            "software":{"osVersionNumber":{"stringValue":"1.0"}}}}
+        ]}}
+        """#.utf8)
+        let devices = try CoreDeviceInventoryDecoder.decode(payload).map(InventoryDevice.remote)
+        let presentation = DeviceBrowserPresentation(devices: devices, sortOrder: .operatingSystem)
+        #expect(presentation.sections.map(\.title) == ["futureOS 1.0", "iOS 27.10", "iOS 27.2", "iOS Other", "watchOS 27.2", "visionOS 27.2"])
+        let platforms = DeviceBrowserPresentation(devices: devices, sortOrder: .platform)
+        #expect(platforms.sections.map(\.id) == ["futureOS", "iOS", "watchOS", "xrOS"])
+        #expect(platforms.sections.map(\.title) == ["futureOS", "iOS", "watchOS", "visionOS"])
+    }
+
+    @Test func sidebarRegroupingKeepsSelectionExpansionAndFilters() async throws {
+        _ = NSApplication.shared
+        let domain = "NeoSimulator.SidebarFixture.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
+        func devices(firstDate: Double = 100) throws -> [InventoryDevice] {
+            let data = try JSONSerialization.data(withJSONObject: ["result": ["devices": [
+                ["identifier": "A", "properties": ["hardware": ["reality": "physical"], "state": ["name": "Alpha"],
+                    "connection": ["state": "connected", "lastConnectionDate": firstDate]]],
+                ["identifier": "B", "properties": ["hardware": ["reality": "physical"], "state": ["name": "Beta"],
+                    "connection": ["state": "connected", "lastConnectionDate": 200_000]]],
+            ]]])
+            return try CoreDeviceInventoryDecoder.decode(data).map(InventoryDevice.remote)
+        }
+        let source = ManagerModelSource(devices: try devices())
+        let model = SimulatorManagerModel(source: source)
+        model.settings.setReadingSuspended(true)
+        await model.refresh()
+        let controller = ManagerWindowController(model: model, defaults: defaults)
+        controller.window?.setFrameAutosaveName("")
+        defer { controller.window?.close() }
+        let content = try #require(controller.window?.contentView)
+        let outline = try #require(inspectorViews(content).compactMap { $0 as? NSOutlineView }.first)
+        let menu = try #require(controller.window?.toolbar?.items.compactMap { $0 as? NSMenuToolbarItem }
+            .first { $0.itemIdentifier.rawValue == "FilterSimulators" }?.menu)
+        func choose(_ title: String) throws {
+            controller.menuNeedsUpdate(menu)
+            let item = try #require(menu.items.first { $0.title == title })
+            #expect(NSApp.sendAction(try #require(item.action), to: item.target, from: item))
+        }
+        #expect(controller.outlineView(outline, numberOfChildrenOfItem: nil) == 1)
+        try choose("Recent")
+        controller.selectDevice(.coreDevice("A"))
+        let selectedRow = try #require(outline.item(atRow: outline.selectedRow) as? NSObject)
+        let groupedOrder = (0..<outline.numberOfRows).compactMap { row -> NSObject? in
+            guard let item = outline.item(atRow: row), controller.outlineView(outline, shouldSelectItem: item) else { return nil }
+            return item as? NSObject
+        }
+        try choose("Show Groups")
+        #expect(outline.numberOfRows == 2)
+        #expect((0..<outline.numberOfRows).compactMap { outline.item(atRow: $0) as? NSObject } == groupedOrder)
+        #expect(controller.selectedIdentifiers == [.coreDevice("A")])
+        try choose("Show Groups")
+        let group = try #require(outline.parent(forItem: selectedRow))
+        outline.collapseItem(group)
+        let restored = ManagerWindowController(model: model, defaults: defaults)
+        restored.window?.setFrameAutosaveName("")
+        defer { restored.window?.close() }
+        let restoredContent = try #require(restored.window?.contentView)
+        let restoredOutline = try #require(inspectorViews(restoredContent).compactMap { $0 as? NSOutlineView }.first)
+        #expect(!restoredOutline.isItemExpanded(restoredOutline.item(atRow: 2)))
+        controller.selectDevice(.coreDevice("A"))
+        #expect(outline.isItemExpanded(group))
+        let search = try #require(inspectorViews(content).compactMap { $0 as? NSSearchField }
+            .first { $0.placeholderString == "Search Devices" })
+        search.stringValue = "Alpha"
+        controller.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: search))
+        search.stringValue = ""
+        controller.selectDevice(.coreDevice("A"))
+        controller.update()
+        let newGroup = try #require(outline.item(atRow: 0))
+        #expect(outline.isItemExpanded(newGroup))
+        search.stringValue = "Alpha"
+        controller.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: search))
+        await source.setDevices(try devices(firstDate: 200_000))
+        await model.refresh()
+        controller.update()
+        #expect(search.stringValue == "Alpha")
+        #expect(controller.selectedIdentifiers == [.coreDevice("A")])
+        #expect(outline.item(atRow: outline.selectedRow) as? NSObject === selectedRow)
+        search.stringValue = ""
+        controller.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: search))
+        #expect(controller.outlineView(outline, numberOfChildrenOfItem: nil) == 1)
+        #expect(controller.selectedIdentifiers == [.coreDevice("A")])
+    }
+
+    @Test func sidebarOptionsRestoreAndUseNativeFallbacks() throws {
+        let domain = "NeoSimulator.SidebarFixture.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
+        var options = DeviceBrowserPresentation.Options(defaults: defaults)
+        #expect(options.sortOrder == .availability && options.showGroups)
+        options.sortOrder = .recent
+        options.showGroups = false
+        options.save(to: defaults)
+        let restored = DeviceBrowserPresentation.Options(defaults: defaults)
+        #expect(restored.sortOrder == .recent && !restored.showGroups)
+        defaults.set(-1, forKey: "SidebarSortOrder")
+        #expect(DeviceBrowserPresentation.Options(defaults: defaults).sortOrder == .availability)
+    }
+
     @Test(arguments: ["new-selection", "return-selection", "rollback"])
     func pendingPresentationKeepsTheLaterSelectionAndCanvas(_ mode: String) async throws {
         _ = NSApplication.shared
@@ -381,7 +562,7 @@ struct ManagerModelTests {
         _ = NSApplication.shared
         let features: Set<String> = ["streamapplist", "installapp", "launchapplication", "configurationprofiles", "listFiles", "transferFiles"]
         func device(_ identifier: String = "inspected-device", name: String = "Phone", features: Set<String> = features) -> InventoryDevice {
-            .remote(CoreDeviceDevice(identifier: identifier, udid: nil, kind: .physical, name: name,
+            .remote(CoreDeviceDevice(identifier: identifier, udid: nil, kind: .physical, name: name, reportedName: name,
                 modelIdentifier: nil, modelName: nil, cpuType: nil, platform: "iOS", osVersion: nil, osBuild: nil,
                 connectionState: "connected", pairingState: "paired", transportType: nil, bootState: "booted", preparednessState: nil,
                 capabilities: Set(features.map { "com.apple.coredevice.feature." + $0 }), lastConnectedAt: nil, visibilityClass: nil))
@@ -454,7 +635,7 @@ struct ManagerModelTests {
     @Test func changingProfileCapabilityClearsTheOldKindEvenWhenTheRefreshFails() async throws {
         _ = NSApplication.shared
         func device(features: Set<String>) -> InventoryDevice {
-            .remote(CoreDeviceDevice(identifier: "inspected-device", udid: nil, kind: .physical, name: "Phone",
+            .remote(CoreDeviceDevice(identifier: "inspected-device", udid: nil, kind: .physical, name: "Phone", reportedName: "Phone",
                 modelIdentifier: nil, modelName: nil, cpuType: nil, platform: "iOS", osVersion: nil, osBuild: nil,
                 connectionState: "connected", pairingState: "paired", transportType: nil, bootState: "booted", preparednessState: nil,
                 capabilities: Set(features.map { "com.apple.coredevice.feature." + $0 }), lastConnectedAt: nil, visibilityClass: nil))
@@ -1150,7 +1331,7 @@ struct ManagerModelTests {
 
     @Test func remoteDuoResolvesInstalledArtworkWithoutOpeningAScreen() async {
         let device = InventoryDevice.remote(CoreDeviceDevice(identifier: "remote-duo", udid: nil,
-            kind: .physical, name: "Duo", modelIdentifier: "iPhone19,4", modelName: "iPhone Duo", cpuType: nil,
+            kind: .physical, name: "Duo", reportedName: "Duo", modelIdentifier: "iPhone19,4", modelName: "iPhone Duo", cpuType: nil,
             platform: "iOS", osVersion: nil, osBuild: nil, connectionState: "connected",
             pairingState: "paired", transportType: nil, bootState: "booted", preparednessState: nil, capabilities: [],
             lastConnectedAt: nil, visibilityClass: nil))
@@ -1280,7 +1461,7 @@ struct ManagerModelTests {
 
     @Test func remoteInfoUsesAvailablePropertiesWithoutSubstitutingItsCommandIDForUDID() async throws {
         let remote = CoreDeviceDevice(identifier: "command-id", udid: nil,
-            kind: .physical, name: "Known Phone", modelIdentifier: "iPhone19,2", modelName: "iPhone 18 Pro", cpuType: nil,
+            kind: .physical, name: "Known Phone", reportedName: "Known Phone", modelIdentifier: "iPhone19,2", modelName: "iPhone 18 Pro", cpuType: nil,
             platform: "iOS", osVersion: "27.1", osBuild: nil, connectionState: "connected",
             pairingState: "paired", transportType: nil, bootState: "booted", preparednessState: nil, capabilities: [],
             lastConnectedAt: nil, visibilityClass: nil)
@@ -1593,10 +1774,11 @@ struct ManagerModelTests {
         #expect(restored.isVisible(future) == !hidesHardware && restored.isVisible(sibling) == !hidesHardware)
     }
 
-    private func simulator(deviceSet: String? = nil, name: String = "Test Phone", state: String = "Booted") -> InventoryDevice {
+    private func simulator(deviceSet: String? = nil, name: String = "Test Phone", state: String = "Booted",
+                           lastUsedAt: Date? = nil) -> InventoryDevice {
         .simulator(SimulatorHostDevice(identifier: "same-udid", name: name, descriptiveName: name,
             runtimeIdentifier: "test-runtime", runtimeName: "iOS", productFamily: "iPhone", state: state,
-            deviceSetPath: deviceSet, capabilities: ["com.apple.dt.coredevice.device.shutdown"]))
+            deviceSetPath: deviceSet, lastUsedAt: lastUsedAt, capabilities: ["com.apple.dt.coredevice.device.shutdown"]))
     }
 
     private func settings(appearance: String, contentSize: String? = nil) -> SimulatorDeviceSettings {

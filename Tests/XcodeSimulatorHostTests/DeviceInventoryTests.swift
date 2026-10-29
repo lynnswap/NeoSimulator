@@ -10,7 +10,7 @@ struct DeviceInventoryTests {
         let phone = try #require(records.first { $0.kind == .physical })
         #expect(phone.identifier == "remote-command-id")
         #expect(phone.udid == "hardware-udid")
-        #expect(phone.name == "Test Phone")
+        #expect(phone.name == "Test Phone" && phone.reportedName == "Test Phone")
         #expect(phone.modelIdentifier == "iPhone99,1")
         #expect(phone.modelName == "Test Hardware")
         #expect(phone.cpuType?.type == 16777228)
@@ -25,6 +25,8 @@ struct DeviceInventoryTests {
         #expect(vm.identifier == "vm-command-id" && vm.udid == "vm-hardware-udid")
         #expect(!vm.isAvailable && vm.lastConnectedAt == nil)
         #expect(vm.capabilities == ["com.apple.coredevice.feature.unpairdevice"])
+        let unnamed = try #require(records.first { $0.identifier == "coredevice-only-simulator" })
+        #expect(unnamed.name == unnamed.identifier && unnamed.reportedName == nil)
     }
 
     @Test func joinsSimctlAuthorityWithoutConflatingCommandIDsOrDeviceSets() async throws {
@@ -46,8 +48,9 @@ struct DeviceInventoryTests {
         #expect(await calls.coreDeviceReads == 1)
         let joined = try #require(snapshot.devices.first { $0.id == .simulator(udid: normal.identifier, deviceSetPath: nil) })
         #expect(joined.capabilities == ["com.apple.coredevice.feature.customizeuistyle"])
+        #expect(joined.lastConnectionDate == Date(timeIntervalSinceReferenceDate: 100))
         let joinedClone = try #require(snapshot.devices.first { $0.id == clone.inventoryID })
-        #expect(joinedClone.capabilities == [])
+        #expect(joinedClone.capabilities == [] && joinedClone.lastConnectionDate == nil)
         #expect(snapshot.devices.contains { $0.id == .coreDevice("remote-command-id") })
         #expect(!snapshot.devices.contains { $0.id == .simulator(udid: "coredevice-only-simulator", deviceSetPath: nil) })
         if case .simulator(let retained) = joined {
