@@ -1741,10 +1741,18 @@ final class DeviceSession {
         try? await recording.waitUntilFinished()
     }
 
+    /// Called once an import that attempted to install applications ends, whatever its outcome,
+    /// because a failed or cancelled batch can still have installed some of them.
+    @ObservationIgnored var onApplicationsChange: (() -> Void)?
+
     func importFiles(_ urls: [URL]) async throws {
+        var installsApplications = false
+        defer { if installsApplications { onApplicationsChange?() } }
         try await SimulatorFileImport.perform(urls) { url, kind in
             switch kind {
-            case .application: try await tools.installApplication(at: url)
+            case .application:
+                installsApplications = true
+                try await tools.installApplication(at: url)
             case .media: try await tools.importMedia(at: url)
             }
         }

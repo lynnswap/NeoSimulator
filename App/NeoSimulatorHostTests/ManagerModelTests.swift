@@ -756,6 +756,48 @@ struct ManagerModelTests {
         controller.stopReading()
     }
 
+    @Test func applicationChangesFromAnotherOwnerReloadOnlyTheMatchingAppsInspector() async throws {
+        _ = NSApplication.shared
+        func response(_ names: [String]) -> String {
+            "{" + names.map { "\"dev.example.\($0.lowercased())\" = { CFBundleIdentifier = \"dev.example.\($0.lowercased())\"; CFBundleDisplayName = \($0); };" }.joined() + "}"
+        }
+        let device = simulator(deviceSet: "/custom")
+        let source = ManagerModelSource(devices: [], inspectorResponse: response(["Kept"]))
+        var events = source.events.makeAsyncIterator()
+        let controller = ManagerDeviceInspectorController(model: SimulatorManagerModel(source: source))
+        controller.setPage(.info)
+        controller.inspection.select(.applications)
+        controller.update(device: device, isManaging: false, isVisible: true)
+        #expect(await events.next() == .inspect(device.id))
+        await finishInspectorRead(controller.inspection)
+        let views = inspectorViews(controller.view)
+        let table = try #require(views.compactMap { $0 as? NSTableView }.first {
+            $0.accessibilityLabel() == "Installed Applications, Profiles, and Reports"
+        })
+        func rows(_ count: Int) -> XCTNSPredicateExpectation {
+            XCTNSPredicateExpectation(predicate: NSPredicate { object, _ in
+                MainActor.assumeIsolated { (object as? NSTableView)?.numberOfRows == count }
+            }, object: table)
+        }
+        try #require(await XCTWaiter.fulfillment(of: [rows(1)], timeout: 5) == .completed)
+        table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        let search = try #require(views.compactMap { $0 as? NSSearchField }.first)
+        search.stringValue = "dev.example"
+        controller.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: search))
+
+        // The same UDID in the default set is a different device.
+        controller.applicationsChanged(on: simulator().id)
+        #expect(!controller.inspection.reading)
+        await source.completeInspectorRead(response(["Kept", "Installed"]))
+        controller.applicationsChanged(on: device.id)
+        #expect(await events.next() == .inspect(device.id))
+        await finishInspectorRead(controller.inspection)
+        try #require(await XCTWaiter.fulfillment(of: [rows(2)], timeout: 5) == .completed)
+        #expect(controller.inspection.applications.map(\.name) == ["Installed", "Kept"])
+        #expect(table.selectedRow == 1 && search.stringValue == "dev.example")
+        controller.stopReading()
+    }
+
     private func finishInspectorRead(_ inspection: DeviceInspectorModel) async {
         while inspection.reading {
             await withCheckedContinuation { continuation in

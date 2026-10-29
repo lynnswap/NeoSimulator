@@ -17,6 +17,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     var onChange: (() -> Void)?
     var onRestart: ((SimulatorDeviceIdentifier, Bool) -> Void)?
     var onShutDown: ((SimulatorDeviceIdentifier) -> Void)?
+    /// A device window's import changed the device's installed applications.
+    var onApplicationsChange: ((SimulatorDeviceIdentifier) -> Void)?
     var isStopped: Bool { stopped }
     var openedDeviceIdentifiers: Set<SimulatorDeviceIdentifier> { Set(sessions.keys) }
     private let owner: RendererOwnerIdentity?
@@ -839,6 +841,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                         do { try session.applyDebugSettings() } catch {
                             hostLog("Could not apply debug settings to \(device.name): \(error.localizedDescription)")
                         }
+                        session.onApplicationsChange = { [weak self] in self?.onApplicationsChange?(identifier) }
                         if let controller = awaitingReconnect.removeValue(forKey: identifier) {
                             try conflicts.check()
                             controller.reconnect(session, present: !isInProcess)

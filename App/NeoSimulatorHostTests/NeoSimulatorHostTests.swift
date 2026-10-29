@@ -8202,6 +8202,18 @@ struct InputFocusTests {
         window.mouseUp(with: try event(.leftMouseUp, at: end))
     }
 
+    @Test func windowImportReportsApplicationChangesEvenWhenTheBatchFails() async throws {
+        let session = try makeSession(TestDisplay(), simctl: URL(fileURLWithPath: "/usr/bin/true"))
+        var changes = 0
+        session.onApplicationsChange = { changes += 1 }
+        try await session.importFiles([URL(fileURLWithPath: "/tmp/Photo.png")])
+        #expect(changes == 0)
+        await #expect(throws: (any Error).self) {
+            try await session.importFiles([URL(fileURLWithPath: "/tmp/App.app"), URL(fileURLWithPath: "/tmp/Unsupported.txt")])
+        }
+        #expect(changes == 1)
+    }
+
     private func makeSession(_ display: TestDisplay,
                              family: DeviceCapabilities.Family = .iPhone,
                              features: Set<String> = Self.defaultFeatures,
