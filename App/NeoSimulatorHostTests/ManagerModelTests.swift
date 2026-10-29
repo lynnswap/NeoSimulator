@@ -1425,6 +1425,18 @@ struct ManagerModelTests {
         let emptyPairedTable = try #require(tables(in: view).first)
         #expect(emptyPairedTable.numberOfRows == 1)
         #expect(emptyPairedTable.selectedRow == -1)
+
+        var selected: DeviceInventoryID?
+        let selectionController = NSHostingController(rootView: PairedSimulatorsView(
+            devices: [phone], selection: Binding(get: { selected }, set: { selected = $0 }),
+            emptyLabel: "No Paired iPhone Simulators", menu: { _ in NSMenu() }))
+        window.contentViewController = selectionController
+        let selectionView = selectionController.view
+        selectionView.layoutSubtreeIfNeeded()
+        window.displayIfNeeded()
+        let selectionTable = try #require(tables(in: selectionView).first)
+        selectionTable.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        #expect(selected == phone.inventoryID)
     }
 
     @Test func profilesFollowTheAvailableKindWhenChangingDevices() throws {

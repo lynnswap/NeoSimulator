@@ -129,30 +129,9 @@ struct DeviceInformationView: View {
         return Section {} footer: {
             GroupBox {
                 VStack(spacing: 0) {
-                    List(selection: $selectedPairedSimulator) {
-                        if paired.isEmpty {
-                            Text(device.productFamily == "Apple Watch" ? "No Paired iPhone Simulators" : "No Paired Watch Simulators")
-                                .foregroundStyle(Color.secondary)
-                                .frame(maxWidth: .infinity)
-                                .frame(height: 120)
-                                .selectionDisabled()
-                        } else {
-                            ForEach(paired, id: \.inventoryID) { partner in
-                                LabeledContent {
-                                    DeviceMenuButton(menu: deviceMenu(partner), symbol: "ellipsis",
-                                                     label: "More Actions for \(partner.name)", isBordered: false)
-                                } label: {
-                                    Text(partner.name)
-                                        .lineLimit(1)
-                                        .truncationMode(.middle)
-                                        .help(partner.name)
-                                }
-                                .tag(partner.inventoryID)
-                            }
-                        }
-                    }
-                    .listStyle(.plain)
-                    .scrollContentBackground(.hidden)
+                    PairedSimulatorsView(devices: paired, selection: $selectedPairedSimulator,
+                        emptyLabel: device.productFamily == "Apple Watch" ? "No Paired iPhone Simulators" : "No Paired Watch Simulators",
+                        menu: deviceMenu)
                     .frame(maxWidth: .infinity)
                     Divider()
                     HStack {
