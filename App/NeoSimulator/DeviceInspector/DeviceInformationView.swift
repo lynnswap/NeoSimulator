@@ -153,8 +153,7 @@ struct DeviceInformationView: View {
                 }
             }
             .safeAreaBar(edge: .bottom, spacing: 0) {
-                VStack(spacing: 0) {
-                    Divider()
+                PairingAccessoryBar {
                     HStack {
                         DeviceMenuButton(menu: pairingMenu(device), symbol: "plus", label: "Add Paired Simulator", controlSize: .regular)
                             .disabled(!manager.canAddPairing(for: device) || inspection.isManaging ||
@@ -170,17 +169,35 @@ struct DeviceInformationView: View {
                                   targetWatch.map { manager.managingDeviceIDs.contains($0.inventoryID) } == true)
                         Spacer()
                     }
-                    .fixedSize(horizontal: false, vertical: true)
-                    .buttonStyle(.accessoryBarAction)
-                    .controlSize(.regular)
-                    .padding(.vertical, 4)
                 }
-                .background(.bar)
             }
+            .listRowInsets(EdgeInsets())
         } header: {
             Text("Paired Simulators")
         } footer: {
             editVisibilityButton
+        }
+    }
+
+    private struct PairingAccessoryBar<Content: View>: View {
+        @Environment(\.defaultMinListRowHeight) private var minimumRowHeight
+        let content: Content
+
+        init(@ViewBuilder content: () -> Content) {
+            self.content = content()
+        }
+
+        var body: some View {
+            VStack(spacing: 0) {
+                Divider()
+                content
+                    .fixedSize(horizontal: false, vertical: true)
+                    .buttonStyle(.borderless)
+                    .controlSize(.regular)
+                    .padding(4)
+                    .frame(minHeight: minimumRowHeight)
+            }
+            .background(.regularMaterial)
         }
     }
 
@@ -206,7 +223,6 @@ struct DeviceInformationView: View {
             let image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)!
             let button = NSPopUpButton(image: image, pullDownMenu: menu)
             button.controlSize = controlSize
-            button.bezelStyle = .accessoryBarAction
             button.isBordered = false
             (button.cell as? NSPopUpButtonCell)?.arrowPosition = .noArrow
             button.isEnabled = context.environment.isEnabled
