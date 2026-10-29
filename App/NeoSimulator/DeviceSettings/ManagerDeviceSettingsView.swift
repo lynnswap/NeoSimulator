@@ -46,7 +46,7 @@ struct ManagerDeviceSettingsView: View {
     private var hasAvailableSettings: Bool {
         guard let settings else { return false }
         return settings.appearance != nil || settings.liquidGlassOpacity != nil || settings.colorFilter != nil
-            || textSizeIndex != nil || settings.reduceMotion != nil || settings.increaseContrast != nil
+            || textSizeIndex != nil || settings.boldText != nil || settings.reduceMotion != nil || settings.increaseContrast != nil
             || settings.showBorders != nil || settings.reduceTransparency != nil || settings.voiceOver != nil
             || settings.locationAvailable || settings.volume != nil
             || (settings.audioOutputDevice != nil && !settings.audioOutputDevices.isEmpty)
@@ -102,6 +102,7 @@ struct ManagerDeviceSettingsView: View {
 
     private var accessibilityRows: some View {
         Group {
+            toggle("Bold Text", symbol: "bold", keyPath: \.boldText, setting: SimulatorDeviceSetting.boldText)
             toggle("Reduce Motion", symbol: "figure.walk.motion", keyPath: \.reduceMotion, setting: SimulatorDeviceSetting.reduceMotion)
             toggle("Increase Contrast", symbol: "circle.lefthalf.striped.horizontal", keyPath: \.increaseContrast, setting: SimulatorDeviceSetting.increaseContrast)
             toggle("Show Borders", symbol: "square.dashed", keyPath: \.showBorders, setting: SimulatorDeviceSetting.showBorders)

@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 
-@testable import XcodeSimulatorHost
+@_spi(NeoSimulator) @testable import XcodeSimulatorHost
 
 @Suite
 struct InstallationInspectorTests {
@@ -537,6 +537,7 @@ struct XcodeConnectionsTests {
         let backend = SimulatorSettingsBackend(run: { tool, arguments in
             if case .devicectl = tool { throw CLIError.io("wrong-device", "devicectl cannot distinguish this device set") }
             commands.append(arguments)
+            if arguments.first == "spawn" { return Data(#"<plist version="1.0"><dict/></plist>"#.utf8) }
             let output = switch arguments.last {
             case "appearance": "light"
             case "content_size": "medium"
@@ -842,6 +843,7 @@ struct SimulatorSettingsBackendTests {
         let speaker = SimulatorAudioDevice(identifier: "speaker-uid", name: "Speaker")
         let backend = SimulatorSettingsBackend(run: { tool, arguments in
             if tool == .simctl {
+                if arguments.first == "spawn" { return Data(#"<plist version="1.0"><dict><key>EnhancedTextLegibilityEnabled</key><integer>1</integer></dict></plist>"#.utf8) }
                 return Data((arguments.last == "appearance" ? "dark" : arguments.last == "content_size" ? "large" : "enabled").utf8)
             }
             if arguments.contains("appearance") {
@@ -858,7 +860,7 @@ struct SimulatorSettingsBackendTests {
             return envelope("{\"availableScenarios\":[{\"name\":\"City Run\",\"localizedName\":\"City Run localized\"}]}")
         }, audioDevices: { ([microphone], [speaker]) })
         let value = await backend.read(device: simulator("device-A"))
-        #expect(value.appearance == "dark" && value.contentSize == "large" && value.increaseContrast == true)
+        #expect(value.appearance == "dark" && value.contentSize == "large" && value.increaseContrast == true && value.boldText == true)
         #expect(value.supportedLooksAndFeels == [.clear, .tinted])
         #expect(value.lookAndFeel == "Tinted Liquid Glass" && value.liquidGlassOpacity == 0.6)
         #expect(value.colorFilter == .protanopia && value.colorFilterIntensity == 0.75)
@@ -877,6 +879,7 @@ struct SimulatorSettingsBackendTests {
                 queried.append(arguments)
                 throw CLIError.unavailable("unsupported", "This device is unavailable to CoreDevice.")
             }
+            if arguments.first == "spawn" { return Data(#"<plist version="1.0"><dict/></plist>"#.utf8) }
             if arguments.first == "location" { return Data("Name                 Description\n========================================================\nCity Run             City Run\n".utf8) }
             return Data((arguments.last == "appearance" ? "light" : arguments.last == "content_size" ? "small" : "disabled").utf8)
         }, audioDevices: { ([], []) })
@@ -888,7 +891,7 @@ struct SimulatorSettingsBackendTests {
         #expect(queried.count == 4 && queried.allSatisfy { $0.contains("custom-set-device") })
         let custom = simulator("custom-set-device", deviceSetPath: "/tmp/FixtureDeviceSet")
         let customValue = await backend.read(device: custom)
-        #expect(customValue.appearance == "light" && customValue.locationAvailable)
+        #expect(customValue.appearance == "light" && customValue.locationAvailable && customValue.boldText == false)
         #expect(queried.count == 4 && customValue.issues.isEmpty)
         #expect(throws: CLIError.self) { try backend.set(.liquidGlassOpacity(0.75), device: custom) }
     }
@@ -961,6 +964,48 @@ struct SimulatorSettingsBackendTests {
         let recovered = await backend.refresh(failed, after: .reduceMotion(true), device: simulator("device-A"))
         #expect(recovered.reduceMotion == true && recovered.colorFilter == SimulatorColorFilter.none)
         #expect(recovered.issues == ["audio: Unavailable."])
+    }
+
+
+    @Test func boldTextUsesTheSimulatorPreferenceAndScopedConfirmation() async throws {
+        var commands: [[String]] = []
+        var failure: String?
+        let backend = SimulatorSettingsBackend(run: { tool, arguments in
+            #expect(tool == .simctl)
+            commands.append(arguments)
+            if let failure, arguments.contains(failure) { throw CLIError.io("fixture-bold-text", "The command failed.") }
+            return Data()
+        }, readCommand: { tool, arguments in
+            #expect(tool == .simctl && arguments == ["spawn", "device-A", "defaults", "export", "com.apple.Accessibility", "-"])
+            if failure == "export" { throw CLIError.io("fixture-bold-text", "The read failed.") }
+            return Data(#"<plist version="1.0"><dict/></plist>"#.utf8)
+        }, audioDevices: { Issue.record("Unrelated audio choices were queried."); return ([], []) })
+        let device = simulator("device-A", deviceSetPath: "/custom/Devices")
+        var original = SimulatorDeviceSettings(boldText: true, volume: 60)
+        original.issues = ["Bold Text: Previous failure.", "audio: Unavailable."]
+        #expect(original.applying(.boldText(false)).boldText == false)
+        try backend.set(.boldText(true), device: device)
+        #expect(commands == [
+            ["spawn", "device-A", "defaults", "write", "com.apple.Accessibility", "EnhancedTextLegibilityEnabled", "-int", "1"],
+            ["spawn", "device-A", "notifyutil", "-p", "com.apple.accessibility.cache.enhance.text.legibility"]
+        ])
+        let updated = await backend.refresh(original, after: .boldText(true), device: device)
+        #expect(updated.boldText == false && updated.volume == 60 && updated.issues == ["audio: Unavailable."])
+        failure = "export"
+        let unreadable = await backend.refresh(updated, after: .boldText(false), device: device)
+        #expect(unreadable.boldText == nil && unreadable.volume == 60)
+        #expect(unreadable.issues == ["audio: Unavailable.", "Bold Text: The read failed."])
+        failure = "write"
+        let writes = commands.count
+        do { try backend.set(.boldText(false), device: device); Issue.record("The write failure was lost.") }
+        catch { #expect((error as? CLIError)?.identifier == "fixture-bold-text") }
+        #expect(commands.count == writes + 1)
+        failure = "notifyutil"
+        do { try backend.set(.boldText(false), device: device); Issue.record("The notification failure was lost.") }
+        catch {
+            #expect((error as? CLIError)?.identifier == "bold-text-notification")
+            #expect(error.localizedDescription.contains("saved") && error.localizedDescription.contains("The command failed."))
+        }
     }
 
     @Test func writesUseTheTargetDeviceAndPreserveCommandFailures() throws {
@@ -1047,11 +1092,17 @@ struct SimulatorSettingsBackendTests {
         var ran = false
         let backend = SimulatorSettingsBackend(run: { _, _ in ran = true; return Data() }, audioDevices: { ([], []) })
         let unsupported = try remote("physical", features: ["startaudiooutput"])
-        #expect(await backend.read(device: unsupported).volume == nil)
+        let unsupportedValues = await backend.read(device: unsupported)
+        #expect(unsupportedValues.volume == nil && unsupportedValues.boldText == nil)
+        #expect(throws: CLIError.self) { try backend.set(.boldText(true), device: unsupported) }
         #expect(throws: CLIError.self) { try backend.set(.audioOutputDevice("systemDefault"), device: unsupported) }
         let unavailable = try remote("virtual", features: ["customizeuistyle"], connection: "unavailable")
         #expect(await backend.read(device: unavailable).appearance == nil)
         #expect(throws: CLIError.self) { try backend.set(.appearance("dark"), device: unavailable) }
+        let watch = InventoryDevice.simulator(SimulatorHostDevice(identifier: "watch", name: "Watch", descriptiveName: "Watch",
+            runtimeIdentifier: "watchOS", runtimeName: "watchOS", productFamily: "Apple Watch", state: "Booted"))
+        #expect(await backend.refresh(SimulatorDeviceSettings(boldText: true), after: .boldText(true), device: watch).boldText == nil)
+        #expect(throws: CLIError.self) { try backend.set(.boldText(true), device: watch) }
         #expect(!ran)
     }
 }
