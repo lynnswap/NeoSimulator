@@ -69,6 +69,8 @@ public struct CoreDeviceDevice: Equatable, Sendable {
     public let udid: String?
     public let kind: DeviceInventoryKind
     public let name: String
+    /// The device-reported name before applying display fallbacks.
+    public let reportedName: String?
     public let modelIdentifier: String?
     public let modelName: String?
     public let cpuType: CPUType?
@@ -153,10 +155,10 @@ public enum InventoryDevice: Equatable, Sendable, Identifiable {
         }
     }
 
-    /// Simulator last-use time, or CoreDevice last-connection time. No recency threshold is imposed.
-    public var lastActivityDate: Date? {
+    /// CoreDevice connection time; custom device sets do not borrow default-set metadata.
+    public var lastConnectionDate: Date? {
         switch self {
-        case .simulator(let device): device.lastUsedAt
+        case .simulator(let device): device.coreDevice?.lastConnectedAt
         case .remote(let device): device.lastConnectedAt
         }
     }
@@ -371,6 +373,7 @@ enum CoreDeviceInventoryDecoder {
             return CoreDeviceDevice(
                 identifier: device.identifier, udid: properties.hardware.udid, kind: kind,
                 name: properties.state?.name ?? properties.hardware.marketingName ?? properties.hardware.productType ?? device.identifier,
+                reportedName: properties.state?.name,
                 modelIdentifier: properties.hardware.productType, modelName: properties.hardware.marketingName,
                 // CoreDevice can sign-extend Mach CPU identifiers into unsigned 64-bit JSON values.
                 cpuType: properties.hardware.cpuType.map {

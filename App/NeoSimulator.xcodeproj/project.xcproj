@@ -167,6 +167,7 @@
                 },
               ],
             },
+            { "path": "DeviceBrowserPresentation.swift", "target-membership": [ "NeoSimulator/compile-sources", "NeoSimulatorHostTests/compile-sources" ] },
             { "path": "ManagerWindowController.swift", "target-membership": [ "NeoSimulator/compile-sources", "NeoSimulatorHostTests/compile-sources" ] },
             { "path": "SimulatorSidebarRowView.swift", "target-membership": [ "NeoSimulator/compile-sources", "NeoSimulatorHostTests/compile-sources" ] },
             { "path": "SimulatorSidebarCellView.swift", "target-membership": [ "NeoSimulator/compile-sources", "NeoSimulatorHostTests/compile-sources" ] },

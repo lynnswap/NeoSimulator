@@ -60,17 +60,16 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     private var rows: [DeviceRow] = []
     private var rowsByID: [DeviceInventoryID: DeviceRow] = [:]
     private var devicesByID: [DeviceInventoryID: InventoryDevice] = [:]
-    private var availableRows: [DeviceRow] = []
-    private var unavailableRows: [DeviceRow] = []
+    private var groups: [DeviceGroup] = []
+    private var groupsByID: [String: DeviceGroup] = [:]
     private var displayedManagingIDs: Set<DeviceInventoryID> = []
     private(set) var selectedIdentifiers = Set<DeviceInventoryID>()
-    private let availableGroup = AvailabilityGroup(available: true)
-    private let unavailableGroup = AvailabilityGroup(available: false)
-    private var expandedGroups: Set<Bool> = [true, false]
+    private let defaults: UserDefaults
+    private var collapsedGroups: Set<String>
+    private var options: DeviceBrowserPresentation.Options
     private var loadedRows = false
     private var displayedGrouping = false
-    private var displayedGroups: [Bool] = []
-    private var groupByAvailability = true
+    private var displayedGroups: [String] = []
     private let deviceMenu = NSMenu(title: "Device Actions")
     private var sidebarObservation: NSKeyValueObservation?
     private var toolbarAppearanceObservation: NSKeyValueObservation?
@@ -80,17 +79,18 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     private var kindFilter = DeviceKindFilter.all
     private var availabilityFilter = DeviceAvailabilityFilter.all
     private var familyFilter: String?
-    private var sortOrder = DeviceSortOrder.name
+    private typealias DeviceSortOrder = DeviceBrowserPresentation.SortOrder
 
     private final class DeviceRow: NSObject {
         let id: DeviceInventoryID
         init(id: DeviceInventoryID) { self.id = id }
     }
 
-    private final class AvailabilityGroup: NSObject {
-        let available: Bool
-        var title: String { available ? "Available" : "Unavailable" }
-        init(available: Bool) { self.available = available }
+    private final class DeviceGroup: NSObject {
+        let id: String
+        var title: String
+        var rows: [DeviceRow] = []
+        init(id: String, title: String) { self.id = id; self.title = title }
     }
 
     private enum DeviceKindFilter: Int, CaseIterable {
@@ -135,23 +135,11 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         }
     }
 
-    private enum DeviceSortOrder: Int, CaseIterable {
-        case availability, recent, name, fidelity, platform, operatingSystem
-
-        var title: String {
-            switch self {
-            case .availability: "Availability"
-            case .recent: "Recent"
-            case .name: "Name"
-            case .fidelity: "Fidelity"
-            case .platform: "Platform"
-            case .operatingSystem: "Operating System"
-            }
-        }
-    }
-
-    init(model: SimulatorManagerModel) {
+    init(model: SimulatorManagerModel, defaults: UserDefaults = .standard) {
         self.model = model
+        self.defaults = defaults
+        options = DeviceBrowserPresentation.Options(defaults: defaults)
+        collapsedGroups = Set(defaults.stringArray(forKey: "SidebarCollapsedSectionIDs") ?? [])
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1040, height: 700),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                               backing: .buffered, defer: false)
@@ -189,16 +177,11 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     func update() {
         let previousIdentifier = selectionIdentifier
         selectedIdentifiers.formIntersection(Set(model.inventory.map(\.id)))
-        if groupByAvailability, loadedRows {
-            for group in availabilityGroups where table.row(forItem: group) >= 0 {
-                if table.isItemExpanded(group) { expandedGroups.insert(group.available) }
-                else { expandedGroups.remove(group.available) }
-            }
-        }
+        rememberCollapsedGroups()
         updatingSelection = true
         reloadRows()
-        if groupByAvailability {
-            for group in availabilityGroups where expandedGroups.contains(group.available) { table.expandItem(group) }
+        if options.showGroups {
+            for group in groups where !collapsedGroups.contains(group.id) { table.expandItem(group) }
         }
         restoreVisibleSelection()
         updatingSelection = false
@@ -272,80 +255,68 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
                 && (query.isEmpty || $0.name.localizedStandardContains(query)
                     || ($0.operatingSystem?.localizedStandardContains(query) ?? false)
                     || (modelName(of: $0)?.localizedStandardContains(query) ?? false))
-        }.sorted(by: precedes)
-    }
-
-    private func precedes(_ lhs: InventoryDevice, _ rhs: InventoryDevice) -> Bool {
-        switch sortOrder {
-        case .availability:
-            if lhs.isAvailable != rhs.isAvailable { return lhs.isAvailable }
-        case .recent:
-            let a = lhs.lastActivityDate ?? .distantPast, b = rhs.lastActivityDate ?? .distantPast
-            if a != b { return a > b }
-        case .fidelity:
-            let a = fidelity(of: lhs), b = fidelity(of: rhs)
-            if a != b { return a < b }
-        case .platform:
-            let order = platform(of: lhs).localizedStandardCompare(platform(of: rhs))
-            if order != .orderedSame { return order == .orderedAscending }
-        case .operatingSystem:
-            let order = (lhs.operatingSystem ?? "").compare(rhs.operatingSystem ?? "", options: .numeric)
-            if order != .orderedSame { return order == .orderedDescending }
-        case .name: break
-        }
-        let names = lhs.name.localizedStandardCompare(rhs.name)
-        if names != .orderedSame { return names == .orderedAscending }
-        let versions = version(of: lhs).compare(version(of: rhs), options: .numeric)
-        if versions != .orderedSame { return versions == .orderedDescending }
-        return stableKey(lhs.id) < stableKey(rhs.id)
-    }
-
-    private var availabilityGroups: [AvailabilityGroup] {
-        [availableGroup, unavailableGroup].filter { group in
-            switch availabilityFilter {
-            case .all: true
-            case .available: group.available
-            case .unavailable: !group.available
-            }
         }
     }
 
     private func device(for row: DeviceRow) -> InventoryDevice? { devicesByID[row.id] }
 
-    private func children(of group: AvailabilityGroup) -> [DeviceRow] {
-        group.available ? availableRows : unavailableRows
+    private func rememberCollapsedGroups() {
+        guard options.showGroups, loadedRows else { return }
+        for group in groups where table.row(forItem: group) >= 0 {
+            if table.isItemExpanded(group) { collapsedGroups.remove(group.id) }
+            else { collapsedGroups.insert(group.id) }
+        }
+    }
+
+    private func saveCollapsedGroups() {
+        defaults.set(collapsedGroups.sorted(), forKey: "SidebarCollapsedSectionIDs")
+    }
+
+    func outlineViewItemDidExpand(_ notification: Notification) {
+        guard !updatingSelection, let group = notification.userInfo?["NSObject"] as? DeviceGroup else { return }
+        collapsedGroups.remove(group.id)
+        saveCollapsedGroups()
+    }
+
+    func outlineViewItemDidCollapse(_ notification: Notification) {
+        guard !updatingSelection, let group = notification.userInfo?["NSObject"] as? DeviceGroup else { return }
+        collapsedGroups.insert(group.id)
+        saveCollapsedGroups()
     }
 
     private func reloadRows() {
         let previousDevices = devicesByID
         let previousRows = rows.map(\.id)
-        let previousAvailable = availableRows.map(\.id)
-        let previousUnavailable = unavailableRows.map(\.id)
+        let previousMembers = groups.map { $0.rows.map(\.id) }
         rebuildRows()
-        let groups = availabilityGroups.map(\.available)
-        let sameStructure = loadedRows && displayedGrouping == groupByAvailability
+        let sameStructure = loadedRows && displayedGrouping == options.showGroups
             && previousRows == rows.map(\.id)
-            && (!groupByAvailability || (displayedGroups == groups
-                && previousAvailable == availableRows.map(\.id)
-                && previousUnavailable == unavailableRows.map(\.id)))
+            && (!options.showGroups || (displayedGroups == groups.map(\.id)
+                && previousMembers == groups.map { $0.rows.map(\.id) }))
         if sameStructure {
             for row in rows where previousDevices[row.id] != devicesByID[row.id] { table.reloadItem(row) }
         } else { table.reloadData() }
-        displayedGrouping = groupByAvailability
-        displayedGroups = groups
+        displayedGrouping = options.showGroups
+        displayedGroups = groups.map(\.id)
     }
 
     private func rebuildRows() {
         devicesByID = Dictionary(model.inventory.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         rowsByID = rowsByID.filter { devicesByID[$0.key] != nil }
-        rows = filteredDevices.map { device in
+        let presentation = DeviceBrowserPresentation(devices: filteredDevices, sortOrder: options.sortOrder)
+        rows = presentation.devices.map { device in
             if let row = rowsByID[device.id] { return row }
             let row = DeviceRow(id: device.id)
             rowsByID[device.id] = row
             return row
         }
-        availableRows = rows.filter { devicesByID[$0.id]?.isAvailable == true }
-        unavailableRows = rows.filter { devicesByID[$0.id]?.isAvailable == false }
+        groups = presentation.sections.map { section in
+            let group = groupsByID[section.id] ?? DeviceGroup(id: section.id, title: section.title)
+            group.title = section.title
+            group.rows = section.devices.compactMap { rowsByID[$0.id] }
+            return group
+        }
+        groupsByID = Dictionary(uniqueKeysWithValues: groups.map { ($0.id, $0) })
     }
 
     private func restoreVisibleSelection() {
@@ -540,20 +511,20 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     }
 
     func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
-        if let group = item as? AvailabilityGroup { return children(of: group).count }
-        return item == nil ? (groupByAvailability ? availabilityGroups.count : rows.count) : 0
+        if let group = item as? DeviceGroup { return group.rows.count }
+        return item == nil ? (options.showGroups ? groups.count : rows.count) : 0
     }
 
     func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any {
-        if let group = item as? AvailabilityGroup { return children(of: group)[index] }
-        return groupByAvailability ? availabilityGroups[index] as Any : rows[index] as Any
+        if let group = item as? DeviceGroup { return group.rows[index] }
+        return options.showGroups ? groups[index] as Any : rows[index] as Any
     }
 
-    func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool { item is AvailabilityGroup }
-    func outlineView(_ outlineView: NSOutlineView, isGroupItem item: Any) -> Bool { item is AvailabilityGroup }
+    func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool { item is DeviceGroup }
+    func outlineView(_ outlineView: NSOutlineView, isGroupItem item: Any) -> Bool { item is DeviceGroup }
     func outlineView(_ outlineView: NSOutlineView, shouldSelectItem item: Any) -> Bool { item is DeviceRow }
     func outlineView(_ outlineView: NSOutlineView, heightOfRowByItem item: Any) -> CGFloat {
-        item is AvailabilityGroup ? 26 : 52
+        item is DeviceGroup ? 26 : 52
     }
 
     func outlineView(_ outlineView: NSOutlineView, typeSelectStringFor tableColumn: NSTableColumn?, item: Any) -> String? {
@@ -571,8 +542,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     }
 
     func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
-        if let group = item as? AvailabilityGroup {
-            let identifier = NSUserInterfaceItemIdentifier("DeviceAvailabilityGroup")
+        if let group = item as? DeviceGroup {
+            let identifier = NSUserInterfaceItemIdentifier("DeviceBrowserGroup")
             let cell = outlineView.makeView(withIdentifier: identifier, owner: self) as? NSTableCellView ?? NSTableCellView()
             cell.identifier = identifier
             if cell.textField == nil {
@@ -617,12 +588,13 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     func controlTextDidChange(_ notification: Notification) { update() }
 
     private var selectedDevices: [InventoryDevice] {
-        model.inventory.filter { selectedIdentifiers.contains($0.id) }.sorted(by: precedes)
+        DeviceBrowserPresentation(devices: model.inventory.filter { selectedIdentifiers.contains($0.id) },
+                                  sortOrder: options.sortOrder).devices
     }
 
     private var visibleSelectedDevices: [InventoryDevice] {
         let identifiers = Set(table.selectedRowIndexes.compactMap { (table.item(atRow: $0) as? DeviceRow)?.id })
-        return model.inventory.filter { identifiers.contains($0.id) }.sorted(by: precedes)
+        return rows.compactMap { device(for: $0) }.filter { identifiers.contains($0.id) }
     }
 
     private var selectedSimulator: SimulatorHostDevice? {
@@ -685,8 +657,10 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         selectedIdentifiers = [identifier]
         updatingSelection = true
         reloadRows()
-        if groupByAvailability, rows.contains(where: { $0.id == identifier }), let device = devicesByID[identifier] {
-            table.expandItem(device.isAvailable ? availableGroup : unavailableGroup)
+        if options.showGroups, let group = groups.first(where: { $0.rows.contains { $0.id == identifier } }) {
+            collapsedGroups.remove(group.id)
+            table.expandItem(group)
+            saveCollapsedGroups()
         }
         restoreVisibleSelection()
         updatingSelection = false
@@ -927,22 +901,6 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         case .physical: "Physical"
         case .virtualMachine: "Virtual Machine"
         case .other: "Other"
-        }
-    }
-
-    private func fidelity(of device: InventoryDevice) -> Int {
-        switch device.kind {
-        case .physical: 0
-        case .virtualMachine: 1
-        case .simulator: 2
-        case .other: 3
-        }
-    }
-
-    private func stableKey(_ identifier: DeviceInventoryID) -> String {
-        switch identifier {
-        case .simulator(let udid, let path): "simulator:\(udid):\(path.map { "set:\($0)" } ?? "default")"
-        case .coreDevice(let identifier): "coredevice:\(identifier)"
         }
     }
 
@@ -1377,9 +1335,9 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             item.state = availabilityFilter == filter ? .on : .off
             menu.addItem(item)
         }
-        let grouping = NSMenuItem(title: "Group by Availability", action: #selector(toggleAvailabilityGroups(_:)), keyEquivalent: "")
+        let grouping = NSMenuItem(title: "Show Groups", action: #selector(toggleDeviceGroups(_:)), keyEquivalent: "")
         grouping.target = self
-        grouping.state = groupByAvailability ? .on : .off
+        grouping.state = options.showGroups ? .on : .off
         menu.addItem(grouping)
         menu.addItem(.separator())
         menu.addItem(.sectionHeader(title: "Device Family"))
@@ -1400,7 +1358,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             let item = NSMenuItem(title: order.title, action: #selector(sortDevices(_:)), keyEquivalent: "")
             item.target = self
             item.tag = order.rawValue
-            item.state = sortOrder == order ? .on : .off
+            item.state = options.sortOrder == order ? .on : .off
             menu.addItem(item)
         }
     }
@@ -1417,14 +1375,10 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         update()
     }
 
-    @objc private func toggleAvailabilityGroups(_ sender: Any?) {
-        if groupByAvailability {
-            for group in availabilityGroups {
-                if table.isItemExpanded(group) { expandedGroups.insert(group.available) }
-                else { expandedGroups.remove(group.available) }
-            }
-        }
-        groupByAvailability.toggle()
+    @objc private func toggleDeviceGroups(_ sender: Any?) {
+        rememberCollapsedGroups()
+        options.showGroups.toggle()
+        options.save(to: defaults)
         loadedRows = false
         update()
     }
@@ -1436,7 +1390,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
 
     @objc private func sortDevices(_ sender: NSMenuItem) {
         guard let order = DeviceSortOrder(rawValue: sender.tag) else { return }
-        sortOrder = order
+        options.sortOrder = order
+        options.save(to: defaults)
         update()
     }
 
