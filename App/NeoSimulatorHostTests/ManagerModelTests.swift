@@ -4,7 +4,7 @@ import Observation
 import SwiftUI
 import Testing
 import XCTest
-@testable import XcodeSimulatorHost
+@_spi(NeoSimulator) @testable import XcodeSimulatorHost
 
 @Suite(.serialized, .timeLimit(.minutes(1))) @MainActor
 struct ManagerModelTests {
@@ -1221,27 +1221,38 @@ struct ManagerModelTests {
         #expect(!model.isLoading)
     }
 
-    @Test func failedEditRefreshesTheSelectedDevice() async throws {
+    @Test func partialEditConfirmsActualValuesBeforeReportingTheFailure() async throws {
         let device = simulator()
         let source = ManagerModelSource(devices: [device])
         var events = source.events.makeAsyncIterator()
-        let model = DeviceSettingsModel(source: source)
-        model.inspect(device, selectionCount: 1)
+        let reported = AsyncStream<(SimulatorHostFailure?, Bool?, String?)>.makeStream()
+        var errors = reported.stream.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source)
+        manager.onError = { error in
+            reported.continuation.yield((error as? SimulatorHostFailure,
+                manager.settings.settings?.boldText, manager.settings.settings?.contentSize))
+        }
+        await manager.refresh()
+        manager.settings.inspect(device, selectionCount: 1)
         #expect(await events.next() == .read(device.id))
-        await source.completeRead(settings(appearance: "light"))
-        await model.finishReading()
+        await source.completeRead(SimulatorDeviceSettings(contentSize: "medium", boldText: false))
+        await manager.settings.finishReading()
 
-        let edit = model.accept(.appearance("dark"), for: device)
-        let applying = Task { try await model.apply(edit) }
+        manager.setDeviceSetting(.boldText(true), for: device.id)
         #expect(await events.next() == .write(device.id))
-        await source.failWrite()
-        do { try await applying.value; Issue.record("The source failure must reach the caller.") }
-        catch { #expect(error is ManagerModelSource.Failure) }
+        manager.setDeviceSetting(.contentSize("large"), for: device.id)
+        await source.failWrite(afterApplying: true)
+        let failure = try #require(await errors.next())
+        #expect(failure.0?.technicalDetails == "Unavailable")
+        #expect(failure.1 == true && failure.2 == "large")
+        #expect(await events.next() == .write(device.id))
+        #expect(await source.writeInputs.last??.boldText == true)
+        await source.returnOnNextRead(SimulatorDeviceSettings(contentSize: "large", boldText: true))
+        await source.completeWrite()
         #expect(await events.next() == .read(device.id))
-        await source.completeRead(settings(appearance: "dark"))
-        await model.finishReading()
-        #expect(model.settings?.appearance == "dark")
-        #expect(model.issue == nil)
+        await manager.settings.finishReading()
+        #expect(manager.settings.settings?.boldText == true && manager.settings.settings?.contentSize == "large")
+        try await manager.quitRenderer(keepingDevicesRunning: true)
     }
 
     @Test func rapidSwitchEditsKeepTheirLatestValuesWhenAnEarlierWriteFails() async throws {
@@ -1283,7 +1294,8 @@ struct ManagerModelTests {
         try await manager.quitRenderer(keepingDevicesRunning: true)
     }
 
-    @Test func pendingEditsStayWithTheirDeviceAcrossSelectionChanges() async throws {
+    @Test(arguments: [false, true])
+    func pendingEditsStayWithTheirDeviceAcrossSelectionChanges(_ partialFailure: Bool) async throws {
         let first = simulator(deviceSet: "/first")
         let second = simulator(deviceSet: "/second")
         let source = ManagerModelSource(devices: [first, second])
@@ -1299,7 +1311,8 @@ struct ManagerModelTests {
 
         manager.settings.inspect(second, selectionCount: 1)
         #expect(manager.settings.settings == nil)
-        await source.completeWrite()
+        if partialFailure { await source.failWrite(afterApplying: true) }
+        else { await source.completeWrite() }
         #expect(await events.next() == .read(second.id))
         await source.completeRead(SimulatorDeviceSettings(showBorders: false))
         await manager.settings.finishReading()
@@ -1867,6 +1880,7 @@ actor ManagerModelSource: SimulatorManagerSource {
         switch setting {
         case .appearance(let appearance): updated.appearance = appearance
         case .contentSize(let size): updated.contentSize = size
+        case .boldText(let value): updated.boldText = value
         case .showBorders(let value): updated.showBorders = value
         case .reduceTransparency(let value): updated.reduceTransparency = value
         default: throw Failure.unavailable
@@ -1884,11 +1898,17 @@ actor ManagerModelSource: SimulatorManagerSource {
         pendingWrite = nil
         if let updated { waiting?.resume(returning: updated) }
     }
-    func failWrite() {
+    func failWrite(afterApplying: Bool = false) {
         let waiting = writeContinuation
+        let updated = pendingWrite
         writeContinuation = nil
         pendingWrite = nil
-        waiting?.resume(throwing: Failure.unavailable)
+        if afterApplying, let updated {
+            waiting?.resume(throwing: SimulatorDeviceSettingsUpdateFailure(settings: updated,
+                underlyingError: SimulatorHostFailure(Failure.unavailable)))
+        } else {
+            waiting?.resume(throwing: Failure.unavailable)
+        }
     }
     func quitRenderer(keepingDevicesRunning: Bool?) { continuation.yield(.quit) }
     func selectHost(_ host: SimulatorHost, xcodeURL: URL?) throws { throw Failure.unavailable }

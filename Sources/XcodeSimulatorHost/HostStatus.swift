@@ -103,6 +103,15 @@ public struct SimulatorDeviceSettings: Sendable {
     public internal(set) var issues: [String] = []
 }
 
+/// A failed write with the settings read after that attempt, including any partial changes.
+@_spi(NeoSimulator) public struct SimulatorDeviceSettingsUpdateFailure: Error, LocalizedError, Sendable {
+    public let settings: SimulatorDeviceSettings
+    public let underlyingError: SimulatorHostFailure
+    public var errorDescription: String? { underlyingError.errorDescription }
+    public var failureReason: String? { underlyingError.failureReason }
+    public var recoverySuggestion: String? { underlyingError.recoverySuggestion }
+}
+
 public enum SimulatorDeviceSetting: Sendable {
     case appearance(String)
     case contentSize(String)
@@ -265,20 +274,27 @@ extension SimulatorHostController {
 
     /// Writes a setting and refreshes its values in an existing snapshot.
     /// Unrelated values and query issues are preserved. A failed refresh marks its values
-    /// unavailable and records an issue; a write or persistence failure is thrown.
+    /// unavailable and records an issue. A write or persistence failure includes the
+    /// post-attempt settings in `SimulatorDeviceSettingsUpdateFailure`.
     public func setDeviceSetting(_ setting: SimulatorDeviceSetting, for device: InventoryDevice,
                                  updating settings: SimulatorDeviceSettings) async throws -> SimulatorDeviceSettings {
         do {
             let inspector = try await inspector(for: device)
-            try await applyDeviceSetting(setting, device: device, xcodeURL: inspector.simulatorXcodeURL)
-            var updated = await Self.refreshSettings(settings, after: setting, device: device,
-                                                     xcodeURL: inspector.simulatorXcodeURL)
+            let outcome = await Self.updateSettings(settings, after: setting, device: device,
+                                                    xcodeURL: inspector.simulatorXcodeURL) {
+                try await self.applyDeviceSetting(setting, device: device, xcodeURL: inspector.simulatorXcodeURL)
+            }
+            var updated = outcome.settings
             switch setting {
             case .location, .locationScenario, .clearLocation: readSavedLocation(for: device, settings: &updated)
             default: break
             }
+            if let failure = outcome.failure {
+                throw SimulatorDeviceSettingsUpdateFailure(settings: updated, underlyingError: failure)
+            }
             return updated
-        } catch let error as SimulatorHostFailure { throw error }
+        } catch let error as SimulatorDeviceSettingsUpdateFailure { throw error }
+        catch let error as SimulatorHostFailure { throw error }
         catch { throw SimulatorHostFailure(error) }
     }
 
@@ -400,9 +416,11 @@ extension SimulatorHostController {
     }
 
     @concurrent
-    private static func refreshSettings(_ settings: SimulatorDeviceSettings, after setting: SimulatorDeviceSetting,
-                                        device: InventoryDevice, xcodeURL: URL?) async -> SimulatorDeviceSettings {
-        await settingsBackend(device: device, xcodeURL: xcodeURL).refresh(settings, after: setting, device: device)
+    private static func updateSettings(_ settings: SimulatorDeviceSettings, after setting: SimulatorDeviceSetting,
+                                       device: InventoryDevice, xcodeURL: URL?,
+                                       applying write: @escaping @Sendable () async throws -> Void)
+        async -> (settings: SimulatorDeviceSettings, failure: SimulatorHostFailure?) {
+        await settingsBackend(device: device, xcodeURL: xcodeURL).update(settings, with: setting, device: device, applying: write)
     }
 
     @concurrent
@@ -477,6 +495,15 @@ struct SimulatorSettingsBackend {
 
     func read(device: InventoryDevice) async -> SimulatorDeviceSettings {
         await read(device: device, updating: SimulatorDeviceSettings(), queries: Set(Query.allCases), refreshAudioDevices: true)
+    }
+
+    func update(_ settings: SimulatorDeviceSettings, with setting: SimulatorDeviceSetting, device: InventoryDevice,
+                applying write: () async throws -> Void) async -> (settings: SimulatorDeviceSettings, failure: SimulatorHostFailure?) {
+        var failure: SimulatorHostFailure?
+        do { try await write() }
+        catch { failure = error as? SimulatorHostFailure ?? SimulatorHostFailure(error) }
+        let updated = await refresh(settings, after: setting, device: device)
+        return (updated, failure)
     }
 
     func refresh(_ settings: SimulatorDeviceSettings, after setting: SimulatorDeviceSetting,

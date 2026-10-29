@@ -1004,16 +1004,18 @@ struct SimulatorSettingsBackendTests {
 
     @Test func boldTextUsesTheSimulatorPreferenceAndScopedConfirmation() async throws {
         var commands: [[String]] = []
+        var actualBoldText = false
         var failure: String?
         let backend = SimulatorSettingsBackend(run: { tool, arguments in
             #expect(tool == .simctl)
             commands.append(arguments)
+            if failure == "notifyutil", arguments.contains("write") { actualBoldText = arguments.last == "1" }
             if let failure, arguments.contains(failure) { throw CLIError.io("fixture-bold-text", "The command failed.") }
             return Data()
         }, readCommand: { tool, arguments in
             #expect(tool == .simctl && arguments == ["spawn", "device-A", "defaults", "export", "com.apple.Accessibility", "-"])
             if failure == "export" { throw CLIError.io("fixture-bold-text", "The read failed.") }
-            return Data(#"<plist version="1.0"><dict/></plist>"#.utf8)
+            return Data("<plist version=\"1.0\"><dict><key>EnhancedTextLegibilityEnabled</key><integer>\(actualBoldText ? 1 : 0)</integer></dict></plist>".utf8)
         }, audioDevices: { Issue.record("Unrelated audio choices were queried."); return ([], []) })
         let device = simulator("device-A", deviceSetPath: "/custom/Devices")
         var original = SimulatorDeviceSettings(boldText: true, volume: 60)
@@ -1036,11 +1038,13 @@ struct SimulatorSettingsBackendTests {
         catch { #expect((error as? CLIError)?.identifier == "fixture-bold-text") }
         #expect(commands.count == writes + 1)
         failure = "notifyutil"
-        do { try backend.set(.boldText(false), device: device); Issue.record("The notification failure was lost.") }
-        catch {
-            #expect((error as? CLIError)?.identifier == "bold-text-notification")
-            #expect(error.localizedDescription.contains("saved") && error.localizedDescription.contains("The command failed."))
+        let partial = await backend.update(updated, with: .boldText(true), device: device) {
+            try backend.set(.boldText(true), device: device)
         }
+        #expect(partial.settings.boldText == true && partial.settings.volume == 60)
+        #expect(partial.settings.issues == ["audio: Unavailable."])
+        #expect(partial.failure?.technicalDetails.contains("bold-text-notification") == true)
+        #expect(partial.failure?.technicalDetails.contains("saved") == true)
     }
 
     @Test func writesUseTheTargetDeviceAndPreserveCommandFailures() throws {
