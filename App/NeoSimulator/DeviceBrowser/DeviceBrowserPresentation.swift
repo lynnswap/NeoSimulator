@@ -216,6 +216,16 @@ struct DeviceBrowserPresentation {
                                  calendar: Calendar, now: Date) -> Bool {
         let names = (reportedName(lhs) ?? "").localizedCaseInsensitiveCompare(reportedName(rhs) ?? "")
         if order == .name, names != .orderedSame { return names == .orderedAscending }
+        if order == .operatingSystem {
+            switch (coreDevice(lhs)?.osBuildUpdate, coreDevice(rhs)?.osBuildUpdate) {
+            case (.some, nil): return true
+            case (nil, .some): return false
+            case (.some(let a), .some(let b)):
+                if a.isOrdered(before: b) { return true }
+                if b.isOrdered(before: a) { return false }
+            case (nil, nil): break
+            }
+        }
         // Inventory does not contain DeviceKit's transient presentation-active state.
         let aAvailable = isAvailable(lhs), bAvailable = isAvailable(rhs)
         if aAvailable != bAvailable { return aAvailable }

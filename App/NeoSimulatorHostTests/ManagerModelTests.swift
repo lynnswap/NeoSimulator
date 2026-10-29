@@ -117,11 +117,22 @@ struct ManagerModelTests {
         #expect(availability.sections.last?.devices.map(\.id) == [defaultDevice.id])
     }
 
-    @Test func operatingSystemSectionsUseNumericVersionsWithMissingVersionLast() throws {
+    @Test func operatingSystemOrderUsesTypedVersionsWithMissingValuesLast() throws {
+        // base and rebuilt differ only in humanReadableVersionString, which BuildUpdate.< ignores.
         let payload = Data(#"""
         {"result":{"devices":[
           {"identifier":"older","properties":{"hardware":{"reality":"physical","platform":"iOS"},
-            "software":{"osVersionNumber":{"stringValue":"27.2"}}}},
+            "software":{"osVersionNumber":{"stringValue":"27.2"}},"connection":{"state":"connected"}}},
+          {"identifier":"base","properties":{"hardware":{"reality":"physical","platform":"iOS"},
+            "software":{"osVersionNumber":{"stringValue":"27.2"},"osBuildVersions":{"buildVersion":{"majorLetterComponent":"B","majorNumberComponent":24,"name":"24B114",
+              "revisionVersion":{"components":[24,2,114,0,0],"extraInfo":{"humanReadableVersionString":"a","versionExtraString":"x"},"originalComponentsCount":5,"stringValue":"24.2.114.0.0"},"updateNumberComponent":114}}}}},
+          {"identifier":"rebuilt","properties":{"hardware":{"reality":"physical","platform":"iOS"},
+            "software":{"osVersionNumber":{"stringValue":"27.2"},"osBuildVersions":{"buildVersion":{"majorLetterComponent":"B","majorNumberComponent":24,"name":"24B114",
+              "revisionVersion":{"components":[24,2,114,0,0],"extraInfo":{"humanReadableVersionString":"b","versionExtraString":"x"},"originalComponentsCount":5,"stringValue":"24.2.114.0.0"},"updateNumberComponent":114}}},
+            "connection":{"state":"connected"}}},
+          {"identifier":"earlierBuild","properties":{"hardware":{"reality":"physical","platform":"iOS"},
+            "software":{"osVersionNumber":{"stringValue":"27.2"},"osBuildVersions":{"buildVersion":{"factoryIdentifier":9,"majorLetterComponent":"B","majorNumberComponent":24,"name":"24B91016s",
+              "revisionVersion":{"components":[24,2,101,6,19],"originalComponentsCount":5,"stringValue":"24.2.101.6.19"},"updateLetterComponent":"s","updateNumberComponent":91016}}}}},
           {"identifier":"newer","properties":{"hardware":{"reality":"physical","platform":"iOS"},
             "software":{"osVersionNumber":{"stringValue":"27.10"}}}},
           {"identifier":"unknown","properties":{"hardware":{"reality":"physical","platform":"iOS"}}},
@@ -136,6 +147,9 @@ struct ManagerModelTests {
         let devices = try CoreDeviceInventoryDecoder.decode(payload).map(InventoryDevice.remote)
         let presentation = DeviceBrowserPresentation(devices: devices, sortOrder: .operatingSystem)
         #expect(presentation.sections.map(\.title) == ["futureOS 1.0", "iOS 27.10", "iOS 27.2", "iOS Other", "watchOS 27.2", "visionOS 27.2"])
+        // Typed builds precede availability: 24B91016s before 24B114, and a missing build after both.
+        #expect(presentation.sections.first { $0.id == "iOS 27.2" }?.devices.map(\.id)
+            == ["earlierBuild", "rebuilt", "base", "older"].map(DeviceInventoryID.coreDevice))
         let platforms = DeviceBrowserPresentation(devices: devices, sortOrder: .platform)
         #expect(platforms.sections.map(\.id) == ["futureOS", "iOS", "watchOS", "xrOS"])
         #expect(platforms.sections.map(\.title) == ["futureOS", "iOS", "watchOS", "visionOS"])
@@ -620,7 +634,7 @@ struct ManagerModelTests {
         let features: Set<String> = ["streamapplist", "installapp", "launchapplication", "configurationprofiles", "listFiles", "transferFiles"]
         func device(_ identifier: String = "inspected-device", name: String = "Phone", features: Set<String> = features) -> InventoryDevice {
             .remote(CoreDeviceDevice(identifier: identifier, udid: nil, kind: .physical, name: name, reportedName: name,
-                modelIdentifier: nil, modelName: nil, cpuType: nil, platform: "iOS", osVersion: nil, osBuild: nil,
+                modelIdentifier: nil, modelName: nil, cpuType: nil, platform: "iOS", osVersion: nil, osBuild: nil, osBuildUpdate: nil,
                 connectionState: "connected", pairingState: "paired", transportType: nil, bootState: "booted", preparednessState: nil,
                 capabilities: Set(features.map { "com.apple.coredevice.feature." + $0 }), lastConnectedAt: nil, visibilityClass: nil))
         }
@@ -693,7 +707,7 @@ struct ManagerModelTests {
         _ = NSApplication.shared
         func device(features: Set<String>) -> InventoryDevice {
             .remote(CoreDeviceDevice(identifier: "inspected-device", udid: nil, kind: .physical, name: "Phone", reportedName: "Phone",
-                modelIdentifier: nil, modelName: nil, cpuType: nil, platform: "iOS", osVersion: nil, osBuild: nil,
+                modelIdentifier: nil, modelName: nil, cpuType: nil, platform: "iOS", osVersion: nil, osBuild: nil, osBuildUpdate: nil,
                 connectionState: "connected", pairingState: "paired", transportType: nil, bootState: "booted", preparednessState: nil,
                 capabilities: Set(features.map { "com.apple.coredevice.feature." + $0 }), lastConnectedAt: nil, visibilityClass: nil))
         }
@@ -1529,7 +1543,7 @@ struct ManagerModelTests {
     @Test func remoteDuoResolvesInstalledArtworkWithoutOpeningAScreen() async {
         let device = InventoryDevice.remote(CoreDeviceDevice(identifier: "remote-duo", udid: nil,
             kind: .physical, name: "Duo", reportedName: "Duo", modelIdentifier: "iPhone19,4", modelName: "iPhone Duo", cpuType: nil,
-            platform: "iOS", osVersion: nil, osBuild: nil, connectionState: "connected",
+            platform: "iOS", osVersion: nil, osBuild: nil, osBuildUpdate: nil, connectionState: "connected",
             pairingState: "paired", transportType: nil, bootState: "booted", preparednessState: nil, capabilities: [],
             lastConnectedAt: nil, visibilityClass: nil))
         let source = ManagerModelSource(devices: [device])
@@ -1659,7 +1673,7 @@ struct ManagerModelTests {
     @Test func remoteInfoUsesAvailablePropertiesWithoutSubstitutingItsCommandIDForUDID() async throws {
         let remote = CoreDeviceDevice(identifier: "command-id", udid: nil,
             kind: .physical, name: "Known Phone", reportedName: "Known Phone", modelIdentifier: "iPhone19,2", modelName: "iPhone 18 Pro", cpuType: nil,
-            platform: "iOS", osVersion: "27.1", osBuild: nil, connectionState: "connected",
+            platform: "iOS", osVersion: "27.1", osBuild: nil, osBuildUpdate: nil, connectionState: "connected",
             pairingState: "paired", transportType: nil, bootState: "booted", preparednessState: nil, capabilities: [],
             lastConnectedAt: nil, visibilityClass: nil)
         let payload = Data(#"""
