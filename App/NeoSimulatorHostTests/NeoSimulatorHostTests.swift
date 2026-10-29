@@ -300,6 +300,7 @@ struct InputFocusTests {
         let canvas = controller.presentationViewController.view
         let viewport = try #require(canvas.layoutGuides.first { $0.identifier.rawValue == "DeviceCanvasViewport" })
         let window = try #require(controller.presentationWindow)
+        let compactRoot = try #require(window.contentView)
         window.contentView?.layoutSubtreeIfNeeded()
         window.setContentSize(NSSize(width: window.contentView!.bounds.width + 120,
                                      height: window.contentView!.bounds.height + 80))
@@ -355,6 +356,7 @@ struct InputFocusTests {
         mainWindow.setContentSize(NSSize(width: 1040, height: 650))
         mainWindow.contentView?.layoutSubtreeIfNeeded()
         mainWindow.displayIfNeeded()
+        #expect(window.contentView === compactRoot && !canvas.isDescendant(of: compactRoot))
         #expect(controls.superview !== canvas && controls.window === mainWindow)
         #expect(abs(canvas.convert(viewport.frame, to: nil).minY - controls.convert(controls.bounds, to: nil).maxY) < 1)
         #expect(viewport.frame.height > canvas.bounds.height - controls.bounds.height)
@@ -364,6 +366,8 @@ struct InputFocusTests {
         controller.showCompactWindow()
         manager.showDevicePreview(ifDisplaying: identifier)
         window.contentView?.layoutSubtreeIfNeeded()
+        #expect(window.contentView === compactRoot && canvas.superview === compactRoot)
+        #expect(canvas.frame == compactRoot.bounds)
         #expect(controls.superview === canvas && controls.window === window)
         #expect(viewport.frame.height > 0 && display.renderScale > 0)
         #expect(canvas.convert(viewport.frame, to: nil).insetBy(dx: -1, dy: -1).contains(display.view.convert(display.view.bounds, to: nil)))
@@ -1158,6 +1162,7 @@ struct InputFocusTests {
         let controls = DeviceCanvasControls()
         controls.update(supports: { _ in true }, isEnabled: { _ in true }, recordingTitle: "Record Screen")
         controller.canvasControls = controls
+        let compactRoot = try #require(controller.window?.contentView)
         let session = controller.session
         let parent = NSViewController()
         parent.view = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 600))
@@ -1189,6 +1194,8 @@ struct InputFocusTests {
         parent.view.setFrameSize(NSSize(width: 300, height: 480))
         parent.view.layoutSubtreeIfNeeded()
         let content = controller.presentationViewController.view
+        #expect(controller.window?.contentView === compactRoot)
+        #expect(!content.isDescendant(of: compactRoot))
         #expect(content.bounds.contains(display.view.convert(display.view.bounds, to: content)))
         let accessory = DeviceCanvasAccessoryViewController()
         var minimumWidth: CGFloat = 0
@@ -1210,7 +1217,8 @@ struct InputFocusTests {
         #expect(controller.window?.level == .floating)
         controller.perform(.stayOnTop)
         #expect(controller.window?.level == .normal)
-        #expect(controller.window?.contentView === content && controls.superview === content)
+        #expect(controller.window?.contentView === compactRoot && content.superview === compactRoot)
+        #expect(content.frame == compactRoot.bounds && controls.superview === content)
         controller.setScale(.physicalSize)
         let compactScale = display.renderScale
         compactWindow.setFrameOrigin(NSPoint(x: visible.minX + 20, y: visible.minY + 20))
@@ -1241,6 +1249,7 @@ struct InputFocusTests {
         controller.reconnect(replacementSession, present: false)
         #expect(controller.isEmbedded && controller.presentationViewController.parent === parent)
         #expect(controller.session === replacementSession && compactPresentations == 2)
+        #expect(controller.window?.contentView === compactRoot)
         #expect(replacement.disconnectCount == 0 && display.disconnectCount == 1 && closes == 0)
         #expect(controller.canvasControls === controls && controls.window === window)
         #expect(controls.isDescendant(of: accessory.view) && !accessory.isHidden && minimumWidth > 0)
@@ -4772,7 +4781,7 @@ struct InputFocusTests {
             #expect(display.isResizing)
         }
         // No view consumes the header gap, so its presses reach window dragging.
-        let content = try #require(window.contentView)
+        let content = controller.presentationViewController.view
         let gap = content.convert(NSPoint(
             x: view.frame.midX, y: view.frame.maxY + WindowScale.displayGap(bezelPadding: display.chromePadding) / 2), to: nil)
         #expect(try press(window, at: gap) === content)
