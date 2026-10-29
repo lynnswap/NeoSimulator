@@ -1382,6 +1382,7 @@ struct ManagerModelTests {
         #expect(viewport.height > 0 && row.height > 0)
         #expect(viewport.minY <= row.minY + backingPixel)
         #expect(viewport.maxY >= row.maxY - backingPixel)
+        #expect(row.height >= 40)
         #expect(pairedScroll.frame.height < 120)
         let pairedRow = try #require(pairedTable.view(atColumn: 0, row: 0, makeIfNecessary: true))
         pairedRow.layoutSubtreeIfNeeded()
@@ -1425,6 +1426,11 @@ struct ManagerModelTests {
         let emptyPairedTable = try #require(tables(in: view).first)
         #expect(emptyPairedTable.numberOfRows == 1)
         #expect(emptyPairedTable.selectedRow == -1)
+        let emptyScroll = try #require(emptyPairedTable.enclosingScrollView)
+        let emptyRow = emptyPairedTable.rect(ofRow: 0)
+        #expect(emptyRow.height >= 120)
+        #expect(emptyScroll.documentVisibleRect.minY <= emptyRow.minY + backingPixel)
+        #expect(emptyScroll.documentVisibleRect.maxY >= emptyRow.maxY - backingPixel)
 
         var selected: DeviceInventoryID?
         let selectionController = NSHostingController(rootView: PairedSimulatorsView(
@@ -1437,6 +1443,13 @@ struct ManagerModelTests {
         let selectionTable = try #require(tables(in: selectionView).first)
         selectionTable.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
         #expect(selected == phone.inventoryID)
+        selectionController.rootView = PairedSimulatorsView(
+            devices: [], selection: Binding(get: { selected }, set: { selected = $0 }),
+            emptyLabel: "No Paired iPhone Simulators", menu: { _ in NSMenu() })
+        selectionView.layoutSubtreeIfNeeded()
+        window.displayIfNeeded()
+        #expect(selectionTable.numberOfRows == 1)
+        #expect(selectionTable.selectedRow == -1)
     }
 
     @Test func profilesFollowTheAvailableKindWhenChangingDevices() throws {

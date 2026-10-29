@@ -4,6 +4,7 @@ import XcodeSimulatorHost
 
 @MainActor
 struct PairedSimulatorsView: NSViewRepresentable {
+    private static let minimumPartnerRowHeight: CGFloat = 40
     let devices: [SimulatorHostDevice]
     @Binding var selection: DeviceInventoryID?
     let emptyLabel: String
@@ -48,7 +49,7 @@ struct PairedSimulatorsView: NSViewRepresentable {
             table.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("Partner")))
             table.headerView = nil
             table.style = .plain
-            table.rowSizeStyle = .medium
+            table.rowSizeStyle = .custom
             table.usesAutomaticRowHeights = true
             table.allowsEmptySelection = true
             table.allowsMultipleSelection = false
@@ -149,7 +150,7 @@ struct PairedSimulatorsView: NSViewRepresentable {
 
         override init(frame frameRect: NSRect) {
             super.init(frame: frameRect)
-            title.lineBreakMode = .byTruncatingMiddle
+            title.lineBreakMode = .byTruncatingTail
             title.maximumNumberOfLines = 1
             title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
             more.isBordered = false
@@ -165,6 +166,7 @@ struct PairedSimulatorsView: NSViewRepresentable {
                 stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
                 stack.topAnchor.constraint(equalTo: topAnchor, constant: 4),
                 stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4),
+                heightAnchor.constraint(greaterThanOrEqualToConstant: minimumPartnerRowHeight),
             ])
             textField = title
         }

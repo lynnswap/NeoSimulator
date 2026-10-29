@@ -21,17 +21,20 @@ struct DeviceInformationView: View {
                 simulator.productFamily == "iPhone" || simulator.productFamily == "Apple Watch" {
                 simulator
             } else { nil }
-            Form {
+            Group {
                 if editsVisibility {
-                    visibilityEditor(information)
+                    Form { visibilityEditor(information) }
+                        .formStyle(.grouped)
                 } else {
-                    informationCards(information, includesPairing: pairingDevice != nil)
-                    if let simulator = pairingDevice {
-                        pairedSimulators(simulator)
+                    Form {
+                        informationCards(information, includesPairing: pairingDevice != nil)
+                        if let simulator = pairingDevice {
+                            pairedSimulators(simulator)
+                        }
                     }
+                    .formStyle(InformationFormStyle())
                 }
             }
-            .formStyle(.grouped)
             .safeAreaBar(edge: .bottom, spacing: 0) {
                 if editsVisibility {
                     Button("Done") { editsVisibility = false }
@@ -151,7 +154,7 @@ struct DeviceInformationView: View {
                     }
                     .fixedSize(horizontal: false, vertical: true)
                     .buttonStyle(.borderless)
-                    .controlSize(.small)
+                    .controlSize(.regular)
                     .padding(4)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(.regularMaterial)
@@ -159,12 +162,47 @@ struct DeviceInformationView: View {
             } label: {
                 Text("Paired Simulators")
             }
-            .groupBoxStyle(PairedSimulatorCardStyle())
+            .groupBoxStyle(InformationCardStyle())
+            .onChange(of: paired.map(\.inventoryID)) { _, identifiers in
+                if let selectedPairedSimulator, !identifiers.contains(selectedPairedSimulator) {
+                    self.selectedPairedSimulator = nil
+                }
+            }
             editVisibilityButton
         }
     }
 
-    private struct PairedSimulatorCardStyle: GroupBoxStyle {
+    private struct InformationFormStyle: FormStyle {
+        func makeBody(configuration: Configuration) -> some View {
+            ScrollView {
+                VStack(alignment: .leading) {
+                    ForEach(sections: configuration.content) { section in
+                        section.header
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(Color.secondary)
+                        if !section.content.isEmpty {
+                            GroupBox {
+                                VStack(spacing: 0) {
+                                    ForEach(subviews: section.content) { row in
+                                        row.padding(10)
+                                        if row.id != section.content.last?.id {
+                                            Divider().padding(.horizontal, 10)
+                                        }
+                                    }
+                                }
+                            }
+                            .groupBoxStyle(InformationCardStyle())
+                        }
+                        section.footer
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical)
+            }
+        }
+    }
+
+    private struct InformationCardStyle: GroupBoxStyle {
         func makeBody(configuration: Configuration) -> some View {
             VStack(alignment: .leading) {
                 configuration.label
@@ -174,7 +212,7 @@ struct DeviceInformationView: View {
                 configuration.content
                     .font(.body)
                     .foregroundStyle(Color.primary)
-                    .background(Color(nsColor: .controlBackgroundColor))
+                    .background(.background.secondary)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -203,7 +241,7 @@ struct DeviceInformationView: View {
         func makeNSView(context: Context) -> NSPopUpButton {
             let image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)!
             let button = NSPopUpButton(image: image, pullDownMenu: menu)
-            button.controlSize = .small
+            button.controlSize = controlSize(context.environment.controlSize)
             button.bezelStyle = .accessoryBarAction
             button.isBordered = isBordered
             (button.cell as? NSPopUpButtonCell)?.arrowPosition = .noArrow
@@ -215,6 +253,7 @@ struct DeviceInformationView: View {
 
         func updateNSView(_ button: NSPopUpButton, context: Context) {
             button.menu = menu
+            button.controlSize = controlSize(context.environment.controlSize)
             button.isBordered = isBordered
             button.isEnabled = context.environment.isEnabled
             button.setAccessibilityLabel(label)
@@ -223,6 +262,17 @@ struct DeviceInformationView: View {
 
         func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSPopUpButton, context: Context) -> NSSize? {
             nsView.fittingSize
+        }
+
+        private func controlSize(_ size: SwiftUI.ControlSize) -> NSControl.ControlSize {
+            switch size {
+            case .mini: .mini
+            case .small: .small
+            case .regular: .regular
+            case .large: .large
+            case .extraLarge: .extraLarge
+            @unknown default: .regular
+            }
         }
     }
 }
