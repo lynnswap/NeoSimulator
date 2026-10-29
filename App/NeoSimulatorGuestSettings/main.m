@@ -224,7 +224,7 @@ int main(int argc, const char *argv[]) {
                                     }];
                                     result[@"modes"] = modes;
                                     if (!error) {
-                                        result[@"hasNativeModes"] = @(modes.count != 0);
+                                        result[@"hasNativeModes"] = modes.count ? @YES : @NO;
                                         if (modes.count == 0) {
                                             result[@"status"] = @"no-native-modes";
                                             result[@"success"] = @YES;
@@ -253,7 +253,7 @@ int main(int argc, const char *argv[]) {
                                                             error = ApplyMode(selected, ^(NSError *relaunchError) {
                                                                 result[@"canvasApplied"] = @YES;
                                                                 result[@"stage"] = @"relaunch";
-                                                                result[@"success"] = @(relaunchError == nil);
+                                                                result[@"success"] = relaunchError ? @NO : @YES;
                                                                 if (relaunchError) {
                                                                     result[@"error"] = @{@"domain": relaunchError.domain,
                                                                         @"code": @(relaunchError.code), @"description": relaunchError.localizedDescription};
@@ -278,7 +278,7 @@ int main(int argc, const char *argv[]) {
             error = SettingsError(5, [NSString stringWithFormat:@"%@: %@", exception.name, exception.reason ?: @""]);
         }
         if (error) {
-            result[@"canvasApplied"] = @(CanvasApplied != 0);
+            result[@"canvasApplied"] = CanvasApplied ? @YES : @NO;
             result[@"success"] = @NO;
             result[@"stage"] = stage;
             result[@"error"] = @{@"domain": error.domain, @"code": @(error.code),
