@@ -4781,7 +4781,7 @@ struct InputFocusTests {
             #expect(display.isResizing)
         }
         // No view consumes the header gap, so its presses reach window dragging.
-        let content = try #require(window.contentView)
+        let content = controller.presentationViewController.view
         let gap = content.convert(NSPoint(
             x: view.frame.midX, y: view.frame.maxY + WindowScale.displayGap(bezelPadding: display.chromePadding) / 2), to: nil)
         #expect(try press(window, at: gap) === content)
