@@ -172,9 +172,11 @@ struct DeviceInformationView: View {
             ScrollView {
                 VStack(alignment: .leading) {
                     ForEach(sections: configuration.content) { section in
-                        section.header
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(Color.secondary)
+                        if !section.header.isEmpty {
+                            section.header
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(Color.secondary)
+                        }
                         if !section.content.isEmpty {
                             GroupBox {
                                 VStack(spacing: 0) {
