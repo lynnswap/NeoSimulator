@@ -129,7 +129,9 @@ struct DeviceInformationView: View {
         let paired = DeviceInformation.pairedSimulators(for: device, in: manager.inventory)
         let selectedPartner = paired.first { $0.inventoryID == selectedPairedSimulator }
         let targetWatch = selectedPartner.flatMap { DeviceInformation.watchToUnpair(device: device, partner: $0) }
-        return Section {} footer: {
+        return Section {} header: {
+            Text("Paired Simulators")
+        } footer: {
             GroupBox {
                 VStack(spacing: 0) {
                     PairedSimulatorsView(devices: paired, selection: $selectedPairedSimulator,
@@ -142,6 +144,7 @@ struct DeviceInformationView: View {
                             .disabled(!manager.canAddPairing(for: device) || inspection.isManaging ||
                                       !manager.canManage(.pair, deviceIDs: [device.inventoryID]))
                         Divider()
+                            .padding(.vertical, 4)
                         Button {
                             if let targetWatch { unpair(targetWatch) }
                         } label: {
@@ -158,8 +161,6 @@ struct DeviceInformationView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(.regularMaterial)
                 }
-            } label: {
-                Text("Paired Simulators")
             }
             .groupBoxStyle(InformationCardStyle())
             editVisibilityButton
@@ -186,6 +187,7 @@ struct DeviceInformationView: View {
                             section.header
                                 .font(.subheadline.weight(.semibold))
                                 .foregroundStyle(Color.secondary)
+                                .accessibilityAddTraits(.isHeader)
                         }
                         if !section.content.isEmpty {
                             GroupBox {
@@ -211,19 +213,13 @@ struct DeviceInformationView: View {
 
     private struct InformationCardStyle: GroupBoxStyle {
         func makeBody(configuration: Configuration) -> some View {
-            VStack(alignment: .leading) {
-                configuration.label
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(Color.secondary)
-                    .accessibilityAddTraits(.isHeader)
-                configuration.content
-                    .font(.body)
-                    .foregroundStyle(Color.primary)
-                    .background(Color(nsColor: .quaternarySystemFill))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .accessibilityElement(children: .contain)
+            configuration.content
+                .font(.body)
+                .foregroundStyle(Color.primary)
+                .background(Color(nsColor: .quaternarySystemFill))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityElement(children: .contain)
         }
     }
 
@@ -249,8 +245,8 @@ struct DeviceInformationView: View {
             let configuration = NSImage.SymbolConfiguration(
                 pointSize: NSFont.preferredFont(forTextStyle: .subheadline).pointSize, weight: .semibold)
             let image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)!
-                .withSymbolConfiguration(configuration)!
             let button = NSPopUpButton(image: image, pullDownMenu: menu)
+            button.symbolConfiguration = configuration
             button.controlSize = controlSize(context.environment.controlSize)
             button.bezelStyle = .accessoryBarAction
             button.isBordered = isBordered
