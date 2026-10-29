@@ -34,11 +34,14 @@ class ReleaseSigningTests(unittest.TestCase):
         helper = self.app / "Contents/Helpers/NeoSimulatorGuestSettings"
         helper.parent.mkdir(parents=True)
         helper.write_bytes(bytes.fromhex("cffaedfe") + b"fixture")
+        self.helper = helper
         self.tools = sign_release.NativeTools()
 
     @staticmethod
     def native_result(arguments, operation, **kwargs):
         stdout = b"arm64" if arguments[0] == "/usr/bin/lipo" else b""
+        if "--entitlements" in arguments and Path(arguments[-1]).name == "NeoSimulatorGuestSettings":
+            stdout = plistlib.dumps({sign_release.GUEST_SETTINGS_ENTITLEMENT: True})
         return sign_release.NativeResult(stdout, b"", 0)
 
     def test_validates_the_embedded_renderer_as_part_of_the_app(self):
@@ -54,6 +57,26 @@ class ReleaseSigningTests(unittest.TestCase):
         with patch.object(self.tools, "run", side_effect=self.native_result):
             with self.assertRaisesRegex(sign_release.ReleaseError, "renderer CFBundleVersion"):
                 sign_release.validate_app(self.tools, self.mount, "v1.2.3", "7")
+
+    def test_rejects_a_missing_helper_exception_or_an_exception_on_the_manager(self):
+        for path, values in ((self.helper, {}), (self.app, {sign_release.GUEST_SETTINGS_ENTITLEMENT: True})):
+            with self.subTest(path=path.name):
+                def result(arguments, operation, **kwargs):
+                    if "--entitlements" in arguments and Path(arguments[-1]) == path:
+                        return sign_release.NativeResult(plistlib.dumps(values), b"", 0)
+                    return self.native_result(arguments, operation, **kwargs)
+                with patch.object(self.tools, "run", side_effect=result):
+                    with self.assertRaises(sign_release.ReleaseError):
+                        sign_release.validate_app(self.tools, self.mount, "v1.2.3", "7")
+
+    def test_resigning_uses_the_helper_profile_without_app_exceptions(self):
+        credentials = sign_release.SigningCredentials(Path("fixture.keychain"), "A" * 40, Path("fixture.p8"))
+        with patch.object(self.tools, "run", side_effect=self.native_result) as run, patch.object(sign_release, "verify_developer_id"):
+            sign_release.sign_application(self.tools, self.app, credentials, "ABCDEFGHIJ")
+        signing = [call.args[0] for call in run.call_args_list if "--sign" in call.args[0]]
+        self.assertEqual([Path(call[-1]) for call in signing], [self.helper, self.renderer, self.app])
+        self.assertEqual(Path(signing[0][signing[0].index("--entitlements") + 1]), sign_release.GUEST_SETTINGS_ENTITLEMENTS_PATH)
+        self.assertTrue(all("--entitlements" not in call for call in signing[1:]))
 
 
 class BuildScriptSigningTests(unittest.TestCase):
@@ -77,6 +100,9 @@ class BuildScriptSigningTests(unittest.TestCase):
                 scripts.mkdir()
                 for name in ("build-local.sh", "build-release.sh"):
                     shutil.copy2(Path(__file__).resolve().parents[1] / name, scripts / name)
+                entitlements = root / "App/NeoSimulatorGuestSettings/GuestSettings.entitlements"
+                entitlements.parent.mkdir(parents=True)
+                shutil.copy2(sign_release.GUEST_SETTINGS_ENTITLEMENTS_PATH, entitlements)
                 tools = root / "tools"
                 tools.mkdir()
                 bodies = {
@@ -128,6 +154,9 @@ helper.write_bytes(b"fixture")
                     self.assertEqual(call[call.index("--options") + 1], "runtime")
                     self.assertIn("--timestamp=none" if expected_identity == "-" else "--timestamp", call)
                     self.assertNotIn("--timestamp" if expected_identity == "-" else "--timestamp=none", call)
+                self.assertEqual(Path(signing[0][signing[0].index("--entitlements") + 1]), entitlements)
+                self.assertEqual(plistlib.loads(entitlements.read_bytes()), {sign_release.GUEST_SETTINGS_ENTITLEMENT: True})
+                self.assertTrue(all("--entitlements" not in call for call in signing[1:]))
                 self.assertEqual(calls[-1][:-1], ["--verify", "--deep", "--strict"])
 
 

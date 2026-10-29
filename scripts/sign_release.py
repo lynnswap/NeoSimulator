@@ -30,6 +30,9 @@ APP_BUNDLE = f"{APP_NAME}.app"
 APP_IDENTIFIER = "dev.lynnswap.NeoSimulator"
 RENDERER_NAME = "NeoSimulatorRenderer"
 RENDERER_IDENTIFIER = f"{APP_IDENTIFIER}.Renderer"
+GUEST_SETTINGS_NAME = "NeoSimulatorGuestSettings"
+GUEST_SETTINGS_ENTITLEMENT = "com.apple.security.cs.allow-dyld-environment-variables"
+GUEST_SETTINGS_ENTITLEMENTS_PATH = Path(__file__).resolve().parents[1] / "App" / GUEST_SETTINGS_NAME / "GuestSettings.entitlements"
 APPLICATIONS_LINK = "\u200b"
 SECRET_NAMES = ("DEVELOPER_ID_P12_BASE64", "DEVELOPER_ID_P12_PASSWORD", "NOTARY_API_PRIVATE_KEY")
 VERSION_PATTERN = r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*)?"
@@ -238,12 +241,20 @@ def validate_app(tools: NativeTools, mount: Path, version: str, build_number: st
         if architectures != b"arm64":
             raise ReleaseError("The release app must be arm64-only.")
         tools.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(bundle)], "Validate app signature")
-        entitlements = tools.run(
-            ["/usr/bin/codesign", "--display", "--entitlements", ":-", str(bundle)], "Inspect app entitlements",
-        ).stdout
-        if entitlements and parse_plist(entitlements, "Inspect app entitlements"):
-            raise ReleaseError("The manager and renderer signing profiles do not use entitlements.")
+        validate_entitlements(tools, bundle, guest_helper=bundle == helper)
     return app
+
+
+def validate_entitlements(tools: NativeTools, path: Path, *, guest_helper: bool = False) -> None:
+    data = tools.run(
+        ["/usr/bin/codesign", "--display", "--entitlements", ":-", str(path)], "Inspect app entitlements",
+    ).stdout
+    values = parse_plist(data, "Inspect app entitlements") if data else {}
+    if guest_helper:
+        if set(values) != {GUEST_SETTINGS_ENTITLEMENT} or values[GUEST_SETTINGS_ENTITLEMENT] is not True:
+            raise ReleaseError("The guest settings helper requires only its allow-DYLD environment entitlement.")
+    elif values:
+        raise ReleaseError("The manager and renderer signing profiles do not use entitlements.")
 
 
 def make_writable_image(tools: NativeTools, source: Path, destination: Path, capacity: int, executable_size: int) -> None:
@@ -361,10 +372,12 @@ def temporary_credentials(tools: NativeTools, parent: Path, configuration: dict[
                     os.environ.pop(name, None)
 
 
-def sign(tools: NativeTools, path: Path, credentials: SigningCredentials, *, app: bool) -> None:
+def sign(tools: NativeTools, path: Path, credentials: SigningCredentials, *, app: bool, entitlements: Path | None = None) -> None:
     arguments = ["/usr/bin/codesign", "--force", "--timestamp", "--keychain", str(credentials.keychain),
                  "--sign", credentials.certificate_sha1]
     arguments += ["--options", "runtime"] if app else ["--identifier", f"{APP_IDENTIFIER}.dmg"]
+    if entitlements:
+        arguments += ["--entitlements", str(entitlements)]
     tools.run([*arguments, str(path)], "Sign release app" if app else "Sign release DMG")
 
 
@@ -390,8 +403,10 @@ def sign_application(tools: NativeTools, app: Path, credentials: SigningCredenti
     # apply the manager's signing profile to the renderer.
     helper = app / "Contents" / "Helpers" / "NeoSimulatorGuestSettings"
     for bundle, identifier in ((helper, "NeoSimulatorGuestSettings"), (renderer, RENDERER_IDENTIFIER), (app, APP_IDENTIFIER)):
-        sign(tools, bundle, credentials, app=True)
+        entitlements = GUEST_SETTINGS_ENTITLEMENTS_PATH if bundle == helper else None
+        sign(tools, bundle, credentials, app=True, entitlements=entitlements)
         verify_developer_id(tools, bundle, team, app=True, identifier=identifier)
+        validate_entitlements(tools, bundle, guest_helper=bundle == helper)
 
 
 def parse_json(payload: bytes) -> dict | None:
@@ -487,6 +502,8 @@ def prepare_release(arguments: argparse.Namespace) -> Path:
                     verify_developer_id(tools, app, configuration["APPLE_TEAM_ID"], app=True)
                     verify_developer_id(tools, app / "Contents" / "Applications" / f"{RENDERER_NAME}.app",
                                         configuration["APPLE_TEAM_ID"], app=True, identifier=RENDERER_IDENTIFIER)
+                    verify_developer_id(tools, app / "Contents" / "Helpers" / GUEST_SETTINGS_NAME,
+                                        configuration["APPLE_TEAM_ID"], app=True, identifier=GUEST_SETTINGS_NAME)
                     if layout_contents(mount) != layout:
                         raise ReleaseError("The final image did not preserve the original DMG layout.")
                 tools.run([
