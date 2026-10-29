@@ -158,6 +158,8 @@ struct PairedSimulatorsView: NSViewRepresentable {
                 pointSize: NSFont.preferredFont(forTextStyle: .body).pointSize, weight: .bold)
             more.isBordered = false
             more.imageScaling = .scaleNone
+            // A font-sized label preserves the symbol's alignment rect with an empty title.
+            more.imagePosition = .imageLeading
             (more.cell as? NSPopUpButtonCell)?.arrowPosition = .noArrow
             let stack = NSStackView(views: [title])
             stack.addView(more, in: .trailing)
