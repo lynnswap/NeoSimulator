@@ -3,6 +3,22 @@ import Testing
 @testable import XcodeSimulatorHost
 
 @Suite struct DeviceInspectorTests {
+    @Test func integerValuesPreserveUnsignedJSONAndPropertyListPrecision() throws {
+        let raw: UInt64 = 18446744071562067970
+        let json = try JSONDecoder().decode(DeviceInspectorValue.self, from: Data(#"{"unsigned":18446744071562067970,"signed":-2,"fraction":0.5,"flag":true}"#.utf8))
+        #expect(json["unsigned"] == .unsignedInteger(raw))
+        #expect(json["signed"] == .integer(-2) && json["fraction"] == .number(0.5))
+        #expect(json["flag"] == .boolean(true))
+        let data = try PropertyListSerialization.data(fromPropertyList: [
+            "unsigned": NSNumber(value: raw), "flag": NSNumber(value: true), "zero": NSNumber(value: 0), "one": NSNumber(value: 1),
+        ], format: .binary, options: 0)
+        let plist = try DeviceInspectorValue.propertyList(PropertyListSerialization.propertyList(from: data, format: nil))
+        #expect(plist["unsigned"] == .unsignedInteger(raw) && plist["flag"] == .boolean(true))
+        #expect(plist["zero"] == .integer(0) && plist["one"] == .integer(1))
+        #expect(plist["zero"]?.boolean == false && plist["one"]?.boolean == true)
+        #expect(DeviceInspectorValue.unsignedInteger(0).boolean == false && DeviceInspectorValue.unsignedInteger(1).boolean == true)
+    }
+
     @Test func simulatorInfoUsesItsCatalogModelAndCompleteRuntimeVersion() async {
         let calls = InspectorCalls { _ in Self.output(#"""
         {"devices":{"runtime":[{"udid":"sim-udid","name":"Renamed Phone","deviceTypeIdentifier":"phone-type","dataPath":"/guest/Data"}]},

@@ -382,8 +382,8 @@ struct ManagerModelTests {
         let features: Set<String> = ["streamapplist", "installapp", "launchapplication", "configurationprofiles", "listFiles", "transferFiles"]
         func device(_ identifier: String = "inspected-device", name: String = "Phone", features: Set<String> = features) -> InventoryDevice {
             .remote(CoreDeviceDevice(identifier: identifier, udid: nil, kind: .physical, name: name,
-                modelIdentifier: nil, modelName: nil, platform: "iOS", osVersion: nil, osBuild: nil,
-                connectionState: "connected", pairingState: "paired", transportType: nil, bootState: "booted",
+                modelIdentifier: nil, modelName: nil, cpuType: nil, platform: "iOS", osVersion: nil, osBuild: nil,
+                connectionState: "connected", pairingState: "paired", transportType: nil, bootState: "booted", preparednessState: nil,
                 capabilities: Set(features.map { "com.apple.coredevice.feature." + $0 }), lastConnectedAt: nil, visibilityClass: nil))
         }
         let response: String
@@ -455,8 +455,8 @@ struct ManagerModelTests {
         _ = NSApplication.shared
         func device(features: Set<String>) -> InventoryDevice {
             .remote(CoreDeviceDevice(identifier: "inspected-device", udid: nil, kind: .physical, name: "Phone",
-                modelIdentifier: nil, modelName: nil, platform: "iOS", osVersion: nil, osBuild: nil,
-                connectionState: "connected", pairingState: "paired", transportType: nil, bootState: "booted",
+                modelIdentifier: nil, modelName: nil, cpuType: nil, platform: "iOS", osVersion: nil, osBuild: nil,
+                connectionState: "connected", pairingState: "paired", transportType: nil, bootState: "booted", preparednessState: nil,
                 capabilities: Set(features.map { "com.apple.coredevice.feature." + $0 }), lastConnectedAt: nil, visibilityClass: nil))
         }
         let original = device(features: ["provisioningprofiles", "configurationprofiles"])
@@ -1150,9 +1150,9 @@ struct ManagerModelTests {
 
     @Test func remoteDuoResolvesInstalledArtworkWithoutOpeningAScreen() async {
         let device = InventoryDevice.remote(CoreDeviceDevice(identifier: "remote-duo", udid: nil,
-            kind: .physical, name: "Duo", modelIdentifier: "iPhone19,4", modelName: "iPhone Duo",
+            kind: .physical, name: "Duo", modelIdentifier: "iPhone19,4", modelName: "iPhone Duo", cpuType: nil,
             platform: "iOS", osVersion: nil, osBuild: nil, connectionState: "connected",
-            pairingState: "paired", transportType: nil, bootState: "booted", capabilities: [],
+            pairingState: "paired", transportType: nil, bootState: "booted", preparednessState: nil, capabilities: [],
             lastConnectedAt: nil, visibilityClass: nil))
         let source = ManagerModelSource(devices: [device])
         let model = SimulatorManagerModel(source: source)
@@ -1238,7 +1238,11 @@ struct ManagerModelTests {
         let information = DeviceInformation(device: simulator(), properties: [
             "name": .string("Renamed Phone"), "operatingSystem": .string("iOS 27.2"),
             "modelName": .string("iPhone 18 Pro"),
-            "hardware": .object(["serialNumber": .string("serial")]),
+            "coreDeviceIdentifier": .string("coredevice-command-id"),
+            "hardware": .object(["serialNumber": .string("serial"),
+                "cpuType": .object(["type": .integer(16777228), "subtype": .integer(0)]),
+                "platform": .string("iOS"), "productType": .string("iPhone99,2"), "reality": .string("simulated")]),
+            "state": .string("Booted"), "bootState": .string("shutdown"), "preparednessState": .integer(0),
             "connection": .object(["state": .string("disconnected"), "pairingState": .string("paired"),
                 "transportType": .string("sameMachine"), "lastConnectionDate": .date(Date(timeIntervalSinceReferenceDate: 100))]),
         ])
@@ -1250,6 +1254,14 @@ struct ManagerModelTests {
         #expect(information.fields.filter { $0.id == ["modelName"] || $0.id == ["udid"] }.allSatisfy { $0.group == .hardware })
         let serial = try #require(information.fields.first { $0.id == ["hardware", "serialNumber"] })
         #expect(serial.value == "serial" && serial.group == .hardware)
+        let coreID = try #require(information.fields.first { $0.id == ["coreDeviceIdentifier"] })
+        #expect(coreID.title == "CoreDevice ID" && coreID.value == "coredevice-command-id" && coreID.group == .essential)
+        let hardware = Dictionary(uniqueKeysWithValues: information.fields.filter { $0.group == .hardware }.map { ($0.title, $0.value) })
+        #expect(hardware["CPU Type"] == "arm64" && hardware["Platform"] == "iOS")
+        #expect(hardware["Product Type"] == "iPhone99,2" && hardware["Fidelity"] == "Simulated")
+        #expect(information.fields.first { $0.id == ["bootState"] }?.value == "ShutDown")
+        #expect(information.fields.first { $0.title == "DDI Services" }?.value == "Disabled")
+        #expect(information.fields.first { $0.id == ["state"] }?.value == "Booted")
         let connection = information.fields.filter { $0.group == .connection }
         #expect(Set(connection.map(\.title)) == ["Tunnel State", "Pairing State", "Transport Type", "Last Connection Date"])
         #expect(connection.first { $0.id == ["connection", "state"] }?.value == "Disconnected")
@@ -1258,29 +1270,48 @@ struct ManagerModelTests {
         #expect(connection.first { $0.id == ["connection", "lastConnectionDate"] }?.value == Date(timeIntervalSinceReferenceDate: 100).formatted())
     }
 
-    @Test func remoteInfoUsesAvailablePropertiesWithoutSubstitutingItsCommandIDForUDID() {
-        let remote = CoreDeviceDevice(identifier: "command-id", udid: nil,
-            kind: .physical, name: "Known Phone", modelIdentifier: "iPhone19,2", modelName: "iPhone 18 Pro",
-            platform: "iOS", osVersion: "27.1", osBuild: nil, connectionState: "connected",
-            pairingState: "paired", transportType: nil, bootState: "booted", capabilities: [],
-            lastConnectedAt: nil, visibilityClass: nil)
-        let information = DeviceInformation(device: .remote(remote), properties: [
-            "state": .object(["name": .string("Current Phone")]),
-            "connection": .object(["transportType": .string("USB"), "state": .string("futureRawState")]),
-            "software": .object([
-                "osVersionNumber": .object(["stringValue": .string("27.2")]),
-                "osBuildVersions": .object(["buildVersion": .object(["name": .string("27C100")])]),
-            ]),
-            "configuration": .object(["displays": .array([
-                .object(["name": .string("Primary")]), .object(["name": .string("External")]),
-            ])]),
+    @Test(arguments: zip([1, 3], ["Disabled", "Enabled"]))
+    func ddiServicesUsesTheAdvertisedFlagAmongOtherPreparednessBits(_ raw: Int64, _ expected: String) {
+        let information = DeviceInformation(device: simulator(), properties: [
+            "state": .object(["preparednessState": .integer(raw)]),
         ])
+        #expect(information.fields.first { $0.title == "DDI Services" }?.value == expected)
+    }
+
+    @Test func remoteInfoUsesAvailablePropertiesWithoutSubstitutingItsCommandIDForUDID() async throws {
+        let remote = CoreDeviceDevice(identifier: "command-id", udid: nil,
+            kind: .physical, name: "Known Phone", modelIdentifier: "iPhone19,2", modelName: "iPhone 18 Pro", cpuType: nil,
+            platform: "iOS", osVersion: "27.1", osBuild: nil, connectionState: "connected",
+            pairingState: "paired", transportType: nil, bootState: "booted", preparednessState: nil, capabilities: [],
+            lastConnectedAt: nil, visibilityClass: nil)
+        let payload = Data(#"""
+        {"result":{"properties":{
+          "state":{"name":"Current Phone","bootState":"futureBoot"},
+          "hardware":{"cpuType":{"type":16777228,"subtype":18446744071562067970},"reality":"futureReality"},
+          "connection":{"transportType":"USB","state":"futureRawState"},
+          "software":{"osVersionNumber":{"stringValue":"27.2"},"osBuildVersions":{"buildVersion":{"name":"27C100"}}},
+          "configuration":{"displays":[{"name":"Primary"},{"name":"External"}]}
+        }}}
+        """#.utf8)
+        let snapshot = await DeviceInspector(device: .remote(remote), simulatorXcodeURL: nil, transport: .init(run: { command in
+            #expect(command.arguments.starts(with: ["device", "info", "details"]))
+            return CommandOutput(terminationStatus: 0, stdout: payload, stderr: Data())
+        })).info()
+        #expect(snapshot.issues.isEmpty)
+        let information = DeviceInformation(device: snapshot.device, properties: snapshot.fields)
         #expect(information.fields.first { $0.id == ["name"] }?.value == "Current Phone")
         #expect(information.fields.first { $0.id == ["operatingSystem"] }?.value == "iOS 27.2")
         #expect(information.fields.first { $0.id == ["modelName"] }?.value == "iPhone 18 Pro")
         #expect(!information.fields.contains { $0.id == ["udid"] })
         #expect(information.fields.first { $0.id == ["connection", "transportType"] }?.value == "USB")
         #expect(information.fields.first { $0.id == ["connection", "state"] }?.value == "futureRawState")
+        #expect(information.fields.filter { $0.id.starts(with: ["hardware", "cpuType"]) }.map(\.value) == ["arm64e"])
+        let unknown = try JSONDecoder().decode(DeviceInspectorValue.self, from: Data(#"{"hardware":{"cpuType":{"type":2147483647,"subtype":18446744071562067970}}}"#.utf8))
+        let unknownInfo = DeviceInformation(device: .remote(remote), properties: try #require(unknown.object))
+        #expect(unknownInfo.fields.first { $0.id == ["hardware", "cpuType"] }?.value == "type 2147483647, subtype 18446744071562067970")
+        #expect(information.fields.first { $0.id == ["hardware", "reality"] }?.value == "futureReality")
+        #expect(information.fields.first { $0.id == ["state", "bootState"] }?.value == "futureBoot")
+        #expect(!information.fields.contains { $0.title == "DDI Services" })
         #expect(information.fields.first { $0.value == "27C100" }?.title == "Software / OS Builds / Build / Name")
         #expect(information.fields.first { $0.value == "Primary" }?.title == "Configuration / Displays — Item 1 / Name")
         #expect(information.fields.first { $0.value == "External" }?.title == "Configuration / Displays — Item 2 / Name")
@@ -1487,6 +1518,7 @@ struct ManagerModelTests {
             "modelName": .string("iPhone 18 Pro"), "hardware": .object(["serialNumber": .string("serial")]),
         ])
         let visibility = DeviceInfoVisibility(defaults: defaults)
+        #expect(!information.fields.contains { $0.id == ["hardware", "cpuType"] || $0.id == ["state", "preparednessState"] })
         #expect(Set(information.fields.filter { visibility.isVisible($0) }.map(\.id)) == DeviceInformation.defaultFields)
         let serial = try #require(information.fields.first { $0.id == ["hardware", "serialNumber"] })
         let os = try #require(information.fields.first { $0.id == ["operatingSystem"] })
@@ -1494,6 +1526,37 @@ struct ManagerModelTests {
         visibility.setVisible(false, for: os)
         let restored = DeviceInfoVisibility(defaults: defaults)
         #expect(restored.isVisible(serial) && !restored.isVisible(os))
+    }
+
+    @Test(arguments: [true, false])
+    func cpuVisibilityKeepsComponentChoicesWhenFieldsCollapse(legacyHiddenFields: Bool) throws {
+        let suite = "NeoSimulatorTests.CPUVisibility.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let cpuPath = ["hardware", "cpuType"]
+        if legacyHiddenFields {
+            defaults.set([cpuPath + ["type"], cpuPath + ["subtype"], ["future"]],
+                         forKey: DeviceInfoVisibility.legacyPreferenceKey)
+        } else {
+            defaults.set(["defaultVisible": false, "overrides": [
+                ["path": cpuPath + ["type"], "visible": true],
+                ["path": cpuPath + ["subtype"], "visible": false],
+                ["path": ["future"], "visible": false],
+            ]], forKey: DeviceInfoVisibility.preferenceKey)
+        }
+        let information = DeviceInformation(device: simulator(), properties: [
+            "hardware": .object(["cpuType": .object(["type": .integer(16777228), "subtype": .integer(0)])]),
+            "future": .object(["value": .string("retained choice")]),
+        ])
+        let cpu = try #require(information.fields.first { $0.id == cpuPath })
+        let future = try #require(information.fields.first { $0.id == ["future", "value"] })
+        let visibility = DeviceInfoVisibility(defaults: defaults)
+        #expect(visibility.isVisible(cpu) == !legacyHiddenFields)
+        visibility.setVisible(true, for: cpu)
+        let restored = DeviceInfoVisibility(defaults: defaults)
+        #expect(restored.isVisible(cpu) && !restored.isVisible(future))
+        restored.setVisible(false, for: cpu)
+        #expect(!DeviceInfoVisibility(defaults: defaults).isVisible(cpu))
     }
 
     @Test(arguments: [false, true])

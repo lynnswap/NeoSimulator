@@ -43,11 +43,16 @@ final class DeviceInfoVisibility {
     }
 
     func isVisible(_ field: DeviceInformation.Field) -> Bool {
-        selection.overrides.filter { field.id.starts(with: $0.key) }
-            .max { $0.key.count < $1.key.count }?.value ?? selection.defaultVisible
+        field.visibilityPaths.contains { path in
+            selection.overrides.filter { path.starts(with: $0.key) }
+                .max { $0.key.count < $1.key.count }?.value ?? selection.defaultVisible
+        }
     }
 
     func setVisible(_ visible: Bool, for field: DeviceInformation.Field) {
+        for path in field.visibilityPaths where path != field.id {
+            selection.overrides.removeValue(forKey: path)
+        }
         selection.overrides[field.id] = visible
         save()
     }
