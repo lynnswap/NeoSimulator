@@ -16,6 +16,10 @@ struct ManagerModelTests {
           {"identifier":"phone","properties":{"hardware":{"reality":"physical","platform":"iOS"},
             "state":{"name":"Beta"},"software":{"osVersionNumber":{"stringValue":"27.2"}},
             "connection":{"state":"connected","lastConnectionDate":200}}},
+          {"identifier":"provisioning","properties":{"hardware":{"reality":"physical","platform":"iOS"},
+            "state":{"name":"Bravo","visibilityClass":"devicesBeingProvisioned"},
+            "software":{"osVersionNumber":{"stringValue":"27.2"}},
+            "connection":{"state":"unavailable","lastConnectionDate":50}}},
           {"identifier":"vm","properties":{"hardware":{"reality":"virtual","platform":"macOS"},
             "state":{"name":"Alpha"},"software":{"osVersionNumber":{"stringValue":"15.10"}},
             "connection":{"state":"connected","lastConnectionDate":100}}},
@@ -26,10 +30,11 @@ struct ManagerModelTests {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = try #require(TimeZone(secondsFromGMT: 0))
         let presentation = DeviceBrowserPresentation(devices: records.map(InventoryDevice.remote), sortOrder: order,
-                                                     calendar: calendar, locale: Locale(identifier: "en_US_POSIX"))
+                                                     calendar: calendar, locale: Locale(identifier: "en_US_POSIX"),
+                                                     now: Date(timeIntervalSinceReferenceDate: 86_400))
         let expected: [String] = switch order {
         case .availability: ["Available", "Unavailable"]
-        case .recent: ["Jan 1, 2001", "Other"]
+        case .recent: ["Jan 2, 2001", "Jan 1, 2001", "Other"]
         case .name: ["Other", "A", "B", "#"]
         case .fidelity: ["Other", "Physical Devices", "Virtual Machines"]
         case .platform: ["iOS", "macOS", "Other"]
@@ -37,9 +42,13 @@ struct ManagerModelTests {
         }
         #expect(presentation.sections.map(\.title) == expected)
         #expect(Set(presentation.devices.map(\.id)) == Set(records.map { .coreDevice($0.identifier) }))
+        // The same-day provisioning Bravo precedes Beta except where Name compares names first.
+        let names = presentation.devices.map(\.name)
+        let bravo = try #require(names.firstIndex(of: "Bravo")), beta = try #require(names.firstIndex(of: "Beta"))
+        #expect((bravo < beta) == (order != .name))
         if order == .recent {
             // Full timestamps run Beta -> Alpha; the same-day name order runs Alpha -> Beta.
-            #expect(presentation.sections[0].devices.map(\.name) == ["Alpha", "Beta"])
+            #expect(presentation.sections[1].devices.map(\.name) == ["Alpha", "Beta"])
         }
         if order == .name { #expect(presentation.sections[0].devices[0].name == "Fallback Name") }
     }
