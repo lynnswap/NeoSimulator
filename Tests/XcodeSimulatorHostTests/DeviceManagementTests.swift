@@ -1,6 +1,7 @@
 import Foundation
 import Darwin
 import Testing
+import Synchronization
 
 @testable import XcodeSimulatorHost
 
@@ -189,15 +190,19 @@ struct DeviceManagementTests {
             defer { try? handle.close() }
             return try handle.readToEnd() ?? Data()
         }
+        let launched = Mutex(false)
         let command = Task {
-            try await SystemCommandRunner.runCancellable(executable: URL(fileURLWithPath: "/bin/sh"),
-                arguments: ["-c", "trap '' TERM; printf '%s\\n' \"$$\" > \"$1\"; exec /bin/sleep 300", "fixture", ready.path])
+            try await SimulatorHostController.openDeviceHub(boot: {
+                _ = try await SystemCommandRunner.runCancellable(executable: URL(fileURLWithPath: "/bin/sh"),
+                    arguments: ["-c", "trap '' TERM; printf '%s\\n' \"$$\" > \"$1\"; exec /bin/sleep 300", "fixture", ready.path])
+            }, launch: { launched.withLock { $0 = true } })
         }
         defer { command.cancel() }
         let child = try #require(Int32(String(decoding: try await pid.value, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)))
         command.cancel()
         await #expect(throws: CancellationError.self) { _ = try await command.value }
         #expect(kill(child, 0) == -1 && errno == ESRCH)
+        #expect(!launched.withLock { $0 })
     }
 
     @Test func batchPreservesPartialSuccessAndUsesNamespacedCommandDestinations() async throws {

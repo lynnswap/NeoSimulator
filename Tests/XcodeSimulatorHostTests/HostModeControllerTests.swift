@@ -108,6 +108,110 @@ struct HostModeControllerTests {
         try await controller.operation { @Sendable in try await controller.screenOpen(clone) {} }
     }
 
+    @Test(.timeLimit(.minutes(1)))
+    func cancelledBootCandidatesKeepTheirObservationOriginWhileAnEarlierDeviceOpens() async throws {
+        let controller = SimulatorHostController(rendererApplicationURL: URL(fileURLWithPath: "/Renderer.app"))
+        let xcode = XcodeInstallation(applicationURL: URL(fileURLWithPath: "/Xcode.app"), version: try ToolVersion("27.2"), buildVersion: "fixture")
+        let devices = ["A", "B"].map {
+            SimulatorHostDevice(identifier: $0, name: $0, descriptiveName: $0, runtimeIdentifier: "runtime",
+                                runtimeName: "iOS", productFamily: "iPhone", state: "Booted")
+        }
+        let entered = AsyncStream<Void>.makeStream()
+        let release = AsyncStream<Void>.makeStream()
+        let opened = Mutex<[DeviceInventoryID]>([])
+        let batch = Task {
+            try await controller.operation { @Sendable in
+                let catalog = try await controller.readScreenOpenCatalog { [(xcode, devices)] }
+                return try await controller.synchronizeBootedDevices(catalog, attachInitially: true, ownedIdentifiers: { [] }) { id in
+                    opened.withLock { $0.append(id) }
+                    if id == devices[0].inventoryID {
+                        entered.continuation.yield(())
+                        for await _ in release.stream { break }
+                    }
+                }
+            }
+        }
+        var events = entered.stream.makeAsyncIterator()
+        await events.next()
+        controller.makeScreenOpenRequest(for: devices[1].inventoryID).cancel()
+        release.continuation.yield(())
+        #expect(try await batch.value.failure == nil)
+        #expect(opened.withLock { $0 } == [devices[0].inventoryID])
+
+        let next = try await controller.readScreenOpenCatalog { [(xcode, devices)] }
+        _ = try await controller.synchronizeBootedDevices(next, attachInitially: true, ownedIdentifiers: { [] }) { id in
+            opened.withLock { $0.append(id) }
+        }
+        #expect(opened.withLock { $0 } == [devices[0].inventoryID])
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func staleShutdownAndMissingCatalogsDoNotReleaseCancelledBoots() async throws {
+        let controller = SimulatorHostController(rendererApplicationURL: URL(fileURLWithPath: "/Renderer.app"))
+        let xcode = XcodeInstallation(applicationURL: URL(fileURLWithPath: "/Xcode.app"), version: try ToolVersion("27.2"), buildVersion: "fixture")
+        let shutdown = SimulatorHostDevice(identifier: "B", name: "B", descriptiveName: "B", runtimeIdentifier: "runtime",
+                                           runtimeName: "iOS", productFamily: "iPhone", state: "Shutdown")
+        let booted = SimulatorHostDevice(identifier: "B", name: "B", descriptiveName: "B", runtimeIdentifier: "runtime",
+                                         runtimeName: "iOS", productFamily: "iPhone", state: "Booted")
+        let opened = Mutex<[DeviceInventoryID]>([])
+        let poll: @Sendable ([SimulatorHostDevice]) async throws -> Void = { devices in
+            try await controller.operation { @Sendable in
+                let catalog = try await controller.readScreenOpenCatalog { [(xcode, devices)] }
+                _ = try await controller.synchronizeBootedDevices(catalog, attachInitially: true, ownedIdentifiers: { [] }) { id in
+                    opened.withLock { $0.append(id) }
+                }
+            }
+        }
+        try await poll([shutdown])
+        let entered = AsyncStream<Void>.makeStream()
+        let release = AsyncStream<Void>.makeStream()
+        let reading = Task {
+            try await controller.readScreenOpenCatalog {
+                entered.continuation.yield(())
+                for await _ in release.stream { break }
+                return [(xcode, [shutdown])]
+            }
+        }
+        var events = entered.stream.makeAsyncIterator()
+        await events.next()
+        controller.makeScreenOpenRequest(for: booted.inventoryID).cancel()
+        release.continuation.yield(())
+        let stale = try await reading.value
+        _ = try await controller.synchronizeBootedDevices(stale, attachInitially: true, ownedIdentifiers: { [] }) { id in
+            opened.withLock { $0.append(id) }
+        }
+        try await poll([booted])
+        #expect(opened.withLock { $0 }.isEmpty)
+        try await poll([])
+        try await poll([booted])
+        #expect(opened.withLock { $0 }.isEmpty)
+        try await poll([shutdown])
+        try await poll([booted])
+        #expect(opened.withLock { $0 } == [booted.inventoryID])
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func aCancelledDeviceHubBootCannotStartALaterLaunch() async throws {
+        let entered = AsyncStream<Void>.makeStream()
+        let finish = Mutex<CheckedContinuation<Void, Never>?>(nil)
+        let launched = Mutex(false)
+        let opening = Task {
+            try await SimulatorHostController.openDeviceHub(boot: {
+                await withCheckedContinuation { continuation in
+                    finish.withLock { $0 = continuation }
+                    entered.continuation.yield(())
+                }
+            }, launch: { launched.withLock { $0 = true } })
+        }
+        var events = entered.stream.makeAsyncIterator()
+        await events.next()
+        opening.cancel()
+        let continuation = finish.withLock { value in let current = value; value = nil; return current }
+        continuation?.resume()
+        await #expect(throws: CancellationError.self) { try await opening.value }
+        #expect(!launched.withLock { $0 })
+    }
+
     @Test func cancellingAnOpenConsumesOnlyOlderXcodeConnections() async throws {
         let controller = SimulatorHostController(rendererApplicationURL: URL(fileURLWithPath: "/Renderer.app"))
         let tracker = XcodeConnectionTracker()

@@ -267,6 +267,7 @@ struct WorkspaceClient: Sendable {
             configuration.arguments = rendererLaunchArguments(owner: try RendererOwnerIdentity.current(),
                 startupResultURL: startupResultURL, xcodeURL: xcodeURL, deviceIdentifier: deviceIdentifier, headless: headlessRenderers)
 
+            try Task.checkCancellation()
             let application = try await NSWorkspace.shared.openApplication(
                 at: applicationURL,
                 configuration: configuration
@@ -322,11 +323,14 @@ struct WorkspaceClient: Sendable {
             let configuration = NSWorkspace.OpenConfiguration()
             configuration.activates = true
             configuration.allowsRunningApplicationSubstitution = false
+            try Task.checkCancellation()
             let app = try await NSWorkspace.shared.openApplication(at: applicationURL, configuration: configuration)
             guard app.bundleIdentifier == ToolConstants.deviceHubBundleIdentifier,
                   app.bundleURL.map(normalized) == normalized(applicationURL) else {
                 throw CLIError.configuration("device-hub-substitution", "LaunchServices opened an unexpected Device Hub application")
             }
+            // LaunchServices has already committed this external launch; it may be a shared instance.
+            try Task.checkCancellation()
             return applicationURL
         },
         // Normal quit can wait for recordings, device shutdown, and error alerts.
