@@ -81,12 +81,21 @@ struct ManagerModelTests {
             "software":{"osVersionNumber":{"stringValue":"27.2"}}}},
           {"identifier":"newer","properties":{"hardware":{"reality":"physical","platform":"iOS"},
             "software":{"osVersionNumber":{"stringValue":"27.10"}}}},
-          {"identifier":"unknown","properties":{"hardware":{"reality":"physical","platform":"iOS"}}}
+          {"identifier":"unknown","properties":{"hardware":{"reality":"physical","platform":"iOS"}}},
+          {"identifier":"watch","properties":{"hardware":{"reality":"physical","platform":"watchOS"},
+            "software":{"osVersionNumber":{"stringValue":"27.2"}}}},
+          {"identifier":"vision","properties":{"hardware":{"reality":"physical","platform":"visionOS"},
+            "software":{"osVersionNumber":{"stringValue":"27.2"}}}},
+          {"identifier":"future","properties":{"hardware":{"reality":"physical","platform":"futureOS"},
+            "software":{"osVersionNumber":{"stringValue":"1.0"}}}}
         ]}}
         """#.utf8)
         let devices = try CoreDeviceInventoryDecoder.decode(payload).map(InventoryDevice.remote)
         let presentation = DeviceBrowserPresentation(devices: devices, sortOrder: .operatingSystem)
-        #expect(presentation.sections.map(\.title) == ["iOS 27.10", "iOS 27.2", "iOS Other"])
+        #expect(presentation.sections.map(\.title) == ["futureOS 1.0", "iOS 27.10", "iOS 27.2", "iOS Other", "watchOS 27.2", "visionOS 27.2"])
+        let platforms = DeviceBrowserPresentation(devices: devices, sortOrder: .platform)
+        #expect(platforms.sections.map(\.id) == ["futureOS", "iOS", "watchOS", "xrOS"])
+        #expect(platforms.sections.map(\.title) == ["futureOS", "iOS", "watchOS", "visionOS"])
     }
 
     @Test func sidebarRegroupingKeepsSelectionExpansionAndFilters() async throws {

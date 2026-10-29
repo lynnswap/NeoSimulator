@@ -143,7 +143,13 @@ struct DeviceBrowserPresentation {
             value = simulator.coreDevice?.platform ?? simulator.runtimeName.split(separator: " ").first.map(String.init)
         case .remote(let remote): value = remote.platform
         }
-        return value.map { (raw: $0, display: $0) }
+        // DevicePlatform.jsonValue uses visionOS; its rawValue remains xrOS.
+        return value.map {
+            switch $0 {
+            case "visionOS", "xrOS": (raw: "xrOS", display: "visionOS")
+            default: (raw: $0, display: $0)
+            }
+        }
     }
 
     private static func version(_ device: InventoryDevice) -> String? {
