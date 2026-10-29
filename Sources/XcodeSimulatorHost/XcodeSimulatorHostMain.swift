@@ -164,7 +164,7 @@ public actor SimulatorHostController {
     private var startupHandled = false
     private var startupDeviceIdentifier: DeviceInventoryID?
     private var operationInProgress = false
-    private var operationWaiters: [CheckedContinuation<Void, Never>] = []
+    private var operationWaiters: [(id: UUID, continuation: CheckedContinuation<Void, any Error>)] = []
     var shutdownTransactions: [SimulatorShutdownTransaction] = []
 
     public init(rendererApplicationURL: URL,
@@ -348,16 +348,24 @@ public actor SimulatorHostController {
         guard let target = try await registeredRenderers().first(where: { sameURL(URL(fileURLWithPath: $0.xcodePath), xcode.applicationURL) }) else {
             throw CLIError.temporary("renderer-startup", "The simulator display exited before opening the device.")
         }
+        let preservesOwnership = target.deviceIdentifiers.contains(deviceID)
         do {
             if bootIfNeeded { try await RendererDeviceRequestWaiter().open(deviceID, in: target) }
             else { try await RendererDeviceRequestWaiter().attach(deviceID, in: target) }
             try await self.present(deviceID, xcodeURL: xcode.applicationURL, purpose: purpose)
+        } catch is CancellationError {
+            if !preservesOwnership {
+                // Cancellation can win after the renderer emitted its original open acknowledgement.
+                try await Task { try await RendererDeviceRequestWaiter().release(deviceID, from: target) }.value
+            }
+            throw CancellationError()
         } catch {
             throw CLIError.temporary(launchesRenderer ? "neo-host-launch-partial-success" : "renderer-device-launch", error.localizedDescription)
         }
     }
 
     private func present(_ deviceID: DeviceInventoryID, xcodeURL: URL, purpose: SimulatorPresentationContext.Purpose) async throws {
+        try Task.checkCancellation()
         guard let presentSimulator else { return }
         try await presentSimulator(SimulatorPresentationContext(deviceID: deviceID, xcodeURL: xcodeURL, purpose: purpose))
     }
@@ -701,15 +709,32 @@ public actor SimulatorHostController {
         try SimulatorProcessConnections.read()
     }
     func operation<T>(_ body: () async throws -> T) async throws -> T {
-        if operationInProgress { await withCheckedContinuation { operationWaiters.append($0) } }
-        else { operationInProgress = true }
+        try Task.checkCancellation()
+        if operationInProgress {
+            let id = UUID()
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+                    operationWaiters.append((id, continuation))
+                }
+            } onCancel: {
+                Task { await self.cancelOperationWaiter(id) }
+            }
+        } else { operationInProgress = true }
         defer {
             if operationWaiters.isEmpty { operationInProgress = false }
-            else { operationWaiters.removeFirst().resume() }
+            else { operationWaiters.removeFirst().continuation.resume() }
         }
-        do { return try await body() }
+        do {
+            try Task.checkCancellation()
+            return try await body()
+        } catch is CancellationError { throw CancellationError() }
         catch let error as SimulatorHostFailure { throw error }
         catch { throw SimulatorHostFailure(error) }
+    }
+
+    private func cancelOperationWaiter(_ id: UUID) {
+        guard let index = operationWaiters.firstIndex(where: { $0.id == id }) else { return }
+        operationWaiters.remove(at: index).continuation.resume(throwing: CancellationError())
     }
     @concurrent
     private func runSimctl(xcode: XcodeInstallation, arguments: [String], deviceSetPath: String? = nil) async throws -> Data {

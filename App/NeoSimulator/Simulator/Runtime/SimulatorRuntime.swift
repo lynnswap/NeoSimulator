@@ -32,7 +32,7 @@ final class SimulatorRuntime {
         try Task.checkCancellation()
         let source = xcodeURL.resolvingSymlinksInPath()
         if let preparation = preparations[source] {
-            let runtime = try await preparation.value
+            let runtime = try await CoreDeviceRuntime.preparedValue(of: preparation)
             if let requestedUI = uiXcodeURL?.resolvingSymlinksInPath(), runtime.uiXcodeURL != requestedUI {
                 throw HostError.unavailable("SimulatorKit is already loaded from \(runtime.uiXcodeURL.path)")
             }
@@ -40,12 +40,12 @@ final class SimulatorRuntime {
             return runtime
         }
         let preparation = Task {
+            defer { preparations[source] = nil }
             let requestedUI = (uiXcodeURL ?? loadedUIXcodeURL ?? source).resolvingSymlinksInPath()
             return try await SimulatorRuntime(xcodeURL: source, uiXcodeURL: requestedUI)
         }
         preparations[source] = preparation
-        defer { preparations[source] = nil }
-        let runtime = try await preparation.value
+        let runtime = try await CoreDeviceRuntime.preparedValue(of: preparation)
         try Task.checkCancellation()
         return runtime
     }

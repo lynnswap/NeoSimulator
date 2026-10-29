@@ -160,7 +160,25 @@ final class SimulatorManagerModel {
     @ObservationIgnored private var inventoryRefreshRequested = false
     @ObservationIgnored private var stopping = false
     @ObservationIgnored private var operationTask: Task<Void, Never>?
-    @ObservationIgnored private var pendingOperations: [(activity: String, refreshCatalog: Bool, run: @MainActor () async throws -> Void)] = []
+    private struct PendingOperation {
+        let activity: String
+        let refreshCatalog: Bool
+        let openDevice: DeviceInventoryID?
+        let run: @MainActor () async throws -> Void
+    }
+    private(set) var openingDeviceIDs: Set<DeviceInventoryID> = []
+    @ObservationIgnored private var activeOpen: (device: DeviceInventoryID, task: Task<Void, any Error>)?
+    @ObservationIgnored private var pendingOperations: [PendingOperation] = []
+
+    func cancelOpening(_ identifier: DeviceInventoryID) {
+        pendingOperations.removeAll { $0.openDevice == identifier }
+        if activeOpen?.device == identifier { activeOpen?.task.cancel() }
+        else { openingDeviceIDs.remove(identifier) }
+    }
+
+    func cancelPendingOpens() {
+        for identifier in openingDeviceIDs { cancelOpening(identifier) }
+    }
 
     init(rendererApplicationURL: URL,
          presentSimulator: (@MainActor @Sendable (SimulatorPresentationContext) async throws -> Void)? = nil) {
@@ -203,10 +221,12 @@ final class SimulatorManagerModel {
     }
 
     func openDevice(_ identifier: DeviceInventoryID) {
-        guard !stopping else { return }
+        guard !stopping, !openingDeviceIDs.contains(identifier) else { return }
         onDeviceOpenRequested?(identifier)
-        perform("Opening simulator…") {
+        openingDeviceIDs.insert(identifier)
+        perform("Opening simulator…", openDevice: identifier) {
             try await self.controller.openDevice(identifier, xcodeURL: nil)
+            try Task.checkCancellation()
             await self.deviceScreenDidConnect(identifier)
         }
     }
@@ -215,9 +235,11 @@ final class SimulatorManagerModel {
                        present: @escaping @MainActor () async throws -> Void) {
         guard !stopping else { return }
         if restoration.presentation == .main { onDeviceOpenRequested?(restoration.deviceID) }
-        perform("Restoring simulator…") {
+        openingDeviceIDs.insert(restoration.deviceID)
+        perform("Restoring simulator…", openDevice: restoration.deviceID) {
             await self.refreshCatalog()
             try await self.controller.openDevice(restoration.deviceID, xcodeURL: restoration.xcodeURL)
+            try Task.checkCancellation()
             await self.deviceScreenDidConnect(restoration.deviceID)
             try await present()
         }
@@ -566,9 +588,10 @@ final class SimulatorManagerModel {
         }
     }
 
-    func quitRenderer(keepingDevicesRunning: Bool?) async throws {
+    func prepareForQuit() async throws {
         stopping = true
-        pendingOperations.removeAll { $0.refreshCatalog }
+        let opening = activeOpen?.task
+        cancelPendingOpens()
         settings.stopReading()
         await stopDevicePostures()
         statusRefreshTask?.cancel()
@@ -576,8 +599,16 @@ final class SimulatorManagerModel {
         for task in managementRequests.values.compactMap(\.task) { await task.value }
         await statusRefreshTask?.value
         await settings.finishReading()
-        do { try await controller.quitRenderer(keepingDevicesRunning: keepingDevicesRunning) }
-        catch { stopping = false; settings.resumeReading(); throw error }
+        if let opening, case .failure(let error) = await opening.result, !(error is CancellationError) {
+            throw error
+        }
+    }
+
+    func quitRenderer(keepingDevicesRunning: Bool?) async throws {
+        do {
+            try await prepareForQuit()
+            try await controller.quitRenderer(keepingDevicesRunning: keepingDevicesRunning)
+        } catch { resumeAfterCancelledQuit(); throw error }
     }
 
     func resumeAfterCancelledQuit() {
@@ -593,10 +624,10 @@ final class SimulatorManagerModel {
         backgroundIssue = message
     }
 
-    private func perform(_ activity: String, refreshCatalog: Bool = true,
+    private func perform(_ activity: String, refreshCatalog: Bool = true, openDevice: DeviceInventoryID? = nil,
                          operation: @escaping @MainActor () async throws -> Void) {
         guard !stopping else { return }
-        pendingOperations.append((activity, refreshCatalog, operation))
+        pendingOperations.append(.init(activity: activity, refreshCatalog: refreshCatalog, openDevice: openDevice, run: operation))
         if refreshCatalog { isBusy = true }
         guard operationTask == nil else {
             return
@@ -615,10 +646,24 @@ final class SimulatorManagerModel {
                 self.isBusy = next.refreshCatalog || self.pendingOperations.contains { $0.refreshCatalog }
                 self.activity = next.activity
                 var failure: (any Error)?
-                do { try await next.run() }
-                catch { failure = error }
-                if (next.refreshCatalog || self.inventoryRefreshRequested), !self.stopping { await self.refreshCatalog() }
-                if let failure { self.onError?(failure) }
+                if let identifier = next.openDevice {
+                    let task = Task {
+                        try await next.run()
+                        try Task.checkCancellation()
+                        if next.refreshCatalog, !self.stopping { await self.refreshCatalog() }
+                    }
+                    self.activeOpen = (identifier, task)
+                    do { try await task.value }
+                    catch is CancellationError {}
+                    catch { failure = error }
+                    self.activeOpen = nil
+                    self.openingDeviceIDs.remove(identifier)
+                } else {
+                    do { try await next.run() }
+                    catch { failure = error }
+                }
+                if next.openDevice == nil, (next.refreshCatalog || self.inventoryRefreshRequested), !self.stopping { await self.refreshCatalog() }
+                if let failure, next.openDevice == nil || !self.stopping { self.onError?(failure) }
             }
         }
     }

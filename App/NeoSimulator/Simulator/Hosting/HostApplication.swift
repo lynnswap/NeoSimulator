@@ -71,6 +71,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     private var menu: MenuController?
     private var stopped = false
     private var stoppingTask: Task<Void, Error>?
+    private var openRequests: [String: (device: SimulatorDeviceIdentifier, preservesOwnership: Bool, task: Task<Void, Never>)] = [:]
     /// Shared cascade position; zero until the first window cascades.
     private var nextWindowPosition = NSPoint.zero
     /// I/O ▸ Touch Pressure's settings, which every device window shares.
@@ -209,25 +210,31 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     }
 
     private func openRequestedSimulator(_ identifier: SimulatorDeviceIdentifier, requestIdentifier: String? = nil, bootIfNeeded: Bool = true) {
-        Task {
+        let preservesOwnership = ownedDeviceIdentifiers.contains(identifier) || sessions[identifier] != nil
+        let task = Task {
             var result = ["udid": identifier.identifier]
             if let path = identifier.deviceSetPath { result["deviceSetPath"] = path }
             defer {
                 if let requestIdentifier {
+                    openRequests.removeValue(forKey: requestIdentifier)
                     DistributedNotificationCenter.default().postNotificationName(
                         Notification.Name("dev.lynnswap.NeoSimulator.RendererOpened"), object: requestIdentifier,
                         userInfo: result, deliverImmediately: true)
                 }
             }
-            do { try await openSimulatorLocally(withIdentifier: identifier, bootIfNeeded: bootIfNeeded) }
-            catch {
-                result["error"] = error.localizedDescription
+            do {
+                try await withScreenOpenCleanup(preservingExisting: preservesOwnership, operation: {
+                    try await self.openSimulatorLocally(withIdentifier: identifier, bootIfNeeded: bootIfNeeded)
+                }, cleanup: { try await self.releaseDevice(identifier) })
+            } catch {
+                if !(error is CancellationError) { result["error"] = error.localizedDescription }
                 if requestIdentifier == nil, !(error is CancellationError) {
                     NSAlert(presenting: error).runModal()
                     showDeviceBrowser()
                 }
             }
         }
+        if let requestIdentifier { openRequests[requestIdentifier] = (identifier, preservesOwnership, task) }
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
@@ -255,6 +262,11 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             if let identifier {
                 openRequestedSimulator(identifier, requestIdentifier: requestIdentifier, bootIfNeeded: false)
             }
+        case "cancel-open":
+            guard let identifier, let requestIdentifier,
+                  let request = openRequests[requestIdentifier], request.device == identifier else { return }
+            request.task.cancel()
+            if !request.preservesOwnership { cancelOpeningResources(identifier) }
         case "release-device":
             guard let identifier, let requestIdentifier else { return }
             Task {
@@ -600,9 +612,17 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     }
 
     func openPresentation(for identifier: SimulatorDeviceIdentifier, bootIfNeeded: Bool = false) async throws -> DeviceWindowController {
-        try await openSimulatorLocally(withIdentifier: identifier, bootIfNeeded: bootIfNeeded, presents: false)
-        guard let controller = sessions[identifier] else { throw CancellationError() }
-        return controller
+        let preservesPresentation = sessions[identifier] != nil || openingDevices.contains(identifier)
+        return try await withScreenOpenCleanup(preservingExisting: preservesPresentation, operation: {
+            try await self.openSimulatorLocally(withIdentifier: identifier, bootIfNeeded: bootIfNeeded, presents: false)
+            guard let controller = self.sessions[identifier] else { throw CancellationError() }
+            return controller
+        }, cleanup: { try await self.releaseDevice(identifier) })
+    }
+
+    private func cancelOpeningResources(_ identifier: SimulatorDeviceIdentifier) {
+        connections[identifier]?.cancel()
+        bootOperations[identifier]?.cancel()
     }
 
     func releasePresentation(for identifier: SimulatorDeviceIdentifier,
@@ -657,6 +677,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     private func openSimulatorLocally(withIdentifier identifier: SimulatorDeviceIdentifier, bootIfNeeded: Bool = true,
                                      presents: Bool = true) async throws {
         guard !releasingDevices.contains(identifier) else { throw CancellationError() }
+        let preservesConnection = sessions[identifier] != nil || openingDevices.contains(identifier)
         openingDevices.insert(identifier)
         defer { openingDevices.remove(identifier) }
         // A restart boots the device itself, and a closed window shuts it
@@ -710,7 +731,12 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             guard !stopped, !isTerminating, !releasingDevices.contains(identifier),
                   !isManaged || ownedDeviceIdentifiers.contains(identifier) else { throw CancellationError() }
             try scanDevices()
-            if let pending = connections[identifier] { await pending.value }
+            if let pending = connections[identifier] {
+                if preservesConnection { await pending.value }
+                else {
+                    await withTaskCancellationHandler { await pending.value } onCancel: { pending.cancel() }
+                }
+            }
             if let failure = connectionFailures[identifier] { throw failure }
             if sessions[identifier] != nil && awaitingReconnect[identifier] == nil { break }
             guard ContinuousClock.now < deadline else { throw HostError.unavailable("The simulator did not finish opening.") }
@@ -1313,10 +1339,13 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         let devices = keepsRunning ? [] : ownedDeviceIdentifiers.union(sessions.keys).sorted().map {
             (identifier: $0.identifier, deviceSetPath: $0.deviceSetPath)
         }
+        let requests = openRequests.values.map(\.task)
+        requests.forEach { $0.cancel() }
         let pending = Array(connections.values) + Array(restarting.values)
         pending.forEach { $0.cancel() }
         bootOperations.values.forEach { $0.cancel() }
         for task in pending { await task.value }
+        for task in requests { await task.value }
         for controller in sessions.values { controller.invalidate() }
         await recordings.finishAll()
         sessions.removeAll()
@@ -1384,5 +1413,26 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             catch where (error as NSError).code == NSFileNoSuchFileError {}
             catch { hostLog("Could not remove simulator ownership: \(error.localizedDescription)") }
         }
+    }
+}
+
+/// An open may return after cancellation with a newly attached screen. Its cleanup must finish uncancelled.
+@MainActor
+func withScreenOpenCleanup<Value>(preservingExisting: Bool,
+                                 operation: () async throws -> Value,
+                                 cleanup: @escaping @MainActor () async throws -> Void) async throws -> Value {
+    do {
+        let value = try await operation()
+        try Task.checkCancellation()
+        return value
+    } catch {
+        if Task.isCancelled, !preservingExisting {
+            let openingError = error
+            do { try await Task { try await cleanup() }.value }
+            catch {
+                throw HostError.operation("\(openingError.localizedDescription)\nOpening cleanup failed: \(error.localizedDescription)")
+            }
+        }
+        throw error
     }
 }

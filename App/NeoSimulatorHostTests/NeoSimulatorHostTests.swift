@@ -1140,6 +1140,29 @@ struct InputFocusTests {
         }
     }
 
+    @Test(.timeLimit(.minutes(1)), arguments: [false, true])
+    func cancelledOpenCleansUpALateAttachmentWithoutClosingAnExistingScreen(_ preservingExisting: Bool) async throws {
+        let display = TestDisplay()
+        let entered = AsyncStream<Void>.makeStream()
+        var events = entered.stream.makeAsyncIterator()
+        var finish: CheckedContinuation<Void, Never>?
+        let opening = Task {
+            try await withScreenOpenCleanup(preservingExisting: preservingExisting, operation: {
+                await withCheckedContinuation { continuation in
+                    finish = continuation
+                    entered.continuation.yield(())
+                }
+                return display
+            }, cleanup: { display.disconnect() })
+        }
+        await events.next()
+        opening.cancel()
+        finish?.resume()
+        do { _ = try await opening.value; Issue.record("A cancelled attachment was published") }
+        catch is CancellationError {}
+        #expect(display.disconnectCount == (preservingExisting ? 0 : 1))
+    }
+
     @Test func embeddedAndCompactPresentationsKeepOneSessionAndInputOwner() async throws {
         _ = NSApplication.shared
         let display = TestDisplay()

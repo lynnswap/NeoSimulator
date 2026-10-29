@@ -948,14 +948,18 @@ struct ManagerModelTests {
         var events = source.events.makeAsyncIterator()
         let manager = SimulatorManagerModel(source: source)
         var presented = false
+        let presentations = AsyncStream<Void>.makeStream()
+        var presentationEvents = presentations.stream.makeAsyncIterator()
         manager.restoreScreen(decoded) {
             #expect(!manager.inventory.isEmpty)
             presented = true
+            presentations.continuation.yield(())
         }
         #expect(await events.next() == .open(decoded.deviceID))
         #expect(await source.lastOpenXcodeURL == xcode)
         #expect(!presented)
         await source.completeOpen()
+        await presentationEvents.next()
         try await manager.quitRenderer(keepingDevicesRunning: true)
         #expect(presented)
     }
@@ -1052,7 +1056,8 @@ struct ManagerModelTests {
 
     @Test func acceptedEditsMergeSnapshotsAndDrainBeforeQuit() async throws {
         let device = simulator()
-        let source = ManagerModelSource(devices: [device])
+        let queued = simulator(deviceSet: "/queued-device-set")
+        let source = ManagerModelSource(devices: [device, queued])
         var events = source.events.makeAsyncIterator()
         let manager = SimulatorManagerModel(source: source)
         await manager.refresh()
@@ -1061,11 +1066,20 @@ struct ManagerModelTests {
         await source.completeRead(settings(appearance: "light", contentSize: "medium"))
         await manager.settings.finishReading()
 
+        manager.openDevice(device.id)
+        #expect(await events.next() == .open(device.id))
+        manager.openDevice(queued.id)
+        #expect(manager.openingDeviceIDs == [device.id, queued.id])
         manager.setDeviceSetting(.appearance("dark"), for: device.id)
         manager.setDeviceSetting(.contentSize("large"), for: device.id)
         #expect(manager.settings.settings?.appearance == "dark")
         #expect(manager.settings.settings?.contentSize == "large")
+        manager.cancelOpening(queued.id)
+        manager.cancelOpening(device.id)
+        // The lower IPC deliberately returns success after cancellation.
+        await source.completeOpen()
         #expect(await events.next() == .write(device.id))
+        #expect(manager.openingDeviceIDs.isEmpty)
         await source.completeWrite()
         #expect(await events.next() == .write(device.id))
         let inputs = await source.writeInputs
@@ -1092,6 +1106,25 @@ struct ManagerModelTests {
         await source.completeOpen()
         try await manager.quitRenderer(keepingDevicesRunning: true)
         #expect(await events.next() == .quit)
+    }
+
+    @Test func failedOpenCancellationPreventsQuitAndAllowsRetry() async throws {
+        let device = simulator()
+        let source = ManagerModelSource(devices: [device])
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source)
+        manager.openDevice(device.id)
+        #expect(await events.next() == .open(device.id))
+        let quitting = Task.immediate { try await manager.quitRenderer(keepingDevicesRunning: true) }
+        await source.failOpen()
+        do { try await quitting.value; Issue.record("Quit ignored failed open cleanup") }
+        catch {}
+        #expect(await source.quitCount == 0)
+        manager.openDevice(device.id)
+        #expect(await events.next() == .open(device.id))
+        await source.completeOpen()
+        try await manager.quitRenderer(keepingDevicesRunning: true)
+        #expect(await source.quitCount == 1)
     }
 
     @Test func editingDuringRefreshStillReadsExternalChanges() async throws {
@@ -1806,6 +1839,7 @@ actor ManagerModelSource: SimulatorManagerSource {
     private var pendingWrite: SimulatorDeviceSettings?
     private(set) var writeInputs: [SimulatorDeviceSettings?] = []
     private(set) var readCount = 0
+    private(set) var quitCount = 0
     private(set) var lastOpenXcodeURL: URL?
     private(set) var artworkXcodeRequests: [DeviceInventoryID] = []
     private(set) var installedXcodeReadCount = 0
@@ -1890,7 +1924,7 @@ actor ManagerModelSource: SimulatorManagerSource {
         pendingWrite = nil
         waiting?.resume(throwing: Failure.unavailable)
     }
-    func quitRenderer(keepingDevicesRunning: Bool?) { continuation.yield(.quit) }
+    func quitRenderer(keepingDevicesRunning: Bool?) { quitCount += 1; continuation.yield(.quit) }
     func selectHost(_ host: SimulatorHost, xcodeURL: URL?) throws { throw Failure.unavailable }
     func openDevice(_ deviceID: DeviceInventoryID, xcodeURL: URL?) async throws {
         lastOpenXcodeURL = xcodeURL

@@ -1,12 +1,68 @@
 import Foundation
 import Darwin
 import Testing
+import XCTest
 
 @_spi(NeoSimulator) @testable import XcodeSimulatorHost
 
 @MainActor
 @Suite
 struct HostModeControllerTests {
+    @Test(.timeLimit(.minutes(1))) func aCancelledQueuedOperationDoesNotRunOrBlockItsSuccessor() async throws {
+        let controller = SimulatorHostController(rendererApplicationURL: URL(fileURLWithPath: "/Renderer.app"))
+        let entered = AsyncStream<Void>.makeStream()
+        let release = AsyncStream<Void>.makeStream()
+        let first = Task {
+            try await controller.operation { @Sendable in
+                entered.continuation.yield(())
+                for await _ in release.stream { break }
+            }
+        }
+        var events = entered.stream.makeAsyncIterator()
+        await events.next()
+        let cancelled = Task { try await controller.operation { @Sendable in true } }
+        cancelled.cancel()
+        release.continuation.yield(())
+        try await first.value
+        do {
+            _ = try await cancelled.value
+            Issue.record("A cancelled open entered the controller operation")
+        } catch is CancellationError {}
+        let value = try await controller.operation { @Sendable in 42 }
+        #expect(value == 42)
+    }
+
+    @Test(.timeLimit(.minutes(1)), arguments: [false, true])
+    func aCancelledRuntimeWaiterRetiresWithoutCancellingSharedPreparation(_ finishConcurrently: Bool) async throws {
+        var finish: CheckedContinuation<Int, any Error>?
+        let preparation = Task.immediate {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Int, any Error>) in
+                finish = continuation
+            }
+        }
+        let cancelled = XCTestExpectation(description: "Cancelled runtime consumer retires")
+        let waiting = Task.immediate {
+            defer { cancelled.fulfill() }
+            return try await CoreDeviceRuntime.preparedValue(of: preparation)
+        }
+        let other = Task.immediate { try await CoreDeviceRuntime.preparedValue(of: preparation) }
+        waiting.cancel()
+        if finishConcurrently { finish?.resume(returning: 42); finish = nil }
+        let result = await XCTWaiter.fulfillment(of: [cancelled], timeout: 5)
+        #expect(result == .completed)
+        #expect(!preparation.isCancelled)
+        finish?.resume(returning: 42)
+        do { #expect(try await waiting.value == 42 && finishConcurrently) }
+        catch is CancellationError {}
+        #expect(try await other.value == 42)
+
+        let beforeRegistration = Task { try await CoreDeviceRuntime.preparedValue(of: preparation) }
+        beforeRegistration.cancel()
+        do { _ = try await beforeRegistration.value; Issue.record("A cancelled consumer registered a runtime wait") }
+        catch is CancellationError {}
+        #expect(try await CoreDeviceRuntime.preparedValue(of: preparation) == 42)
+    }
+
     @Test func anExitedRendererRetainsItsStartupFailureAndRecovery() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

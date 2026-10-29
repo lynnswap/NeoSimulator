@@ -597,6 +597,9 @@ final class RendererDeviceRequestWaiter {
     private var cancelTimeout: (() -> Void)?
     private var continuation: CheckedContinuation<Void, any Error>?
     private var handled = true
+    private var cancellationRequest: (() -> Void)?
+    private var activeRequestIdentifier: String?
+    private var cancelledOpen = false
 
     func release(_ deviceID: DeviceInventoryID, from renderer: RendererRegistration) async throws {
         try await request("release-device", acknowledgement: "RendererReleased", deviceID: deviceID, renderer: renderer, timeoutSeconds: 120)
@@ -628,6 +631,16 @@ final class RendererDeviceRequestWaiter {
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 self.continuation = continuation
+                self.activeRequestIdentifier = requestIdentifier
+                if action == "open-device" || action == "attach-device" {
+                    self.cancellationRequest = { [weak self] in
+                        guard let self else { return }
+                        self.cancelledOpen = true
+                        var info = ["action": "cancel-open", "udid": identifier, "requestIdentifier": requestIdentifier]
+                        if let deviceSetPath { info["deviceSetPath"] = deviceSetPath }
+                        self.send(info, renderer.sessionIdentifier)
+                    }
+                }
                 observer = acknowledgements.addObserver(
                     forName: Notification.Name("dev.lynnswap.NeoSimulator.\(acknowledgement)"),
                     object: requestIdentifier, queue: .main
@@ -642,7 +655,7 @@ final class RendererDeviceRequestWaiter {
                             self?.finish(.failure(CLIError.temporary("renderer-device-request", failure)))
                         } else {
                             self?.handled = handled
-                            self?.finish(.success(()))
+                            self?.finish(self?.cancelledOpen == true ? .failure(CancellationError()) : .success(()))
                         }
                     }
                 }
@@ -655,13 +668,20 @@ final class RendererDeviceRequestWaiter {
                 send(info, renderer.sessionIdentifier)
             }
         } onCancel: {
-            Task { @MainActor in self.finish(.failure(CancellationError())) }
+            Task { @MainActor in
+                guard self.activeRequestIdentifier == requestIdentifier else { return }
+                if let cancel = self.cancellationRequest { cancel() }
+                else { self.finish(.failure(CancellationError())) }
+            }
         }
     }
 
     private func finish(_ result: Result<Void, any Error>) {
         guard let continuation else { return }
         self.continuation = nil
+        cancellationRequest = nil
+        activeRequestIdentifier = nil
+        cancelledOpen = false
         if let observer { acknowledgements.removeObserver(observer) }
         observer = nil
         cancelTimeout?()
