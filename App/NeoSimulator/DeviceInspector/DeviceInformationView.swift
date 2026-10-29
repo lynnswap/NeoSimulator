@@ -163,11 +163,6 @@ struct DeviceInformationView: View {
                 Text("Paired Simulators")
             }
             .groupBoxStyle(InformationCardStyle())
-            .onChange(of: paired.map(\.inventoryID)) { _, identifiers in
-                if let selectedPairedSimulator, !identifiers.contains(selectedPairedSimulator) {
-                    self.selectedPairedSimulator = nil
-                }
-            }
             editVisibilityButton
         }
     }
