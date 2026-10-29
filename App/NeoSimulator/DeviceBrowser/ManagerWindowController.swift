@@ -180,9 +180,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         rememberCollapsedGroups()
         updatingSelection = true
         reloadRows()
-        if options.showGroups {
-            for group in groups where !collapsedGroups.contains(group.id) { table.expandItem(group) }
-        }
+        restoreGroupExpansion()
         restoreVisibleSelection()
         updatingSelection = false
         loadedRows = true
@@ -317,6 +315,11 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             return group
         }
         groupsByID = Dictionary(uniqueKeysWithValues: groups.map { ($0.id, $0) })
+    }
+
+    private func restoreGroupExpansion() {
+        guard options.showGroups else { return }
+        for group in groups where !collapsedGroups.contains(group.id) { table.expandItem(group) }
     }
 
     private func restoreVisibleSelection() {
@@ -659,9 +662,9 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         reloadRows()
         if options.showGroups, let group = groups.first(where: { $0.rows.contains { $0.id == identifier } }) {
             collapsedGroups.remove(group.id)
-            table.expandItem(group)
             saveCollapsedGroups()
         }
+        restoreGroupExpansion()
         restoreVisibleSelection()
         updatingSelection = false
         updateSelection()

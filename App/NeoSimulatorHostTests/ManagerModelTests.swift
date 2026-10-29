@@ -155,6 +155,13 @@ struct ManagerModelTests {
             .first { $0.placeholderString == "Search Devices" })
         search.stringValue = "Alpha"
         controller.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: search))
+        search.stringValue = ""
+        controller.selectDevice(.coreDevice("A"))
+        controller.update()
+        let newGroup = try #require(outline.item(atRow: 0))
+        #expect(outline.isItemExpanded(newGroup))
+        search.stringValue = "Alpha"
+        controller.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: search))
         await source.setDevices(try devices(firstDate: 200_000))
         await model.refresh()
         controller.update()
