@@ -72,6 +72,8 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
     private let actions = NSPopUpButton(frame: .zero, pullsDown: true)
     private let reloadButton = NSButton(image: NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "Refresh Inspector")!, target: nil, action: nil)
     private let buttons = NSStackView()
+    private let footer = NSStackView()
+    private var stackBottomConstraint: NSLayoutConstraint?
     private let contentView = NSView()
     private let infoView = NSView()
     private var lastIssue: String? { get { inspection.lastIssue } set { inspection.lastIssue = newValue } }
@@ -191,7 +193,8 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
         }
         buttons.orientation = .horizontal
         buttons.spacing = 6
-        let footer = NSStackView(views: [progress, status])
+        footer.addArrangedSubview(progress)
+        footer.addArrangedSubview(status)
         footer.orientation = .horizontal
         footer.alignment = .top
         footer.spacing = 6
@@ -205,17 +208,21 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
         let stack = NSStackView(views: [infoPicker, contentView, infoView, unavailableView, buttons, footer])
         stack.orientation = .vertical
         stack.distribution = .fill
-        stack.alignment = .leading
+        stack.alignment = .centerX
         stack.spacing = 10
         stack.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(stack)
+        let bottom = stack.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8)
+        stackBottomConstraint = bottom
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 8),
-            stack.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -8),
+            stack.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
             stack.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
-            stack.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8),
+            bottom,
         ])
-        for child in stack.views { child.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
+        for child in stack.views {
+            child.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: child === infoView ? 0 : -16).isActive = true
+        }
         contentView.heightAnchor.constraint(greaterThanOrEqualToConstant: 260).isActive = true
         updateVisibility()
         updateControls()
@@ -346,6 +353,7 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
         contentView.isHidden = showingInfo || unavailable != nil
         infoView.isHidden = !showingInfo || unavailable != nil
         buttons.isHidden = showingInfo
+        stackBottomConstraint?.constant = showingInfo ? 0 : -8
         unavailableView.isHidden = unavailable == nil
         if let unavailable {
             unavailableView.rootView = AnyView(ContentUnavailableView {
@@ -406,6 +414,7 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
         else { message = lastIssue ?? "" }
         if status.stringValue != message { status.stringValue = message }
         status.isHidden = status.stringValue.isEmpty || unavailableState != nil
+        footer.isHidden = showingInfo && progress.isHidden && status.isHidden
     }
 
     func reload() {

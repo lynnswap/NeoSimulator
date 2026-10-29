@@ -68,8 +68,9 @@ struct DeviceInformationView: View {
             Button { editsVisibility = true } label: {
                 Text("Edit Visibility")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal)
+                    .foregroundStyle(Color.secondary)
+                    .padding(.vertical, 4)
+                    .padding(.horizontal, 10)
             }
             .buttonStyle(.borderless)
             .controlSize(.small)
@@ -90,7 +91,7 @@ struct DeviceInformationView: View {
 
     private func fieldValue(_ field: DeviceInformation.Field) -> some View {
         Text(field.value)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(Color.secondary)
             .textSelection(.enabled)
             .multilineTextAlignment(.trailing)
             .lineLimit(1)
@@ -155,7 +156,7 @@ struct DeviceInformationView: View {
                 VStack(spacing: 0) {
                     Divider()
                     HStack {
-                        DeviceMenuButton(menu: pairingMenu(device), symbol: "plus", label: "Add Paired Simulator")
+                        DeviceMenuButton(menu: pairingMenu(device), symbol: "plus", label: "Add Paired Simulator", controlSize: .regular)
                             .disabled(!manager.canAddPairing(for: device) || inspection.isManaging ||
                                       !manager.canManage(.pair, deviceIDs: [device.inventoryID]))
                         Divider()
@@ -170,8 +171,9 @@ struct DeviceInformationView: View {
                         Spacer()
                     }
                     .fixedSize(horizontal: false, vertical: true)
-                    .buttonStyle(.accessoryBar)
-                    .controlSize(.small)
+                    .buttonStyle(.accessoryBarAction)
+                    .controlSize(.regular)
+                    .padding(.vertical, 4)
                 }
                 .background(.bar)
             }
@@ -198,11 +200,12 @@ struct DeviceInformationView: View {
         let menu: NSMenu
         let symbol: String
         let label: String
+        var controlSize: NSControl.ControlSize = .small
 
         func makeNSView(context: Context) -> NSPopUpButton {
             let image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)!
             let button = NSPopUpButton(image: image, pullDownMenu: menu)
-            button.controlSize = .small
+            button.controlSize = controlSize
             button.bezelStyle = .accessoryBarAction
             button.isBordered = false
             (button.cell as? NSPopUpButtonCell)?.arrowPosition = .noArrow
