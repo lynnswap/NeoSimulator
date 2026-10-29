@@ -30,6 +30,12 @@ APP_BUNDLE = f"{APP_NAME}.app"
 APP_IDENTIFIER = "dev.lynnswap.NeoSimulator"
 RENDERER_NAME = "NeoSimulatorRenderer"
 RENDERER_IDENTIFIER = f"{APP_IDENTIFIER}.Renderer"
+GUEST_SETTINGS_NAME = "NeoSimulatorGuestSettings"
+GUEST_SETTINGS_ENTITLEMENT = "com.apple.security.cs.allow-dyld-environment-variables"
+GUEST_SETTINGS_ENTITLEMENTS_PATH = Path(__file__).resolve().parents[1] / "App" / GUEST_SETTINGS_NAME / "GuestSettings.entitlements"
+# Simulator Security reads these from the helper's __TEXT,__entitlements section
+# and does not merge them with the macOS signature.
+GUEST_SETTINGS_SIMULATOR_ENTITLEMENTS = ("com.apple.frontboard.launchapplications", "com.apple.frontboard.shutdown")
 APPLICATIONS_LINK = "\u200b"
 SECRET_NAMES = ("DEVELOPER_ID_P12_BASE64", "DEVELOPER_ID_P12_PASSWORD", "NOTARY_API_PRIVATE_KEY")
 VERSION_PATTERN = r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*)?"
@@ -230,19 +236,36 @@ def validate_app(tools: NativeTools, mount: Path, version: str, build_number: st
     }.items():
         if renderer_info.get(name) != expected:
             raise ReleaseError(f"The renderer {name} does not match the release contract.")
-    if set(machos) != {executable, renderer_executable}:
-        raise ReleaseError("The app must contain its manager and embedded renderer executables.")
-    for bundle, binary in ((renderer, renderer_executable), (app, executable)):
+    helper = app / "Contents" / "Helpers" / "NeoSimulatorGuestSettings"
+    if set(machos) != {executable, renderer_executable, helper}:
+        raise ReleaseError("The app must contain its manager, renderer, and guest settings helper executables.")
+    for bundle, binary in ((helper, helper), (renderer, renderer_executable), (app, executable)):
         architectures = tools.run(["/usr/bin/lipo", "-archs", str(binary)], "Validate app architecture").stdout.strip()
         if architectures != b"arm64":
             raise ReleaseError("The release app must be arm64-only.")
         tools.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(bundle)], "Validate app signature")
-        entitlements = tools.run(
-            ["/usr/bin/codesign", "--display", "--entitlements", ":-", str(bundle)], "Inspect app entitlements",
-        ).stdout
-        if entitlements and parse_plist(entitlements, "Inspect app entitlements"):
-            raise ReleaseError("The manager and renderer signing profiles do not use entitlements.")
+        validate_entitlements(tools, bundle, guest_helper=bundle == helper)
     return app
+
+
+def validate_entitlements(tools: NativeTools, path: Path, *, guest_helper: bool = False) -> None:
+    data = tools.run(
+        ["/usr/bin/codesign", "--display", "--entitlements", ":-", str(path)], "Inspect app entitlements",
+    ).stdout
+    values = parse_plist(data, "Inspect app entitlements") if data else {}
+    if guest_helper:
+        if set(values) != {GUEST_SETTINGS_ENTITLEMENT} or values[GUEST_SETTINGS_ENTITLEMENT] is not True:
+            raise ReleaseError("The guest settings helper requires only its allow-DYLD environment entitlement.")
+        with tempfile.TemporaryDirectory(prefix="guest-entitlements-") as directory:
+            section = Path(directory) / "entitlements.plist"
+            tools.run(["/usr/bin/segedit", str(path), "-extract", "__TEXT", "__entitlements", str(section)],
+                      "Inspect guest settings simulator entitlements")
+            simulated = parse_plist(section.read_bytes(), "Inspect guest settings simulator entitlements")
+        if (set(simulated) != set(GUEST_SETTINGS_SIMULATOR_ENTITLEMENTS)
+                or any(simulated[name] is not True for name in GUEST_SETTINGS_SIMULATOR_ENTITLEMENTS)):
+            raise ReleaseError("The guest settings helper requires only its simulator service entitlements.")
+    elif values:
+        raise ReleaseError("The manager and renderer signing profiles do not use entitlements.")
 
 
 def make_writable_image(tools: NativeTools, source: Path, destination: Path, capacity: int, executable_size: int) -> None:
@@ -360,10 +383,15 @@ def temporary_credentials(tools: NativeTools, parent: Path, configuration: dict[
                     os.environ.pop(name, None)
 
 
-def sign(tools: NativeTools, path: Path, credentials: SigningCredentials, *, app: bool) -> None:
+def sign(tools: NativeTools, path: Path, credentials: SigningCredentials, *, app: bool, entitlements: Path | None = None,
+         identifier: str | None = None) -> None:
     arguments = ["/usr/bin/codesign", "--force", "--timestamp", "--keychain", str(credentials.keychain),
                  "--sign", credentials.certificate_sha1]
     arguments += ["--options", "runtime"] if app else ["--identifier", f"{APP_IDENTIFIER}.dmg"]
+    if identifier:
+        arguments += ["--identifier", identifier]
+    if entitlements:
+        arguments += ["--entitlements", str(entitlements)]
     tools.run([*arguments, str(path)], "Sign release app" if app else "Sign release DMG")
 
 
@@ -387,9 +415,13 @@ def sign_application(tools: NativeTools, app: Path, credentials: SigningCredenti
     renderer = app / "Contents" / "Applications" / f"{RENDERER_NAME}.app"
     # Seal nested code before its containing bundle; --deep signing can silently
     # apply the manager's signing profile to the renderer.
-    for bundle, identifier in ((renderer, RENDERER_IDENTIFIER), (app, APP_IDENTIFIER)):
-        sign(tools, bundle, credentials, app=True)
+    helper = app / "Contents" / "Helpers" / "NeoSimulatorGuestSettings"
+    for bundle, identifier in ((helper, "NeoSimulatorGuestSettings"), (renderer, RENDERER_IDENTIFIER), (app, APP_IDENTIFIER)):
+        entitlements = GUEST_SETTINGS_ENTITLEMENTS_PATH if bundle == helper else None
+        sign(tools, bundle, credentials, app=True, entitlements=entitlements,
+             identifier=GUEST_SETTINGS_NAME if bundle == helper else None)
         verify_developer_id(tools, bundle, team, app=True, identifier=identifier)
+        validate_entitlements(tools, bundle, guest_helper=bundle == helper)
 
 
 def parse_json(payload: bytes) -> dict | None:
@@ -485,6 +517,8 @@ def prepare_release(arguments: argparse.Namespace) -> Path:
                     verify_developer_id(tools, app, configuration["APPLE_TEAM_ID"], app=True)
                     verify_developer_id(tools, app / "Contents" / "Applications" / f"{RENDERER_NAME}.app",
                                         configuration["APPLE_TEAM_ID"], app=True, identifier=RENDERER_IDENTIFIER)
+                    verify_developer_id(tools, app / "Contents" / "Helpers" / GUEST_SETTINGS_NAME,
+                                        configuration["APPLE_TEAM_ID"], app=True, identifier=GUEST_SETTINGS_NAME)
                     if layout_contents(mount) != layout:
                         raise ReleaseError("The final image did not preserve the original DMG layout.")
                 tools.run([

@@ -46,7 +46,7 @@ struct ManagerDeviceSettingsView: View {
     private var hasAvailableSettings: Bool {
         guard let settings else { return false }
         return settings.appearance != nil || settings.liquidGlassOpacity != nil || settings.colorFilter != nil
-            || textSizeIndex != nil || settings.boldText != nil || settings.reduceMotion != nil || settings.increaseContrast != nil
+            || textSizeIndex != nil || settings.boldText != nil || settings.displayZoom != nil || settings.reduceMotion != nil || settings.increaseContrast != nil
             || settings.showBorders != nil || settings.reduceTransparency != nil || settings.voiceOver != nil
             || settings.locationAvailable || settings.volume != nil
             || (settings.audioOutputDevice != nil && !settings.audioOutputDevices.isEmpty)
@@ -89,6 +89,13 @@ struct ManagerDeviceSettingsView: View {
                 slider("Intensity", symbol: "slider.horizontal.3",
                        value: binding(get: { $0.colorFilterIntensity }, setting: { .colorFilter(filter, intensity: $0) }), range: 0.25...1)
             }
+            picker("Display Zoom", symbol: "rectangle.inset.filled",
+                   value: binding(get: { $0.displayZoom.map { String($0.rawMode) } },
+                                  setting: { UInt64($0).map(SimulatorDeviceSetting.displayZoom) }),
+                   choices: (settings?.supportedDisplayZoomModes ?? []).map {
+                       Choice(id: String($0.rawMode), title: $0.nativeName)
+                   })
+                .help("Applying Display Zoom restarts the device's interface.")
             slider("Text Size", symbol: "textformat.size",
                    value: binding(get: { $0.contentSize.flatMap { SimulatorDeviceSettings.contentSizes.firstIndex(of: $0) }.map(Double.init) },
                                   setting: {

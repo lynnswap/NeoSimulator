@@ -117,11 +117,20 @@ final class DeviceSettingsModel {
                 if device?.id == destination.id { refreshRequested = true }
             }
         } catch {
+            var failure: any Error = error
+            if let update = error as? SimulatorDeviceSettingsUpdateFailure {
+                if generation == request, device?.id == destination.id {
+                    confirmedSettings = update.settings
+                    issue = nil
+                    logIssues(update.settings)
+                }
+                failure = update.underlyingError
+            }
             if device?.id == destination.id {
                 generation += 1
                 refreshRequested = true
             }
-            throw error
+            throw failure
         }
     }
 
