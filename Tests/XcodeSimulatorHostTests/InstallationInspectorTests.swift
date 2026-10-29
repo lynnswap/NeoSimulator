@@ -638,6 +638,84 @@ struct XcodeConnectionsTests {
                     userInfo: ["udid": "device-id", "deviceSetPath": "/custom-set"])
     }
 
+    @Test(.timeLimit(.minutes(1)), arguments: [false, true]) @MainActor
+    func aRendererExitFinishesRequestsThatItCanNoLongerAcknowledge(_ cancelled: Bool) async throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        process.arguments = ["60"]
+        try process.run()
+        defer { if process.isRunning { process.terminate() } }
+        let device = DeviceInventoryID.simulator(udid: "device-id", deviceSetPath: "/custom-set")
+        let renderer = RendererRegistration(processIdentifier: process.processIdentifier, applicationPath: "/Renderer.app",
+                                            xcodePath: "/Xcode.app", sessionIdentifier: "session", deviceIdentifiers: [])
+        let sent = AsyncStream<String?>.makeStream()
+        var actions = sent.stream.makeAsyncIterator()
+        // Stands in for the 450 s open deadline. Reaching it means the exit was not observed.
+        let waiter = RendererDeviceRequestWaiter(acknowledgements: NotificationCenter(), scheduleTimeout: { _, expire in
+            let deadline = Task { try await Task.sleep(for: .seconds(10)); expire() }
+            return { deadline.cancel() }
+        }) { info, _ in sent.continuation.yield(info["action"]) }
+        let opening = Task { try await waiter.open(device, in: renderer) }
+        #expect(await actions.next() == "open-device")
+        if cancelled {
+            opening.cancel()
+            #expect(await actions.next() == "cancel-open")
+        }
+        process.terminate()
+        do {
+            try await opening.value
+            Issue.record("An open succeeded without its renderer")
+        } catch is CancellationError { #expect(cancelled) }
+        catch let error as CLIError { #expect(!cancelled && error.identifier == "renderer-device-exit") }
+    }
+
+    @Test(.timeLimit(.minutes(1)), arguments: [true, false]) @MainActor
+    func aCancelledOpenReleasesItsScreenUnlessTheRendererHasExited(_ rendererExits: Bool) async throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        process.arguments = ["60"]
+        try process.run()
+        defer { if process.isRunning { process.terminate() } }
+        let center = NotificationCenter()
+        let device = DeviceInventoryID.simulator(udid: "device-id", deviceSetPath: "/custom-set")
+        let renderer = RendererRegistration(processIdentifier: process.processIdentifier, applicationPath: "/Renderer.app",
+                                            xcodePath: "/Xcode.app", sessionIdentifier: "session", deviceIdentifiers: [])
+        let sent = AsyncStream<[String: String]>.makeStream()
+        var requests = sent.stream.makeAsyncIterator()
+        // Stands in for the 450 s and 120 s request deadlines. Reaching it means the exit was not observed.
+        let makeWaiter: @MainActor () -> RendererDeviceRequestWaiter = {
+            RendererDeviceRequestWaiter(acknowledgements: center, scheduleTimeout: { _, expire in
+                let deadline = Task { try await Task.sleep(for: .seconds(10)); expire() }
+                return { deadline.cancel() }
+            }) { info, _ in sent.continuation.yield(info) }
+        }
+        let opening = Task {
+            try await SimulatorHostController.openRendererDevice(device, in: renderer, bootIfNeeded: true, launchesRenderer: false,
+                                                                makeWaiter: makeWaiter) { Issue.record("A cancelled open was presented") }
+        }
+        let open = try #require(await requests.next())
+        #expect(open["action"] == "open-device")
+        opening.cancel()
+        #expect(await requests.next()?["action"] == "cancel-open")
+        let reply = ["udid": "device-id", "deviceSetPath": "/custom-set"]
+        if rendererExits { process.terminate() }
+        else { center.post(name: .init("dev.lynnswap.NeoSimulator.RendererOpened"), object: open["requestIdentifier"], userInfo: reply) }
+        // The renderer did not own the device before this open, so cancellation releases it.
+        let release = try #require(await requests.next())
+        #expect(release["action"] == "release-device")
+        if !rendererExits {
+            center.post(name: .init("dev.lynnswap.NeoSimulator.RendererReleased"), object: release["requestIdentifier"],
+                        userInfo: reply.merging(["error": "Recording cleanup failed"]) { $1 })
+        }
+        do {
+            try await opening.value
+            Issue.record("A cancelled open succeeded")
+        } catch is CancellationError { #expect(rendererExits) }
+        catch let error as CLIError {
+            #expect(!rendererExits && error.identifier == "renderer-device-request" && error.message == "Recording cleanup failed")
+        }
+    }
+
     @Test @MainActor func closeDeviceAcknowledgementPreservesFailureAndAllowsRetry() async throws {
         let center = NotificationCenter()
         let target = DeviceInventoryID.simulator(udid: "device-id", deviceSetPath: nil)

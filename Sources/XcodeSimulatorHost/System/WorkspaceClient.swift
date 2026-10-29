@@ -610,6 +610,7 @@ final class RendererDeviceRequestWaiter {
 
     private var observer: NSObjectProtocol?
     private var cancelTimeout: (() -> Void)?
+    private var cancelExitObservation: (() -> Void)?
     private var continuation: CheckedContinuation<Void, any Error>?
     private var handled = true
     private var cancellationRequest: (() -> Void)?
@@ -677,6 +678,16 @@ final class RendererDeviceRequestWaiter {
                 cancelTimeout = scheduleTimeout(.seconds(timeoutSeconds)) { [weak self] in
                     self?.finish(.failure(CLIError.temporary("renderer-device-timeout", "The simulator display did not finish the device request.")))
                 }
+                cancelExitObservation = Self.observeExit(of: renderer.processIdentifier) { [weak self] in
+                    guard let self, self.activeRequestIdentifier == requestIdentifier else { return }
+                    // A release retires only presentation state owned by the renderer process, which its exit also retires.
+                    if action == "release-device" { self.finish(.success(())) }
+                    // Other requests and the cancellation of an open can no longer be completed.
+                    else {
+                        self.finish(.failure(self.cancelledOpen ? CancellationError()
+                            : CLIError.temporary("renderer-device-exit", "The simulator display exited before finishing the device request.")))
+                    }
+                }
                 var info = ["action": action, "udid": identifier, "requestIdentifier": requestIdentifier]
                 info.merge(additionalInfo) { _, additional in additional }
                 if let deviceSetPath { info["deviceSetPath"] = deviceSetPath }
@@ -701,6 +712,8 @@ final class RendererDeviceRequestWaiter {
         observer = nil
         cancelTimeout?()
         cancelTimeout = nil
+        cancelExitObservation?()
+        cancelExitObservation = nil
         continuation.resume(with: result)
     }
 
@@ -710,6 +723,15 @@ final class RendererDeviceRequestWaiter {
             action()
         }
         return { task.cancel() }
+    }
+
+    /// Dispatch also reports a process that exited before the source was registered.
+    private static func observeExit(of processIdentifier: pid_t, exited: @escaping @MainActor () -> Void) -> () -> Void {
+        let source = DispatchSource.makeProcessSource(identifier: processIdentifier, eventMask: .exit, queue: .main)
+        // Acknowledgements also reach the waiter through main-actor tasks, so one delivered before the exit wins.
+        source.setEventHandler { Task { @MainActor in exited() } }
+        source.activate()
+        return { source.cancel() }
     }
 
 }

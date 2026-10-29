@@ -655,25 +655,26 @@ final class SimulatorManagerModel {
                 self.isBusy = next.refreshCatalog || self.pendingOperations.contains { $0.refreshCatalog }
                 self.activity = next.activity
                 var failure: (any Error)?
+                var refreshesCatalog = next.refreshCatalog
                 if let request = next.openDevice {
                     let task = Task {
                         try await next.run()
                         try Task.checkCancellation()
-                        if next.refreshCatalog, !self.stopping { await self.refreshCatalog() }
                     }
                     self.activeOpen = (request, task)
                     do { try await task.value }
-                    catch is CancellationError {}
-                    catch { failure = error }
+                    catch {
+                        refreshesCatalog = false
+                        if !(error is CancellationError) { failure = error }
+                    }
+                    // Presentation and owned cleanup have finished, so the refresh below is not part of the cancellable open.
                     self.activeOpen = nil
                     self.openingDeviceIDs.remove(request.deviceID)
                 } else {
                     do { try await next.run() }
                     catch { failure = error }
                 }
-                if !self.stopping, self.inventoryRefreshRequested || (next.openDevice == nil && next.refreshCatalog) {
-                    await self.refreshCatalog()
-                }
+                if !self.stopping, refreshesCatalog || self.inventoryRefreshRequested { await self.refreshCatalog() }
                 if let failure, next.openDevice == nil || !self.stopping { self.onError?(failure) }
             }
         }
