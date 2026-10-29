@@ -1394,12 +1394,13 @@ struct ManagerModelTests {
                 return menu
             },
             unpair: { _ in Issue.record("Unpaired without a user action") }))
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 320, height: 800),
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 280, height: 800),
                               styleMask: .titled, backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentViewController = controller
         defer { window.close() }
         let view = controller.view
+        window.setContentSize(NSSize(width: 280, height: 800))
         view.layoutSubtreeIfNeeded()
         window.displayIfNeeded()
         func tables(in view: NSView) -> [NSTableView] {
@@ -1424,6 +1425,7 @@ struct ManagerModelTests {
         let more = try #require(popupButtons(in: pairedRow).first {
             $0.accessibilityLabel() == "More Actions for \(phone.name)"
         })
+        #expect(more.convert(more.bounds, to: pairedRow).minX > pairedRow.bounds.midX)
         #expect(more.menu?.items.contains {
             $0.title == "View Screen" && $0.action == #selector(NSApplication.terminate(_:))
         } == true)

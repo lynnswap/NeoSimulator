@@ -49,6 +49,7 @@ struct PairedSimulatorsView: NSViewRepresentable {
             table.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("Partner")))
             table.headerView = nil
             table.style = .plain
+            table.intercellSpacing = .zero
             table.rowSizeStyle = .custom
             table.usesAutomaticRowHeights = true
             table.allowsEmptySelection = true
@@ -156,14 +157,15 @@ struct PairedSimulatorsView: NSViewRepresentable {
             more.isBordered = false
             more.controlSize = .small
             (more.cell as? NSPopUpButtonCell)?.arrowPosition = .noArrow
-            let stack = NSStackView(views: [title, more])
+            let stack = NSStackView(views: [title])
+            stack.addView(more, in: .trailing)
             stack.orientation = .horizontal
             stack.alignment = .centerY
             stack.translatesAutoresizingMaskIntoConstraints = false
             addSubview(stack)
             NSLayoutConstraint.activate([
-                stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
-                stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+                stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
+                stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
                 stack.topAnchor.constraint(equalTo: topAnchor, constant: 4),
                 stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4),
                 heightAnchor.constraint(greaterThanOrEqualToConstant: minimumPartnerRowHeight),
