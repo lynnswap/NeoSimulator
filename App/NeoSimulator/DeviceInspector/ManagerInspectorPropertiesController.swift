@@ -35,6 +35,7 @@ final class ManagerInspectorPropertiesController: NSViewController, NSOutlineVie
             case .array(let values): "\(values.count) items"
             case .string(let string): string
             case .integer(let number): String(number)
+            case .unsignedInteger(let number): String(number)
             case .number(let number): String(number)
             case .boolean(let enabled): enabled ? "Yes" : "No"
             case .date(let date): date.formatted()
