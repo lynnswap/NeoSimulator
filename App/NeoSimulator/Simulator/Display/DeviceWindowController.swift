@@ -22,6 +22,8 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     private let onRestart: (DeviceWindowController, _ erasing: Bool) -> Void
     private let onShutDown: ((DeviceWindowController) -> Void)?
     private var content: DeviceContentView
+    /// AppKit keeps the compact window's decoration hierarchy while its canvas moves between presentations.
+    private let compactContainer = NSView()
     private let fitting: DisplayFitting
     let canvasZoom = CanvasZoom()
     private let keyboard: DisplayKeyboardInput
@@ -192,6 +194,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         // Full screen remains available even when the bezel disables resizing.
         window.collectionBehavior = [.fullScreenPrimary, .fullScreenAllowsTiling]
         window.delegate = self
+        window.contentView = compactContainer
         window.displayScale = { [weak self] in self?.session.display.renderScale ?? 1 }
         window.handleMouseEvent = { [weak self] in self?.handleBezelDrag($0) ?? false }
         attachSession()
@@ -307,7 +310,6 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         releasePresentationFocus()
         window?.orderOut(nil)
         content.removeFromSuperview()
-        window?.contentView = nil
         presentationViewController.removeFromParent()
         parent.addChild(presentationViewController)
         embeddedParent = parent
@@ -327,6 +329,12 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         readInitialOrientation()
     }
 
+    private func attachCompactContent() {
+        content.frame = compactContainer.bounds
+        content.autoresizingMask = [.width, .height]
+        compactContainer.addSubview(content)
+    }
+
     /// Presents the same native display in its standalone window.
     func showCompactWindow() {
         guard !closed else { return }
@@ -340,8 +348,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         content.isEmbedded = false
         content.attachCanvasControls()
         deviceToolbar?.updateNativeRotation()
-        content.autoresizingMask = []
-        window?.contentView = content
+        attachCompactContent()
         keyboard.attach(to: window)
         observePresentationWindow()
         bezelChanged()
@@ -466,7 +473,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
             content.frame = embeddedContainer.bounds
             content.autoresizingMask = [.width, .height]
             embeddedContainer.addSubview(content)
-        } else { window.contentView = content }
+        } else { attachCompactContent() }
         keyboard.attach(to: presentationWindow)
         observePresentationWindow()
         showResizeCursors()
@@ -1608,7 +1615,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     /// Saves the primary device's compact geometry per screen arrangement.
     private func saveWindowGeometry() {
         guard !closed, !isRestarting, !isEmbedded, !session.isResizingApp, hasPresentedCompactWindow,
-              let window, window.contentView === content else { return }
+              let window, content.superview === compactContainer else { return }
         savedScale = WindowScale.usable(session.display.renderScale)
         preferences.setWindowGeometry(center: NSPoint(x: window.frame.midX, y: window.frame.midY),
                                       scale: savedScale,
