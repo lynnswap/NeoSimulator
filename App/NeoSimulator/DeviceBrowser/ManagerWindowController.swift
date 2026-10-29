@@ -130,8 +130,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         func includes(_ device: InventoryDevice) -> Bool {
             switch self {
             case .all: true
-            case .available: device.isAvailable
-            case .unavailable: !device.isAvailable
+            case .available: DeviceBrowserPresentation.isAvailable(device)
+            case .unavailable: !DeviceBrowserPresentation.isAvailable(device)
             }
         }
     }
@@ -583,7 +583,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         let managing = model.managingDeviceIDs.contains(device.id)
         cell.progress.isHidden = !managing
         if managing { cell.progress.startAnimation(nil) } else { cell.progress.stopAnimation(nil) }
-        cell.setAccessibilityLabel("\(device.name), \(device.operatingSystem ?? kindTitle(device)), \(device.isAvailable ? "Available" : "Unavailable")")
+        cell.setAccessibilityLabel("\(device.name), \(device.operatingSystem ?? kindTitle(device)), \(DeviceBrowserPresentation.isAvailable(device) ? "Available" : "Unavailable")")
         return cell
     }
 

@@ -44,6 +44,36 @@ struct ManagerModelTests {
         if order == .name { #expect(presentation.sections[0].devices[0].name == "Fallback Name") }
     }
 
+    @Test func sidebarAvailabilityUsesRetainedCoreDeviceClassification() throws {
+        let data = Data(#"""
+        {"result":{"devices":[
+          {"identifier":"connecting","properties":{"hardware":{"reality":"physical"},
+            "state":{"name":"Connecting"},"connection":{"state":"connecting"}}},
+          {"identifier":"boot","properties":{"hardware":{"reality":"virtual"},
+            "connection":{"state":"unavailable"}},
+            "capabilities":[{"featureIdentifier":"com.apple.dt.coredevice.device.boot"}]},
+          {"identifier":"resume","properties":{"hardware":{"reality":"virtual"},
+            "connection":{"state":"unavailable"}},
+            "capabilities":[{"featureIdentifier":"com.apple.dt.coredevice.virtualmachineplugin.resumeFromPause"}]},
+          {"identifier":"provisioning","properties":{"hardware":{"reality":"physical"},
+            "state":{"visibilityClass":"devicesBeingProvisioned"},"connection":{"state":"unavailable"}}},
+          {"identifier":"unavailable","properties":{"hardware":{"reality":"physical"},
+            "connection":{"state":"unavailable"}}},
+          {"identifier":"future","properties":{"hardware":{"reality":"physical"},
+            "connection":{"state":"future-state"}}},
+          {"identifier":"missing","properties":{"hardware":{"reality":"physical"}}}
+        ]}}
+        """#.utf8)
+        let devices = try CoreDeviceInventoryDecoder.decode(data).map(InventoryDevice.remote)
+        let grouped = DeviceBrowserPresentation(devices: devices, sortOrder: .availability)
+        #expect(Set(grouped.sections.first?.devices.map(\.id) ?? []) ==
+            Set(["connecting", "boot", "resume", "provisioning"].map(DeviceInventoryID.coreDevice)))
+        #expect(Set(grouped.sections.last?.devices.map(\.id) ?? []) ==
+            Set(["unavailable", "future", "missing"].map(DeviceInventoryID.coreDevice)))
+        let recent = DeviceBrowserPresentation(devices: devices, sortOrder: .recent)
+        #expect(Set(recent.devices.prefix(4).map(\.id)) == Set(grouped.sections[0].devices.map(\.id)))
+    }
+
     @Test(arguments: [(nil as String?, "Other"), ("  ßeta  ", "SS"), ("\nAlpha", "#"), ("", "#")])
     func sidebarNameGroupsUseTheReportedFirstCharacter(_ name: String?, _ expected: String) throws {
         var state: [String: String] = [:]
@@ -61,7 +91,7 @@ struct ManagerModelTests {
         let payload = Data(#"""
         {"result":{"devices":[{"identifier":"core-record","properties":{
           "hardware":{"reality":"simulated","udid":"same-udid"},"state":{"name":"Default"},
-          "connection":{"state":"connected","lastConnectionDate":100}}}]}}
+          "connection":{"state":"unavailable","lastConnectionDate":100}}}]}}
         """#.utf8)
         let snapshot = await DeviceInventoryReader(
             readSimulators: { DeviceInventorySnapshot(devices: [defaultDevice, customDevice], issues: []) },
@@ -73,6 +103,9 @@ struct ManagerModelTests {
         #expect(presentation.sections.count == 2)
         #expect(presentation.sections.last?.id == "Other")
         #expect(presentation.sections.last?.devices.map(\.id) == [customDevice.id])
+        let availability = DeviceBrowserPresentation(devices: snapshot.devices, sortOrder: .availability)
+        #expect(availability.sections.first?.devices.map(\.id) == [customDevice.id])
+        #expect(availability.sections.last?.devices.map(\.id) == [defaultDevice.id])
     }
 
     @Test func operatingSystemSectionsUseNumericVersionsWithMissingVersionLast() throws {
@@ -104,10 +137,11 @@ struct ManagerModelTests {
         let domain = "NeoSimulator.SidebarFixture.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: domain))
         defer { defaults.removePersistentDomain(forName: domain) }
-        func devices(firstDate: Double = 100) throws -> [InventoryDevice] {
+        func devices(firstDate: Double = 100, firstConnection: String = "connected") throws -> [InventoryDevice] {
             let data = try JSONSerialization.data(withJSONObject: ["result": ["devices": [
                 ["identifier": "A", "properties": ["hardware": ["reality": "physical"], "state": ["name": "Alpha"],
-                    "connection": ["state": "connected", "lastConnectionDate": firstDate]]],
+                    "connection": ["state": firstConnection, "lastConnectionDate": firstDate]],
+                    "capabilities": [["featureIdentifier": "com.apple.coredevice.feature.viewdevicescreen"]]],
                 ["identifier": "B", "properties": ["hardware": ["reality": "physical"], "state": ["name": "Beta"],
                     "connection": ["state": "connected", "lastConnectionDate": 200_000]]],
             ]]])
@@ -126,7 +160,7 @@ struct ManagerModelTests {
             .first { $0.itemIdentifier.rawValue == "FilterSimulators" }?.menu)
         func choose(_ title: String) throws {
             controller.menuNeedsUpdate(menu)
-            let item = try #require(menu.items.first { $0.title == title })
+            let item = try #require(menu.items.first { $0.title == title && !$0.isSectionHeader })
             #expect(NSApp.sendAction(try #require(item.action), to: item.target, from: item))
         }
         #expect(controller.outlineView(outline, numberOfChildrenOfItem: nil) == 1)
@@ -173,6 +207,19 @@ struct ManagerModelTests {
         controller.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: search))
         #expect(controller.outlineView(outline, numberOfChildrenOfItem: nil) == 1)
         #expect(controller.selectedIdentifiers == [.coreDevice("A")])
+        try choose("Availability")
+        try choose("Available")
+        let viewScreen = try #require(inspectorViews(content).compactMap { $0 as? NSButton }
+            .first { $0.title == "View Screen" })
+        #expect(viewScreen.isEnabled)
+        await source.setDevices(try devices(firstDate: 200_000, firstConnection: "connecting"))
+        await model.refresh()
+        controller.update()
+        #expect(controller.selectedIdentifiers == [.coreDevice("A")])
+        #expect(outline.item(atRow: outline.selectedRow) as? NSObject === selectedRow)
+        #expect(!viewScreen.isEnabled)
+        let row = try #require(controller.outlineView(outline, viewFor: outline.tableColumns.first, item: selectedRow))
+        #expect(row.accessibilityLabel()?.hasSuffix(", Available") == true)
     }
 
     @Test func sidebarOptionsRestoreAndUseNativeFallbacks() throws {

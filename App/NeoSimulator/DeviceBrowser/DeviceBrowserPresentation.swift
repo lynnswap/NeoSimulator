@@ -45,6 +45,26 @@ struct DeviceBrowserPresentation {
     let sections: [Section]
     var devices: [InventoryDevice] { sections.flatMap(\.devices) }
 
+    /// Sidebar classification is independent of device-operation eligibility.
+    static func isAvailable(_ device: InventoryDevice) -> Bool {
+        let coreDevice: CoreDeviceDevice?
+        switch device {
+        case .simulator(let simulator): coreDevice = simulator.coreDevice
+        case .remote(let remote): coreDevice = remote
+        }
+        guard let coreDevice else { return device.isAvailable }
+        if coreDevice.visibilityClass == "devicesBeingProvisioned"
+            || coreDevice.capabilities.contains("com.apple.dt.coredevice.device.boot")
+            || coreDevice.capabilities.contains("com.apple.dt.coredevice.virtualmachineplugin.resumeFromPause") {
+            return true
+        }
+        switch coreDevice.connectionState {
+        case "unavailable": return false
+        case "disconnected", "connecting", "connected": return true
+        default: return device.isAvailable
+        }
+    }
+
     init(devices: [InventoryDevice], sortOrder: SortOrder,
          calendar: Calendar = .current, locale: Locale = .current, now: Date = .now) {
         let formatter = DateFormatter()
@@ -57,7 +77,7 @@ struct DeviceBrowserPresentation {
 
         func key(_ device: InventoryDevice) -> String {
             switch sortOrder {
-            case .availability: device.isAvailable ? "available" : "unavailable"
+            case .availability: Self.isAvailable(device) ? "available" : "unavailable"
             case .recent: device.lastConnectionDate.map(formatter.string(from:)) ?? "Other"
             case .name: Self.nameGroup(Self.reportedName(device))
             case .fidelity: Self.reality(device)
@@ -186,7 +206,8 @@ struct DeviceBrowserPresentation {
         let names = (reportedName(lhs) ?? "").localizedCaseInsensitiveCompare(reportedName(rhs) ?? "")
         if order == .name, names != .orderedSame { return names == .orderedAscending }
         // Inventory does not contain DeviceKit's transient presentation-active state.
-        if lhs.isAvailable != rhs.isAvailable { return lhs.isAvailable }
+        let aAvailable = isAvailable(lhs), bAvailable = isAvailable(rhs)
+        if aAvailable != bAvailable { return aAvailable }
         if order != .recent {
             let a = calendar.startOfDay(for: lhs.lastConnectionDate ?? now)
             let b = calendar.startOfDay(for: rhs.lastConnectionDate ?? now)
