@@ -591,6 +591,52 @@ struct XcodeConnectionsTests {
         #expect(requests.suffix(2).compactMap { $0["keepRunning"] } == ["true", "false"])
     }
 
+    @Test(.timeLimit(.minutes(1)), arguments: [false, true]) @MainActor
+    func cancellingAnOpenWaitsForItsRendererCleanup(_ cleanupFails: Bool) async throws {
+        let center = NotificationCenter()
+        let device = DeviceInventoryID.simulator(udid: "device-id", deviceSetPath: "/custom-set")
+        let renderer = RendererRegistration(processIdentifier: 1, applicationPath: "/Renderer.app", xcodePath: "/Xcode.app",
+                                            sessionIdentifier: "session", deviceIdentifiers: [])
+        let started = AsyncStream<Void>.makeStream()
+        var events = started.stream.makeAsyncIterator()
+        var original: [String: String] = [:]
+        var cancellationSent = false
+        var completed = false
+        let waiter = RendererDeviceRequestWaiter(acknowledgements: center, scheduleTimeout: { _, _ in {} }) { info, session in
+            #expect(session == renderer.sessionIdentifier)
+            if info["action"] == "cancel-open" {
+                cancellationSent = true
+                #expect(info["requestIdentifier"] == original["requestIdentifier"])
+                #expect(info["deviceSetPath"] == "/custom-set")
+                started.continuation.yield(())
+            } else {
+                original = info
+                started.continuation.yield(())
+            }
+        }
+        let opening = Task {
+            defer { completed = true }
+            try await waiter.open(device, in: renderer)
+        }
+        await events.next()
+        opening.cancel()
+        await events.next()
+        #expect(!completed)
+        var result = ["udid": "device-id", "deviceSetPath": "/custom-set"]
+        if cleanupFails { result["error"] = "Owned cleanup failed" }
+        center.post(name: .init("dev.lynnswap.NeoSimulator.RendererOpened"),
+                    object: original["requestIdentifier"], userInfo: result)
+        do {
+            try await opening.value
+            Issue.record("A cancelled open succeeded")
+        } catch is CancellationError { #expect(!cleanupFails) }
+        catch let error as CLIError { #expect(cleanupFails && error.message == "Owned cleanup failed") }
+        #expect(cancellationSent)
+        // The retired acknowledgement must not complete another request or resume twice.
+        center.post(name: .init("dev.lynnswap.NeoSimulator.RendererOpened"), object: original["requestIdentifier"],
+                    userInfo: ["udid": "device-id", "deviceSetPath": "/custom-set"])
+    }
+
     @Test @MainActor func closeDeviceAcknowledgementPreservesFailureAndAllowsRetry() async throws {
         let center = NotificationCenter()
         let target = DeviceInventoryID.simulator(udid: "device-id", deviceSetPath: nil)
@@ -689,6 +735,31 @@ struct XcodeConnectionsTests {
         #expect(tracker.observe([device("A", "Booted"), device("B", "Booted")], attachInitially: true).devicesToAttach == [.simulator(udid: "A", deviceSetPath: nil)])
         tracker.reset()
         #expect(tracker.observe([device("A", "Booted"), device("B", "Booted")], attachInitially: true).devicesToAttach == [.simulator(udid: "A", deviceSetPath: nil), .simulator(udid: "B", deviceSetPath: nil)])
+    }
+
+    @Test func aCancelledAttachmentStaysRetiredForOnlyItsBootAndDeviceSet() {
+        let tracker = SimulatorBootTracker()
+        func device(_ state: String, set: String? = nil) -> SimulatorHostDevice {
+            .init(identifier: "A", name: "A", descriptiveName: "A", runtimeIdentifier: "runtime", runtimeName: "iOS",
+                  productFamily: "iPhone", state: state, deviceSetPath: set)
+        }
+        let normal = device("Booted")
+        let clone = device("Booted", set: "/custom-set")
+        _ = tracker.observe([device("Shutdown"), device("Shutdown", set: "/custom-set")], attachInitially: false)
+        // Cleanup can finish before the booted state reaches the next catalog snapshot.
+        tracker.didCancelAttachment(normal.inventoryID)
+        #expect(tracker.observe([normal, clone], attachInitially: true).devicesToAttach == [clone.inventoryID])
+        tracker.didAttach(clone.inventoryID)
+        #expect(tracker.observe([normal, clone], attachInitially: true).devicesToAttach.isEmpty)
+        _ = tracker.observe([device("Shutdown"), clone], attachInitially: true)
+        #expect(tracker.observe([normal, clone], attachInitially: true).devicesToAttach == [normal.inventoryID])
+        tracker.didCancelAttachment(normal.inventoryID)
+        tracker.reset()
+        #expect(tracker.observe([normal, clone], attachInitially: true).devicesToAttach == [normal.inventoryID, clone.inventoryID])
+        tracker.didCancelAttachment(clone.inventoryID)
+        tracker.didAttach(normal.inventoryID)
+        tracker.forgetTestingDevices()
+        #expect(tracker.observe([normal, clone], attachInitially: true).devicesToAttach == [clone.inventoryID])
     }
 
     @Test func testingVisibilityChangesReattachClonesAndPreserveNormalWindowChoices() {

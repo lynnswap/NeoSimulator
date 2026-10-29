@@ -229,7 +229,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         presentationTask = task
         defer { if presentationGeneration == generation { presentationTask = nil } }
-        try await task.value
+        try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
     }
 
     private func requestPresentation(_ placement: SimulatorScreenRestoration.Presentation) {
@@ -354,12 +354,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard !quitting else { throw CancellationError() }
         prepareMainWindow()
         let displayURL = try await CoreDeviceRuntime.uiXcodeURL()
+        try Task.checkCancellation()
         displayXcodeURL = displayURL
         let sourceURL = context.xcodeURL.standardizedFileURL.resolvingSymlinksInPath()
         let host: HostApplication
         if let existing = simulatorHosts[sourceURL] { host = existing }
         else {
             let runtime = try await SimulatorRuntime.load(xcodeURL: sourceURL, uiXcodeURL: displayURL)
+            try Task.checkCancellation()
             host = try HostApplication(runtime: runtime, conflicts: HostConflictMonitor(), inProcess: true, pasteboardSync: pasteboardSync)
             host.onError = { [weak self] error in self?.present(error) }
             host.onChange = { [weak self] in self?.simulatorPresentationsChanged() }
@@ -396,24 +398,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             simulatorWindows.removeValue(forKey: context.deviceID)
             mainWindow?.showDevicePreview(ifDisplaying: context.deviceID)
         }
-        let controller = try await host.openPresentation(for: identifier, bootIfNeeded: false)
-        controller.onShowInMainWindow = { [weak self] in self?.showScreenInMainWindow(context.deviceID) }
-        let isNew = simulatorWindows[context.deviceID] !== controller
-        if let previous = simulatorWindows[context.deviceID] {
-            previousPresentation = Screen.simulator(previous).presentation
+        let preservesPresentation = host.openedDeviceIdentifiers.contains(identifier)
+        var attached = false
+        do {
+            let controller = try await host.openPresentation(for: identifier, bootIfNeeded: false)
+            attached = true
+            try Task.checkCancellation()
+            controller.onShowInMainWindow = { [weak self] in self?.showScreenInMainWindow(context.deviceID) }
+            let isNew = simulatorWindows[context.deviceID] !== controller
+            if let previous = simulatorWindows[context.deviceID] {
+                previousPresentation = Screen.simulator(previous).presentation
+            }
+            simulatorWindows[context.deviceID] = controller
+            if isNew {
+                configureCanvasControls(for: context.deviceID, screen: .simulator(controller))
+                observeScreenState(context.deviceID)
+            }
+            try await presentConnectedScreen(context.deviceID, purpose: context.purpose,
+                                             preserving: previousPresentation)
+        } catch {
+            if Task.isCancelled, attached, !preservesPresentation {
+                try await Task { try await host.releasePresentation(for: identifier) }.value
+            }
+            throw error
         }
-        simulatorWindows[context.deviceID] = controller
-        if isNew {
-            configureCanvasControls(for: context.deviceID, screen: .simulator(controller))
-            observeScreenState(context.deviceID)
-        }
-        try await presentConnectedScreen(context.deviceID, purpose: context.purpose,
-                                         preserving: previousPresentation)
     }
 
     func presentConnectedScreen(_ identifier: DeviceInventoryID,
                                 purpose: SimulatorPresentationContext.Purpose,
                                 preserving presentation: SimulatorScreenRestoration.Presentation? = nil) async throws {
+        try Task.checkCancellation()
         guard !quitting, let mainWindow, let screen = screen(for: identifier) else { return }
         if mainWindow.selectedIdentifiers.isEmpty, presentationIntent.revision == 0, purpose != .requested {
             mainWindow.selectDevice(identifier)
@@ -725,14 +739,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !quitting else { return .terminateLater }
-        guard !model.isBusy else {
-            let alert = NSAlert()
-            alert.messageText = "A simulator operation is still running."
-            alert.informativeText = "Wait for the operation to finish, then quit NeoSimulator."
-            alert.runModal()
-            return .terminateCancel
-        }
         quitting = true
+        let preparation = Task.immediate { try await model.prepareForQuit() }
         let restoring: [SimulatorScreenRestoration] = restartsAfterQuitting ? simulatorHosts.flatMap { xcode, host in
             host.openedDeviceIdentifiers.compactMap { device in
                 let id = DeviceInventoryID.simulator(udid: device.identifier, deviceSetPath: device.deviceSetPath)
@@ -745,6 +753,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task {
             do {
                 mainWindow?.stopInspectorReads()
+                try await preparation.value
                 try await mainWindow?.finishInspectorPreviews()
                 inventoryObservationTask?.cancel()
                 await inventoryObservation?.stop()
@@ -967,7 +976,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func quitAsking(_ sender: Any?) {
-        guard !model.isBusy, !quitting else { return }
+        guard !quitting else { return }
         let defaults = UserDefaults(suiteName: "dev.lynnswap.NeoSimulator.Renderer") ?? .standard
         let alert = NSAlert()
         alert.messageText = "Do you want to shut down the simulated devices?"

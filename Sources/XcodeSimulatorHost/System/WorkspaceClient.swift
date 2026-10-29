@@ -267,6 +267,7 @@ struct WorkspaceClient: Sendable {
             configuration.arguments = rendererLaunchArguments(owner: try RendererOwnerIdentity.current(),
                 startupResultURL: startupResultURL, xcodeURL: xcodeURL, deviceIdentifier: deviceIdentifier, headless: headlessRenderers)
 
+            try Task.checkCancellation()
             let application = try await NSWorkspace.shared.openApplication(
                 at: applicationURL,
                 configuration: configuration
@@ -303,6 +304,7 @@ struct WorkspaceClient: Sendable {
                     )
                 }
                 try await waitForNeoHostStartup(resultURL: startupResultURL, isTerminated: { application.isTerminated })
+                try Task.checkCancellation()
                 return observed
             } catch let launchError {
                 guard application.bundleIdentifier == ToolConstants.neoHostBundleIdentifier,
@@ -312,27 +314,23 @@ struct WorkspaceClient: Sendable {
                     identity: identity,
                     timeoutInterval: 10
                 )
-                do {
+                try await finishFailedNeoHostLaunch(launchError, processIdentifier: application.processIdentifier) {
                     try await waiter.terminate()
-                } catch let terminationError {
-                    let message = "NeoSimulator launch failed (\(launchError.localizedDescription)), and pid \(application.processIdentifier) could not be terminated (\(terminationError.localizedDescription))"
-                    let failure = launchError as? any LocalizedError
-                    throw CLIError(category: .temporary, identifier: "neo-host-launch-cleanup", message: message,
-                                   failureReason: failure?.failureReason == nil ? nil : message,
-                                   recoverySuggestion: failure?.recoverySuggestion)
                 }
-                throw launchError
             }
         },
         openDeviceHub: { applicationURL in
             let configuration = NSWorkspace.OpenConfiguration()
             configuration.activates = true
             configuration.allowsRunningApplicationSubstitution = false
+            try Task.checkCancellation()
             let app = try await NSWorkspace.shared.openApplication(at: applicationURL, configuration: configuration)
             guard app.bundleIdentifier == ToolConstants.deviceHubBundleIdentifier,
                   app.bundleURL.map(normalized) == normalized(applicationURL) else {
                 throw CLIError.configuration("device-hub-substitution", "LaunchServices opened an unexpected Device Hub application")
             }
+            // LaunchServices has already committed this external launch; it may be a shared instance.
+            try Task.checkCancellation()
             return applicationURL
         },
         // Normal quit can wait for recordings, device shutdown, and error alerts.
@@ -525,6 +523,23 @@ struct WorkspaceClient: Sendable {
         return directory
     }
 
+    @MainActor static func finishFailedNeoHostLaunch(
+        _ launchError: any Error,
+        processIdentifier: pid_t,
+        terminate: @escaping @MainActor @Sendable () async throws -> Void
+    ) async throws -> Never {
+        do {
+            try await Task { try await terminate() }.value
+        } catch let terminationError {
+            let message = "NeoSimulator launch failed (\(launchError.localizedDescription)), and pid \(processIdentifier) could not be terminated (\(terminationError.localizedDescription))"
+            let failure = launchError as? any LocalizedError
+            throw CLIError(category: .temporary, identifier: "neo-host-launch-cleanup", message: message,
+                           failureReason: failure?.failureReason == nil ? nil : message,
+                           recoverySuggestion: failure?.recoverySuggestion)
+        }
+        throw launchError
+    }
+
     @MainActor static func waitForNeoHostStartup(
         resultURL: URL,
         isTerminated: () -> Bool
@@ -597,6 +612,9 @@ final class RendererDeviceRequestWaiter {
     private var cancelTimeout: (() -> Void)?
     private var continuation: CheckedContinuation<Void, any Error>?
     private var handled = true
+    private var cancellationRequest: (() -> Void)?
+    private var activeRequestIdentifier: String?
+    private var cancelledOpen = false
 
     func release(_ deviceID: DeviceInventoryID, from renderer: RendererRegistration) async throws {
         try await request("release-device", acknowledgement: "RendererReleased", deviceID: deviceID, renderer: renderer, timeoutSeconds: 120)
@@ -628,6 +646,16 @@ final class RendererDeviceRequestWaiter {
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 self.continuation = continuation
+                self.activeRequestIdentifier = requestIdentifier
+                if action == "open-device" || action == "attach-device" {
+                    self.cancellationRequest = { [weak self] in
+                        guard let self else { return }
+                        self.cancelledOpen = true
+                        var info = ["action": "cancel-open", "udid": identifier, "requestIdentifier": requestIdentifier]
+                        if let deviceSetPath { info["deviceSetPath"] = deviceSetPath }
+                        self.send(info, renderer.sessionIdentifier)
+                    }
+                }
                 observer = acknowledgements.addObserver(
                     forName: Notification.Name("dev.lynnswap.NeoSimulator.\(acknowledgement)"),
                     object: requestIdentifier, queue: .main
@@ -642,7 +670,7 @@ final class RendererDeviceRequestWaiter {
                             self?.finish(.failure(CLIError.temporary("renderer-device-request", failure)))
                         } else {
                             self?.handled = handled
-                            self?.finish(.success(()))
+                            self?.finish(self?.cancelledOpen == true ? .failure(CancellationError()) : .success(()))
                         }
                     }
                 }
@@ -655,13 +683,20 @@ final class RendererDeviceRequestWaiter {
                 send(info, renderer.sessionIdentifier)
             }
         } onCancel: {
-            Task { @MainActor in self.finish(.failure(CancellationError())) }
+            Task { @MainActor in
+                guard self.activeRequestIdentifier == requestIdentifier else { return }
+                if let cancel = self.cancellationRequest { cancel() }
+                else { self.finish(.failure(CancellationError())) }
+            }
         }
     }
 
     private func finish(_ result: Result<Void, any Error>) {
         guard let continuation else { return }
         self.continuation = nil
+        cancellationRequest = nil
+        activeRequestIdentifier = nil
+        cancelledOpen = false
         if let observer { acknowledgements.removeObserver(observer) }
         observer = nil
         cancelTimeout?()
