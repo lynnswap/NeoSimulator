@@ -69,6 +69,7 @@ public struct SimulatorDeviceSettings: Sendable {
     public static let contentSizes = ["extra-small", "small", "medium", "large", "extra-large", "extra-extra-large", "extra-extra-extra-large", "accessibility-medium", "accessibility-large", "accessibility-extra-large", "accessibility-extra-extra-large", "accessibility-extra-extra-extra-large"]
     public internal(set) var appearance: String?
     public internal(set) var contentSize: String?
+    public internal(set) var boldText: Bool?
     public internal(set) var increaseContrast: Bool?
     public internal(set) var lookAndFeel: String?
     public internal(set) var supportedLooksAndFeels: [SimulatorLookAndFeel] = []
@@ -96,6 +97,7 @@ public struct SimulatorDeviceSettings: Sendable {
 public enum SimulatorDeviceSetting: Sendable {
     case appearance(String)
     case contentSize(String)
+    case boldText(Bool)
     case increaseContrast(Bool)
     case lookAndFeel(SimulatorLookAndFeel)
     case liquidGlassOpacity(Double)
@@ -119,6 +121,7 @@ extension SimulatorDeviceSettings {
         switch setting {
         case .appearance(let value): result.appearance = value
         case .contentSize(let value): result.contentSize = value
+        case .boldText(let value): result.boldText = value
         case .increaseContrast(let value): result.increaseContrast = value
         case .lookAndFeel(let value): result.lookAndFeel = value.rawValue
         case .liquidGlassOpacity(let value): result.liquidGlassOpacity = value
@@ -189,10 +192,18 @@ private extension InventoryDevice {
         }
     }
 
+    var supportsBoldText: Bool {
+        guard case .simulator(let device) = self else { return false }
+        return ["iPhone", "iPad"].contains(device.productFamily)
+    }
+
     func checkSettingsWrite(_ setting: SimulatorDeviceSetting) throws {
+        if case .boldText = setting, !supportsBoldText {
+            throw CLIError.unavailable("bold-text-unavailable", "Bold Text is available only for iOS simulators.")
+        }
         if case .simulator(let device) = self {
             switch setting {
-            case .appearance, .contentSize, .increaseContrast, .location, .locationScenario, .clearLocation: return
+            case .appearance, .contentSize, .boldText, .increaseContrast, .location, .locationScenario, .clearLocation: return
             default:
                 guard device.deviceSetPath == nil else {
                     throw CLIError.unavailable("custom-set-setting", "This setting is not available for simulators in a custom device set.")
@@ -203,8 +214,9 @@ private extension InventoryDevice {
         guard settingsAvailable else {
             throw CLIError.unavailable("device-setting-unavailable", "The selected device is not currently available.")
         }
-        let feature: String = switch setting {
+        let feature: String? = switch setting {
         case .appearance: "customizeuistyle"
+        case .boldText: nil
         case .liquidGlassOpacity: "customizeliquidglass"
         case .contentSize, .increaseContrast, .lookAndFeel, .colorFilter, .reduceMotion, .showBorders, .reduceTransparency: "customizeappearancesettings"
         case .voiceOver: "voiceover"
@@ -212,7 +224,7 @@ private extension InventoryDevice {
         case .audioInputDevice: "audioinput"
         case .location, .locationScenario, .clearLocation: "simulatelocation"
         }
-        guard supportsSettingsFeature(feature) else {
+        guard let feature, supportsSettingsFeature(feature) else {
             throw CLIError.unavailable("device-setting-capability", "The selected device does not currently expose this setting.")
         }
     }
@@ -423,13 +435,14 @@ struct SimulatorSettingsBackend {
     }
 
     private enum Query: CaseIterable {
-        case simulatorAppearance, simulatorContentSize, simulatorContrast, appearance, voiceOver, audio, location
+        case simulatorAppearance, simulatorContentSize, simulatorContrast, boldText, appearance, voiceOver, audio, location
 
         var issueNames: [String] {
             switch self {
             case .simulatorAppearance: ["appearance"]
             case .simulatorContentSize: ["content_size"]
             case .simulatorContrast: ["increase_contrast"]
+            case .boldText: ["Bold Text"]
             case .appearance: ["appearance settings", "color filter"]
             case .voiceOver: ["VoiceOver"]
             case .audio: ["audio"]
@@ -452,6 +465,7 @@ struct SimulatorSettingsBackend {
             if case .simulator = device { query = .simulatorContentSize } else { query = .appearance }
         case .increaseContrast:
             if case .simulator = device { query = .simulatorContrast } else { query = .appearance }
+        case .boldText: query = .boldText
         case .lookAndFeel, .liquidGlassOpacity, .colorFilter, .reduceMotion, .showBorders, .reduceTransparency: query = .appearance
         case .voiceOver: query = .voiceOver
         case .volume, .audioInputDevice, .audioOutputDevice: query = .audio
@@ -470,6 +484,7 @@ struct SimulatorSettingsBackend {
             case .simulatorAppearance: settings.appearance = nil
             case .simulatorContentSize: settings.contentSize = nil
             case .simulatorContrast: settings.increaseContrast = nil
+            case .boldText: settings.boldText = nil
             case .appearance:
                 if case .remote = device {
                     settings.appearance = nil
@@ -522,6 +537,14 @@ struct SimulatorSettingsBackend {
             }
         }
 
+        if queries.contains(.boldText), device.supportsBoldText {
+            settings.boldText = await capture("Bold Text") {
+                let data = try await readCommand(.simctl, ["spawn", identifier, "defaults", "export", Self.boldTextDomain, "-"])
+                let values = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
+                guard let values else { throw CLIError.io("bold-text-value", "The device returned an invalid accessibility preferences dictionary.") }
+                return (values[Self.boldTextKey] as? NSNumber)?.intValue == 1
+            }
+        }
         if queries.contains(.appearance), device.supportsSettingsQuery(.appearance), let appearance = await capture("appearance settings", { try await query(Appearance.self, ["device", "info", "appearance"], identifier) }) {
             settings.lookAndFeel = appearance.lookAndFeel
             settings.supportedLooksAndFeels = (appearance.supportedLooksAndFeels ?? []).compactMap(Self.lookAndFeel)
@@ -606,6 +629,13 @@ struct SimulatorSettingsBackend {
                 if value.hasPrefix("accessibility-") { options += ["--larger-accessibility-sizes", "on"] }
                 _ = try run(.devicectl, command(["device", "settings", "appearance"] + options, identifier))
             }
+        case .boldText(let enabled):
+            _ = try run(.simctl, ["spawn", identifier, "defaults", "write", Self.boldTextDomain, Self.boldTextKey, "-int", enabled ? "1" : "0"])
+            do {
+                _ = try run(.simctl, ["spawn", identifier, "notifyutil", "-p", Self.boldTextNotification])
+            } catch {
+                throw CLIError.io("bold-text-notification", "Bold Text was saved, but its change notification failed: \(error.localizedDescription)")
+            }
         case .increaseContrast(let enabled):
             if case .simulator = device { try ui("increase_contrast", enabled ? "enabled" : "disabled") }
             else { try appearance("--increase-contrast", enabled ? "on" : "off") }
@@ -636,6 +666,11 @@ struct SimulatorSettingsBackend {
             else { _ = try run(.devicectl, command(["device", "simulate", "location", "clear"], identifier)) }
         }
     }
+
+    // libAccessibility's _AXSSetEnhanceTextLegibilityEnabled uses this preference and cache notification.
+    private static let boldTextDomain = "com.apple.Accessibility"
+    private static let boldTextKey = "EnhancedTextLegibilityEnabled"
+    private static let boldTextNotification = "com.apple.accessibility.cache.enhance.text.legibility"
 
     private func command(_ arguments: [String], _ identifier: String) -> [String] {
         arguments + ["--device", identifier, "--quiet", "--timeout", "10", "--json-output", "-"]
