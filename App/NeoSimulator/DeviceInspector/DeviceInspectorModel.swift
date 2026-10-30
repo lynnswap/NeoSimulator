@@ -57,7 +57,7 @@ final class DeviceInspectorModel {
     }
     func supports(_ feature: String) -> Bool { device?.capabilities.contains("com.apple.coredevice.feature." + feature) == true }
     var canReadApplications: Bool { device?.kind == .simulator ? simulatorIsRunning : supports("streamapplist") }
-    var canInstallApplications: Bool { device?.kind == .simulator ? simulatorIsRunning : supports("installapp") }
+    var canInstallApplications: Bool { device?.canInstallApplications == true }
     var canReadProfiles: Bool {
         if case .simulator(let simulator) = device,
            simulator.deviceSetPath != nil || !simulatorIsRunning { return false }
@@ -139,6 +139,16 @@ final class DeviceInspectorModel {
             guard generation == request, !Task.isCancelled else { return }
             reading = false
             readTask = nil
+        }
+    }
+}
+
+extension InventoryDevice {
+    /// Whether the Apps inspector's installer can target the device in this snapshot.
+    var canInstallApplications: Bool {
+        switch self {
+        case .simulator(let simulator): simulator.isAvailable && simulator.state == "Booted"
+        case .remote(let device): device.capabilities.contains("com.apple.coredevice.feature.installapp")
         }
     }
 }

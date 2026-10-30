@@ -20,6 +20,9 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
     var onChange: (() -> Void)?
     var onConnect: (() async -> Void)?
     var onShowInMainWindow: (() -> Void)? { didSet { update() } }
+    /// Application bundles dropped on the screen go to the device's installer, whichever window shows it.
+    var canInstallApplications: () -> Bool = { false }
+    var installApplications: ([URL]) -> Void = { _ in }
     let presentationViewController = RemoteDevicePresentationViewController()
     var isEmbedded: Bool { presentationViewController.parent != nil }
     private var presentationWindow: NSWindow? { presentationViewController.view.window }
@@ -30,7 +33,7 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
     }
     private var presentationConstraints: [NSLayoutConstraint] = []
     private var changingPresentation = false
-    private let viewport = NSView()
+    private let viewport = RemoteDeviceViewport()
     private let canvasControlsContainer = NSStackView()
     var canvasControls: DeviceCanvasControls? {
         didSet {
@@ -139,6 +142,8 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
         viewport.wantsLayer = true
         viewport.layer?.backgroundColor = NSColor.black.cgColor
         viewport.translatesAutoresizingMaskIntoConstraints = false
+        viewport.canInstallApplications = { [weak self] in self?.canInstallApplications() == true }
+        viewport.installApplications = { [weak self] in self?.installApplications($0) }
         root.addSubview(viewport)
         session.contentView.translatesAutoresizingMaskIntoConstraints = false
         viewport.addSubview(session.contentView)
@@ -1028,5 +1033,38 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
             throw RemoteDeviceWindowError.unavailable("The screenshot could not be encoded as PNG.")
         }
         try (data as Data).write(to: destination, options: .atomic)
+    }
+}
+
+/// Contains the screen with whichever input view it uses, and moves with the presentation between windows.
+@MainActor
+private final class RemoteDeviceViewport: NSView {
+    var canInstallApplications: () -> Bool = { false }
+    var installApplications: ([URL]) -> Void = { _ in }
+
+    init() {
+        super.init(frame: .zero)
+        registerForDraggedTypes([.fileURL])
+    }
+    required init?(coder: NSCoder) { nil }
+
+    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        canInstallApplications() && applications(in: sender) != nil ? .copy : []
+    }
+
+    override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        guard canInstallApplications(), let urls = applications(in: sender) else { return false }
+        installApplications(urls)
+        return true
+    }
+
+    /// Rejects a drag that includes other files, rather than installing only some of what was dropped.
+    private func applications(in sender: any NSDraggingInfo) -> [URL]? {
+        let pasteboard = sender.draggingPasteboard
+        let files = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        let applications = pasteboard.readObjects(forClasses: [NSURL.self], options: [
+            .urlReadingFileURLsOnly: true, .urlReadingContentsConformToTypes: [UTType.applicationBundle.identifier],
+        ]) as? [URL] ?? []
+        return applications.isEmpty || applications.count != files.count ? nil : applications
     }
 }

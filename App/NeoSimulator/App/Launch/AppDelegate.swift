@@ -863,6 +863,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 await self.model.deviceScreenDidConnect(id)
             }
             controller.onChange = { [weak self] in self?.updateScreenToolbar() }
+            controller.canInstallApplications = { [weak self] in self?.model.canInstallApplications(on: id) == true }
+            controller.installApplications = { [weak self] urls in
+                self?.model.installApplications(at: urls, on: id) { self?.mainWindow?.applicationsChanged(on: id) }
+            }
             remoteWindows[id] = controller
             configureCanvasControls(for: id, screen: .remote(controller))
             observeScreenState(id)
