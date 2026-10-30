@@ -123,17 +123,18 @@ struct InputFocusTests {
             event.setIntegerValueField(.scrollWheelEventMomentumPhase, value: Int64(momentum.rawValue))
             return try #require(NSEvent(cgEvent: event))
         }
-        let began = try scroll(.began)
+        // The events that begin and end a scroll carry movement too, so even a brief scroll drags instead of tapping.
+        let began = try scroll(.began, dx: 10, dy: -30)
         let origin = began.locationInWindow
         // Moving two fingers up scrolls content up, as dragging one finger up on the screen does.
-        for event in [began, try scroll(.changed, dx: 10, dy: -30), try scroll(.changed, dy: -20), try scroll(.ended),
+        for event in [began, try scroll(.ended, dy: -20), began, try scroll(.changed, dy: -20), try scroll(.ended),
                       try scroll(nil, momentum: .begin, dy: -50), try scroll(nil, momentum: .end)] {
             input.scrollWheel(with: event)
         }
         for operation in operations { try await operation() }
-        #expect(transport.touches.map(\.phase) == [.began, .moved, .moved, .ended])
-        #expect(transport.touches.map(\.point) == [origin, CGPoint(x: origin.x + 10, y: origin.y + 30),
-            CGPoint(x: origin.x + 10, y: origin.y + 50), CGPoint(x: origin.x + 10, y: origin.y + 50)])
+        let moved = CGPoint(x: origin.x + 10, y: origin.y + 30), dragged = CGPoint(x: origin.x + 10, y: origin.y + 50)
+        #expect(transport.touches.map(\.phase) == [.began, .moved, .ended, .began, .moved, .moved, .ended])
+        #expect(transport.touches.map(\.point) == [origin, moved, dragged, origin, moved, dragged, dragged])
         try await session.stop()
     }
 

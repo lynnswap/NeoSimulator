@@ -635,7 +635,7 @@ struct ManagerModelTests {
         let session = RemoteDeviceScreenSession(device: a, captureSources: catalog) { _, _, _ in TestRemoteScreenTransport() }
         try await session.start()
         let controller = RemoteDeviceWindowController(device: a, session: session, presentCompactWindow: { _ in })
-        app.remoteWindows[aID] = controller
+        app.screens.attach(controller)
         main.selectDevice(aID)
         try await app.presentConnectedScreen(aID, purpose: .requested)
         // The screen and its frame can cover the canvas and its context menu, so the menu bar offers the command.
