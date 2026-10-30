@@ -822,13 +822,20 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                     guard !stopped, !isTerminating, !suppressed.contains(identifier) else { return }
                     try conflicts.check()
                     if let screen = runtime.display.defaultScreen(of: device) {
+                        var capabilities = Self.capabilities(of: device)
                         let nativeCanvas: NativeDeviceCanvas?
+                        var keyboard: NativeDeviceKeyboard?
                         if device.deviceTypeIdentifier == "com.apple.CoreSimulator.SimDeviceType.iPhone-Duo", device.deviceSetPath == nil {
                             nativeCanvas = try await NativeDeviceCanvas.connect(simulatorUDID: device.identifier)
-                        } else { nativeCanvas = nil }
+                        } else {
+                            nativeCanvas = nil
+                            if device.deviceSetPath == nil, capabilities.supportsFeature(DeviceCapabilities.keyboard) {
+                                keyboard = try await nativeKeyboard(of: device)
+                            }
+                        }
                         try Task.checkCancellation()
-                        let connection = try SimulatorConnection(device: device, screen: screen, runtime: runtime, nativeCanvas: nativeCanvas)
-                        var capabilities = Self.capabilities(of: device)
+                        let connection = try SimulatorConnection(device: device, screen: screen, runtime: runtime,
+                                                                 nativeCanvas: nativeCanvas, keyboard: keyboard)
                         if nativeCanvas != nil { capabilities.controlsOrientation = false }
                         let session = DeviceSession(
                             device: Self.describe(device), capabilities: capabilities,
@@ -881,6 +888,23 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                 connectionFailures[identifier] = error
                 if !openingDevices.contains(identifier) { report(error) }
             }
+        }
+    }
+
+    /// The device's native keyboard, whose guest services carry each Mac keyboard's layout. CoreDevice lists only
+    /// the default device set. Without it, SimulatorKit's keyboard remains, which the guest reads with a US layout.
+    private func nativeKeyboard(of device: SimulatorDevice) async throws -> NativeDeviceKeyboard? {
+        do {
+            let keyboard = try await NativeDeviceKeyboard.connect(simulatorUDID: device.identifier)
+            keyboard.onFailure = { [name = device.name] error in
+                hostLog("Could not send keyboard input to \(name): \(error.localizedDescription)")
+            }
+            return keyboard
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            hostLog("\(device.name) keeps SimulatorKit's keyboard, which the guest reads with a US layout: \(error.localizedDescription)")
+            return nil
         }
     }
 

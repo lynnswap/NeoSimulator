@@ -10,6 +10,12 @@ When disconnected, the Mac keyboard does not type into the device, and the
 software keyboard appears. **Toggle Software Keyboard** (Command-K) controls
 its visibility while the hardware keyboard is connected.
 
+Simulators in the default device set receive each Mac keyboard as its own
+hardware keyboard with that keyboard's properties, as in Device Hub, so the
+device uses its layout, such as JIS. Simulators in other device sets and Apple
+Vision Pro receive keys through SimulatorKit, which the device reads with a US
+layout.
+
 Choose **Capture Keyboard** above the device screen or in **I/O → Keyboard**
 to send Mac shortcuts to the device. Click the button again or hold Escape for
 one second to release the keyboard. Capture ends when the screen loses focus,

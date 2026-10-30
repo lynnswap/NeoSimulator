@@ -563,6 +563,8 @@ final class SimulatorExternalScreenConnection: SimulatorExternalScreen {
     /// The `SimDeviceScreen`.
     private let screen: AnyObject
     private let runtime: SimulatorRuntime
+    /// The device's native keyboard, which this screen's displays share with its integrated screen.
+    private let keyboard: NativeDeviceKeyboard?
     private let setCurrentMode: NativeObjCMethod<Void, AnyObject, CGSize, NSDictionary?, DispatchQueue, Completion>
     private let setPowerState: NativeObjCMethod<Void, Int32, DispatchQueue, Completion>
     private var events: NativeSwiftValue?
@@ -570,10 +572,11 @@ final class SimulatorExternalScreenConnection: SimulatorExternalScreen {
     private var hidClient: AnyObject?
 
     init(device: SimulatorDevice, screen: (identifier: UInt32, object: AnyObject), runtime: SimulatorRuntime,
-         changed: @escaping @MainActor () -> Void) throws {
+         keyboard: NativeDeviceKeyboard? = nil, changed: @escaping @MainActor () -> Void) throws {
         self.device = device
         self.screen = screen.object
         self.runtime = runtime
+        self.keyboard = keyboard
         screenID = screen.identifier
         let display = runtime.display
         guard let simScreen = try unsafe display.screen.unsafeInvoke(on: screen.object) else {
@@ -655,7 +658,7 @@ final class SimulatorExternalScreenConnection: SimulatorExternalScreen {
     }
 
     func makeDisplay() throws -> any SimulatorDisplay {
-        try SimulatorConnection(device: device, screen: (screenID, screen), runtime: runtime)
+        try SimulatorConnection(device: device, screen: (screenID, screen), runtime: runtime, keyboard: keyboard, ownsKeyboard: false)
     }
 
     func disconnect() {
@@ -1517,13 +1520,20 @@ final class SimulatorConnection: SimulatorDisplay {
     var onPropertiesChange: (() -> Void)?
     private var screenEvents: NativeSwiftValue?
     private let screen: AnyObject
+    /// The device's native keyboard, which takes the Mac's keyboard instead of SimulatorKit's Indigo keyboard.
+    /// The integrated screen's connection owns it; external and app-resizing displays share it.
+    private let keyboard: NativeDeviceKeyboard?
+    private let ownsKeyboard: Bool
+    private var keyboardResponder: NativeKeyboardResponder?
 
     init(device: SimulatorDevice, screen: (identifier: UInt32, object: AnyObject), runtime: SimulatorRuntime,
-         nativeCanvas: NativeDeviceCanvas? = nil) throws {
+         nativeCanvas: NativeDeviceCanvas? = nil, keyboard: NativeDeviceKeyboard? = nil, ownsKeyboard: Bool = true) throws {
         self.nativeCanvas = nativeCanvas
         self.device = device
         self.runtime = runtime
         self.screen = screen.object
+        self.keyboard = keyboard
+        self.ownsKeyboard = ownsKeyboard
         connectedDisplayID = screen.identifier
         let display = runtime.display
         buttonTarget = try unsafe display.buttonTarget.unsafeInvoke(on: screen.object)
@@ -1557,7 +1567,15 @@ final class SimulatorConnection: SimulatorDisplay {
             on: screen.object, display.screenPropertyEvents, .main, handler)
         // SimulatorKit connects keyboard input on every display and sends each modifier
         // change to all of them; the window controller enables it only while the window is key.
-        setKeyboardEnabled(false)
+        // A native keyboard replaces it, which keeps Indigo from reattaching its own keyboard.
+        setSimulatorKitKeyboardEnabled(false)
+        if let keyboard {
+            keyboardResponder = NativeKeyboardResponder { [weak self] event in
+                guard let self, !disconnected, keyboard.isEnabled(for: self) else { return false }
+                keyboard.handle(event)
+                return true
+            }
+        }
     }
 
     func connectAppDisplay(uniqueID: String) async throws -> any SimulatorDisplay {
@@ -1567,7 +1585,8 @@ final class SimulatorConnection: SimulatorDisplay {
             try Task.checkCancellation()
             guard isBooted else { throw HostError.unavailable("The simulator disconnected while preparing app resizing.") }
             if let screen = try runtime.display.appScreen(uniqueID: uniqueID, of: device) {
-                let connection = try SimulatorConnection(device: device, screen: screen, runtime: runtime)
+                let connection = try SimulatorConnection(device: device, screen: screen, runtime: runtime,
+                                                         keyboard: keyboard, ownsKeyboard: false)
                 connection.setChromeVisible(false)
                 return connection
             }
@@ -1744,7 +1763,18 @@ final class SimulatorConnection: SimulatorDisplay {
     }
     func setLocationScenario(_ name: String) async throws { try await device.setLocationScenario(name) }
     func setHardwareKeyboardConnected(_ connected: Bool) async throws {
-        try await device.setHardwareKeyboardEnabled(connected, keyboardType: runtime.input.currentKeyboardType())
+        var failure: (any Error)?
+        do { try await device.setHardwareKeyboardEnabled(connected, keyboardType: runtime.input.currentKeyboardType()) }
+        catch { failure = error }
+        // The guest also counts native keyboard services as connected hardware keyboards; input recreates them.
+        if !connected, let keyboard {
+            do { try await keyboard.removeServices() }
+            catch {
+                failure = failure.map { HostError.operation([$0.localizedDescription, error.localizedDescription].joined(separator: "\n")) }
+                    ?? error
+            }
+        }
+        if let failure { throw failure }
     }
     func setKeyboardLanguage(_ language: String) async throws { try await device.setKeyboardLanguage(language) }
     func connectPasteboard(_ pasteboard: NSPasteboard,
@@ -1758,10 +1788,10 @@ final class SimulatorConnection: SimulatorDisplay {
         changed: @escaping @MainActor () -> Void,
         found: @escaping @MainActor (Result<any SimulatorExternalScreen, any Error>) -> Void
     ) throws -> AnyObject? {
-        try runtime.display.registerForExternalScreens(of: device) { [device, runtime] screen in
+        try runtime.display.registerForExternalScreens(of: device) { [device, runtime, keyboard] screen in
             found(Result {
                 try SimulatorExternalScreenConnection(device: device, screen: try screen.get(), runtime: runtime,
-                                                      changed: changed)
+                                                      keyboard: keyboard, changed: changed)
             })
         }
     }
@@ -1780,6 +1810,19 @@ final class SimulatorConnection: SimulatorDisplay {
         view.invalidateIntrinsicContentSize()
     }
     func setKeyboardEnabled(_ enabled: Bool) {
+        guard nativeCanvas == nil, !disconnected else { return }
+        // SimulatorKit's digitizer passes the keys it does not handle to the native keyboard. A device UI plugin's
+        // overlay takes the input instead, so SimulatorKit's keyboard remains with that display.
+        if enabled, let keyboard, let keyboardResponder, let digitizerView, inputView === digitizerView {
+            keyboardResponder.attach(after: digitizerView)
+            keyboard.setEnabled(true, for: self)
+        } else if !enabled, let keyboard, keyboard.isEnabled(for: self) {
+            keyboard.setEnabled(false, for: self)
+        } else {
+            setSimulatorKitKeyboardEnabled(enabled)
+        }
+    }
+    private func setSimulatorKitKeyboardEnabled(_ enabled: Bool) {
         guard nativeCanvas == nil, !disconnected, let keyboard = object_getIvar(view, runtime.display.keyboardDelegate) else { return }
         perform("enable keyboard input") {
             try unsafe runtime.display.setKeyboardEnabled.unsafeInvoke(on: keyboard as AnyObject, enabled)
@@ -1849,6 +1892,17 @@ final class SimulatorConnection: SimulatorDisplay {
         screenEvents = nil
         onPropertiesChange = nil
         hidClient = nil
+        keyboardResponder?.detach()
+        if let keyboard {
+            keyboard.setEnabled(false, for: self)
+            if ownsKeyboard {
+                Task {
+                    do { try await keyboard.stop() } catch {
+                        hostLog("Could not remove the native keyboard services: \(error.localizedDescription)")
+                    }
+                }
+            }
+        }
     }
     isolated deinit { disconnect() }
 
@@ -1863,5 +1917,42 @@ final class SimulatorConnection: SimulatorDisplay {
             hostLog("Could not \(operation): \(error.localizedDescription)")
             return fallback
         }
+    }
+}
+
+/// Follows a SimulatorKit display's digitizer in its responder chain. The digitizer passes key-downs and key-ups
+/// it does not handle to its next responder, including those `DisplayKeyboardInput` forwards and those AppKit
+/// delivers after menu key equivalents. `handle` takes them for the native keyboard; events it declines continue
+/// along the chain, as they did before.
+@MainActor
+final class NativeKeyboardResponder: NSResponder {
+    private let handle: (NSEvent) -> Bool
+    private weak var view: NSView?
+
+    init(handle: @escaping (NSEvent) -> Bool) {
+        self.handle = handle
+        super.init()
+    }
+    required init?(coder: NSCoder) { nil }
+
+    /// AppKit resets a view's next responder when the view moves to another superview, so this attaches again then.
+    func attach(after view: NSView) {
+        guard view.nextResponder !== self else { return }
+        detach()
+        nextResponder = view.nextResponder
+        view.nextResponder = self
+        self.view = view
+    }
+
+    func detach() {
+        if let view, view.nextResponder === self { view.nextResponder = nextResponder }
+        view = nil
+    }
+
+    override func keyDown(with event: NSEvent) {
+        if !handle(event) { super.keyDown(with: event) }
+    }
+    override func keyUp(with event: NSEvent) {
+        if !handle(event) { super.keyUp(with: event) }
     }
 }
