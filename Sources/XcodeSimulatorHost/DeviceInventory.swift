@@ -56,6 +56,56 @@ public enum DeviceInventoryKind: Equatable, Sendable {
     case other(String)
 }
 
+/// The fields of CoreDevice's typed `BuildUpdate` that its native ordering compares.
+///
+/// Inventory retains a value only when those fields have types and values CoreDevice can compare:
+/// a known train program and at least the five revision components that the comparison reads.
+/// A missing revision is not reconstructed from the build name, so such a build has no value here
+/// although CoreDevice derives one when decoding. Fields the comparison does not read are not checked.
+public struct CoreDeviceBuildUpdate: Comparable, Sendable {
+    /// `TrainProgram` raw values in Xcode 27.2's CoreDeviceUtilities, which rejects any other value.
+    private static let trainPrograms: Set = ["iOS", "macOS", "tvOS", "watchOS", "xrOS", "developerTools", "rtKit"]
+
+    let trainProgram: String?
+    let revisionComponents: [UInt]
+    let revisionExtraString: String?
+    let factoryIdentifier: UInt?
+
+    init?(trainProgram: String?, revisionComponents: [UInt], revisionExtraString: String?, factoryIdentifier: UInt?) {
+        // CoreDevice decodes a shorter revision unchanged, and its VersionNumber.< then traps reading components 0...4.
+        guard revisionComponents.count >= 5, trainProgram.map(Self.trainPrograms.contains) ?? true else { return nil }
+        self.trainProgram = trainProgram
+        self.revisionComponents = Array(revisionComponents.prefix(5))
+        self.revisionExtraString = revisionExtraString
+        self.factoryIdentifier = factoryIdentifier
+    }
+
+    /// Orders builds by train program, the first five revision components, the revision's extra
+    /// version string, then factory identifier, with an absent value first, as `BuildUpdate.<` does.
+    ///
+    /// `BuildUpdate.<` compares factory identifiers only when entire revisions are equal, so builds whose
+    /// revisions differ only in human-readable text or later components are unordered, and another
+    /// criterion can then order them in a cycle. This order compares their factory identifiers instead.
+    public static func < (lhs: Self, rhs: Self) -> Bool {
+        if lhs.trainProgram != rhs.trainProgram { return precedes(lhs.trainProgram, rhs.trainProgram) }
+        if lhs.revisionComponents != rhs.revisionComponents {
+            return lhs.revisionComponents.lexicographicallyPrecedes(rhs.revisionComponents)
+        }
+        if lhs.revisionExtraString != rhs.revisionExtraString {
+            return precedes(lhs.revisionExtraString, rhs.revisionExtraString)
+        }
+        return precedes(lhs.factoryIdentifier, rhs.factoryIdentifier)
+    }
+
+    private static func precedes<Value: Comparable>(_ lhs: Value?, _ rhs: Value?) -> Bool {
+        switch (lhs, rhs) {
+        case (nil, .some): true
+        case (.some(let lhs), .some(let rhs)): lhs < rhs
+        default: false
+        }
+    }
+}
+
 /// A CoreDevice record from `properties`, without the deprecated parallel JSON fields.
 public struct CoreDeviceDevice: Equatable, Sendable {
     /// The Mach CPU identifiers reported by the device's hardware properties.
@@ -77,6 +127,9 @@ public struct CoreDeviceDevice: Equatable, Sendable {
     public let platform: String?
     public let osVersion: String?
     public let osBuild: String?
+    /// DeviceInfo.osBuildUpdate: the supplemental build when one is reported, otherwise the base build.
+    /// Nil when that build has no usable typed comparison fields; see ``CoreDeviceBuildUpdate``.
+    public let osBuildUpdate: CoreDeviceBuildUpdate?
     public let connectionState: String?
     public let pairingState: String?
     public let transportType: String?
@@ -337,7 +390,36 @@ enum CoreDeviceInventoryDecoder {
             struct Version: Decodable { let stringValue: String }
             struct Builds: Decodable {
                 struct Build: Decodable { let name: String }
+                /// BuildUpdate's compared fields, with CoreDevice's Codable keys and types.
+                struct Update: Decodable {
+                    struct Revision: Decodable {
+                        struct Extra: Decodable { let versionExtraString: String }
+                        let components: [UInt]
+                        let extraInfo: Extra?
+                    }
+                    let trainProgram: String?
+                    let revisionVersion: Revision?
+                    let factoryIdentifier: UInt?
+                }
+                private enum CodingKeys: String, CodingKey { case buildVersion, supplementalBuildVersion }
                 let buildVersion: Build?
+                let update: CoreDeviceBuildUpdate?
+
+                init(from decoder: any Decoder) throws {
+                    let values = try decoder.container(keyedBy: CodingKeys.self)
+                    buildVersion = try values.decodeIfPresent(Build.self, forKey: .buildVersion)
+                    // DeviceInfo.osBuildUpdate reads a reported supplemental build without falling back.
+                    let key: CodingKeys = (try? values.decodeNil(forKey: .supplementalBuildVersion)) == false
+                        ? .supplementalBuildVersion : .buildVersion
+                    // Unusable comparison metadata leaves the device and its display build intact.
+                    update = (try? values.decodeIfPresent(Update.self, forKey: key)).flatMap { update in
+                        update.revisionVersion.flatMap {
+                            CoreDeviceBuildUpdate(trainProgram: update.trainProgram, revisionComponents: $0.components,
+                                                  revisionExtraString: $0.extraInfo?.versionExtraString,
+                                                  factoryIdentifier: update.factoryIdentifier)
+                        }
+                    }
+                }
             }
             let osVersionNumber: Version?
             let osBuildVersions: Builds?
@@ -381,6 +463,7 @@ enum CoreDeviceInventoryDecoder {
                 },
                 platform: properties.hardware.platform, osVersion: properties.software?.osVersionNumber?.stringValue,
                 osBuild: properties.software?.osBuildVersions?.buildVersion?.name,
+                osBuildUpdate: properties.software?.osBuildVersions?.update,
                 connectionState: properties.connection?.state, pairingState: properties.connection?.pairingState,
                 transportType: properties.connection?.transportType, bootState: properties.state?.bootState,
                 preparednessState: properties.state?.preparednessState,

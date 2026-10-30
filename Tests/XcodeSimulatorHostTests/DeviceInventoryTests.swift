@@ -16,6 +16,8 @@ struct DeviceInventoryTests {
         #expect(phone.cpuType?.type == 16777228)
         #expect(phone.cpuType?.subtype == Int32(bitPattern: 0x80000002))
         #expect(phone.platform == "iOS" && phone.osVersion == "27.0" && phone.osBuild == "27A100")
+        // Malformed comparison metadata keeps the record and its display build.
+        #expect(phone.osBuildUpdate == nil)
         #expect(phone.connectionState == "connected" && phone.pairingState == "paired")
         #expect(phone.transportType == "wired" && phone.bootState == "booted")
         #expect(phone.isAvailable)
@@ -25,8 +27,16 @@ struct DeviceInventoryTests {
         #expect(vm.identifier == "vm-command-id" && vm.udid == "vm-hardware-udid")
         #expect(!vm.isAvailable && vm.lastConnectedAt == nil)
         #expect(vm.capabilities == ["com.apple.coredevice.feature.unpairdevice"])
+        let base = try #require(vm.osBuildUpdate)
+        let simulator = try #require(records.first { $0.identifier == "simulator-command-id" })
+        #expect(simulator.osBuild == "24B114")
+        // The supplemental 24B91016s natively precedes 24B114, although its name sorts after it.
+        let supplemental = try #require(simulator.osBuildUpdate)
+        #expect(supplemental < base)
         let unnamed = try #require(records.first { $0.identifier == "coredevice-only-simulator" })
         #expect(unnamed.name == unnamed.identifier && unnamed.reportedName == nil)
+        // CoreDevice defines no order for fewer than five revision components.
+        #expect(unnamed.osBuildUpdate == nil)
     }
 
     @Test func joinsSimctlAuthorityWithoutConflatingCommandIDsOrDeviceSets() async throws {
@@ -187,18 +197,23 @@ struct DeviceInventoryTests {
        "deviceProperties":{"name":"Wrong Deprecated Name"},"connectionProperties":{"lastConnectionDate":"invalid"},
        "properties":{"hardware":{"reality":"physical","udid":"hardware-udid","productType":"iPhone99,1","marketingName":"Test Hardware","cpuType":{"type":16777228,"subtype":18446744071562067970},"platform":"iOS"},
          "state":{"name":"Test Phone","bootState":"booted"},
-         "software":{"osVersionNumber":{"stringValue":"27.0"},"osBuildVersions":{"buildVersion":{"name":"27A100"}}},
+         "software":{"osVersionNumber":{"stringValue":"27.0"},"osBuildVersions":{"buildVersion":{"name":"27A100","revisionVersion":{"components":"27.0.100"}}}},
          "connection":{"state":"connected","pairingState":"paired","transportType":"wired","lastConnectionDate":100}},
        "capabilities":[{"featureIdentifier":"com.apple.coredevice.feature.installapp","name":"Install Application"}]},
       {"identifier":"vm-command-id","properties":{"hardware":{"reality":"virtual","udid":"vm-hardware-udid","productType":"iPhone99,11"},
-         "state":{"name":"Test VM"},"connection":{"state":"unavailable"}},
+         "state":{"name":"Test VM"},"connection":{"state":"unavailable"},
+         "software":{"osBuildVersions":{"buildVersion":{"majorLetterComponent":"B","majorNumberComponent":24,"name":"24B114","revisionVersion":{"components":[24,2,114,0,0],"originalComponentsCount":5,"stringValue":"24.2.114.0.0"},"updateNumberComponent":114}}}},
        "capabilities":[{"featureIdentifier":"com.apple.coredevice.feature.unpairdevice"}]},
       {"identifier":"simulator-command-id","properties":{"hardware":{"reality":"simulated","udid":"simulator-udid",
          "cpuType":{"type":16777228,"subtype":0},"platform":"iOS","productType":"iPhone99,2"},
          "state":{"name":"CoreDevice Simulator Name","bootState":"shutdown","preparednessState":0},
-         "connection":{"state":"disconnected","pairingState":"paired","transportType":"sameMachine","lastConnectionDate":100}},
+         "connection":{"state":"disconnected","pairingState":"paired","transportType":"sameMachine","lastConnectionDate":100},
+         "software":{"osBuildVersions":{
+           "buildVersion":{"majorLetterComponent":"B","majorNumberComponent":24,"name":"24B114","revisionVersion":{"components":[24,2,114,0,0],"originalComponentsCount":5,"stringValue":"24.2.114.0.0"},"updateNumberComponent":114},
+           "supplementalBuildVersion":{"factoryIdentifier":9,"majorLetterComponent":"B","majorNumberComponent":24,"name":"24B91016s","revisionVersion":{"components":[24,2,101,6,19],"originalComponentsCount":5,"stringValue":"24.2.101.6.19"},"updateLetterComponent":"s","updateNumberComponent":91016}}}},
        "capabilities":[{"featureIdentifier":"com.apple.coredevice.feature.customizeuistyle"}]},
-      {"identifier":"coredevice-only-simulator","properties":{"hardware":{"reality":"simulated","udid":"coredevice-only-simulator"}}}
+      {"identifier":"coredevice-only-simulator","properties":{"hardware":{"reality":"simulated","udid":"coredevice-only-simulator"},
+         "software":{"osBuildVersions":{"buildVersion":{"name":"24B114","revisionVersion":{"components":[24,2,114,0],"originalComponentsCount":4,"stringValue":"24.2.114.0"}}}}}}
     ]}}
     """#.utf8)
 
