@@ -32,15 +32,22 @@ Choose **View Screen** for a connected physical device or virtual machine to
 open its screen when the device supports it. The settings inspector shows the
 controls that the selected device supports.
 
-A physical device's screen opens over USB from a capture source that macOS
-presents to apps as a camera. macOS does not say which device a capture source
-shows, so choose **Capture Source…** below the screen and select the device's
+A physical device's screen appears inside the same device frame that Device Hub
+draws, and the frame's side buttons press the device's buttons. Click or drag
+on the screen to touch it; scroll with two fingers on a trackpad to drag the
+screen's content.
+
+NeoSimulator shows a physical device's screen while the device is connected to
+the Mac with a cable, through a screen source that macOS presents to apps as a
+camera. macOS does not say which device a source shows, so the first time,
+choose **Choose Screen Source…** on the device's screen and select the device's
 source. NeoSimulator reconnects with that source and remembers it for the
 device. Sources with the same name are numbered; if the screen shows a
-different device, choose another source. The first connection then asks for
-Camera access. If you denied it, allow NeoSimulator in **System Settings →
-Privacy & Security → Camera**, then choose **Reconnect**. If the chosen source
-is disconnected, connect the device with a USB cable and choose **Reconnect**.
+different device, choose **Device → Choose Screen Source…** again. The first
+connection then asks for Camera access. If you
+denied it, allow NeoSimulator in **System Settings → Privacy & Security →
+Camera**, then choose **Try Again** on the screen. If the screen is not
+available, connect the device with a cable and choose **Try Again**.
 
 **File → New Simulator…** creates a device from the installed runtimes. For an
 iPhone, **Paired Apple Watch** adds a second page for a compatible watch.
@@ -176,11 +183,13 @@ watches also have an Always On control.
 Physical-device and VM screen windows support standard macOS tabs. Moving a
 screen between the main and compact windows keeps its connection. Home, Lock,
 and volume controls appear when the
-device supports them. **Reconnect** retries a disconnected screen.
+device supports them. **Reconnect** in the compact window's toolbar or in the
+menu you get by Control-clicking beside the device retries the screen.
 
 On a remote connection that supports app resizing, choose **Resize App** in
 the main or compact window's toolbar. Resize the window to request a new app
-size; the footer shows the size accepted by the device. **Stop Resize** returns
+size; the compact window's **Stop Resize** help tag shows the size accepted by
+the device. **Stop Resize** returns
 the same screen to its primary display. Moving between the main and compact
 window keeps the resize session. Finish recording before starting or stopping
 Resize App. Screenshots and recordings made while resizing use the app's display.

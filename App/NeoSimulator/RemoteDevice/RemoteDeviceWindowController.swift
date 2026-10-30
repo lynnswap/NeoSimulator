@@ -4,7 +4,7 @@ import UniformTypeIdentifiers
 @_spi(NeoSimulator) import XcodeSimulatorHost
 
 @MainActor
-final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, NSToolbarDelegate, NSMenuItemValidation {
+final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, NSToolbarDelegate, NSMenuDelegate, NSMenuItemValidation {
     private enum RecordingDestination: Sendable {
         case automatic(URL), selected(URL)
 
@@ -49,11 +49,15 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
             update()
         }
     }
-    private let statusLabel = NSTextField(wrappingLabelWithString: "")
+    /// Covers the screen while it connects or is unavailable, with the actions that can restore it.
+    private let statusView = NSBox()
     private let progress = NSProgressIndicator()
-    private let retryButton = NSButton(title: "Reconnect", target: nil, action: nil)
-    private let captureSourceButton = NSButton(title: "Capture Source…", target: nil, action: nil)
+    private let statusTitle = NSTextField(wrappingLabelWithString: "")
+    private let statusDetail = NSTextField(wrappingLabelWithString: "")
+    private let retryButton = NSButton(title: "Try Again", target: nil, action: nil)
+    private let captureSourceButton = NSButton(title: "Choose Screen Source…", target: nil, action: nil)
     private var captureSourceTask: Task<Void, Never>?
+    private var presentingIssue = false
     private let inputView: RemoteDeviceInputView
     // Keep key and modifier releases on the original responder after focus or native-view changes.
     private var capturedKeyboardResponder: NSView?
@@ -96,7 +100,6 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
     private var closing = false
     private var mayClose = false
     private var inventoryAvailable = true
-    private var issue: String?
     private var toolbarItems: [String: NSToolbarItem] = [:]
     private let writeImage: @MainActor (CGImage, URL) async throws -> Void
     private let presentSavePanel: @MainActor (NSSavePanel, NSWindow) async -> NSApplication.ModalResponse
@@ -141,8 +144,6 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
         presentationViewController.owner = self
         window.delegate = self
         let root = NSView()
-        viewport.wantsLayer = true
-        viewport.layer?.backgroundColor = NSColor.black.cgColor
         viewport.translatesAutoresizingMaskIntoConstraints = false
         viewport.canInstallApplications = { [weak self] in self?.canInstallApplications() == true }
         viewport.installApplications = { [weak self] in self?.installApplications($0) }
@@ -151,44 +152,65 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
         viewport.addSubview(session.contentView)
         inputView.translatesAutoresizingMaskIntoConstraints = false
         viewport.addSubview(inputView)
-        let footer = NSStackView(views: [progress, statusLabel, captureSourceButton, retryButton])
-        footer.orientation = .horizontal
-        footer.alignment = .centerY
-        footer.spacing = 8
-        footer.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
-        footer.translatesAutoresizingMaskIntoConstraints = false
-        root.addSubview(footer)
+        // An opaque panel keeps the status readable over a failed connection's last frame, the device's frame,
+        // or the canvas, in either system appearance.
+        statusView.boxType = .custom
+        statusView.titlePosition = .noTitle
+        statusView.borderWidth = 0
+        statusView.cornerRadius = 12
+        statusView.fillColor = .windowBackgroundColor
+        statusView.contentViewMargins = .zero
+        statusView.appearance = NSAppearance(named: .darkAqua)
+        statusView.translatesAutoresizingMaskIntoConstraints = false
+        let actions = NSStackView(views: [retryButton, captureSourceButton])
+        actions.orientation = .vertical
+        actions.spacing = 8
+        let status = NSStackView(views: [progress, statusTitle, statusDetail, actions])
+        status.orientation = .vertical
+        status.alignment = .centerX
+        status.spacing = 8
+        status.edgeInsets = NSEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
+        status.setCustomSpacing(16, after: statusDetail)
+        status.translatesAutoresizingMaskIntoConstraints = false
+        statusView.contentView?.addSubview(status)
+        viewport.addSubview(statusView)
         canvasControlsContainer.orientation = .vertical
         canvasControlsContainer.alignment = .width
         canvasControlsContainer.edgeInsets = NSEdgeInsets(top: 0, left: 8, bottom: 8, right: 8)
         canvasControlsContainer.translatesAutoresizingMaskIntoConstraints = false
         canvasControlsContainer.isHidden = true
-        let bottom = NSStackView(views: [footer, canvasControlsContainer])
+        // The stack detaches the hidden container, so the screen reaches the bottom without controls.
+        let bottom = NSStackView(views: [canvasControlsContainer])
         bottom.orientation = .vertical
         bottom.alignment = .width
-        bottom.spacing = 0
         bottom.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(bottom)
         progress.style = .spinning
-        progress.controlSize = .small
-        statusLabel.font = .systemFont(ofSize: 11)
-        statusLabel.textColor = .secondaryLabelColor
+        progress.controlSize = .regular
+        statusTitle.font = .preferredFont(forTextStyle: .headline)
+        statusDetail.font = .preferredFont(forTextStyle: .subheadline)
+        statusDetail.textColor = .secondaryLabelColor
+        for label in [statusTitle, statusDetail] {
+            label.alignment = .center
+            label.preferredMaxLayoutWidth = 260
+        }
         retryButton.target = self
         retryButton.action = #selector(reconnect(_:))
-        retryButton.controlSize = .small
         captureSourceButton.target = self
         captureSourceButton.action = #selector(chooseCaptureSource(_:))
-        captureSourceButton.controlSize = .small
         NSLayoutConstraint.activate([
             viewport.leadingAnchor.constraint(equalTo: root.leadingAnchor), viewport.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             viewport.topAnchor.constraint(equalTo: root.topAnchor), viewport.bottomAnchor.constraint(equalTo: bottom.topAnchor),
             bottom.leadingAnchor.constraint(equalTo: root.leadingAnchor), bottom.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             bottom.bottomAnchor.constraint(equalTo: root.bottomAnchor),
-            progress.widthAnchor.constraint(equalToConstant: 16), progress.heightAnchor.constraint(equalToConstant: 16),
             session.contentView.leadingAnchor.constraint(equalTo: viewport.leadingAnchor), session.contentView.trailingAnchor.constraint(equalTo: viewport.trailingAnchor),
             session.contentView.topAnchor.constraint(equalTo: viewport.topAnchor), session.contentView.bottomAnchor.constraint(equalTo: viewport.bottomAnchor),
             inputView.leadingAnchor.constraint(equalTo: viewport.leadingAnchor), inputView.trailingAnchor.constraint(equalTo: viewport.trailingAnchor),
             inputView.topAnchor.constraint(equalTo: viewport.topAnchor), inputView.bottomAnchor.constraint(equalTo: viewport.bottomAnchor),
+            status.leadingAnchor.constraint(equalTo: statusView.leadingAnchor), status.trailingAnchor.constraint(equalTo: statusView.trailingAnchor),
+            status.topAnchor.constraint(equalTo: statusView.topAnchor), status.bottomAnchor.constraint(equalTo: statusView.bottomAnchor),
+            statusView.centerXAnchor.constraint(equalTo: viewport.centerXAnchor), statusView.centerYAnchor.constraint(equalTo: viewport.centerYAnchor),
+            statusView.widthAnchor.constraint(lessThanOrEqualTo: viewport.widthAnchor, constant: -32),
         ])
         presentationViewController.view = root
         window.contentViewController = presentationViewController
@@ -201,6 +223,13 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
         inputView.enqueue = { [weak self] operation in self?.enqueueInput(operation) }
         session.onInputCapabilitiesLost = { [weak self] kinds in self?.inputView.invalidateInputs(for: kinds) }
         session.onStateChange = { [weak self] in self?.update() }
+        session.onFrameButton = { [weak self] page, usage, state in self?.sendFrameButton(usagePage: page, usage: usage, state: state) }
+        session.onFrameButtonFailure = { [weak self] in self?.showIssue($0) }
+        // The screen stays usable, so its status does not cover it for these failures.
+        session.onAppResizeFailure = { [weak self] in self?.showIssue($0) }
+        let screenMenu = NSMenu(title: "Screen")
+        screenMenu.delegate = self
+        viewport.menu = screenMenu
         session.prepareForDisplayChange = { [weak self] in
             let acceptedInput = self?.inputTask
             await acceptedInput?.value
@@ -366,7 +395,6 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
 
     func connectIfNeeded() {
         guard !closing, !mayClose, connectionTask == nil else { return }
-        issue = nil
         connectionTask = Task { [weak self] in
             guard let self else { return }
             defer { self.connectionTask = nil; self.update() }
@@ -374,10 +402,11 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
                 try await self.session.start()
                 try Task.checkCancellation()
                 await self.onConnect?()
+            } catch {
+                // The screen's status shows the session's failure and how to retry.
             }
-            catch is CancellationError {}
-            catch { if !self.closing { self.showIssue(error) } }
         }
+        update()
     }
 
     func updateInventory(_ snapshot: InventoryDevice?) {
@@ -399,7 +428,6 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
     private func update() {
         let connected = session.state == .connected && !session.isChangingDisplay && !closing && !changingPresentation
         if !connected || !session.inputCapabilities.contains(.keyboard) { keyboardCapture.stop() }
-        let busy = session.state == .connecting || session.state == .stopping || session.isChangingDisplay || captureTask != nil || recordingTask != nil
         let native = session.nativeInputView
         inputView.isHidden = native != nil
         native?.isHidden = closing
@@ -421,55 +449,56 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
                 button.isEnabled = item.isEnabled
             }
         }
+        toolbarItems["captureKeyboard"]?.toolTip = capturesKeyboard ? "Release Keyboard — or hold Escape for one second." : "Capture Keyboard"
+        if let size = session.appResizeGeometry?.resolvedSize {
+            let width = Double(size.width).formatted(.number.precision(.fractionLength(0)))
+            let height = Double(size.height).formatted(.number.precision(.fractionLength(0)))
+            toolbarItems["resizeApp"]?.toolTip = "Stop Resize — the app is \(width) × \(height)"
+        }
         toolbarItems["capture"]?.toolTip = completedScreenshot != nil ? "Save the captured screenshot…"
             : session.canCaptureScreenshot ? "Save Screenshot…" : "Screenshot capture is not available for this display yet."
         toolbarItems["record"]?.toolTip = session.canRecordScreen || session.hasUnfinishedRecording || session.completedRecording != nil
             ? screenActionPresentation("record")?.title : "Screen recording is not available for this display yet."
-        retryButton.isHidden = session.state != .failed && session.state != .stopped
-        retryButton.isEnabled = !closing && inventoryAvailable
-        let chosenSource = session.captureSource
-        captureSourceButton.isHidden = chosenSource == nil && !session.needsCaptureSource
-        captureSourceButton.isEnabled = canChooseCaptureSource
-        captureSourceButton.toolTip = chosenSource.map { "Shows this device’s screen from “\($0.name)”." }
-            ?? "Choose which connected screen-capture source shows this device."
-        progress.isHidden = !busy
-        if busy { progress.startAnimation(nil) } else { progress.stopAnimation(nil) }
-        if let transportIssue = session.lastError?.localizedDescription {
-            statusLabel.stringValue = issue.map { $0 == transportIssue ? $0 : "\($0)\n\(transportIssue)" } ?? transportIssue
-        }
-        else if session.isChangingDisplay { statusLabel.stringValue = "Changing app display…" }
-        else if captureTask != nil { statusLabel.stringValue = "Saving screenshot…" }
-        else if session.recordingState == .starting { statusLabel.stringValue = "Starting recording…" }
-        else if session.recordingState == .stopping { statusLabel.stringValue = "Finishing recording…" }
-        else if recordingTask != nil { statusLabel.stringValue = "Saving recording…" }
-        else if let issue { statusLabel.stringValue = issue }
-        else if capturesKeyboard { statusLabel.stringValue = "Keyboard captured. Hold Escape for one second to release." }
-        else if session.hasUnfinishedRecording { statusLabel.stringValue = "Recording" }
-        else if completedScreenshot != nil { statusLabel.stringValue = "Screenshot ready to save." }
-        else if session.completedRecording != nil { statusLabel.stringValue = "Recording ready to save." }
-        else if let geometry = session.appResizeGeometry {
-            statusLabel.stringValue = "App size: \(Double(geometry.resolvedSize.width).formatted(.number.precision(.fractionLength(0)))) × \(Double(geometry.resolvedSize.height).formatted(.number.precision(.fractionLength(0))))"
-        }
-        else if !inventoryAvailable { statusLabel.stringValue = "The device is unavailable." }
-        else {
-            statusLabel.stringValue = switch session.state {
-            case .idle: "Ready to connect."
-            case .connecting: "Connecting…"
-            case .connected: session.hasReceivedFrame || native != nil ? "Connected" : "Connected. Waiting for the first frame…"
-            case .stopping: "Disconnecting…"
-            case .stopped: "Disconnected"
-            case .failed: "The screen connection failed."
-            }
-        }
-        statusLabel.toolTip = statusLabel.stringValue
+        updateStatus()
         for item in toolbarItems.values { item.menuFormRepresentation?.isEnabled = item.isEnabled }
         onChange?()
     }
 
+    /// Covers the screen while it connects or cannot be shown, with the actions that can restore it.
+    private func updateStatus() {
+        let connecting = connectionTask != nil || session.state == .connecting || session.state == .stopping
+        let unavailable = !inventoryAvailable || !connecting && session.state != .connected
+        let waiting = !unavailable && (connecting || session.isChangingDisplay
+            || session.nativeInputView == nil && !session.hasReceivedFrame)
+        statusView.isHidden = closing || !unavailable && !waiting
+        progress.isHidden = !waiting
+        if waiting { progress.startAnimation(nil) } else { progress.stopAnimation(nil) }
+        let error = session.lastError.map { $0 as NSError }
+        statusTitle.stringValue = if !inventoryAvailable { "The device is unavailable." }
+            else if unavailable { error?.localizedDescription ?? "Disconnected" }
+            else if session.state == .connecting { "Connecting…" }
+            else { "" }
+        statusTitle.isHidden = statusTitle.stringValue.isEmpty
+        statusDetail.stringValue = unavailable && inventoryAvailable ? error?.localizedRecoverySuggestion ?? "" : ""
+        statusDetail.isHidden = statusDetail.stringValue.isEmpty
+        retryButton.title = error == nil ? "Connect" : "Try Again"
+        retryButton.isHidden = !unavailable || !inventoryAvailable
+        retryButton.isEnabled = isScreenActionEnabled("reconnect")
+        captureSourceButton.isHidden = !unavailable || !session.needsCaptureSource
+        captureSourceButton.isEnabled = canChooseCaptureSource
+        statusView.setAccessibilityLabel(waiting && statusTitle.isHidden ? "Connecting" : nil)
+    }
+
+    /// Presents a failure as a sheet, unless the screen's status already shows it.
     private func showIssue(_ error: any Error) {
-        let error = error as NSError
-        issue = [error.localizedDescription, error.localizedRecoverySuggestion].compactMap { $0 }.joined(separator: "\n\n")
-        update()
+        if session.state != .connected, session.lastError?.localizedDescription == error.localizedDescription { return }
+        guard !presentingIssue, let window = presentationWindow, window.isVisible else { return }
+        presentingIssue = true
+        let alert = NSAlert(presenting: error)
+        Task { [weak self] in
+            _ = await self?.presentAlert(alert, window)
+            self?.presentingIssue = false
+        }
     }
 
     private func enqueueInput(_ operation: @escaping @MainActor () async throws -> Void) {
@@ -478,7 +507,18 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
         inputTask = Task { [weak self] in
             await preceding?.value
             do { try await operation() }
-            catch { self?.showIssue(error) }
+            catch {
+                // Input that fails because the screen disconnected is explained by its status.
+                guard let self, self.session.state == .connected else { return }
+                self.showIssue(error)
+            }
+        }
+    }
+
+    private func sendFrameButton(usagePage: Int, usage: Int, state: RemoteDeviceButtonState) {
+        guard !closing, !changingPresentation, session.state == .connected, session.inputCapabilities.contains(.button) else { return }
+        inputView.enqueueInput(for: .button) { [session] in
+            try await session.sendButton(usagePage: usagePage, usage: usage, state: state)
         }
     }
 
@@ -572,13 +612,22 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
         }
     }
 
-    /// Changing the source reconnects the screen, so it follows Reconnect's availability.
+    /// Only a screen shown through a Mac capture source has one to choose. Changing it reconnects
+    /// the screen, so it follows Reconnect's availability.
     private var canChooseCaptureSource: Bool {
-        captureSourceTask == nil && stoppingTask == nil && isScreenActionEnabled("reconnect")
+        (session.captureSource != nil || session.needsCaptureSource)
+            && captureSourceTask == nil && stoppingTask == nil && isScreenActionEnabled("reconnect")
     }
 
-    @objc private func chooseCaptureSource(_ sender: NSButton) {
+    @objc func chooseCaptureSource(_ sender: Any?) {
         guard canChooseCaptureSource else { return }
+        // A button shows the sources below itself and the canvas's context menu where it was opened;
+        // the menu bar shows them over the screen.
+        let anchor = sender as? NSButton ?? viewport
+        let location = if sender is NSButton { NSPoint(x: 0, y: anchor.bounds.maxY + 4) }
+            else if (sender as? NSMenuItem)?.menu === viewport.menu, let window = viewport.window {
+                viewport.convert(window.mouseLocationOutsideOfEventStream, from: nil)
+            } else { NSPoint(x: viewport.bounds.midX, y: viewport.bounds.midY) }
         captureSourceTask = Task { [weak self] in
             guard let self else { return }
             defer { self.captureSourceTask = nil; self.update() }
@@ -587,7 +636,7 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
                 try Task.checkCancellation()
                 guard !self.closing else { return }
                 guard !sources.isEmpty else {
-                    throw RemoteDeviceWindowError.unavailable("No device screen-capture sources are connected. Connect the device to this Mac with a USB cable.")
+                    throw RemoteDeviceWindowError.unavailable("No device screens are available. Connect the device to this Mac with a cable, then try again.")
                 }
                 // macOS can list several devices under one name; numbering keeps each choice distinct.
                 let chosen = self.session.captureSource
@@ -601,7 +650,7 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
                     item.state = source == chosen ? .on : .off
                     menu.addItem(item)
                 }
-                menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.maxY + 4), in: sender)
+                menu.popUp(positioning: nil, at: location, in: anchor)
             } catch is CancellationError {}
             catch { self.showIssue(error) }
         }
@@ -610,9 +659,21 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
 
     @objc private func captureSourceSelected(_ item: NSMenuItem) {
         guard let source = item.representedObject as? RemoteScreenCaptureSource, !closing, !mayClose else { return }
-        issue = nil
         if session.captureSource != source || session.state != .connected { reconnect(choosing: source) }
         update()
+    }
+
+    /// The canvas's context menu holds the screen's connection actions outside the device.
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+        if session.captureSource != nil || session.needsCaptureSource {
+            let source = NSMenuItem(title: "Choose Screen Source…", action: #selector(chooseCaptureSource(_:)), keyEquivalent: "")
+            source.target = self
+            menu.addItem(source)
+        }
+        let reconnect = NSMenuItem(title: "Reconnect", action: #selector(reconnect(_:)), keyEquivalent: "")
+        reconnect.target = self
+        menu.addItem(reconnect)
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
@@ -792,6 +853,8 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
         case #selector(toolbarAction(_:)):
             guard let identifier = menuItem.representedObject as? String else { return false }
             return isScreenActionEnabled(identifier)
+        case #selector(chooseCaptureSource(_:)): return canChooseCaptureSource
+        case #selector(reconnect(_:)): return isScreenActionEnabled("reconnect")
         default: return true
         }
     }
@@ -860,7 +923,6 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
     }
 
     private func runRecordingOperation(finishing: Bool = false, _ operation: @escaping @MainActor () async throws -> Void) {
-        issue = nil
         let identifier = UUID()
         recordingTaskIdentifier = identifier
         finishingRecording = finishing
@@ -1008,7 +1070,6 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
     }
 
     private func runCaptureOperation(_ operation: @escaping @MainActor () async throws -> Void) {
-        issue = nil
         captureTask = Task { [self] in
             defer { captureTask = nil; update() }
             do { try await operation() }

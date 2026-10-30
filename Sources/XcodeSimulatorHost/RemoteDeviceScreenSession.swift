@@ -1,4 +1,5 @@
 import AppKit
+import OSLog
 
 public enum RemoteDeviceInputKind: Hashable, Sendable { case keyboard, pointer, digitizer, button }
 public enum RemoteDeviceButtonState: String, Sendable { case down, up }
@@ -24,7 +25,8 @@ public final class RemoteDeviceScreenSession {
 
     public let device: CoreDeviceDevice
     public var deviceID: DeviceInventoryID { .coreDevice(device.identifier) }
-    public let contentView: NSView
+    /// The device's frame, with its screen inside it.
+    public var contentView: NSView { frame }
     /// Root of the native input hierarchy; its focused responder handles AppKit events.
     /// Media streams use the explicit HID methods below.
     public var nativeInputView: NSView? { transport?.nativeInputView }
@@ -50,10 +52,19 @@ public final class RemoteDeviceScreenSession {
     @_spi(NeoSimulator) public var prepareForDisplayChange: (() async -> Void)?
     /// Called when native HID services disappear. Geometry readiness changes do not invoke this callback.
     public var onInputCapabilitiesLost: ((Set<RemoteDeviceInputKind>) -> Void)?
+    /// Receives presses of the device frame's buttons, with the HID usages to send for them.
+    @_spi(NeoSimulator) public var onFrameButton: ((_ usagePage: Int, _ usage: Int, RemoteDeviceButtonState) -> Void)?
+    /// Receives failures reading a pressed frame button.
+    @_spi(NeoSimulator) public var onFrameButtonFailure: ((any Error) -> Void)?
+    /// Receives each app-resize failure that leaves the screen connected; lastError also keeps it.
+    @_spi(NeoSimulator) public var onAppResizeFailure: ((any Error) -> Void)?
 
     private let makeTransport: @MainActor (CoreDeviceDevice, NSView, String?) async throws -> any RemoteScreenTransport
     private let captureSources: any RemoteScreenCaptureSourceCatalog
     private let makeResizeTransport: @MainActor (CoreDeviceDevice) async throws -> (any AppResizeTransport)?
+    private let readDisplay: @MainActor (CoreDeviceDevice) async throws -> RemoteDeviceDisplay?
+    private let frame = RemoteDeviceFrameView()
+    private var framePreparation: Task<Void, Never>?
     private var transport: (any RemoteScreenTransport)?
     private var starting: Task<Void, any Error>?
     private var stopping: Task<Void, any Error>?
@@ -92,7 +103,8 @@ public final class RemoteDeviceScreenSession {
 
     public convenience init(device: CoreDeviceDevice) {
         let sources = ScreenCaptureSourceCatalog.shared
-        self.init(device: device, captureSources: sources, makeResizeTransport: CoreDeviceScreenTransport.resizeTransport) {
+        self.init(device: device, captureSources: sources, makeResizeTransport: CoreDeviceScreenTransport.resizeTransport,
+                  readDisplay: CoreDeviceScreenTransport.primaryDisplay) {
             try await CoreDeviceScreenTransport.make($0, contentView: $1, displayUniqueID: $2, captureSources: sources)
         }
     }
@@ -100,18 +112,18 @@ public final class RemoteDeviceScreenSession {
     init(device: CoreDeviceDevice,
          captureSources: any RemoteScreenCaptureSourceCatalog = ScreenCaptureSourceCatalog.shared,
          makeResizeTransport: @escaping @MainActor (CoreDeviceDevice) async throws -> (any AppResizeTransport)? = { _ in nil },
+         readDisplay: @escaping @MainActor (CoreDeviceDevice) async throws -> RemoteDeviceDisplay? = { _ in nil },
          makeTransport: @escaping @MainActor (CoreDeviceDevice, NSView, String?) async throws -> any RemoteScreenTransport) {
         self.device = device
         self.captureSources = captureSources
         self.makeTransport = makeTransport
         self.makeResizeTransport = makeResizeTransport
-        contentView = NSView(frame: .zero)
-        contentView.wantsLayer = true
-        contentView.layer?.backgroundColor = NSColor.black.cgColor
+        self.readDisplay = readDisplay
         recording.onChange = { [weak self] in self?.onStateChange?() }
     }
 
     isolated deinit {
+        framePreparation?.cancel()
         starting?.cancel()
         resizeOperation?.task.cancel()
         resizeAdjustment?.cancel()
@@ -136,6 +148,7 @@ public final class RemoteDeviceScreenSession {
         if let starting { try await starting.value; return }
         if state == .connected { return }
         if transport != nil || resizeSession != nil { try await stop() }
+        prepareFrame()
         generation += 1
         let token = generation
         lastError = nil
@@ -144,7 +157,7 @@ public final class RemoteDeviceScreenSession {
         let task = Task { [self] in
             defer { starting = nil }
             do {
-                let transport = try await makeTransport(device, contentView, nil)
+                let transport = try await makeTransport(device, frame.screen, nil)
                 self.transport = transport
                 do {
                     try Task.checkCancellation()
@@ -166,7 +179,7 @@ public final class RemoteDeviceScreenSession {
                         if error is CancellationError { throw error }
                         resizeTransport = nil
                         resizeEligibility = .unavailable
-                        lastError = error
+                        reportResizeFailure(error)
                     }
                     try Task.checkCancellation()
                     guard generation == token else { throw CancellationError() }
@@ -347,6 +360,35 @@ public final class RemoteDeviceScreenSession {
         try await send(.button(usagePage, usage, state))
     }
 
+    /// Shows the device's frame from its display description, whether or not its screen connects.
+    private func prepareFrame() {
+        guard frame.chrome == nil, framePreparation == nil else { return }
+        framePreparation = Task { [weak self, device, readDisplay] in
+            defer { self?.framePreparation = nil }
+            do {
+                guard let display = try await readDisplay(device),
+                      let resources = try RemoteDeviceChromeResources(display: display, productType: device.modelIdentifier) else { return }
+                let chrome = try NativeDeviceChrome(resources: resources)
+                try Task.checkCancellation()
+                guard let self else { return }
+                chrome.onButton = { [weak self] event in
+                    switch event {
+                    case .pressed(let button, let state): self?.onFrameButton?(button.usagePage, button.usage, state)
+                    case .failed(let error): self?.onFrameButtonFailure?(error)
+                    }
+                }
+                self.frame.show(chrome, for: display)
+                self.onStateChange?()
+            } catch {
+                guard !Task.isCancelled else { return }
+                // The screen works without its frame; the next connection reads the display again.
+                Self.logger.error("The device frame is unavailable: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+
+    private static let logger = Logger(subsystem: "dev.lynnswap.NeoSimulator", category: "RemoteScreen")
+
     private func send(_ input: RemoteScreenInput) async throws {
         guard state == .connected, !isChangingDisplay, let transport else {
             throw CLIError.unavailable("remote-screen-connection", "Connect the device screen before sending input.")
@@ -373,6 +415,7 @@ public final class RemoteDeviceScreenSession {
             finishFrameWait(.failure(CLIError.unavailable("remote-display-ended", "The display connection ended.")))
             if resizeSession != nil, !isChangingDisplay { returnFromInvalidatedDisplay() }
         case .inputGeometryChanged: break
+        case .displayAngle(let angle): frame.angle = angle
         case .inputCapabilitiesLost(let kinds): onInputCapabilitiesLost?(kinds)
         }
         onStateChange?()
@@ -395,8 +438,11 @@ public final class RemoteDeviceScreenSession {
                 guard !Task.isCancelled, let self, let source, self.resizeTransport === source else { return }
                 self.resizeTransport = nil
                 self.resizeEligibility = .unavailable
-                self.lastError = error
-                if self.resizeSession != nil { self.returnFromInvalidatedDisplay() }
+                // A resized app reports the failure once its primary display returns.
+                if self.resizeSession != nil {
+                    self.lastError = error
+                    self.returnFromInvalidatedDisplay()
+                } else { self.reportResizeFailure(error) }
                 self.onStateChange?()
             }
         }
@@ -415,6 +461,7 @@ public final class RemoteDeviceScreenSession {
                 let assertion = try await resizeTransport.start(size: size, cornerRadius: cornerRadius)
                 resizeSession = assertion
                 appResizeGeometry = assertion.geometry
+                frame.showsChrome = false
                 try Task.checkCancellation()
                 try observeResize(assertion)
                 try await connectDisplay(assertion.displayUniqueID, waitForFrame: true)
@@ -447,7 +494,7 @@ public final class RemoteDeviceScreenSession {
     }
 
     /// Requests native point geometry, keeping only the latest pending size. Accepted
-    /// geometry comes from appResizeGeometry; adjustment errors are reported in lastError.
+    /// geometry comes from appResizeGeometry; adjustment errors go to onAppResizeFailure and lastError.
     @_spi(NeoSimulator)
     public func resizeApp(to size: CGSize) {
         guard state == .connected, !isChangingDisplay, let assertion = resizeSession, let geometry = appResizeGeometry,
@@ -467,7 +514,7 @@ public final class RemoteDeviceScreenSession {
             } catch {
                 guard !Task.isCancelled, let self, self.resizeSession === assertion else { return }
                 self.pendingAppSize = nil
-                self.lastError = error
+                self.reportResizeFailure(error)
                 self.onStateChange?()
             }
         }
@@ -525,7 +572,7 @@ public final class RemoteDeviceScreenSession {
     private func connectDisplay(_ identifier: String?, waitForFrame: Bool) async throws {
         generation += 1
         let token = generation
-        let connection = try await makeTransport(device, contentView, identifier)
+        let connection = try await makeTransport(device, frame.screen, identifier)
         transport = connection
         try Task.checkCancellation()
         guard generation == token, stopping == nil else { throw CancellationError() }
@@ -590,10 +637,16 @@ public final class RemoteDeviceScreenSession {
                         onStateChange?()
                     } catch { throw cause.map { Self.combining($0, cleanup: error) } ?? error }
                 }
+                if let cause, self.stopping == nil { self.onAppResizeFailure?(cause) }
             } catch {
                 // The joined transition task publishes the failure through session state.
             }
         }
+    }
+
+    private func reportResizeFailure(_ error: any Error) {
+        lastError = error
+        onAppResizeFailure?(error)
     }
 
     private func restorePrimary(finalizeRecording: Bool) async throws {
@@ -612,6 +665,7 @@ public final class RemoteDeviceScreenSession {
         try resizeSession?.invalidate()
         resizeSession = nil
         appResizeGeometry = nil
+        frame.showsChrome = true
     }
 
     private func waitForCaptures() async {
@@ -662,6 +716,8 @@ enum RemoteScreenInput: Sendable {
 enum RemoteScreenTransportEvent {
     case connected, disconnected, frameReceived
     case inputGeometryChanged
+    /// The display's quarter-turn orientation, which also turns the device's frame.
+    case displayAngle(CGFloat)
     case inputCapabilitiesLost(Set<RemoteDeviceInputKind>)
     case attributes(RemoteDeviceVideoAttributes)
     case failure(any Error)

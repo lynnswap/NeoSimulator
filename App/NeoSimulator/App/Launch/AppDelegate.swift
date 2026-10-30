@@ -572,9 +572,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for (title, selector, key) in [("Cut", "cut:", "x"), ("Copy", "copy:", "c"), ("Paste", "paste:", "v"), ("Select All", "selectAll:", "a")] {
             addItem(title, action: Selector(selector), key: key, to: edit).target = nil
         }
-        simulatorMenus.addDeviceMenus(to: main, managementMenu: SelectedDeviceMenu { [weak self] in
+        let device = simulatorMenus.addDeviceMenus(to: main, managementMenu: SelectedDeviceMenu { [weak self] in
             self?.mainWindow?.menuForSelectedDevices()
         })
+        // A remote screen and its frame can cover the canvas, whose context menu also offers this command.
+        device.insertItem(NSMenuItem(title: "Choose Screen Source…",
+            action: #selector(RemoteDeviceWindowController.chooseCaptureSource(_:)), keyEquivalent: ""), at: 1)
         let view = addSubmenu("View", to: main)
         addItem("Show Devices", action: #selector(showDevices(_:)), to: view)
         simulatorMenus.addScreenCommands(file: file, edit: edit, view: view)
