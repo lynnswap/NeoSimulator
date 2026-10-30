@@ -312,7 +312,7 @@ public final class NativeDeviceCanvas {
 }
 
 @MainActor
-private final class NativeCanvasHostingView: NSHostingView<AnyView> {
+final class NativeCanvasHostingView: NSHostingView<AnyView> {
     var content: AnyView?
     var contentSize: (() -> CGSize)?
     override var intrinsicContentSize: NSSize { contentSize?() ?? super.intrinsicContentSize }
@@ -339,7 +339,7 @@ extension ModifiedContent: NativeCanvasModifier where Modifier: ViewModifier {
 }
 
 @MainActor @Observable
-private final class NativeCanvasPresentation {
+final class NativeCanvasPresentation {
     var showsChrome = true
     var zoom: CGFloat = 1
     var magnification: CGFloat?
@@ -347,15 +347,17 @@ private final class NativeCanvasPresentation {
     @ObservationIgnored var onSizeChange: (() -> Void)?
 }
 
-private struct NativeCanvasRoot: View {
+struct NativeCanvasRoot: View {
     let presentation: NativeCanvasPresentation
     let shown: AnyView
     let hidden: AnyView
     let canvasPath: WritableKeyPath<EnvironmentValues, Bool>
     let zoomPath: WritableKeyPath<EnvironmentValues, CGFloat>
     var body: some View {
-        // A magnified presentation keeps the measured composition at the host's origin, so the host
-        // frame changing on every zoom and pan step does not move it within SwiftUI's pixel grid.
+        // AppKit owns the host frame: the root takes exactly the proposed size, even when the measured
+        // composition is larger. A magnified presentation keeps the composition at the host's origin,
+        // so the host frame changing on every zoom and pan step does not move it within SwiftUI's
+        // pixel grid, and the scale effect maps it onto the frame.
         let magnification = presentation.magnification
         (presentation.showsChrome ? shown : hidden)
             .environment(canvasPath, false)
@@ -367,7 +369,8 @@ private struct NativeCanvasRoot: View {
                 presentation.onSizeChange?()
             }
             .scaleEffect(magnification ?? 1, anchor: magnification == nil ? .center : .topLeading)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: magnification == nil ? .center : .topLeading)
+            .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity,
+                   alignment: magnification == nil ? .center : .topLeading)
             .clipped()
     }
 }
