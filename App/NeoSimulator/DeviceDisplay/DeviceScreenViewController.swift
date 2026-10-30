@@ -4,13 +4,23 @@ import Observation
 
 /// The manager's center pane, which shows the selected device's live screen or its preview.
 /// The manager window owns the selection and toolbar, and attaches `canvasAccessory` to this pane's split view item.
+/// The pane returns to the preview when `DeviceScreens` closes or replaces the screen it shows.
 @MainActor
 final class DeviceScreenViewController: NSViewController {
     private let model: SimulatorManagerModel
+    private let screens: DeviceScreens
     let liveScreenContainer = NSViewController()
     let canvasAccessory = DeviceCanvasAccessoryViewController()
-    private(set) var liveDeviceIdentifier: DeviceInventoryID?
-    private(set) weak var liveCommandTarget: NSResponder?
+    /// The screen in `liveScreenContainer`, until the pane shows the preview again.
+    private var displayedScreen: DeviceScreen?
+    private var displayedScreenObservation = 0
+    /// The displayed screen while it is still open; a closed or replaced screen no longer counts as live.
+    var liveScreen: DeviceScreen? {
+        guard let displayedScreen, screens.screen(for: displayedScreen.id) === displayedScreen else { return nil }
+        return displayedScreen
+    }
+    var liveDeviceIdentifier: DeviceInventoryID? { liveScreen?.id }
+    var liveCommandTarget: NSResponder? { liveScreen?.commandTarget }
     var onLiveScreenChange: (() -> Void)?
     var onViewScreen: (() -> Void)?
     private let previewStack = NSStackView()
@@ -28,8 +38,9 @@ final class DeviceScreenViewController: NSViewController {
     private let activity = NSTextField(labelWithString: "")
     private let progress = NSProgressIndicator()
 
-    init(model: SimulatorManagerModel) {
+    init(model: SimulatorManagerModel, screens: DeviceScreens) {
         self.model = model
+        self.screens = screens
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -195,24 +206,43 @@ final class DeviceScreenViewController: NSViewController {
         viewScreen.toolTip = nil
     }
 
-    func showLiveScreen(for identifier: DeviceInventoryID, controls: DeviceCanvasControls?, commandTarget: NSResponder) {
-        liveDeviceIdentifier = identifier
-        liveCommandTarget = commandTarget
-        canvasAccessory.setControls(controls)
+    /// Shows the screen its presentation owner embedded in `liveScreenContainer`.
+    func showLiveScreen(_ screen: DeviceScreen) {
+        displayedScreen = screen
+        canvasAccessory.setControls(screen.canvasControls)
         liveScreenContainer.view.isHidden = false
         previewStack.isHidden = true
         onLiveScreenChange?()
+        observeDisplayedScreen()
     }
 
     func showDevicePreview(ifDisplaying identifier: DeviceInventoryID) {
-        guard liveDeviceIdentifier == identifier else { return }
-        liveDeviceIdentifier = nil
+        guard displayedScreen?.id == identifier else { return }
+        displayedScreen = nil
+        displayedScreenObservation += 1
         canvasAccessory.setControls(nil)
-        liveCommandTarget = nil
         liveScreenContainer.view.isHidden = true
         previewStack.isHidden = false
         onLiveScreenChange?()
         updateDeviceFooter()
+    }
+
+    /// Fits the accessory to the screen's updated controls, and shows the preview once the screen closes.
+    private func observeDisplayedScreen() {
+        displayedScreenObservation += 1
+        let observation = displayedScreenObservation
+        guard let screen = displayedScreen else { return }
+        let isOpen = withObservationTracking {
+            _ = screen.canvasControlsUpdates
+            return screens.screen(for: screen.id) === screen
+        } onChange: { [weak self] in
+            Task { @MainActor in
+                guard let self, self.displayedScreenObservation == observation else { return }
+                self.canvasAccessory.refresh()
+                self.observeDisplayedScreen()
+            }
+        }
+        if !isOpen { showDevicePreview(ifDisplaying: screen.id) }
     }
 
     @objc private func requestScreen(_ sender: Any?) { onViewScreen?() }

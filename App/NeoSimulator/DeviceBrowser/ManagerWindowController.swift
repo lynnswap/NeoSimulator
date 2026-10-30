@@ -7,23 +7,29 @@ import Observation
 final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource, NSOutlineViewDelegate,
                                      NSSearchFieldDelegate, NSToolbarDelegate, NSToolbarItemValidation, NSMenuDelegate {
     private let model: SimulatorManagerModel
+    private let screens: DeviceScreens
+    /// Device commands' shared shortcuts follow the live screen.
+    private let menus: MenuController
     private let splitController = NSSplitViewController()
     private let table = NSOutlineView()
     private let search = NSSearchField()
     private let artworkCache = DeviceArtworkCache()
-    var isDeviceActivated: (DeviceInventoryID) -> Bool = { _ in false }
-    var preferredArtworkXcodeURL: () -> URL? = { nil }
     private(set) lazy var deviceScreenViewController: DeviceScreenViewController = {
-        let pane = DeviceScreenViewController(model: model)
+        let pane = DeviceScreenViewController(model: model, screens: screens)
         pane.onViewScreen = { [weak self] in self?.openSelectedDevice(nil) }
-        pane.onLiveScreenChange = { [weak self] in self?.updateLiveScreenToolbarItems() }
+        pane.onLiveScreenChange = { [weak self] in
+            self?.updateLiveScreenToolbarItems()
+            self?.observeLiveScreenToolbar()
+        }
         return pane
     }()
     var onShowCompactWindow: ((DeviceInventoryID) -> Void)?
     var onSelectionIntent: (() -> Void)?
     var onSelectionChange: ((DeviceInventoryID?) -> Void)?
-    var onScreenAction: ((String) -> Void)?
     var onNewCompanion: ((SimulatorHostDevice) -> Void)?
+    private var liveScreenToolbarObservation = 0
+    private var displayedScreenIDs: Set<DeviceInventoryID> = []
+    private var displayedArtworkXcodeURL: URL?
     private var selectionIdentifier: DeviceInventoryID?
     private let compactIdentifier = NSToolbarItem.Identifier("CompactDeviceWindow")
     private let resizeAppIdentifier = NSToolbarItem.Identifier("resizeApp")
@@ -124,8 +130,10 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         }
     }
 
-    init(model: SimulatorManagerModel, defaults: UserDefaults = .standard) {
+    init(model: SimulatorManagerModel, screens: DeviceScreens, menus: MenuController, defaults: UserDefaults = .standard) {
         self.model = model
+        self.screens = screens
+        self.menus = menus
         self.defaults = defaults
         options = DeviceBrowserPresentation.Options(defaults: defaults)
         collapsedGroups = Set(defaults.stringArray(forKey: "SidebarCollapsedSectionIDs") ?? [])
@@ -158,6 +166,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         update()
         observeInventory()
         observeManagement()
+        observeScreens()
     }
 
     required init?(coder: NSCoder) { nil }
@@ -202,6 +211,28 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
                 }
                 self.updateSelection()
                 self.observeManagement()
+            }
+        }
+    }
+
+    /// Reloads the rows whose screens opened or closed, or every row when artwork comes from another Xcode.
+    private func observeScreens() {
+        displayedScreenIDs = screens.identifiers
+        displayedArtworkXcodeURL = screens.displayXcodeURL
+        withObservationTracking {
+            _ = screens.identifiers
+            _ = screens.displayXcodeURL
+        } onChange: { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                if self.displayedArtworkXcodeURL != self.screens.displayXcodeURL {
+                    for row in self.rows { self.table.reloadItem(row) }
+                } else {
+                    for identifier in self.displayedScreenIDs.symmetricDifference(self.screens.identifiers) {
+                        if let row = self.rowsByID[identifier] { self.table.reloadItem(row) }
+                    }
+                }
+                self.observeScreens()
             }
         }
     }
@@ -559,9 +590,23 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         return super.supplementalTarget(forAction: action, sender: sender)
     }
 
-    func updateScreenToolbar(supports: (String) -> Bool, isEnabled: (String) -> Bool,
-                             resizingApp: Bool = false, capturesKeyboard: Bool = false) {
+    /// Follows the live screen's state for its toolbar items and the device commands' shared shortcuts.
+    private func observeLiveScreenToolbar() {
+        liveScreenToolbarObservation += 1
+        let observation = liveScreenToolbarObservation
+        withObservationTracking { updateLiveScreenToolbar() } onChange: { [weak self] in
+            Task { @MainActor in
+                guard let self, self.liveScreenToolbarObservation == observation else { return }
+                self.observeLiveScreenToolbar()
+            }
+        }
+    }
+
+    private func updateLiveScreenToolbar() {
+        guard let screen = deviceScreenViewController.liveScreen else { return }
+        menus.updateKeyEquivalents(for: screen.simulatorCapabilities)
         if let item = window?.toolbar?.items.first(where: { $0.itemIdentifier == resizeAppIdentifier }) {
+            let resizingApp = screen.resizingApp
             let title = resizingApp ? "Stop Resize" : "Resize App"
             item.label = title
             item.toolTip = title
@@ -570,8 +615,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
                 button.toolTip = title
                 button.setAccessibilityLabel(title)
             }
-            item.isHidden = deviceScreenViewController.liveDeviceIdentifier == nil || !supports("resizeApp")
-            item.isEnabled = isEnabled("resizeApp")
+            item.isHidden = !screen.supports("resizeApp")
+            item.isEnabled = screen.isEnabled("resizeApp")
             item.menuFormRepresentation?.isEnabled = item.isEnabled
             item.menuFormRepresentation?.state = resizingApp ? .on : .off
             if let button = item.view as? NSButton {
@@ -580,8 +625,9 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             }
         }
         if let item = window?.toolbar?.items.first(where: { $0.itemIdentifier == captureKeyboardIdentifier }) {
-            item.isHidden = deviceScreenViewController.liveDeviceIdentifier == nil || !supports("captureKeyboard")
-            item.isEnabled = isEnabled("captureKeyboard")
+            let capturesKeyboard = screen.capturesKeyboard
+            item.isHidden = !screen.supports("captureKeyboard")
+            item.isEnabled = screen.isEnabled("captureKeyboard")
             item.menuFormRepresentation?.state = capturesKeyboard ? .on : .off
             item.menuFormRepresentation?.isEnabled = item.isEnabled
             if let button = item.view as? NSButton {
@@ -590,32 +636,31 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
                 button.toolTip = capturesKeyboard ? "Release Keyboard — or hold Escape for one second." : "Capture Keyboard"
             }
         }
+        if let group = window?.toolbar?.items.first(where: { $0.itemIdentifier == canvasZoomIdentifier }) as? NSToolbarItemGroup {
+            group.isHidden = !screen.supports(CanvasZoom.Action.fit.rawValue)
+            for (index, action) in CanvasZoom.Action.allCases.enumerated() {
+                group.subitems[index].isEnabled = screen.isEnabled(action.rawValue)
+            }
+            if let selected = CanvasZoom.Action.allCases.firstIndex(where: { screen.canvasZoomIsSelected($0.rawValue) }) {
+                group.setSelected(true, at: selected)
+            } else {
+                // selectOne rejects clearing its last selection, including selectedIndex = -1.
+                group.selectionMode = .selectAny
+                for index in group.subitems.indices { group.setSelected(false, at: index) }
+                group.selectionMode = .selectOne
+            }
+        }
     }
 
     @objc private func resizeApp(_ sender: Any?) {
-        onScreenAction?("resizeApp")
+        deviceScreenViewController.liveScreen?.perform("resizeApp")
     }
 
-    @objc private func captureKeyboard(_ sender: Any?) { onScreenAction?("captureKeyboard") }
-    func updateCanvasZoom(supports: (String) -> Bool, isEnabled: (String) -> Bool, isSelected: (String) -> Bool) {
-        guard let group = window?.toolbar?.items.first(where: { $0.itemIdentifier == canvasZoomIdentifier }) as? NSToolbarItemGroup else { return }
-        group.isHidden = deviceScreenViewController.liveDeviceIdentifier == nil || !supports(CanvasZoom.Action.fit.rawValue)
-        for (index, action) in CanvasZoom.Action.allCases.enumerated() {
-            group.subitems[index].isEnabled = isEnabled(action.rawValue)
-        }
-        if let selected = CanvasZoom.Action.allCases.firstIndex(where: { isSelected($0.rawValue) }) {
-            group.setSelected(true, at: selected)
-        } else {
-            // selectOne rejects clearing its last selection, including selectedIndex = -1.
-            group.selectionMode = .selectAny
-            for index in group.subitems.indices { group.setSelected(false, at: index) }
-            group.selectionMode = .selectOne
-        }
-    }
+    @objc private func captureKeyboard(_ sender: Any?) { deviceScreenViewController.liveScreen?.perform("captureKeyboard") }
 
     @objc private func performCanvasZoom(_ sender: NSToolbarItemGroup) {
         guard CanvasZoom.Action.allCases.indices.contains(sender.selectedIndex) else { return }
-        onScreenAction?(CanvasZoom.Action.allCases[sender.selectedIndex].rawValue)
+        deviceScreenViewController.liveScreen?.perform(CanvasZoom.Action.allCases[sender.selectedIndex].rawValue)
     }
 
     @objc private func showCompactDeviceWindow(_ sender: Any?) {
@@ -683,19 +728,15 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
 
     private func artwork(for device: InventoryDevice) -> DeviceArtworkModel {
         let xcodeURL: URL?
-        if let preferred = preferredArtworkXcodeURL() { xcodeURL = preferred }
+        if let preferred = screens.displayXcodeURL { xcodeURL = preferred }
         else if case .simulator(let simulator) = device { xcodeURL = simulator.ownerXcodeURL }
         else { xcodeURL = nil }
         return artworkCache.artwork(modelIdentifier: device.modelIdentifier, family: family(of: device), xcodeURL: xcodeURL,
                                     resolveXcodeURLs: { [weak model] in await model?.artworkXcodeURLs(for: device) ?? [] })
     }
 
-    func reloadDeviceArtwork() {
-        for row in rows { table.reloadItem(row) }
-    }
-
     private func shouldRenderAsActive(_ device: InventoryDevice) -> Bool {
-        if isDeviceActivated(device.id) { return true }
+        if screens.screen(for: device.id) != nil { return true }
         switch device {
         case .simulator(let simulator):
             return ["Booting", "Shutting Down"].contains(simulator.state)
@@ -1081,8 +1122,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
 
     @objc private func lockDeviceFromMenu(_ sender: NSMenuItem) {
         guard let identifier = sender.representedObject as? DeviceInventoryID,
-              identifier == deviceScreenViewController.liveDeviceIdentifier else { return }
-        onScreenAction?("lock")
+              let screen = deviceScreenViewController.liveScreen, screen.id == identifier else { return }
+        screen.perform("lock")
     }
 
     @objc private func performManagement(_ sender: NSMenuItem) {

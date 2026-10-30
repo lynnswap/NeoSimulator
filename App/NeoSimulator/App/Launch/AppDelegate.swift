@@ -1,5 +1,4 @@
 import AppKit
-import Observation
 @_spi(NeoSimulator) import XcodeSimulatorHost
 
 @MainActor
@@ -8,6 +7,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     lazy var model = SimulatorManagerModel(rendererApplicationURL: rendererURL, presentSimulator: { [weak self] context in
         try await self?.openSimulatorPresentation(context)
     })
+    private(set) lazy var screens: DeviceScreens = {
+        let screens = DeviceScreens(model: self.model)
+        screens.onError = { [weak self] error in self?.present(error) }
+        screens.onShowInMainWindow = { [weak self] identifier in self?.selectDeviceForPresentation(identifier) }
+        screens.onApplicationsChange = { [weak self] identifier in self?.mainWindow?.applicationsChanged(on: identifier) }
+        return screens
+    }()
     private(set) var mainWindow: ManagerWindowController?
     private var settingsWindow: SettingsWindowController?
     private var newSimulatorWindows: [DeviceInventoryID?: NewSimulatorWindowController] = [:]
@@ -20,203 +26,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var inventoryObservationTask: Task<Void, Never>?
     private var quitKeepingDevicesRunning: Bool?
     private var restartsAfterQuitting = false
-    var remoteWindows: [DeviceInventoryID: RemoteDeviceWindowController] = [:] {
-        didSet { updateDevicePostureScreens(); mainWindow?.reloadDeviceArtwork() }
-    }
-    private var simulatorHosts: [URL: HostApplication] = [:]
-    var simulatorWindows: [DeviceInventoryID: DeviceWindowController] = [:] {
-        didSet { updateDevicePostureScreens(); mainWindow?.reloadDeviceArtwork() }
-    }
-    private func updateDevicePostureScreens() {
-        model.setOpenDeviceScreens(quitting ? [] : Set(simulatorWindows.keys).union(remoteWindows.keys))
-    }
-    private var displayXcodeURL: URL?
     private var presentationTask: Task<Void, any Error>?
     private var presentationGeneration = 0
     private(set) var presentationIntent: (revision: Int, placement: SimulatorScreenRestoration.Presentation) = (0, .main)
-    private var remoteHostCleanup: Task<Void, Never>?
-    private var lastRemoteHost: SimulatorHost?
-    private lazy var pasteboardSync = PasteboardSync { [weak self] in
-        self?.simulatorWindows.values.map(\.session) ?? []
-    }
     private lazy var simulatorMenus = MenuController(application: nil,
-        gpuPolicy: UserDefaults(suiteName: GPUPolicy.suiteName).map(GPUPolicy.init), pasteboardSync: pasteboardSync)
-
-    @MainActor private enum Screen {
-        case simulator(DeviceWindowController)
-        case remote(RemoteDeviceWindowController)
-
-        var presentation: SimulatorScreenRestoration.Presentation {
-            switch self {
-            case .simulator(let controller):
-                controller.isEmbedded ? .main : controller.window?.isVisible == true ? .compact : .hidden
-            case .remote(let controller):
-                controller.isEmbedded ? .main : controller.window?.isVisible == true ? .compact : .hidden
-            }
-        }
-
-        func isEmbedded(in parent: NSViewController) -> Bool {
-            let controller = switch self {
-            case .simulator(let controller): controller.presentationViewController
-            case .remote(let controller): controller.presentationViewController as NSViewController
-            }
-            return controller.parent === parent && controller.view.superview === parent.view
-        }
-
-        var commandTarget: NSResponder {
-            switch self {
-            case .simulator(let controller): controller
-            case .remote(let controller): controller
-            }
-        }
-
-        var canControlDevice: Bool {
-            switch self {
-            case .simulator(let controller): controller.session.canPerformCommands
-            case .remote(let controller): controller.session.state == .connected
-            }
-        }
-
-        var canvasControls: DeviceCanvasControls? {
-            switch self {
-            case .simulator(let controller): controller.canvasControls
-            case .remote(let controller): controller.canvasControls
-            }
-        }
-
-        var nativePoseControls: NativeDevicePoseControls? {
-            switch self {
-            case .simulator(let controller): controller.session.display.nativePoseControls
-            case .remote: nil
-            }
-        }
-
-        func validatePresentationMove() throws {
-            let canMove: Bool
-            switch self {
-            case .simulator(let controller): canMove = controller.canMovePresentation
-            case .remote(let controller): canMove = controller.canMovePresentation
-            }
-            guard canMove else {
-                throw HostError.operation("Close the device's dialog or leave full screen before moving its screen.")
-            }
-        }
-
-        func preparePresentationMove() async throws {
-            switch self {
-            case .simulator: try validatePresentationMove()
-            case .remote(let controller): try await controller.preparePresentationMove()
-            }
-        }
-
-        private func simulatorCommand(_ identifier: String, for controller: DeviceWindowController) -> DeviceCommand.ID? {
-            switch identifier {
-            case "home": .home
-            case "lock": .lock
-            case "rotate": DeviceCommand.canvasRotation(modifierFlags: NSApp.currentEvent?.modifierFlags ?? NSEvent.modifierFlags)
-            case "resizeApp": .resizeApp
-            case "capture": .saveScreen
-            case "record": controller.session.recording == nil ? .recordScreen : .stopRecording
-            case "captureKeyboard": .captureKeyboard
-            default: nil
-            }
-        }
-
-        func supports(_ identifier: String) -> Bool {
-            if CanvasZoom.Action(rawValue: identifier) != nil {
-                if case .simulator = self { return true }
-                return false
-            }
-            switch self {
-            case .simulator(let controller):
-                guard let id = simulatorCommand(identifier, for: controller) else { return false }
-                return id == .resizeApp ? controller.session.supportsAppResize : DeviceCommand.command(id).isSupported(controller.session.capabilities)
-            case .remote(let controller):
-                return identifier == "resizeApp" ? controller.session.supportsAppResize : identifier != "rotate"
-            }
-        }
-
-        func isEnabled(_ identifier: String) -> Bool {
-            if let action = CanvasZoom.Action(rawValue: identifier), case .simulator(let controller) = self {
-                return controller.canPerformCanvasZoom(action)
-            }
-            switch self {
-            case .simulator(let controller):
-                guard let id = simulatorCommand(identifier, for: controller) else { return false }
-                return DeviceCommand.command(id).isEnabled(controller)
-            case .remote(let controller): return controller.isScreenActionEnabled(identifier)
-            }
-        }
-
-        func perform(_ identifier: String) {
-            if let action = CanvasZoom.Action(rawValue: identifier), case .simulator(let controller) = self {
-                controller.performCanvasZoom(action)
-                return
-            }
-            switch self {
-            case .simulator(let controller):
-                if let id = simulatorCommand(identifier, for: controller) { controller.perform(id) }
-            case .remote(let controller): controller.performScreenAction(identifier)
-            }
-        }
-
-        var resizingApp: Bool {
-            if case .simulator(let controller) = self { return controller.session.isResizingApp || controller.session.isStartingAppResize }
-            if case .remote(let controller) = self { return controller.session.isResizingApp || controller.session.isChangingDisplay }
-            return false
-        }
-
-        func canvasZoomIsSelected(_ identifier: String) -> Bool {
-            guard let action = CanvasZoom.Action(rawValue: identifier), case .simulator(let controller) = self else { return false }
-            return controller.canvasZoomIsSelected(action)
-        }
-
-        var recordingTitle: String {
-            switch self {
-            case .simulator(let controller): controller.session.recording == nil ? "Record Screen" : "Stop Recording"
-            case .remote(let controller): controller.screenActionPresentation("record")?.title ?? "Record Screen"
-            }
-        }
-
-        var recordingStartDate: Date? {
-            switch self {
-            case .simulator(let controller): controller.session.recording?.startDate
-            case .remote(let controller): controller.session.recordingStartDate
-            }
-        }
-
-        var capturesKeyboard: Bool {
-            switch self {
-            case .simulator(let controller): controller.capturesKeyboard
-            case .remote(let controller): controller.capturesKeyboard
-            }
-        }
-
-        func embed(in parent: NSViewController) async throws {
-            switch self {
-            case .simulator(let controller): try await controller.embed(in: parent)
-            case .remote(let controller): try await controller.embed(in: parent)
-            }
-        }
-        func showCompactWindow() async throws {
-            switch self {
-            case .simulator(let controller): try await controller.showCompactWindow()
-            case .remote(let controller): try await controller.showCompactWindow()
-            }
-        }
-        func detach() async throws {
-            switch self {
-            case .simulator(let controller): try await controller.detachPresentation()
-            case .remote(let controller): try await controller.detachPresentation()
-            }
-        }
-    }
-
-    private func screen(for identifier: DeviceInventoryID) -> Screen? {
-        if let controller = simulatorWindows[identifier] { return .simulator(controller) }
-        if let controller = remoteWindows[identifier] { return .remote(controller) }
-        return nil
-    }
+        gpuPolicy: UserDefaults(suiteName: GPUPolicy.suiteName).map(GPUPolicy.init), pasteboardSync: screens.pasteboardSync)
 
     private func transitionPresentation(_ operation: @escaping @MainActor () async throws -> Void) async throws {
         let previous = presentationTask
@@ -237,10 +51,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         presentationIntent.placement = placement
     }
 
-    private func showScreenInMainWindow(_ identifier: DeviceInventoryID) {
-        selectDeviceForPresentation(identifier)
-    }
-
     func selectDeviceForPresentation(_ identifier: DeviceInventoryID) {
         prepareMainWindow()
         requestPresentation(.main)
@@ -256,22 +66,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func embedScreen(_ identifier: DeviceInventoryID, revision: Int, preservingFocus: Bool = true) async throws {
         try await transitionPresentation { [self] in
-            guard isCurrentPresentation(identifier, revision: revision), let screen = screen(for: identifier),
+            guard isCurrentPresentation(identifier, revision: revision), let screen = screens.screen(for: identifier),
                   let mainWindow else { return }
             let pane = mainWindow.deviceScreenViewController
             defer {
-                if let current = pane.liveDeviceIdentifier,
-                   self.screen(for: current)?.isEmbedded(in: pane.liveScreenContainer) != true {
-                    pane.showDevicePreview(ifDisplaying: current)
+                if let current = pane.liveScreen, !current.isEmbedded(in: pane.liveScreenContainer) {
+                    pane.showDevicePreview(ifDisplaying: current.id)
                 }
             }
-            if pane.liveDeviceIdentifier == identifier, screen.isEmbedded(in: pane.liveScreenContainer) {
+            if pane.liveScreen === screen, screen.isEmbedded(in: pane.liveScreenContainer) {
                 return
             }
             try await screen.preparePresentationMove()
             guard isCurrentPresentation(identifier, revision: revision) else { return }
             let previousResponder = preservingFocus ? mainWindow.window?.firstResponder : nil
-            let previous = pane.liveDeviceIdentifier.flatMap { self.screen(for: $0) }
+            let previous = pane.liveScreen
             try await previous?.preparePresentationMove()
             guard isCurrentPresentation(identifier, revision: revision) else { return }
             try screen.validatePresentationMove()
@@ -297,8 +106,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 try await screen.detach()
                 return
             }
-            pane.showLiveScreen(for: identifier, controls: screen.canvasControls, commandTarget: screen.commandTarget)
-            updateScreenToolbar()
+            pane.showLiveScreen(screen)
             if let previousResponder { mainWindow.window?.makeFirstResponder(previousResponder) }
         }
     }
@@ -312,7 +120,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             do {
                 try await self.transitionPresentation {
                     guard self.isCurrentPresentation(identifier, revision: revision),
-                          let screen = self.screen(for: identifier) else { return }
+                          let screen = self.screens.screen(for: identifier) else { return }
                     try await screen.preparePresentationMove()
                     guard self.isCurrentPresentation(identifier, revision: revision) else { return }
                     try await screen.showCompactWindow()
@@ -330,19 +138,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task { [weak self] in
             guard let self else { return }
             do {
-                if let identifier, self.screen(for: identifier) != nil {
+                if let identifier, self.screens.screen(for: identifier) != nil {
                     try await self.embedScreen(identifier, revision: revision, preservingFocus: preservingFocus)
                 } else {
                     try await self.transitionPresentation {
+                        guard self.presentationIntent.revision == revision,
+                              let pane = self.mainWindow?.deviceScreenViewController, let screen = pane.liveScreen else { return }
+                        try await screen.preparePresentationMove()
                         guard self.presentationIntent.revision == revision else { return }
-                        if let current = self.mainWindow?.deviceScreenViewController.liveDeviceIdentifier {
-                            if let screen = self.screen(for: current) {
-                                try await screen.preparePresentationMove()
-                                guard self.presentationIntent.revision == revision else { return }
-                                try await screen.detach()
-                            }
-                            self.mainWindow?.deviceScreenViewController.showDevicePreview(ifDisplaying: current)
-                        }
+                        try await screen.detach()
+                        pane.showDevicePreview(ifDisplaying: screen.id)
                     }
                 }
             } catch is CancellationError {}
@@ -351,79 +156,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func openSimulatorPresentation(_ context: SimulatorPresentationContext) async throws {
-        guard !quitting else { throw CancellationError() }
         prepareMainWindow()
-        let displayURL = try await CoreDeviceRuntime.uiXcodeURL()
-        try Task.checkCancellation()
-        displayXcodeURL = displayURL
-        let sourceURL = context.xcodeURL.standardizedFileURL.resolvingSymlinksInPath()
-        let host: HostApplication
-        if let existing = simulatorHosts[sourceURL] { host = existing }
-        else {
-            let runtime = try await SimulatorRuntime.load(xcodeURL: sourceURL, uiXcodeURL: displayURL)
-            try Task.checkCancellation()
-            host = try HostApplication(runtime: runtime, conflicts: HostConflictMonitor(), inProcess: true, pasteboardSync: pasteboardSync)
-            host.onError = { [weak self] error in self?.present(error) }
-            host.onChange = { [weak self] in self?.simulatorPresentationsChanged() }
-            host.onClose = { [weak self] identifier, choice, finishing in
-                guard let self else { return }
-                let id = DeviceInventoryID.simulator(udid: identifier.identifier, deviceSetPath: identifier.deviceSetPath)
-                self.simulatorWindows.removeValue(forKey: id)
-                self.mainWindow?.deviceScreenViewController.showDevicePreview(ifDisplaying: id)
-                let keepRunning = choice == .keepRunning || (choice == nil && HostPreferences.defaults.bool(forKey: HostPreferences.detachOnWindowClose))
-                self.model.closeDevice(id, keepingDeviceRunning: keepRunning, after: finishing)
-            }
-            host.onRestart = { [weak self] identifier, erasing in
-                guard let self, let device = self.model.inventory.first(where: {
-                    $0.id == .simulator(udid: identifier.identifier, deviceSetPath: identifier.deviceSetPath)
-                }) else { return }
-                self.model.manage(erasing ? .erase : .restart, devices: [device])
-            }
-            host.onShutDown = { [weak self] identifier in
-                guard let self, let device = self.model.inventory.first(where: {
-                    $0.id == .simulator(udid: identifier.identifier, deviceSetPath: identifier.deviceSetPath)
-                }) else { return }
-                self.model.manage(.shutdown, devices: [device])
-            }
-            host.onApplicationsChange = { [weak self] identifier in
-                self?.mainWindow?.applicationsChanged(on: .simulator(udid: identifier.identifier, deviceSetPath: identifier.deviceSetPath))
-            }
-            try host.start()
-            simulatorHosts[sourceURL] = host
-        }
-        guard case .simulator(let udid, let path) = context.deviceID else { return }
-        let identifier = SimulatorDeviceIdentifier(udid, deviceSetPath: path)
-        var previousPresentation: SimulatorScreenRestoration.Presentation?
-        for (url, previous) in simulatorHosts where url != sourceURL && previous.openedDeviceIdentifiers.contains(identifier) {
-            try await previous.releasePresentation(for: identifier) { controller in
-                previousPresentation = Screen.simulator(controller).presentation
-            }
-            simulatorWindows.removeValue(forKey: context.deviceID)
-            mainWindow?.deviceScreenViewController.showDevicePreview(ifDisplaying: context.deviceID)
-        }
-        let preservesPresentation = host.openedDeviceIdentifiers.contains(identifier)
-        var attached = false
-        do {
-            let controller = try await host.openPresentation(for: identifier, bootIfNeeded: false)
-            attached = true
-            try Task.checkCancellation()
-            controller.onShowInMainWindow = { [weak self] in self?.showScreenInMainWindow(context.deviceID) }
-            let isNew = simulatorWindows[context.deviceID] !== controller
-            if let previous = simulatorWindows[context.deviceID] {
-                previousPresentation = Screen.simulator(previous).presentation
-            }
-            simulatorWindows[context.deviceID] = controller
-            if isNew {
-                configureCanvasControls(for: context.deviceID, screen: .simulator(controller))
-                observeScreenState(context.deviceID)
-            }
-            try await presentConnectedScreen(context.deviceID, purpose: context.purpose,
-                                             preserving: previousPresentation)
-        } catch {
-            if Task.isCancelled, attached, !preservesPresentation {
-                try await Task { try await host.releasePresentation(for: identifier) }.value
-            }
-            throw error
+        try await screens.openSimulatorScreen(context) { [self] previousPresentation in
+            try await presentConnectedScreen(context.deviceID, purpose: context.purpose, preserving: previousPresentation)
         }
     }
 
@@ -431,7 +166,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                 purpose: SimulatorPresentationContext.Purpose,
                                 preserving presentation: SimulatorScreenRestoration.Presentation? = nil) async throws {
         try Task.checkCancellation()
-        guard !quitting, let mainWindow, let screen = screen(for: identifier) else { return }
+        guard !quitting, let mainWindow, let screen = screens.screen(for: identifier) else { return }
         if mainWindow.selectedIdentifiers.isEmpty, presentationIntent.revision == 0, purpose != .requested {
             mainWindow.selectDevice(identifier)
             requestPresentation(.main)
@@ -455,195 +190,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func simulatorPresentationsChanged() {
-        for (url, host) in simulatorHosts where host.isStopped { simulatorHosts.removeValue(forKey: url) }
-        let opened = Set(simulatorHosts.values.flatMap(\.openedDeviceIdentifiers).map {
-            DeviceInventoryID.simulator(udid: $0.identifier, deviceSetPath: $0.deviceSetPath)
-        })
-        for identifier in simulatorWindows.keys where !opened.contains(identifier) {
-            simulatorWindows.removeValue(forKey: identifier)
-            mainWindow?.deviceScreenViewController.showDevicePreview(ifDisplaying: identifier)
-        }
-        updateScreenToolbar()
-    }
-
-    private func stopSimulatorPresentations() async throws {
+    /// Lets accepted screen moves finish before the screens stop.
+    private func stopScreens() async throws {
         _ = await presentationTask?.result
-        await model.stopDevicePostures()
-        for host in simulatorHosts.values { try await host.stop(keepingDevicesRunning: true) }
-        simulatorHosts.removeAll()
-        simulatorWindows.removeAll()
-        if let pane = mainWindow?.deviceScreenViewController, let current = pane.liveDeviceIdentifier {
-            pane.showDevicePreview(ifDisplaying: current)
-        }
-    }
-
-    private func prepareSimulatorManagement(_ action: DeviceManagementAction, devices: [InventoryDevice]) async throws {
-        var prepared: [InventoryDevice] = []
-        do {
-            for device in devices {
-                guard case .simulator(let simulator) = device, device.supports(action), simulatorWindows[device.id] != nil,
-                      case .simulator(let udid, let path) = device.id else { continue }
-                let identifier = SimulatorDeviceIdentifier(udid, deviceSetPath: path)
-                guard let host = simulatorHosts.values.first(where: { $0.openedDeviceIdentifiers.contains(identifier) }) else { continue }
-                switch action {
-                case .restart, .erase:
-                    if simulator.state == "Booted" {
-                        try await host.preparePresentationForRestart(for: identifier)
-                        prepared.append(device)
-                    } else {
-                        try await host.releasePresentation(for: identifier)
-                        simulatorWindows.removeValue(forKey: device.id)
-                        mainWindow?.deviceScreenViewController.showDevicePreview(ifDisplaying: device.id)
-                    }
-                case .shutdown, .forceShutdown, .remove:
-                    try await host.releasePresentation(for: identifier)
-                    simulatorWindows.removeValue(forKey: device.id)
-                    mainWindow?.deviceScreenViewController.showDevicePreview(ifDisplaying: device.id)
-                default: break
-                }
-            }
-        } catch {
-            do { try await finishSimulatorManagement(action, devices: prepared) }
-            catch let cleanupError {
-                throw HostError.operation([error.localizedDescription, cleanupError.localizedDescription].joined(separator: "\n"))
-            }
-            throw error
-        }
-    }
-
-    private func finishSimulatorManagement(_ action: DeviceManagementAction, devices: [InventoryDevice]) async throws {
-        guard action == .restart || action == .erase else { return }
-        var failures: [String] = []
-        for device in devices {
-            guard case .simulator(let udid, let path) = device.id else { continue }
-            let identifier = SimulatorDeviceIdentifier(udid, deviceSetPath: path)
-            guard let host = simulatorHosts.values.first(where: { $0.openedDeviceIdentifiers.contains(identifier) }) else { continue }
-            do { try await host.finishPresentationRestart(for: identifier) }
-            catch { failures.append("\(device.name): \(error.localizedDescription)") }
-        }
-        simulatorPresentationsChanged()
-        if !failures.isEmpty { throw HostError.operation(failures.joined(separator: "\n")) }
+        try await screens.stopAll()
     }
 
     func prepareMainWindow() {
         guard mainWindow == nil else { return }
-        let controller = ManagerWindowController(model: model)
-        controller.isDeviceActivated = { [weak self] identifier in self?.screen(for: identifier) != nil }
-        controller.preferredArtworkXcodeURL = { [weak self] in self?.displayXcodeURL }
+        let controller = ManagerWindowController(model: model, screens: screens, menus: simulatorMenus)
         controller.onShowCompactWindow = { [weak self] identifier in self?.showCompactScreen(identifier) }
         model.onOpenRemoteDevice = { [weak self] device in try await self?.openRemoteScreen(device) }
         model.onDeviceOpenRequested = { [weak self] identifier in self?.selectDeviceForPresentation(identifier) }
         controller.onSelectionIntent = { [weak self] in self?.requestPresentation(.main) }
         controller.onSelectionChange = { [weak self] identifier in self?.selectedDeviceChanged(identifier) }
         controller.onNewCompanion = { [weak self] device in self?.showNewSimulator(pairingWith: device) }
-        controller.onScreenAction = { [weak self] action in
-            guard let self, let identifier = self.mainWindow?.deviceScreenViewController.liveDeviceIdentifier else { return }
-            self.performScreenAction(action, for: identifier)
-        }
         mainWindow = controller
-    }
-
-    private func configureCanvasControls(for identifier: DeviceInventoryID, screen: Screen) {
-        let controls = DeviceCanvasControls()
-        controls.onAction = { [weak self] action in self?.performScreenAction(action, for: identifier) }
-        switch screen {
-        case .simulator(let controller):
-            controller.canvasControls = controls
-            controller.onSessionChange = { [weak self] in self?.observeScreenState(identifier) }
-        case .remote(let controller): controller.canvasControls = controls
-        }
-    }
-
-    private func performScreenAction(_ action: String, for identifier: DeviceInventoryID) {
-        guard let screen = screen(for: identifier) else { return }
-        if action == "pairedDevice" {
-            model.openActivePairedDevice(for: identifier)
-            return
-        }
-        if action.hasPrefix("posture."), let posture = DevicePosture(rawValue: String(action.dropFirst("posture.".count))),
-           let source = model.devicePostures[identifier], screen.canControlDevice,
-           !model.managingDeviceIDs.contains(identifier) {
-            Task { [weak self] in
-                do { try await source.select(posture) }
-                catch is CancellationError {}
-                catch { self?.present(error) }
-            }
-            if case .simulator(let controller) = screen { controller.focusInput() }
-            updateScreenToolbar()
-            return
-        }
-        guard screen.supports(action), screen.isEnabled(action) else { return }
-        screen.perform(action)
-        updateScreenToolbar()
-    }
-
-    private func updateCanvasControls(for identifier: DeviceInventoryID) {
-        guard let screen = screen(for: identifier), let controls = screen.canvasControls else { return }
-        let posture = model.devicePostures[identifier]
-        let enabled = screen.canControlDevice && !model.managingDeviceIDs.contains(identifier)
-        controls.xcodeURL = displayXcodeURL
-        let available = model.inventory.first { $0.id == identifier }
-            .map { DevicePostureModel.canInspect(capabilities: $0.capabilities) } ?? false
-        controls.update(supports: { action in
-            action == "rotate" && posture?.isSupported == true ? false : screen.supports(action)
-        }, isEnabled: screen.isEnabled, recordingTitle: screen.recordingTitle,
-                        recordingStartDate: screen.recordingStartDate, nativePoses: screen.nativePoseControls,
-                        nativePosesEnabled: enabled, posture: posture, postureEnabled: enabled, postureAvailable: available,
-                        pairedDeviceName: model.activePairedDevice(for: identifier)?.name)
-        if let pane = mainWindow?.deviceScreenViewController, pane.liveDeviceIdentifier == identifier {
-            pane.canvasAccessory.refresh()
-        }
-    }
-
-    private func updateScreenToolbar() {
-        for identifier in Array(simulatorWindows.keys) + Array(remoteWindows.keys) { updateCanvasControls(for: identifier) }
-        guard let identifier = mainWindow?.deviceScreenViewController.liveDeviceIdentifier, let screen = screen(for: identifier) else { return }
-        simulatorMenus.updateKeyEquivalents(for: (screen.commandTarget as? DeviceWindowController)?.session.capabilities)
-        mainWindow?.updateScreenToolbar(supports: screen.supports, isEnabled: screen.isEnabled,
-                                       resizingApp: screen.resizingApp, capturesKeyboard: screen.capturesKeyboard)
-        mainWindow?.updateCanvasZoom(supports: screen.supports, isEnabled: screen.isEnabled, isSelected: screen.canvasZoomIsSelected)
-    }
-
-    private func observeScreenState(_ identifier: DeviceInventoryID) {
-        guard let screen = screen(for: identifier) else { return }
-        let owner = screen.commandTarget
-        let session = (owner as? DeviceWindowController)?.session
-        withObservationTracking {
-            updateCanvasControls(for: identifier)
-            // These controls return to the main toolbar with the same screen.
-            _ = screen.capturesKeyboard
-            _ = screen.resizingApp
-            for action in ["resizeApp", "captureKeyboard"] {
-                _ = screen.supports(action)
-                _ = screen.isEnabled(action)
-            }
-            if let controller = owner as? DeviceWindowController {
-                _ = controller.canvasZoom.scale
-                _ = controller.canvasZoom.fitScale
-                _ = controller.canvasZoom.mode
-            }
-            if mainWindow?.deviceScreenViewController.liveDeviceIdentifier == identifier { updateScreenToolbar() }
-        } onChange: { [weak self, weak owner, weak session] in
-            Task { @MainActor in
-                guard let self, let owner, self.screen(for: identifier)?.commandTarget === owner else { return }
-                if let controller = owner as? DeviceWindowController, controller.session !== session { return }
-                self.observeScreenState(identifier)
-            }
-        }
-    }
-
-    private func observeRemoteDevices() {
-        withObservationTracking {
-            _ = model.inventory
-            _ = model.status?.host
-            _ = model.isRemoteInventoryComplete
-        } onChange: { [weak self] in
-            Task { @MainActor in
-                self?.updateRemoteWindows()
-                self?.observeRemoteDevices()
-            }
-        }
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -657,27 +219,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let defaults = HostPreferences.defaults
             let shows = !defaults.showsDeviceBezels
             defaults.set(shows, forKey: HostPreferences.showChrome)
-            self?.simulatorWindows.values.forEach { $0.setDeviceBezelVisible(shows) }
+            self?.screens.setDeviceBezelsVisible(shows)
         }
         installMenu()
-        observeRemoteDevices()
-        model.beforeStoppingScreens = { [weak self] in
-            do {
-                try await self?.stopSimulatorPresentations()
-                try await self?.stopRemoteScreens()
-            } catch {
-                self?.updateDevicePostureScreens()
-                throw error
-            }
-        }
+        screens.observeRemoteDevices()
+        model.beforeStoppingScreens = { [weak self] in try await self?.stopScreens() }
         model.beforeManagingRemoteDevices = { [weak self] identifiers in
-            try await self?.stopRemoteScreens(for: identifiers)
+            try await self?.screens.stopRemoteScreens(for: identifiers)
         }
         model.beforeManagingSimulators = { [weak self] action, devices in
-            try await self?.prepareSimulatorManagement(action, devices: devices)
+            try await self?.screens.prepareSimulatorManagement(action, devices: devices)
         }
         model.afterManagingSimulators = { [weak self] action, devices in
-            try await self?.finishSimulatorManagement(action, devices: devices)
+            try await self?.screens.finishSimulatorManagement(action, devices: devices)
         }
         model.onError = { [weak self] error in
             if !(error is CancellationError) { self?.present(error) }
@@ -745,16 +299,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !quitting else { return .terminateLater }
         quitting = true
+        screens.beginQuitting()
         let preparation = Task.immediate { try await model.prepareForQuit() }
-        let restoring: [SimulatorScreenRestoration] = restartsAfterQuitting ? simulatorHosts.flatMap { xcode, host in
-            host.openedDeviceIdentifiers.compactMap { device in
-                let id = DeviceInventoryID.simulator(udid: device.identifier, deviceSetPath: device.deviceSetPath)
-                guard let controller = simulatorWindows[id] else { return nil as SimulatorScreenRestoration? }
-                let presentation: SimulatorScreenRestoration.Presentation = controller.isEmbedded ? .main
-                    : controller.window?.isVisible == true ? .compact : .hidden
-                return SimulatorScreenRestoration(device: device, xcodeURL: xcode, presentation: presentation)
-            }
-        }.sorted { $0.presentation.restorationOrder < $1.presentation.restorationOrder } : []
+        let restoring = restartsAfterQuitting ? screens.restorations() : []
         Task {
             do {
                 mainWindow?.stopInspectorReads()
@@ -764,9 +311,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 await inventoryObservation?.stop()
                 await inventoryObservationTask?.value
                 inventoryObservation = nil
-                await remoteHostCleanup?.value
-                try await stopSimulatorPresentations()
-                try await stopRemoteScreens()
+                await screens.waitForRemoteHostCleanup()
+                try await stopScreens()
                 try await model.quitRenderer(keepingDevicesRunning: quitKeepingDevicesRunning)
                 if restartsAfterQuitting {
                     let urls = restoring.map(\.url)
@@ -780,7 +326,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if restartsAfterQuitting { quitKeepingDevicesRunning = nil }
                 restartsAfterQuitting = false
                 model.resumeAfterCancelledQuit()
-                updateDevicePostureScreens()
+                screens.resumeAfterCancelledQuit()
                 mainWindow?.resumeInspectorAfterCancelledQuit()
                 startInventoryObservation()
                 if !(error is CancellationError) { present(error) }
@@ -804,7 +350,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard let restoration = SimulatorScreenRestoration(url: url) else { continue }
                 let revision = presentationIntent.revision
                 model.restoreScreen(restoration) { [weak self] in
-                    guard let self, let screen = self.screen(for: restoration.deviceID) else { return }
+                    guard let self, let screen = self.screens.screen(for: restoration.deviceID) else { return }
                     try await self.transitionPresentation {
                         switch restoration.presentation {
                         case .main: break // Opening the screen already embeds it in the main window.
@@ -848,68 +394,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func openRemoteScreen(_ device: CoreDeviceDevice) async throws {
-        let id = DeviceInventoryID.coreDevice(device.identifier)
-        guard !quitting, !model.managingDeviceIDs.contains(id) else { return }
-        let controller: RemoteDeviceWindowController
-        if let existing = remoteWindows[id] { controller = existing }
-        else {
-            controller = RemoteDeviceWindowController(device: device)
-            controller.onClose = { [weak self, weak controller] in
-                guard self?.remoteWindows[id] === controller else { return }
-                self?.remoteWindows.removeValue(forKey: id)
-                self?.mainWindow?.deviceScreenViewController.showDevicePreview(ifDisplaying: id)
-            }
-            controller.onShowInMainWindow = { [weak self] in self?.showScreenInMainWindow(id) }
-            controller.onConnect = { [weak self, weak controller] in
-                guard let self, self.remoteWindows[id] === controller else { return }
-                await self.model.deviceScreenDidConnect(id)
-            }
-            controller.onChange = { [weak self] in self?.updateScreenToolbar() }
-            controller.canInstallApplications = { [weak self] in self?.model.canInstallApplications(on: id) == true }
-            controller.installApplications = { [weak self] urls in
-                self?.model.installApplications(at: urls, on: id) { self?.mainWindow?.applicationsChanged(on: id) }
-            }
-            remoteWindows[id] = controller
-            configureCanvasControls(for: id, screen: .remote(controller))
-            observeScreenState(id)
-        }
-        controller.connectIfNeeded()
-        try await presentConnectedScreen(id, purpose: .requested)
-    }
-
-    private func updateRemoteWindows() {
-        if model.isRemoteInventoryComplete {
-            for (id, controller) in remoteWindows {
-                let current = model.inventory.first { $0.id == id }
-                controller.updateInventory(current)
-            }
-        }
-        let host = model.status?.host
-        let changedToDeviceHub = host == .deviceHub && lastRemoteHost != .deviceHub
-        if let host { lastRemoteHost = host }
-        if changedToDeviceHub, !remoteWindows.isEmpty, remoteHostCleanup == nil {
-            remoteHostCleanup = Task { [weak self] in
-                guard let self else { return }
-                defer { self.remoteHostCleanup = nil }
-                do { try await self.stopRemoteScreens() }
-                catch is CancellationError {}
-                catch { self.present(error) }
-            }
-        }
-    }
-
-    private func stopRemoteScreens(for identifiers: Set<DeviceInventoryID>? = nil) async throws {
-        var failures: [String] = []
-        let targets = remoteWindows.filter { identifiers?.contains($0.key) ?? true }.map(\.value)
-        for controller in targets {
-            do { try await controller.stopAndClose() }
-            catch is CancellationError {
-                if !failures.isEmpty { throw RemoteDeviceWindowError.cleanup(failures) }
-                throw CancellationError()
-            }
-            catch { failures.append("\(controller.device.name): \(error.localizedDescription)") }
-        }
-        if !failures.isEmpty { throw RemoteDeviceWindowError.cleanup(failures) }
+        guard let screen = screens.openRemoteScreen(for: device) else { return }
+        try await presentConnectedScreen(screen.id, purpose: .requested)
     }
 
     @objc private func showDevices(_ sender: Any?) {

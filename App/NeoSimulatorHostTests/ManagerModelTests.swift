@@ -179,7 +179,8 @@ struct ManagerModelTests {
         let model = SimulatorManagerModel(source: source)
         model.settings.setReadingSuspended(true)
         await model.refresh()
-        let controller = ManagerWindowController(model: model, defaults: defaults)
+        let controller = ManagerWindowController(model: model, screens: DeviceScreens(model: model),
+                                                 menus: MenuController(application: nil), defaults: defaults)
         controller.window?.setFrameAutosaveName("")
         defer { controller.window?.close() }
         let content = try #require(controller.window?.contentView)
@@ -206,7 +207,8 @@ struct ManagerModelTests {
         try choose("Show Groups")
         let group = try #require(outline.parent(forItem: selectedRow))
         outline.collapseItem(group)
-        let restored = ManagerWindowController(model: model, defaults: defaults)
+        let restored = ManagerWindowController(model: model, screens: DeviceScreens(model: model),
+                                               menus: MenuController(application: nil), defaults: defaults)
         restored.window?.setFrameAutosaveName("")
         defer { restored.window?.close() }
         let restoredContent = try #require(restored.window?.contentView)
@@ -259,7 +261,8 @@ struct ManagerModelTests {
         await model.refresh()
         var requested: [DeviceInventoryID] = []
         model.onDeviceOpenRequested = { requested.append($0) }
-        let controller = ManagerWindowController(model: model)
+        let controller = ManagerWindowController(model: model, screens: DeviceScreens(model: model),
+                                                 menus: MenuController(application: nil))
         controller.window?.setFrameAutosaveName("")
         defer { controller.window?.close() }
         controller.selectDevice(.coreDevice("A"))
@@ -313,7 +316,8 @@ struct ManagerModelTests {
         let aController = RemoteDeviceWindowController(device: a, session: aSession, presentCompactWindow: { _ in })
         let bController = RemoteDeviceWindowController(device: b, session: bSession, presentCompactWindow: { _ in })
         let aID = DeviceInventoryID.coreDevice(a.identifier), bID = DeviceInventoryID.coreDevice(b.identifier)
-        app.remoteWindows = [aID: aController, bID: bController]
+        app.screens.attach(aController)
+        app.screens.attach(bController)
         main.selectDevice(aID)
         if mode != "new-selection" {
             try await app.presentConnectedScreen(aID, purpose: .requested)
@@ -361,7 +365,7 @@ struct ManagerModelTests {
         #expect(main.selectedIdentifiers == [selected])
         #expect(model.settings.device?.id == selected && main.deviceInspector.inspection.device?.id == selected)
         #expect((mode == "new-selection" ? aController : bController).presentationViewController.parent == nil)
-        #expect(aSession.state == .connected && app.remoteWindows[aID] === aController)
+        #expect(aSession.state == .connected && app.screens.screen(for: aID)?.commandTarget === aController)
         try await aSession.stop()
         try await bSession.stop()
         main.window?.close()
@@ -388,7 +392,7 @@ struct ManagerModelTests {
         let aController = RemoteDeviceWindowController(device: a, session: aSession, presentCompactWindow: { _ in })
         let bController = RemoteDeviceWindowController(device: b, session: bSession, presentCompactWindow: { _ in })
         let aID = DeviceInventoryID.coreDevice(a.identifier), bID = DeviceInventoryID.coreDevice(b.identifier)
-        app.remoteWindows[bID] = bController
+        app.screens.attach(bController)
         main.selectDevice(bID)
         try await app.presentConnectedScreen(bID, purpose: .requested)
         main.selectDevice(aID)
@@ -409,7 +413,7 @@ struct ManagerModelTests {
         }
         outline.selectRowIndexes(IndexSet(integer: aRow), byExtendingSelection: false)
         #expect(await releases.next() != nil)
-        app.remoteWindows[aID] = aController
+        app.screens.attach(aController)
         let connected = Task {
             try await app.presentConnectedScreen(aID, purpose: .automatic, preserving: .compact)
         }
@@ -454,7 +458,8 @@ struct ManagerModelTests {
         let backgroundParent = NSViewController()
         backgroundParent.view = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 600))
         try await background.embed(in: backgroundParent)
-        app.remoteWindows = [aID: controller, cID: background]
+        app.screens.attach(controller)
+        app.screens.attach(background)
         main.selectDevice(aID)
         try await app.presentConnectedScreen(aID, purpose: .requested)
         let content = try #require(main.window?.contentView)
@@ -511,7 +516,8 @@ struct ManagerModelTests {
         let aController = RemoteDeviceWindowController(device: a, session: aSession, presentCompactWindow: { _ in })
         let bController = RemoteDeviceWindowController(device: b, session: bSession, presentCompactWindow: { _ in })
         let aID = DeviceInventoryID.coreDevice(a.identifier), bID = DeviceInventoryID.coreDevice(b.identifier)
-        app.remoteWindows = [aID: aController, bID: bController]
+        app.screens.attach(aController)
+        app.screens.attach(bController)
         main.selectDevice(aID)
         try await app.presentConnectedScreen(aID, purpose: .requested)
         main.onShowCompactWindow?(aID)
@@ -573,7 +579,7 @@ struct ManagerModelTests {
         var compactPresentations = 0
         let controller = RemoteDeviceWindowController(device: a, session: session,
             presentCompactWindow: { _ in compactPresentations += 1 })
-        app.remoteWindows[aID] = controller
+        app.screens.attach(controller)
         if !initial { main.selectDevice(bID) }
         try await app.presentConnectedScreen(aID, purpose: initial ? .startup : .automatic)
         let selected = initial ? aID : bID
@@ -581,7 +587,7 @@ struct ManagerModelTests {
         #expect(model.settings.device?.id == selected && main.deviceInspector.inspection.device?.id == selected)
         #expect(pane.liveDeviceIdentifier == (initial ? aID : nil))
         #expect((controller.presentationViewController.parent === pane.liveScreenContainer) == initial)
-        #expect(session.state == .connected && app.remoteWindows[aID] === controller)
+        #expect(session.state == .connected && app.screens.screen(for: aID)?.commandTarget === controller)
         if !initial {
             try await app.presentConnectedScreen(aID, purpose: .automatic, preserving: .compact)
             #expect(compactPresentations == 1 && main.selectedIdentifiers == [bID] && pane.liveDeviceIdentifier == nil)
@@ -630,7 +636,8 @@ struct ManagerModelTests {
         try await bSession.start()
         let aController = RemoteDeviceWindowController(device: a, session: aSession, presentCompactWindow: { _ in })
         let bController = RemoteDeviceWindowController(device: b, session: bSession, presentCompactWindow: { _ in })
-        app.remoteWindows = [aID: aController, bID: bController]
+        app.screens.attach(aController)
+        app.screens.attach(bController)
         main.selectDevice(aID)
         try await app.presentConnectedScreen(aID, purpose: .requested)
         model.setDeviceSetting(.appearance("dark"), for: bID)
@@ -664,6 +671,56 @@ struct ManagerModelTests {
         try await aSession.stop()
         try await bSession.stop()
         main.window?.close()
+    }
+
+    @Test func liveRemoteScreenChangesReachTheToolbarAndClosingReturnsThePaneToThePreview() async throws {
+        _ = NSApplication.shared
+        let devices = try CoreDeviceInventoryDecoder.decode(Data(#"{"result":{"devices":[{"identifier":"A","properties":{"hardware":{"reality":"physical"},"state":{"name":"A"}}}]}}"#.utf8))
+        let a = try #require(devices.first)
+        let aID = DeviceInventoryID.coreDevice(a.identifier)
+        let model = SimulatorManagerModel(source: ManagerModelSource(devices: devices.map(InventoryDevice.remote)))
+        model.settings.setReadingSuspended(true)
+        await model.refresh()
+        let app = AppDelegate()
+        app.model = model
+        app.prepareMainWindow()
+        let main = try #require(app.mainWindow)
+        main.window?.setFrameAutosaveName("")
+        let pane = main.deviceScreenViewController
+        defer { main.window?.close() }
+        let transport = TestRemoteScreenTransport()
+        transport.inputCapabilities = [.keyboard]
+        let session = RemoteDeviceScreenSession(device: a) { _, _, _ in transport }
+        try await session.start()
+        let controller = RemoteDeviceWindowController(device: a, session: session, presentCompactWindow: { _ in })
+        let screen = app.screens.attach(controller)
+        main.selectDevice(aID)
+        try await app.presentConnectedScreen(aID, purpose: .requested)
+        let capture = try #require(main.window?.toolbar?.items.first { $0.itemIdentifier.rawValue == "captureKeyboard" })
+        #expect(pane.liveScreen === screen && !capture.isHidden && capture.isEnabled)
+        let releasing = AsyncStream<Void>.makeStream(), resume = AsyncStream<Void>.makeStream()
+        var releases = releasing.stream.makeAsyncIterator()
+        transport.onReleaseInputs = {
+            transport.onReleaseInputs = nil
+            releasing.continuation.yield(())
+            var permits = resume.stream.makeAsyncIterator()
+            _ = await permits.next()
+        }
+        let closing = Task { try await controller.stopAndClose() }
+        #expect(await releases.next() != nil)
+        // The remote controller reports that it is closing only through its change callback.
+        let disabled = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            MainActor.assumeIsolated { !capture.isEnabled }
+        }, object: nil)
+        try #require(await XCTWaiter.fulfillment(of: [disabled], timeout: 5) == .completed)
+        #expect(pane.liveScreen === screen)
+        resume.continuation.yield(())
+        try await closing.value
+        let previewed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            MainActor.assumeIsolated { pane.liveScreenContainer.view.isHidden && capture.isHidden }
+        }, object: nil)
+        try #require(await XCTWaiter.fulfillment(of: [previewed], timeout: 5) == .completed)
+        #expect(app.screens.screen(for: aID) == nil && pane.liveDeviceIdentifier == nil)
     }
 
     @Test(arguments: [(DeviceInspectorModel.Page.info, DeviceInspectorModel.Content.applications),
