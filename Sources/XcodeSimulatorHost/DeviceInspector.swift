@@ -240,7 +240,10 @@ public struct DeviceInspector: Sendable {
     }
 
     @concurrent public func launchApplication(bundleIdentifier: String) async throws {
-        try await mutateApplication(simulator: ["launch", simulatorID, bundleIdentifier], remote: ["device", "process", "launch", bundleIdentifier], operation: "Launch Application")
+        switch device {
+        case .simulator: _ = try await simctl(["launch", simulatorID, bundleIdentifier], operation: "Launch Application")
+        case .remote: _ = try await coreDevice(["device", "process", "launch"], trailingArguments: [bundleIdentifier], operation: "Launch Application")
+        }
     }
 
     /// Returns a local simulator data container suitable for Finder. Remote device paths
@@ -536,7 +539,9 @@ public struct DeviceInspector: Sendable {
         } catch { throw failure(error, operation: operation, source: .coreDevice) }
     }
 
-    @concurrent func coreDevice(_ arguments: [String], operation: String, timeout: Int? = nil) async throws -> Data {
+    /// `trailingArguments` follow the device and output options, because commands such as
+    /// `device process launch` pass every argument after their bundle identifier to the app.
+    @concurrent func coreDevice(_ arguments: [String], trailingArguments: [String] = [], operation: String, timeout: Int? = nil) async throws -> Data {
         do {
             let identifier: String
             switch device {
@@ -549,7 +554,7 @@ public struct DeviceInspector: Sendable {
             }
             let options = ["--device", identifier, "--omit-deprecated-fields-in-json", "--json-output", "-", "--quiet"]
                 + (timeout.map { ["--timeout", String($0)] } ?? [])
-            let command = DeviceInspectorCommand(source: .coreDevice, arguments: arguments + options)
+            let command = DeviceInspectorCommand(source: .coreDevice, arguments: arguments + options + trailingArguments)
             return try await run(command, operation: operation)
         } catch { throw failure(error, operation: operation, source: .coreDevice) }
     }
