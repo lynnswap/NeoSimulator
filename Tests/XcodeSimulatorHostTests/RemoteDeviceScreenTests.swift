@@ -1079,7 +1079,11 @@ struct RemoteDeviceScreenTests {
         NSApp.sendEvent(try key(.flagsChanged))
         try await keyboard.removeServices()
         #expect(transport.keyboards.map(\.sender) == [nil, 0xA, 0xB])
-        #expect(transport.keyboards.map(\.events) == [[typed, unknown], [builtIn, syntheticUp, release], [external, release]].map { $0.map(ObjectIdentifier.init) })
+        // Losing the last display releases the key 0xB still holds.
+        let keyRelease = try #require(transport.keyboards.last?.events.last)
+        #expect(keyRelease.type == .keyUp && keyRelease.keyCode == external.keyCode)
+        #expect(transport.keyboards.map { $0.events.map(ObjectIdentifier.init) }
+            == [[typed, unknown], [builtIn, syntheticUp, release], [external, release, keyRelease]].map { $0.map(ObjectIdentifier.init) })
         #expect(transport.keyboards.map(\.stops) == [2, 1, 1])
 
         // After reconnection, synthesized input recreates the active Mac keyboard with released state.
@@ -1093,7 +1097,7 @@ struct RemoteDeviceScreenTests {
         await #expect(throws: CLIError.self) { try await keyboard.removeServices() }
         try await keyboard.stop()
         #expect(transport.keyboards.map(\.sender) == [nil, 0xA, 0xB, 0xB])
-        #expect(recreated.events == [ObjectIdentifier(released)] && recreated.stops == 2)
+        #expect(recreated.events.map(ObjectIdentifier.init) == [ObjectIdentifier(released)] && recreated.stops == 2)
         #expect(failures == ["fixture cleanup failed", "fixture stream failed"])
         keyboard.handle(try key(.keyDown, sender: 0xA))
         try await keyboard.removeServices()
@@ -1161,6 +1165,68 @@ struct RemoteDeviceScreenTests {
             try reports([holding([.shift, .command]), holding(.command)] + commandA + [holding([])]),
         ]
         #expect(transport.keyboards.dropFirst(3).map(\.reports) == released)
+        #expect(failures.isEmpty)
+    }
+
+    @Test func nativeKeyboardReleasesHeldKeysWhenTheLastDisplayLosesTheKeyboard() async throws {
+        let runtime = ABIRuntime.shared
+        let bindings = try await NativeKeyboardBindings(runtime: runtime)
+        let report = try CoreDeviceHIDService.reportABI(runtime: runtime)
+        let data = try runtime.resolveAndWait(.swift(.type("Foundation.Data")))
+        let readData = try report.type.resolveAndWait(.swift(.getter("data", as: (() -> Data).self,
+            valueABIs: [report.type: report.abi, data: try .structure(named: data.name, fields: [.uint64, .uint64])],
+            receiverABI: report.abi)))
+        let translation = {
+            let translator = try bindings.makeTranslator()
+            return { (event: NSEvent) throws -> [Data] in try translator.reports(for: event).map { try unsafe readData.unsafeInvoke(on: $0) } }
+        }
+        let transport = KeyboardFixtureTransport()
+        transport.makeTranslation = translation
+        let keyboard = NativeDeviceKeyboard(transport: transport)
+        var failures: [String] = []
+        keyboard.onFailure = { failures.append($0.localizedDescription) }
+        var events: [NSEvent] = []
+        func key(_ type: NSEvent.EventType, _ code: Int, sender: UInt64 = 0, timestamp: TimeInterval = 0) throws -> NSEvent {
+            let event = try #require(NSEvent.keyEvent(with: type, location: .zero, modifierFlags: [], timestamp: timestamp, windowNumber: 0,
+                context: nil, characters: "a", charactersIgnoringModifiers: "a", isARepeat: false, keyCode: UInt16(code)))
+            // Retaining each event keeps its identity unique.
+            events.append(event)
+            transport.senders[ObjectIdentifier(event)] = sender
+            return event
+        }
+        let display = NSObject()
+        let otherDisplay = NSObject()
+        keyboard.setEnabled(true, for: display)
+        keyboard.setEnabled(true, for: otherDisplay)
+        let held = [try key(.keyDown, kVK_ANSI_A, sender: 0xA), try key(.keyDown, kVK_ANSI_B, sender: 0xB)]
+        for event in held { keyboard.handle(event) }
+        // While another display has the keyboard, key-ups still arrive there, so the keys stay held.
+        keyboard.setEnabled(false, for: otherDisplay)
+        let typed = [try key(.keyDown, kVK_ANSI_C, sender: 0xA), try key(.keyUp, kVK_ANSI_C, sender: 0xA)]
+        for event in typed { keyboard.handle(event) }
+        // The held keys' key-ups reach another window once the last display loses the keyboard.
+        keyboard.setEnabled(false, for: display)
+        keyboard.setEnabled(true, for: display)
+        let next = try key(.keyDown, kVK_ANSI_D, sender: 0xA)
+        keyboard.handle(next)
+        try await keyboard.removeServices()
+
+        func reports(_ events: [NSEvent]) throws -> [Data] {
+            let translate = try translation()
+            return try events.flatMap { try translate($0) }
+        }
+        try #require(transport.keyboards.map(\.sender) == [0xA, 0xB])
+        // A report carries its event's time, and each synthesized key-up has the time of the release.
+        let releaseTimes = try transport.keyboards.map { service in
+            try #require(service.events.first { received in !events.contains { $0 === received } }).timestamp
+        }
+        // Each keyboard releases its keys and keeps its guest service; the next key is pressed alone.
+        let expected = [
+            try reports([held[0]] + typed + [key(.keyUp, kVK_ANSI_A, timestamp: releaseTimes[0]), next]),
+            try reports([held[1], key(.keyUp, kVK_ANSI_B, timestamp: releaseTimes[1])]),
+        ]
+        #expect(transport.keyboards.map(\.reports) == expected)
+        #expect(transport.keyboards.map(\.stops) == [1, 1])
         #expect(failures.isEmpty)
     }
 
@@ -1277,9 +1343,11 @@ private final class KeyboardFixtureTransport: NativeKeyboardTransport {
         let sender: UInt64?
         /// The real translation into report bytes, when the fixture has one.
         let translate: ((NSEvent) throws -> [Data])?
-        var events: [ObjectIdentifier] = []
+        /// Retained, so that the synthesized events the test does not retain also keep unique identities.
+        var events: [NSEvent] = []
         var reports: [Data] = []
         private(set) var modifierFlags: NSEvent.ModifierFlags = []
+        private(set) var heldKeyCodes: Set<UInt16> = []
         var stops = 0
         var sendFailures = 0
         var stopFailures = 0
@@ -1289,9 +1357,14 @@ private final class KeyboardFixtureTransport: NativeKeyboardTransport {
         }
         func send(_ event: NSEvent) async throws {
             if sendFailures > 0 { sendFailures -= 1; throw ScreenFixtureError.stream }
-            events.append(ObjectIdentifier(event))
+            events.append(event)
             if let translate { reports += try translate(event) }
-            if event.type == .flagsChanged { modifierFlags = event.modifierFlags.intersection(.deviceIndependentFlagsMask) }
+            switch event.type {
+            case .flagsChanged: modifierFlags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            case .keyDown: heldKeyCodes.insert(event.keyCode)
+            case .keyUp: heldKeyCodes.remove(event.keyCode)
+            default: break
+            }
         }
         func stop() async throws {
             stops += 1

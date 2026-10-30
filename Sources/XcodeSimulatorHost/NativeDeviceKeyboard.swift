@@ -53,12 +53,16 @@ public final class NativeDeviceKeyboard {
 
     /// Gives one of the device's displays the Mac's keyboard, as SimulatorKit's keyboard does while it is enabled.
     /// Modifier changes are observed app-wide while any display has it, including synthesized ones.
+    /// When the last display loses it, the keyboards release their keys, whose key-ups reach another window.
+    /// Modifiers are left to modifier changes, such as the release `DisplayKeyboardInput` sends for lost focus.
     public func setEnabled(_ enabled: Bool, for display: AnyObject) {
         let identifier = ObjectIdentifier(display)
+        let hadDisplays = !enabledDisplays.isEmpty
         if enabled, !isStopped { enabledDisplays.insert(identifier) } else { enabledDisplays.remove(identifier) }
         if enabledDisplays.isEmpty {
             if let modifierMonitor { NSEvent.removeMonitor(modifierMonitor) }
             modifierMonitor = nil
+            if hadDisplays { releaseKeys() }
         } else if modifierMonitor == nil {
             modifierMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
                 self?.handle(event)
@@ -161,6 +165,20 @@ public final class NativeDeviceKeyboard {
         try await removeServices()
     }
 
+    /// Sends each keyboard a key-up for every key it holds. The guest services remain, so the guest keeps its
+    /// hardware keyboards, and the observers translate the key-ups, so later reports no longer carry the keys.
+    private func releaseKeys() {
+        for keyboard in allKeyboards {
+            enqueue { [weak self] in
+                // The keyboard's keys are read after its earlier input has been translated.
+                for keyCode in keyboard.heldKeyCodes.sorted() {
+                    guard let release = Self.keyUp(keyCode) else { continue }
+                    do { try await keyboard.send(release) } catch { self?.onFailure(error) }
+                }
+            }
+        }
+    }
+
     @discardableResult
     private func enqueue(_ operation: @escaping @MainActor () async throws -> Void) -> Task<Void, any Error> {
         let previous = lastOperation
@@ -208,6 +226,12 @@ public final class NativeDeviceKeyboard {
             timestamp: event.timestamp, windowNumber: event.windowNumber, context: nil, characters: "",
             charactersIgnoringModifiers: "", isARepeat: false, keyCode: 0)
     }
+
+    /// A key-up for a held key. The observer takes the key from the key code alone, not from characters or modifiers.
+    private static func keyUp(_ keyCode: UInt16) -> NSEvent? {
+        NSEvent.keyEvent(with: .keyUp, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: 0, context: nil, characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: keyCode)
+    }
 }
 
 /// The Mac HID services that send keyboard input and the guest keyboards that receive it.
@@ -226,6 +250,8 @@ protocol NativeKeyboardTransport: AnyObject {
 protocol NativeKeyboardService: AnyObject {
     /// The modifiers this keyboard holds: those of the last modifier change it translated.
     var modifierFlags: NSEvent.ModifierFlags { get }
+    /// The key codes of the keys this keyboard holds: those it translated a key-down for and no key-up since.
+    var heldKeyCodes: Set<UInt16> { get }
     /// Translates the event against this keyboard's state and sends any reports, creating the guest service
     /// with the first of them.
     func send(_ event: NSEvent) async throws
@@ -267,6 +293,7 @@ private final class CoreDeviceKeyboardService: NativeKeyboardService {
     private let translator: NativeKeyboardBindings.Translator
     private var service: CoreDeviceHIDService?
     private(set) var modifierFlags: NSEvent.ModifierFlags = []
+    private(set) var heldKeyCodes: Set<UInt16> = []
 
     init(remote: CoreDeviceRemoteScreenDevice, source: String, descriptor: NativeSwiftValue,
          bindings: NativeKeyboardBindings) throws {
@@ -279,8 +306,13 @@ private final class CoreDeviceKeyboardService: NativeKeyboardService {
 
     func send(_ event: NSEvent) async throws {
         let reports = try translator.reports(for: event)
+        switch event.type {
         // The observer keeps the modifiers of each modifier change, whatever its key code, and reads none from key events.
-        if event.type == .flagsChanged { modifierFlags = event.modifierFlags.intersection(.deviceIndependentFlagsMask) }
+        case .flagsChanged: modifierFlags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        case .keyDown: heldKeyCodes.insert(event.keyCode)
+        case .keyUp: heldKeyCodes.remove(event.keyCode)
+        default: break
+        }
         guard !reports.isEmpty else { return }
         let service: CoreDeviceHIDService
         if let existing = self.service { service = existing } else {
