@@ -330,11 +330,13 @@ final class DeviceScreenViewController: NSViewController {
         }
     }
 
-    /// Shows the screen in its compact window unless it is already there.
-    func showCompactWindow(of screen: DeviceScreen, while isCurrent: @escaping @MainActor () -> Bool) async throws {
+    /// Shows the screen in its compact window, bringing that window forward. With `unlessCompact`, a screen already in
+    /// its compact window stays as it is.
+    func showCompactWindow(of screen: DeviceScreen, unlessCompact: Bool = false,
+                           while isCurrent: @escaping @MainActor () -> Bool) async throws {
         try await performScreenMove { [self] in
             guard isCurrent() else { return }
-            if screen.presentation != .compact { try await screen.showCompactWindow() }
+            if !unlessCompact || screen.presentation != .compact { try await screen.showCompactWindow() }
             showDevicePreview(ifDisplaying: screen.id)
         }
     }

@@ -585,7 +585,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             try await deviceScreenViewController.embedScreen(for: identifier, preservingFocus: purpose == .automatic,
                                                              while: { self.isCurrentPresentation(identifier, revision: revision) })
         case .compact:
-            try await deviceScreenViewController.showCompactWindow(of: screen, while: {
+            try await deviceScreenViewController.showCompactWindow(of: screen, unlessCompact: true, while: {
                 self.presentationIntent.revision == revision || self.selectedIdentifiers != [identifier]
             })
         case .hidden: break
