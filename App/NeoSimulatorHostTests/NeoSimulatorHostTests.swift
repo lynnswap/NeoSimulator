@@ -33,7 +33,7 @@ struct InputFocusTests {
         for id in ids {
             let controller = try makeController(TestDisplay(), features: [], device: id,
                 keyboardLanguage: { nil }, keyboardCaptureTap: TestKeyboardEventTap(),
-                presentCompactWindow: { _ in compactPresentations.append(id) })
+                presentCompactWindow: { compactPresentations.append(id); $0.orderFront(nil) })
             controllers.append(controller)
             app.screens.attach(controller, as: .simulator(udid: id, deviceSetPath: nil))
         }
@@ -46,7 +46,7 @@ struct InputFocusTests {
         #expect(await events.next() == .open(devices[0].id))
         await source.completeOpen()
         #expect(await events.next() == .open(devices[1].id))
-        if showsCompactDeviceInMain { app.selectDeviceForPresentation(devices[1].id) }
+        if showsCompactDeviceInMain { main.showDevice(devices[1].id) }
         await source.completeOpen()
         #expect(await events.next() == .open(devices[2].id))
         await source.returnOnNextRead(SimulatorDeviceSettings())
@@ -63,6 +63,19 @@ struct InputFocusTests {
         #expect(compactPresentations == (showsCompactDeviceInMain ? [] : [ids[1]]))
         #expect(controllers[0].window?.isVisible == false && !controllers[0].isEmbedded)
         #expect(controllers[showsCompactDeviceInMain ? 1 : 2].presentationViewController.parent === pane.liveScreenContainer)
+        guard !showsCompactDeviceInMain else { return }
+        try #require(app.screens.screen(for: devices[1].id)?.presentation == .compact)
+        try await main.presentConnectedScreen(devices[1].id, purpose: .automatic)
+        #expect(compactPresentations == [ids[1]])
+        #expect(await events.next() == .read(selected))
+        app.application(NSApp, open: [restorations[1].url])
+        #expect(await events.next() == .open(devices[1].id))
+        await source.completeOpen()
+        let restored = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            MainActor.assumeIsolated { !model.isBusy }
+        }, object: nil)
+        try #require(await XCTWaiter.fulfillment(of: [restored], timeout: 5) == .completed)
+        #expect(compactPresentations == [ids[1], ids[1]])
     }
 
     @Test func remoteKeyboardForwardsJISLanguageKeysAndTheirReleases() async throws {

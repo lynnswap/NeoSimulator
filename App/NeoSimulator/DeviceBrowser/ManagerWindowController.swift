@@ -23,10 +23,12 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         }
         return pane
     }()
-    var onShowCompactWindow: ((DeviceInventoryID) -> Void)?
-    var onSelectionIntent: (() -> Void)?
-    var onSelectionChange: ((DeviceInventoryID?) -> Void)?
     var onNewCompanion: ((SimulatorHostDevice) -> Void)?
+    /// Reports a failed screen move that no caller awaits.
+    var onError: ((any Error) -> Void)?
+    /// The user's latest placement choice for the selected device's screen. Each choice advances the revision, so
+    /// moves accepted for an earlier choice stop.
+    private(set) var presentationIntent: (revision: Int, placement: SimulatorScreenRestoration.Presentation) = (0, .main)
     private var liveScreenToolbarObservation = 0
     private var displayedScreenIDs: Set<DeviceInventoryID> = []
     private var displayedArtworkXcodeURL: URL?
@@ -182,7 +184,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         updatingSelection = false
         loadedRows = true
         updateSelection()
-        if selectionIdentifier != previousIdentifier { onSelectionChange?(selectionIdentifier) }
+        if selectionIdentifier != previousIdentifier { selectedDeviceChanged(selectionIdentifier) }
         updateFilterItem()
     }
 
@@ -499,10 +501,10 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
 
     func outlineViewSelectionDidChange(_ notification: Notification) {
         guard !updatingSelection else { return }
-        onSelectionIntent?()
+        requestPresentation(.main)
         selectedIdentifiers = Set(table.selectedRowIndexes.compactMap { (table.item(atRow: $0) as? DeviceRow)?.id })
         updateSelection()
-        onSelectionChange?(selectionIdentifier)
+        selectedDeviceChanged(selectionIdentifier)
     }
 
     func controlTextDidChange(_ notification: Notification) { update() }
@@ -553,6 +555,92 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         updatingSelection = false
         updateSelection()
         if let row = table.selectedRowIndexes.first { table.scrollRowToVisible(row) }
+    }
+
+    /// Selects the device for the main window and shows its screen there once it is open, bringing the window forward.
+    func showDevice(_ identifier: DeviceInventoryID) {
+        requestPresentation(.main)
+        selectDevice(identifier)
+        selectedDeviceChanged(identifier, preservingFocus: false)
+        showWindow(nil)
+        window?.makeKeyAndOrderFront(nil)
+    }
+
+    /// Places a screen that just opened or reconnected. The selected device's screen follows the latest choice; another
+    /// device's screen that connected on its own keeps `presentation`, or else its current one.
+    func presentConnectedScreen(_ identifier: DeviceInventoryID, purpose: SimulatorPresentationContext.Purpose,
+                                preserving presentation: SimulatorScreenRestoration.Presentation? = nil) async throws {
+        try Task.checkCancellation()
+        guard !screens.isQuitting, let screen = screens.screen(for: identifier) else { return }
+        if selectedIdentifiers.isEmpty, presentationIntent.revision == 0, purpose != .requested {
+            selectDevice(identifier)
+            requestPresentation(.main)
+        }
+        let revision = presentationIntent.revision
+        let selected = selectedIdentifiers == [identifier]
+        guard selected || purpose == .automatic else { return }
+        switch selected ? presentationIntent.placement : presentation ?? screen.presentation {
+        case .main:
+            guard selected else { return }
+            try await deviceScreenViewController.embedScreen(for: identifier, preservingFocus: purpose == .automatic,
+                                                             while: { self.isCurrentPresentation(identifier, revision: revision) })
+        case .compact:
+            try await deviceScreenViewController.showCompactWindow(of: screen, unlessCompact: true, while: {
+                self.presentationIntent.revision == revision || self.selectedIdentifiers != [identifier]
+            })
+        case .hidden: break
+        }
+    }
+
+    /// Reopens a screen that was open before relaunching, in its saved presentation unless the user chooses one for
+    /// the device first.
+    func restoreScreen(_ restoration: SimulatorScreenRestoration) {
+        let identifier = restoration.deviceID
+        let revision = presentationIntent.revision
+        model.restoreScreen(restoration) { [weak self] in
+            guard let self, let screen = screens.screen(for: identifier) else { return }
+            let pane = deviceScreenViewController
+            let keepsRestoredPresentation: @MainActor () -> Bool = {
+                self.presentationIntent.revision == revision || self.selectedIdentifiers != [identifier]
+            }
+            switch restoration.presentation {
+            case .main:
+                // Opening the screen already embeds it in the main window; the restore finishes after that move.
+                await pane.waitForScreenMoves()
+            case .compact:
+                try await pane.showCompactWindow(of: screen, while: keepsRestoredPresentation)
+                if presentationIntent.revision == revision { window?.orderOut(nil) }
+            case .hidden:
+                try await pane.detachScreen(screen, while: keepsRestoredPresentation)
+            }
+        }
+    }
+
+    private func requestPresentation(_ placement: SimulatorScreenRestoration.Presentation) {
+        presentationIntent.revision += 1
+        presentationIntent.placement = placement
+    }
+
+    private func isCurrentPresentation(_ identifier: DeviceInventoryID, revision: Int) -> Bool {
+        !screens.isQuitting && presentationIntent.revision == revision && selectedIdentifiers == [identifier]
+    }
+
+    /// Embeds the selected device's open screen, or detaches the live screen when the selection has none.
+    private func selectedDeviceChanged(_ identifier: DeviceInventoryID?, preservingFocus: Bool = true) {
+        let revision = presentationIntent.revision
+        Task { [weak self] in
+            guard let self else { return }
+            let pane = deviceScreenViewController
+            do {
+                if let identifier, screens.screen(for: identifier) != nil {
+                    try await pane.embedScreen(for: identifier, preservingFocus: preservingFocus,
+                                               while: { self.isCurrentPresentation(identifier, revision: revision) })
+                } else {
+                    try await pane.detachLiveScreen(while: { self.presentationIntent.revision == revision })
+                }
+            } catch is CancellationError {}
+            catch { onError?(error) }
+        }
     }
 
     private func updateLiveScreenToolbarItems() {
@@ -666,8 +754,22 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
 
     @objc private func showCompactDeviceWindow(_ sender: Any?) {
         guard let identifier = deviceScreenViewController.liveDeviceIdentifier, window?.attachedSheet == nil,
-              window?.styleMask.contains(.fullScreen) == false else { return }
-        onShowCompactWindow?(identifier)
+              window?.styleMask.contains(.fullScreen) == false, selectedIdentifiers == [identifier] else { return }
+        requestPresentation(.compact)
+        let revision = presentationIntent.revision
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await deviceScreenViewController.switchToCompactWindow(for: identifier, while: {
+                    self.isCurrentPresentation(identifier, revision: revision)
+                })
+                // The compact window replaces this one, unless a later choice or the screen's close stopped the move.
+                if isCurrentPresentation(identifier, revision: revision), screens.screen(for: identifier) != nil {
+                    window?.orderOut(nil)
+                }
+            } catch is CancellationError {}
+            catch { onError?(error) }
+        }
     }
 
     func validateToolbarItem(_ item: NSToolbarItem) -> Bool {
@@ -973,13 +1075,13 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
                 return
             }
             if !selectedIdentifiers.contains(row.id) {
-                onSelectionIntent?()
+                requestPresentation(.main)
                 selectedIdentifiers = [row.id]
                 updatingSelection = true
                 restoreVisibleSelection()
                 updatingSelection = false
                 updateSelection()
-                onSelectionChange?(selectionIdentifier)
+                selectedDeviceChanged(selectionIdentifier)
             }
         }
         populateDeviceMenu(deviceMenu, devices: visibleSelectedDevices)
