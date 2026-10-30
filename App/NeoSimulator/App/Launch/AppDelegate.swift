@@ -258,32 +258,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         try await transitionPresentation { [self] in
             guard isCurrentPresentation(identifier, revision: revision), let screen = screen(for: identifier),
                   let mainWindow else { return }
+            let pane = mainWindow.deviceScreenViewController
             defer {
-                if let current = mainWindow.liveDeviceIdentifier,
-                   self.screen(for: current)?.isEmbedded(in: mainWindow.liveScreenContainer) != true {
-                    mainWindow.showDevicePreview(ifDisplaying: current)
+                if let current = pane.liveDeviceIdentifier,
+                   self.screen(for: current)?.isEmbedded(in: pane.liveScreenContainer) != true {
+                    pane.showDevicePreview(ifDisplaying: current)
                 }
             }
-            if mainWindow.liveDeviceIdentifier == identifier, screen.isEmbedded(in: mainWindow.liveScreenContainer) {
+            if pane.liveDeviceIdentifier == identifier, screen.isEmbedded(in: pane.liveScreenContainer) {
                 return
             }
             try await screen.preparePresentationMove()
             guard isCurrentPresentation(identifier, revision: revision) else { return }
             let previousResponder = preservingFocus ? mainWindow.window?.firstResponder : nil
-            let previous = mainWindow.liveDeviceIdentifier.flatMap { self.screen(for: $0) }
+            let previous = pane.liveDeviceIdentifier.flatMap { self.screen(for: $0) }
             try await previous?.preparePresentationMove()
             guard isCurrentPresentation(identifier, revision: revision) else { return }
             try screen.validatePresentationMove()
             try previous?.validatePresentationMove()
             try await previous?.detach()
             guard isCurrentPresentation(identifier, revision: revision) else { return }
-            do { try await screen.embed(in: mainWindow.liveScreenContainer) }
+            do { try await screen.embed(in: pane.liveScreenContainer) }
             catch {
                 if let previous, isCurrentPresentation(identifier, revision: revision) {
-                    do { try await previous.embed(in: mainWindow.liveScreenContainer) }
+                    do { try await previous.embed(in: pane.liveScreenContainer) }
                     catch let restorationError {
-                        if let current = mainWindow.liveDeviceIdentifier {
-                            mainWindow.showDevicePreview(ifDisplaying: current)
+                        if let current = pane.liveDeviceIdentifier {
+                            pane.showDevicePreview(ifDisplaying: current)
                         }
                         throw HostError.operation([error.localizedDescription,
                             "Could not restore the previous device screen: \(restorationError.localizedDescription)"].joined(separator: "\n"))
@@ -296,8 +297,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 try await screen.detach()
                 return
             }
-            mainWindow.activeScreenCommandTarget = screen.commandTarget
-            mainWindow.showLiveScreen(for: identifier, controls: screen.canvasControls)
+            pane.showLiveScreen(for: identifier, controls: screen.canvasControls, commandTarget: screen.commandTarget)
             updateScreenToolbar()
             if let previousResponder { mainWindow.window?.makeFirstResponder(previousResponder) }
         }
@@ -316,7 +316,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     try await screen.preparePresentationMove()
                     guard self.isCurrentPresentation(identifier, revision: revision) else { return }
                     try await screen.showCompactWindow()
-                    self.mainWindow?.showDevicePreview(ifDisplaying: identifier)
+                    self.mainWindow?.deviceScreenViewController.showDevicePreview(ifDisplaying: identifier)
                     guard self.isCurrentPresentation(identifier, revision: revision) else { return }
                     self.mainWindow?.window?.orderOut(nil)
                 }
@@ -335,13 +335,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 } else {
                     try await self.transitionPresentation {
                         guard self.presentationIntent.revision == revision else { return }
-                        if let current = self.mainWindow?.liveDeviceIdentifier {
+                        if let current = self.mainWindow?.deviceScreenViewController.liveDeviceIdentifier {
                             if let screen = self.screen(for: current) {
                                 try await screen.preparePresentationMove()
                                 guard self.presentationIntent.revision == revision else { return }
                                 try await screen.detach()
                             }
-                            self.mainWindow?.showDevicePreview(ifDisplaying: current)
+                            self.mainWindow?.deviceScreenViewController.showDevicePreview(ifDisplaying: current)
                         }
                     }
                 }
@@ -369,7 +369,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard let self else { return }
                 let id = DeviceInventoryID.simulator(udid: identifier.identifier, deviceSetPath: identifier.deviceSetPath)
                 self.simulatorWindows.removeValue(forKey: id)
-                self.mainWindow?.showDevicePreview(ifDisplaying: id)
+                self.mainWindow?.deviceScreenViewController.showDevicePreview(ifDisplaying: id)
                 let keepRunning = choice == .keepRunning || (choice == nil && HostPreferences.defaults.bool(forKey: HostPreferences.detachOnWindowClose))
                 self.model.closeDevice(id, keepingDeviceRunning: keepRunning, after: finishing)
             }
@@ -399,7 +399,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 previousPresentation = Screen.simulator(controller).presentation
             }
             simulatorWindows.removeValue(forKey: context.deviceID)
-            mainWindow?.showDevicePreview(ifDisplaying: context.deviceID)
+            mainWindow?.deviceScreenViewController.showDevicePreview(ifDisplaying: context.deviceID)
         }
         let preservesPresentation = host.openedDeviceIdentifiers.contains(identifier)
         var attached = false
@@ -449,7 +449,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard self.presentationIntent.revision == revision
                     || mainWindow.selectedIdentifiers != [identifier] else { return }
                 if screen.presentation != .compact { try await screen.showCompactWindow() }
-                mainWindow.showDevicePreview(ifDisplaying: identifier)
+                mainWindow.deviceScreenViewController.showDevicePreview(ifDisplaying: identifier)
             }
         case .hidden: break
         }
@@ -462,7 +462,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         })
         for identifier in simulatorWindows.keys where !opened.contains(identifier) {
             simulatorWindows.removeValue(forKey: identifier)
-            mainWindow?.showDevicePreview(ifDisplaying: identifier)
+            mainWindow?.deviceScreenViewController.showDevicePreview(ifDisplaying: identifier)
         }
         updateScreenToolbar()
     }
@@ -473,7 +473,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for host in simulatorHosts.values { try await host.stop(keepingDevicesRunning: true) }
         simulatorHosts.removeAll()
         simulatorWindows.removeAll()
-        if let current = mainWindow?.liveDeviceIdentifier { mainWindow?.showDevicePreview(ifDisplaying: current) }
+        if let pane = mainWindow?.deviceScreenViewController, let current = pane.liveDeviceIdentifier {
+            pane.showDevicePreview(ifDisplaying: current)
+        }
     }
 
     private func prepareSimulatorManagement(_ action: DeviceManagementAction, devices: [InventoryDevice]) async throws {
@@ -492,12 +494,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     } else {
                         try await host.releasePresentation(for: identifier)
                         simulatorWindows.removeValue(forKey: device.id)
-                        mainWindow?.showDevicePreview(ifDisplaying: device.id)
+                        mainWindow?.deviceScreenViewController.showDevicePreview(ifDisplaying: device.id)
                     }
                 case .shutdown, .forceShutdown, .remove:
                     try await host.releasePresentation(for: identifier)
                     simulatorWindows.removeValue(forKey: device.id)
-                    mainWindow?.showDevicePreview(ifDisplaying: device.id)
+                    mainWindow?.deviceScreenViewController.showDevicePreview(ifDisplaying: device.id)
                 default: break
                 }
             }
@@ -536,7 +538,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller.onSelectionChange = { [weak self] identifier in self?.selectedDeviceChanged(identifier) }
         controller.onNewCompanion = { [weak self] device in self?.showNewSimulator(pairingWith: device) }
         controller.onScreenAction = { [weak self] action in
-            guard let self, let identifier = self.mainWindow?.liveDeviceIdentifier else { return }
+            guard let self, let identifier = self.mainWindow?.deviceScreenViewController.liveDeviceIdentifier else { return }
             self.performScreenAction(action, for: identifier)
         }
         mainWindow = controller
@@ -589,14 +591,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         recordingStartDate: screen.recordingStartDate, nativePoses: screen.nativePoseControls,
                         nativePosesEnabled: enabled, posture: posture, postureEnabled: enabled, postureAvailable: available,
                         pairedDeviceName: model.activePairedDevice(for: identifier)?.name)
-        if mainWindow?.liveDeviceIdentifier == identifier {
-            mainWindow?.refreshCanvasControls()
+        if let pane = mainWindow?.deviceScreenViewController, pane.liveDeviceIdentifier == identifier {
+            pane.canvasAccessory.refresh()
         }
     }
 
     private func updateScreenToolbar() {
         for identifier in Array(simulatorWindows.keys) + Array(remoteWindows.keys) { updateCanvasControls(for: identifier) }
-        guard let identifier = mainWindow?.liveDeviceIdentifier, let screen = screen(for: identifier) else { return }
+        guard let identifier = mainWindow?.deviceScreenViewController.liveDeviceIdentifier, let screen = screen(for: identifier) else { return }
         simulatorMenus.updateKeyEquivalents(for: (screen.commandTarget as? DeviceWindowController)?.session.capabilities)
         mainWindow?.updateScreenToolbar(supports: screen.supports, isEnabled: screen.isEnabled,
                                        resizingApp: screen.resizingApp, capturesKeyboard: screen.capturesKeyboard)
@@ -621,7 +623,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 _ = controller.canvasZoom.fitScale
                 _ = controller.canvasZoom.mode
             }
-            if mainWindow?.liveDeviceIdentifier == identifier { updateScreenToolbar() }
+            if mainWindow?.deviceScreenViewController.liveDeviceIdentifier == identifier { updateScreenToolbar() }
         } onChange: { [weak self, weak owner, weak session] in
             Task { @MainActor in
                 guard let self, let owner, self.screen(for: identifier)?.commandTarget === owner else { return }
@@ -810,14 +812,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             guard self.presentationIntent.revision == revision
                                 || self.mainWindow?.selectedIdentifiers != [restoration.deviceID] else { return }
                             try await screen.showCompactWindow()
-                            self.mainWindow?.showDevicePreview(ifDisplaying: restoration.deviceID)
+                            self.mainWindow?.deviceScreenViewController.showDevicePreview(ifDisplaying: restoration.deviceID)
                             guard self.presentationIntent.revision == revision else { return }
                             self.mainWindow?.window?.orderOut(nil)
                         case .hidden:
                             guard self.presentationIntent.revision == revision
                                 || self.mainWindow?.selectedIdentifiers != [restoration.deviceID] else { return }
                             try await screen.detach()
-                            self.mainWindow?.showDevicePreview(ifDisplaying: restoration.deviceID)
+                            self.mainWindow?.deviceScreenViewController.showDevicePreview(ifDisplaying: restoration.deviceID)
                         }
                     }
                 }
@@ -855,7 +857,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             controller.onClose = { [weak self, weak controller] in
                 guard self?.remoteWindows[id] === controller else { return }
                 self?.remoteWindows.removeValue(forKey: id)
-                self?.mainWindow?.showDevicePreview(ifDisplaying: id)
+                self?.mainWindow?.deviceScreenViewController.showDevicePreview(ifDisplaying: id)
             }
             controller.onShowInMainWindow = { [weak self] in self?.showScreenInMainWindow(id) }
             controller.onConnect = { [weak self, weak controller] in

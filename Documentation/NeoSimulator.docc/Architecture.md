@@ -127,7 +127,8 @@ Hub mode.
 | `SimulatorManagerModel` | Own observable inventory, loading state, and the accepted operation queue. |
 | `DeviceSettingsModel` | Own the selected settings snapshot, cancellable reads, and readback after queued edits. |
 | `DeviceInspectorModel` | Own inspector records and reject results from an earlier selection or page. |
-| `ManagerWindowController` | Present the sidebar, device canvas, and settings inspector in `NSSplitViewController`. |
+| `ManagerWindowController` | Present the sidebar, device screen pane, and settings inspector in `NSSplitViewController`, and own the selection and toolbar. |
+| `DeviceScreenViewController` | Show the selected device's screen or preview in the center pane, with its canvas controls and activity footer. |
 | `SimulatorRuntime` | Load and validate private framework interfaces through ABIBridge. |
 | `CoreSimulator` | Device-set access and simulator model data. |
 | `HostApplication` | Observe device sets, own sessions and windows, and coordinate launch and shutdown. |
