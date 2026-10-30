@@ -15,7 +15,8 @@ final class DeviceScreens {
     private(set) var displayXcodeURL: URL?
     @ObservationIgnored private let model: SimulatorManagerModel
     @ObservationIgnored private var hosts: [URL: HostApplication] = [:]
-    @ObservationIgnored private var quitting = false
+    /// Set while the app quits, until a cancelled quit resumes.
+    @ObservationIgnored private(set) var isQuitting = false
     @ObservationIgnored private var lastRemoteHost: SimulatorHost?
     @ObservationIgnored private var remoteHostCleanup: Task<Void, Never>?
     @ObservationIgnored var onError: ((any Error) -> Void)?
@@ -85,7 +86,7 @@ final class DeviceScreens {
     }
 
     private func publishOpenScreens() {
-        model.setOpenDeviceScreens(quitting ? [] : Set(entries.keys))
+        model.setOpenDeviceScreens(isQuitting ? [] : Set(entries.keys))
     }
 
     private var simulatorIdentifiers: [DeviceInventoryID] {
@@ -112,7 +113,7 @@ final class DeviceScreens {
     /// `present` place it with the presentation it replaces. A cancelled open releases a screen it attached.
     func openSimulatorScreen(_ context: SimulatorPresentationContext,
                              present: (SimulatorScreenRestoration.Presentation?) async throws -> Void) async throws {
-        guard !quitting else { throw CancellationError() }
+        guard !isQuitting else { throw CancellationError() }
         let displayURL = try await CoreDeviceRuntime.uiXcodeURL()
         try Task.checkCancellation()
         if displayXcodeURL != displayURL { displayXcodeURL = displayURL }
@@ -248,7 +249,7 @@ final class DeviceScreens {
     /// Opens or reconnects the device's remote screen unless the device is being managed or the app is quitting.
     func openRemoteScreen(for device: CoreDeviceDevice) -> DeviceScreen? {
         let identifier = DeviceInventoryID.coreDevice(device.identifier)
-        guard !quitting, !model.managingDeviceIDs.contains(identifier) else { return nil }
+        guard !isQuitting, !model.managingDeviceIDs.contains(identifier) else { return nil }
         let screen = entries[identifier] ?? attach(RemoteDeviceWindowController(device: device))
         if case .remote(let controller) = screen.controller { controller.connectIfNeeded() }
         return screen
@@ -312,10 +313,10 @@ final class DeviceScreens {
     // MARK: Stopping
 
     /// Refuses new screens while the app quits, and keeps later registry changes from restarting posture observation.
-    func beginQuitting() { quitting = true }
+    func beginQuitting() { isQuitting = true }
 
     func resumeAfterCancelledQuit() {
-        quitting = false
+        isQuitting = false
         publishOpenScreens()
     }
 

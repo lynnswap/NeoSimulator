@@ -46,7 +46,7 @@ struct InputFocusTests {
         #expect(await events.next() == .open(devices[0].id))
         await source.completeOpen()
         #expect(await events.next() == .open(devices[1].id))
-        if showsCompactDeviceInMain { app.selectDeviceForPresentation(devices[1].id) }
+        if showsCompactDeviceInMain { main.showDevice(devices[1].id) }
         await source.completeOpen()
         #expect(await events.next() == .open(devices[2].id))
         await source.returnOnNextRead(SimulatorDeviceSettings())
