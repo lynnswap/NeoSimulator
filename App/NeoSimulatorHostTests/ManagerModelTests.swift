@@ -826,6 +826,43 @@ struct ManagerModelTests {
         controller.stopReading()
     }
 
+    @Test func screenDropsInstallWithTheInspectorInstallerOfTheirDevice() async throws {
+        func device(_ name: String, features: Set<String>) -> InventoryDevice {
+            .remote(CoreDeviceDevice(identifier: name, udid: nil, kind: .physical, name: name, reportedName: name,
+                modelIdentifier: nil, modelName: nil, cpuType: nil, platform: "iOS", osVersion: nil, osBuild: nil, osBuildUpdate: nil,
+                connectionState: "connected", pairingState: "paired", transportType: nil, bootState: "booted", preparednessState: nil,
+                capabilities: Set(features.map { "com.apple.coredevice.feature." + $0 }), lastConnectedAt: nil, visibilityClass: nil))
+        }
+        let listing = device("Listing", features: ["streamapplist"])
+        let phone = device("Phone", features: ["installapp"])
+        let source = ManagerModelSource(devices: [listing, phone], inspectorResponse: "{}")
+        var events = source.events.makeAsyncIterator()
+        let model = SimulatorManagerModel(source: source)
+        await model.refresh()
+        var failures: [String] = []
+        model.onError = { failures.append($0.localizedDescription) }
+        let completions = AsyncStream<Void>.makeStream()
+        let application = URL(fileURLWithPath: "/fixture/Dropped.app")
+        #expect(!model.canInstallApplications(on: listing.id))
+        model.installApplications(at: [application], on: listing.id) { completions.continuation.yield(()) }
+        #expect(model.managingDeviceIDs.isEmpty)
+
+        try #require(model.canInstallApplications(on: phone.id))
+        await source.holdInspectorReads()
+        model.installApplications(at: [application], on: phone.id) { completions.continuation.yield(()) }
+        #expect(await events.next() == .inspect(phone.id))
+        let command = try #require(await source.inspectorCommands.last)
+        #expect(command.source == .coreDevice)
+        #expect(command.arguments.starts(with: ["device", "install", "app", application.path, "--device", "Phone"]))
+        // The inspector shows the same operation as in progress, and a second drop waits for it.
+        #expect(model.managingDeviceIDs == [phone.id] && !model.canInstallApplications(on: phone.id))
+        await source.failInspectorRead()
+        var completed = completions.stream.makeAsyncIterator()
+        #expect(await completed.next() != nil)
+        #expect(failures == ["Phone: No files were imported.\n\nDropped.app: Install Application: Unavailable"])
+        #expect(model.canInstallApplications(on: phone.id))
+    }
+
     private func finishInspectorRead(_ inspection: DeviceInspectorModel) async {
         while inspection.reading {
             await withCheckedContinuation { continuation in
@@ -2016,6 +2053,7 @@ actor ManagerModelSource: SimulatorManagerSource {
     private var inspectorResponse: String?
     private var holdsInspectorReads = false
     private var inspectorRead: CheckedContinuation<CommandOutput, any Error>?
+    private(set) var inspectorCommands: [DeviceInspectorCommand] = []
     private var holdsInventoryReads = false
     private var inventoryRead: CheckedContinuation<Void, Never>?
     private var holdsManagement = false
@@ -2198,9 +2236,10 @@ actor ManagerModelSource: SimulatorManagerSource {
     func inspector(for device: InventoryDevice) throws -> DeviceInspector {
         guard inspectorResponse != nil else { throw Failure.unavailable }
         return DeviceInspector(device: device, simulatorXcodeURL: URL(fileURLWithPath: "/Fixture.app"),
-            transport: .init(run: { command in try await self.readInspector(device.id) }))
+            transport: .init(run: { command in try await self.readInspector(device.id, command: command) }))
     }
-    private func readInspector(_ identifier: DeviceInventoryID) async throws -> CommandOutput {
+    private func readInspector(_ identifier: DeviceInventoryID, command: DeviceInspectorCommand) async throws -> CommandOutput {
+        inspectorCommands.append(command)
         if holdsInspectorReads {
             return try await withCheckedThrowingContinuation { waiting in
                 inspectorRead = waiting

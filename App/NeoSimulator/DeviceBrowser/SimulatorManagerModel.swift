@@ -483,6 +483,24 @@ final class SimulatorManagerModel {
 
     }
 
+    /// Whether the Apps inspector's installer can accept applications for the device now.
+    func canInstallApplications(on identifier: DeviceInventoryID) -> Bool {
+        guard !stopping, !managingDeviceIDs.contains(identifier) else { return false }
+        return inventory.first { $0.id == identifier }?.canInstallApplications == true
+    }
+
+    /// Installs applications requested outside the inspector, such as by a screen drop. The
+    /// completion also follows a failed batch, because it can have installed some of them.
+    func installApplications(at urls: [URL], on identifier: DeviceInventoryID,
+                             completion: @escaping @MainActor () -> Void) {
+        guard canInstallApplications(on: identifier),
+              let device = inventory.first(where: { $0.id == identifier }) else { return }
+        performInspectorOperation(for: device, operation: {
+            let inspector = try await self.inspector(for: device)
+            try await SimulatorFileImport.perform(urls) { url, _ in try await inspector.installApplication(at: url) }
+        }, completion: completion)
+    }
+
     func restoreDefaults(force: Bool = false) {
         perform("Restoring original settings…") {
             try await self.beforeStoppingScreens?()

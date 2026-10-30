@@ -466,6 +466,62 @@ struct InputFocusTests {
         try await controller.stopAndClose()
     }
 
+    @Test func remoteScreenTakesDroppedAppBundlesAcrossMovesAndReconnects() async throws {
+        _ = NSApplication.shared
+        let data = Data(#"{"result":{"devices":[{"identifier":"fixture-command","properties":{"hardware":{"reality":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)
+        let device = try #require(CoreDeviceInventoryDecoder.decode(data).first)
+        let transport = TestRemoteScreenTransport()
+        var connections = 0
+        let session = RemoteDeviceScreenSession(device: device) { _, _, _ in
+            connections += 1
+            return transport
+        }
+        let controller = RemoteDeviceWindowController(device: device, session: session, presentCompactWindow: { _ in })
+        var installable = true
+        var installs: [[URL]] = []
+        controller.canInstallApplications = { installable }
+        controller.installApplications = { installs.append($0) }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let application = directory.appendingPathComponent("Fixture.app", isDirectory: true)
+        let notes = directory.appendingPathComponent("Notes.txt")
+        try FileManager.default.createDirectory(at: application, withIntermediateDirectories: true)
+        try Data().write(to: notes)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        func destination() throws -> NSView {
+            func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+            let views = descendants(controller.presentationViewController.view).filter { $0.registeredDraggedTypes.contains(.fileURL) }
+            try #require(views.count == 1)
+            #expect(session.contentView.isDescendant(of: views[0]))
+            return views[0]
+        }
+        func drop(_ urls: [URL], on view: NSView) -> (NSDragOperation, Bool) {
+            let info = TestDraggingInfo(urls)
+            defer { info.draggingPasteboard.releaseGlobally() }
+            return (view.draggingEntered(info), view.performDragOperation(info))
+        }
+        let parent = NSViewController()
+        parent.view = NSView(frame: NSRect(x: 0, y: 0, width: 500, height: 700))
+        try await session.start()
+        try await controller.embed(in: parent)
+        let screen = try destination()
+        #expect(screen.isDescendant(of: parent.view))
+        #expect(drop([application], on: screen) == (.copy, true))
+        try await controller.showCompactWindow()
+        #expect(try destination() === screen && screen.window === controller.window)
+        #expect(drop([application, notes], on: screen) == ([], false))
+        installable = false
+        #expect(drop([application], on: screen) == ([], false))
+        installable = true
+        controller.performScreenAction("reconnect")
+        try await wait { connections == 2 && session.state == .connected }
+        try #require(connections == 2 && session.state == .connected)
+        try await controller.embed(in: parent)
+        #expect(try destination() === screen && screen.isDescendant(of: parent.view))
+        #expect(drop([application], on: screen) == (.copy, true))
+        #expect(installs == [[application], [application]])
+        try await controller.stopAndClose()
+    }
+
     @Test func remoteWindowCoalescesLayoutSizesWithoutBlockingHID() async throws {
         _ = NSApplication.shared
         let data = Data(#"{"result":{"devices":[{"identifier":"fixture-command","properties":{"hardware":{"reality":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)
@@ -8605,6 +8661,34 @@ private final class InputView: NSView {
 @MainActor
 private final class KeyPresentationWindow: NSWindow {
     override var isKeyWindow: Bool { true }
+}
+
+/// A drag of file URLs on a private pasteboard, delivered without a WindowServer drag session.
+@MainActor
+private final class TestDraggingInfo: NSObject, NSDraggingInfo {
+    let draggingPasteboard = NSPasteboard.withUniqueName()
+    var draggingFormation = NSDraggingFormation.default
+    var animatesToDestination = false
+    var numberOfValidItemsForDrop = 0
+    var draggingDestinationWindow: NSWindow? { nil }
+    var draggingSourceOperationMask: NSDragOperation { .every }
+    var draggingLocation: NSPoint { .zero }
+    var draggedImageLocation: NSPoint { .zero }
+    nonisolated var draggedImage: NSImage? { nil }
+    var draggingSource: Any? { nil }
+    var draggingSequenceNumber: Int { 0 }
+    var springLoadingHighlight: NSSpringLoadingHighlight { .none }
+
+    init(_ urls: [URL]) {
+        super.init()
+        draggingPasteboard.writeObjects(urls.map { $0 as NSURL })
+    }
+
+    func slideDraggedImage(to screenPoint: NSPoint) {}
+    func enumerateDraggingItems(options enumOpts: NSDraggingItemEnumerationOptions = [], for view: NSView?,
+                                classes classArray: [AnyClass], searchOptions: [NSPasteboard.ReadingOptionKey: Any] = [:],
+                                using block: (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void) {}
+    func resetSpringLoading() {}
 }
 
 @MainActor
