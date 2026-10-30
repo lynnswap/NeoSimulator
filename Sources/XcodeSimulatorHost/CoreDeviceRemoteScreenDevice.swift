@@ -1,6 +1,7 @@
 import ABIBridge
 import AppKit
 import Darwin
+import Security
 
 @_spi(NeoSimulator)
 @MainActor
@@ -194,8 +195,23 @@ enum CoreDeviceScreenTransport {
         guard try remote.supports("com.apple.coredevice.feature.viewdevicescreen") else {
             throw CLIError.unavailable("remote-screen-capability", "The device does not currently expose a screen connection.")
         }
+        try requireMediaStreamEntitlement()
         try await CoreDeviceDisplayGeometry.loadRuntime()
         return try CoreDeviceMediaStreamTransport(remote: remote, contentView: contentView, displayUniqueID: displayUniqueID)
+    }
+
+    /// avconferenced rejects a stream from a process without this entitlement, and the native
+    /// activation then never returns, so an unentitled build must not start the stream.
+    private static func requireMediaStreamEntitlement() throws {
+        guard let task = SecTaskCreateFromSelf(nil) else {
+            throw CLIError.software("remote-screen-entitlement", "Could not inspect this app's entitlements before opening the device's live screen stream.")
+        }
+        var error: Unmanaged<CFError>?
+        let value = SecTaskCopyValueForEntitlement(task, "com.apple.videoconference.allow-conferencing" as CFString, &error)
+        if value == nil, let error { throw error.takeRetainedValue() }
+        guard value as? Bool == true else {
+            throw CLIError.unavailable("remote-screen-entitlement", "This build of NeoSimulator cannot open the device's live screen stream because it lacks the video conferencing entitlement the stream requires.")
+        }
     }
 
     static func resizeTransport(_ device: CoreDeviceDevice) async throws -> (any AppResizeTransport)? {
