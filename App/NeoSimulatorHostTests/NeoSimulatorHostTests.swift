@@ -35,7 +35,7 @@ struct InputFocusTests {
                 keyboardLanguage: { nil }, keyboardCaptureTap: TestKeyboardEventTap(),
                 presentCompactWindow: { _ in compactPresentations.append(id) })
             controllers.append(controller)
-            app.simulatorWindows[.simulator(udid: id, deviceSetPath: nil)] = controller
+            app.screens.attach(controller, as: .simulator(udid: id, deviceSetPath: nil))
         }
         defer { controllers.forEach { $0.invalidate() }; main.window?.close() }
         let xcode = URL(fileURLWithPath: "/Applications/Fixture Xcode.app")
@@ -336,10 +336,15 @@ struct InputFocusTests {
             simctl: URL(fileURLWithPath: "/usr/bin/false"), devicectl: URL(fileURLWithPath: "/usr/bin/false"),
             keyboardCaptureTap: TestKeyboardEventTap(), presentCompactWindow: { _ in })
         defer { controller.invalidate() }
-        let controls = DeviceCanvasControls()
+        let model = SimulatorManagerModel(source: ManagerModelSource(devices: []))
+        model.settings.setReadingSuspended(true)
+        let screens = DeviceScreens(model: model)
+        let identifier = DeviceInventoryID.simulator(udid: controller.session.device.identifier,
+                                                     deviceSetPath: controller.session.device.deviceSetPath)
+        let screen = screens.attach(controller, as: identifier)
+        let controls = screen.canvasControls
         controls.update(supports: { ["home", "capture", "record"].contains($0) },
                         isEnabled: { _ in true }, recordingTitle: "Record Screen")
-        controller.canvasControls = controls
         controller.showCompactWindow()
         let canvas = controller.presentationViewController.view
         let viewport = try #require(canvas.layoutGuides.first { $0.identifier.rawValue == "DeviceCanvasViewport" })
@@ -385,9 +390,7 @@ struct InputFocusTests {
 
         controls.update(supports: { ["home", "capture", "record"].contains($0) },
                         isEnabled: { _ in true }, recordingTitle: "Record Screen", pairedDeviceName: "Companion Watch")
-        let model = SimulatorManagerModel(source: ManagerModelSource(devices: []))
-        model.settings.setReadingSuspended(true)
-        let manager = ManagerWindowController(model: model)
+        let manager = ManagerWindowController(model: model, screens: screens, menus: MenuController(application: nil))
         let mainWindow = try #require(manager.window)
         mainWindow.setFrameAutosaveName("")
         defer { mainWindow.close() }
@@ -395,9 +398,7 @@ struct InputFocusTests {
         mainWindow.contentView?.layoutSubtreeIfNeeded()
         let pane = manager.deviceScreenViewController
         controller.embed(in: pane.liveScreenContainer)
-        let identifier = DeviceInventoryID.simulator(udid: controller.session.device.identifier,
-                                                     deviceSetPath: controller.session.device.deviceSetPath)
-        pane.showLiveScreen(for: identifier, controls: controls, commandTarget: controller)
+        pane.showLiveScreen(screen)
         mainWindow.setContentSize(NSSize(width: 1040, height: 650))
         mainWindow.contentView?.layoutSubtreeIfNeeded()
         mainWindow.displayIfNeeded()
@@ -427,24 +428,24 @@ struct InputFocusTests {
             simctl: URL(fileURLWithPath: "/usr/bin/false"), devicectl: URL(fileURLWithPath: "/usr/bin/false"),
             keyboardCaptureTap: TestKeyboardEventTap(), presentCompactWindow: { _ in })
         defer { controller.invalidate() }
-        let controls = DeviceCanvasControls()
-        controls.update(supports: { ["home", "capture", "record"].contains($0) },
-                        isEnabled: { _ in true }, recordingTitle: "Record Screen")
-        controller.canvasControls = controls
         let model = SimulatorManagerModel(source: ManagerModelSource(devices: []))
         model.settings.setReadingSuspended(true)
-        let manager = ManagerWindowController(model: model)
+        let screens = DeviceScreens(model: model)
+        let screen = screens.attach(controller, as: .simulator(udid: controller.session.device.identifier,
+                                                               deviceSetPath: controller.session.device.deviceSetPath))
+        let controls = screen.canvasControls
+        controls.update(supports: { ["home", "capture", "record"].contains($0) },
+                        isEnabled: { _ in true }, recordingTitle: "Record Screen")
+        let manager = ManagerWindowController(model: model, screens: screens, menus: MenuController(application: nil))
         let mainWindow = try #require(manager.window)
         mainWindow.setFrameAutosaveName("")
         defer { mainWindow.close() }
         mainWindow.setContentSize(NSSize(width: 1040, height: 700))
         mainWindow.contentView?.layoutSubtreeIfNeeded()
-        let identifier = DeviceInventoryID.simulator(udid: controller.session.device.identifier,
-                                                     deviceSetPath: controller.session.device.deviceSetPath)
         let live = manager.deviceScreenViewController.liveScreenContainer
         try await animateCanvas {
             controller.embed(in: live)
-            manager.deviceScreenViewController.showLiveScreen(for: identifier, controls: controls, commandTarget: controller)
+            manager.deviceScreenViewController.showLiveScreen(screen)
             mainWindow.contentView?.layoutSubtreeIfNeeded()
         }
         let canvas = controller.presentationViewController.view
