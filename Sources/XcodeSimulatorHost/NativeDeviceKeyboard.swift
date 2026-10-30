@@ -16,8 +16,9 @@ public final class NativeDeviceKeyboard {
     private var keyboards: [UInt64: any NativeKeyboardService] = [:]
     /// Senders that are not Mac HID services, such as other processes' event sources. Their input counts as synthesized.
     private var unknownSenders: Set<UInt64> = []
-    /// The Mac keyboard that last sent input. Synthesized input, including the modifier synchronization and releases
-    /// that `DisplayKeyboardInput` and Capture Keyboard send, belongs to it, so it reaches the keyboard holding the keys.
+    /// The Mac keyboard that last sent input. Synthesized presses, including the modifier synchronization that
+    /// `DisplayKeyboardInput` sends, belong to it. Synthesized releases, such as those for lost focus and the end of
+    /// Capture Keyboard, may belong to any keyboard, so each keyboard receives them.
     private var activeSender: UInt64?
     /// Carries synthesized input before any Mac keyboard sends input, as Device Hub's main keyboard does.
     private var mainKeyboard: (any NativeKeyboardService)?
@@ -75,9 +76,13 @@ public final class NativeDeviceKeyboard {
     public func handle(_ event: NSEvent) {
         guard !isStopped, [.keyDown, .keyUp, .flagsChanged].contains(event.type),
               event.type != .keyDown || !event.isARepeat else { return }
-        let keyboard: any NativeKeyboardService
+        let targets: [any NativeKeyboardService]
+        // A keyboard that starts while no other one remains takes the modifiers the event carries. Otherwise the
+        // remaining keyboards hold them, from their own modifier changes or the synchronization for focus.
+        var startsAlone = false
         do {
             let sender = try transport.sender(of: event)
+            let hadMacKeyboards = !keyboards.isEmpty
             if let macKeyboard = try macKeyboard(sender) {
                 activeSender = sender
                 if let mainKeyboard {
@@ -87,27 +92,42 @@ public final class NativeDeviceKeyboard {
                         do { try await mainKeyboard.stop() } catch { self?.unremoved.append(mainKeyboard); self?.onFailure(error) }
                     }
                 }
-                keyboard = macKeyboard
+                targets = [macKeyboard]
+                startsAlone = !hadMacKeyboards
+            } else if Self.releases(event) {
+                // A keyboard that does not hold the key or modifier sends nothing for it.
+                targets = allKeyboards
             } else if let activeSender, let macKeyboard = try macKeyboard(activeSender) {
-                keyboard = macKeyboard
+                targets = [macKeyboard]
+                startsAlone = !hadMacKeyboards
             } else {
-                keyboard = try mainKeyboard ?? transport.makeMainKeyboard()
+                startsAlone = mainKeyboard == nil && !hadMacKeyboards
+                let keyboard = try mainKeyboard ?? transport.makeMainKeyboard()
                 mainKeyboard = keyboard
+                targets = [keyboard]
             }
         } catch { onFailure(error); return }
-        enqueue { [weak self] in
-            do { try await keyboard.send(event) } catch { self?.onFailure(error) }
+        let heldModifiers = startsAlone ? Self.modifierChange(holding: event) : nil
+        for keyboard in targets {
+            enqueue { [weak self] in
+                do {
+                    if let heldModifiers { try await keyboard.send(heldModifiers) }
+                    try await keyboard.send(event)
+                } catch { self?.onFailure(error) }
+            }
         }
     }
 
     /// Removes every keyboard service so the guest no longer reports a connected hardware keyboard; later input
     /// creates them again with released keys. A service that could not be removed is retried by the next removal.
     public func removeServices() async throws {
-        let removing = unremoved + keyboards.keys.sorted().compactMap { keyboards[$0] } + (mainKeyboard.map { [$0] } ?? [])
-        unremoved = []
+        let detached = allKeyboards
         keyboards = [:]
         mainKeyboard = nil
         try await enqueue { [weak self] in
+            // Earlier removals, such as a replaced main keyboard's, have finished, so their failures are retried here.
+            let removing = (self?.unremoved ?? []) + detached
+            self?.unremoved = []
             var failures: [String] = []
             for keyboard in removing {
                 do { try await keyboard.stop() } catch {
@@ -139,6 +159,10 @@ public final class NativeDeviceKeyboard {
         return task
     }
 
+    private var allKeyboards: [any NativeKeyboardService] {
+        keyboards.keys.sorted().compactMap { keyboards[$0] } + (mainKeyboard.map { [$0] } ?? [])
+    }
+
     /// The keyboard of a Mac HID service, or nil for synthesized input and senders that are not Mac HID services.
     private func macKeyboard(_ sender: UInt64) throws -> (any NativeKeyboardService)? {
         guard sender != 0, !unknownSenders.contains(sender) else { return nil }
@@ -149,6 +173,23 @@ public final class NativeDeviceKeyboard {
         }
         keyboards[sender] = keyboard
         return keyboard
+    }
+
+    /// Whether `event` releases rather than presses: a key-up, or a modifier change that leaves no modifier held.
+    private static func releases(_ event: NSEvent) -> Bool {
+        event.type == .keyUp
+            || (event.type == .flagsChanged && event.modifierFlags.isDisjoint(with: [.shift, .control, .option, .command, .function]))
+    }
+
+    /// A modifier change to the modifiers a key event carries. A keyboard's observer reads modifiers only from
+    /// modifier changes, so without it the key would reach the guest unmodified.
+    private static func modifierChange(holding event: NSEvent) -> NSEvent? {
+        // A key event's function flag marks keys such as the arrows rather than a held Fn key.
+        let flags = event.modifierFlags.subtracting([.function, .numericPad, .help, .capsLock])
+        guard event.type != .flagsChanged, !flags.isDisjoint(with: [.shift, .control, .option, .command]) else { return nil }
+        return NSEvent.keyEvent(with: .flagsChanged, location: event.locationInWindow, modifierFlags: flags,
+            timestamp: event.timestamp, windowNumber: event.windowNumber, context: nil, characters: "",
+            charactersIgnoringModifiers: "", isARepeat: false, keyCode: 0)
     }
 }
 

@@ -2937,6 +2937,13 @@ struct InputFocusTests {
         let view = type.init(frame: .zero)
         defer { _ = try? unsafe display.disconnect.unsafeInvoke(on: view, NativeSwiftClosure {}) }
         let input = try unsafe display.digitizerView.unsafeInvoke(on: view)
+        // A connected display's digitizer is enabled. Only then does it check an event against the events it handles,
+        // which would take any key it does not also ignore.
+        let digitizer = try await ABIRuntime.shared.resolve(.swift(.type("SimulatorKit.SimDigitizerInputView")))
+        let isEnabled = try await digitizer.resolve(.swift(.getter("isEnabled", as: (() -> Bool).self)))
+        let isPaused = try await digitizer.resolve(.swift(.getter("isPaused", as: (() -> Bool).self)))
+        try unsafe await digitizer.resolve(.swift(.setter("isEnabled", as: ((Bool) -> Void).self))).unsafeInvoke(on: input, true)
+        #expect(try unsafe isEnabled.unsafeInvoke(on: input) && !isPaused.unsafeInvoke(on: input))
         var handled: [(NSEvent.EventType, NSEvent.ModifierFlags)] = []
         let responder = NativeKeyboardResponder { event in
             handled.append((event.type, event.modifierFlags))

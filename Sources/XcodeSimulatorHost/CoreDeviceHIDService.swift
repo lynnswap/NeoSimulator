@@ -57,20 +57,26 @@ final class CoreDeviceHIDService {
             descriptorType: try .opaque(named: descriptorType.name),
             serviceIDType: try .opaque(named: serviceIDType.name),
         ]
-        let create = try implementation.type.resolveAndWait(.swift(.method("CoreDevice.UniversalHIDService.createService(descriptor:)",
+        // CoreDevice also declares `Swift.UInt64` service-ID overloads of `send` and `resetGestureState`, which runtime-value
+        // arguments cannot tell apart by labels. Every requirement names the `HIDServiceID` declaration that `createService` returns.
+        let create = try implementation.type.resolveAndWait(.swift(.method(
+            "CoreDevice.UniversalHIDService.createService(descriptor: CoreDevice.HIDServiceDescriptor) async throws(CoreDevice.CoreDeviceError) -> CoreDevice.HIDServiceID",
             as: ((NativeSwiftValue) async throws(Failure) -> NativeSwiftValue).self, valueABIs: abis)))
-        let send = try implementation.type.resolveAndWait(.swift(.method("CoreDevice.UniversalHIDService.send(report:to:)",
+        let send = try implementation.type.resolveAndWait(.swift(.method(
+            "CoreDevice.UniversalHIDService.send(report: UniversalHID.HIDReport, to: CoreDevice.HIDServiceID) throws(CoreDevice.CoreDeviceError) -> ()",
             as: ((NativeSwiftValue, NativeSwiftValue) throws(Failure) -> Void).self, valueABIs: abis)))
-        let reset = try implementation.type.resolveAndWait(.swift(.method("CoreDevice.UniversalHIDService.resetGestureState(service:)",
+        let reset = try implementation.type.resolveAndWait(.swift(.method(
+            "CoreDevice.UniversalHIDService.resetGestureState(service: CoreDevice.HIDServiceID) throws(CoreDevice.CoreDeviceError) -> ()",
             as: ((NativeSwiftValue) throws(Failure) -> Void).self, valueABIs: abis)))
-        let remove = try implementation.type.resolveAndWait(.swift(.method("CoreDevice.UniversalHIDService.remove(service:)",
+        let remove = try implementation.type.resolveAndWait(.swift(.method(
+            "CoreDevice.UniversalHIDService.remove(service: CoreDevice.HIDServiceID) async throws(CoreDevice.CoreDeviceError) -> ()",
             as: ((NativeSwiftValue) async throws(Failure) -> Void).self, valueABIs: abis)))
-        let serviceID = try await unsafe create.unsafeInvoke(on: implementation, nativeDescriptor).copyUnderlyingValue()
+        let serviceID = try await unsafe create.unsafeInvoke(on: implementation, nativeDescriptor)
         // The returned service has an owner before cancellation can abandon it.
         return CoreDeviceHIDService(send: { report in
-            try unsafe send.unsafeInvoke(on: implementation, report, serviceID.copyUnderlyingValue())
-        }, reset: { try unsafe reset.unsafeInvoke(on: implementation, serviceID.copyUnderlyingValue()) },
-           remove: { try await unsafe remove.unsafeInvoke(on: implementation, serviceID.copyUnderlyingValue()) })
+            try unsafe send.unsafeInvoke(on: implementation, report, serviceID)
+        }, reset: { try unsafe reset.unsafeInvoke(on: implementation, serviceID) },
+           remove: { try await unsafe remove.unsafeInvoke(on: implementation, serviceID) })
     }
 
     static func touchscreenDescriptor(displayID: UInt32, uniqueID: String, runtime: ABIRuntime) async throws -> NativeSwiftValue {
