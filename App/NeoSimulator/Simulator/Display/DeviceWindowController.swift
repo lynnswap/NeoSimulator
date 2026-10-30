@@ -320,9 +320,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         deviceToolbar?.updateNativeRotation()
         content.isSizedToDisplay = false
         content.displayGap = 0
-        content.frame = container.bounds
-        content.autoresizingMask = [.width, .height]
-        container.addSubview(content)
+        attachEmbeddedContent(to: container)
         keyboard.attach(to: content.window)
         observePresentationWindow()
         updateEmbeddedScale()
@@ -331,9 +329,25 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     }
 
     private func attachCompactContent() {
+        content.translatesAutoresizingMaskIntoConstraints = true
         content.frame = compactContainer.bounds
         content.autoresizingMask = [.width, .height]
         compactContainer.addSubview(content)
+    }
+
+    /// Keeps the content in the container's safe area, which moves with the main window's toolbar,
+    /// bottom accessory and footer. The canvas still draws across the whole container.
+    private func attachEmbeddedContent(to container: NSView) {
+        content.translatesAutoresizingMaskIntoConstraints = false
+        content.frame = container.safeAreaRect
+        container.addSubview(content)
+        let area = container.safeAreaLayoutGuide
+        NSLayoutConstraint.activate([
+            content.leadingAnchor.constraint(equalTo: area.leadingAnchor),
+            content.trailingAnchor.constraint(equalTo: area.trailingAnchor),
+            content.topAnchor.constraint(equalTo: area.topAnchor),
+            content.bottomAnchor.constraint(equalTo: area.bottomAnchor),
+        ])
     }
 
     /// Presents the same native display in its standalone window.
@@ -472,9 +486,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         }
         if let embeddedContainer {
             content.isEmbedded = true
-            content.frame = embeddedContainer.bounds
-            content.autoresizingMask = [.width, .height]
-            embeddedContainer.addSubview(content)
+            attachEmbeddedContent(to: embeddedContainer)
         } else { attachCompactContent() }
         keyboard.attach(to: presentationWindow)
         observePresentationWindow()
@@ -1936,8 +1948,10 @@ private final class DeviceContentView: NSView, DisplayContentView {
         scrollMonitor = nil
         guard usesViewport, window != nil else { return }
         scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
-            guard let self, event.modifierFlags.contains(.option), let window = self.window,
-                  event.window === window, self.bounds.contains(self.convert(event.locationInWindow, from: nil)) else { return event }
+            // The canvas extends behind toolbars and accessories, which keep their own events.
+            guard let self, event.modifierFlags.contains(.option), let window = self.window, event.window === window,
+                  window.contentView?.superview?.hitTest(event.locationInWindow)?.isDescendant(of: self) == true
+            else { return event }
             self.canvasScrollView.scrollWheel(with: event)
             return nil
         }
@@ -1991,9 +2005,18 @@ private final class DeviceContentView: NSView, DisplayContentView {
     }
     var availableDisplaySize: NSSize { availableDisplayRect.size }
 
+    /// The fitting area as the clip view shows it, in document coordinates. Content insets extend
+    /// the clip beyond it, behind an embedded pane's bars.
+    private var canvasFitRect: NSRect {
+        let clip = canvasScrollView.contentView, insets = clip.contentInsets
+        return NSRect(x: clip.bounds.minX + insets.left, y: clip.bounds.minY + (clip.isFlipped ? insets.top : insets.bottom),
+                      width: clip.bounds.width - insets.left - insets.right,
+                      height: clip.bounds.height - insets.top - insets.bottom)
+    }
+
     private var canvasCenter: NSPoint? {
         guard canvasDisplayFrame.width > 0, canvasDisplayFrame.height > 0 else { return nil }
-        let visible = canvasScrollView.contentView.bounds
+        let visible = canvasFitRect
         return NSPoint(x: (visible.midX - canvasDisplayFrame.minX) / canvasDisplayFrame.width,
                        y: (visible.midY - canvasDisplayFrame.minY) / canvasDisplayFrame.height)
     }
@@ -2120,14 +2143,24 @@ private final class DeviceContentView: NSView, DisplayContentView {
         if usesViewport {
             let center = canvasMagnificationOperation?.center ?? retainedCanvasCenter ?? canvasCenter ?? NSPoint(x: 0.5, y: 0.5)
             retainedCanvasCenter = nil
-            canvasScrollView.frame = available
+            // An embedded canvas occupies its container's safe area but draws across the whole container.
+            // The content insets leave the document resting in the fitting area while letting it scroll
+            // and magnify behind the container's bars.
+            let drawing = isEmbedded ? superview.map { convert($0.bounds, from: $0) } ?? bounds : available
+            let insets = NSEdgeInsets(top: drawing.maxY - available.maxY, left: available.minX - drawing.minX,
+                                      bottom: available.minY - drawing.minY, right: drawing.maxX - available.maxX)
+            if !NSEdgeInsetsEqual(canvasScrollView.contentInsets, insets) {
+                canvasScrollView.contentInsets = insets
+                // AppKit can defer retiling for new insets; the fitting rect below needs the clip's geometry.
+                canvasScrollView.tile()
+            }
+            canvasScrollView.frame = drawing
             let intrinsic = display.intrinsicContentSize
             let size = intrinsic.width > 0 && intrinsic.height > 0 ? intrinsic : display.frame.size
             // Keep enough document space for both ends until AppKit finishes magnifying.
             let magnification = isEmbedded && !scrollsDisplay
                 ? min(canvasZoom?.scale ?? 1, canvasScrollView.magnification) : 1
-            let viewport = NSSize(width: canvasScrollView.contentSize.width / magnification,
-                                  height: canvasScrollView.contentSize.height / magnification)
+            let viewport = NSSize(width: available.width / magnification, height: available.height / magnification)
             let documentSize = NSSize(width: max(viewport.width, size.width), height: max(viewport.height, size.height))
             canvasDocumentView.setFrameSize(documentSize)
             canvasDisplayFrame = NSRect(x: (documentSize.width - size.width) / 2,
@@ -2135,8 +2168,9 @@ private final class DeviceContentView: NSView, DisplayContentView {
                                        width: size.width, height: size.height)
             if !usesNativeCanvas { display.frame = canvasDisplayFrame }
             let clip = canvasScrollView.contentView
-            let proposed = NSRect(x: canvasDisplayFrame.minX + size.width * center.x - clip.bounds.width / 2,
-                                  y: canvasDisplayFrame.minY + size.height * center.y - clip.bounds.height / 2,
+            let fit = canvasFitRect
+            let proposed = NSRect(x: clip.bounds.minX + canvasDisplayFrame.minX + size.width * center.x - fit.midX,
+                                  y: clip.bounds.minY + canvasDisplayFrame.minY + size.height * center.y - fit.midY,
                                   width: clip.bounds.width, height: clip.bounds.height)
             clip.scroll(to: clip.constrainBoundsRect(proposed).origin)
             canvasScrollView.reflectScrolledClipView(clip)
