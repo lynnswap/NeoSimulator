@@ -44,6 +44,9 @@ final class CoreDeviceCaptureTransport: RemoteScreenTransport {
         video.pixelFormat = .bgra8Unorm
         // Frames are copied into the drawable rather than rendered as an attachment.
         video.framebufferOnly = false
+        // Two drawables, rather than the default three, leave fewer older frames queued ahead of
+        // the newest one, so the live screen falls less far behind the device.
+        video.maximumDrawableCount = 2
         video.isOpaque = true
         video.colorspace = CGColorSpace(name: CGColorSpace.sRGB)
         stream = try RemoteScreenCaptureStream(target: .init(layer: video), device: device)
