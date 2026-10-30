@@ -56,12 +56,13 @@ struct InputFocusTests {
         }, object: nil)
         try #require(await XCTWaiter.fulfillment(of: [completed], timeout: 5) == .completed)
         let selected = showsCompactDeviceInMain ? devices[1].id : devices[2].id
-        #expect(main.selectedIdentifiers == [selected] && main.liveDeviceIdentifier == selected)
+        let pane = main.deviceScreenViewController
+        #expect(main.selectedIdentifiers == [selected] && pane.liveDeviceIdentifier == selected)
         #expect(model.settings.device?.id == selected && main.deviceInspector.inspection.device?.id == selected)
         #expect(main.window?.isVisible == true)
         #expect(compactPresentations == (showsCompactDeviceInMain ? [] : [ids[1]]))
         #expect(controllers[0].window?.isVisible == false && !controllers[0].isEmbedded)
-        #expect(controllers[showsCompactDeviceInMain ? 1 : 2].presentationViewController.parent === main.liveScreenContainer)
+        #expect(controllers[showsCompactDeviceInMain ? 1 : 2].presentationViewController.parent === pane.liveScreenContainer)
     }
 
     @Test func remoteKeyboardForwardsJISLanguageKeysAndTheirReleases() async throws {
@@ -349,10 +350,11 @@ struct InputFocusTests {
         defer { mainWindow.close() }
         mainWindow.setContentSize(NSSize(width: 1040, height: 700))
         mainWindow.contentView?.layoutSubtreeIfNeeded()
-        controller.embed(in: manager.liveScreenContainer)
+        let pane = manager.deviceScreenViewController
+        controller.embed(in: pane.liveScreenContainer)
         let identifier = DeviceInventoryID.simulator(udid: controller.session.device.identifier,
                                                      deviceSetPath: controller.session.device.deviceSetPath)
-        manager.showLiveScreen(for: identifier, controls: controls)
+        pane.showLiveScreen(for: identifier, controls: controls, commandTarget: controller)
         mainWindow.setContentSize(NSSize(width: 1040, height: 650))
         mainWindow.contentView?.layoutSubtreeIfNeeded()
         mainWindow.displayIfNeeded()
@@ -364,7 +366,7 @@ struct InputFocusTests {
         #expect(canvas.convert(viewport.frame, to: nil).insetBy(dx: -1, dy: -1).contains(display.view.convert(display.view.bounds, to: nil)))
 
         controller.showCompactWindow()
-        manager.showDevicePreview(ifDisplaying: identifier)
+        pane.showDevicePreview(ifDisplaying: identifier)
         window.contentView?.layoutSubtreeIfNeeded()
         #expect(window.contentView === compactRoot && canvas.superview === compactRoot)
         #expect(canvas.frame == compactRoot.bounds)
@@ -396,9 +398,10 @@ struct InputFocusTests {
         mainWindow.contentView?.layoutSubtreeIfNeeded()
         let identifier = DeviceInventoryID.simulator(udid: controller.session.device.identifier,
                                                      deviceSetPath: controller.session.device.deviceSetPath)
+        let live = manager.deviceScreenViewController.liveScreenContainer
         try await animateCanvas {
-            controller.embed(in: manager.liveScreenContainer)
-            manager.showLiveScreen(for: identifier, controls: controls)
+            controller.embed(in: live)
+            manager.deviceScreenViewController.showLiveScreen(for: identifier, controls: controls, commandTarget: controller)
             mainWindow.contentView?.layoutSubtreeIfNeeded()
         }
         let canvas = controller.presentationViewController.view
@@ -412,7 +415,7 @@ struct InputFocusTests {
         #expect(fitArea.insetBy(dx: -pixel, dy: -pixel).contains(display.view.convert(display.view.bounds, to: nil)))
         // At point size the device is taller than the fitting area and continues behind both bars.
         try await animateCanvas { controller.setScale(.pointAccurate) }
-        let pane = manager.liveScreenContainer.view.convert(manager.liveScreenContainer.view.bounds, to: nil)
+        let pane = live.view.convert(live.view.bounds, to: nil)
         let shown = display.view.convert(display.view.visibleRect, to: nil)
         #expect(shown.maxY > mainWindow.contentLayoutRect.maxY + 1 && shown.minY < controlsRect.minY - 1,
                 "Shown \(NSStringFromRect(shown)) for fitting area \(NSStringFromRect(fitArea))")
