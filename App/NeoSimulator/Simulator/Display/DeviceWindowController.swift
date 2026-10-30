@@ -447,6 +447,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         session.onAppResizeGeometryChange = { [weak self] in self?.appGeometryChanged() }
         session.onExternalScreenChange = { [weak self] in self?.syncExternalDisplayWindow() }
         content.canvasZoom = canvasZoom
+        content.onNativeCanvasMagnification = { [weak self] in self?.session.display.setCanvasMagnification($0) }
         content.canImport = { [weak self] in self?.session.canPerformToolOperation == true }
         content.importFiles = { [weak self] in self?.importFiles($0) }
         content.onDisplaySizeChange = { [weak self] in
@@ -1787,14 +1788,21 @@ private final class DeviceContentView: NSView, DisplayContentView {
         self.display.removeFromSuperview()
         self.display = display
         previousDisplaySize = nil
-        if usesViewport { canvasDocumentView.addSubview(display) }
+        if usesViewport { displayContainer.addSubview(display) }
         else { addSubview(display, positioned: .below, relativeTo: canvasControls) }
         needsLayout = true
     }
     var canvasZoom: CanvasZoom?
     var canvasMagnification: CGFloat { canvasScrollView.magnification }
+    /// Renders the current magnification inside a native composition presented in `canvasOverlay`,
+    /// or nil when the composition is presented at its own size.
+    var onNativeCanvasMagnification: (CGFloat?) -> Void = { _ in }
     private let canvasScrollView = NSScrollView()
     private let canvasDocumentView = NSView()
+    /// Native compositions follow the magnified document from above the clip view. Magnifying their
+    /// ancestors would change how DeviceKit's AppKit-backed content measures its natural size.
+    private let canvasOverlay = CanvasOverlayView()
+    private var clipBoundsObserver: (any NSObjectProtocol)?
     private var canvasDisplayFrame = NSRect.zero
     private var retainedCanvasCenter: NSPoint?
     private struct CanvasMagnificationRequest {
@@ -1829,12 +1837,16 @@ private final class DeviceContentView: NSView, DisplayContentView {
     var isEmbedded = false { didSet { if isEmbedded != oldValue { updateViewport() } } }
     var scrollsDisplay = false { didSet { if scrollsDisplay != oldValue { updateViewport() } } }
     private var usesViewport: Bool { isEmbedded || scrollsDisplay }
+    private var displayContainer: NSView {
+        guard usesViewport else { return self }
+        return usesNativeCanvas ? canvasOverlay : canvasDocumentView
+    }
     private func updateViewport() {
         retainedCanvasCenter = canvasCenter
         if !isEmbedded || scrollsDisplay {
             requestCanvasMagnification(.init(animated: false, preparation: .reset))
         }
-        let parent = usesViewport ? canvasDocumentView : self
+        let parent = displayContainer
         if display.superview !== parent {
             display.removeFromSuperview()
             if usesViewport { parent.addSubview(display) }
@@ -1894,6 +1906,15 @@ private final class DeviceContentView: NSView, DisplayContentView {
             }
         canvasScrollView.isHidden = true
         canvasScrollView.toolTip = "Use the scroll bars or Option-scroll to pan the device."
+        // Above the clip view and below its scrollers.
+        canvasOverlay.clipsToBounds = true
+        canvasScrollView.addSubview(canvasOverlay, positioned: .above, relativeTo: canvasScrollView.contentView)
+        // Scrolling and every magnification step, including animated ones, change the clip's bounds.
+        canvasScrollView.contentView.postsBoundsChangedNotifications = true
+        clipBoundsObserver = NotificationCenter.default.addObserver(
+            forName: NSView.boundsDidChangeNotification, object: canvasScrollView.contentView, queue: nil) { [weak self] _ in
+                MainActor.assumeIsolated { self?.placeNativeCanvas() }
+            }
         addSubview(canvasScrollView)
         needsUpdateConstraints = true
         addSubview(display)
@@ -1902,6 +1923,7 @@ private final class DeviceContentView: NSView, DisplayContentView {
     isolated deinit {
         if let scrollMonitor { NSEvent.removeMonitor(scrollMonitor) }
         if let liveScrollObserver { NotificationCenter.default.removeObserver(liveScrollObserver) }
+        if let clipBoundsObserver { NotificationCenter.default.removeObserver(clipBoundsObserver) }
     }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
@@ -2075,6 +2097,16 @@ private final class DeviceContentView: NSView, DisplayContentView {
            canvasMagnificationOperation?.pendingCompletions == 0 { canvasMagnificationOperation = nil }
     }
 
+    /// Presents a native composition at the magnified document's display rect.
+    private func placeNativeCanvas() {
+        guard usesViewport, usesNativeCanvas, canvasDisplayFrame.width > 0 else { return }
+        canvasOverlay.frame = canvasScrollView.contentView.frame
+        let frame = canvasOverlay.convert(canvasDisplayFrame, from: canvasDocumentView)
+        display.frame = frame
+        // The conversion uses the clip's current bounds; during animation `magnification` can trail them.
+        onNativeCanvasMagnification(frame.width / canvasDisplayFrame.width)
+    }
+
     override func layout() {
         guard !isLayingOutCanvas else { return }
         isLayingOutCanvas = true
@@ -2101,15 +2133,17 @@ private final class DeviceContentView: NSView, DisplayContentView {
             canvasDisplayFrame = NSRect(x: (documentSize.width - size.width) / 2,
                                        y: (documentSize.height - size.height) / 2,
                                        width: size.width, height: size.height)
-            display.frame = canvasDisplayFrame
+            if !usesNativeCanvas { display.frame = canvasDisplayFrame }
             let clip = canvasScrollView.contentView
             let proposed = NSRect(x: canvasDisplayFrame.minX + size.width * center.x - clip.bounds.width / 2,
                                   y: canvasDisplayFrame.minY + size.height * center.y - clip.bounds.height / 2,
                                   width: clip.bounds.width, height: clip.bounds.height)
             clip.scroll(to: clip.constrainBoundsRect(proposed).origin)
             canvasScrollView.reflectScrolledClipView(clip)
+            placeNativeCanvas()
             return
         }
+        if usesNativeCanvas { onNativeCanvasMagnification(nil) }
         if usesNativeCanvas || (isSizedToDisplay && canvasControls == nil) {
             display.frame = available
         } else {
@@ -2118,6 +2152,14 @@ private final class DeviceContentView: NSView, DisplayContentView {
             display.frame = NSRect(x: available.midX - size.width / 2, y: available.midY - size.height / 2,
                                    width: size.width, height: size.height)
         }
+    }
+}
+
+/// Leaves events outside its presented composition to the canvas beneath.
+private final class CanvasOverlayView: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let view = super.hitTest(point)
+        return view === self ? nil : view
     }
 }
 

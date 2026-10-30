@@ -287,6 +287,16 @@ public final class NativeDeviceCanvas {
     }
 
     public func setChromeVisible(_ visible: Bool) { presentation.showsChrome = visible }
+    /// Renders the presenting canvas's magnification after the composition is measured, as
+    /// DeviceKit's own canvas applies its scale effect. An AppKit-magnified ancestor would change
+    /// how the composition's AppKit-backed content measures.
+    ///
+    /// With a magnification, the view's frame is the scaled composition and the composition scales
+    /// from its top-leading corner. With `nil`, the composition is centered in the view at its own size.
+    public func setMagnification(_ magnification: CGFloat?) {
+        guard presentation.magnification != magnification else { return }
+        presentation.magnification = magnification
+    }
     public func setZoom(_ zoom: CGFloat) {
         presentation.zoom = zoom
         hosting.invalidateIntrinsicContentSize()
@@ -302,7 +312,7 @@ public final class NativeDeviceCanvas {
 }
 
 @MainActor
-private final class NativeCanvasHostingView: NSHostingView<AnyView> {
+final class NativeCanvasHostingView: NSHostingView<AnyView> {
     var content: AnyView?
     var contentSize: (() -> CGSize)?
     override var intrinsicContentSize: NSSize { contentSize?() ?? super.intrinsicContentSize }
@@ -329,20 +339,26 @@ extension ModifiedContent: NativeCanvasModifier where Modifier: ViewModifier {
 }
 
 @MainActor @Observable
-private final class NativeCanvasPresentation {
+final class NativeCanvasPresentation {
     var showsChrome = true
     var zoom: CGFloat = 1
+    var magnification: CGFloat?
     var naturalSize = CGSize(width: 500, height: 700)
     @ObservationIgnored var onSizeChange: (() -> Void)?
 }
 
-private struct NativeCanvasRoot: View {
+struct NativeCanvasRoot: View {
     let presentation: NativeCanvasPresentation
     let shown: AnyView
     let hidden: AnyView
     let canvasPath: WritableKeyPath<EnvironmentValues, Bool>
     let zoomPath: WritableKeyPath<EnvironmentValues, CGFloat>
     var body: some View {
+        // AppKit owns the host frame: the root takes exactly the proposed size, even when the measured
+        // composition is larger. A magnified presentation keeps the composition at the host's origin,
+        // so the host frame changing on every zoom and pan step does not move it within SwiftUI's
+        // pixel grid, and the scale effect maps it onto the frame.
+        let magnification = presentation.magnification
         (presentation.showsChrome ? shown : hidden)
             .environment(canvasPath, false)
             .environment(zoomPath, presentation.zoom)
@@ -352,7 +368,9 @@ private struct NativeCanvasRoot: View {
                 presentation.naturalSize = size
                 presentation.onSizeChange?()
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .scaleEffect(magnification ?? 1, anchor: magnification == nil ? .center : .topLeading)
+            .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity,
+                   alignment: magnification == nil ? .center : .topLeading)
             .clipped()
     }
 }
