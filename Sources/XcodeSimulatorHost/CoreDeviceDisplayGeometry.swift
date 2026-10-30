@@ -88,7 +88,7 @@ final class CoreDeviceDisplayGeometry {
         generation += 1
         let token = generation
         self.update = update
-        let initial = try await unsafe bindings.readInitialDisplayInfo.unsafeInvoke(on: remote.object).copyUnderlyingValue()
+        let initial = try await unsafe bindings.readInitialDisplayInfo.unsafeInvoke(on: remote.object)
         try Task.checkCancellation()
         guard generation == token else { throw CancellationError() }
         try readAndObserve(generation: token, initial: project(initial))
