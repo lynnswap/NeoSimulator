@@ -201,7 +201,7 @@ enum CoreDeviceScreenTransport {
         guard let displayUniqueID else {
             // Capture sources do not reveal their device, so only an explicit choice selects one.
             guard let source = captureSources.chosenSource(for: device.identifier) else {
-                throw RemoteScreenCaptureSourceError(reason: .unchosen, sourceName: nil)
+                throw RemoteScreenCaptureSourceError(reason: .unchosen)
             }
             try await captureSources.waitUntilConnected(source)
             try await CoreDeviceDisplayGeometry.loadRuntime()
@@ -212,6 +212,13 @@ enum CoreDeviceScreenTransport {
         }
         try await CoreDeviceDisplayGeometry.loadRuntime()
         return try CoreDeviceMediaStreamTransport(remote: remote, contentView: contentView, displayUniqueID: displayUniqueID)
+    }
+
+    /// Reads the device's primary display for its frame, without opening a screen connection.
+    static func primaryDisplay(_ device: CoreDeviceDevice) async throws -> RemoteDeviceDisplay? {
+        let remote = try await CoreDeviceRemoteScreenDevice(identifier: device.identifier)
+        guard try remote.supports("com.apple.coredevice.feature.getdisplayinfo") else { return nil }
+        return try await CoreDeviceDisplayGeometry.primaryDisplay(of: remote)
     }
 
     /// avconferenced rejects a stream from a process without this entitlement, and the native

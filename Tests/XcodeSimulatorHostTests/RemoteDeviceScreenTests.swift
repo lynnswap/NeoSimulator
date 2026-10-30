@@ -416,6 +416,50 @@ struct RemoteDeviceScreenTests {
         #expect(CoreDeviceCaptureTransport.videoAttributes(frame: CGSize(width: 400, height: 800), display: turning).orientation == .portrait)
     }
 
+    @Test(.enabled(if: FileManager.default.fileExists(atPath: RemoteDeviceChromeResources.deviceKitDirectory.appendingPathComponent("chrome_map.plist").path),
+                   "Requires DeviceKit's installed device chrome"))
+    func theDeviceFrameSurroundsAnUnavailableScreenAndKeepsItsInputAlignedWhenTurned() async throws {
+        try await CoreDeviceDisplayGeometry.loadRuntime()
+        // An iPhone Air reports the chrome that DeviceKit's map also gives its product type.
+        let reported = RemoteDeviceDisplay(pixelSize: CGSize(width: 1260, height: 2736), scale: 3,
+            chromeIdentifier: "com.apple.dt.devicekit.chrome.phone12", maskIdentifier: "1506CF9E-8F5F-48D9-91CA-E852368519A5")
+        let unreported = RemoteDeviceDisplay(pixelSize: reported.pixelSize, scale: reported.scale, chromeIdentifier: nil, maskIdentifier: nil)
+        let resources = try #require(try RemoteDeviceChromeResources(display: reported, productType: nil))
+        #expect(try RemoteDeviceChromeResources(display: unreported, productType: "iPhone18,4") == resources)
+        // Its side button sends the same consumer usage as the screen's Lock control.
+        #expect(resources.mask != nil && resources.buttons["power"] == RemoteDeviceChromeButton(usagePage: 0x0c, usage: 0x30))
+        let session = RemoteDeviceScreenSession(device: try device(), readDisplay: { _ in reported }) { _, _, _ in
+            throw RemoteScreenCaptureSourceError(reason: .disconnected)
+        }
+        let frame = try #require(session.contentView as? RemoteDeviceFrameView)
+        frame.frame = CGRect(x: 0, y: 0, width: 600, height: 800)
+        await #expect(throws: RemoteScreenCaptureSourceError.self) { try await session.start() }
+        await wait(session) { frame.chrome != nil }
+        // Apps dropped on the frame reach the presentation that installs them.
+        #expect(frame.chrome?.view.registeredDraggedTypes.isEmpty == true)
+        let framebuffer = RemoteScreenFramebuffer(frame: frame.screen.bounds)
+        framebuffer.autoresizingMask = [.width, .height]
+        frame.screen.addSubview(framebuffer)
+        for angle: CGFloat in [0, 90] {
+            frame.angle = angle
+            frame.layoutSubtreeIfNeeded()
+            let display = RemoteScreenFramebuffer.Display(size: CGSize(width: 420, height: 912), angle: angle)
+            framebuffer.update(display: display)
+            framebuffer.update(attributes: CoreDeviceCaptureTransport.videoAttributes(
+                frame: angle == 0 ? CGSize(width: 1260, height: 2736) : CGSize(width: 2736, height: 1260), display: display))
+            let screen = frame.screen.frame
+            #expect(frame.chrome?.view.isHidden == false && frame.screen.layer?.mask != nil)
+            #expect(abs(screen.width / screen.height - (angle == 0 ? 1260.0 / 2736 : 2736.0 / 1260)) < 0.001)
+            #expect(frame.bounds.insetBy(dx: 8, dy: 8).contains(screen), "Angle \(angle): \(screen) has no bezel in \(frame.bounds)")
+            // The display's top-left corner is wherever the device frame turned it, and the frame itself takes no touches.
+            let corner = angle == 0 ? CGPoint(x: screen.minX + 1, y: screen.maxY - 1) : CGPoint(x: screen.maxX - 1, y: screen.maxY - 1)
+            let origin = try #require(framebuffer.inputLocations(at: corner, from: frame, clampingToDisplay: false))
+            #expect(origin.touch.x < 0.01 && origin.touch.y < 0.01, "Angle \(angle): \(origin.touch)")
+            #expect(framebuffer.inputLocations(at: CGPoint(x: screen.minX - 2, y: screen.midY), from: frame, clampingToDisplay: false) == nil)
+        }
+        try await session.stop()
+    }
+
     @Test func captureStreamCapturesItsCurrentIOSurfaceFrameAndDropsFramesAfterStopping() async throws {
         let gpu = try #require(MTLCreateSystemDefaultDevice())
         let layer = CAMetalLayer()
@@ -458,7 +502,7 @@ struct RemoteDeviceScreenTests {
         var attempts = 0
         let session = RemoteDeviceScreenSession(device: try device(), captureSources: catalog) { _, _, _ in
             attempts += 1
-            if attempts == 1 { throw RemoteScreenCaptureSourceError(reason: .unchosen, sourceName: nil) }
+            if attempts == 1 { throw RemoteScreenCaptureSourceError(reason: .unchosen) }
             return transport
         }
         #expect(session.captureSource == nil)
@@ -911,6 +955,10 @@ struct RemoteDeviceScreenTests {
             as: ((CGSize, CGFloat) -> NativeSwiftValue).self, valueABIs: bindings.abis)))
         let size = try unsafe makeSize.unsafeInvoke(CGSize(width: 300, height: 600), 2)
         #expect(try unsafe bindings.pointSize.unsafeInvoke(on: size) == CGSize(width: 150, height: 300))
+        // The device frame reads the same size in DeviceKit's pixel and scale terms.
+        let frame = try CoreDeviceDisplayGeometry.FrameBindings(runtime: runtime, abis: bindings.abis)
+        #expect(try unsafe frame.pixelSize.unsafeInvoke(on: size) == CGSize(width: 300, height: 600))
+        #expect(try unsafe frame.scale.unsafeInvoke(on: size) == 2)
     }
 
     @Test func nativeTouchscreenDescriptorsPreserveANonLegacyDisplayIdentity() async throws {

@@ -207,6 +207,19 @@ run inside the manager app, which requests Camera access before capture
 starts. A remote screen closes its owned connections and releases held inputs
 without shutting down the device.
 
+`RemoteDeviceScreenSession` owns the device frame, independent of its
+transports. When a connection starts, it reads the primary display's size and
+DeviceKit chrome and framebuffer-mask identifiers from CoreDevice, falling back
+to DeviceKit's `chrome_map.plist` entry for the product type. DeviceKit's
+`ChromeView` and `DisplayViewModel` draw that chrome and lay it out; the
+transports draw in a screen view placed at DeviceKit's framebuffer frame,
+masked by the framebuffer mask and turned with the display's orientation. The
+frame does not start DeviceKit's own display stream. Its side buttons send the
+HID usages their `chrome.json` declares. A resized app's dedicated display is
+shown without the frame. A two-finger trackpad scroll on the screen drags one
+digitizer touch from where it began and ends it when the fingers lift, so the
+device applies its own deceleration.
+
 macOS lists a connected device's screen as an AVFoundation capture source once
 the manager enables CoreMediaIO screen-capture devices for its process, but it
 does not report which CoreDevice device a source shows. A source's name does

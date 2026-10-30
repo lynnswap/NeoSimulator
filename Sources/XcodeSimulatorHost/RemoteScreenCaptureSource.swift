@@ -15,19 +15,18 @@ public struct RemoteScreenCaptureSource: Hashable, Sendable {
 struct RemoteScreenCaptureSourceError: LocalizedError {
     enum Reason { case unchosen, disconnected }
     let reason: Reason
-    let sourceName: String?
 
     var errorDescription: String? {
         switch reason {
-        case .unchosen: "Choose the screen capture source for this device."
-        case .disconnected: "The capture source “\(sourceName ?? "")” chosen for this device is not connected."
+        case .unchosen: "Choose this device’s screen source."
+        case .disconnected: "This device’s screen isn’t available."
         }
     }
 
     var recoverySuggestion: String? {
         switch reason {
-        case .unchosen: "macOS lists a connected device’s screen as a capture source without identifying the device, so NeoSimulator asks once."
-        case .disconnected: "Connect the device with a USB cable and reconnect, or choose its capture source again."
+        case .unchosen: "macOS lists the screens of devices connected with a cable without saying which device each one shows."
+        case .disconnected: "NeoSimulator shows the screen of a device connected to this Mac with a cable. Connect the device and try again, or choose its screen source."
         }
     }
 }
@@ -86,7 +85,7 @@ final class ScreenCaptureSourceCatalog: RemoteScreenCaptureSourceCatalog {
         await waitForDevices(timeout: .seconds(5), until: isConnected)
         try Task.checkCancellation()
         guard isConnected() else {
-            throw RemoteScreenCaptureSourceError(reason: .disconnected, sourceName: source.name)
+            throw RemoteScreenCaptureSourceError(reason: .disconnected)
         }
     }
 

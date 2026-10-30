@@ -21,7 +21,12 @@ final class RemoteDeviceInputView: NSView {
         setAccessibilityRole(.group)
     }
     required init?(coder: NSCoder) { nil }
-    override func hitTest(_ point: NSPoint) -> NSView? { isInputEnabled ? super.hitTest(point) : nil }
+    /// Only the screen takes the device's pointer input; the frame around it keeps its own buttons.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard isInputEnabled, let superview,
+              session.inputLocations(atWindowPoint: superview.convert(point, to: nil)) != nil else { return nil }
+        return super.hitTest(point)
+    }
     func releaseFocus() {
         resetMouseGestures()
         enqueue? { [session] in try await session.releaseInputs() }
@@ -60,6 +65,7 @@ final class RemoteDeviceInputView: NSView {
     func invalidateInputs(for kinds: Set<RemoteDeviceInputKind>) {
         for kind in kinds { capabilityGenerations[kind, default: 0] += 1 }
         mouseGestures = mouseGestures.filter { !kinds.contains($0.value.kind.capability) }
+        if kinds.contains(.digitizer) { scrollGesture = nil }
     }
 
     func enqueueInput(for kind: RemoteDeviceInputKind, _ operation: @escaping @MainActor () async throws -> Void) {
@@ -81,6 +87,13 @@ final class RemoteDeviceInputView: NSView {
         let clicks: Int
     }
     private var mouseGestures: [Int: MouseGesture] = [:]
+    /// A two-finger scroll drags one touch from where it began, as a finger on the screen would.
+    private struct ScrollGesture {
+        let origin: CGPoint
+        var translation = CGVector.zero
+        var location: CGPoint { CGPoint(x: origin.x + translation.dx, y: origin.y + translation.dy) }
+    }
+    private var scrollGesture: ScrollGesture?
     private var inputGeneration = 0
     private var capabilityGenerations: [RemoteDeviceInputKind: Int] = [:]
     private var pointerTracking: NSTrackingArea?
@@ -96,6 +109,7 @@ final class RemoteDeviceInputView: NSView {
     private func resetMouseGestures() {
         inputGeneration += 1
         mouseGestures.removeAll()
+        scrollGesture = nil
     }
 
     private func enqueueMouseInput(kind: MouseInputKind, _ operation: @escaping @MainActor () async throws -> Void) {
@@ -119,6 +133,7 @@ final class RemoteDeviceInputView: NSView {
     override func mouseDown(with event: NSEvent) {
         guard isInputEnabled else { return }
         window?.makeFirstResponder(self)
+        endScroll()
         let kind: MouseInputKind
         if event.buttonNumber == 0, session.inputCapabilities.contains(.digitizer) { kind = .touch }
         else if session.inputCapabilities.contains(.pointer) { kind = .pointer }
@@ -167,6 +182,38 @@ final class RemoteDeviceInputView: NSView {
     }
     override func rightMouseUp(with event: NSEvent) { mouseUp(with: event) }
     override func otherMouseUp(with event: NSEvent) { mouseUp(with: event) }
+
+    override func scrollWheel(with event: NSEvent) {
+        // Momentum arrives after the fingers lift; iOS decelerates from the drag's own velocity instead.
+        guard event.momentumPhase.isEmpty else { return }
+        guard isInputEnabled, event.hasPreciseScrollingDeltas else { return super.scrollWheel(with: event) }
+        if event.phase.contains(.began) {
+            endScroll()
+            guard mouseGestures.isEmpty, session.inputCapabilities.contains(.digitizer),
+                  let locations = session.inputLocations(atWindowPoint: event.locationInWindow) else { return }
+            scrollGesture = ScrollGesture(origin: event.locationInWindow)
+            enqueueMouseInput(kind: .touch) { [session] in try await session.sendTouch(at: locations.touch, phase: .began) }
+        } else if event.phase.contains(.changed), var gesture = scrollGesture {
+            // Scrolling deltas already follow the person's scroll direction setting; content follows the touch.
+            gesture.translation.dx += event.scrollingDeltaX
+            gesture.translation.dy -= event.scrollingDeltaY
+            scrollGesture = gesture
+            guard let locations = session.inputLocations(atWindowPoint: gesture.location, clampingToDisplay: true) else { return }
+            enqueueMouseInput(kind: .touch) { [session] in try await session.sendTouch(at: locations.touch, phase: .moved) }
+        } else if !event.phase.isDisjoint(with: [.ended, .cancelled]) {
+            endScroll()
+        }
+    }
+
+    private func endScroll() {
+        guard let gesture = scrollGesture else { return }
+        scrollGesture = nil
+        guard let locations = session.inputLocations(atWindowPoint: gesture.location, clampingToDisplay: true) else {
+            releaseFocus()
+            return
+        }
+        enqueueMouseInput(kind: .touch) { [session] in try await session.sendTouch(at: locations.touch, phase: .ended) }
+    }
 
     override func mouseMoved(with event: NSEvent) {
         guard isInputEnabled, session.inputCapabilities.contains(.pointer),

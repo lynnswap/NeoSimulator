@@ -93,6 +93,49 @@ struct InputFocusTests {
         try await session.stop()
     }
 
+    @Test func remoteScreenTakesItsDisplayOnlyAndDragsATouchForTwoFingerScrolling() async throws {
+        _ = NSApplication.shared
+        let data = Data(#"{"result":{"devices":[{"identifier":"fixture-command","properties":{"hardware":{"reality":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)
+        let device = try #require(CoreDeviceInventoryDecoder.decode(data).first)
+        let transport = TestRemoteScreenTransport()
+        transport.inputCapabilities = [.digitizer]
+        let session = RemoteDeviceScreenSession(device: device) { _, _, _ in transport }
+        try await session.start()
+        let viewport = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 600))
+        let input = RemoteDeviceInputView(session: session)
+        input.frame = viewport.bounds
+        viewport.addSubview(input)
+        input.isInputEnabled = true
+        var operations: [@MainActor () async throws -> Void] = []
+        input.enqueue = { operations.append($0) }
+        // The device frame around the display keeps clicks on its side buttons.
+        let display = CGRect(x: 100, y: 100, width: 200, height: 400)
+        transport.locate = { point, clamping in
+            clamping || display.contains(point) ? RemoteDeviceInputLocations(touch: point, pointer: point) : nil
+        }
+        #expect(input.hitTest(NSPoint(x: 50, y: 300)) == nil)
+        #expect(input.hitTest(NSPoint(x: 200, y: 300)) === input)
+        transport.locate = { point, _ in RemoteDeviceInputLocations(touch: point, pointer: point) }
+        func scroll(_ phase: CGScrollPhase?, momentum: CGMomentumScrollPhase = .none, dx: Int32 = 0, dy: Int32 = 0) throws -> NSEvent {
+            let event = try #require(CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2, wheel1: dy, wheel2: dx, wheel3: 0))
+            event.setIntegerValueField(.scrollWheelEventScrollPhase, value: Int64(phase?.rawValue ?? 0))
+            event.setIntegerValueField(.scrollWheelEventMomentumPhase, value: Int64(momentum.rawValue))
+            return try #require(NSEvent(cgEvent: event))
+        }
+        let began = try scroll(.began)
+        let origin = began.locationInWindow
+        // Moving two fingers up scrolls content up, as dragging one finger up on the screen does.
+        for event in [began, try scroll(.changed, dx: 10, dy: -30), try scroll(.changed, dy: -20), try scroll(.ended),
+                      try scroll(nil, momentum: .begin, dy: -50), try scroll(nil, momentum: .end)] {
+            input.scrollWheel(with: event)
+        }
+        for operation in operations { try await operation() }
+        #expect(transport.touches.map(\.phase) == [.began, .moved, .moved, .ended])
+        #expect(transport.touches.map(\.point) == [origin, CGPoint(x: origin.x + 10, y: origin.y + 30),
+            CGPoint(x: origin.x + 10, y: origin.y + 50), CGPoint(x: origin.x + 10, y: origin.y + 50)])
+        try await session.stop()
+    }
+
     @Test(arguments: ["search", "screen-to-search", "screen"])
     func remoteAppResizeRestoresOnlyUnchangedScreenFocus(_ focus: String) async throws {
         _ = NSApplication.shared
@@ -558,6 +601,37 @@ struct InputFocusTests {
         select(chosen)
         try await wait { shownSources.count == 2 && session.state == .connected }
         #expect(shownSources == [current, chosen] && session.captureSource == chosen)
+        try await controller.stopAndClose()
+    }
+
+    @Test func anUnavailableRemoteScreenShowsItsFailureOnceAndRetriesFromTheScreen() async throws {
+        _ = NSApplication.shared
+        let data = Data(#"{"result":{"devices":[{"identifier":"fixture-command","properties":{"hardware":{"reality":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)
+        let device = try #require(CoreDeviceInventoryDecoder.decode(data).first)
+        let failure = RemoteScreenCaptureSourceError(reason: .disconnected)
+        let transport = TestRemoteScreenTransport()
+        var connections = 0
+        let session = RemoteDeviceScreenSession(device: device) { _, _, _ in
+            connections += 1
+            if connections == 1 { throw failure }
+            return transport
+        }
+        let controller = RemoteDeviceWindowController(device: device, session: session, presentCompactWindow: { _ in })
+        func shown<View: NSView>(_ type: View.Type) -> [View] {
+            func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+            return descendants(controller.presentationViewController.view)
+                .compactMap { $0 as? View }.filter { !$0.isHiddenOrHasHiddenAncestor }
+        }
+        controller.connectIfNeeded()
+        try await wait { session.state == .failed && shown(NSButton.self).contains { $0.title == "Try Again" } }
+        let text = shown(NSTextField.self).map(\.stringValue).joined(separator: "\n")
+        let message = try #require(failure.errorDescription), suggestion = try #require(failure.recoverySuggestion)
+        #expect(text.components(separatedBy: message).count == 2 && text.contains(suggestion), "Shown: \(text)")
+        let retry = try #require(shown(NSButton.self).first { $0.title == "Try Again" })
+        #expect(shown(NSButton.self).contains { $0.title == "Choose Screen Source…" })
+        retry.performClick(nil)
+        try await wait { connections == 2 && session.state == .connected && shown(NSTextField.self).isEmpty }
+        #expect(session.state == .connected && shown(NSTextField.self).isEmpty && shown(NSButton.self).isEmpty)
         try await controller.stopAndClose()
     }
 
@@ -10099,8 +10173,11 @@ private final class RendererOwnerMonitorFixture: Sendable {
 final class TestRemoteScreenTransport: RemoteScreenTransport {
     var nativeInputView: NSView?
     var inputCapabilities: Set<RemoteDeviceInputKind> = [.button]
+    /// Maps window points to the screen's input locations; without it the screen takes no pointer input.
+    var locate: ((CGPoint, Bool) -> RemoteDeviceInputLocations?)?
     private(set) var buttons: [RemoteDeviceButtonState] = []
     private(set) var keys: [(usage: UInt16, state: RemoteDeviceButtonState)] = []
+    private(set) var touches: [(point: CGPoint, phase: RemoteDeviceTouchPhase)] = []
     private(set) var inputReleases = 0
     var onReleaseInputs: (@MainActor () async throws -> Void)?
     func start(events: @escaping @MainActor (RemoteScreenTransportEvent) -> Void) async throws {
@@ -10111,6 +10188,10 @@ final class TestRemoteScreenTransport: RemoteScreenTransport {
     func send(_ input: RemoteScreenInput) async throws {
         if case .button(_, _, let state) = input { buttons.append(state) }
         if case .key(let usage, let state) = input { keys.append((usage, state)) }
+        if case .touch(let point, _, let phase, _) = input { touches.append((point, phase)) }
+    }
+    func inputLocations(atWindowPoint point: CGPoint, clampingToDisplay: Bool) -> RemoteDeviceInputLocations? {
+        locate?(point, clampingToDisplay)
     }
     func releaseInputs() async throws {
         inputReleases += 1
