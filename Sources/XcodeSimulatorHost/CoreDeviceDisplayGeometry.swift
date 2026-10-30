@@ -6,21 +6,57 @@ import SwiftUI
 /// Reads the same normalized display orientation used by DeviceKit's display and HID owners.
 @MainActor
 final class CoreDeviceDisplayGeometry {
+    struct Bindings {
+        let readDeviceInfo: NativeSwiftMethod<() -> NativeSwiftValue>
+        let readInitialDisplayInfo: NativeSwiftMethod<() async throws -> NativeSwiftValue>
+        let readDisplayInfo: NativeSwiftMethod<() -> NativeSwiftValue?>
+        let displays: NativeSwiftMethod<() -> [NativeSwiftValue]>
+        let orientation: NativeSwiftMethod<() -> NativeSwiftValue?>
+        let primary: NativeSwiftMethod<() -> Bool>
+        let uniqueID: NativeSwiftMethod<() -> String?>
+        let identifier: NativeSwiftMethod<() -> UInt32>
+        let makeDisplay: NativeSwiftFunction<(NativeSwiftValue, NativeSwiftValue?) -> NativeSwiftValue>
+        let normalizedOrientation: NativeSwiftMethod<() -> Measurement<UnitAngle>>
+        let displaySize: NativeSwiftMethod<() -> NativeSwiftValue>
+        let pointSize: NativeSwiftMethod<() -> CGSize>
+
+        init(deviceType: NativeSwiftType, runtime: ABIRuntime) throws {
+            readDeviceInfo = try deviceType.resolveAndWait(.swift(.getter("deviceInfo", as: (() -> NativeSwiftValue).self)))
+            let info = try runtime.resolveAndWait(.swift(.type("CoreDeviceProtocols.DeviceInfo")))
+            let displayInfo = try runtime.resolveAndWait(.swift(.type("CoreDevice.DisplayInfo")))
+            let display = try runtime.resolveAndWait(.swift(.type("CoreDevice.Display")))
+            let orientationInfo = try runtime.resolveAndWait(.swift(.type("CoreDevice.OrientationInfo")))
+            let normalized = try runtime.resolveAndWait(.swift(.type("DeviceKit.DisplayInfo")))
+            let size = try runtime.resolveAndWait(.swift(.type("DeviceKit.DisplaySize")))
+            let angle = try runtime.resolveAndWait(.swift(.type("Foundation.Measurement", genericArguments: [.type(UnitAngle.self)])))
+            // DeviceKit and CoreDevice's display structs and Foundation's Measurement are resilient values;
+            // their exported getters and initializer use indirect storage across the framework boundary.
+            // Metadata shows this for each receiver except DisplaySize, whose CGSize field alone can explain
+            // its addressable-for-dependencies bit.
+            let abis = try Dictionary(uniqueKeysWithValues: [displayInfo, display, orientationInfo, normalized, size, angle]
+                .map { ($0, try NativeType.opaque(named: $0.name)) })
+            readInitialDisplayInfo = try deviceType.resolveAndWait(.swift(.getter("displayInfo",
+                as: (() async throws -> NativeSwiftValue).self, valueABIs: abis)))
+            readDisplayInfo = try info.resolveAndWait(.swift(.getter("displayInfo", as: (() -> NativeSwiftValue?).self, valueABIs: abis)))
+            displays = try displayInfo.resolveAndWait(.swift(.getter("displays", as: (() -> [NativeSwiftValue]).self, valueABIs: abis)))
+            orientation = try displayInfo.resolveAndWait(.swift(.getter("orientation", as: (() -> NativeSwiftValue?).self, valueABIs: abis)))
+            primary = try display.resolveAndWait(.swift(.getter("primary", as: (() -> Bool).self, valueABIs: abis)))
+            uniqueID = try display.resolveAndWait(.swift(.getter("uniqueId", as: (() -> String?).self, valueABIs: abis)))
+            identifier = try display.resolveAndWait(.swift(.getter("displayId", as: (() -> UInt32).self, valueABIs: abis)))
+            makeDisplay = try normalized.resolveAndWait(.swift(.initializer("init(display:orientation:)",
+                as: ((NativeSwiftValue, NativeSwiftValue?) -> NativeSwiftValue).self, valueABIs: abis)))
+            normalizedOrientation = try normalized.resolveAndWait(.swift(.getter("normalizedCurrentOrientation",
+                as: (() -> Measurement<UnitAngle>).self, valueABIs: abis)))
+            displaySize = try normalized.resolveAndWait(.swift(.getter("displaySize", as: (() -> NativeSwiftValue).self, valueABIs: abis)))
+            pointSize = try size.resolveAndWait(.swift(.getter("pointSize", as: (() -> CGSize).self,
+                valueABIs: abis, receiverABI: abis[size])))
+        }
+    }
+
     private static var runtimeLoaded = false
     private let remote: CoreDeviceRemoteScreenDevice
-    private let readDeviceInfo: NativeSwiftMethod<() -> NativeSwiftValue>
-    private let readInitialDisplayInfo: NativeSwiftMethod<() async throws -> NativeSwiftValue>
-    private let readDisplayInfo: NativeSwiftMethod<() -> NativeSwiftValue?>
-    private let displays: NativeSwiftMethod<() -> [NativeSwiftValue]>
-    private let orientation: NativeSwiftMethod<() -> NativeSwiftValue?>
-    private let primary: NativeSwiftMethod<() -> Bool>
-    private let uniqueID: NativeSwiftMethod<() -> String?>
-    private let identifier: NativeSwiftMethod<() -> UInt32>
+    private let bindings: Bindings
     private let displayUniqueID: String?
-    private let makeDisplay: NativeSwiftFunction<(NativeSwiftValue, NativeSwiftValue?) -> NativeSwiftValue>
-    private let normalizedOrientation: NativeSwiftMethod<() -> Measurement<UnitAngle>>
-    private let displaySize: NativeSwiftMethod<() -> NativeSwiftValue>
-    private let pointSize: NativeSwiftMethod<() -> CGSize>
     private var update: (@MainActor (Result<RemoteScreenFramebuffer.Display?, any Error>) -> Void)?
     private var generation = 0
 
@@ -42,39 +78,14 @@ final class CoreDeviceDisplayGeometry {
     init(remote: CoreDeviceRemoteScreenDevice, displayUniqueID: String? = nil) throws {
         self.remote = remote
         self.displayUniqueID = displayUniqueID
-        let runtime = remote.runtime
-        readDeviceInfo = try remote.type.resolveAndWait(.swift(.getter("deviceInfo", as: (() -> NativeSwiftValue).self)))
-        let info = try runtime.resolveAndWait(.swift(.type("CoreDeviceProtocols.DeviceInfo")))
-        let displayInfo = try runtime.resolveAndWait(.swift(.type("CoreDevice.DisplayInfo")))
-        let display = try runtime.resolveAndWait(.swift(.type("CoreDevice.Display")))
-        let orientationInfo = try runtime.resolveAndWait(.swift(.type("CoreDevice.OrientationInfo")))
-        let normalized = try runtime.resolveAndWait(.swift(.type("DeviceKit.DisplayInfo")))
-        let size = try runtime.resolveAndWait(.swift(.type("DeviceKit.DisplaySize")))
-        // DeviceKit and CoreDevice's display structs are resilient values; their exported getters
-        // and initializer use indirect storage across the framework boundary.
-        let abis = try Dictionary(uniqueKeysWithValues: [displayInfo, display, orientationInfo, normalized, size]
-            .map { ($0, try NativeType.opaque(named: $0.name)) })
-        readInitialDisplayInfo = try remote.type.resolveAndWait(.swift(.getter("displayInfo",
-            as: (() async throws -> NativeSwiftValue).self, valueABIs: abis)))
-        readDisplayInfo = try info.resolveAndWait(.swift(.getter("displayInfo", as: (() -> NativeSwiftValue?).self, valueABIs: abis)))
-        displays = try displayInfo.resolveAndWait(.swift(.getter("displays", as: (() -> [NativeSwiftValue]).self, valueABIs: abis)))
-        orientation = try displayInfo.resolveAndWait(.swift(.getter("orientation", as: (() -> NativeSwiftValue?).self, valueABIs: abis)))
-        primary = try display.resolveAndWait(.swift(.getter("primary", as: (() -> Bool).self, valueABIs: abis)))
-        uniqueID = try display.resolveAndWait(.swift(.getter("uniqueId", as: (() -> String?).self, valueABIs: abis)))
-        identifier = try display.resolveAndWait(.swift(.getter("displayId", as: (() -> UInt32).self, valueABIs: abis)))
-        makeDisplay = try normalized.resolveAndWait(.swift(.initializer("init(display:orientation:)",
-            as: ((NativeSwiftValue, NativeSwiftValue?) -> NativeSwiftValue).self, valueABIs: abis)))
-        normalizedOrientation = try normalized.resolveAndWait(.swift(.getter("normalizedCurrentOrientation",
-            as: (() -> Measurement<UnitAngle>).self, valueABIs: abis)))
-        displaySize = try normalized.resolveAndWait(.swift(.getter("displaySize", as: (() -> NativeSwiftValue).self, valueABIs: abis)))
-        pointSize = try size.resolveAndWait(.swift(.getter("pointSize", as: (() -> CGSize).self, valueABIs: abis)))
+        bindings = try Bindings(deviceType: remote.type, runtime: remote.runtime)
     }
 
     func start(update: @escaping @MainActor (Result<RemoteScreenFramebuffer.Display?, any Error>) -> Void) async throws {
         generation += 1
         let token = generation
         self.update = update
-        let initial = try await unsafe readInitialDisplayInfo.unsafeInvoke(on: remote.object).copyUnderlyingValue()
+        let initial = try await unsafe bindings.readInitialDisplayInfo.unsafeInvoke(on: remote.object).copyUnderlyingValue()
         try Task.checkCancellation()
         guard generation == token else { throw CancellationError() }
         try readAndObserve(generation: token, initial: project(initial))
@@ -100,22 +111,22 @@ final class CoreDeviceDisplayGeometry {
     }
 
     private func read() throws -> RemoteScreenFramebuffer.Display? {
-        let info = try unsafe readDeviceInfo.unsafeInvoke(on: remote.object)
-        guard let displayInfo = try unsafe readDisplayInfo.unsafeInvoke(on: info) else { return nil }
+        let info = try unsafe bindings.readDeviceInfo.unsafeInvoke(on: remote.object)
+        guard let displayInfo = try unsafe bindings.readDisplayInfo.unsafeInvoke(on: info) else { return nil }
         return try project(displayInfo)
     }
 
     private func project(_ displayInfo: NativeSwiftValue) throws -> RemoteScreenFramebuffer.Display? {
-        let candidates = try unsafe displays.unsafeInvoke(on: displayInfo)
+        let candidates = try unsafe bindings.displays.unsafeInvoke(on: displayInfo)
         guard let display = try candidates.first(where: {
-            if let displayUniqueID { return try unsafe uniqueID.unsafeInvoke(on: $0) == displayUniqueID }
-            return try unsafe primary.unsafeInvoke(on: $0)
+            if let displayUniqueID { return try unsafe bindings.uniqueID.unsafeInvoke(on: $0) == displayUniqueID }
+            return try unsafe bindings.primary.unsafeInvoke(on: $0)
         }) else { return nil }
-        let value = try unsafe makeDisplay.unsafeInvoke(display, orientation.unsafeInvoke(on: displayInfo))
-        let angle = try unsafe normalizedOrientation.unsafeInvoke(on: value).converted(to: .degrees).value
-        let size = try unsafe pointSize.unsafeInvoke(on: displaySize.unsafeInvoke(on: value))
+        let value = try unsafe bindings.makeDisplay.unsafeInvoke(display, bindings.orientation.unsafeInvoke(on: displayInfo))
+        let angle = try unsafe bindings.normalizedOrientation.unsafeInvoke(on: value).converted(to: .degrees).value
+        let size = try unsafe bindings.pointSize.unsafeInvoke(on: bindings.displaySize.unsafeInvoke(on: value))
         guard size.width > 0, size.height > 0, angle.isFinite else { return nil }
-        return try unsafe RemoteScreenFramebuffer.Display(size: size, angle: angle, identifier: identifier.unsafeInvoke(on: display))
+        return try unsafe RemoteScreenFramebuffer.Display(size: size, angle: angle, identifier: bindings.identifier.unsafeInvoke(on: display))
     }
 }
 
