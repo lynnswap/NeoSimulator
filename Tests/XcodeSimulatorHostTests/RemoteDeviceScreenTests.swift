@@ -1035,8 +1035,7 @@ struct RemoteDeviceScreenTests {
         for layout in macKeyboardLayouts {
             let properties = try #require(try bindings.properties(ofHIDService: layout.serviceID))
             let identity = try bindings.identity(of: bindings.descriptor(serviceID: layout.serviceID, properties: properties))
-            #expect(identity.standardType == layout.standardType && identity.countryCode == layout.countryCode,
-                    "Registry entry 0x\(String(layout.serviceID, radix: 16)): \(identity)")
+            #expect(identity.standardType == layout.standardType, "Registry entry 0x\(String(layout.serviceID, radix: 16)): \(identity)")
         }
     }
 
@@ -1146,6 +1145,22 @@ struct RemoteDeviceScreenTests {
         let expected = [try reports([focus]), try reports([focus] + shifted + [lostFocus]), try reports(other)]
         #expect(transport.keyboards.map(\.sender) == [nil, 0xA, 0xB])
         #expect(transport.keyboards.map(\.reports) == expected)
+
+        // A modifier change carries the modifiers of every Mac keyboard. A modifier one keyboard releases is released on
+        // the others too: B types Command-A after A releases Shift, and nothing stays held after B releases Command.
+        let commandA = [try key(.keyDown, kVK_ANSI_A, sender: 0xB, flags: .command), try key(.keyUp, kVK_ANSI_A, sender: 0xB, flags: .command)]
+        let changes = [try key(.flagsChanged, kVK_Shift, sender: 0xA, flags: .shift),
+                       try key(.flagsChanged, kVK_Command, sender: 0xB, flags: [.shift, .command]),
+                       try key(.flagsChanged, kVK_Shift, sender: 0xA, flags: .command)]
+            + commandA + [try key(.flagsChanged, kVK_Command, sender: 0xB)]
+        for event in changes { keyboard.handle(event) }
+        try await keyboard.removeServices()
+        func holding(_ flags: NSEvent.ModifierFlags) throws -> NSEvent { try key(.flagsChanged, 0, flags: flags) }
+        let released = [
+            try reports([holding(.shift), holding(.command), holding([])]),
+            try reports([holding([.shift, .command]), holding(.command)] + commandA + [holding([])]),
+        ]
+        #expect(transport.keyboards.dropFirst(3).map(\.reports) == released)
         #expect(failures.isEmpty)
     }
 
@@ -1184,13 +1199,14 @@ private func capturedFrame(width: Int, height: Int, bgra: [UInt8], ioSurface: Bo
 }
 
 /// The layouts the Mac's keyboard HID services publish in their registry entries, independently of the HID event
-/// system, which withholds them from some clients.
-private let macKeyboardLayouts: [(serviceID: UInt64, standardType: UInt8, countryCode: UInt8?)] = {
+/// system, which withholds them from some clients. CountryCode is left out: the HID event system, which Device Hub
+/// also reads, can report 0 (not localized) where the registry has a country, and the guest takes the layout from StandardType.
+private let macKeyboardLayouts: [(serviceID: UInt64, standardType: UInt8)] = {
     var iterator: io_iterator_t = 0
     guard IOServiceGetMatchingServices(kIOMainPortDefault, IOServiceMatching("IOHIDEventService"), &iterator) == KERN_SUCCESS
     else { return [] }
     defer { IOObjectRelease(iterator) }
-    var layouts: [(serviceID: UInt64, standardType: UInt8, countryCode: UInt8?)] = []
+    var layouts: [(serviceID: UInt64, standardType: UInt8)] = []
     while case let entry = IOIteratorNext(iterator), entry != IO_OBJECT_NULL {
         defer { IOObjectRelease(entry) }
         func property(_ key: String) -> Int? {
@@ -1200,7 +1216,7 @@ private let macKeyboardLayouts: [(serviceID: UInt64, standardType: UInt8, countr
         guard property(kIOHIDPrimaryUsagePageKey) == kHIDPage_GenericDesktop, property(kIOHIDPrimaryUsageKey) == kHIDUsage_GD_Keyboard,
               let standardType = property(kIOHIDStandardTypeKey).flatMap(UInt8.init(exactly:)),
               IORegistryEntryGetRegistryEntryID(entry, &serviceID) == KERN_SUCCESS else { continue }
-        layouts.append((serviceID, standardType, property(kIOHIDCountryCodeKey).flatMap(UInt8.init(exactly:))))
+        layouts.append((serviceID, standardType))
     }
     return layouts
 }()
@@ -1263,6 +1279,7 @@ private final class KeyboardFixtureTransport: NativeKeyboardTransport {
         let translate: ((NSEvent) throws -> [Data])?
         var events: [ObjectIdentifier] = []
         var reports: [Data] = []
+        private(set) var modifierFlags: NSEvent.ModifierFlags = []
         var stops = 0
         var sendFailures = 0
         var stopFailures = 0
@@ -1274,6 +1291,7 @@ private final class KeyboardFixtureTransport: NativeKeyboardTransport {
             if sendFailures > 0 { sendFailures -= 1; throw ScreenFixtureError.stream }
             events.append(ObjectIdentifier(event))
             if let translate { reports += try translate(event) }
+            if event.type == .flagsChanged { modifierFlags = event.modifierFlags.intersection(.deviceIndependentFlagsMask) }
         }
         func stop() async throws {
             stops += 1

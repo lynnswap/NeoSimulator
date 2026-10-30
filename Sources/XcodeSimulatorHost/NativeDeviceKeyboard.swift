@@ -80,6 +80,9 @@ public final class NativeDeviceKeyboard {
         // A keyboard that starts while no other one remains takes the modifiers the event carries. Otherwise the
         // remaining keyboards hold them, from their own modifier changes or the synchronization for focus.
         var startsAlone = false
+        // A Mac keyboard's modifier change carries the modifiers held on every Mac keyboard, and its keyboard takes them.
+        // The other keyboards release those the change no longer carries, which the Mac no longer holds.
+        var others: [any NativeKeyboardService] = []
         do {
             let sender = try transport.sender(of: event)
             let hadMacKeyboards = !keyboards.isEmpty
@@ -94,6 +97,7 @@ public final class NativeDeviceKeyboard {
                 }
                 targets = [macKeyboard]
                 startsAlone = !hadMacKeyboards
+                if event.type == .flagsChanged { others = allKeyboards.filter { $0 !== macKeyboard } }
             } else if Self.releases(event) {
                 // A keyboard that does not hold the key or modifier sends nothing for it.
                 targets = allKeyboards
@@ -114,6 +118,15 @@ public final class NativeDeviceKeyboard {
                     if let heldModifiers { try await keyboard.send(heldModifiers) }
                     try await keyboard.send(event)
                 } catch { self?.onFailure(error) }
+            }
+        }
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        for keyboard in others {
+            enqueue { [weak self] in
+                // The keyboard's modifiers are read after its earlier input has been translated.
+                guard !keyboard.modifierFlags.isSubset(of: flags),
+                      let release = Self.modifierChange(to: keyboard.modifierFlags.intersection(flags), at: event) else { return }
+                do { try await keyboard.send(release) } catch { self?.onFailure(error) }
             }
         }
     }
@@ -187,7 +200,11 @@ public final class NativeDeviceKeyboard {
         // A key event's function flag marks keys such as the arrows rather than a held Fn key.
         let flags = event.modifierFlags.subtracting([.function, .numericPad, .help, .capsLock])
         guard event.type != .flagsChanged, !flags.isDisjoint(with: [.shift, .control, .option, .command]) else { return nil }
-        return NSEvent.keyEvent(with: .flagsChanged, location: event.locationInWindow, modifierFlags: flags,
+        return modifierChange(to: flags, at: event)
+    }
+
+    private static func modifierChange(to flags: NSEvent.ModifierFlags, at event: NSEvent) -> NSEvent? {
+        NSEvent.keyEvent(with: .flagsChanged, location: event.locationInWindow, modifierFlags: flags,
             timestamp: event.timestamp, windowNumber: event.windowNumber, context: nil, characters: "",
             charactersIgnoringModifiers: "", isARepeat: false, keyCode: 0)
     }
@@ -207,6 +224,8 @@ protocol NativeKeyboardTransport: AnyObject {
 /// One guest keyboard with its own key and modifier state.
 @MainActor
 protocol NativeKeyboardService: AnyObject {
+    /// The modifiers this keyboard holds: those of the last modifier change it translated.
+    var modifierFlags: NSEvent.ModifierFlags { get }
     /// Translates the event against this keyboard's state and sends any reports, creating the guest service
     /// with the first of them.
     func send(_ event: NSEvent) async throws
@@ -247,6 +266,7 @@ private final class CoreDeviceKeyboardService: NativeKeyboardService {
     private let identity: NativeKeyboardBindings.Identity
     private let translator: NativeKeyboardBindings.Translator
     private var service: CoreDeviceHIDService?
+    private(set) var modifierFlags: NSEvent.ModifierFlags = []
 
     init(remote: CoreDeviceRemoteScreenDevice, source: String, descriptor: NativeSwiftValue,
          bindings: NativeKeyboardBindings) throws {
@@ -259,6 +279,8 @@ private final class CoreDeviceKeyboardService: NativeKeyboardService {
 
     func send(_ event: NSEvent) async throws {
         let reports = try translator.reports(for: event)
+        // The observer keeps the modifiers of each modifier change, whatever its key code, and reads none from key events.
+        if event.type == .flagsChanged { modifierFlags = event.modifierFlags.intersection(.deviceIndependentFlagsMask) }
         guard !reports.isEmpty else { return }
         let service: CoreDeviceHIDService
         if let existing = self.service { service = existing } else {
