@@ -365,7 +365,8 @@ public final class RemoteDeviceScreenSession {
     }
 
     /// Sends one magnify event of a trackpad pinch, whose phase begins, continues, ends, or cancels the device's pinch.
-    /// The device places the pinch itself; the event carries only its scale.
+    /// The pinch reaches a guest service that carries the properties of the Mac trackpad that sent the event; an event
+    /// that no Mac HID service sent, such as a synthesized one, reaches no service. The event carries only its scale.
     public func sendPinch(_ event: NSEvent) async throws { try await send(.pinch(event)) }
 
     /// Shows the device's frame from its display description, whether or not its screen connects.

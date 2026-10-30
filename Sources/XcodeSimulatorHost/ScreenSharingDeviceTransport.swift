@@ -114,7 +114,7 @@ final class ScreenSharingDeviceTransport: NSObject, RemoteScreenTransport {
         let task = Task { [self] in
             await capabilityObservation.stop()
             var failure: (any Error)?
-            do { try await input.releaseInputs() } catch { failure = error }
+            do { try await input.stop() } catch { failure = error }
             do { try unsafe close.unsafeInvoke(on: view) }
             catch { failure = failure.map { RemoteDeviceScreenSession.combining($0, cleanup: error) } ?? error }
             view.removeFromSuperview()

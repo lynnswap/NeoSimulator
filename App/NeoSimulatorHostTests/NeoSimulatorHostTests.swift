@@ -201,7 +201,8 @@ struct InputFocusTests {
 
         #expect(transport.pinches.map(ObjectIdentifier.init) == (ended + cancelled + unfocused + [lost]).map(ObjectIdentifier.init))
         #expect(canvas.magnified.map(ObjectIdentifier.init) == (beside + unsupported).map(ObjectIdentifier.init))
-        #expect(transport.touches.map(\.phase) == [.began, .ended])
+        // Only the scroll before the pinch drags a touch, from its first event's movement until the pinch begins.
+        #expect(transport.touches.map(\.phase) == [.began, .moved, .ended])
         try await session.stop()
     }
 

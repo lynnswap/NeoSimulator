@@ -1,5 +1,6 @@
 import ABIBridge
 import AppKit
+import IOKit.hidsystem
 
 /// One native UniversalHID service. Its owner builds the reports, orders their sends, and tracks what they hold.
 @MainActor
@@ -9,12 +10,11 @@ final class CoreDeviceHIDService {
 
     private let sendNative: (NativeSwiftValue) throws -> Void
     private let resetNative: () throws -> Void
-    private let removeNative: (() async throws -> Void)?
+    private let removeNative: () async throws -> Void
     private(set) var isRemoved = false
 
-    /// A nil `remove` marks a service the device owns, which stopping leaves on the device.
     init(send: @escaping (NativeSwiftValue) throws -> Void, reset: @escaping () throws -> Void,
-         remove: (() async throws -> Void)?) {
+         remove: @escaping () async throws -> Void) {
         sendNative = send
         resetNative = reset
         removeNative = remove
@@ -35,32 +35,18 @@ final class CoreDeviceHIDService {
 
     /// Creates the service `descriptor` describes. Its reports must come from CoreDevice's UniversalHID module.
     static func connect(remote: CoreDeviceRemoteScreenDevice, descriptor: NativeSwiftValue) async throws -> CoreDeviceHIDService {
-        try await open(.created(descriptor: descriptor), remote: remote, failure: nativeFailure(runtime: remote.runtime))
-    }
-
-    /// Uses the service the device lists for trackpad gestures over its touchscreen. Device Hub sends to it without
-    /// creating it, so stopping it leaves the service on the device.
-    static func touchscreenGesture(remote: CoreDeviceRemoteScreenDevice) async throws -> CoreDeviceHIDService {
-        try await open(.touchscreenGesture, remote: remote, failure: nativeFailure(runtime: remote.runtime))
-    }
-
-    private enum Service {
-        case created(descriptor: NativeSwiftValue)
-        case touchscreenGesture
-    }
-
-    private static func nativeFailure(runtime: ABIRuntime) throws -> any Error {
+        let runtime = remote.runtime
         let errorType = try runtime.resolveAndWait(.swift(.type("CoreDevice.CoreDeviceError")))
         let readError = try errorType.resolveAndWait(.swift(.staticGetter("ioError", as: (() -> NativeSwiftValue).self,
             valueABIs: [errorType: try .opaque(named: errorType.name)])))
         guard let failure = try unsafe readError.unsafeInvoke().withCopy({ $0 as? any Error }) else {
             throw CLIError.io("remote-hid-service", "The native HID service error type could not be resolved.")
         }
-        return failure
+        return try await connect(remote: remote, descriptor: descriptor, failure: failure)
     }
 
-    private static func open<Failure: Error>(_ service: Service, remote: CoreDeviceRemoteScreenDevice,
-                                            failure: Failure) async throws -> CoreDeviceHIDService {
+    private static func connect<Failure: Error>(remote: CoreDeviceRemoteScreenDevice, descriptor nativeDescriptor: NativeSwiftValue,
+                                               failure: Failure) async throws -> CoreDeviceHIDService {
         let runtime = remote.runtime
         let implementation = try await remote.implementation(capability: "UniversalHIDServiceCapability",
                                                              feature: CoreDeviceScreenInput.universalHIDFeature)
@@ -74,43 +60,24 @@ final class CoreDeviceHIDService {
         ]
         // CoreDevice also declares `Swift.UInt64` service-ID overloads of `send` and `resetGestureState`, which runtime-value
         // arguments cannot tell apart by labels. Every requirement names the `HIDServiceID` declaration that `createService` returns.
+        let create = try implementation.type.resolveAndWait(.swift(.method(
+            "CoreDevice.UniversalHIDService.createService(descriptor: CoreDevice.HIDServiceDescriptor) async throws(CoreDevice.CoreDeviceError) -> CoreDevice.HIDServiceID",
+            as: ((NativeSwiftValue) async throws(Failure) -> NativeSwiftValue).self, valueABIs: abis)))
         let send = try implementation.type.resolveAndWait(.swift(.method(
             "CoreDevice.UniversalHIDService.send(report: UniversalHID.HIDReport, to: CoreDevice.HIDServiceID) throws(CoreDevice.CoreDeviceError) -> ()",
             as: ((NativeSwiftValue, NativeSwiftValue) throws(Failure) -> Void).self, valueABIs: abis)))
         let reset = try implementation.type.resolveAndWait(.swift(.method(
             "CoreDevice.UniversalHIDService.resetGestureState(service: CoreDevice.HIDServiceID) throws(CoreDevice.CoreDeviceError) -> ()",
             as: ((NativeSwiftValue) throws(Failure) -> Void).self, valueABIs: abis)))
-        let serviceID: NativeSwiftValue
-        var remove: (() async throws -> Void)?
-        switch service {
-        case .created(let descriptor):
-            let create = try implementation.type.resolveAndWait(.swift(.method(
-                "CoreDevice.UniversalHIDService.createService(descriptor: CoreDevice.HIDServiceDescriptor) async throws(CoreDevice.CoreDeviceError) -> CoreDevice.HIDServiceID",
-                as: ((NativeSwiftValue) async throws(Failure) -> NativeSwiftValue).self, valueABIs: abis)))
-            let removal = try implementation.type.resolveAndWait(.swift(.method(
-                "CoreDevice.UniversalHIDService.remove(service: CoreDevice.HIDServiceID) async throws(CoreDevice.CoreDeviceError) -> ()",
-                as: ((NativeSwiftValue) async throws(Failure) -> Void).self, valueABIs: abis)))
-            let created = try await unsafe create.unsafeInvoke(on: implementation, descriptor)
-            serviceID = created
-            remove = { try await unsafe removal.unsafeInvoke(on: implementation, created) }
-        case .touchscreenGesture:
-            // CoreDeviceUtilities declares the device's standard service IDs.
-            try CoreDeviceRemoteScreenDevice.load(NativeKeyboardBindings.coreDeviceUtilitiesPath)
-            let gesture = try serviceIDType.resolveAndWait(.swift(.staticGetter("touchscreenGesture",
-                as: (() -> NativeSwiftValue).self, valueABIs: abis)))
-            // The device lists the services it accepts reports for; Device Hub sends only to listed ones.
-            let exists = try implementation.type.resolveAndWait(.swift(.method(
-                "(extension in CoreDevice):CoreDevice.UniversalHIDService.serviceExists(CoreDevice.HIDServiceID) async throws(CoreDevice.CoreDeviceError) -> Swift.Bool",
-                as: ((NativeSwiftValue) async throws(Failure) -> Bool).self, valueABIs: abis)))
-            serviceID = try unsafe gesture.unsafeInvoke()
-            guard try await unsafe exists.unsafeInvoke(on: implementation, serviceID) else {
-                throw CLIError.unavailable("remote-gesture-service", "The device does not accept trackpad gestures.")
-            }
-        }
+        let remove = try implementation.type.resolveAndWait(.swift(.method(
+            "CoreDevice.UniversalHIDService.remove(service: CoreDevice.HIDServiceID) async throws(CoreDevice.CoreDeviceError) -> ()",
+            as: ((NativeSwiftValue) async throws(Failure) -> Void).self, valueABIs: abis)))
+        let serviceID = try await unsafe create.unsafeInvoke(on: implementation, nativeDescriptor)
         // The returned service has an owner before cancellation can abandon it.
         return CoreDeviceHIDService(send: { report in
             try unsafe send.unsafeInvoke(on: implementation, report, serviceID)
-        }, reset: { try unsafe reset.unsafeInvoke(on: implementation, serviceID) }, remove: remove)
+        }, reset: { try unsafe reset.unsafeInvoke(on: implementation, serviceID) },
+           remove: { try await unsafe remove.unsafeInvoke(on: implementation, serviceID) })
     }
 
     static func touchscreenDescriptor(displayID: UInt32, uniqueID: String, runtime: ABIRuntime) async throws -> NativeSwiftValue {
@@ -151,7 +118,7 @@ final class CoreDeviceHIDService {
         guard !isRemoved else { return }
         var failure: (any Error)?
         do { try resetNative() } catch { failure = error }
-        do { try await removeNative?(); isRemoved = true }
+        do { try await removeNative(); isRemoved = true }
         catch { failure = failure.map { RemoteDeviceScreenSession.combining($0, cleanup: error) } ?? error }
         if let failure { throw failure }
     }
@@ -320,5 +287,97 @@ struct CoreDeviceEventReports {
             throw CLIError.software("native-keyboard-sample", "AppKit could not create a sample key event.")
         }
         return event
+    }
+}
+
+/// Finds the Mac HID service that sent an event and describes a guest service that carries its properties under its
+/// registry ID, as Device Hub's HID service lookup does for the Mac keyboards and trackpads that send it input.
+@MainActor
+struct MacHIDServiceLookup {
+    static let coreDeviceUtilitiesPath = "/Library/Developer/PrivateFrameworks/CoreDeviceUtilities.framework/Versions/A/CoreDeviceUtilities"
+
+    /// The keys UniversalHID copies from a HID service into its properties.
+    private let propertyKeys: [String]
+    /// Creates the passive HID event system client that Device Hub reads Mac HID services through. The HID event
+    /// system withholds StandardType and CountryCode, which carry a keyboard's layout, from simple clients.
+    private let makeHIDClient: () throws -> IOHIDEventSystemClient
+    private let readSender: NativeSwiftMethod<() -> UInt64>
+    private let makeDescriptor: (UInt64, [String: Any]) throws -> NativeSwiftValue
+
+    init(runtime: ABIRuntime) async throws {
+        try CoreDeviceRemoteScreenDevice.load(Self.coreDeviceUtilitiesPath)
+        try CoreDeviceRemoteScreenDevice.load(CoreDeviceEventReports.universalHIDKitURL.path)
+        // NSEvent's NSEventProtocol conformance is in UniversalHIDKit; the getter binds through an event.
+        readSender = try await runtime.object(CoreDeviceEventReports.sampleKey(.keyDown)).resolve(.swift(.getter(
+            "(extension in UniversalHIDKit):UniversalHIDKit.NSEventProtocol.senderID.getter : Swift.UInt64",
+            as: (() -> UInt64).self))).method
+
+        let keyType = try CoreDeviceHIDService.universalHIDType("HIDServicePropertyKey", runtime: runtime)
+        let allKeys = try await keyType.resolve(.swift(.staticGetter("allCases", as: (() -> NativeSwiftValue).self,
+            valueABIs: [keyType: try .structure(named: keyType.name, fields: [.uint64, .uint64])])))
+        guard let keys = try unsafe allKeys.unsafeInvoke().withCopy({ value in
+            (value as? [Any])?.map { ($0 as? any RawRepresentable)?.rawValue as? String }
+        }), !keys.isEmpty, !keys.contains(nil) else {
+            throw CLIError.unavailable("native-hid-properties", "UniversalHID's service property keys could not be read.")
+        }
+        propertyKeys = keys.compactMap(\.self)
+        let createHIDClient = try await runtime.resolve(.c(.function("IOHIDEventSystemClientCreateWithType",
+            as: ((OpaquePointer?, Int32, OpaquePointer?) -> OpaquePointer?).self)))
+        makeHIDClient = {
+            // 2 is kIOHIDEventSystemClientTypePassive. The client is returned retained.
+            guard let client = try unsafe createHIDClient.unsafeInvoke(nil, 2, nil) else {
+                throw CLIError.unavailable("native-hid-properties", "The HID event system did not create a passive client.")
+            }
+            return unsafe Unmanaged<IOHIDEventSystemClient>.fromOpaque(UnsafeRawPointer(client)).takeRetainedValue()
+        }
+
+        let properties = try CoreDeviceHIDService.universalHIDType("HIDServiceProperties", runtime: runtime)
+        let descriptorType = try await runtime.resolve(.swift(.type("CoreDevice.HIDServiceDescriptor")))
+        let descriptorABIs: [NativeSwiftType: NativeType] = [
+            properties: try .structure(named: properties.name, fields: [.uint64, .uint64]),
+            descriptorType: try .opaque(named: descriptorType.name),
+        ]
+        let propertiesABI = descriptorABIs[properties]
+        let makeProperties = try await properties.resolve(.swift(.initializer("init(serviceID:properties:)",
+            as: ((UInt64, [String: Any]) throws -> NativeSwiftValue).self, valueABIs: descriptorABIs)))
+        let ignoresNaturalScrolling = try await properties.resolve(.swift(.setter("ignoresNaturalScrollingPreference",
+            as: ((Bool?) -> Void).self, valueABIs: descriptorABIs, receiverABI: propertiesABI)))
+        let pointerButtonMode = try await properties.resolve(.swift(.setter("pointerButtonMode",
+            as: ((Int?) -> Void).self, valueABIs: descriptorABIs, receiverABI: propertiesABI)))
+        let makeServiceDescriptor = try await descriptorType.resolve(.swift(.initializer("init(serviceProperties:)",
+            as: ((NativeSwiftValue) -> NativeSwiftValue).self, valueABIs: descriptorABIs)))
+        makeDescriptor = { serviceID, values in
+            let value = try unsafe makeProperties.unsafeInvoke(serviceID, values)
+            // Device Hub's service lookup also adjusts these; matching it keeps the guest's view of the service the same.
+            try unsafe ignoresNaturalScrolling.unsafeInvoke(on: value, true)
+            try unsafe pointerButtonMode.unsafeInvoke(on: value, nil)
+            return try unsafe makeServiceDescriptor.unsafeInvoke(value)
+        }
+    }
+
+    /// The registry ID of the Mac HID service that produced the event, or 0 for a synthesized event.
+    func sender(of event: NSEvent) throws -> UInt64 { try unsafe readSender.unsafeInvoke(on: event) }
+
+    /// The properties UniversalHID copies from the Mac HID service whose registry ID is `sender`, as Device Hub's
+    /// `HIDServiceProperties(service:)` reads them, or nil when no such service exists.
+    func properties(ofHIDService sender: UInt64) throws -> [String: Any]? {
+        let client = try makeHIDClient()
+        // A service reads most properties through its client; without the client it has only the usages it was listed with.
+        return withExtendedLifetime(client) {
+            let services = IOHIDEventSystemClientCopyServices(client) as? [IOHIDServiceClient] ?? []
+            guard let service = services.first(where: {
+                (IOHIDServiceClientGetRegistryID($0) as? NSNumber)?.uint64Value == sender
+            }) else { return nil }
+            var properties: [String: Any] = [:]
+            for key in propertyKeys {
+                if let value = IOHIDServiceClientCopyProperty(service, key as CFString) { properties[key] = value }
+            }
+            return properties
+        }
+    }
+
+    /// The descriptor of a guest service that carries `properties` under the service ID `serviceID`.
+    func descriptor(serviceID: UInt64, properties: [String: Any]) throws -> NativeSwiftValue {
+        try makeDescriptor(serviceID, properties)
     }
 }

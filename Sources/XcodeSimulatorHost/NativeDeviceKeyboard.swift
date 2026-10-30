@@ -1,6 +1,5 @@
 import ABIBridge
 import AppKit
-import IOKit.hidsystem
 import os
 
 /// Forwards a simulator's Mac keyboard input through CoreDevice keyboard services that carry each Mac keyboard's
@@ -269,10 +268,10 @@ final class CoreDeviceKeyboardTransport: NativeKeyboardTransport {
         bindings = try await NativeKeyboardBindings(runtime: remote.runtime)
     }
 
-    func sender(of event: NSEvent) throws -> UInt64 { try bindings.sender(of: event) }
+    func sender(of event: NSEvent) throws -> UInt64 { try bindings.lookup.sender(of: event) }
 
     func makeKeyboard(forSender sender: UInt64) throws -> (any NativeKeyboardService)? {
-        guard let properties = try bindings.properties(ofHIDService: sender) else { return nil }
+        guard let properties = try bindings.lookup.properties(ofHIDService: sender) else { return nil }
         return try CoreDeviceKeyboardService(remote: remote, source: "Mac HID service 0x\(String(sender, radix: 16))",
             descriptor: bindings.descriptor(serviceID: sender, properties: properties), bindings: bindings)
     }
@@ -328,8 +327,6 @@ private final class CoreDeviceKeyboardService: NativeKeyboardService {
 
 @MainActor
 struct NativeKeyboardBindings {
-    static let coreDeviceUtilitiesPath = "/Library/Developer/PrivateFrameworks/CoreDeviceUtilities.framework/Versions/A/CoreDeviceUtilities"
-
     /// The layout properties a guest keyboard service carries, as the guest reads them.
     struct Identity: CustomStringConvertible {
         let product: String?
@@ -344,64 +341,23 @@ struct NativeKeyboardBindings {
         }
     }
 
-    /// The keys UniversalHID copies from a HID service into its properties.
-    private let propertyKeys: [String]
-    /// Creates the passive HID event system client that Device Hub reads Mac HID services through. The HID event
-    /// system withholds StandardType and CountryCode, which carry a keyboard's layout, from simple clients.
-    private let makeHIDClient: () throws -> IOHIDEventSystemClient
-    private let readSender: NativeSwiftMethod<() -> UInt64>
+    /// The Mac HID services that keyboard input comes from.
+    let lookup: MacHIDServiceLookup
     private let events: CoreDeviceEventReports
-    private let makeDescriptor: (UInt64, [String: Any]) throws -> NativeSwiftValue
+    private let markHardwareKeyboard: (NativeSwiftValue) throws -> NativeSwiftValue
     private let makeMainKeyboardDescriptor: () throws -> NativeSwiftValue
     private let identify: (NativeSwiftValue) throws -> Identity
 
     init(runtime: ABIRuntime) async throws {
-        try CoreDeviceRemoteScreenDevice.load(Self.coreDeviceUtilitiesPath)
+        lookup = try await MacHIDServiceLookup(runtime: runtime)
         events = try await CoreDeviceEventReports(runtime: runtime, eventType: "keyboard")
-        let sample = try CoreDeviceEventReports.sampleKey(.keyDown)
-        // NSEvent's NSEventProtocol conformance is in UniversalHIDKit; the getter binds through an event.
-        readSender = try await runtime.object(sample).resolve(.swift(.getter(
-            "(extension in UniversalHIDKit):UniversalHIDKit.NSEventProtocol.senderID.getter : Swift.UInt64",
-            as: (() -> UInt64).self))).method
         // Converting a key press before any service exists proves the translation; without it, keys would vanish.
-        guard try !events.makeTranslator().reports(for: sample).isEmpty else {
+        guard try !events.makeTranslator().reports(for: CoreDeviceEventReports.sampleKey(.keyDown)).isEmpty else {
             throw CLIError.unavailable("native-keyboard-report", "UniversalHIDKit did not report a key press.")
         }
 
-        let keyType = try CoreDeviceHIDService.universalHIDType("HIDServicePropertyKey", runtime: runtime)
-        let allKeys = try await keyType.resolve(.swift(.staticGetter("allCases", as: (() -> NativeSwiftValue).self,
-            valueABIs: [keyType: try .structure(named: keyType.name, fields: [.uint64, .uint64])])))
-        guard let keys = try unsafe allKeys.unsafeInvoke().withCopy({ value in
-            (value as? [Any])?.map { ($0 as? any RawRepresentable)?.rawValue as? String }
-        }), !keys.isEmpty, !keys.contains(nil) else {
-            throw CLIError.unavailable("native-keyboard-properties", "UniversalHID's service property keys could not be read.")
-        }
-        propertyKeys = keys.compactMap(\.self)
-        let createHIDClient = try await runtime.resolve(.c(.function("IOHIDEventSystemClientCreateWithType",
-            as: ((OpaquePointer?, Int32, OpaquePointer?) -> OpaquePointer?).self)))
-        makeHIDClient = {
-            // 2 is kIOHIDEventSystemClientTypePassive. The client is returned retained.
-            guard let client = try unsafe createHIDClient.unsafeInvoke(nil, 2, nil) else {
-                throw CLIError.unavailable("native-keyboard-properties", "The HID event system did not create a passive client.")
-            }
-            return unsafe Unmanaged<IOHIDEventSystemClient>.fromOpaque(UnsafeRawPointer(client)).takeRetainedValue()
-        }
-
-        let properties = try CoreDeviceHIDService.universalHIDType("HIDServiceProperties", runtime: runtime)
         let descriptorType = try await runtime.resolve(.swift(.type("CoreDevice.HIDServiceDescriptor")))
-        let descriptorABIs: [NativeSwiftType: NativeType] = [
-            properties: try .structure(named: properties.name, fields: [.uint64, .uint64]),
-            descriptorType: try .opaque(named: descriptorType.name),
-        ]
-        let propertiesABI = descriptorABIs[properties]
-        let makeProperties = try await properties.resolve(.swift(.initializer("init(serviceID:properties:)",
-            as: ((UInt64, [String: Any]) throws -> NativeSwiftValue).self, valueABIs: descriptorABIs)))
-        let ignoresNaturalScrolling = try await properties.resolve(.swift(.setter("ignoresNaturalScrollingPreference",
-            as: ((Bool?) -> Void).self, valueABIs: descriptorABIs, receiverABI: propertiesABI)))
-        let pointerButtonMode = try await properties.resolve(.swift(.setter("pointerButtonMode",
-            as: ((Int?) -> Void).self, valueABIs: descriptorABIs, receiverABI: propertiesABI)))
-        let makeServiceDescriptor = try await descriptorType.resolve(.swift(.initializer("init(serviceProperties:)",
-            as: ((NativeSwiftValue) -> NativeSwiftValue).self, valueABIs: descriptorABIs)))
+        let descriptorABIs: [NativeSwiftType: NativeType] = [descriptorType: try .opaque(named: descriptorType.name)]
         let receiver = descriptorABIs[descriptorType]
         let setSoftwareKeyboard = try await descriptorType.resolve(.swift(.method("setSoftwareKeyboard(_:)",
             as: ((Bool) -> Bool).self, valueABIs: descriptorABIs, receiverABI: receiver, receiver: .mutating)))
@@ -411,13 +367,7 @@ struct NativeKeyboardBindings {
             _ = try unsafe setSoftwareKeyboard.unsafeInvoke(on: descriptor, false)
             return descriptor
         }
-        makeDescriptor = { serviceID, values in
-            let value = try unsafe makeProperties.unsafeInvoke(serviceID, values)
-            // Device Hub's service lookup also adjusts these; matching it keeps the guest's view of the keyboard the same.
-            try unsafe ignoresNaturalScrolling.unsafeInvoke(on: value, true)
-            try unsafe pointerButtonMode.unsafeInvoke(on: value, nil)
-            return try hardwareKeyboardDescriptor(unsafe makeServiceDescriptor.unsafeInvoke(value))
-        }
+        markHardwareKeyboard = hardwareKeyboardDescriptor
         let mainKeyboard = try await descriptorType.resolve(.swift(.staticMethod("mainKeyboard()",
             as: (() -> NativeSwiftValue).self, valueABIs: descriptorABIs)))
         makeMainKeyboardDescriptor = { try hardwareKeyboardDescriptor(unsafe mainKeyboard.unsafeInvoke()) }
@@ -437,31 +387,11 @@ struct NativeKeyboardBindings {
         }
     }
 
-    func sender(of event: NSEvent) throws -> UInt64 { try unsafe readSender.unsafeInvoke(on: event) }
-
-    /// The properties UniversalHID copies from the Mac HID service whose registry ID is `sender`, as Device Hub's
-    /// `HIDServiceProperties(service:)` reads them, or nil when no such service exists.
-    func properties(ofHIDService sender: UInt64) throws -> [String: Any]? {
-        let client = try makeHIDClient()
-        // A service reads most properties through its client; without the client it has only the usages it was listed with.
-        return withExtendedLifetime(client) {
-            let services = IOHIDEventSystemClientCopyServices(client) as? [IOHIDServiceClient] ?? []
-            guard let service = services.first(where: {
-                (IOHIDServiceClientGetRegistryID($0) as? NSNumber)?.uint64Value == sender
-            }) else { return nil }
-            var properties: [String: Any] = [:]
-            for key in propertyKeys {
-                if let value = IOHIDServiceClientCopyProperty(service, key as CFString) { properties[key] = value }
-            }
-            return properties
-        }
-    }
-
     /// An observer with one keyboard's key and modifier state.
     func makeTranslator() throws -> CoreDeviceEventReports.Translator { try events.makeTranslator() }
 
     func descriptor(serviceID: UInt64, properties: [String: Any]) throws -> NativeSwiftValue {
-        try makeDescriptor(serviceID, properties)
+        try markHardwareKeyboard(lookup.descriptor(serviceID: serviceID, properties: properties))
     }
 
     /// CoreDevice's generic keyboard descriptor, which Device Hub uses for synthesized input.
