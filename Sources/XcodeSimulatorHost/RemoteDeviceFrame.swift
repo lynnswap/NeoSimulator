@@ -205,7 +205,7 @@ final class RemoteDeviceFrameView: NSView {
     private static let logger = Logger(subsystem: "dev.lynnswap.NeoSimulator", category: "RemoteScreen")
 
     /// Covers the device's display; transports add their content here.
-    let screen = NSView()
+    let screen: NSView = RemoteDeviceScreenView()
     /// The display's quarter-turn orientation, as DeviceKit reports it.
     var angle: CGFloat = 0 { didSet { if angle != oldValue { needsLayout = true } } }
     /// A resized app's dedicated display has no device around it.
@@ -276,5 +276,13 @@ final class RemoteDeviceFrameView: NSView {
             self.chrome = nil
             return nil
         }
+    }
+}
+
+/// Keeps a transport's content on the display's exact frame. AppKit's autoresizing aligns each edge to the
+/// backing pixel grid, which would move the shown display and its input off a screen placed between pixels.
+private final class RemoteDeviceScreenView: NSView {
+    override func resizeSubviews(withOldSize oldSize: NSSize) {
+        for subview in subviews { subview.frame = bounds }
     }
 }

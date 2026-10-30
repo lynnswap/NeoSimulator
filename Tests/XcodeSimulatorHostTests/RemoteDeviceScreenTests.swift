@@ -452,7 +452,9 @@ struct RemoteDeviceScreenTests {
             #expect(abs(screen.width / screen.height - (angle == 0 ? 1260.0 / 2736 : 2736.0 / 1260)) < 0.001)
             #expect(frame.bounds.insetBy(dx: 8, dy: 8).contains(screen), "Angle \(angle): \(screen) has no bezel in \(frame.bounds)")
             // The display's top-left corner is wherever the device frame turned it, and the frame itself takes no touches.
-            let corner = angle == 0 ? CGPoint(x: screen.minX + 1, y: screen.maxY - 1) : CGPoint(x: screen.maxX - 1, y: screen.maxY - 1)
+            // Input reaches within a quarter point of the display's edges, which fall between backing pixels.
+            let corner = angle == 0 ? CGPoint(x: screen.minX + 0.25, y: screen.maxY - 0.25)
+                : CGPoint(x: screen.maxX - 0.25, y: screen.maxY - 0.25)
             let origin = try #require(framebuffer.inputLocations(at: corner, from: frame, clampingToDisplay: false))
             #expect(origin.touch.x < 0.01 && origin.touch.y < 0.01, "Angle \(angle): \(origin.touch)")
             #expect(framebuffer.inputLocations(at: CGPoint(x: screen.minX - 2, y: screen.midY), from: frame, clampingToDisplay: false) == nil)
