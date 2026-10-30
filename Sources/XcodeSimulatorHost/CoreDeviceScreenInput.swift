@@ -1,5 +1,5 @@
 import ABIBridge
-import Foundation
+import AppKit
 import IOKit
 import Observation
 
@@ -11,6 +11,9 @@ final class CoreDeviceScreenInput {
     private var digitizerReports: CoreDeviceDigitizerReports?
     private var displayIdentifier: UInt32?
     private var displayInputNeedsReconnect = false
+    private var gestureReports: CoreDeviceEventReports?
+    /// The device's touchscreen gesture service, with the observer that translates the gestures sent to it.
+    private var gestureInput: (service: CoreDeviceHIDService, translator: CoreDeviceEventReports.Translator)?
     private var implementations: [RemoteDeviceInputKind: NativeSwiftValue] = [:]
     private var pressed = RemoteScreenPressedInputs()
     private var generations: [RemoteDeviceInputKind: UInt] = [:]
@@ -22,6 +25,7 @@ final class CoreDeviceScreenInput {
         .pointer: "com.apple.coredevice.feature.remote.hid.pointer",
         .digitizer: "com.apple.coredevice.feature.remote.hid.digitizer",
         .button: "com.apple.coredevice.feature.remote.hid.button",
+        .gesture: universalHIDFeature,
     ]
     static let universalHIDFeature = "com.apple.coredevice.feature.remote.universalhidservice"
 
@@ -72,6 +76,8 @@ final class CoreDeviceScreenInput {
         // Other services retain their pressed state and continue normally.
         pressed.discard(for: kinds)
         if displayUniqueID != nil, kinds.contains(.digitizer) { displayInputNeedsReconnect = true }
+        // The next pinch looks for the device's gesture service again.
+        if kinds.contains(.gesture) { gestureInput = nil }
         for kind in kinds {
             generations[kind, default: 0] += 1
             implementations.removeValue(forKey: kind)
@@ -86,6 +92,11 @@ final class CoreDeviceScreenInput {
             let generation = generations[.digitizer, default: 0]
             do { try await sendNative(.touch(point, second, .ended, edge)); pressed.touch = nil }
             catch { if generations[.digitizer, default: 0] == generation { failures.append(error.localizedDescription) } }
+        }
+        if pressed.pinching, let gestureInput {
+            let generation = generations[.gesture, default: 0]
+            do { try gestureInput.service.resetGestures(); pressed.pinching = false }
+            catch { if generations[.gesture, default: 0] == generation { failures.append(error.localizedDescription) } }
         }
         for (button, point) in pressed.pointerButtons.sorted(by: { $0.key < $1.key }) {
             guard pressed.pointerButtons[button] != nil else { continue }
@@ -204,9 +215,38 @@ final class CoreDeviceScreenInput {
             let event = switch phase { case .began: "start"; case .moved: "position"; case .ended: "end" }
             try unsafe send.unsafeInvoke(on: implementation, point, second, eventType.makeEnumCase(named: event),
                                          nativeEdge.makeEnumCase(named: edge.rawValue), target.makeEnumCase(named: "mainScreen"))
+        case .pinch(let event):
+            guard try remote.supports(Self.universalHIDFeature) else {
+                throw CLIError.unavailable("remote-input-capability", "The device no longer exposes trackpad gestures.")
+            }
+            let gestures = if let gestureInput { gestureInput } else { try await connectGestures() }
+            let reports = try gestures.translator.reports(for: event)
+            // Without a report, the device would not start the pinch or would keep one the trackpad already ended.
+            guard !reports.isEmpty else {
+                throw CLIError.unavailable("remote-gesture-report", "UniversalHIDKit did not translate the pinch.")
+            }
+            for report in reports { try gestures.service.send(report) }
         }
     }
 
+    /// Pinches go to the gesture service the device provides for its touchscreen, where Device Hub sends trackpad input
+    /// that has no Mac HID sender. Device Hub sends a Mac trackpad's own magnify events to a service that mirrors that
+    /// trackpad instead; the scale reports are the same.
+    private func connectGestures() async throws -> (service: CoreDeviceHIDService, translator: CoreDeviceEventReports.Translator) {
+        let generation = generations[.gesture, default: 0]
+        // UniversalHIDKit's magnify translator belongs to the digitizer event type.
+        let reports = if let gestureReports { gestureReports } else {
+            try await CoreDeviceEventReports(runtime: remote.runtime, eventType: "digitizer")
+        }
+        gestureReports = reports
+        let service = try await CoreDeviceHIDService.touchscreenGesture(remote: remote)
+        guard generations[.gesture, default: 0] == generation else {
+            throw CLIError.unavailable("remote-input-capability", "The device's input service changed while preparing the input.")
+        }
+        let input = (service: service, translator: try reports.makeTranslator())
+        gestureInput = input
+        return input
+    }
 }
 
 struct RemoteScreenPressedInputs {
@@ -215,6 +255,8 @@ struct RemoteScreenPressedInputs {
     var buttons: Set<Button> = []
     var pointerButtons: [Int: CGPoint] = [:]
     var touch: (CGPoint, CGPoint?, RemoteDeviceTouchEdge)?
+    /// Whether the device is pinching: a pinch has begun and has not ended or been cancelled.
+    var pinching = false
 
     mutating func record(_ input: RemoteScreenInput) {
         switch input {
@@ -228,6 +270,8 @@ struct RemoteScreenPressedInputs {
             else { pointerButtons[button] = point }
         case .touch(let point, let second, let phase, let edge):
             touch = phase == .ended ? nil : (point, second, edge)
+        case .pinch(let event):
+            pinching = event.phase.isDisjoint(with: [.ended, .cancelled])
         case .pointer: break
         }
     }
@@ -237,6 +281,7 @@ struct RemoteScreenPressedInputs {
         if kinds.contains(.button) { buttons.removeAll() }
         if kinds.contains(.pointer) { pointerButtons.removeAll() }
         if kinds.contains(.digitizer) { touch = nil }
+        if kinds.contains(.gesture) { pinching = false }
     }
 }
 
@@ -247,6 +292,7 @@ private extension RemoteScreenInput {
         case .button: .button
         case .pointer, .pointerButton: .pointer
         case .touch: .digitizer
+        case .pinch: .gesture
         }
     }
 }

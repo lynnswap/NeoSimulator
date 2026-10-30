@@ -290,7 +290,7 @@ private final class CoreDeviceKeyboardService: NativeKeyboardService {
     private let source: String
     private let descriptor: NativeSwiftValue
     private let identity: NativeKeyboardBindings.Identity
-    private let translator: NativeKeyboardBindings.Translator
+    private let translator: CoreDeviceEventReports.Translator
     private var service: CoreDeviceHIDService?
     private(set) var modifierFlags: NSEvent.ModifierFlags = []
     private(set) var heldKeyCodes: Set<UInt16> = []
@@ -326,21 +326,9 @@ private final class CoreDeviceKeyboardService: NativeKeyboardService {
     func stop() async throws { try await service?.stop() }
 }
 
-/// UniversalHIDKit translates AppKit events with the system UniversalHID module, while CoreDevice consumes its
-/// bundled module of the same name. Each report crosses between them as its bytes, never as the other module's value.
 @MainActor
 struct NativeKeyboardBindings {
-    static let systemUniversalHIDURL = URL(fileURLWithPath: "/System/Library/PrivateFrameworks/UniversalHID.framework/Versions/A/UniversalHID")
-    static let universalHIDKitURL = URL(fileURLWithPath: "/System/Library/PrivateFrameworks/UniversalHIDKit.framework/Versions/A/UniversalHIDKit")
     static let coreDeviceUtilitiesPath = "/Library/Developer/PrivateFrameworks/CoreDeviceUtilities.framework/Versions/A/CoreDeviceUtilities"
-
-    /// An `EventObserver` with one keyboard's key and modifier state, converting its reports for CoreDevice.
-    struct Translator {
-        fileprivate let observer: NativeSwiftValue
-        fileprivate let translate: (NativeSwiftValue, NSEvent) throws -> [NativeSwiftValue]
-
-        func reports(for event: NSEvent) throws -> [NativeSwiftValue] { try translate(observer, event) }
-    }
 
     /// The layout properties a guest keyboard service carries, as the guest reads them.
     struct Identity: CustomStringConvertible {
@@ -362,80 +350,23 @@ struct NativeKeyboardBindings {
     /// system withholds StandardType and CountryCode, which carry a keyboard's layout, from simple clients.
     private let makeHIDClient: () throws -> IOHIDEventSystemClient
     private let readSender: NativeSwiftMethod<() -> UInt64>
-    private let makeObserver: () throws -> NativeSwiftValue
-    private let translate: (NativeSwiftValue, NSEvent) throws -> [NativeSwiftValue]
+    private let events: CoreDeviceEventReports
     private let makeDescriptor: (UInt64, [String: Any]) throws -> NativeSwiftValue
     private let makeMainKeyboardDescriptor: () throws -> NativeSwiftValue
     private let identify: (NativeSwiftValue) throws -> Identity
 
     init(runtime: ABIRuntime) async throws {
         try CoreDeviceRemoteScreenDevice.load(Self.coreDeviceUtilitiesPath)
-        try CoreDeviceRemoteScreenDevice.load(Self.universalHIDKitURL.path)
-        let system = Self.systemUniversalHIDURL
-        let sample = try Self.sampleKey(.keyDown)
+        events = try await CoreDeviceEventReports(runtime: runtime, eventType: "keyboard")
+        let sample = try CoreDeviceEventReports.sampleKey(.keyDown)
         // NSEvent's NSEventProtocol conformance is in UniversalHIDKit; the getter binds through an event.
         readSender = try await runtime.object(sample).resolve(.swift(.getter(
             "(extension in UniversalHIDKit):UniversalHIDKit.NSEventProtocol.senderID.getter : Swift.UInt64",
             as: (() -> UInt64).self))).method
-
-        let eventType = try await runtime.resolve(.swift(.type("UniversalHID.HIDEventType")), in: .path(system), loading: .loadedOnly)
-        let maskType = try await runtime.resolve(.swift(.type("UniversalHID.HIDEventMask")), in: .path(system), loading: .loadedOnly)
-        let observerType = try await runtime.resolve(.swift(.type("UniversalHIDKit.EventObserver",
-            genericArguments: [.type(NSEvent.self)])), in: .path(Self.universalHIDKitURL), loading: .loadedOnly)
-        let systemReport = try await runtime.resolve(.swift(.type("UniversalHID.HIDReport")), in: .path(system), loading: .loadedOnly)
-        let coreDeviceReport = try CoreDeviceHIDService.reportABI(runtime: runtime)
-        let data = try await runtime.resolve(.swift(.type("Foundation.Data")))
-        let dataABI = try NativeType.structure(named: data.name, fields: [.uint64, .uint64])
-        // These single-field and Data-wrapping values pass their stored words directly, as DeviceKit passes them.
-        // Each map names one module's types: a type both modules define resolves to the map's entry.
-        let systemReportABI = try NativeType.structure(named: systemReport.name, fields: [.uint64, .uint64])
-        let systemABIs: [NativeSwiftType: NativeType] = [
-            eventType: try .structure(named: eventType.name, fields: [.uint32]),
-            maskType: try .structure(named: maskType.name, fields: [.uint64]),
-            systemReport: systemReportABI,
-            data: dataABI,
-        ]
-        let keyboard = try await eventType.resolve(.swift(.staticGetter("keyboard", as: (() -> NativeSwiftValue).self,
-            valueABIs: systemABIs)))
-        let maskValue = try await eventType.resolve(.swift(.getter("maskValue", as: (() -> UInt).self,
-            valueABIs: systemABIs, receiverABI: systemABIs[eventType])))
-        let makeMask = try await maskType.resolve(.swift(.initializer("init(rawValue:)", as: ((UInt) -> NativeSwiftValue).self,
-            valueABIs: systemABIs)))
-        let makeObserver = try await observerType.resolve(.swift(.initializer("init(eventMask:)",
-            as: ((NativeSwiftValue) -> NativeSwiftValue).self, valueABIs: systemABIs)))
-        let process = try await observerType.resolve(.swift(.method("processEvent(_:)", as: ((NSEvent) -> NativeSwiftValue).self,
-            valueABIs: systemABIs)))
-        let readData = try await systemReport.resolve(.swift(.getter("data", as: (() -> Data).self,
-            valueABIs: systemABIs, receiverABI: systemReportABI)))
-        let makeReport = try await coreDeviceReport.type.resolve(.swift(.initializer("init(data:)",
-            as: ((Data) -> NativeSwiftValue).self, valueABIs: [coreDeviceReport.type: coreDeviceReport.abi, data: dataABI])))
-        let mask = try unsafe maskValue.unsafeInvoke(on: keyboard.unsafeInvoke())
-        // The initializer consumes its mask, so each observer gets its own.
-        let observe = { try unsafe makeObserver.unsafeInvoke(makeMask.unsafeInvoke(mask)) }
-
-        // A result is an array of (report, senderID) whose element type comes from the system module.
-        let probe = try unsafe process.unsafeInvoke(on: observe(), sample)
-        let count = try await probe.type.resolve(.swift(.getter("count", as: (() -> Int).self)))
-        let element = try await probe.type.resolve(.swift(.getter("Swift.Array.subscript.getter : (Swift.Int) -> A",
-            as: ((Int) -> NativeSwiftValue).self)))
-        let translate = { (observer: NativeSwiftValue, event: NSEvent) throws -> [NativeSwiftValue] in
-            let results = try unsafe process.unsafeInvoke(on: observer, event)
-            let reports = try unsafe count.unsafeInvoke(on: results)
-            return try (0..<reports).map { index in
-                let report = try unsafe element.unsafeInvoke(on: results, index).copyTupleElement(at: 0)
-                guard report.type == systemReport else {
-                    throw CLIError.unavailable("native-keyboard-report", "UniversalHIDKit returned \(report.type.name) from "
-                        + "\(String(describing: report.type.image)) instead of the system UniversalHID report.")
-                }
-                return try unsafe makeReport.unsafeInvoke(readData.unsafeInvoke(on: report))
-            }
-        }
         // Converting a key press before any service exists proves the translation; without it, keys would vanish.
-        guard try !translate(observe(), sample).isEmpty else {
+        guard try !events.makeTranslator().reports(for: sample).isEmpty else {
             throw CLIError.unavailable("native-keyboard-report", "UniversalHIDKit did not report a key press.")
         }
-        self.makeObserver = observe
-        self.translate = translate
 
         let keyType = try CoreDeviceHIDService.universalHIDType("HIDServicePropertyKey", runtime: runtime)
         let allKeys = try await keyType.resolve(.swift(.staticGetter("allCases", as: (() -> NativeSwiftValue).self,
@@ -526,7 +457,8 @@ struct NativeKeyboardBindings {
         }
     }
 
-    func makeTranslator() throws -> Translator { Translator(observer: try makeObserver(), translate: translate) }
+    /// An observer with one keyboard's key and modifier state.
+    func makeTranslator() throws -> CoreDeviceEventReports.Translator { try events.makeTranslator() }
 
     func descriptor(serviceID: UInt64, properties: [String: Any]) throws -> NativeSwiftValue {
         try makeDescriptor(serviceID, properties)
@@ -536,12 +468,4 @@ struct NativeKeyboardBindings {
     func mainKeyboardDescriptor() throws -> NativeSwiftValue { try makeMainKeyboardDescriptor() }
 
     func identity(of descriptor: NativeSwiftValue) throws -> Identity { try identify(descriptor) }
-
-    private static func sampleKey(_ type: NSEvent.EventType) throws -> NSEvent {
-        guard let event = NSEvent.keyEvent(with: type, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0,
-            context: nil, characters: "a", charactersIgnoringModifiers: "a", isARepeat: false, keyCode: 0) else {
-            throw CLIError.software("native-keyboard-sample", "AppKit could not create a sample key event.")
-        }
-        return event
-    }
 }

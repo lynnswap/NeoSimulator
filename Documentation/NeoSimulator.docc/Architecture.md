@@ -218,7 +218,12 @@ frame does not start DeviceKit's own display stream. Its side buttons send the
 HID usages their `chrome.json` declares. A resized app's dedicated display is
 shown without the frame. A two-finger trackpad scroll on the screen drags one
 digitizer touch from where it began and ends it when the fingers lift, so the
-device applies its own deceleration.
+device applies its own deceleration. A trackpad pinch that begins on the screen
+goes to the touchscreen gesture service that the device lists among its
+UniversalHID services. As in Device Hub, UniversalHIDKit's `EventObserver`
+translates each magnify event into a scale report with the event's phase and
+magnification. When the screen loses input during a pinch, the session resets
+that service's gesture state.
 
 macOS lists a connected device's screen as an AVFoundation capture source once
 the manager enables CoreMediaIO screen-capture devices for its process, but it

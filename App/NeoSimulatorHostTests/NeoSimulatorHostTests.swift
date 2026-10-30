@@ -136,6 +136,73 @@ struct InputFocusTests {
         try await session.stop()
     }
 
+    @Test func aTrackpadPinchOverTheRemoteScreenPinchesTheDeviceUntilItEndsOrTheScreenLosesInput() async throws {
+        _ = NSApplication.shared
+        let data = Data(#"{"result":{"devices":[{"identifier":"fixture-command","properties":{"hardware":{"reality":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)
+        let device = try #require(CoreDeviceInventoryDecoder.decode(data).first)
+        let transport = TestRemoteScreenTransport()
+        transport.inputCapabilities = [.digitizer, .gesture]
+        let session = RemoteDeviceScreenSession(device: device) { _, _, _ in transport }
+        try await session.start()
+        let canvas = MagnifyingCanvasFixture(frame: NSRect(x: 0, y: 0, width: 400, height: 600))
+        let input = RemoteDeviceInputView(session: session)
+        input.frame = canvas.bounds
+        canvas.addSubview(input)
+        input.isInputEnabled = true
+        var operations: [@MainActor () async throws -> Void] = []
+        input.enqueue = { operations.append($0) }
+        func pinch(_ phase: TrackpadPinchPhase, by magnification: Double = 0) throws -> NSEvent {
+            try trackpadPinchEvent(phase, magnification: magnification)
+        }
+        func scroll(_ phase: CGScrollPhase) throws -> NSEvent {
+            let event = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2, wheel1: 0, wheel2: 0, wheel3: 0)
+            event?.setIntegerValueField(.scrollWheelEventScrollPhase, value: Int64(phase.rawValue))
+            return try #require(event.flatMap(NSEvent.init(cgEvent:)))
+        }
+        func send() async throws {
+            for operation in operations { try await operation() }
+            operations.removeAll()
+        }
+        // A pinch that begins beside the display magnifies the canvas.
+        transport.locate = { _, _ in nil }
+        let beside = try [pinch(.began), pinch(.changed, by: 0.2), pinch(.ended)]
+        for event in beside { input.magnify(with: event) }
+
+        // Over the display, the device performs the trackpad's pinch until it ends or is cancelled.
+        // The pinch takes both fingers, so it ends a scroll's touch drag and a scroll during it drags nothing.
+        transport.locate = { point, _ in RemoteDeviceInputLocations(touch: point, pointer: point) }
+        input.scrollWheel(with: try scroll(.began))
+        let ended = try [pinch(.began), pinch(.changed, by: 0.25), pinch(.changed, by: -0.1), pinch(.ended)]
+        input.magnify(with: ended[0])
+        input.scrollWheel(with: try scroll(.began))
+        for event in ended.dropFirst() { input.magnify(with: event) }
+        let cancelled = try [pinch(.began), pinch(.cancelled)]
+        // Losing focus releases a pinch in progress, and the rest of it reaches neither the device nor the canvas.
+        let unfocused = try [pinch(.began), pinch(.changed, by: 0.3)]
+        for event in cancelled + unfocused { input.magnify(with: event) }
+        try await send()
+        input.releaseFocus()
+        for event in try [pinch(.changed, by: 0.1), pinch(.ended)] { input.magnify(with: event) }
+        try await send()
+        #expect(transport.inputReleases == 1)
+        // Losing the device's gesture input ends a pinch in progress the same way.
+        let lost = try pinch(.began)
+        input.magnify(with: lost)
+        try await send()
+        input.invalidateInputs(for: [.gesture])
+        for event in try [pinch(.changed, by: 0.1), pinch(.ended)] { input.magnify(with: event) }
+        // Without gesture input, a pinch over the display magnifies the canvas.
+        transport.inputCapabilities = [.digitizer]
+        let unsupported = try [pinch(.began), pinch(.ended)]
+        for event in unsupported { input.magnify(with: event) }
+        try await send()
+
+        #expect(transport.pinches.map(ObjectIdentifier.init) == (ended + cancelled + unfocused + [lost]).map(ObjectIdentifier.init))
+        #expect(canvas.magnified.map(ObjectIdentifier.init) == (beside + unsupported).map(ObjectIdentifier.init))
+        #expect(transport.touches.map(\.phase) == [.began, .ended])
+        try await session.stop()
+    }
+
     @Test(arguments: ["search", "screen-to-search", "screen"])
     func remoteAppResizeRestoresOnlyUnchangedScreenFocus(_ focus: String) async throws {
         _ = NSApplication.shared
@@ -10178,6 +10245,7 @@ final class TestRemoteScreenTransport: RemoteScreenTransport {
     private(set) var buttons: [RemoteDeviceButtonState] = []
     private(set) var keys: [(usage: UInt16, state: RemoteDeviceButtonState)] = []
     private(set) var touches: [(point: CGPoint, phase: RemoteDeviceTouchPhase)] = []
+    private(set) var pinches: [NSEvent] = []
     private(set) var inputReleases = 0
     var onReleaseInputs: (@MainActor () async throws -> Void)?
     func start(events: @escaping @MainActor (RemoteScreenTransportEvent) -> Void) async throws {
@@ -10189,6 +10257,7 @@ final class TestRemoteScreenTransport: RemoteScreenTransport {
         if case .button(_, _, let state) = input { buttons.append(state) }
         if case .key(let usage, let state) = input { keys.append((usage, state)) }
         if case .touch(let point, _, let phase, _) = input { touches.append((point, phase)) }
+        if case .pinch(let event) = input { pinches.append(event) }
     }
     func inputLocations(atWindowPoint point: CGPoint, clampingToDisplay: Bool) -> RemoteDeviceInputLocations? {
         locate?(point, clampingToDisplay)
@@ -10198,4 +10267,23 @@ final class TestRemoteScreenTransport: RemoteScreenTransport {
         try await onReleaseInputs?()
     }
     func stop() async throws { nativeInputView?.removeFromSuperview() }
+}
+
+/// Stands in for the canvas around a remote screen, which magnifies the pinches the screen leaves to it.
+private final class MagnifyingCanvasFixture: NSView {
+    private(set) var magnified: [NSEvent] = []
+    override func magnify(with event: NSEvent) { magnified.append(event) }
+}
+
+/// The gesture phases of a trackpad's magnify events.
+private enum TrackpadPinchPhase: Int64 { case began = 1, changed = 2, ended = 4, cancelled = 8 }
+
+/// AppKit makes a trackpad's magnify event from a zoom gesture, IOHIDEvent type 8, with its phase and magnification.
+private func trackpadPinchEvent(_ phase: TrackpadPinchPhase, magnification: Double) throws -> NSEvent {
+    let event = try #require(CGEvent(source: nil))
+    event.type = try #require(CGEventType(rawValue: 29))
+    event.setIntegerValueField(try #require(CGEventField(rawValue: 110)), value: 8)
+    event.setIntegerValueField(try #require(CGEventField(rawValue: 132)), value: phase.rawValue)
+    event.setDoubleValueField(try #require(CGEventField(rawValue: 113)), value: magnification)
+    return try #require(NSEvent(cgEvent: event))
 }

@@ -1,7 +1,11 @@
 import AppKit
 import OSLog
 
-public enum RemoteDeviceInputKind: Hashable, Sendable { case keyboard, pointer, digitizer, button }
+public enum RemoteDeviceInputKind: Hashable, Sendable {
+    case keyboard, pointer, digitizer, button
+    /// Trackpad gestures over the touchscreen, such as pinches.
+    case gesture
+}
 public enum RemoteDeviceButtonState: String, Sendable { case down, up }
 public enum RemoteDevicePointerPhase: String, Sendable { case down, up, dragged }
 public enum RemoteDeviceTouchPhase: String, Sendable { case began, moved, ended }
@@ -358,6 +362,10 @@ public final class RemoteDeviceScreenSession {
         try await send(.button(usagePage, usage, state))
     }
 
+    /// Sends one magnify event of a trackpad pinch, whose phase begins, continues, ends, or cancels the device's pinch.
+    /// The device places the pinch itself; the event carries only its scale.
+    public func sendPinch(_ event: NSEvent) async throws { try await send(.pinch(event)) }
+
     /// Shows the device's frame from its display description, whether or not its screen connects.
     private func prepareFrame() {
         guard frame.chrome == nil, framePreparation == nil else { return }
@@ -544,7 +552,7 @@ public final class RemoteDeviceScreenSession {
             }
         }
         resizeOperation = ResizeOperation(intent: intent, task: task)
-        onInputCapabilitiesLost?([.keyboard, .pointer, .digitizer, .button])
+        onInputCapabilitiesLost?([.keyboard, .pointer, .digitizer, .button, .gesture])
         onStateChange?()
         try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
     }
@@ -694,12 +702,14 @@ public final class RemoteDeviceScreenSession {
     }
 }
 
-enum RemoteScreenInput: Sendable {
+enum RemoteScreenInput {
     case key(UInt16, RemoteDeviceButtonState)
     case pointer(CGPoint)
     case pointerButton(Int, RemoteDevicePointerPhase, Int, CGPoint)
     case touch(CGPoint, CGPoint?, RemoteDeviceTouchPhase, RemoteDeviceTouchEdge)
     case button(Int, Int, RemoteDeviceButtonState)
+    /// UniversalHIDKit translates the AppKit event itself, as it does for Device Hub.
+    case pinch(NSEvent)
 }
 
 enum RemoteScreenTransportEvent {

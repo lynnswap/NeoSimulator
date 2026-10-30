@@ -76,7 +76,7 @@ public struct NativeRuntimeValidationReport: Codable, Equatable, Sendable {
             "Mac keyboard service properties and report delivery to an actual device",
         ], load: {
             try CoreDeviceRemoteScreenDevice.load(NativeKeyboardBindings.coreDeviceUtilitiesPath)
-            try CoreDeviceRemoteScreenDevice.load(NativeKeyboardBindings.universalHIDKitURL.path)
+            try CoreDeviceRemoteScreenDevice.load(CoreDeviceEventReports.universalHIDKitURL.path)
         }, prepare: {
             // This translates a synthesized key without a device; it never creates a service.
             _ = try await NativeKeyboardBindings(runtime: .shared)

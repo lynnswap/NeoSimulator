@@ -1024,6 +1024,51 @@ struct RemoteDeviceScreenTests {
         }
     }
 
+    @Test func trackpadPinchesBecomeScaleReportsThatCoreDeviceSends() async throws {
+        let runtime = ABIRuntime.shared
+        let translator = try await CoreDeviceEventReports(runtime: runtime, eventType: "digitizer").makeTranslator()
+        let report = try CoreDeviceHIDService.reportABI(runtime: runtime)
+        let scale = try CoreDeviceHIDService.universalHIDType("ScaleReport", runtime: runtime)
+        let reportID = try CoreDeviceHIDService.universalHIDType("ReportID", runtime: runtime)
+        let phase = try CoreDeviceHIDService.universalHIDType("HIDEventPhase", runtime: runtime)
+        let abis: [NativeSwiftType: NativeType] = [
+            report.type: report.abi,
+            scale: try .structure(named: scale.name, fields: [.uint64, .uint64]),
+            reportID: try .structure(named: reportID.name, fields: [.uint8]),
+            phase: try .structure(named: phase.name, fields: [.uint8]),
+        ]
+        let rawID = try reportID.resolveAndWait(.swift(.getter("rawValue", as: (() -> UInt8).self, valueABIs: abis, receiverABI: abis[reportID])))
+        let readID = try report.type.resolveAndWait(.swift(.getter("reportID", as: (() -> NativeSwiftValue).self, valueABIs: abis, receiverABI: report.abi)))
+        let scaleID = try scale.resolveAndWait(.swift(.staticGetter("reportID", as: (() -> NativeSwiftValue).self, valueABIs: abis)))
+        let makeScale = try scale.resolveAndWait(.swift(.initializer("init(_report:)", as: ((NativeSwiftValue) -> NativeSwiftValue).self, valueABIs: abis)))
+        let z = try scale.resolveAndWait(.swift(.getter("z", as: (() -> Double).self, valueABIs: abis, receiverABI: abis[scale])))
+        let readPhase = try scale.resolveAndWait(.swift(.getter("phase", as: (() -> NativeSwiftValue).self, valueABIs: abis, receiverABI: abis[scale])))
+        let rawPhase = try phase.resolveAndWait(.swift(.getter("rawValue", as: (() -> UInt8).self, valueABIs: abis, receiverABI: abis[phase])))
+        func expected(_ name: String) throws -> UInt8 {
+            let read = try phase.resolveAndWait(.swift(.staticGetter(name, as: (() -> NativeSwiftValue).self, valueABIs: abis)))
+            return try unsafe rawPhase.unsafeInvoke(on: read.unsafeInvoke())
+        }
+        // AppKit makes a trackpad's magnify event from a zoom gesture, IOHIDEvent type 8, with its phase and magnification.
+        for (gesturePhase, name, magnification) in [(Int64(1), "began", 0.0), (2, "changed", 0.25), (2, "changed", -0.125),
+                                                    (4, "ended", 0), (8, "canceled", 0)] {
+            let event = try #require(CGEvent(source: nil))
+            event.type = try #require(CGEventType(rawValue: 29))
+            event.setIntegerValueField(try #require(CGEventField(rawValue: 110)), value: 8)
+            event.setIntegerValueField(try #require(CGEventField(rawValue: 132)), value: gesturePhase)
+            event.setDoubleValueField(try #require(CGEventField(rawValue: 113)), value: magnification)
+            let pinch = try #require(NSEvent(cgEvent: event))
+            try #require(pinch.type == .magnify)
+            let reports = try translator.reports(for: pinch)
+            // Each step reaches the device as one scale report in CoreDevice's own UniversalHID module.
+            let value = try #require(reports.first)
+            #expect(reports.count == 1 && value.type == report.type)
+            #expect(try unsafe rawID.unsafeInvoke(on: readID.unsafeInvoke(on: value)) == rawID.unsafeInvoke(on: scaleID.unsafeInvoke()))
+            let scaled = try unsafe makeScale.unsafeInvoke(value)
+            #expect(abs(try unsafe z.unsafeInvoke(on: scaled) - magnification) < 0.001, "\(name) \(magnification)")
+            #expect(try unsafe rawPhase.unsafeInvoke(on: readPhase.unsafeInvoke(on: scaled)) == expected(name), "\(name)")
+        }
+    }
+
     @Test func failedHIDServiceRemovalKeepsTheOwnedServiceForCleanupRetry() async throws {
         var removes = 0
         var resets = 0
