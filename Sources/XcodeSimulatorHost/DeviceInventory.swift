@@ -59,59 +59,49 @@ public enum DeviceInventoryKind: Equatable, Sendable {
 /// The fields of CoreDevice's typed `BuildUpdate` that its native ordering compares.
 ///
 /// Inventory retains a value only when those fields have types and values CoreDevice can compare:
-/// a known train program, at least the five revision components that the comparison reads, and
-/// complete revision extra text. A missing revision is not reconstructed from the build name, so such
-/// a build has no value here although CoreDevice derives one when decoding. Fields the comparison
-/// does not read are not checked. Equality compares the retained fields; it is not the ordering's tie.
-public struct CoreDeviceBuildUpdate: Equatable, Sendable {
-    struct RevisionExtra: Decodable, Equatable, Sendable {
-        let humanReadableVersionString: String
-        let versionExtraString: String
-    }
-
+/// a known train program and at least the five revision components that the comparison reads.
+/// A missing revision is not reconstructed from the build name, so such a build has no value here
+/// although CoreDevice derives one when decoding. Fields the comparison does not read are not checked.
+public struct CoreDeviceBuildUpdate: Comparable, Sendable {
     /// `TrainProgram` raw values in Xcode 27.2's CoreDeviceUtilities, which rejects any other value.
     private static let trainPrograms: Set = ["iOS", "macOS", "tvOS", "watchOS", "xrOS", "developerTools", "rtKit"]
 
     let trainProgram: String?
     let revisionComponents: [UInt]
-    let revisionExtra: RevisionExtra?
+    let revisionExtraString: String?
     let factoryIdentifier: UInt?
 
-    init?(trainProgram: String?, revisionComponents: [UInt], revisionExtra: RevisionExtra?, factoryIdentifier: UInt?) {
+    init?(trainProgram: String?, revisionComponents: [UInt], revisionExtraString: String?, factoryIdentifier: UInt?) {
         // CoreDevice decodes a shorter revision unchanged, and its VersionNumber.< then traps reading components 0...4.
         guard revisionComponents.count >= 5, trainProgram.map(Self.trainPrograms.contains) ?? true else { return nil }
         self.trainProgram = trainProgram
-        self.revisionComponents = revisionComponents
-        self.revisionExtra = revisionExtra
+        self.revisionComponents = Array(revisionComponents.prefix(5))
+        self.revisionExtraString = revisionExtraString
         self.factoryIdentifier = factoryIdentifier
     }
 
-    /// Returns the result of CoreDevice's `BuildUpdate.<`.
+    /// Orders builds by train program, the first five revision components, the revision's extra
+    /// version string, then factory identifier, with an absent value first, as `BuildUpdate.<` does.
     ///
-    /// Two different values can be unordered in both directions, for example when only their
-    /// human-readable revision text differs, so callers continue with their next criterion.
-    public func isOrdered(before other: CoreDeviceBuildUpdate) -> Bool {
-        switch (trainProgram, other.trainProgram) {
-        case (nil, .some): return true
-        case (.some, nil): return false
-        case (.some(let lhs), .some(let rhs)) where lhs != rhs: return lhs < rhs
-        default: break
+    /// `BuildUpdate.<` compares factory identifiers only when entire revisions are equal, so builds whose
+    /// revisions differ only in human-readable text or later components are unordered, and another
+    /// criterion can then order them in a cycle. This order compares their factory identifiers instead.
+    public static func < (lhs: Self, rhs: Self) -> Bool {
+        if lhs.trainProgram != rhs.trainProgram { return precedes(lhs.trainProgram, rhs.trainProgram) }
+        if lhs.revisionComponents != rhs.revisionComponents {
+            return lhs.revisionComponents.lexicographicallyPrecedes(rhs.revisionComponents)
         }
-        // CoreDevice compares factory identifiers only for equal revisions, including component count and extra text.
-        if revisionComponents == other.revisionComponents, revisionExtra == other.revisionExtra {
-            switch (factoryIdentifier, other.factoryIdentifier) {
-            case (nil, .some): return true
-            case (.some(let lhs), .some(let rhs)): return lhs < rhs
-            default: return false
-            }
+        if lhs.revisionExtraString != rhs.revisionExtraString {
+            return precedes(lhs.revisionExtraString, rhs.revisionExtraString)
         }
-        for (lhs, rhs) in zip(revisionComponents.prefix(5), other.revisionComponents.prefix(5)) where lhs != rhs {
-            return lhs < rhs
-        }
-        switch (revisionExtra, other.revisionExtra) {
-        case (nil, .some): return true
-        case (.some(let lhs), .some(let rhs)): return lhs.versionExtraString < rhs.versionExtraString
-        default: return false
+        return precedes(lhs.factoryIdentifier, rhs.factoryIdentifier)
+    }
+
+    private static func precedes<Value: Comparable>(_ lhs: Value?, _ rhs: Value?) -> Bool {
+        switch (lhs, rhs) {
+        case (nil, .some): true
+        case (.some(let lhs), .some(let rhs)): lhs < rhs
+        default: false
         }
     }
 }
@@ -403,8 +393,9 @@ enum CoreDeviceInventoryDecoder {
                 /// BuildUpdate's compared fields, with CoreDevice's Codable keys and types.
                 struct Update: Decodable {
                     struct Revision: Decodable {
+                        struct Extra: Decodable { let versionExtraString: String }
                         let components: [UInt]
-                        let extraInfo: CoreDeviceBuildUpdate.RevisionExtra?
+                        let extraInfo: Extra?
                     }
                     let trainProgram: String?
                     let revisionVersion: Revision?
@@ -424,7 +415,8 @@ enum CoreDeviceInventoryDecoder {
                     update = (try? values.decodeIfPresent(Update.self, forKey: key)).flatMap { update in
                         update.revisionVersion.flatMap {
                             CoreDeviceBuildUpdate(trainProgram: update.trainProgram, revisionComponents: $0.components,
-                                                  revisionExtra: $0.extraInfo, factoryIdentifier: update.factoryIdentifier)
+                                                  revisionExtraString: $0.extraInfo?.versionExtraString,
+                                                  factoryIdentifier: update.factoryIdentifier)
                         }
                     }
                 }

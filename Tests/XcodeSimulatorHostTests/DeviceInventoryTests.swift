@@ -32,7 +32,7 @@ struct DeviceInventoryTests {
         #expect(simulator.osBuild == "24B114")
         // The supplemental 24B91016s natively precedes 24B114, although its name sorts after it.
         let supplemental = try #require(simulator.osBuildUpdate)
-        #expect(supplemental.isOrdered(before: base) && !base.isOrdered(before: supplemental))
+        #expect(supplemental < base)
         let unnamed = try #require(records.first { $0.identifier == "coredevice-only-simulator" })
         #expect(unnamed.name == unnamed.identifier && unnamed.reportedName == nil)
         // CoreDevice defines no order for fewer than five revision components.

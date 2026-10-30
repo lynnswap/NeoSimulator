@@ -220,10 +220,8 @@ struct DeviceBrowserPresentation {
             switch (coreDevice(lhs)?.osBuildUpdate, coreDevice(rhs)?.osBuildUpdate) {
             case (.some, nil): return true
             case (nil, .some): return false
-            case (.some(let a), .some(let b)):
-                if a.isOrdered(before: b) { return true }
-                if b.isOrdered(before: a) { return false }
-            case (nil, nil): break
+            case (.some(let a), .some(let b)) where a != b: return a < b
+            default: break
             }
         }
         // Inventory does not contain DeviceKit's transient presentation-active state.

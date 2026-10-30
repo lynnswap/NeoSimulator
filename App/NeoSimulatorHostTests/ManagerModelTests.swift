@@ -118,16 +118,21 @@ struct ManagerModelTests {
     }
 
     @Test func operatingSystemOrderUsesTypedVersionsWithMissingValuesLast() throws {
-        // base and rebuilt differ only in humanReadableVersionString, which BuildUpdate.< ignores.
+        // base, patched and rebuilt share a 24B114 revision apart from humanReadableVersionString. BuildUpdate.<
+        // compares only base and patched by factory, so availability and identifiers would then form a cycle.
         let payload = Data(#"""
         {"result":{"devices":[
           {"identifier":"older","properties":{"hardware":{"reality":"physical","platform":"iOS"},
             "software":{"osVersionNumber":{"stringValue":"27.2"}},"connection":{"state":"connected"}}},
           {"identifier":"base","properties":{"hardware":{"reality":"physical","platform":"iOS"},
-            "software":{"osVersionNumber":{"stringValue":"27.2"},"osBuildVersions":{"buildVersion":{"majorLetterComponent":"B","majorNumberComponent":24,"name":"24B114",
+            "software":{"osVersionNumber":{"stringValue":"27.2"},"osBuildVersions":{"buildVersion":{"factoryIdentifier":1,"majorLetterComponent":"B","majorNumberComponent":24,"name":"24B114",
               "revisionVersion":{"components":[24,2,114,0,0],"extraInfo":{"humanReadableVersionString":"a","versionExtraString":"x"},"originalComponentsCount":5,"stringValue":"24.2.114.0.0"},"updateNumberComponent":114}}}}},
+          {"identifier":"patched","properties":{"hardware":{"reality":"physical","platform":"iOS"},
+            "software":{"osVersionNumber":{"stringValue":"27.2"},"osBuildVersions":{"buildVersion":{"factoryIdentifier":2,"majorLetterComponent":"B","majorNumberComponent":24,"name":"24B114",
+              "revisionVersion":{"components":[24,2,114,0,0],"extraInfo":{"humanReadableVersionString":"a","versionExtraString":"x"},"originalComponentsCount":5,"stringValue":"24.2.114.0.0"},"updateNumberComponent":114}}},
+            "connection":{"state":"connected"}}},
           {"identifier":"rebuilt","properties":{"hardware":{"reality":"physical","platform":"iOS"},
-            "software":{"osVersionNumber":{"stringValue":"27.2"},"osBuildVersions":{"buildVersion":{"majorLetterComponent":"B","majorNumberComponent":24,"name":"24B114",
+            "software":{"osVersionNumber":{"stringValue":"27.2"},"osBuildVersions":{"buildVersion":{"factoryIdentifier":1,"majorLetterComponent":"B","majorNumberComponent":24,"name":"24B114",
               "revisionVersion":{"components":[24,2,114,0,0],"extraInfo":{"humanReadableVersionString":"b","versionExtraString":"x"},"originalComponentsCount":5,"stringValue":"24.2.114.0.0"},"updateNumberComponent":114}}},
             "connection":{"state":"connected"}}},
           {"identifier":"earlierBuild","properties":{"hardware":{"reality":"physical","platform":"iOS"},
@@ -149,7 +154,7 @@ struct ManagerModelTests {
         #expect(presentation.sections.map(\.title) == ["futureOS 1.0", "iOS 27.10", "iOS 27.2", "iOS Other", "watchOS 27.2", "visionOS 27.2"])
         // Typed builds precede availability: 24B91016s before 24B114, and a missing build after both.
         #expect(presentation.sections.first { $0.id == "iOS 27.2" }?.devices.map(\.id)
-            == ["earlierBuild", "rebuilt", "base", "older"].map(DeviceInventoryID.coreDevice))
+            == ["earlierBuild", "rebuilt", "base", "patched", "older"].map(DeviceInventoryID.coreDevice))
         let platforms = DeviceBrowserPresentation(devices: devices, sortOrder: .platform)
         #expect(platforms.sections.map(\.id) == ["futureOS", "iOS", "watchOS", "xrOS"])
         #expect(platforms.sections.map(\.title) == ["futureOS", "iOS", "watchOS", "visionOS"])
