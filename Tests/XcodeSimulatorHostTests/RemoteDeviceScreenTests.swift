@@ -1,4 +1,5 @@
 import AppKit
+import Carbon
 import CoreVideo
 import ImageIO
 import Metal
@@ -915,7 +916,7 @@ struct RemoteDeviceScreenTests {
     @Test func nativeTouchscreenDescriptorsPreserveANonLegacyDisplayIdentity() async throws {
         try CoreDeviceRemoteScreenDevice.load("/Library/Developer/PrivateFrameworks/CoreDeviceUtilities.framework/Versions/A/CoreDeviceUtilities")
         let runtime = ABIRuntime.shared
-        let descriptor = try await CoreDeviceDisplayInput.descriptor(displayID: 0x35, uniqueID: "resized-app-display", runtime: runtime)
+        let descriptor = try await CoreDeviceHIDService.touchscreenDescriptor(displayID: 0x35, uniqueID: "resized-app-display", runtime: runtime)
         let descriptorType = try runtime.resolveAndWait(.swift(.type("CoreDevice.HIDServiceDescriptor")))
         let serviceIDType = try runtime.resolveAndWait(.swift(.type("CoreDevice.HIDServiceID")))
         let abis: [NativeSwiftType: NativeType] = [descriptorType: try .opaque(named: descriptorType.name),
@@ -978,7 +979,7 @@ struct RemoteDeviceScreenTests {
     @Test func failedHIDServiceRemovalKeepsTheOwnedServiceForCleanupRetry() async throws {
         var removes = 0
         var resets = 0
-        let service = CoreDeviceDisplayInput(send: { _, _, _, _ in }, reset: {
+        let service = CoreDeviceHIDService(send: { _ in }, reset: {
             resets += 1
             throw ScreenFixtureError.stream
         }, remove: {
@@ -990,9 +991,100 @@ struct RemoteDeviceScreenTests {
         #expect(!service.isRemoved)
         await #expect(throws: ScreenFixtureError.stream) { try await service.stop() }
         #expect(service.isRemoved && removes == 2 && resets == 2)
-        #expect(throws: CLIError.self) { try service.send(.zero, second: nil, phase: .began, edge: .none) }
+        let report = try CoreDeviceDigitizerReports(runtime: .shared).make(point: .zero, second: nil, phase: .began, edge: .none)
+        #expect(throws: CLIError.self) { try service.send(report) }
         try await service.stop()
         #expect(removes == 2 && resets == 2)
+    }
+
+    @Test func keyboardServicesCarryTheMacKeyboardLayoutAndReportsInCoreDevicesModule() async throws {
+        let runtime = ABIRuntime.shared
+        let bindings = try await NativeKeyboardBindings(runtime: runtime)
+        for (standardType, countryCode) in [(2, 15), (0, 33)] {
+            let descriptor = try bindings.descriptor(serviceID: 0x1234, properties: [
+                "PrimaryUsagePage": 1, "PrimaryUsage": 6, "DeviceUsagePairs": [["DeviceUsagePage": 1, "DeviceUsage": 6]],
+                "StandardType": standardType, "CountryCode": countryCode, "Product": "Fixture Keyboard",
+            ])
+            let identity = try bindings.identity(of: descriptor)
+            #expect(identity.standardType == UInt8(standardType) && identity.countryCode == UInt8(countryCode))
+            #expect(identity.isHardwareKeyboard && identity.product == "Fixture Keyboard")
+        }
+        let main = try bindings.identity(of: bindings.mainKeyboardDescriptor())
+        #expect(main.isHardwareKeyboard && main.standardType == nil, "\(main)")
+        let report = try CoreDeviceHIDService.reportABI(runtime: runtime)
+        let data = try runtime.resolveAndWait(.swift(.type("Foundation.Data")))
+        let readData = try report.type.resolveAndWait(.swift(.getter("data", as: (() -> Data).self,
+            valueABIs: [report.type: report.abi, data: try .structure(named: data.name, fields: [.uint64, .uint64])],
+            receiverABI: report.abi)))
+        let translator = try bindings.makeTranslator()
+        // Eisu exists only on JIS keyboards; its press and release must both reach CoreDevice's keyboard service.
+        let reports = try [NSEvent.EventType.keyDown, .keyUp].map { type in
+            let event = try #require(NSEvent.keyEvent(with: type, location: .zero, modifierFlags: [], timestamp: 1, windowNumber: 0,
+                context: nil, characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: UInt16(kVK_JIS_Eisu)))
+            #expect(try bindings.sender(of: event) == 0)
+            let values = try translator.reports(for: event)
+            #expect(values.count == 1 && values.allSatisfy { $0.type == report.type })
+            return try values.map { try unsafe readData.unsafeInvoke(on: $0) }
+        }
+        #expect(reports[0] != reports[1])
+    }
+
+    @Test func nativeKeyboardKeepsEachMacKeyboardsServiceAndSendsSynthesizedInputToTheActiveOne() async throws {
+        _ = NSApplication.shared
+        let transport = KeyboardFixtureTransport()
+        let keyboard = NativeDeviceKeyboard(transport: transport)
+        var failures: [String] = []
+        keyboard.onFailure = { failures.append($0.localizedDescription) }
+        let display = NSObject()
+        var events: [NSEvent] = []
+        func key(_ type: NSEvent.EventType, sender: UInt64 = 0, repeating: Bool = false) throws -> NSEvent {
+            let event = try #require(NSEvent.keyEvent(with: type, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0,
+                context: nil, characters: type == .flagsChanged ? "" : "a", charactersIgnoringModifiers: type == .flagsChanged ? "" : "a",
+                isARepeat: repeating, keyCode: 0))
+            // Retaining each event keeps its identity unique.
+            events.append(event)
+            transport.senders[ObjectIdentifier(event)] = sender
+            return event
+        }
+        keyboard.setEnabled(true, for: display)
+        // Before any Mac keyboard sends input, synthesized input, such as automation's, uses the main keyboard.
+        let typed = try key(.keyDown)
+        keyboard.handle(typed)
+        let unknown = try key(.keyUp, sender: 0x99)
+        keyboard.handle(unknown)
+        // The first Mac keyboard input removes the main keyboard and then receives synthesized releases.
+        let builtIn = try key(.keyDown, sender: 0xA)
+        keyboard.handle(builtIn)
+        keyboard.handle(try key(.keyDown, sender: 0xA, repeating: true))
+        let syntheticUp = try key(.keyUp)
+        keyboard.handle(syntheticUp)
+        let external = try key(.keyDown, sender: 0xB)
+        keyboard.handle(external)
+        let release = try key(.flagsChanged)
+        NSApp.sendEvent(release)
+        keyboard.setEnabled(false, for: display)
+        NSApp.sendEvent(try key(.flagsChanged))
+        try await keyboard.removeServices()
+        #expect(transport.keyboards.map(\.sender) == [nil, 0xA, 0xB])
+        #expect(transport.keyboards.map(\.events) == [[typed, unknown], [builtIn, syntheticUp], [external, release]].map { $0.map(ObjectIdentifier.init) })
+        #expect(transport.keyboards.map(\.stops) == [1, 1, 1])
+
+        // After reconnection, synthesized input recreates the active Mac keyboard with released state.
+        // Its failures are reported, and a service that could not be removed is removed by the next attempt.
+        keyboard.handle(try key(.keyDown))
+        let recreated = try #require(transport.keyboards.last)
+        recreated.sendFailures = 1
+        recreated.stopFailures = 1
+        let released = try key(.keyUp, sender: 0xB)
+        keyboard.handle(released)
+        await #expect(throws: CLIError.self) { try await keyboard.removeServices() }
+        try await keyboard.stop()
+        #expect(transport.keyboards.map(\.sender) == [nil, 0xA, 0xB, 0xB])
+        #expect(recreated.events == [ObjectIdentifier(released)] && recreated.stops == 2)
+        #expect(failures == ["fixture stream failed"])
+        keyboard.handle(try key(.keyDown, sender: 0xA))
+        try await keyboard.removeServices()
+        #expect(transport.keyboards.count == 4)
     }
 
     private func wait(_ session: RemoteDeviceScreenSession, until condition: @escaping @MainActor () -> Bool) async {
@@ -1076,6 +1168,47 @@ private final class PostureFixtureTransport: DevicePostureTransport {
 private enum ScreenFixtureError: LocalizedError {
     case stream, cleanup
     var errorDescription: String? { self == .stream ? "fixture stream failed" : "fixture cleanup failed" }
+}
+
+@MainActor
+private final class KeyboardFixtureTransport: NativeKeyboardTransport {
+    final class Keyboard: NativeKeyboardService {
+        /// Nil for the main keyboard.
+        let sender: UInt64?
+        var events: [ObjectIdentifier] = []
+        var stops = 0
+        var sendFailures = 0
+        var stopFailures = 0
+        init(sender: UInt64?) { self.sender = sender }
+        func send(_ event: NSEvent) async throws {
+            if sendFailures > 0 { sendFailures -= 1; throw ScreenFixtureError.stream }
+            events.append(ObjectIdentifier(event))
+        }
+        func stop() async throws {
+            stops += 1
+            if stopFailures > 0 { stopFailures -= 1; throw ScreenFixtureError.cleanup }
+        }
+    }
+
+    /// Synthesized events have no sender, as AppKit creates them.
+    var senders: [ObjectIdentifier: UInt64] = [:]
+    let macSenders: Set<UInt64> = [0xA, 0xB]
+    var keyboards: [Keyboard] = []
+
+    func sender(of event: NSEvent) throws -> UInt64 { senders[ObjectIdentifier(event)] ?? 0 }
+
+    func makeKeyboard(forSender sender: UInt64) throws -> (any NativeKeyboardService)? {
+        guard macSenders.contains(sender) else { return nil }
+        let keyboard = Keyboard(sender: sender)
+        keyboards.append(keyboard)
+        return keyboard
+    }
+
+    func makeMainKeyboard() throws -> any NativeKeyboardService {
+        let keyboard = Keyboard(sender: nil)
+        keyboards.append(keyboard)
+        return keyboard
+    }
 }
 
 @MainActor

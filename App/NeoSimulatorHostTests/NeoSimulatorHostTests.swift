@@ -2929,6 +2929,41 @@ struct InputFocusTests {
         try unsafe display.disconnect.unsafeInvoke(on: view, NativeSwiftClosure {})
     }
 
+    @Test func simulatorKitInputPassesKeysButNotModifiersToTheNativeKeyboard() async throws {
+        _ = NSApplication.shared
+        let runtime = try await makeRuntime()
+        let display = runtime.display
+        let type = try #require(NSClassFromString("SimulatorKit.SimDisplayView") as? NSView.Type)
+        let view = type.init(frame: .zero)
+        defer { _ = try? unsafe display.disconnect.unsafeInvoke(on: view, NativeSwiftClosure {}) }
+        let input = try unsafe display.digitizerView.unsafeInvoke(on: view)
+        var handled: [(NSEvent.EventType, NSEvent.ModifierFlags)] = []
+        let responder = NativeKeyboardResponder { event in
+            handled.append((event.type, event.modifierFlags))
+            return true
+        }
+        responder.attach(after: input)
+        responder.attach(after: input)
+        #expect(input.nextResponder === responder && responder.nextResponder === view)
+        // AppKit delivers Command key-downs here only after menus decline them; DisplayKeyboardInput forwards Command key-ups.
+        for (type, flags) in [(NSEvent.EventType.keyDown, NSEvent.ModifierFlags()), (.keyUp, []), (.keyDown, .command),
+                              (.keyUp, .command), (.flagsChanged, .shift)] {
+            let event = try #require(NSEvent.keyEvent(with: type, location: .zero, modifierFlags: flags, timestamp: 0,
+                windowNumber: 0, context: nil, characters: type == .flagsChanged ? "" : "a",
+                charactersIgnoringModifiers: type == .flagsChanged ? "" : "a", isARepeat: false, keyCode: type == .flagsChanged ? 56 : 0))
+            switch type {
+            case .keyDown: input.keyDown(with: event)
+            case .keyUp: input.keyUp(with: event)
+            default: input.flagsChanged(with: event)
+            }
+        }
+        // The native keyboard observes modifier changes app-wide instead, as SimulatorKit's keyboard does.
+        #expect(handled.map(\.0) == [.keyDown, .keyUp, .keyDown, .keyUp])
+        #expect(handled.map { $0.1.contains(.command) } == [false, false, true, true])
+        responder.detach()
+        #expect(input.nextResponder === view)
+    }
+
     @Test func aUserInterfacePluginGivesTheWindowItsToolbarAndTakesTheInput() throws {
         let display = TestDisplay()
         let overlay = InputView()
