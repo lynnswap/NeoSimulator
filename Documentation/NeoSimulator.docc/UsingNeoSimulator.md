@@ -32,6 +32,16 @@ Choose **View Screen** for a connected physical device or virtual machine to
 open its screen when the device supports it. The settings inspector shows the
 controls that the selected device supports.
 
+A physical device's screen opens over USB from a capture source that macOS
+presents to apps as a camera. macOS does not say which device a capture source
+shows, so choose **Capture Source…** below the screen and select the device's
+source. NeoSimulator reconnects with that source and remembers it for the
+device. Sources with the same name are numbered; if the screen shows a
+different device, choose another source. The first connection then asks for
+Camera access. If you denied it, allow NeoSimulator in **System Settings →
+Privacy & Security → Camera**, then choose **Reconnect**. If the chosen source
+is disconnected, connect the device with a USB cable and choose **Reconnect**.
+
 **File → New Simulator…** creates a device from the installed runtimes. For an
 iPhone, **Paired Apple Watch** adds a second page for a compatible watch.
 For an existing iPhone, open its **More → Pair Apple Watch** menu to select an

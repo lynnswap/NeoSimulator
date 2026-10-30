@@ -42,6 +42,8 @@ class ReleaseSigningTests(unittest.TestCase):
         stdout = b"arm64" if arguments[0] == "/usr/bin/lipo" else b""
         if "--entitlements" in arguments and Path(arguments[-1]).name == "NeoSimulatorGuestSettings":
             stdout = plistlib.dumps(dict.fromkeys(sign_release.GUEST_SETTINGS_ENTITLEMENTS, True))
+        if "--entitlements" in arguments and Path(arguments[-1]).name == "NeoSimulator.app":
+            stdout = plistlib.dumps(dict.fromkeys(sign_release.MANAGER_ENTITLEMENTS, True))
         if arguments[0] == "/usr/bin/segedit":
             Path(arguments[-1]).write_bytes(plistlib.dumps(dict.fromkeys(sign_release.GUEST_SETTINGS_SIMULATOR_ENTITLEMENTS, True)))
         return sign_release.NativeResult(stdout, b"", 0)
@@ -60,11 +62,13 @@ class ReleaseSigningTests(unittest.TestCase):
             with self.assertRaisesRegex(sign_release.ReleaseError, "renderer CFBundleVersion"):
                 sign_release.validate_app(self.tools, self.mount, "v1.2.3", "7")
 
-    def test_rejects_a_missing_helper_exception_or_an_exception_on_the_manager(self):
+    def test_rejects_entitlements_outside_each_signing_profile(self):
         allow_dyld_only = {"com.apple.security.cs.allow-dyld-environment-variables": True}
-        for path, values in ((self.helper, {}), (self.helper, allow_dyld_only),
-                             (self.app, dict.fromkeys(sign_release.GUEST_SETTINGS_ENTITLEMENTS, True))):
-            with self.subTest(path=path.name):
+        camera = dict.fromkeys(sign_release.MANAGER_ENTITLEMENTS, True)
+        for path, values in ((self.helper, {}), (self.helper, allow_dyld_only), (self.app, {}),
+                             (self.app, {**camera, **dict.fromkeys(sign_release.GUEST_SETTINGS_ENTITLEMENTS, True)}),
+                             (self.renderer, camera)):
+            with self.subTest(path=path.name, values=sorted(values)):
                 def result(arguments, operation, **kwargs):
                     if "--entitlements" in arguments and Path(arguments[-1]) == path:
                         return sign_release.NativeResult(plistlib.dumps(values), b"", 0)
@@ -83,7 +87,7 @@ class ReleaseSigningTests(unittest.TestCase):
             with self.assertRaisesRegex(sign_release.ReleaseError, "simulator service entitlements"):
                 sign_release.validate_app(self.tools, self.mount, "v1.2.3", "7")
 
-    def test_resigning_uses_the_helper_profile_without_app_exceptions(self):
+    def test_resigning_applies_each_signing_profile(self):
         credentials = sign_release.SigningCredentials(Path("fixture.keychain"), "A" * 40, Path("fixture.p8"))
         identifiers = {self.helper: "NeoSimulatorGuestSettings-generated-uuid", self.renderer: sign_release.RENDERER_IDENTIFIER,
                        self.app: sign_release.APP_IDENTIFIER}
@@ -108,7 +112,8 @@ class ReleaseSigningTests(unittest.TestCase):
         self.assertEqual([Path(call[-1]) for call in signing], [self.helper, self.renderer, self.app])
         self.assertEqual(Path(signing[0][signing[0].index("--entitlements") + 1]), sign_release.GUEST_SETTINGS_ENTITLEMENTS_PATH)
         self.assertEqual(signing[0][signing[0].index("--identifier") + 1], sign_release.GUEST_SETTINGS_NAME)
-        self.assertTrue(all("--identifier" not in call and "--entitlements" not in call for call in signing[1:]))
+        self.assertEqual(Path(signing[2][signing[2].index("--entitlements") + 1]), sign_release.MANAGER_ENTITLEMENTS_PATH)
+        self.assertTrue(all("--identifier" not in call for call in signing[1:]))
 
 
 class BuildScriptSigningTests(unittest.TestCase):
@@ -121,6 +126,8 @@ class BuildScriptSigningTests(unittest.TestCase):
         guest.mkdir(parents=True)
         for name in ("GuestSettings.entitlements", "GuestVirtual.entitlements"):
             shutil.copy2(sign_release.GUEST_SETTINGS_ENTITLEMENTS_PATH.with_name(name), guest / name)
+        (root / "App/NeoSimulator").mkdir()
+        shutil.copy2(sign_release.MANAGER_ENTITLEMENTS_PATH, root / "App/NeoSimulator/NeoSimulator.entitlements")
         tools = root / "tools"
         tools.mkdir()
         bodies = {
@@ -200,7 +207,10 @@ shutil.copyfile(os.environ["FIXTURE_GUEST_SECTION"], helper)
                 self.assertEqual(plistlib.loads(entitlements.with_name("GuestVirtual.entitlements").read_bytes()),
                                  dict.fromkeys(sign_release.GUEST_SETTINGS_SIMULATOR_ENTITLEMENTS, True))
                 self.assertEqual(signing[0][signing[0].index("--identifier") + 1], sign_release.GUEST_SETTINGS_NAME)
-                self.assertTrue(all("--identifier" not in call and "--entitlements" not in call for call in signing[1:]))
+                self.assertTrue(all("--identifier" not in call for call in signing[1:]))
+                self.assertNotIn("--entitlements", signing[1])
+                self.assertEqual(Path(signing[2][signing[2].index("--entitlements") + 1]),
+                                 root / "App/NeoSimulator/NeoSimulator.entitlements")
                 self.assertEqual(calls[-1][:-1], ["--verify", "--deep", "--strict"])
 
     def test_rejects_a_helper_without_its_simulator_entitlements(self):

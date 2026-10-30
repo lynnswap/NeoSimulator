@@ -28,6 +28,10 @@ import uuid
 APP_NAME = "NeoSimulator"
 APP_BUNDLE = f"{APP_NAME}.app"
 APP_IDENTIFIER = "dev.lynnswap.NeoSimulator"
+# The hardened runtime denies AVFoundation capture of a connected device's screen without camera access.
+# Only the manager captures; the renderer is signed without entitlements.
+MANAGER_ENTITLEMENTS = ("com.apple.security.device.camera",)
+MANAGER_ENTITLEMENTS_PATH = Path(__file__).resolve().parents[1] / "App" / APP_NAME / f"{APP_NAME}.entitlements"
 RENDERER_NAME = "NeoSimulatorRenderer"
 RENDERER_IDENTIFIER = f"{APP_IDENTIFIER}.Renderer"
 GUEST_SETTINGS_NAME = "NeoSimulatorGuestSettings"
@@ -243,23 +247,24 @@ def validate_app(tools: NativeTools, mount: Path, version: str, build_number: st
     helper = app / "Contents" / "Helpers" / "NeoSimulatorGuestSettings"
     if set(machos) != {executable, renderer_executable, helper}:
         raise ReleaseError("The app must contain its manager, renderer, and guest settings helper executables.")
-    for bundle, binary in ((helper, helper), (renderer, renderer_executable), (app, executable)):
+    for bundle, binary, entitlements in ((helper, helper, GUEST_SETTINGS_ENTITLEMENTS), (renderer, renderer_executable, ()),
+                                         (app, executable, MANAGER_ENTITLEMENTS)):
         architectures = tools.run(["/usr/bin/lipo", "-archs", str(binary)], "Validate app architecture").stdout.strip()
         if architectures != b"arm64":
             raise ReleaseError("The release app must be arm64-only.")
         tools.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(bundle)], "Validate app signature")
-        validate_entitlements(tools, bundle, guest_helper=bundle == helper)
+        validate_entitlements(tools, bundle, entitlements, guest_helper=bundle == helper)
     return app
 
 
-def validate_entitlements(tools: NativeTools, path: Path, *, guest_helper: bool = False) -> None:
+def validate_entitlements(tools: NativeTools, path: Path, expected: tuple[str, ...], *, guest_helper: bool = False) -> None:
     data = tools.run(
         ["/usr/bin/codesign", "--display", "--entitlements", ":-", str(path)], "Inspect app entitlements",
     ).stdout
     values = parse_plist(data, "Inspect app entitlements") if data else {}
+    if set(values) != set(expected) or any(values[name] is not True for name in expected):
+        raise ReleaseError(f"The {path.name} signature must have exactly these entitlements: {', '.join(expected) or 'none'}.")
     if guest_helper:
-        if set(values) != set(GUEST_SETTINGS_ENTITLEMENTS) or any(values[name] is not True for name in GUEST_SETTINGS_ENTITLEMENTS):
-            raise ReleaseError("The guest settings helper requires only its allow-DYLD environment and library-validation exceptions.")
         with tempfile.TemporaryDirectory(prefix="guest-entitlements-") as directory:
             section = Path(directory) / "entitlements.plist"
             tools.run(["/usr/bin/segedit", str(path), "-extract", "__TEXT", "__entitlements", str(section)],
@@ -268,8 +273,6 @@ def validate_entitlements(tools: NativeTools, path: Path, *, guest_helper: bool 
         if (set(simulated) != set(GUEST_SETTINGS_SIMULATOR_ENTITLEMENTS)
                 or any(simulated[name] is not True for name in GUEST_SETTINGS_SIMULATOR_ENTITLEMENTS)):
             raise ReleaseError("The guest settings helper requires only its simulator service entitlements.")
-    elif values:
-        raise ReleaseError("The manager and renderer signing profiles do not use entitlements.")
 
 
 def make_writable_image(tools: NativeTools, source: Path, destination: Path, capacity: int, executable_size: int) -> None:
@@ -420,12 +423,14 @@ def sign_application(tools: NativeTools, app: Path, credentials: SigningCredenti
     # Seal nested code before its containing bundle; --deep signing can silently
     # apply the manager's signing profile to the renderer.
     helper = app / "Contents" / "Helpers" / "NeoSimulatorGuestSettings"
-    for bundle, identifier in ((helper, "NeoSimulatorGuestSettings"), (renderer, RENDERER_IDENTIFIER), (app, APP_IDENTIFIER)):
-        entitlements = GUEST_SETTINGS_ENTITLEMENTS_PATH if bundle == helper else None
-        sign(tools, bundle, credentials, app=True, entitlements=entitlements,
+    for bundle, identifier, entitlements_path, entitlements in (
+        (helper, "NeoSimulatorGuestSettings", GUEST_SETTINGS_ENTITLEMENTS_PATH, GUEST_SETTINGS_ENTITLEMENTS),
+        (renderer, RENDERER_IDENTIFIER, None, ()), (app, APP_IDENTIFIER, MANAGER_ENTITLEMENTS_PATH, MANAGER_ENTITLEMENTS),
+    ):
+        sign(tools, bundle, credentials, app=True, entitlements=entitlements_path,
              identifier=GUEST_SETTINGS_NAME if bundle == helper else None)
         verify_developer_id(tools, bundle, team, app=True, identifier=identifier)
-        validate_entitlements(tools, bundle, guest_helper=bundle == helper)
+        validate_entitlements(tools, bundle, entitlements, guest_helper=bundle == helper)
 
 
 def parse_json(payload: bytes) -> dict | None:

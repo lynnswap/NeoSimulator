@@ -52,6 +52,7 @@ public final class RemoteDeviceScreenSession {
     public var onInputCapabilitiesLost: ((Set<RemoteDeviceInputKind>) -> Void)?
 
     private let makeTransport: @MainActor (CoreDeviceDevice, NSView, String?) async throws -> any RemoteScreenTransport
+    private let captureSources: any RemoteScreenCaptureSourceCatalog
     private let makeResizeTransport: @MainActor (CoreDeviceDevice) async throws -> (any AppResizeTransport)?
     private var transport: (any RemoteScreenTransport)?
     private var starting: Task<Void, any Error>?
@@ -84,16 +85,24 @@ public final class RemoteDeviceScreenSession {
         !isChangingDisplay && !hasUnfinishedRecording
             && (resizeSession != nil || state == .connected && resizeEligibility == .eligible)
     }
+    /// The Mac screen-capture source chosen for this device, used by the next connection.
+    @_spi(NeoSimulator) public var captureSource: RemoteScreenCaptureSource? { captureSources.chosenSource(for: device.identifier) }
+    /// True when connecting failed because no connected capture source is chosen for this device.
+    @_spi(NeoSimulator) public var needsCaptureSource: Bool { lastError is RemoteScreenCaptureSourceError }
 
     public convenience init(device: CoreDeviceDevice) {
-        self.init(device: device, makeResizeTransport: CoreDeviceScreenTransport.resizeTransport,
-                  makeTransport: CoreDeviceScreenTransport.make)
+        let sources = ScreenCaptureSourceCatalog.shared
+        self.init(device: device, captureSources: sources, makeResizeTransport: CoreDeviceScreenTransport.resizeTransport) {
+            try await CoreDeviceScreenTransport.make($0, contentView: $1, displayUniqueID: $2, captureSources: sources)
+        }
     }
 
     init(device: CoreDeviceDevice,
+         captureSources: any RemoteScreenCaptureSourceCatalog = ScreenCaptureSourceCatalog.shared,
          makeResizeTransport: @escaping @MainActor (CoreDeviceDevice) async throws -> (any AppResizeTransport)? = { _ in nil },
          makeTransport: @escaping @MainActor (CoreDeviceDevice, NSView, String?) async throws -> any RemoteScreenTransport) {
         self.device = device
+        self.captureSources = captureSources
         self.makeTransport = makeTransport
         self.makeResizeTransport = makeResizeTransport
         contentView = NSView(frame: .zero)
@@ -290,6 +299,19 @@ public final class RemoteDeviceScreenSession {
 
     /// Releases the retained completed recording after saving or an explicit discard.
     public func discardCompletedRecording() { recording.discardCompleted() }
+
+    /// Lists the Mac's screen-capture sources for choosing this device's source.
+    @_spi(NeoSimulator)
+    public func availableCaptureSources() async throws -> [RemoteScreenCaptureSource] {
+        try await captureSources.sources()
+    }
+
+    /// Chooses this device's capture source for later connections; reconnect to use it.
+    @_spi(NeoSimulator)
+    public func chooseCaptureSource(_ source: RemoteScreenCaptureSource) {
+        captureSources.choose(source, for: device.identifier)
+        onStateChange?()
+    }
 
     /// Releases inputs owned by this connection without disconnecting its screen.
     public func releaseInputs() async throws {

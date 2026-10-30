@@ -33,8 +33,9 @@ open .build/local/arm64/NeoSimulator.app
 ```
 
 For a local app you keep using, sign each update with the same identity to keep
-its signing requirement stable across builds. Pass a certificate name or SHA-1
-hash from your keychain:
+its signing requirement stable across builds. macOS ties the manager's Camera
+access for physical-device screens to that requirement. Pass a certificate name
+or SHA-1 hash from your keychain:
 
 ```bash
 scripts/build-local.sh --signing-identity 'Developer ID Application: Your Name (TEAMID)'
@@ -48,6 +49,7 @@ The staging layout matches releases:
 ```text
 arm64/NeoSimulator.app/
   Contents/Applications/NeoSimulatorRenderer.app/
+  Contents/Helpers/NeoSimulatorGuestSettings
 ```
 
 The AppKit manager owns host selection and launches the embedded renderer when
@@ -79,7 +81,8 @@ capture/import failures, and other renderer contracts without booting devices.
 Its `NeoSimulatorHostTests` target compiles the sources under test without either
 application entry point. It runs without an app host so tests control defaults
 registration and process state independently of app startup.
-Release-script tests cover the embedded renderer's release metadata.
+Release-script tests cover the embedded renderer's release metadata and the
+signing order and entitlements of the helper, renderer, and manager.
 These suites do not replace a live check of an affected private API and guest
 runtime.
 
@@ -116,8 +119,14 @@ repository's Pages source must be **GitHub Actions**.
 
 ## DMG distribution
 
-`build-release.sh` builds the complete app and signs the renderer before its
-manager. Its default signature is ad hoc; `--signing-identity` or
+`build-release.sh` builds the complete app and signs the guest settings helper
+and renderer before their manager. The manager's signature has
+`com.apple.security.device.camera` from `App/NeoSimulator/NeoSimulator.entitlements`,
+because the hardened runtime blocks AVFoundation capture of a connected
+device's screen without it. The renderer is signed without entitlements. The
+helper is signed with only its DYLD-environment and library-validation
+exceptions; its simulator entitlements are embedded in the binary. The default
+signature is ad hoc; `--signing-identity` or
 `CODE_SIGN_IDENTITY` selects a certificate and enables secure timestamping. `package-release.sh` creates a drag-to-Applications DMG and
 checks that the app's files, signature, architectures, and Finder layout survive
 packaging. DMG tooling requires Python 3.10 or later; CI uses Python 3.13.
@@ -145,7 +154,9 @@ python3 scripts/prepare_release.py start \
 This creates a draft and starts **Publish Release**. CI tests and builds the
 arm64 DMG. The **release-signing** environment then requires approval before
 Developer ID signing and notarization. Signing uses a temporary keychain,
-signs the embedded renderer before the outer app, and verifies both signatures.
+signs the guest settings helper and embedded renderer before the outer app
+with the same entitlements as `build-release.sh`, and verifies each signature
+and its entitlements.
 The workflow notarizes and staples the DMG, checks Gatekeeper, then uploads the
 DMG, `release-info.json`, and `SHA256SUMS` to the same draft and publishes it.
 The release tag is created at publication and must target the tested commit.
