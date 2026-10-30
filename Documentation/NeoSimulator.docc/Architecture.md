@@ -143,6 +143,7 @@ Hub mode.
 | `PasteboardSync` | Exchange copies between the Mac and connected sessions. |
 | `ExternalDisplayChanges` | Serialize display and CarPlay changes across sessions for one device. |
 | `DisplayKeyboardInput`, `DisplayFitting` | Shared input-focus and geometry behavior for both window types. |
+| `NativeDeviceKeyboard` | Send a default-set simulator's keyboard input through one CoreDevice keyboard service per Mac keyboard, described by that keyboard's properties. |
 | `TVRemoteController` | Present the remote; sessions retain held inputs until release. |
 
 The manager's observable models stay on MainActor. SwiftUI observes their

@@ -69,7 +69,17 @@ public struct NativeRuntimeValidationReport: Codable, Equatable, Sendable {
         }, prepare: {
             _ = try CoreDeviceDigitizerReports(runtime: .shared)
             // This constructs an SDK value only; it never registers the illustrative display identity.
-            _ = try await CoreDeviceDisplayInput.descriptor(displayID: 0, uniqueID: "runtime-validation", runtime: .shared)
+            _ = try await CoreDeviceHIDService.touchscreenDescriptor(displayID: 0, uniqueID: "runtime-validation", runtime: .shared)
+        })
+        let keyboard = await Preparation.check("nativeKeyboard", unverified: [
+            "Device capability and UniversalHID implementation witnesses", "Guest keyboard service creation and removal",
+            "Mac keyboard service properties and report delivery to an actual device",
+        ], load: {
+            try CoreDeviceRemoteScreenDevice.load(NativeKeyboardBindings.coreDeviceUtilitiesPath)
+            try CoreDeviceRemoteScreenDevice.load(NativeKeyboardBindings.universalHIDKitURL.path)
+        }, prepare: {
+            // This translates a synthesized key without a device; it never creates a service.
+            _ = try await NativeKeyboardBindings(runtime: .shared)
         })
         let geometry = await Preparation.check("remoteDisplayGeometry", unverified: [
             "RemoteDevice display-info reads", "Display selection and normalized orientation and size values",
@@ -77,6 +87,6 @@ public struct NativeRuntimeValidationReport: Codable, Equatable, Sendable {
         ], load: { try await CoreDeviceDisplayGeometry.loadRuntime() }, prepare: {
             _ = try CoreDeviceDisplayGeometry.Bindings(runtime: .shared)
         })
-        return Self(optionalBindings: [canvas, poses, resize, hid, geometry])
+        return Self(optionalBindings: [canvas, poses, resize, hid, keyboard, geometry])
     }
 }

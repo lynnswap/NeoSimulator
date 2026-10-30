@@ -7,7 +7,8 @@ import Observation
 final class CoreDeviceScreenInput {
     private let remote: CoreDeviceRemoteScreenDevice
     private let displayUniqueID: String?
-    private var displayInput: CoreDeviceDisplayInput?
+    private var displayInput: CoreDeviceHIDService?
+    private var digitizerReports: CoreDeviceDigitizerReports?
     private var displayIdentifier: UInt32?
     private var displayInputNeedsReconnect = false
     private var implementations: [RemoteDeviceInputKind: NativeSwiftValue] = [:]
@@ -31,7 +32,11 @@ final class CoreDeviceScreenInput {
 
     func connectDisplay(identifier: UInt32) async throws {
         guard let displayUniqueID else { return }
-        displayInput = try await CoreDeviceDisplayInput.connect(remote: remote, displayID: identifier, uniqueID: displayUniqueID)
+        let reports = try digitizerReports ?? CoreDeviceDigitizerReports(runtime: remote.runtime)
+        digitizerReports = reports
+        let descriptor = try await CoreDeviceHIDService.touchscreenDescriptor(displayID: identifier, uniqueID: displayUniqueID,
+                                                                             runtime: remote.runtime)
+        displayInput = try await CoreDeviceHIDService.connect(remote: remote, descriptor: descriptor)
         displayIdentifier = identifier
         displayInputNeedsReconnect = false
     }
@@ -183,8 +188,10 @@ final class CoreDeviceScreenInput {
                     displayInput = nil
                     try await connectDisplay(identifier: identifier)
                 }
-                guard let displayInput else { throw CLIError.unavailable("remote-display-input", "The display touchscreen has not connected.") }
-                try displayInput.send(point, second: second, phase: phase, edge: edge)
+                guard let displayInput, let digitizerReports else {
+                    throw CLIError.unavailable("remote-display-input", "The display touchscreen has not connected.")
+                }
+                try displayInput.send(digitizerReports.make(point: point, second: second, phase: phase, edge: edge))
                 return
             }
             let implementation = try await implementation(.digitizer, named: "DigitizerHIDCapability")
