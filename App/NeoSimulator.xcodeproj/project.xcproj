@@ -720,6 +720,12 @@
                 "NeoSimulatorRenderer/compile-sources",
                 "NeoSimulatorHostTests/compile-sources",
               ],
+            }, {
+              "path": "DeviceScreenViewController.swift",
+              "target-membership": [
+                "NeoSimulator/compile-sources",
+                "NeoSimulatorHostTests/compile-sources",
+              ],
             },
           ],
         },
