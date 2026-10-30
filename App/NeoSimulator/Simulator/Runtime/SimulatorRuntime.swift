@@ -1378,8 +1378,8 @@ protocol SimulatorDisplay: AnyObject {
     var renderScale: CGFloat { get }
     func setRenderScale(_ scale: CGFloat)
     /// The embedded canvas magnification of a native composition presented outside the
-    /// magnified document, which renders it after measuring.
-    func setCanvasMagnification(_ magnification: CGFloat)
+    /// magnified document, which renders it after measuring; nil outside the canvas viewport.
+    func setCanvasMagnification(_ magnification: CGFloat?)
     /// The display's size at `scale`, with the bezel when it is shown.
     func size(for scale: CGFloat) -> NSSize
     /// The largest scale at which the display fits `size`.
@@ -1486,7 +1486,7 @@ protocol SimulatorDisplay: AnyObject {
 extension SimulatorDisplay {
     var usesNativeCanvas: Bool { false }
     var nativePoseControls: NativeDevicePoseControls? { nil }
-    func setCanvasMagnification(_ magnification: CGFloat) {}
+    func setCanvasMagnification(_ magnification: CGFloat?) {}
     var captureDisplayID: UInt32? { nil }
     func connectAppDisplay(uniqueID: String) async throws -> any SimulatorDisplay {
         throw HostError.unavailable("This display cannot connect to the app resizing screen.")
@@ -1628,7 +1628,7 @@ final class SimulatorConnection: SimulatorDisplay {
         view.invalidateIntrinsicContentSize()
     }
 
-    func setCanvasMagnification(_ magnification: CGFloat) { nativeCanvas?.setMagnification(magnification) }
+    func setCanvasMagnification(_ magnification: CGFloat?) { nativeCanvas?.setMagnification(magnification) }
 
     func size(for scale: CGFloat) -> NSSize {
         if let nativeCanvas { return NSSize(width: nativeCanvas.naturalSize.width * scale, height: nativeCanvas.naturalSize.height * scale) }

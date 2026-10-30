@@ -1794,8 +1794,9 @@ private final class DeviceContentView: NSView, DisplayContentView {
     }
     var canvasZoom: CanvasZoom?
     var canvasMagnification: CGFloat { canvasScrollView.magnification }
-    /// Renders the current magnification inside a native composition presented in `canvasOverlay`.
-    var onNativeCanvasMagnification: (CGFloat) -> Void = { _ in }
+    /// Renders the current magnification inside a native composition presented in `canvasOverlay`,
+    /// or nil when the composition is presented at its own size.
+    var onNativeCanvasMagnification: (CGFloat?) -> Void = { _ in }
     private let canvasScrollView = NSScrollView()
     private let canvasDocumentView = NSView()
     /// Native compositions follow the magnified document from above the clip view. Magnifying their
@@ -2098,10 +2099,12 @@ private final class DeviceContentView: NSView, DisplayContentView {
 
     /// Presents a native composition at the magnified document's display rect.
     private func placeNativeCanvas() {
-        guard usesViewport, usesNativeCanvas else { return }
+        guard usesViewport, usesNativeCanvas, canvasDisplayFrame.width > 0 else { return }
         canvasOverlay.frame = canvasScrollView.contentView.frame
-        display.frame = canvasOverlay.convert(canvasDisplayFrame, from: canvasDocumentView)
-        onNativeCanvasMagnification(canvasScrollView.magnification)
+        let frame = canvasOverlay.convert(canvasDisplayFrame, from: canvasDocumentView)
+        display.frame = frame
+        // The conversion uses the clip's current bounds; during animation `magnification` can trail them.
+        onNativeCanvasMagnification(frame.width / canvasDisplayFrame.width)
     }
 
     override func layout() {
@@ -2140,7 +2143,7 @@ private final class DeviceContentView: NSView, DisplayContentView {
             placeNativeCanvas()
             return
         }
-        if usesNativeCanvas { onNativeCanvasMagnification(1) }
+        if usesNativeCanvas { onNativeCanvasMagnification(nil) }
         if usesNativeCanvas || (isSizedToDisplay && canvasControls == nil) {
             display.frame = available
         } else {
