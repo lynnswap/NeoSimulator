@@ -522,6 +522,45 @@ struct InputFocusTests {
         try await controller.stopAndClose()
     }
 
+    @Test func remoteCaptureSourceChoiceWaitsForTheCurrentConnectionToEnd() async throws {
+        _ = NSApplication.shared
+        let data = Data(#"{"result":{"devices":[{"identifier":"fixture-command","properties":{"hardware":{"reality":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)
+        let device = try #require(CoreDeviceInventoryDecoder.decode(data).first)
+        let suite = "NeoSimulatorTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let catalog = ScreenCaptureSourceCatalog(defaults: defaults)
+        let current = RemoteScreenCaptureSource(name: "Fixture", uniqueID: "current-capture-identity")
+        let chosen = RemoteScreenCaptureSource(name: "Fixture", uniqueID: "chosen-capture-identity")
+        catalog.choose(current, for: device.identifier)
+        let transport = TestRemoteScreenTransport()
+        // Like the capture transport, each connection shows the source chosen when it opens.
+        var shownSources: [RemoteScreenCaptureSource?] = []
+        let session = RemoteDeviceScreenSession(device: device, captureSources: catalog) { _, _, _ in
+            shownSources.append(catalog.chosenSource(for: device.identifier))
+            return transport
+        }
+        let controller = RemoteDeviceWindowController(device: device, session: session, presentCompactWindow: { _ in })
+        try await session.start()
+        func select(_ source: RemoteScreenCaptureSource) {
+            let item = NSMenuItem()
+            item.representedObject = source
+            #expect(NSApp.sendAction(Selector(("captureSourceSelected:")), to: controller, from: item))
+        }
+        // Cancelling a pending capture's save prompt cancels the disconnect in the same way.
+        transport.onReleaseInputs = {
+            transport.onReleaseInputs = nil
+            throw CancellationError()
+        }
+        select(chosen)
+        try await wait { transport.inputReleases == 1 && controller.isScreenActionEnabled("reconnect") }
+        #expect(session.state == .connected && session.captureSource == current && shownSources == [current])
+        select(chosen)
+        try await wait { shownSources.count == 2 && session.state == .connected }
+        #expect(shownSources == [current, chosen] && session.captureSource == chosen)
+        try await controller.stopAndClose()
+    }
+
     @Test func remoteWindowCoalescesLayoutSizesWithoutBlockingHID() async throws {
         _ = NSApplication.shared
         let data = Data(#"{"result":{"devices":[{"identifier":"fixture-command","properties":{"hardware":{"reality":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)

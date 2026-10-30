@@ -554,11 +554,19 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
         inputView.releaseFocus()
     }
 
-    @objc private func reconnect(_ sender: Any?) {
+    @objc private func reconnect(_ sender: Any?) { reconnect(choosing: nil) }
+
+    private func reconnect(choosing source: RemoteScreenCaptureSource?) {
         guard !closing, stoppingTask == nil else { return }
         Task { [weak self] in
             guard let self else { return }
-            do { try await self.stop(); self.connectIfNeeded() }
+            do {
+                try await self.stop()
+                // Disconnecting can be cancelled at a pending capture's save prompt, so the current
+                // connection keeps its source until it has ended.
+                if let source { self.session.chooseCaptureSource(source) }
+                self.connectIfNeeded()
+            }
             catch is CancellationError {}
             catch { self.showIssue(error) }
         }
@@ -602,10 +610,8 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
 
     @objc private func captureSourceSelected(_ item: NSMenuItem) {
         guard let source = item.representedObject as? RemoteScreenCaptureSource, !closing, !mayClose else { return }
-        let unchanged = session.captureSource == source && session.state == .connected
-        session.chooseCaptureSource(source)
         issue = nil
-        if !unchanged { reconnect(nil) }
+        if session.captureSource != source || session.state != .connected { reconnect(choosing: source) }
         update()
     }
 
