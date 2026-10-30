@@ -87,7 +87,9 @@ fi
 rm "$guest_entitlements"
 timestamp_option="--timestamp=none"
 if [[ "$signing_identity" != - ]]; then timestamp_option="--timestamp"; fi
-# Simulator executables need DYLD_ROOT_PATH to select their runtime libraries.
+# Simulator executables need DYLD_ROOT_PATH to select their runtime libraries, and
+# iOS 27 runtimes supply them only through a simulator dyld cache that library
+# validation keeps the helper from mapping.
 codesign --force --options runtime --identifier NeoSimulatorGuestSettings \
   --entitlements "$repo_root/App/NeoSimulatorGuestSettings/GuestSettings.entitlements" \
   --sign "$signing_identity" "$timestamp_option" "$helper"

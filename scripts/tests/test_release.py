@@ -41,7 +41,7 @@ class ReleaseSigningTests(unittest.TestCase):
     def native_result(arguments, operation, **kwargs):
         stdout = b"arm64" if arguments[0] == "/usr/bin/lipo" else b""
         if "--entitlements" in arguments and Path(arguments[-1]).name == "NeoSimulatorGuestSettings":
-            stdout = plistlib.dumps({sign_release.GUEST_SETTINGS_ENTITLEMENT: True})
+            stdout = plistlib.dumps(dict.fromkeys(sign_release.GUEST_SETTINGS_ENTITLEMENTS, True))
         if arguments[0] == "/usr/bin/segedit":
             Path(arguments[-1]).write_bytes(plistlib.dumps(dict.fromkeys(sign_release.GUEST_SETTINGS_SIMULATOR_ENTITLEMENTS, True)))
         return sign_release.NativeResult(stdout, b"", 0)
@@ -61,7 +61,9 @@ class ReleaseSigningTests(unittest.TestCase):
                 sign_release.validate_app(self.tools, self.mount, "v1.2.3", "7")
 
     def test_rejects_a_missing_helper_exception_or_an_exception_on_the_manager(self):
-        for path, values in ((self.helper, {}), (self.app, {sign_release.GUEST_SETTINGS_ENTITLEMENT: True})):
+        allow_dyld_only = {"com.apple.security.cs.allow-dyld-environment-variables": True}
+        for path, values in ((self.helper, {}), (self.helper, allow_dyld_only),
+                             (self.app, dict.fromkeys(sign_release.GUEST_SETTINGS_ENTITLEMENTS, True))):
             with self.subTest(path=path.name):
                 def result(arguments, operation, **kwargs):
                     if "--entitlements" in arguments and Path(arguments[-1]) == path:
@@ -194,7 +196,7 @@ shutil.copyfile(os.environ["FIXTURE_GUEST_SECTION"], helper)
                     self.assertNotIn("--timestamp" if expected_identity == "-" else "--timestamp=none", call)
                 entitlements = root / "App/NeoSimulatorGuestSettings/GuestSettings.entitlements"
                 self.assertEqual(Path(signing[0][signing[0].index("--entitlements") + 1]), entitlements)
-                self.assertEqual(plistlib.loads(entitlements.read_bytes()), {sign_release.GUEST_SETTINGS_ENTITLEMENT: True})
+                self.assertEqual(plistlib.loads(entitlements.read_bytes()), dict.fromkeys(sign_release.GUEST_SETTINGS_ENTITLEMENTS, True))
                 self.assertEqual(plistlib.loads(entitlements.with_name("GuestVirtual.entitlements").read_bytes()),
                                  dict.fromkeys(sign_release.GUEST_SETTINGS_SIMULATOR_ENTITLEMENTS, True))
                 self.assertEqual(signing[0][signing[0].index("--identifier") + 1], sign_release.GUEST_SETTINGS_NAME)

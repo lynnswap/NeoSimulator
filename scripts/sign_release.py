@@ -31,7 +31,11 @@ APP_IDENTIFIER = "dev.lynnswap.NeoSimulator"
 RENDERER_NAME = "NeoSimulatorRenderer"
 RENDERER_IDENTIFIER = f"{APP_IDENTIFIER}.Renderer"
 GUEST_SETTINGS_NAME = "NeoSimulatorGuestSettings"
-GUEST_SETTINGS_ENTITLEMENT = "com.apple.security.cs.allow-dyld-environment-variables"
+# Hardened-runtime exceptions for the helper only: DYLD_ROOT_PATH selects the simulator runtime, and iOS 27
+# runtimes supply system frameworks only through their Apple-signed simulator dyld shared cache, which library
+# validation prevents this helper from mapping. The helper loads only that runtime's frameworks, not plug-ins.
+GUEST_SETTINGS_ENTITLEMENTS = ("com.apple.security.cs.allow-dyld-environment-variables",
+                               "com.apple.security.cs.disable-library-validation")
 GUEST_SETTINGS_ENTITLEMENTS_PATH = Path(__file__).resolve().parents[1] / "App" / GUEST_SETTINGS_NAME / "GuestSettings.entitlements"
 # Simulator Security reads these from the helper's __TEXT,__entitlements section
 # and does not merge them with the macOS signature.
@@ -254,8 +258,8 @@ def validate_entitlements(tools: NativeTools, path: Path, *, guest_helper: bool 
     ).stdout
     values = parse_plist(data, "Inspect app entitlements") if data else {}
     if guest_helper:
-        if set(values) != {GUEST_SETTINGS_ENTITLEMENT} or values[GUEST_SETTINGS_ENTITLEMENT] is not True:
-            raise ReleaseError("The guest settings helper requires only its allow-DYLD environment entitlement.")
+        if set(values) != set(GUEST_SETTINGS_ENTITLEMENTS) or any(values[name] is not True for name in GUEST_SETTINGS_ENTITLEMENTS):
+            raise ReleaseError("The guest settings helper requires only its allow-DYLD environment and library-validation exceptions.")
         with tempfile.TemporaryDirectory(prefix="guest-entitlements-") as directory:
             section = Path(directory) / "entitlements.plist"
             tools.run(["/usr/bin/segedit", str(path), "-extract", "__TEXT", "__entitlements", str(section)],
