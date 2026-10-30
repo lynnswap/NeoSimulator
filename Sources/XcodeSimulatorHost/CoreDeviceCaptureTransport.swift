@@ -108,8 +108,7 @@ final class CoreDeviceCaptureTransport: RemoteScreenTransport {
     }
     func releaseInputs() async throws { try await input.releaseInputs() }
     func inputLocations(atWindowPoint point: CGPoint, clampingToDisplay: Bool) -> RemoteDeviceInputLocations? {
-        framebuffer.inputLocations(at: contentView.convert(point, from: nil), from: contentView,
-                                   clampingToDisplay: clampingToDisplay)
+        framebuffer.inputLocations(at: point, from: nil, clampingToDisplay: clampingToDisplay)
     }
 
     func stop() async throws {

@@ -379,6 +379,17 @@ struct RemoteDeviceScreenTests {
         #expect(abs(topLeft.touch.y - 0.9) < 0.0001)
         #expect(abs(topLeft.pointer.x - 0.1) < 0.0001)
         #expect(abs(topLeft.pointer.y - 0.1) < 0.0001)
+        // UniversalHIDKit places the pointer of a mouse movement by mapping its location with the transform, as the
+        // display's pointer input places it.
+        func expectPointerTransform(of locations: RemoteDeviceInputLocations, _ pointers: [(CGPoint, CGPoint)]) {
+            for (point, pointer) in pointers {
+                let mapped = point.applying(locations.pointerTransform)
+                #expect(abs(mapped.x - pointer.x) < 0.0001 && abs(mapped.y - pointer.y) < 0.0001, "\(point): \(mapped)")
+            }
+        }
+        expectPointerTransform(of: topLeft, [(CGPoint(x: 60, y: 420), CGPoint(x: 0.1, y: 0.1)),
+                                             (CGPoint(x: 60, y: 180), CGPoint(x: 0.1, y: 0.9)),
+                                             (CGPoint(x: 540, y: 180), CGPoint(x: 0.9, y: 0.9))])
         #expect(framebuffer.inputLocations(at: CGPoint(x: 300, y: 550), from: container, clampingToDisplay: false) == nil)
         let release = try #require(framebuffer.inputLocations(at: CGPoint(x: 300, y: 550), from: container,
                                                              clampingToDisplay: true))
@@ -389,6 +400,9 @@ struct RemoteDeviceScreenTests {
         #expect(abs(portrait.touch.x - 0.1) < 0.0001)
         #expect(abs(portrait.touch.y - 0.1) < 0.0001)
         #expect(portrait.pointer == portrait.touch)
+        // The portrait display occupies x=150...450, y=0...600.
+        expectPointerTransform(of: portrait, [(CGPoint(x: 180, y: 540), CGPoint(x: 0.1, y: 0.1)),
+                                              (CGPoint(x: 420, y: 60), CGPoint(x: 0.9, y: 0.9))])
         framebuffer.update(display: nil)
         #expect(framebuffer.inputLocations(at: CGPoint(x: 300, y: 300), from: container, clampingToDisplay: true) == nil)
     }
@@ -1077,16 +1091,40 @@ struct RemoteDeviceScreenTests {
         let translator = try bindings.makeTranslator()
         let report = try CoreDeviceHIDService.reportABI(runtime: runtime)
         let scale = try CoreDeviceHIDService.universalHIDType("ScaleReport", runtime: runtime)
+        let pointer = try CoreDeviceHIDService.universalHIDType("AbsolutePointerReport", runtime: runtime)
         let reportID = try CoreDeviceHIDService.universalHIDType("ReportID", runtime: runtime)
         let phase = try CoreDeviceHIDService.universalHIDType("HIDEventPhase", runtime: runtime)
         let abis: [NativeSwiftType: NativeType] = [
             report.type: report.abi,
             scale: try .structure(named: scale.name, fields: [.uint64, .uint64]),
+            pointer: try .structure(named: pointer.name, fields: [.uint64, .uint64]),
             reportID: try .structure(named: reportID.name, fields: [.uint8]),
             phase: try .structure(named: phase.name, fields: [.uint8]),
         ]
         let rawID = try reportID.resolveAndWait(.swift(.getter("rawValue", as: (() -> UInt8).self, valueABIs: abis, receiverABI: abis[reportID])))
         let readID = try report.type.resolveAndWait(.swift(.getter("reportID", as: (() -> NativeSwiftValue).self, valueABIs: abis, receiverABI: report.abi)))
+
+        // A mouse movement moves the service's hidden pointer, where its pinches happen, to the location that the screen's
+        // transform maps the event's window location to; this transform turns, scales, and moves it.
+        let pointerID = try pointer.resolveAndWait(.swift(.staticGetter("reportID", as: (() -> NativeSwiftValue).self, valueABIs: abis)))
+        let makePointer = try pointer.resolveAndWait(.swift(.initializer("init(_report:)", as: ((NativeSwiftValue) -> NativeSwiftValue).self, valueABIs: abis)))
+        let pointerX = try pointer.resolveAndWait(.swift(.getter("x", as: (() -> Double).self, valueABIs: abis, receiverABI: abis[pointer])))
+        let pointerY = try pointer.resolveAndWait(.swift(.getter("y", as: (() -> Double).self, valueABIs: abis, receiverABI: abis[pointer])))
+        let movement = try mouseMovement(sender: 0x1234)
+        #expect(try bindings.lookup.sender(of: movement) == 0x1234)
+        let location = movement.locationInWindow, target = CGPoint(x: 0.3, y: 0.8)
+        let turn = CGAffineTransform(a: 0, b: 1 / 600, c: -1 / 300, d: 0, tx: 0, ty: 0)
+        let moved = location.applying(turn)
+        let transform = turn.concatenating(CGAffineTransform(translationX: target.x - moved.x, y: target.y - moved.y))
+        let movements = try translator.reports(for: movement, coordinateTransform: transform)
+        let placed = try #require(movements.first)
+        let movementIDs = try movements.map { try unsafe rawID.unsafeInvoke(on: readID.unsafeInvoke(on: $0)) }
+        #expect(try unsafe movementIDs == [rawID.unsafeInvoke(on: pointerID.unsafeInvoke())], "Report IDs \(movementIDs)")
+        let position = try unsafe makePointer.unsafeInvoke(placed)
+        #expect(abs(try unsafe pointerX.unsafeInvoke(on: position) - target.x) < 0.001)
+        #expect(abs(try unsafe pointerY.unsafeInvoke(on: position) - target.y) < 0.001)
+
+        // The trackpad's pinches still reach the device as scale reports alone.
         let scaleID = try scale.resolveAndWait(.swift(.staticGetter("reportID", as: (() -> NativeSwiftValue).self, valueABIs: abis)))
         let makeScale = try scale.resolveAndWait(.swift(.initializer("init(_report:)", as: ((NativeSwiftValue) -> NativeSwiftValue).self, valueABIs: abis)))
         let z = try scale.resolveAndWait(.swift(.getter("z", as: (() -> Double).self, valueABIs: abis, receiverABI: abis[scale])))
@@ -1128,14 +1166,19 @@ struct RemoteDeviceScreenTests {
     @Test func eachMacTrackpadsPinchesReachTheServiceThatCarriesThatTrackpad() async throws {
         let transport = TrackpadFixtureTransport(bindings: try await NativeTrackpadBindings(runtime: .shared))
         let gestures = NativeTrackpadGestures { transport }
-        // Each trackpad's first pinch creates its service. A synthesized pinch, and one whose sender is not a Mac HID
-        // service, reach no service, and no trackpad is made up for them.
+        // Each trackpad's first event creates its service: a mouse movement moves the service's hidden pointer, and the
+        // trackpad's pinches happen there. A synthesized event, and one whose sender is not a Mac HID service, reach no
+        // service, and no trackpad is made up for them.
+        let onScreen = CGAffineTransform(scaleX: 1 / 2000, y: 1 / 2000)
+        try await gestures.movePointer(mouseMovement(sender: 0xA), coordinateTransform: onScreen)
         for pinch in try [trackpadPinch(.began, sender: 0xA), trackpadPinch(.changed, magnification: 0.2, sender: 0xA),
                           trackpadPinch(.began, sender: 0xB), trackpadPinch(.began, sender: nil),
                           trackpadPinch(.began, sender: 0x99), trackpadPinch(.changed, magnification: 0.2, sender: 0x99)] {
             try await gestures.send(pinch)
         }
-        #expect(transport.services.map(\.sender) == [0xA, 0xB] && transport.services.map(\.reports) == [2, 1])
+        try await gestures.movePointer(mouseMovement(sender: nil), coordinateTransform: onScreen)
+        try await gestures.movePointer(mouseMovement(sender: 0x99), coordinateTransform: onScreen)
+        #expect(transport.services.map(\.sender) == [0xA, 0xB] && transport.services.map(\.reports) == [3, 1])
         #expect(transport.lookups == [0xA, 0xB, 0x99])
         // Releasing input ends the pinch each service holds.
         try gestures.resetGestures()
@@ -1143,7 +1186,7 @@ struct RemoteDeviceScreenTests {
         // The device invalidates the services with its gesture capability, so the trackpad's next pinch creates another.
         gestures.discardServices()
         try await gestures.send(trackpadPinch(.began, sender: 0xA))
-        #expect(transport.services.map(\.sender) == [0xA, 0xB, 0xA] && transport.services.map(\.reports) == [2, 1, 1])
+        #expect(transport.services.map(\.sender) == [0xA, 0xB, 0xA] && transport.services.map(\.reports) == [3, 1, 1])
         try await gestures.stop()
         #expect(transport.services.last?.removes == 1)
     }
@@ -1685,6 +1728,14 @@ private func trackpadPinch(_ phase: TrackpadPinchPhase, magnification: Double = 
     event.setIntegerValueField(try #require(CGEventField(rawValue: 110)), value: 8)
     event.setIntegerValueField(try #require(CGEventField(rawValue: 132)), value: phase.rawValue)
     event.setDoubleValueField(try #require(CGEventField(rawValue: 113)), value: magnification)
+    if let sender { event.setIntegerValueField(try #require(CGEventField(rawValue: 87)), value: Int64(sender)) }
+    return try #require(NSEvent(cgEvent: event))
+}
+
+/// A mouse movement, whose sender UniversalHIDKit reads as it does a pinch's.
+private func mouseMovement(sender: UInt64?) throws -> NSEvent {
+    let event = try #require(CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: CGPoint(x: 120, y: 200),
+                                     mouseButton: .left))
     if let sender { event.setIntegerValueField(try #require(CGEventField(rawValue: 87)), value: Int64(sender)) }
     return try #require(NSEvent(cgEvent: event))
 }

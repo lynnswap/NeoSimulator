@@ -125,11 +125,11 @@ struct InputFocusTests {
         // The device frame around the display keeps clicks on its side buttons.
         let display = CGRect(x: 100, y: 100, width: 200, height: 400)
         transport.locate = { point, clamping in
-            clamping || display.contains(point) ? RemoteDeviceInputLocations(touch: point, pointer: point) : nil
+            clamping || display.contains(point) ? RemoteDeviceInputLocations(touch: point, pointer: point, pointerTransform: .identity) : nil
         }
         #expect(input.hitTest(NSPoint(x: 50, y: 300)) == nil)
         #expect(input.hitTest(NSPoint(x: 200, y: 300)) === input)
-        transport.locate = { point, _ in RemoteDeviceInputLocations(touch: point, pointer: point) }
+        transport.locate = { point, _ in RemoteDeviceInputLocations(touch: point, pointer: point, pointerTransform: .identity) }
         func scroll(_ phase: CGScrollPhase?, momentum: CGMomentumScrollPhase = .none, dx: Int32 = 0, dy: Int32 = 0) throws -> NSEvent {
             let event = try #require(CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2, wheel1: dy, wheel2: dx, wheel3: 0))
             event.setIntegerValueField(.scrollWheelEventScrollPhase, value: Int64(phase?.rawValue ?? 0))
@@ -185,7 +185,7 @@ struct InputFocusTests {
 
         // Over the display, the device performs the trackpad's pinch until it ends or is cancelled.
         // The pinch takes both fingers, so it ends a scroll's touch drag and a scroll during it drags nothing.
-        transport.locate = { point, _ in RemoteDeviceInputLocations(touch: point, pointer: point) }
+        transport.locate = { point, _ in RemoteDeviceInputLocations(touch: point, pointer: point, pointerTransform: .identity) }
         input.scrollWheel(with: try scroll(.began))
         let ended = try [pinch(.began), pinch(.changed, by: 0.25), pinch(.changed, by: -0.1), pinch(.ended)]
         input.magnify(with: ended[0])
@@ -216,6 +216,54 @@ struct InputFocusTests {
         #expect(canvas.magnified.map(ObjectIdentifier.init) == (beside + unsupported).map(ObjectIdentifier.init))
         // Only the scroll before the pinch drags a touch, from its first event's movement until the pinch begins.
         #expect(transport.touches.map(\.phase) == [.began, .moved, .ended])
+        try await session.stop()
+    }
+
+    @Test func mouseMovementsOverTheRemoteScreenMoveItsPointerOrThePointerWhereItsPinchesHappen() async throws {
+        _ = NSApplication.shared
+        let data = Data(#"{"result":{"devices":[{"identifier":"fixture-command","properties":{"hardware":{"reality":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)
+        let device = try #require(CoreDeviceInventoryDecoder.decode(data).first)
+        let transport = TestRemoteScreenTransport()
+        let session = RemoteDeviceScreenSession(device: device) { _, _, _ in transport }
+        try await session.start()
+        let viewport = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 600))
+        let input = RemoteDeviceInputView(session: session)
+        input.frame = viewport.bounds
+        viewport.addSubview(input)
+        input.isInputEnabled = true
+        var operations: [@MainActor () async throws -> Void] = []
+        input.enqueue = { operations.append($0) }
+        func send() async throws {
+            for operation in operations { try await operation() }
+            operations.removeAll()
+        }
+        // The screen's geometry turns, scales, and moves window locations within its display into pointer coordinates.
+        let display = CGRect(x: 100, y: 100, width: 200, height: 400)
+        let transform = CGAffineTransform(a: 0, b: 1.0 / 200, c: -1.0 / 400, d: 0, tx: 1.25, ty: -0.5)
+        transport.locate = { point, clamping in
+            guard clamping || display.contains(point) else { return nil }
+            return RemoteDeviceInputLocations(touch: point, pointer: point.applying(transform), pointerTransform: transform)
+        }
+        func mouseMoved(to point: CGPoint) throws -> NSEvent {
+            try #require(NSEvent.mouseEvent(with: .mouseMoved, location: point, modifierFlags: [], timestamp: 0, windowNumber: 0,
+                                            context: nil, eventNumber: 0, clickCount: 0, pressure: 0))
+        }
+        let inside = try mouseMoved(to: CGPoint(x: 150, y: 200)), beside = try mouseMoved(to: CGPoint(x: 50, y: 200))
+
+        // Without a pointer connection, as on a dedicated display, a movement over the display moves the pointer where the
+        // trackpad's pinches happen, with the geometry that places it; a movement beside the display moves nothing.
+        transport.inputCapabilities = [.digitizer, .gesture]
+        for event in [inside, beside] { input.mouseMoved(with: event) }
+        try await send()
+        #expect(transport.gesturePointers.map { ObjectIdentifier($0.event) } == [ObjectIdentifier(inside)])
+        #expect(transport.gesturePointers.map(\.transform) == [transform])
+        // With a pointer connection, the movement moves that pointer instead.
+        transport.inputCapabilities = [.pointer, .digitizer, .gesture]
+        for event in [inside, beside] { input.mouseMoved(with: event) }
+        try await send()
+        #expect(transport.pointerMoves == [inside.locationInWindow.applying(transform)] && transport.gesturePointers.count == 1)
+        // Neither touches the screen.
+        #expect(transport.touches.isEmpty)
         try await session.stop()
     }
 
@@ -10368,6 +10416,8 @@ final class TestRemoteScreenTransport: RemoteScreenTransport {
     private(set) var keys: [(usage: UInt16, state: RemoteDeviceButtonState)] = []
     private(set) var touches: [(point: CGPoint, phase: RemoteDeviceTouchPhase)] = []
     private(set) var pinches: [NSEvent] = []
+    private(set) var pointerMoves: [CGPoint] = []
+    private(set) var gesturePointers: [(event: NSEvent, transform: CGAffineTransform)] = []
     private(set) var inputReleases = 0
     var onReleaseInputs: (@MainActor () async throws -> Void)?
     private var events: (@MainActor (RemoteScreenTransportEvent) -> Void)?
@@ -10383,6 +10433,8 @@ final class TestRemoteScreenTransport: RemoteScreenTransport {
         if case .key(let usage, let state) = input { keys.append((usage, state)) }
         if case .touch(let point, _, let phase, _) = input { touches.append((point, phase)) }
         if case .pinch(let event) = input { pinches.append(event) }
+        if case .pointer(let point) = input { pointerMoves.append(point) }
+        if case .gesturePointer(let event, let transform) = input { gesturePointers.append((event, transform)) }
     }
     func inputLocations(atWindowPoint point: CGPoint, clampingToDisplay: Bool) -> RemoteDeviceInputLocations? {
         locate?(point, clampingToDisplay)

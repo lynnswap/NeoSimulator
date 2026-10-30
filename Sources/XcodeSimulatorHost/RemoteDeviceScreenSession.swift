@@ -369,6 +369,14 @@ public final class RemoteDeviceScreenSession {
     /// that no Mac HID service sent, such as a synthesized one, reaches no service. The event carries only its scale.
     public func sendPinch(_ event: NSEvent) async throws { try await send(.pinch(event)) }
 
+    /// Moves the hidden pointer of the guest service that carries the Mac HID service that sent `event`, a mouse movement
+    /// over the screen, so that the service's later pinches center there, as Device Hub does while clicks touch the screen.
+    /// `locations` are the screen's input locations at the event's window location. A movement that no Mac HID service
+    /// sent moves no pointer.
+    public func moveGesturePointer(with event: NSEvent, at locations: RemoteDeviceInputLocations) async throws {
+        try await send(.gesturePointer(event, locations.pointerTransform))
+    }
+
     /// Shows the device's frame from its display description, whether or not its screen connects.
     private func prepareFrame() {
         guard frame.chrome == nil, framePreparation == nil else { return }
@@ -722,6 +730,8 @@ enum RemoteScreenInput {
     case button(Int, Int, RemoteDeviceButtonState)
     /// UniversalHIDKit translates the AppKit event itself, as it does for Device Hub.
     case pinch(NSEvent)
+    /// A mouse movement, which UniversalHIDKit places where the transform maps the event's window location.
+    case gesturePointer(NSEvent, CGAffineTransform)
 }
 
 enum RemoteScreenTransportEvent {

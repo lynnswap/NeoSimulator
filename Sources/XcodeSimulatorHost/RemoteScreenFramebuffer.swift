@@ -4,6 +4,9 @@ import AppKit
 public struct RemoteDeviceInputLocations: Equatable, Sendable {
     public let touch: CGPoint
     public let pointer: CGPoint
+    /// Maps the locations that give `pointer`, which are window locations for a screen session, to pointer coordinates
+    /// without clamping them to the display, as DeviceKit's `HIDEventGeometry.windowToPointerUnitTransform` does.
+    let pointerTransform: CGAffineTransform
 }
 
 /// The video and HID surface share this coordinate tree. The video crop does not change the HID ROI.
@@ -79,11 +82,12 @@ final class RemoteScreenFramebuffer: NSView {
         }
     }
 
-    func inputLocations(at point: CGPoint, from view: NSView, clampingToDisplay: Bool) -> RemoteDeviceInputLocations? {
+    /// The input locations of `point` in `view`'s coordinates, or the window's when `view` is nil.
+    func inputLocations(at point: CGPoint, from view: NSView?, clampingToDisplay: Bool) -> RemoteDeviceInputLocations? {
         layoutSubtreeIfNeeded()
         guard isReady, let display, let layer else { return nil }
-        let local = convertToLayer(convert(point, from: view))
-        let location = plane.convert(local, from: layer)
+        let locate = { (point: CGPoint) in self.plane.convert(self.convertToLayer(self.convert(point, from: view)), from: layer) }
+        let location = locate(point)
         let size = plane.bounds.size
         guard clampingToDisplay || plane.bounds.contains(location) else { return nil }
         let touch = CGPoint(x: min(1, max(0, location.x / size.width)),
@@ -91,7 +95,14 @@ final class RemoteScreenFramebuffer: NSView {
         // HIDEventGeometry.windowToPointerUnitTransform applies +displayAngle around unit center.
         let correction = CGAffineTransform(translationX: 0.5, y: 0.5)
             .rotated(by: display.angle * .pi / 180).translatedBy(x: -0.5, y: -0.5)
-        return RemoteDeviceInputLocations(touch: touch, pointer: touch.applying(correction))
+        // The views and layers between `view` and the plane only move, scale, and turn it, so three points give the
+        // affine transform of the whole conversion, which then maps to touch coordinates like `touch` without the clamp.
+        let origin = locate(.zero), xAxis = locate(CGPoint(x: 1, y: 0)), yAxis = locate(CGPoint(x: 0, y: 1))
+        let toPlane = CGAffineTransform(a: xAxis.x - origin.x, b: xAxis.y - origin.y, c: yAxis.x - origin.x,
+                                        d: yAxis.y - origin.y, tx: origin.x, ty: origin.y)
+        let toTouch = CGAffineTransform(a: 1 / size.width, b: 0, c: 0, d: -1 / size.height, tx: 0, ty: 1)
+        return RemoteDeviceInputLocations(touch: touch, pointer: touch.applying(correction),
+                                          pointerTransform: toPlane.concatenating(toTouch).concatenating(correction))
     }
 
     private static func rotatedSize(_ size: CGSize, angle: CGFloat) -> CGSize {

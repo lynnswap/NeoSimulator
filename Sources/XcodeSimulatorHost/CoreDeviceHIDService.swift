@@ -212,15 +212,25 @@ struct CoreDeviceEventReports {
     struct Translator {
         fileprivate let observer: NativeSwiftValue
         fileprivate let translate: (NativeSwiftValue, NSEvent) throws -> [NativeSwiftValue]
+        fileprivate let setCoordinateTransform: (NativeSwiftValue, CGAffineTransform) throws -> Void
 
         func reports(for event: NSEvent) throws -> [NativeSwiftValue] { try translate(observer, event) }
+
+        /// The reports for an event at the location that `coordinateTransform` maps its window location to, as Device Hub
+        /// sets the transform of its display's geometry before it translates an event.
+        func reports(for event: NSEvent, coordinateTransform: CGAffineTransform) throws -> [NativeSwiftValue] {
+            try setCoordinateTransform(observer, coordinateTransform)
+            return try translate(observer, event)
+        }
     }
 
     private let makeObserver: () throws -> NativeSwiftValue
     private let translate: (NativeSwiftValue, NSEvent) throws -> [NativeSwiftValue]
+    private let setCoordinateTransform: (NativeSwiftValue, CGAffineTransform) throws -> Void
 
-    /// Translates the events of `eventType`, the name of a `UniversalHID.HIDEventType` member such as `keyboard`.
-    init(runtime: ABIRuntime, eventType name: String) async throws {
+    /// Translates the events of `eventType`, the name of a `UniversalHID.HIDEventType` member such as `keyboard`, or of
+    /// every event type when it is nil, as each of Device Hub's HID service observers does.
+    init(runtime: ABIRuntime, eventType name: String?) async throws {
         try CoreDeviceRemoteScreenDevice.load(Self.universalHIDKitURL.path)
         let system = Self.systemUniversalHIDURL
         let eventType = try await runtime.resolve(.swift(.type("UniversalHID.HIDEventType")), in: .path(system), loading: .loadedOnly)
@@ -240,8 +250,6 @@ struct CoreDeviceEventReports {
             systemReport: systemReportABI,
             data: dataABI,
         ]
-        let member = try await eventType.resolve(.swift(.staticGetter(name, as: (() -> NativeSwiftValue).self,
-            valueABIs: systemABIs)))
         let maskValue = try await eventType.resolve(.swift(.getter("maskValue", as: (() -> UInt).self,
             valueABIs: systemABIs, receiverABI: systemABIs[eventType])))
         let makeMask = try await maskType.resolve(.swift(.initializer("init(rawValue:)", as: ((UInt) -> NativeSwiftValue).self,
@@ -250,11 +258,22 @@ struct CoreDeviceEventReports {
             as: ((NativeSwiftValue) -> NativeSwiftValue).self, valueABIs: systemABIs)))
         let process = try await observerType.resolve(.swift(.method("processEvent(_:)", as: ((NSEvent) -> NativeSwiftValue).self,
             valueABIs: systemABIs)))
+        let coordinateTransform = try await observerType.resolve(.swift(.setter("coordinateTransform",
+            as: ((CGAffineTransform) -> Void).self, valueABIs: systemABIs)))
+        let mask: UInt
+        if let name {
+            let member = try await eventType.resolve(.swift(.staticGetter(name, as: (() -> NativeSwiftValue).self,
+                valueABIs: systemABIs)))
+            mask = try unsafe maskValue.unsafeInvoke(on: member.unsafeInvoke())
+        } else {
+            let allCases = try await eventType.resolve(.swift(.staticGetter("allCases", as: (() -> [NativeSwiftValue]).self,
+                valueABIs: systemABIs)))
+            mask = try unsafe allCases.unsafeInvoke().reduce(0) { try unsafe $0 | maskValue.unsafeInvoke(on: $1) }
+        }
         let readData = try await systemReport.resolve(.swift(.getter("data", as: (() -> Data).self,
             valueABIs: systemABIs, receiverABI: systemReportABI)))
         let makeReport = try await coreDeviceReport.type.resolve(.swift(.initializer("init(data:)",
             as: ((Data) -> NativeSwiftValue).self, valueABIs: [coreDeviceReport.type: coreDeviceReport.abi, data: dataABI])))
-        let mask = try unsafe maskValue.unsafeInvoke(on: member.unsafeInvoke())
         // The initializer consumes its mask, so each observer gets its own.
         let observe = { try unsafe makeObserver.unsafeInvoke(makeMask.unsafeInvoke(mask)) }
 
@@ -277,9 +296,12 @@ struct CoreDeviceEventReports {
             }
         }
         self.makeObserver = observe
+        setCoordinateTransform = { observer, transform in try unsafe coordinateTransform.unsafeInvoke(on: observer, transform) }
     }
 
-    func makeTranslator() throws -> Translator { Translator(observer: try makeObserver(), translate: translate) }
+    func makeTranslator() throws -> Translator {
+        Translator(observer: try makeObserver(), translate: translate, setCoordinateTransform: setCoordinateTransform)
+    }
 
     static func sampleKey(_ type: NSEvent.EventType) throws -> NSEvent {
         guard let event = NSEvent.keyEvent(with: type, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0,
@@ -287,6 +309,13 @@ struct CoreDeviceEventReports {
             throw CLIError.software("native-keyboard-sample", "AppKit could not create a sample key event.")
         }
         return event
+    }
+}
+
+/// Swift passes the imported struct as its six `CGFloat` fields; ABIBridge has no built-in layout for it.
+extension CGAffineTransform: @retroactive ABIBridgeSwiftValue {
+    public static var swiftABIType: NativeType {
+        try! .structure(named: "CGAffineTransform", fields: Array(repeating: .double, count: 6))
     }
 }
 

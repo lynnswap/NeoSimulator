@@ -249,9 +249,13 @@ final class RemoteDeviceInputView: NSView {
     }
 
     override func mouseMoved(with event: NSEvent) {
-        guard isInputEnabled, session.inputCapabilities.contains(.pointer),
-              let locations = session.inputLocations(atWindowPoint: event.locationInWindow) else { return }
-        enqueueMouseInput(kind: .pointer) { [session] in try await session.movePointer(to: locations.pointer) }
+        guard isInputEnabled, let locations = session.inputLocations(atWindowPoint: event.locationInWindow) else { return }
+        if session.inputCapabilities.contains(.pointer) {
+            enqueueMouseInput(kind: .pointer) { [session] in try await session.movePointer(to: locations.pointer) }
+        } else if session.inputCapabilities.contains(.gesture) {
+            // Without a pointer connection, as on a dedicated display, the mouse still places the trackpad's pinches.
+            enqueueGestureInput(for: .gesture) { [session] in try await session.moveGesturePointer(with: event, at: locations) }
+        }
     }
 
     private static let keyUsage: [UInt16: UInt16] = {

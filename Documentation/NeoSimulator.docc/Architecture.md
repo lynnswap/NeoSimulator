@@ -224,10 +224,15 @@ digitizer touch from where it began and ends it when the fingers lift, so the
 device applies its own deceleration. As in Device Hub, a trackpad pinch that
 begins on the screen goes to a UniversalHID service that carries the properties
 of the Mac trackpad that sent it, under that trackpad's HID service registry ID
-and with its pointer hidden. The trackpad's first pinch creates the service, and
+and with its pointer hidden. The trackpad's first event creates the service, and
 UniversalHIDKit's `EventObserver` translates each magnify event into a scale
-report with the event's phase and magnification. A synthesized pinch, which no
-Mac HID service sent, reaches no service. When the screen loses input during a
+report with the event's phase and magnification. On a screen without a pointer
+connection, such as a resized app's dedicated display, a mouse movement over the
+display goes to the service of the Mac HID service that sent it; the observer
+maps the event's window location with the display's window-to-pointer transform
+into an absolute pointer report, so the service's pinches happen at the mouse.
+A synthesized pinch or movement, which no Mac HID service sent, reaches no
+service. When the screen loses input during a
 pinch, the session resets these services' gesture state; disconnecting the
 screen removes them.
 
