@@ -7,6 +7,7 @@ import SwiftUI
 @MainActor
 final class CoreDeviceDisplayGeometry {
     struct Bindings {
+        let abis: [NativeSwiftType: NativeType]
         let readDeviceInfo: NativeSwiftMethod<() -> NativeSwiftValue>
         let readInitialDisplayInfo: NativeSwiftMethod<() async throws -> NativeSwiftValue>
         let readDisplayInfo: NativeSwiftMethod<() -> NativeSwiftValue?>
@@ -20,8 +21,9 @@ final class CoreDeviceDisplayGeometry {
         let displaySize: NativeSwiftMethod<() -> NativeSwiftValue>
         let pointSize: NativeSwiftMethod<() -> CGSize>
 
-        init(deviceType: NativeSwiftType, runtime: ABIRuntime) throws {
-            readDeviceInfo = try deviceType.resolveAndWait(.swift(.getter("deviceInfo", as: (() -> NativeSwiftValue).self)))
+        init(runtime: ABIRuntime) throws {
+            let device = try runtime.resolveAndWait(.swift(.type("CoreDevice.RemoteDevice")))
+            readDeviceInfo = try device.resolveAndWait(.swift(.getter("deviceInfo", as: (() -> NativeSwiftValue).self)))
             let info = try runtime.resolveAndWait(.swift(.type("CoreDeviceProtocols.DeviceInfo")))
             let displayInfo = try runtime.resolveAndWait(.swift(.type("CoreDevice.DisplayInfo")))
             let display = try runtime.resolveAndWait(.swift(.type("CoreDevice.Display")))
@@ -35,7 +37,8 @@ final class CoreDeviceDisplayGeometry {
             // its addressable-for-dependencies bit.
             let abis = try Dictionary(uniqueKeysWithValues: [displayInfo, display, orientationInfo, normalized, size, angle]
                 .map { ($0, try NativeType.opaque(named: $0.name)) })
-            readInitialDisplayInfo = try deviceType.resolveAndWait(.swift(.getter("displayInfo",
+            self.abis = abis
+            readInitialDisplayInfo = try device.resolveAndWait(.swift(.getter("displayInfo",
                 as: (() async throws -> NativeSwiftValue).self, valueABIs: abis)))
             readDisplayInfo = try info.resolveAndWait(.swift(.getter("displayInfo", as: (() -> NativeSwiftValue?).self, valueABIs: abis)))
             displays = try displayInfo.resolveAndWait(.swift(.getter("displays", as: (() -> [NativeSwiftValue]).self, valueABIs: abis)))
@@ -78,7 +81,7 @@ final class CoreDeviceDisplayGeometry {
     init(remote: CoreDeviceRemoteScreenDevice, displayUniqueID: String? = nil) throws {
         self.remote = remote
         self.displayUniqueID = displayUniqueID
-        bindings = try Bindings(deviceType: remote.type, runtime: remote.runtime)
+        bindings = try Bindings(runtime: remote.runtime)
     }
 
     func start(update: @escaping @MainActor (Result<RemoteScreenFramebuffer.Display?, any Error>) -> Void) async throws {

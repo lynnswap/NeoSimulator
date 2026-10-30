@@ -818,11 +818,10 @@ struct RemoteDeviceScreenTests {
     @Test func displayGeometryBindingsReadDeviceKitPointSizesWithoutADevice() async throws {
         try await CoreDeviceDisplayGeometry.loadRuntime()
         let runtime = ABIRuntime.shared
-        let bindings = try CoreDeviceDisplayGeometry.Bindings(
-            deviceType: runtime.resolveAndWait(.swift(.type("CoreDevice.RemoteDevice"))), runtime: runtime)
+        let bindings = try CoreDeviceDisplayGeometry.Bindings(runtime: runtime)
         let sizeType = try runtime.resolveAndWait(.swift(.type("DeviceKit.DisplaySize")))
         let makeSize = try sizeType.resolveAndWait(.swift(.initializer("init(pixelSize:uiScale:)",
-            as: ((CGSize, CGFloat) -> NativeSwiftValue).self, valueABIs: [sizeType: try .opaque(named: sizeType.name)])))
+            as: ((CGSize, CGFloat) -> NativeSwiftValue).self, valueABIs: bindings.abis)))
         let size = try unsafe makeSize.unsafeInvoke(CGSize(width: 300, height: 600), 2)
         #expect(try unsafe bindings.pointSize.unsafeInvoke(on: size) == CGSize(width: 150, height: 300))
     }
