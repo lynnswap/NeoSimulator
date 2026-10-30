@@ -1029,6 +1029,17 @@ struct RemoteDeviceScreenTests {
         #expect(reports[0] != reports[1])
     }
 
+    @Test(.enabled(if: !macKeyboardLayouts.isEmpty, "Requires a Mac keyboard whose HID service publishes StandardType"))
+    func keyboardServicesCarryTheLayoutEachMacKeyboardPublishes() async throws {
+        let bindings = try await NativeKeyboardBindings(runtime: .shared)
+        for layout in macKeyboardLayouts {
+            let properties = try #require(try bindings.properties(ofHIDService: layout.serviceID))
+            let identity = try bindings.identity(of: bindings.descriptor(serviceID: layout.serviceID, properties: properties))
+            #expect(identity.standardType == layout.standardType && identity.countryCode == layout.countryCode,
+                    "Registry entry 0x\(String(layout.serviceID, radix: 16)): \(identity)")
+        }
+    }
+
     @Test func nativeKeyboardKeepsEachMacKeyboardsServiceAndSendsSynthesizedReleasesToEachOne() async throws {
         _ = NSApplication.shared
         let transport = KeyboardFixtureTransport()
@@ -1171,6 +1182,28 @@ private func capturedFrame(width: Int, height: Int, bgra: [UInt8], ioSurface: Bo
     }
     return frame
 }
+
+/// The layouts the Mac's keyboard HID services publish in their registry entries, independently of the HID event
+/// system, which withholds them from some clients.
+private let macKeyboardLayouts: [(serviceID: UInt64, standardType: UInt8, countryCode: UInt8?)] = {
+    var iterator: io_iterator_t = 0
+    guard IOServiceGetMatchingServices(kIOMainPortDefault, IOServiceMatching("IOHIDEventService"), &iterator) == KERN_SUCCESS
+    else { return [] }
+    defer { IOObjectRelease(iterator) }
+    var layouts: [(serviceID: UInt64, standardType: UInt8, countryCode: UInt8?)] = []
+    while case let entry = IOIteratorNext(iterator), entry != IO_OBJECT_NULL {
+        defer { IOObjectRelease(entry) }
+        func property(_ key: String) -> Int? {
+            IORegistryEntryCreateCFProperty(entry, key as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? Int
+        }
+        var serviceID: UInt64 = 0
+        guard property(kIOHIDPrimaryUsagePageKey) == kHIDPage_GenericDesktop, property(kIOHIDPrimaryUsageKey) == kHIDUsage_GD_Keyboard,
+              let standardType = property(kIOHIDStandardTypeKey).flatMap(UInt8.init(exactly:)),
+              IORegistryEntryGetRegistryEntryID(entry, &serviceID) == KERN_SUCCESS else { continue }
+        layouts.append((serviceID, standardType, property(kIOHIDCountryCodeKey).flatMap(UInt8.init(exactly:))))
+    }
+    return layouts
+}()
 
 @MainActor
 private final class PostureFixtureTransport: DevicePostureTransport {

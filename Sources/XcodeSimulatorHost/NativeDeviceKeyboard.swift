@@ -227,7 +227,7 @@ final class CoreDeviceKeyboardTransport: NativeKeyboardTransport {
     func sender(of event: NSEvent) throws -> UInt64 { try bindings.sender(of: event) }
 
     func makeKeyboard(forSender sender: UInt64) throws -> (any NativeKeyboardService)? {
-        guard let properties = HostHIDService.properties(of: sender, keys: bindings.propertyKeys) else { return nil }
+        guard let properties = try bindings.properties(ofHIDService: sender) else { return nil }
         return try CoreDeviceKeyboardService(remote: remote, source: "Mac HID service 0x\(String(sender, radix: 16))",
             descriptor: bindings.descriptor(serviceID: sender, properties: properties), bindings: bindings)
     }
@@ -303,7 +303,10 @@ struct NativeKeyboardBindings {
     }
 
     /// The keys UniversalHID copies from a HID service into its properties.
-    let propertyKeys: [String]
+    private let propertyKeys: [String]
+    /// Creates the passive HID event system client that Device Hub reads Mac HID services through. The HID event
+    /// system withholds StandardType and CountryCode, which carry a keyboard's layout, from simple clients.
+    private let makeHIDClient: () throws -> IOHIDEventSystemClient
     private let readSender: NativeSwiftMethod<() -> UInt64>
     private let makeObserver: () throws -> NativeSwiftValue
     private let translate: (NativeSwiftValue, NSEvent) throws -> [NativeSwiftValue]
@@ -389,6 +392,15 @@ struct NativeKeyboardBindings {
             throw CLIError.unavailable("native-keyboard-properties", "UniversalHID's service property keys could not be read.")
         }
         propertyKeys = keys.compactMap(\.self)
+        let createHIDClient = try await runtime.resolve(.c(.function("IOHIDEventSystemClientCreateWithType",
+            as: ((OpaquePointer?, Int32, OpaquePointer?) -> OpaquePointer?).self)))
+        makeHIDClient = {
+            // 2 is kIOHIDEventSystemClientTypePassive. The client is returned retained.
+            guard let client = try unsafe createHIDClient.unsafeInvoke(nil, 2, nil) else {
+                throw CLIError.unavailable("native-keyboard-properties", "The HID event system did not create a passive client.")
+            }
+            return unsafe Unmanaged<IOHIDEventSystemClient>.fromOpaque(UnsafeRawPointer(client)).takeRetainedValue()
+        }
 
         let properties = try CoreDeviceHIDService.universalHIDType("HIDServiceProperties", runtime: runtime)
         let descriptorType = try await runtime.resolve(.swift(.type("CoreDevice.HIDServiceDescriptor")))
@@ -442,6 +454,24 @@ struct NativeKeyboardBindings {
 
     func sender(of event: NSEvent) throws -> UInt64 { try unsafe readSender.unsafeInvoke(on: event) }
 
+    /// The properties UniversalHID copies from the Mac HID service whose registry ID is `sender`, as Device Hub's
+    /// `HIDServiceProperties(service:)` reads them, or nil when no such service exists.
+    func properties(ofHIDService sender: UInt64) throws -> [String: Any]? {
+        let client = try makeHIDClient()
+        // A service reads most properties through its client; without the client it has only the usages it was listed with.
+        return withExtendedLifetime(client) {
+            let services = IOHIDEventSystemClientCopyServices(client) as? [IOHIDServiceClient] ?? []
+            guard let service = services.first(where: {
+                (IOHIDServiceClientGetRegistryID($0) as? NSNumber)?.uint64Value == sender
+            }) else { return nil }
+            var properties: [String: Any] = [:]
+            for key in propertyKeys {
+                if let value = IOHIDServiceClientCopyProperty(service, key as CFString) { properties[key] = value }
+            }
+            return properties
+        }
+    }
+
     func makeTranslator() throws -> Translator { Translator(observer: try makeObserver(), translate: translate) }
 
     func descriptor(serviceID: UInt64, properties: [String: Any]) throws -> NativeSwiftValue {
@@ -459,23 +489,5 @@ struct NativeKeyboardBindings {
             throw CLIError.software("native-keyboard-sample", "AppKit could not create a sample key event.")
         }
         return event
-    }
-}
-
-/// The Mac's HID services, as UniversalHID reads one to describe it to a guest.
-enum HostHIDService {
-    /// Reads `keys` from the HID service whose registry ID is `sender`, as `HIDServiceProperties(service:)` does,
-    /// or returns nil when no such service exists.
-    static func properties(of sender: UInt64, keys: [String]) -> [String: Any]? {
-        let client = IOHIDEventSystemClientCreateSimpleClient(kCFAllocatorDefault)
-        let services = IOHIDEventSystemClientCopyServices(client) as? [IOHIDServiceClient] ?? []
-        guard let service = services.first(where: {
-            (IOHIDServiceClientGetRegistryID($0) as? NSNumber)?.uint64Value == sender
-        }) else { return nil }
-        var properties: [String: Any] = [:]
-        for key in keys {
-            if let value = IOHIDServiceClientCopyProperty(service, key as CFString) { properties[key] = value }
-        }
-        return properties
     }
 }
