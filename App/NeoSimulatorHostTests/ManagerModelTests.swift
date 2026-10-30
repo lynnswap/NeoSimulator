@@ -621,6 +621,7 @@ struct ManagerModelTests {
         let main = try #require(app.mainWindow)
         main.window?.setFrameAutosaveName("")
         defer { main.window?.close() }
+        let pane = main.deviceScreenViewController
         let suite = "NeoSimulatorTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -641,7 +642,7 @@ struct ManagerModelTests {
         #expect(controller.validateMenuItem(command))
         main.onShowCompactWindow?(aID)
         let compacted = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            MainActor.assumeIsolated { main.liveDeviceIdentifier == nil && !controller.isEmbedded }
+            MainActor.assumeIsolated { pane.liveDeviceIdentifier == nil && !controller.isEmbedded }
         }, object: nil)
         try #require(await XCTWaiter.fulfillment(of: [compacted], timeout: 5) == .completed)
         #expect(controller.presentationViewController.supplementalTarget(forAction: action, sender: command) as AnyObject? === controller)
