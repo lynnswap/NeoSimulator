@@ -71,6 +71,12 @@ public struct NativeRuntimeValidationReport: Codable, Equatable, Sendable {
             // This constructs an SDK value only; it never registers the illustrative display identity.
             _ = try await CoreDeviceDisplayInput.descriptor(displayID: 0, uniqueID: "runtime-validation", runtime: .shared)
         })
-        return Self(optionalBindings: [canvas, poses, resize, hid])
+        let geometry = await Preparation.check("remoteDisplayGeometry", unverified: [
+            "RemoteDevice display-info reads", "Display selection and normalized orientation and size values",
+            "Display-info observation",
+        ], load: { try await CoreDeviceDisplayGeometry.loadRuntime() }, prepare: {
+            _ = try CoreDeviceDisplayGeometry.Bindings(runtime: .shared)
+        })
+        return Self(optionalBindings: [canvas, poses, resize, hid, geometry])
     }
 }
