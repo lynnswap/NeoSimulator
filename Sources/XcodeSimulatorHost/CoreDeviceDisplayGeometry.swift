@@ -287,6 +287,13 @@ public final class NativeDeviceCanvas {
     }
 
     public func setChromeVisible(_ visible: Bool) { presentation.showsChrome = visible }
+    /// Renders the presenting canvas's magnification after the composition is measured, as
+    /// DeviceKit's own canvas applies its scale effect. An AppKit-magnified ancestor would change
+    /// how the composition's AppKit-backed content measures.
+    public func setMagnification(_ magnification: CGFloat) {
+        guard presentation.magnification != magnification else { return }
+        presentation.magnification = magnification
+    }
     public func setZoom(_ zoom: CGFloat) {
         presentation.zoom = zoom
         hosting.invalidateIntrinsicContentSize()
@@ -332,6 +339,7 @@ extension ModifiedContent: NativeCanvasModifier where Modifier: ViewModifier {
 private final class NativeCanvasPresentation {
     var showsChrome = true
     var zoom: CGFloat = 1
+    var magnification: CGFloat = 1
     var naturalSize = CGSize(width: 500, height: 700)
     @ObservationIgnored var onSizeChange: (() -> Void)?
 }
@@ -352,6 +360,7 @@ private struct NativeCanvasRoot: View {
                 presentation.naturalSize = size
                 presentation.onSizeChange?()
             }
+            .scaleEffect(presentation.magnification)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .clipped()
     }

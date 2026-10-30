@@ -1469,7 +1469,7 @@ struct InputFocusTests {
         #expect(scroll.frame.minX == 8 && scroll.frame.maxX == content.bounds.maxX - 8)
         #expect(scroll.frame.minY == controls.frame.maxY && scroll.frame.maxY == content.bounds.maxY - 8)
         #expect(WindowScale.matches(controller.canvasZoom.scale, display.scale(for: scroll.frame.size)))
-        #expect(scroll.documentVisibleRect.insetBy(dx: -1 / window.backingScaleFactor, dy: -1 / window.backingScaleFactor).contains(display.view.frame))
+        #expect(scroll.documentVisibleRect.insetBy(dx: -1 / window.backingScaleFactor, dy: -1 / window.backingScaleFactor).contains(documentRect(of: display.view, in: scroll)))
         let previousControlsSize = controls.fittingSize
         controls.update(supports: { _ in true }, isEnabled: { _ in true }, recordingTitle: "Stop Recording",
                         recordingStartDate: Date.now.addingTimeInterval(-10))
@@ -1479,7 +1479,7 @@ struct InputFocusTests {
         #expect(scroll.frame.minY >= controls.frame.maxY)
         #expect((content as? any DisplayContentView)?.availableDisplaySize == scroll.frame.size)
         #expect(WindowScale.matches(controller.canvasZoom.scale, display.scale(for: scroll.frame.size)))
-        #expect(scroll.documentVisibleRect.insetBy(dx: -1 / window.backingScaleFactor, dy: -1 / window.backingScaleFactor).contains(display.view.frame))
+        #expect(scroll.documentVisibleRect.insetBy(dx: -1 / window.backingScaleFactor, dy: -1 / window.backingScaleFactor).contains(documentRect(of: display.view, in: scroll)))
         display.naturalSize = NSSize(width: 900, height: 900)
         display.onPropertiesChange?()
         try await animateCanvas { controller.setScale(.pointAccurate) }
@@ -1531,7 +1531,7 @@ struct InputFocusTests {
             parent.view.setFrameSize(NSSize(width: 400, height: 300))
             parent.view.layoutSubtreeIfNeeded()
         }
-        #expect(scroll.documentVisibleRect.insetBy(dx: -1 / window.backingScaleFactor, dy: -1 / window.backingScaleFactor).contains(display.view.frame))
+        #expect(scroll.documentVisibleRect.insetBy(dx: -1 / window.backingScaleFactor, dy: -1 / window.backingScaleFactor).contains(documentRect(of: display.view, in: scroll)))
         #expect(display.disconnectCount == 0)
         controller.showCompactWindow()
         let beforeRestart = compact.frame
@@ -1580,28 +1580,33 @@ struct InputFocusTests {
     }
 
     @Test(.timeLimit(.minutes(1)))
-    func nativeRemeasurementAtUnchangedFitSettles() async throws {
+    func nativeNaturalSizeIgnoresTheCanvasMagnification() async throws {
         _ = NSApplication.shared
         let display = TestDisplay()
         display.usesNativeCanvas = true
-        // Width limits Fit, so a taller measurement keeps the same magnification.
-        display.naturalSize = NSSize(width: 120, height: 40)
+        display.naturalSize = NSSize(width: 100, height: 44)
         let controller = try makeController(display, features: [],
             keyboardCaptureTap: TestKeyboardEventTap(), presentCompactWindow: { _ in })
         defer { controller.invalidate() }
-        // DeviceKit's AppKit-backed loading content measures again after each backing change
-        // of the magnified canvas, differing in the last bits of its height.
+        // DeviceKit's loading content aligns its AppKit-backed indicator to the backing pixels of the
+        // view that presents it, and measures again after each backing change. The indicator then
+        // depends on any magnification of that view, and height limits Fit in this pane.
+        var content: CGFloat = 32
         let limit = 50
         var measurements = 0
         let view = try #require(display.view as? TestDisplayView)
-        view.onBackingPropertiesChange = { [unowned display] in
+        let measure = { [unowned display, unowned view] in
             guard measurements < limit else { return }
+            let scale = view.convertToBacking(NSSize(width: 1, height: 1)).height
+            let height = content + (12 * scale).rounded(.up) / scale
+            guard height != display.naturalSize.height else { return }
             measurements += 1
-            display.naturalSize.height = display.naturalSize.height.nextUp
+            display.naturalSize.height = height
             display.onPropertiesChange?()
         }
+        view.onBackingPropertiesChange = measure
         let parent = NSViewController()
-        parent.view = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 600))
+        parent.view = NSView(frame: NSRect(x: 0, y: 0, width: 1200, height: 416))
         let window = KeyPresentationWindow(contentRect: parent.view.frame, styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentViewController = parent
@@ -1610,18 +1615,54 @@ struct InputFocusTests {
             controller.embed(in: parent)
             parent.view.layoutSubtreeIfNeeded()
         }
-        #expect(measurements < limit, "Natural size was measured \(measurements) times")
         let scroll = try #require(controller.presentationViewController.view.subviews.compactMap { $0 as? NSScrollView }.first)
-        #expect(controller.canvasZoom.mode == .fit && display.renderScale == 1)
-        #expect(controller.canvasZoom.fitScale == display.scale(for: scroll.frame.size))
-        #expect(WindowScale.matches(scroll.magnification, controller.canvasZoom.fitScale))
-        #expect(scroll.documentVisibleRect.insetBy(dx: -1 / window.backingScaleFactor, dy: -1 / window.backingScaleFactor).contains(display.view.frame))
+        try #require(scroll.magnification > 2)
+        #expect(measurements < limit, "Natural size was measured \(measurements) times")
+        #expect(display.naturalSize.height == content + 12)
+        func expectFit() {
+            #expect(controller.canvasZoom.mode == .fit && display.renderScale == 1)
+            #expect(controller.canvasZoom.fitScale == display.scale(for: scroll.frame.size))
+            #expect(WindowScale.matches(scroll.magnification, controller.canvasZoom.fitScale))
+            #expect(scroll.documentVisibleRect.insetBy(dx: -1 / window.backingScaleFactor, dy: -1 / window.backingScaleFactor)
+                .contains(documentRect(of: display.view, in: scroll)))
+        }
+        expectFit()
+        let point = display.view.convert(NSPoint(x: display.view.bounds.midX, y: display.view.bounds.midY), to: nil)
+        let root = try #require(window.contentView)
+        let frameView = try #require(root.superview)
+        let hit = try #require(root.hitTest(frameView.convert(point, from: nil)))
+        #expect(hit === display.view || hit.isDescendant(of: display.view))
+        // A readiness change still updates the natural size and Fit.
+        try await animateCanvas {
+            content = 40
+            measure()
+        }
+        #expect(measurements < limit, "Natural size was measured \(measurements) times")
+        #expect(display.naturalSize.height == content + 12)
+        expectFit()
     }
 
     private func animateCanvas(_ operation: @escaping @MainActor () -> Void) async throws {
         let completed = XCTestExpectation(description: "Canvas magnification finishes")
         NSAnimationContext.runAnimationGroup { _ in operation() } completionHandler: { completed.fulfill() }
         try #require(await XCTWaiter.fulfillment(of: [completed], timeout: 5) == .completed)
+    }
+
+    /// The display's rect in the canvas document, wherever the canvas presents the display.
+    private func documentRect(of view: NSView, in scroll: NSScrollView) -> NSRect {
+        view.convert(view.bounds, to: scroll.documentView)
+    }
+
+    /// The device point, in unscaled display coordinates, under the center of the visible canvas.
+    private func visibleDevicePoint(of view: NSView, in scroll: NSScrollView) -> NSPoint {
+        let clip = scroll.contentView
+        let rect = documentRect(of: view, in: scroll)
+        return NSPoint(x: clip.bounds.midX - rect.minX, y: clip.bounds.midY - rect.minY)
+    }
+
+    private func center(of view: NSView, in content: NSView) -> NSPoint {
+        let rect = view.convert(view.bounds, to: content)
+        return NSPoint(x: rect.midX, y: rect.midY)
     }
 
     @Test(.timeLimit(.minutes(1)), arguments: [false, true])
@@ -1651,14 +1692,16 @@ struct InputFocusTests {
         let scroll = try #require(content.subviews.compactMap { $0 as? NSScrollView }.first)
         #expect(controller.canvasZoom.mode == .fit)
         #expect(WindowScale.matches(scroll.magnification, controller.canvasZoom.fitScale))
-        let previousFrame = display.view.frame.size
+        let previousFrame = documentRect(of: display.view, in: scroll).size
         let previousMagnification = scroll.magnification
         try await animateCanvas {
             parent.view.setFrameSize(NSSize(width: 400, height: 600))
             parent.view.layoutSubtreeIfNeeded()
         }
         try #require(scroll.magnification > previousMagnification)
-        #expect(display.view.frame.size == previousFrame && display.renderScale == 1)
+        let resizedFrame = documentRect(of: display.view, in: scroll).size
+        #expect(abs(resizedFrame.width - previousFrame.width) <= 1 / window.backingScaleFactor
+            && abs(resizedFrame.height - previousFrame.height) <= 1 / window.backingScaleFactor && display.renderScale == 1)
         let centerBeforeInterruptedZoom = display.view.convert(NSPoint(x: display.view.bounds.midX,
                                                                        y: display.view.bounds.midY), to: content)
         let initialMagnification = scroll.magnification
@@ -1727,14 +1770,13 @@ struct InputFocusTests {
             clip.scroll(to: NSPoint(x: clip.bounds.minX + 10, y: clip.bounds.minY + 20))
             scroll.reflectScrolledClipView(clip)
             NotificationCenter.default.post(name: NSScrollView.didLiveScrollNotification, object: scroll)
-            midflightPannedCenter = display.view.convert(NSPoint(x: clip.bounds.midX, y: clip.bounds.midY), from: clip)
+            midflightPannedCenter = visibleDevicePoint(of: display.view, in: scroll)
         }
         let pannedZoom = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             MainActor.assumeIsolated { !controller.isMagnifyingCanvas }
         }, object: nil)
         try #require(await XCTWaiter.fulfillment(of: [pannedZoom], timeout: 5) == .completed)
-        let settledPanCenter = display.view.convert(NSPoint(x: scroll.contentView.bounds.midX,
-                                                            y: scroll.contentView.bounds.midY), from: scroll.contentView)
+        let settledPanCenter = visibleDevicePoint(of: display.view, in: scroll)
         #expect(abs(settledPanCenter.x - midflightPannedCenter.x) * scroll.magnification <= backingPixel
             && abs(settledPanCenter.y - midflightPannedCenter.y) * scroll.magnification <= backingPixel)
         try await animateCanvas { controller.performCanvasZoom(.fit) }
@@ -1747,14 +1789,14 @@ struct InputFocusTests {
         }
         let visible = scroll.documentVisibleRect
         let pixel = 1 / window.backingScaleFactor
-        try #require(visible.width > 0 && visible.height > 0 && display.view.frame.width > 0 && display.view.frame.height > 0)
-        #expect(visible.insetBy(dx: -pixel, dy: -pixel).contains(display.view.frame))
-        #expect(min(abs(visible.width - display.view.frame.width), abs(visible.height - display.view.frame.height)) <= pixel)
+        let fittedRect = documentRect(of: display.view, in: scroll)
+        try #require(visible.width > 0 && visible.height > 0 && fittedRect.width > 0 && fittedRect.height > 0)
+        #expect(visible.insetBy(dx: -pixel, dy: -pixel).contains(fittedRect))
+        #expect(min(abs(visible.width - fittedRect.width), abs(visible.height - fittedRect.height)) <= pixel)
         let fitScale = scroll.magnification
-        let deviceCenter = NSPoint(x: display.view.bounds.midX, y: display.view.bounds.midY)
-        let centerAtFit = display.view.convert(deviceCenter, to: content)
+        let centerAtFit = center(of: display.view, in: content)
         try await animateCanvas { controller.performCanvasZoom(.zoomIn) }
-        let centerAfterZoom = display.view.convert(deviceCenter, to: content)
+        let centerAfterZoom = center(of: display.view, in: content)
         #expect(abs(centerAfterZoom.x - centerAtFit.x) <= pixel && abs(centerAfterZoom.y - centerAtFit.y) <= pixel)
         #expect(scroll.magnification > fitScale && display.renderScale == 1)
         try await animateCanvas {
@@ -1762,12 +1804,12 @@ struct InputFocusTests {
             controller.performCanvasZoom(.zoomIn)
             controller.performCanvasZoom(.zoomOut)
         }
-        let centerAfterRetarget = display.view.convert(deviceCenter, to: content)
-        let visibleCenter = display.view.convert(NSPoint(x: scroll.contentView.bounds.midX,
-                                                         y: scroll.contentView.bounds.midY), from: scroll.contentView)
+        let centerAfterRetarget = center(of: display.view, in: content)
+        let visibleCenter = visibleDevicePoint(of: display.view, in: scroll)
+        let deviceSize = documentRect(of: display.view, in: scroll).size
         #expect(abs(centerAfterRetarget.x - centerAtFit.x) <= pixel && abs(centerAfterRetarget.y - centerAtFit.y) <= pixel)
-        #expect(abs(visibleCenter.x - deviceCenter.x) * scroll.magnification <= pixel
-            && abs(visibleCenter.y - deviceCenter.y) * scroll.magnification <= pixel)
+        #expect(abs(visibleCenter.x - deviceSize.width / 2) * scroll.magnification <= pixel
+            && abs(visibleCenter.y - deviceSize.height / 2) * scroll.magnification <= pixel)
         try await animateCanvas { controller.setScale(.pointAccurate) }
         #expect(controller.canvasZoom.mode == .fixed(1) && display.renderScale == 1)
         #expect(window.frame == outerFrame && controller.window?.frame == compactFrame)
@@ -1796,7 +1838,7 @@ struct InputFocusTests {
         #expect(window.firstResponder === display.inputView)
         try await animateCanvas { controller.performCanvasZoom(.fit) }
         #expect(controller.canvasZoomIsSelected(.fit))
-        #expect(scroll.documentVisibleRect.insetBy(dx: -pixel, dy: -pixel).contains(display.view.frame))
+        #expect(scroll.documentVisibleRect.insetBy(dx: -pixel, dy: -pixel).contains(documentRect(of: display.view, in: scroll)))
         try await animateCanvas {
             parent.view.setFrameSize(NSSize(width: 220, height: 300))
             parent.view.layoutSubtreeIfNeeded()
@@ -1829,7 +1871,7 @@ struct InputFocusTests {
             controller.setScale(.pointAccurate)
             controller.performCanvasZoom(.fit)
         }
-        #expect(scroll.documentVisibleRect.insetBy(dx: -pixel, dy: -pixel).contains(display.view.frame))
+        #expect(scroll.documentVisibleRect.insetBy(dx: -pixel, dy: -pixel).contains(documentRect(of: display.view, in: scroll)))
         #expect(controller.canvasZoomIsSelected(.fit) && display.renderScale == 1)
         #expect(window.firstResponder === display.inputView)
         try await animateCanvas {
@@ -1840,7 +1882,7 @@ struct InputFocusTests {
         }
         #expect(controller.canvasZoomIsSelected(.fit))
         #expect(WindowScale.matches(scroll.magnification, controller.canvasZoom.fitScale))
-        #expect(scroll.documentVisibleRect.insetBy(dx: -pixel, dy: -pixel).contains(display.view.frame))
+        #expect(scroll.documentVisibleRect.insetBy(dx: -pixel, dy: -pixel).contains(documentRect(of: display.view, in: scroll)))
         try await animateCanvas {
             controller.setScale(.pointAccurate)
             controller.performCanvasZoom(.fit)
