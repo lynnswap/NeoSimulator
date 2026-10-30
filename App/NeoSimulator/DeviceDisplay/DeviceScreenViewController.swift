@@ -5,6 +5,9 @@ import Observation
 /// The manager's center pane, which shows the selected device's live screen or its preview.
 /// The manager window owns the selection and toolbar, and attaches `canvasAccessory` to this pane's split view item.
 /// The pane returns to the preview when `DeviceScreens` closes or replaces the screen it shows.
+///
+/// The pane runs screen moves in the order the window accepts them. The window passes each move a check of its
+/// latest choice; the move repeats the check after each await and stops once it fails.
 @MainActor
 final class DeviceScreenViewController: NSViewController {
     private let model: SimulatorManagerModel
@@ -37,6 +40,9 @@ final class DeviceScreenViewController: NSViewController {
     private static let footerInset: CGFloat = 8, footerSpacing: CGFloat = 12
     private let activity = NSTextField(labelWithString: "")
     private let progress = NSProgressIndicator()
+    /// The latest accepted move; each move starts after the one accepted before it.
+    private var screenMove: Task<Void, any Error>?
+    private var screenMoveGeneration = 0
 
     init(model: SimulatorManagerModel, screens: DeviceScreens) {
         self.model = model
@@ -206,7 +212,7 @@ final class DeviceScreenViewController: NSViewController {
         viewScreen.toolTip = nil
     }
 
-    /// Shows the screen its presentation owner embedded in `liveScreenContainer`.
+    /// Shows the screen embedded in `liveScreenContainer`.
     func showLiveScreen(_ screen: DeviceScreen) {
         displayedScreen = screen
         canvasAccessory.setControls(screen.canvasControls)
@@ -243,6 +249,116 @@ final class DeviceScreenViewController: NSViewController {
             }
         }
         if !isOpen { showDevicePreview(ifDisplaying: screen.id) }
+    }
+
+    // MARK: Screen moves
+
+    private func performScreenMove(_ move: @escaping @MainActor () async throws -> Void) async throws {
+        let previous = screenMove
+        screenMoveGeneration += 1
+        let generation = screenMoveGeneration
+        let task = Task { @MainActor in
+            _ = await previous?.result
+            try Task.checkCancellation()
+            try await move()
+        }
+        screenMove = task
+        defer { if screenMoveGeneration == generation { screenMove = nil } }
+        try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
+    }
+
+    /// Waits for the moves accepted so far to finish.
+    func waitForScreenMoves() async {
+        _ = await screenMove?.result
+    }
+
+    /// Embeds the device's open screen in place of the live screen. With `preservingFocus`, the window keeps its
+    /// first responder. If the screen cannot embed, the previous screen returns while the move is still current.
+    func embedScreen(for identifier: DeviceInventoryID, preservingFocus: Bool,
+                     while isCurrent: @escaping @MainActor () -> Bool) async throws {
+        try await performScreenMove { [self] in
+            guard isCurrent(), let screen = screens.screen(for: identifier) else { return }
+            defer {
+                if let current = liveScreen, !current.isEmbedded(in: liveScreenContainer) {
+                    showDevicePreview(ifDisplaying: current.id)
+                }
+            }
+            if liveScreen === screen, screen.isEmbedded(in: liveScreenContainer) {
+                return
+            }
+            try await screen.preparePresentationMove()
+            guard isCurrent() else { return }
+            let previousResponder = preservingFocus ? view.window?.firstResponder : nil
+            let previous = liveScreen
+            try await previous?.preparePresentationMove()
+            guard isCurrent() else { return }
+            try screen.validatePresentationMove()
+            try previous?.validatePresentationMove()
+            try await previous?.detach()
+            guard isCurrent() else { return }
+            do { try await screen.embed(in: liveScreenContainer) }
+            catch {
+                if let previous, isCurrent() {
+                    do { try await previous.embed(in: liveScreenContainer) }
+                    catch let restorationError {
+                        if let current = liveDeviceIdentifier { showDevicePreview(ifDisplaying: current) }
+                        throw HostError.operation([error.localizedDescription,
+                            "Could not restore the previous device screen: \(restorationError.localizedDescription)"].joined(separator: "\n"))
+                    }
+                }
+                if let previousResponder { view.window?.makeFirstResponder(previousResponder) }
+                throw error
+            }
+            guard isCurrent() else {
+                try await screen.detach()
+                return
+            }
+            showLiveScreen(screen)
+            if let previousResponder { view.window?.makeFirstResponder(previousResponder) }
+        }
+    }
+
+    /// Moves the device's open screen to its compact window once the screen can leave the pane.
+    func switchToCompactWindow(for identifier: DeviceInventoryID,
+                               while isCurrent: @escaping @MainActor () -> Bool) async throws {
+        try await performScreenMove { [self] in
+            guard isCurrent(), let screen = screens.screen(for: identifier) else { return }
+            try await screen.preparePresentationMove()
+            guard isCurrent() else { return }
+            try await screen.showCompactWindow()
+            showDevicePreview(ifDisplaying: identifier)
+        }
+    }
+
+    /// Shows the screen in its compact window, bringing that window forward. With `unlessCompact`, a screen already in
+    /// its compact window stays as it is.
+    func showCompactWindow(of screen: DeviceScreen, unlessCompact: Bool = false,
+                           while isCurrent: @escaping @MainActor () -> Bool) async throws {
+        try await performScreenMove { [self] in
+            guard isCurrent() else { return }
+            if !unlessCompact || screen.presentation != .compact { try await screen.showCompactWindow() }
+            showDevicePreview(ifDisplaying: screen.id)
+        }
+    }
+
+    /// Removes the screen from its presentation without ending its connection.
+    func detachScreen(_ screen: DeviceScreen, while isCurrent: @escaping @MainActor () -> Bool) async throws {
+        try await performScreenMove { [self] in
+            guard isCurrent() else { return }
+            try await screen.detach()
+            showDevicePreview(ifDisplaying: screen.id)
+        }
+    }
+
+    /// Detaches the live screen once it can leave the pane, and shows the preview.
+    func detachLiveScreen(while isCurrent: @escaping @MainActor () -> Bool) async throws {
+        try await performScreenMove { [self] in
+            guard isCurrent(), let screen = liveScreen else { return }
+            try await screen.preparePresentationMove()
+            guard isCurrent() else { return }
+            try await screen.detach()
+            showDevicePreview(ifDisplaying: screen.id)
+        }
     }
 
     @objc private func requestScreen(_ sender: Any?) { onViewScreen?() }

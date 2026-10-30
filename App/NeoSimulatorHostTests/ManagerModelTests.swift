@@ -320,7 +320,7 @@ struct ManagerModelTests {
         app.screens.attach(bController)
         main.selectDevice(aID)
         if mode != "new-selection" {
-            try await app.presentConnectedScreen(aID, purpose: .requested)
+            try await main.presentConnectedScreen(aID, purpose: .requested)
         }
         let releasing = AsyncStream<Void>.makeStream(), resume = AsyncStream<Void>.makeStream()
         var releases = releasing.stream.makeAsyncIterator()
@@ -330,7 +330,7 @@ struct ManagerModelTests {
             var permits = resume.stream.makeAsyncIterator()
             _ = await permits.next()
         }
-        if mode == "return-selection" { app.selectDeviceForPresentation(bID) }
+        if mode == "return-selection" { main.showDevice(bID) }
         else if mode == "rollback" {
             main.selectDevice(bID)
             bTransport.onReleaseInputs = {
@@ -339,7 +339,7 @@ struct ManagerModelTests {
             }
         }
         let target = mode == "new-selection" ? aID : bID
-        let opening = Task { try await app.presentConnectedScreen(target, purpose: .requested) }
+        let opening = Task { try await main.presentConnectedScreen(target, purpose: .requested) }
         #expect(await releases.next() != nil)
         if mode != "rollback" {
             let content = try #require(main.window?.contentView)
@@ -371,6 +371,56 @@ struct ManagerModelTests {
         main.window?.close()
     }
 
+    @Test func quittingStopsTheAcceptedMoveAndWaitsForIt() async throws {
+        _ = NSApplication.shared
+        let devices = try CoreDeviceInventoryDecoder.decode(Data(#"{"result":{"devices":[{"identifier":"A","properties":{"hardware":{"reality":"physical"},"state":{"name":"A"}}},{"identifier":"B","properties":{"hardware":{"reality":"physical"},"state":{"name":"B"}}}]}}"#.utf8))
+        let a = try #require(devices.first), b = try #require(devices.last)
+        let model = SimulatorManagerModel(source: ManagerModelSource(devices: devices.map(InventoryDevice.remote)))
+        model.settings.setReadingSuspended(true)
+        await model.refresh()
+        let app = AppDelegate()
+        app.model = model
+        app.prepareMainWindow()
+        let main = try #require(app.mainWindow)
+        main.window?.setFrameAutosaveName("")
+        let pane = main.deviceScreenViewController
+        defer { main.window?.close() }
+        let aTransport = TestRemoteScreenTransport()
+        let aSession = RemoteDeviceScreenSession(device: a) { _, _, _ in aTransport }
+        let bSession = RemoteDeviceScreenSession(device: b) { _, _, _ in TestRemoteScreenTransport() }
+        try await aSession.start()
+        try await bSession.start()
+        let aController = RemoteDeviceWindowController(device: a, session: aSession, presentCompactWindow: { _ in })
+        let bController = RemoteDeviceWindowController(device: b, session: bSession, presentCompactWindow: { _ in })
+        let aID = DeviceInventoryID.coreDevice(a.identifier)
+        app.screens.attach(aController)
+        app.screens.attach(bController)
+        main.selectDevice(aID)
+        try await main.presentConnectedScreen(aID, purpose: .requested)
+        let releasing = AsyncStream<Void>.makeStream(), resume = AsyncStream<Void>.makeStream()
+        var releases = releasing.stream.makeAsyncIterator()
+        aTransport.onReleaseInputs = {
+            aTransport.onReleaseInputs = nil
+            releasing.continuation.yield(())
+            var permits = resume.stream.makeAsyncIterator()
+            _ = await permits.next()
+        }
+        let content = try #require(main.window?.contentView)
+        let outline = try #require(inspectorViews(content).compactMap { $0 as? NSOutlineView }.first)
+        let bRow = try #require((0..<outline.numberOfRows).first { row in
+            row != outline.selectedRow && outline.item(atRow: row).map { main.outlineView(outline, shouldSelectItem: $0) } == true
+        })
+        outline.selectRowIndexes(IndexSet(integer: bRow), byExtendingSelection: false)
+        #expect(await releases.next() != nil)
+        app.screens.beginQuitting()
+        resume.continuation.yield(())
+        await pane.waitForScreenMoves()
+        #expect(!aController.isEmbedded && !bController.isEmbedded && pane.liveDeviceIdentifier == nil)
+        #expect(aSession.state == .connected && bSession.state == .connected)
+        try await aSession.stop()
+        try await bSession.stop()
+    }
+
     @Test func connectionCompletionHonorsTheReselectedDevicesLatestMainIntent() async throws {
         _ = NSApplication.shared
         let devices = try CoreDeviceInventoryDecoder.decode(Data(#"{"result":{"devices":[{"identifier":"A","properties":{"hardware":{"reality":"physical"},"state":{"name":"A"}}},{"identifier":"B","properties":{"hardware":{"reality":"physical"},"state":{"name":"B"}}}]}}"#.utf8))
@@ -394,7 +444,7 @@ struct ManagerModelTests {
         let aID = DeviceInventoryID.coreDevice(a.identifier), bID = DeviceInventoryID.coreDevice(b.identifier)
         app.screens.attach(bController)
         main.selectDevice(bID)
-        try await app.presentConnectedScreen(bID, purpose: .requested)
+        try await main.presentConnectedScreen(bID, purpose: .requested)
         main.selectDevice(aID)
         let content = try #require(main.window?.contentView)
         let outline = try #require(inspectorViews(content).compactMap { $0 as? NSOutlineView }.first)
@@ -415,7 +465,7 @@ struct ManagerModelTests {
         #expect(await releases.next() != nil)
         app.screens.attach(aController)
         let connected = Task {
-            try await app.presentConnectedScreen(aID, purpose: .automatic, preserving: .compact)
+            try await main.presentConnectedScreen(aID, purpose: .automatic, preserving: .compact)
         }
         resume.continuation.yield(())
         try await connected.value
@@ -461,7 +511,7 @@ struct ManagerModelTests {
         app.screens.attach(controller)
         app.screens.attach(background)
         main.selectDevice(aID)
-        try await app.presentConnectedScreen(aID, purpose: .requested)
+        try await main.presentConnectedScreen(aID, purpose: .requested)
         let content = try #require(main.window?.contentView)
         let outline = try #require(inspectorViews(content).compactMap { $0 as? NSOutlineView }.first)
         let rows = (0..<outline.numberOfRows).filter { row in
@@ -476,7 +526,7 @@ struct ManagerModelTests {
             var permits = resume.stream.makeAsyncIterator()
             _ = await permits.next()
         }
-        let compacting = Task { try await app.presentConnectedScreen(cID, purpose: .automatic, preserving: .compact) }
+        let compacting = Task { try await main.presentConnectedScreen(cID, purpose: .automatic, preserving: .compact) }
         try #require(await releases.next() != nil)
         outline.selectRowIndexes(IndexSet(rows.prefix(2)), byExtendingSelection: false)
         outline.selectRowIndexes(IndexSet(integer: rows[2]), byExtendingSelection: true)
@@ -519,13 +569,14 @@ struct ManagerModelTests {
         app.screens.attach(aController)
         app.screens.attach(bController)
         main.selectDevice(aID)
-        try await app.presentConnectedScreen(aID, purpose: .requested)
-        main.onShowCompactWindow?(aID)
+        try await main.presentConnectedScreen(aID, purpose: .requested)
+        let compact = try #require(main.window?.toolbar?.items.first { $0.itemIdentifier.rawValue == "CompactDeviceWindow" })
+        #expect(NSApp.sendAction(try #require(compact.action), to: compact.target, from: compact))
         let compacted = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             MainActor.assumeIsolated { pane.liveDeviceIdentifier == nil && !aController.isEmbedded }
         }, object: nil)
         try #require(await XCTWaiter.fulfillment(of: [compacted], timeout: 5) == .completed)
-        let compactIntent = app.presentationIntent
+        let compactIntent = main.presentationIntent
         main.update()
         let content = try #require(main.window?.contentView)
         let fields = inspectorViews(content)
@@ -534,12 +585,12 @@ struct ManagerModelTests {
         main.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: search))
         search.stringValue = ""
         main.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: search))
-        #expect(app.presentationIntent.revision == compactIntent.revision && app.presentationIntent.placement == .compact)
+        #expect(main.presentationIntent.revision == compactIntent.revision && main.presentationIntent.placement == .compact)
         let outline = try #require(fields.compactMap { $0 as? NSOutlineView }.first)
         let aRow = outline.selectedRow
         try #require(aRow >= 0)
         main.updateDeviceMenu(for: aRow)
-        #expect(app.presentationIntent.revision == compactIntent.revision && app.presentationIntent.placement == .compact)
+        #expect(main.presentationIntent.revision == compactIntent.revision && main.presentationIntent.placement == .compact)
         let bRow = try #require((0..<outline.numberOfRows).first { row in
             row != aRow && outline.item(atRow: row).map { main.outlineView(outline, shouldSelectItem: $0) } == true
         })
@@ -550,7 +601,7 @@ struct ManagerModelTests {
             }
         }, object: nil)
         try #require(await XCTWaiter.fulfillment(of: [embedded], timeout: 5) == .completed)
-        try await app.presentConnectedScreen(bID, purpose: .automatic)
+        try await main.presentConnectedScreen(bID, purpose: .automatic)
         #expect(main.selectedIdentifiers == [bID] && pane.liveDeviceIdentifier == bID)
         #expect(bController.presentationViewController.parent === pane.liveScreenContainer)
         #expect(model.settings.device?.id == bID && main.deviceInspector.inspection.device?.id == bID)
@@ -581,7 +632,7 @@ struct ManagerModelTests {
             presentCompactWindow: { _ in compactPresentations += 1 })
         app.screens.attach(controller)
         if !initial { main.selectDevice(bID) }
-        try await app.presentConnectedScreen(aID, purpose: initial ? .startup : .automatic)
+        try await main.presentConnectedScreen(aID, purpose: initial ? .startup : .automatic)
         let selected = initial ? aID : bID
         #expect(main.selectedIdentifiers == [selected])
         #expect(model.settings.device?.id == selected && main.deviceInspector.inspection.device?.id == selected)
@@ -589,21 +640,21 @@ struct ManagerModelTests {
         #expect((controller.presentationViewController.parent === pane.liveScreenContainer) == initial)
         #expect(session.state == .connected && app.screens.screen(for: aID)?.commandTarget === controller)
         if !initial {
-            try await app.presentConnectedScreen(aID, purpose: .automatic, preserving: .compact)
+            try await main.presentConnectedScreen(aID, purpose: .automatic, preserving: .compact)
             #expect(compactPresentations == 1 && main.selectedIdentifiers == [bID] && pane.liveDeviceIdentifier == nil)
         }
         if initial {
             let compact = try #require(main.window?.toolbar?.items.first { $0.itemIdentifier.rawValue == "CompactDeviceWindow" })
             #expect(!compact.isHidden && main.validateToolbarItem(compact))
-            main.onShowCompactWindow?(aID)
+            #expect(NSApp.sendAction(try #require(compact.action), to: compact.target, from: compact))
             let compacted = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
                 MainActor.assumeIsolated { pane.liveDeviceIdentifier == nil && !controller.isEmbedded }
             }, object: nil)
             try #require(await XCTWaiter.fulfillment(of: [compacted], timeout: 5) == .completed)
             #expect(compact.isHidden && !main.validateToolbarItem(compact))
-            try await app.presentConnectedScreen(aID, purpose: .requested)
+            try await main.presentConnectedScreen(aID, purpose: .requested)
             #expect(pane.liveDeviceIdentifier == nil && !controller.isEmbedded)
-            app.selectDeviceForPresentation(aID)
+            main.showDevice(aID)
             let embedded = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
                 MainActor.assumeIsolated { pane.liveDeviceIdentifier == aID && controller.isEmbedded }
             }, object: nil)
@@ -682,7 +733,7 @@ struct ManagerModelTests {
         app.screens.attach(aController)
         app.screens.attach(bController)
         main.selectDevice(aID)
-        try await app.presentConnectedScreen(aID, purpose: .requested)
+        try await main.presentConnectedScreen(aID, purpose: .requested)
         model.setDeviceSetting(.appearance("dark"), for: bID)
         #expect(await events.next() == .write(bID))
         #expect(!model.isBusy)
@@ -695,7 +746,8 @@ struct ManagerModelTests {
             })
             outline.selectRowIndexes(IndexSet(integer: bRow), byExtendingSelection: false)
         } else {
-            main.onShowCompactWindow?(aID)
+            let compact = try #require(main.window?.toolbar?.items.first { $0.itemIdentifier.rawValue == "CompactDeviceWindow" })
+            #expect(NSApp.sendAction(try #require(compact.action), to: compact.target, from: compact))
             let compacted = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
                 MainActor.assumeIsolated { pane.liveDeviceIdentifier == nil && !aController.isEmbedded }
             }, object: nil)
@@ -738,7 +790,7 @@ struct ManagerModelTests {
         let controller = RemoteDeviceWindowController(device: a, session: session, presentCompactWindow: { _ in })
         let screen = app.screens.attach(controller)
         main.selectDevice(aID)
-        try await app.presentConnectedScreen(aID, purpose: .requested)
+        try await main.presentConnectedScreen(aID, purpose: .requested)
         let capture = try #require(main.window?.toolbar?.items.first { $0.itemIdentifier.rawValue == "captureKeyboard" })
         #expect(pane.liveScreen === screen && !capture.isHidden && capture.isEnabled)
         let releasing = AsyncStream<Void>.makeStream(), resume = AsyncStream<Void>.makeStream()
