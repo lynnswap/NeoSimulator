@@ -574,6 +574,48 @@ struct ManagerModelTests {
         main.window?.close()
     }
 
+    @Test func screenSourceCommandReachesTheRemoteScreenInEitherWindow() async throws {
+        _ = NSApplication.shared
+        let devices = try CoreDeviceInventoryDecoder.decode(Data(#"{"result":{"devices":[{"identifier":"A","properties":{"hardware":{"reality":"physical"},"state":{"name":"A"}}}]}}"#.utf8))
+        let a = try #require(devices.first)
+        let aID = DeviceInventoryID.coreDevice(a.identifier)
+        let model = SimulatorManagerModel(source: ManagerModelSource(devices: devices.map(InventoryDevice.remote)))
+        model.settings.setReadingSuspended(true)
+        await model.refresh()
+        let app = AppDelegate()
+        app.model = model
+        app.prepareMainWindow()
+        let main = try #require(app.mainWindow)
+        main.window?.setFrameAutosaveName("")
+        defer { main.window?.close() }
+        let suite = "NeoSimulatorTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let catalog = ScreenCaptureSourceCatalog(defaults: defaults)
+        let session = RemoteDeviceScreenSession(device: a, captureSources: catalog) { _, _, _ in TestRemoteScreenTransport() }
+        try await session.start()
+        let controller = RemoteDeviceWindowController(device: a, session: session, presentCompactWindow: { _ in })
+        app.remoteWindows[aID] = controller
+        main.selectDevice(aID)
+        try await app.presentConnectedScreen(aID, purpose: .requested)
+        // The screen and its frame can cover the canvas and its context menu, so the menu bar offers the command.
+        let command = NSMenuItem(title: "Choose Screen Source…", action: NSSelectorFromString("chooseCaptureSource:"), keyEquivalent: "")
+        let action = try #require(command.action)
+        #expect(main.supplementalTarget(forAction: action, sender: command) as AnyObject? === controller)
+        // A screen shown without a Mac capture source, as a virtual machine's is, has no source to choose.
+        #expect(!controller.validateMenuItem(command))
+        catalog.choose(RemoteScreenCaptureSource(name: "A", uniqueID: "a-capture-identity"), for: a.identifier)
+        #expect(controller.validateMenuItem(command))
+        main.onShowCompactWindow?(aID)
+        let compacted = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            MainActor.assumeIsolated { main.liveDeviceIdentifier == nil && !controller.isEmbedded }
+        }, object: nil)
+        try #require(await XCTWaiter.fulfillment(of: [compacted], timeout: 5) == .completed)
+        #expect(controller.presentationViewController.supplementalTarget(forAction: action, sender: command) as AnyObject? === controller)
+        #expect(controller.validateMenuItem(command))
+        try await session.stop()
+    }
+
     @Test(arguments: [false, true])
     func queuedRemoteOpenPreservesNewerSelectionOrCompact(_ selectsAnotherDevice: Bool) async throws {
         _ = NSApplication.shared

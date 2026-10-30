@@ -43,8 +43,8 @@ camera. macOS does not say which device a source shows, so the first time,
 choose **Choose Screen Source…** on the device's screen and select the device's
 source. NeoSimulator reconnects with that source and remembers it for the
 device. Sources with the same name are numbered; if the screen shows a
-different device, Control-click beside the device and choose **Choose Screen
-Source…** again. The first connection then asks for Camera access. If you
+different device, choose **Device → Choose Screen Source…** again. The first
+connection then asks for Camera access. If you
 denied it, allow NeoSimulator in **System Settings → Privacy & Security →
 Camera**, then choose **Try Again** on the screen. If the screen is not
 available, connect the device with a cable and choose **Try Again**.

@@ -50,7 +50,7 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
         }
     }
     /// Covers the screen while it connects or is unavailable, with the actions that can restore it.
-    private let statusView = NSStackView()
+    private let statusView = NSBox()
     private let progress = NSProgressIndicator()
     private let statusTitle = NSTextField(wrappingLabelWithString: "")
     private let statusDetail = NSTextField(wrappingLabelWithString: "")
@@ -152,20 +152,27 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
         viewport.addSubview(session.contentView)
         inputView.translatesAutoresizingMaskIntoConstraints = false
         viewport.addSubview(inputView)
-        // The status covers the device's dark screen in either system appearance.
+        // An opaque panel keeps the status readable over a failed connection's last frame, the device's frame,
+        // or the canvas, in either system appearance.
+        statusView.boxType = .custom
+        statusView.titlePosition = .noTitle
+        statusView.borderWidth = 0
+        statusView.cornerRadius = 12
+        statusView.fillColor = .windowBackgroundColor
+        statusView.contentViewMargins = .zero
         statusView.appearance = NSAppearance(named: .darkAqua)
-        statusView.orientation = .vertical
-        statusView.alignment = .centerX
-        statusView.spacing = 8
         statusView.translatesAutoresizingMaskIntoConstraints = false
         let actions = NSStackView(views: [retryButton, captureSourceButton])
         actions.orientation = .vertical
         actions.spacing = 8
-        statusView.addArrangedSubview(progress)
-        statusView.addArrangedSubview(statusTitle)
-        statusView.addArrangedSubview(statusDetail)
-        statusView.addArrangedSubview(actions)
-        statusView.setCustomSpacing(16, after: statusDetail)
+        let status = NSStackView(views: [progress, statusTitle, statusDetail, actions])
+        status.orientation = .vertical
+        status.alignment = .centerX
+        status.spacing = 8
+        status.edgeInsets = NSEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
+        status.setCustomSpacing(16, after: statusDetail)
+        status.translatesAutoresizingMaskIntoConstraints = false
+        statusView.contentView?.addSubview(status)
         viewport.addSubview(statusView)
         canvasControlsContainer.orientation = .vertical
         canvasControlsContainer.alignment = .width
@@ -200,6 +207,8 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
             session.contentView.topAnchor.constraint(equalTo: viewport.topAnchor), session.contentView.bottomAnchor.constraint(equalTo: viewport.bottomAnchor),
             inputView.leadingAnchor.constraint(equalTo: viewport.leadingAnchor), inputView.trailingAnchor.constraint(equalTo: viewport.trailingAnchor),
             inputView.topAnchor.constraint(equalTo: viewport.topAnchor), inputView.bottomAnchor.constraint(equalTo: viewport.bottomAnchor),
+            status.leadingAnchor.constraint(equalTo: statusView.leadingAnchor), status.trailingAnchor.constraint(equalTo: statusView.trailingAnchor),
+            status.topAnchor.constraint(equalTo: statusView.topAnchor), status.bottomAnchor.constraint(equalTo: statusView.bottomAnchor),
             statusView.centerXAnchor.constraint(equalTo: viewport.centerXAnchor), statusView.centerYAnchor.constraint(equalTo: viewport.centerYAnchor),
             statusView.widthAnchor.constraint(lessThanOrEqualTo: viewport.widthAnchor, constant: -32),
         ])
@@ -216,6 +225,8 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
         session.onStateChange = { [weak self] in self?.update() }
         session.onFrameButton = { [weak self] page, usage, state in self?.sendFrameButton(usagePage: page, usage: usage, state: state) }
         session.onFrameButtonFailure = { [weak self] in self?.showIssue($0) }
+        // The screen stays usable, so its status does not cover it for these failures.
+        session.onAppResizeFailure = { [weak self] in self?.showIssue($0) }
         let screenMenu = NSMenu(title: "Screen")
         screenMenu.delegate = self
         viewport.menu = screenMenu
@@ -483,7 +494,7 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
         if session.state != .connected, session.lastError?.localizedDescription == error.localizedDescription { return }
         guard !presentingIssue, let window = presentationWindow, window.isVisible else { return }
         presentingIssue = true
-        let alert = NSAlert(error: error)
+        let alert = NSAlert(presenting: error)
         Task { [weak self] in
             _ = await self?.presentAlert(alert, window)
             self?.presentingIssue = false
@@ -601,17 +612,22 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
         }
     }
 
-    /// Changing the source reconnects the screen, so it follows Reconnect's availability.
+    /// Only a screen shown through a Mac capture source has one to choose. Changing it reconnects
+    /// the screen, so it follows Reconnect's availability.
     private var canChooseCaptureSource: Bool {
-        captureSourceTask == nil && stoppingTask == nil && isScreenActionEnabled("reconnect")
+        (session.captureSource != nil || session.needsCaptureSource)
+            && captureSourceTask == nil && stoppingTask == nil && isScreenActionEnabled("reconnect")
     }
 
-    @objc private func chooseCaptureSource(_ sender: Any?) {
+    @objc func chooseCaptureSource(_ sender: Any?) {
         guard canChooseCaptureSource else { return }
-        // A button shows the sources below itself; a context menu's item shows them where it was opened.
+        // A button shows the sources below itself and the canvas's context menu where it was opened;
+        // the menu bar shows them over the screen.
         let anchor = sender as? NSButton ?? viewport
-        let location = sender is NSButton ? NSPoint(x: 0, y: anchor.bounds.maxY + 4)
-            : anchor.convert(anchor.window?.mouseLocationOutsideOfEventStream ?? .zero, from: nil)
+        let location = if sender is NSButton { NSPoint(x: 0, y: anchor.bounds.maxY + 4) }
+            else if (sender as? NSMenuItem)?.menu === viewport.menu, let window = viewport.window {
+                viewport.convert(window.mouseLocationOutsideOfEventStream, from: nil)
+            } else { NSPoint(x: viewport.bounds.midX, y: viewport.bounds.midY) }
         captureSourceTask = Task { [weak self] in
             guard let self else { return }
             defer { self.captureSourceTask = nil; self.update() }

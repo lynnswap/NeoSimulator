@@ -56,6 +56,8 @@ public final class RemoteDeviceScreenSession {
     @_spi(NeoSimulator) public var onFrameButton: ((_ usagePage: Int, _ usage: Int, RemoteDeviceButtonState) -> Void)?
     /// Receives failures reading a pressed frame button.
     @_spi(NeoSimulator) public var onFrameButtonFailure: ((any Error) -> Void)?
+    /// Receives each app-resize failure that leaves the screen connected; lastError also keeps it.
+    @_spi(NeoSimulator) public var onAppResizeFailure: ((any Error) -> Void)?
 
     private let makeTransport: @MainActor (CoreDeviceDevice, NSView, String?) async throws -> any RemoteScreenTransport
     private let captureSources: any RemoteScreenCaptureSourceCatalog
@@ -177,7 +179,7 @@ public final class RemoteDeviceScreenSession {
                         if error is CancellationError { throw error }
                         resizeTransport = nil
                         resizeEligibility = .unavailable
-                        lastError = error
+                        reportResizeFailure(error)
                     }
                     try Task.checkCancellation()
                     guard generation == token else { throw CancellationError() }
@@ -436,8 +438,11 @@ public final class RemoteDeviceScreenSession {
                 guard !Task.isCancelled, let self, let source, self.resizeTransport === source else { return }
                 self.resizeTransport = nil
                 self.resizeEligibility = .unavailable
-                self.lastError = error
-                if self.resizeSession != nil { self.returnFromInvalidatedDisplay() }
+                // A resized app reports the failure once its primary display returns.
+                if self.resizeSession != nil {
+                    self.lastError = error
+                    self.returnFromInvalidatedDisplay()
+                } else { self.reportResizeFailure(error) }
                 self.onStateChange?()
             }
         }
@@ -489,7 +494,7 @@ public final class RemoteDeviceScreenSession {
     }
 
     /// Requests native point geometry, keeping only the latest pending size. Accepted
-    /// geometry comes from appResizeGeometry; adjustment errors are reported in lastError.
+    /// geometry comes from appResizeGeometry; adjustment errors go to onAppResizeFailure and lastError.
     @_spi(NeoSimulator)
     public func resizeApp(to size: CGSize) {
         guard state == .connected, !isChangingDisplay, let assertion = resizeSession, let geometry = appResizeGeometry,
@@ -509,7 +514,7 @@ public final class RemoteDeviceScreenSession {
             } catch {
                 guard !Task.isCancelled, let self, self.resizeSession === assertion else { return }
                 self.pendingAppSize = nil
-                self.lastError = error
+                self.reportResizeFailure(error)
                 self.onStateChange?()
             }
         }
@@ -632,10 +637,16 @@ public final class RemoteDeviceScreenSession {
                         onStateChange?()
                     } catch { throw cause.map { Self.combining($0, cleanup: error) } ?? error }
                 }
+                if let cause, self.stopping == nil { self.onAppResizeFailure?(cause) }
             } catch {
                 // The joined transition task publishes the failure through session state.
             }
         }
+    }
+
+    private func reportResizeFailure(_ error: any Error) {
+        lastError = error
+        onAppResizeFailure?(error)
     }
 
     private func restorePrimary(finalizeRecording: Bool) async throws {

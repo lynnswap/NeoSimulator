@@ -722,7 +722,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
                  #selector(RemoteDeviceWindowController.recordScreenTo(_:)),
                  #selector(RemoteDeviceWindowController.stopScreenRecording(_:)),
                  #selector(RemoteDeviceWindowController.saveScreenRecording(_:)),
-                 #selector(RemoteDeviceWindowController.discardScreenRecording(_:)):
+                 #selector(RemoteDeviceWindowController.discardScreenRecording(_:)),
+                 #selector(RemoteDeviceWindowController.chooseCaptureSource(_:)):
                 if target.responds(to: action) { return target }
             default: break
             }

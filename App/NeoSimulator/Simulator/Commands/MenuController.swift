@@ -97,8 +97,9 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
         observeActiveWindow()
     }
 
-    /// Adds simulator controls without replacing the manager's app and browser menus.
-    func addDeviceMenus(to main: NSMenu, managementMenu: NSMenu? = nil) {
+    /// Adds simulator controls without replacing the manager's app and browser menus, and returns the Device menu.
+    @discardableResult
+    func addDeviceMenus(to main: NSMenu, managementMenu: NSMenu? = nil) -> NSMenu {
         let device = menu("Device", in: main)
         if let managementMenu {
             let item = NSMenuItem(title: "Manage Selected Devices", action: nil, keyEquivalent: "")
@@ -183,6 +184,7 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
         debug.addItem(.separator())
         item("Show Parallel Testing Devices", action: #selector(toggleShowTestingDevices(_:)), in: debug)
         observeActiveWindow()
+        return device
     }
 
     func addScreenCommands(file: NSMenu, edit: NSMenu, view: NSMenu) {
