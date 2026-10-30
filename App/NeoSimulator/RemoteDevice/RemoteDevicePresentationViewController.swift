@@ -18,7 +18,8 @@ final class RemoteDevicePresentationViewController: NSViewController {
                  #selector(RemoteDeviceWindowController.recordScreenTo(_:)),
                  #selector(RemoteDeviceWindowController.stopScreenRecording(_:)),
                  #selector(RemoteDeviceWindowController.saveScreenRecording(_:)),
-                 #selector(RemoteDeviceWindowController.discardScreenRecording(_:)):
+                 #selector(RemoteDeviceWindowController.discardScreenRecording(_:)),
+                 #selector(RemoteDeviceWindowController.chooseCaptureSource(_:)):
                 return owner
             default: break
             }

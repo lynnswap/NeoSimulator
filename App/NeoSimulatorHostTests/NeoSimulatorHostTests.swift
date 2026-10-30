@@ -35,7 +35,7 @@ struct InputFocusTests {
                 keyboardLanguage: { nil }, keyboardCaptureTap: TestKeyboardEventTap(),
                 presentCompactWindow: { _ in compactPresentations.append(id) })
             controllers.append(controller)
-            app.simulatorWindows[.simulator(udid: id, deviceSetPath: nil)] = controller
+            app.screens.attach(controller, as: .simulator(udid: id, deviceSetPath: nil))
         }
         defer { controllers.forEach { $0.invalidate() }; main.window?.close() }
         let xcode = URL(fileURLWithPath: "/Applications/Fixture Xcode.app")
@@ -56,12 +56,13 @@ struct InputFocusTests {
         }, object: nil)
         try #require(await XCTWaiter.fulfillment(of: [completed], timeout: 5) == .completed)
         let selected = showsCompactDeviceInMain ? devices[1].id : devices[2].id
-        #expect(main.selectedIdentifiers == [selected] && main.liveDeviceIdentifier == selected)
+        let pane = main.deviceScreenViewController
+        #expect(main.selectedIdentifiers == [selected] && pane.liveDeviceIdentifier == selected)
         #expect(model.settings.device?.id == selected && main.deviceInspector.inspection.device?.id == selected)
         #expect(main.window?.isVisible == true)
         #expect(compactPresentations == (showsCompactDeviceInMain ? [] : [ids[1]]))
         #expect(controllers[0].window?.isVisible == false && !controllers[0].isEmbedded)
-        #expect(controllers[showsCompactDeviceInMain ? 1 : 2].presentationViewController.parent === main.liveScreenContainer)
+        #expect(controllers[showsCompactDeviceInMain ? 1 : 2].presentationViewController.parent === pane.liveScreenContainer)
     }
 
     @Test func remoteKeyboardForwardsJISLanguageKeysAndTheirReleases() async throws {
@@ -122,17 +123,18 @@ struct InputFocusTests {
             event.setIntegerValueField(.scrollWheelEventMomentumPhase, value: Int64(momentum.rawValue))
             return try #require(NSEvent(cgEvent: event))
         }
-        let began = try scroll(.began)
+        // The events that begin and end a scroll carry movement too, so even a brief scroll drags instead of tapping.
+        let began = try scroll(.began, dx: 10, dy: -30)
         let origin = began.locationInWindow
         // Moving two fingers up scrolls content up, as dragging one finger up on the screen does.
-        for event in [began, try scroll(.changed, dx: 10, dy: -30), try scroll(.changed, dy: -20), try scroll(.ended),
+        for event in [began, try scroll(.ended, dy: -20), began, try scroll(.changed, dy: -20), try scroll(.ended),
                       try scroll(nil, momentum: .begin, dy: -50), try scroll(nil, momentum: .end)] {
             input.scrollWheel(with: event)
         }
         for operation in operations { try await operation() }
-        #expect(transport.touches.map(\.phase) == [.began, .moved, .moved, .ended])
-        #expect(transport.touches.map(\.point) == [origin, CGPoint(x: origin.x + 10, y: origin.y + 30),
-            CGPoint(x: origin.x + 10, y: origin.y + 50), CGPoint(x: origin.x + 10, y: origin.y + 50)])
+        let moved = CGPoint(x: origin.x + 10, y: origin.y + 30), dragged = CGPoint(x: origin.x + 10, y: origin.y + 50)
+        #expect(transport.touches.map(\.phase) == [.began, .moved, .ended, .began, .moved, .moved, .ended])
+        #expect(transport.touches.map(\.point) == [origin, moved, dragged, origin, moved, dragged, dragged])
         try await session.stop()
     }
 
@@ -402,10 +404,15 @@ struct InputFocusTests {
             simctl: URL(fileURLWithPath: "/usr/bin/false"), devicectl: URL(fileURLWithPath: "/usr/bin/false"),
             keyboardCaptureTap: TestKeyboardEventTap(), presentCompactWindow: { _ in })
         defer { controller.invalidate() }
-        let controls = DeviceCanvasControls()
+        let model = SimulatorManagerModel(source: ManagerModelSource(devices: []))
+        model.settings.setReadingSuspended(true)
+        let screens = DeviceScreens(model: model)
+        let identifier = DeviceInventoryID.simulator(udid: controller.session.device.identifier,
+                                                     deviceSetPath: controller.session.device.deviceSetPath)
+        let screen = screens.attach(controller, as: identifier)
+        let controls = screen.canvasControls
         controls.update(supports: { ["home", "capture", "record"].contains($0) },
                         isEnabled: { _ in true }, recordingTitle: "Record Screen")
-        controller.canvasControls = controls
         controller.showCompactWindow()
         let canvas = controller.presentationViewController.view
         let viewport = try #require(canvas.layoutGuides.first { $0.identifier.rawValue == "DeviceCanvasViewport" })
@@ -451,18 +458,15 @@ struct InputFocusTests {
 
         controls.update(supports: { ["home", "capture", "record"].contains($0) },
                         isEnabled: { _ in true }, recordingTitle: "Record Screen", pairedDeviceName: "Companion Watch")
-        let model = SimulatorManagerModel(source: ManagerModelSource(devices: []))
-        model.settings.setReadingSuspended(true)
-        let manager = ManagerWindowController(model: model)
+        let manager = ManagerWindowController(model: model, screens: screens, menus: MenuController(application: nil))
         let mainWindow = try #require(manager.window)
         mainWindow.setFrameAutosaveName("")
         defer { mainWindow.close() }
         mainWindow.setContentSize(NSSize(width: 1040, height: 700))
         mainWindow.contentView?.layoutSubtreeIfNeeded()
-        controller.embed(in: manager.liveScreenContainer)
-        let identifier = DeviceInventoryID.simulator(udid: controller.session.device.identifier,
-                                                     deviceSetPath: controller.session.device.deviceSetPath)
-        manager.showLiveScreen(for: identifier, controls: controls)
+        let pane = manager.deviceScreenViewController
+        controller.embed(in: pane.liveScreenContainer)
+        pane.showLiveScreen(screen)
         mainWindow.setContentSize(NSSize(width: 1040, height: 650))
         mainWindow.contentView?.layoutSubtreeIfNeeded()
         mainWindow.displayIfNeeded()
@@ -474,7 +478,7 @@ struct InputFocusTests {
         #expect(canvas.convert(viewport.frame, to: nil).insetBy(dx: -1, dy: -1).contains(display.view.convert(display.view.bounds, to: nil)))
 
         controller.showCompactWindow()
-        manager.showDevicePreview(ifDisplaying: identifier)
+        pane.showDevicePreview(ifDisplaying: identifier)
         window.contentView?.layoutSubtreeIfNeeded()
         #expect(window.contentView === compactRoot && canvas.superview === compactRoot)
         #expect(canvas.frame == compactRoot.bounds)
@@ -492,23 +496,24 @@ struct InputFocusTests {
             simctl: URL(fileURLWithPath: "/usr/bin/false"), devicectl: URL(fileURLWithPath: "/usr/bin/false"),
             keyboardCaptureTap: TestKeyboardEventTap(), presentCompactWindow: { _ in })
         defer { controller.invalidate() }
-        let controls = DeviceCanvasControls()
-        controls.update(supports: { ["home", "capture", "record"].contains($0) },
-                        isEnabled: { _ in true }, recordingTitle: "Record Screen")
-        controller.canvasControls = controls
         let model = SimulatorManagerModel(source: ManagerModelSource(devices: []))
         model.settings.setReadingSuspended(true)
-        let manager = ManagerWindowController(model: model)
+        let screens = DeviceScreens(model: model)
+        let screen = screens.attach(controller, as: .simulator(udid: controller.session.device.identifier,
+                                                               deviceSetPath: controller.session.device.deviceSetPath))
+        let controls = screen.canvasControls
+        controls.update(supports: { ["home", "capture", "record"].contains($0) },
+                        isEnabled: { _ in true }, recordingTitle: "Record Screen")
+        let manager = ManagerWindowController(model: model, screens: screens, menus: MenuController(application: nil))
         let mainWindow = try #require(manager.window)
         mainWindow.setFrameAutosaveName("")
         defer { mainWindow.close() }
         mainWindow.setContentSize(NSSize(width: 1040, height: 700))
         mainWindow.contentView?.layoutSubtreeIfNeeded()
-        let identifier = DeviceInventoryID.simulator(udid: controller.session.device.identifier,
-                                                     deviceSetPath: controller.session.device.deviceSetPath)
+        let live = manager.deviceScreenViewController.liveScreenContainer
         try await animateCanvas {
-            controller.embed(in: manager.liveScreenContainer)
-            manager.showLiveScreen(for: identifier, controls: controls)
+            controller.embed(in: live)
+            manager.deviceScreenViewController.showLiveScreen(screen)
             mainWindow.contentView?.layoutSubtreeIfNeeded()
         }
         let canvas = controller.presentationViewController.view
@@ -522,7 +527,7 @@ struct InputFocusTests {
         #expect(fitArea.insetBy(dx: -pixel, dy: -pixel).contains(display.view.convert(display.view.bounds, to: nil)))
         // At point size the device is taller than the fitting area and continues behind both bars.
         try await animateCanvas { controller.setScale(.pointAccurate) }
-        let pane = manager.liveScreenContainer.view.convert(manager.liveScreenContainer.view.bounds, to: nil)
+        let pane = live.view.convert(live.view.bounds, to: nil)
         let shown = display.view.convert(display.view.visibleRect, to: nil)
         #expect(shown.maxY > mainWindow.contentLayoutRect.maxY + 1 && shown.minY < controlsRect.minY - 1,
                 "Shown \(NSStringFromRect(shown)) for fitting area \(NSStringFromRect(fitArea))")
@@ -702,6 +707,71 @@ struct InputFocusTests {
         try await controller.stopAndClose()
     }
 
+    @Test func aFailedRemoteScreenKeepsItsStatusReadableOverTheLastFrame() async throws {
+        _ = NSApplication.shared
+        let data = Data(#"{"result":{"devices":[{"identifier":"fixture-command","properties":{"hardware":{"reality":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)
+        let device = try #require(CoreDeviceInventoryDecoder.decode(data).first)
+        let transport = TestRemoteScreenTransport()
+        // Like the capture transport's last drawable, a failed connection's last frame stays in the screen.
+        let lastFrame = NSImageView(image: NSImage(size: NSSize(width: 4, height: 4), flipped: false) {
+            NSColor.white.setFill()
+            $0.fill()
+            return true
+        })
+        lastFrame.imageScaling = .scaleAxesIndependently
+        lastFrame.autoresizingMask = [.width, .height]
+        var connections = 0
+        let session = RemoteDeviceScreenSession(device: device) { _, content, _ in
+            connections += 1
+            lastFrame.frame = content.bounds
+            content.addSubview(lastFrame)
+            return transport
+        }
+        let controller = RemoteDeviceWindowController(device: device, session: session, presentCompactWindow: { _ in })
+        let root = controller.presentationViewController.view
+        // The luminance of each pixel AppKit draws in a rectangle of the root view.
+        func luminances(in rect: NSRect) throws -> [CGFloat] {
+            root.layoutSubtreeIfNeeded()
+            let image = try #require(root.bitmapImageRepForCachingDisplay(in: root.bounds))
+            root.cacheDisplay(in: root.bounds, to: image)
+            let scale = CGFloat(image.pixelsWide) / root.bounds.width
+            let pixels = rect.intersection(root.bounds).insetBy(dx: 1, dy: 1)
+            return stride(from: pixels.minX, to: pixels.maxX, by: 1 / scale).flatMap { x in
+                stride(from: pixels.minY, to: pixels.maxY, by: 1 / scale).compactMap { y in
+                    image.colorAt(x: Int(x * scale), y: Int((root.bounds.height - y) * scale))?.usingColorSpace(.sRGB).map {
+                        $0.alphaComponent * (0.2126 * $0.redComponent + 0.7152 * $0.greenComponent + 0.0722 * $0.blueComponent)
+                    }
+                }
+            }
+        }
+        try await session.start()
+        let failure = RemoteScreenCaptureSourceError(reason: .disconnected)
+        transport.emit(.failure(failure))
+        root.layoutSubtreeIfNeeded()
+        func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+        let title = try #require(descendants(root).compactMap { $0 as? NSTextField }.first {
+            !$0.isHiddenOrHasHiddenAncestor && $0.stringValue == failure.errorDescription
+        })
+        // Text drawn over the bright frame's own color cannot be read.
+        let text = try luminances(in: title.convert(title.bounds, to: root)).sorted()
+        let background = text[text.count / 2], strokes = try #require(text.last)
+        #expect(background < 0.4 && strokes - background > 0.4, "Title \(strokes) over \(background)")
+        #expect(!session.contentView.isHiddenOrHasHiddenAncestor && !lastFrame.isHiddenOrHasHiddenAncestor)
+        let retry = try #require(descendants(root).compactMap { $0 as? NSButton }.first {
+            !$0.isHiddenOrHasHiddenAncestor && $0.title == "Try Again"
+        })
+        retry.performClick(nil)
+        try await wait {
+            connections == 2 && session.state == .connected && !descendants(root).contains {
+                ($0 is NSTextField || $0 is NSProgressIndicator) && !$0.isHiddenOrHasHiddenAncestor
+            }
+        }
+        // Reconnected, the whole screen shows its frames again.
+        let screen = try luminances(in: NSRect(x: root.bounds.midX - 60, y: root.bounds.midY - 60, width: 120, height: 120))
+        #expect(screen.allSatisfy { $0 > 0.9 })
+        try await controller.stopAndClose()
+    }
+
     @Test func remoteWindowCoalescesLayoutSizesWithoutBlockingHID() async throws {
         _ = NSApplication.shared
         let data = Data(#"{"result":{"devices":[{"identifier":"fixture-command","properties":{"hardware":{"reality":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)
@@ -753,6 +823,44 @@ struct InputFocusTests {
         resize.lease.completeAdjustment()
         try await wait { !session.isChangingDisplay && !session.isResizingApp }
         #expect(resize.lease.adjustedSizes == accepted && resize.lease.invalidations == 1)
+        try await controller.stopAndClose()
+    }
+
+    @Test func aRejectedAppSizeIsReportedOnceOverTheConnectedScreen() async throws {
+        _ = NSApplication.shared
+        let data = Data(#"{"result":{"devices":[{"identifier":"fixture-command","properties":{"hardware":{"reality":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)
+        let device = try #require(CoreDeviceInventoryDecoder.decode(data).first)
+        let resize = TestAppResizeTransport()
+        let primary = TestRemoteScreenTransport(), dedicated = TestRemoteScreenTransport()
+        let session = RemoteDeviceScreenSession(device: device, makeResizeTransport: { _ in resize }) { _, _, target in
+            target == nil ? primary : dedicated
+        }
+        var alerts: [NSAlert] = []
+        let controller = RemoteDeviceWindowController(device: device, session: session, presentCompactWindow: { _ in },
+            presentAlert: { alert, _ in alerts.append(alert); return .alertFirstButtonReturn })
+        let window = try #require(controller.window)
+        controller.showWindow(nil)
+        try await session.start()
+        try await wait { session.canResizeApp }
+        try await session.startAppResize(size: CGSize(width: 400, height: 600))
+        let rejection = NSError(domain: "NeoSimulatorTests", code: 1, userInfo: [
+            NSLocalizedDescriptionKey: "The app can’t use this size.",
+            NSLocalizedRecoverySuggestionErrorKey: "Make the window larger, then try again.",
+        ])
+        resize.lease.adjustmentError = rejection
+        window.setContentSize(CGSize(width: 520, height: 640))
+        controller.presentationViewController.view.layoutSubtreeIfNeeded()
+        controller.layoutScreen()
+        try await wait { !alerts.isEmpty }
+        // The device's later geometry updates the screen without repeating the failure.
+        var geometry = resize.lease.geometry
+        geometry.resolvedSize = CGSize(width: 480, height: 620)
+        resize.lease.geometryUpdates.continuation.yield(geometry)
+        try await wait { session.appResizeGeometry == geometry }
+        try await wait { alerts.count > 1 }
+        #expect(alerts.map(\.messageText) == [rejection.localizedDescription])
+        #expect(alerts.first?.informativeText == rejection.localizedRecoverySuggestion)
+        #expect(session.state == .connected && session.isResizingApp && window.isVisible)
         try await controller.stopAndClose()
     }
 
@@ -10248,7 +10356,10 @@ final class TestRemoteScreenTransport: RemoteScreenTransport {
     private(set) var pinches: [NSEvent] = []
     private(set) var inputReleases = 0
     var onReleaseInputs: (@MainActor () async throws -> Void)?
+    private var events: (@MainActor (RemoteScreenTransportEvent) -> Void)?
+    func emit(_ event: RemoteScreenTransportEvent) { events?(event) }
     func start(events: @escaping @MainActor (RemoteScreenTransportEvent) -> Void) async throws {
+        self.events = events
         events(.connected)
         events(.attributes(.init(aspectRatio: CGSize(width: 400, height: 600), contentsRect: CGRect(x: 0, y: 0, width: 1, height: 1), scaleFactor: 1, orientation: .portrait)))
         events(.frameReceived)

@@ -720,6 +720,24 @@
                 "NeoSimulatorRenderer/compile-sources",
                 "NeoSimulatorHostTests/compile-sources",
               ],
+            }, {
+              "path": "DeviceScreenViewController.swift",
+              "target-membership": [
+                "NeoSimulator/compile-sources",
+                "NeoSimulatorHostTests/compile-sources",
+              ],
+            }, {
+              "path": "DeviceScreens.swift",
+              "target-membership": [
+                "NeoSimulator/compile-sources",
+                "NeoSimulatorHostTests/compile-sources",
+              ],
+            }, {
+              "path": "DeviceScreen.swift",
+              "target-membership": [
+                "NeoSimulator/compile-sources",
+                "NeoSimulatorHostTests/compile-sources",
+              ],
             },
           ],
         },

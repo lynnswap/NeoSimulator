@@ -7,42 +7,36 @@ import Observation
 final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource, NSOutlineViewDelegate,
                                      NSSearchFieldDelegate, NSToolbarDelegate, NSToolbarItemValidation, NSMenuDelegate {
     private let model: SimulatorManagerModel
+    private let screens: DeviceScreens
+    /// Device commands' shared shortcuts follow the live screen.
+    private let menus: MenuController
     private let splitController = NSSplitViewController()
     private let table = NSOutlineView()
     private let search = NSSearchField()
-    private let deviceImage = NSImageView()
     private let artworkCache = DeviceArtworkCache()
-    private var previewTask: Task<Void, Never>?
-    private var previewArtwork: DeviceArtworkModel?
-    var isDeviceActivated: (DeviceInventoryID) -> Bool = { _ in false }
-    var preferredArtworkXcodeURL: () -> URL? = { nil }
-    private let deviceName = NSTextField(labelWithString: "Select a Device")
-    private let deviceRuntime = NSTextField(labelWithString: "")
-    private let viewScreen = NSButton(title: "View Screen", target: nil, action: nil)
-    let liveScreenContainer = NSViewController()
-    private(set) var liveDeviceIdentifier: DeviceInventoryID?
+    private(set) lazy var deviceScreenViewController: DeviceScreenViewController = {
+        let pane = DeviceScreenViewController(model: model, screens: screens)
+        pane.onViewScreen = { [weak self] in self?.openSelectedDevice(nil) }
+        pane.onLiveScreenChange = { [weak self] in
+            self?.updateLiveScreenToolbarItems()
+            self?.observeLiveScreenToolbar()
+        }
+        return pane
+    }()
     var onShowCompactWindow: ((DeviceInventoryID) -> Void)?
     var onSelectionIntent: (() -> Void)?
     var onSelectionChange: ((DeviceInventoryID?) -> Void)?
-    var onScreenAction: ((String) -> Void)?
     var onNewCompanion: ((SimulatorHostDevice) -> Void)?
-    weak var activeScreenCommandTarget: NSResponder?
+    private var liveScreenToolbarObservation = 0
+    private var displayedScreenIDs: Set<DeviceInventoryID> = []
+    private var displayedArtworkXcodeURL: URL?
     private var selectionIdentifier: DeviceInventoryID?
-    private var previewStack: NSStackView?
     private let compactIdentifier = NSToolbarItem.Identifier("CompactDeviceWindow")
     private let resizeAppIdentifier = NSToolbarItem.Identifier("resizeApp")
     private let captureKeyboardIdentifier = NSToolbarItem.Identifier("captureKeyboard")
     private let canvasZoomIdentifier = NSToolbarItem.Identifier("CanvasZoom")
     private let moreIdentifier = NSToolbarItem.Identifier("CanvasMoreActions")
     private var moreItem: NSMenuToolbarItem?
-    private let canvasAccessory = DeviceCanvasAccessoryViewController()
-    private let deviceFooter = NSStackView()
-    private let activityStack = NSStackView()
-    private let cancelOpening = NSButton(title: "Cancel Opening Screens", target: nil, action: nil)
-    /// The footer's distance from the pane's safe area, and the space it leaves above itself.
-    private static let footerInset: CGFloat = 8, footerSpacing: CGFloat = 12
-    private let activity = NSTextField(labelWithString: "")
-    private let progress = NSProgressIndicator()
     private var inspectorHost: NSHostingController<ManagerDeviceSettingsView>?
     private let inspectorContainer = NSViewController()
     private(set) lazy var deviceInspector: ManagerDeviceInspectorController = {
@@ -136,8 +130,10 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         }
     }
 
-    init(model: SimulatorManagerModel, defaults: UserDefaults = .standard) {
+    init(model: SimulatorManagerModel, screens: DeviceScreens, menus: MenuController, defaults: UserDefaults = .standard) {
         self.model = model
+        self.screens = screens
+        self.menus = menus
         self.defaults = defaults
         options = DeviceBrowserPresentation.Options(defaults: defaults)
         collapsedGroups = Set(defaults.stringArray(forKey: "SidebarCollapsedSectionIDs") ?? [])
@@ -169,8 +165,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         window.setFrameAutosaveName("NeoSimulatorDevices")
         update()
         observeInventory()
-        observeActivity()
         observeManagement()
+        observeScreens()
     }
 
     required init?(coder: NSCoder) { nil }
@@ -188,7 +184,6 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         updateSelection()
         if selectionIdentifier != previousIdentifier { onSelectionChange?(selectionIdentifier) }
         updateFilterItem()
-        updateActivity()
     }
 
     private func observeInventory() {
@@ -197,12 +192,6 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
                 self?.update()
                 self?.observeInventory()
             }
-        }
-    }
-
-    private func observeActivity() {
-        withObservationTracking { updateActivity() } onChange: { [weak self] in
-            Task { @MainActor in self?.observeActivity() }
         }
     }
 
@@ -226,25 +215,26 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         }
     }
 
-    private func updateActivity() {
-        activity.stringValue = model.isBusy ? model.activity : (model.backgroundIssue ?? "")
-        activity.toolTip = activity.stringValue
-        activity.isHidden = activity.stringValue.isEmpty
-        progress.isHidden = !model.isBusy
-        if model.isBusy { progress.startAnimation(nil) } else { progress.stopAnimation(nil) }
-        cancelOpening.isHidden = model.openingDeviceIDs.isEmpty
-        activityStack.isHidden = activity.isHidden && progress.isHidden && cancelOpening.isHidden
-        updateDeviceFooter()
-    }
-
-    private func updateDeviceFooter() {
-        deviceFooter.isHidden = activityStack.isHidden
-        // A live screen keeps drawing behind the footer; the footer only narrows the area it fits within.
-        let liveView = liveScreenContainer.view
-        var insets = liveView.additionalSafeAreaInsets
-        insets.bottom = deviceFooter.isHidden ? 0
-            : Self.footerInset + deviceFooter.fittingSize.height + Self.footerSpacing
-        liveView.additionalSafeAreaInsets = insets
+    /// Reloads the rows whose screens opened or closed, or every row when artwork comes from another Xcode.
+    private func observeScreens() {
+        displayedScreenIDs = screens.identifiers
+        displayedArtworkXcodeURL = screens.displayXcodeURL
+        withObservationTracking {
+            _ = screens.identifiers
+            _ = screens.displayXcodeURL
+        } onChange: { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                if self.displayedArtworkXcodeURL != self.screens.displayXcodeURL {
+                    for row in self.rows { self.table.reloadItem(row) }
+                } else {
+                    for identifier in self.displayedScreenIDs.symmetricDifference(self.screens.identifiers) {
+                        if let row = self.rowsByID[identifier] { self.table.reloadItem(row) }
+                    }
+                }
+                self.observeScreens()
+            }
+        }
     }
 
     private var filteredDevices: [InventoryDevice] {
@@ -377,93 +367,12 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     }
 
     private func buildDevicePane() {
-        let controller = NSViewController()
-        let view = NSView()
-        controller.view = view
-        liveScreenContainer.view = NSView()
-        controller.addChild(liveScreenContainer)
-        let liveView = liveScreenContainer.view
-        liveView.translatesAutoresizingMaskIntoConstraints = false
-        liveView.isHidden = true
-        liveView.clipsToBounds = true
-        view.addSubview(liveView)
-        // Presentations may draw behind the toolbar, bottom accessory and footer; each keeps its content in the safe area.
-        NSLayoutConstraint.activate([
-            liveView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            liveView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            liveView.topAnchor.constraint(equalTo: view.topAnchor),
-            liveView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-        ])
-        deviceImage.imageScaling = .scaleProportionallyUpOrDown
-        deviceImage.translatesAutoresizingMaskIntoConstraints = false
-        deviceImage.setAccessibilityHidden(true)
-        deviceName.font = .systemFont(ofSize: 17, weight: .semibold)
-        deviceName.alignment = .center
-        deviceName.lineBreakMode = .byTruncatingTail
-        deviceRuntime.font = .systemFont(ofSize: 13)
-        deviceRuntime.textColor = .secondaryLabelColor
-        deviceRuntime.alignment = .center
-        deviceRuntime.lineBreakMode = .byTruncatingTail
-        viewScreen.bezelStyle = .rounded
-        viewScreen.controlSize = .large
-        viewScreen.image = NSImage(systemSymbolName: "rectangle.badge.person.crop", accessibilityDescription: nil)
-        viewScreen.imagePosition = .imageLeading
-        viewScreen.target = self
-        viewScreen.action = #selector(openSelectedDevice(_:))
-        let stack = NSStackView(views: [deviceImage, deviceName, deviceRuntime, viewScreen])
-        previewStack = stack
-        stack.orientation = .vertical
-        stack.alignment = .centerX
-        stack.spacing = 10
-        stack.setCustomSpacing(24, after: deviceImage)
-        stack.setCustomSpacing(20, after: deviceRuntime)
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(stack)
-        progress.style = .spinning
-        progress.controlSize = .small
-        progress.isDisplayedWhenStopped = false
-        activity.font = .systemFont(ofSize: 12)
-        activity.textColor = .secondaryLabelColor
-        activity.lineBreakMode = .byTruncatingTail
-        activityStack.addArrangedSubview(progress)
-        activityStack.addArrangedSubview(activity)
-        cancelOpening.controlSize = .small
-        cancelOpening.bezelStyle = .rounded
-        cancelOpening.target = self
-        cancelOpening.action = #selector(cancelPendingScreenOpens(_:))
-        cancelOpening.isHidden = true
-        activityStack.addArrangedSubview(cancelOpening)
-        activityStack.orientation = .horizontal
-        activityStack.alignment = .centerY
-        activityStack.spacing = 7
-        activityStack.isHidden = true
-        deviceFooter.orientation = .vertical
-        deviceFooter.alignment = .centerX
-        deviceFooter.spacing = 8
-        deviceFooter.translatesAutoresizingMaskIntoConstraints = false
-        deviceFooter.addArrangedSubview(activityStack)
-        deviceFooter.isHidden = true
-        view.addSubview(deviceFooter)
-        NSLayoutConstraint.activate([
-            deviceImage.widthAnchor.constraint(equalToConstant: 192),
-            deviceImage.heightAnchor.constraint(equalToConstant: 192),
-            viewScreen.widthAnchor.constraint(greaterThanOrEqualToConstant: 112),
-            stack.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            stack.centerYAnchor.constraint(equalTo: view.centerYAnchor, constant: -24),
-            stack.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 24),
-            stack.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -24),
-            deviceName.widthAnchor.constraint(lessThanOrEqualTo: stack.widthAnchor),
-            deviceRuntime.widthAnchor.constraint(lessThanOrEqualTo: stack.widthAnchor),
-            deviceFooter.centerXAnchor.constraint(equalTo: view.safeAreaLayoutGuide.centerXAnchor),
-            deviceFooter.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -Self.footerInset),
-            deviceFooter.leadingAnchor.constraint(greaterThanOrEqualTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 12),
-            deviceFooter.trailingAnchor.constraint(lessThanOrEqualTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -12),
-        ])
-        let content = NSSplitViewItem(viewController: controller)
+        let pane = deviceScreenViewController
+        let content = NSSplitViewItem(viewController: pane)
         content.minimumThickness = 280
         content.holdingPriority = .defaultLow
-        canvasAccessory.onMinimumWidthChange = { [weak self] in self?.updateCanvasMinimumWidth($0) }
-        content.addBottomAlignedAccessoryViewController(canvasAccessory)
+        pane.canvasAccessory.onMinimumWidthChange = { [weak self] in self?.updateCanvasMinimumWidth($0) }
+        content.addBottomAlignedAccessoryViewController(pane.canvasAccessory)
         splitController.addSplitViewItem(content)
     }
 
@@ -608,59 +517,25 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         return rows.compactMap { device(for: $0) }.filter { identifiers.contains($0.id) }
     }
 
-    private var selectedSimulator: SimulatorHostDevice? {
-        guard selectedDevices.count == 1, case .simulator(let device) = selectedDevices[0] else { return nil }
-        return device
-    }
-
     private func updateSelection() {
         let selections = selectedDevices
         let selectedDevice = selections.count == 1 ? selections.first : nil
         window?.title = selectedDevice?.name ?? "NeoSimulator"
         window?.subtitle = selectedDevice?.operatingSystem ?? ""
-        let identifier = selectedDevice?.id
         moreItem?.isHidden = selectedDevice == nil
-        selectionIdentifier = identifier
-        if selectedDevice == nil {
-            previewTask?.cancel()
-            previewTask = nil
-            previewArtwork = nil
-        }
+        selectionIdentifier = selectedDevice?.id
         if let device = selectedDevice {
-            deviceName.stringValue = device.name
-            if case .simulator(let simulator) = device { deviceRuntime.stringValue = "\(simulator.runtimeName) Simulator" }
+            let details: String
+            if case .simulator(let simulator) = device { details = "\(simulator.runtimeName) Simulator" }
             else {
-                deviceRuntime.stringValue = [device.operatingSystem, modelName(of: device), kindTitle(device)]
+                details = [device.operatingSystem, modelName(of: device), kindTitle(device)]
                     .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
             }
-            let artwork = artwork(for: device)
-            if previewArtwork !== artwork {
-                previewTask?.cancel()
-                previewArtwork = artwork
-                deviceImage.image = nil
-                previewTask = Task { [weak self] in
-                    let image = await artwork.hardwarePreview()
-                    guard !Task.isCancelled, let self else { return }
-                    self.deviceImage.image = image
-                }
-            }
-        } else if selections.isEmpty {
-            deviceName.stringValue = "Select a Device"
-            deviceRuntime.stringValue = "Choose a device in the sidebar to view its details."
-            deviceImage.image = nil
+            deviceScreenViewController.updatePreview(for: device, details: details, artwork: artwork(for: device),
+                                                     canViewScreen: canViewScreen(device))
         } else {
-            deviceName.stringValue = "\(selections.count) Devices"
-            deviceRuntime.stringValue = "Select one device to view its details."
-            deviceImage.image = NSImage(systemSymbolName: "square.stack.3d.up", accessibilityDescription: nil)
+            deviceScreenViewController.updatePreview(selectionCount: selections.count)
         }
-        deviceImage.contentTintColor = nil
-        let isOpening = identifier.map { model.openingDeviceIDs.contains($0) } == true
-        let isShutdown = selectedSimulator?.state == "Shutdown"
-        viewScreen.title = isOpening ? "Cancel Opening" : (isShutdown ? "Start" : "View Screen")
-        viewScreen.image = isShutdown ? nil : NSImage(systemSymbolName: "rectangle.badge.person.crop", accessibilityDescription: nil)
-        viewScreen.isHidden = selections.count != 1
-        viewScreen.isEnabled = selections.count == 1 && selections.first.map(canViewScreen) == true
-        viewScreen.toolTip = nil
         updateDeviceSettings()
         model.settings.inspect(selectedDevice, selectionCount: selections.count)
     }
@@ -680,18 +555,16 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         if let row = table.selectedRowIndexes.first { table.scrollRowToVisible(row) }
     }
 
-    func showLiveScreen(for identifier: DeviceInventoryID, controls: DeviceCanvasControls?) {
-        liveDeviceIdentifier = identifier
-        canvasAccessory.setControls(controls)
-        liveScreenContainer.view.isHidden = false
-        previewStack?.isHidden = true
-        for item in window?.toolbar?.items ?? [] where item.itemIdentifier == compactIdentifier || item.itemIdentifier == moreIdentifier {
-            item.isHidden = false
+    private func updateLiveScreenToolbarItems() {
+        if deviceScreenViewController.liveDeviceIdentifier != nil {
+            for item in window?.toolbar?.items ?? [] where item.itemIdentifier == compactIdentifier || item.itemIdentifier == moreIdentifier {
+                item.isHidden = false
+            }
+        } else {
+            for item in window?.toolbar?.items ?? [] where item.itemIdentifier == resizeAppIdentifier || item.itemIdentifier == captureKeyboardIdentifier || item.itemIdentifier == compactIdentifier || item.itemIdentifier == canvasZoomIdentifier {
+                item.isHidden = true
+            }
         }
-    }
-
-    func refreshCanvasControls() {
-        canvasAccessory.refresh()
     }
 
     private func updateCanvasMinimumWidth(_ width: CGFloat) {
@@ -700,21 +573,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         if item.minimumThickness != minimum { item.minimumThickness = minimum }
     }
 
-    func showDevicePreview(ifDisplaying identifier: DeviceInventoryID) {
-        guard liveDeviceIdentifier == identifier else { return }
-        liveDeviceIdentifier = nil
-        canvasAccessory.setControls(nil)
-        activeScreenCommandTarget = nil
-        liveScreenContainer.view.isHidden = true
-        previewStack?.isHidden = false
-        for item in window?.toolbar?.items ?? [] where item.itemIdentifier == resizeAppIdentifier || item.itemIdentifier == captureKeyboardIdentifier || item.itemIdentifier == compactIdentifier || item.itemIdentifier == canvasZoomIdentifier {
-            item.isHidden = true
-        }
-        updateDeviceFooter()
-    }
-
     override func supplementalTarget(forAction action: Selector, sender: Any?) -> Any? {
-        if let target = activeScreenCommandTarget {
+        if let target = deviceScreenViewController.liveCommandTarget {
             switch action {
             case #selector(RemoteDeviceWindowController.saveScreenshot(_:)),
                  #selector(RemoteDeviceWindowController.discardScreenshot(_:)),
@@ -722,7 +582,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
                  #selector(RemoteDeviceWindowController.recordScreenTo(_:)),
                  #selector(RemoteDeviceWindowController.stopScreenRecording(_:)),
                  #selector(RemoteDeviceWindowController.saveScreenRecording(_:)),
-                 #selector(RemoteDeviceWindowController.discardScreenRecording(_:)):
+                 #selector(RemoteDeviceWindowController.discardScreenRecording(_:)),
+                 #selector(RemoteDeviceWindowController.chooseCaptureSource(_:)):
                 if target.responds(to: action) { return target }
             default: break
             }
@@ -730,9 +591,23 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         return super.supplementalTarget(forAction: action, sender: sender)
     }
 
-    func updateScreenToolbar(supports: (String) -> Bool, isEnabled: (String) -> Bool,
-                             resizingApp: Bool = false, capturesKeyboard: Bool = false) {
+    /// Follows the live screen's state for its toolbar items and the device commands' shared shortcuts.
+    private func observeLiveScreenToolbar() {
+        liveScreenToolbarObservation += 1
+        let observation = liveScreenToolbarObservation
+        withObservationTracking { updateLiveScreenToolbar() } onChange: { [weak self] in
+            Task { @MainActor in
+                guard let self, self.liveScreenToolbarObservation == observation else { return }
+                self.observeLiveScreenToolbar()
+            }
+        }
+    }
+
+    private func updateLiveScreenToolbar() {
+        guard let screen = deviceScreenViewController.liveScreen else { return }
+        menus.updateKeyEquivalents(for: screen.simulatorCapabilities)
         if let item = window?.toolbar?.items.first(where: { $0.itemIdentifier == resizeAppIdentifier }) {
+            let resizingApp = screen.resizingApp
             let title = resizingApp ? "Stop Resize" : "Resize App"
             item.label = title
             item.toolTip = title
@@ -741,8 +616,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
                 button.toolTip = title
                 button.setAccessibilityLabel(title)
             }
-            item.isHidden = liveDeviceIdentifier == nil || !supports("resizeApp")
-            item.isEnabled = isEnabled("resizeApp")
+            item.isHidden = !screen.supports("resizeApp")
+            item.isEnabled = screen.isEnabled("resizeApp")
             item.menuFormRepresentation?.isEnabled = item.isEnabled
             item.menuFormRepresentation?.state = resizingApp ? .on : .off
             if let button = item.view as? NSButton {
@@ -751,8 +626,9 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             }
         }
         if let item = window?.toolbar?.items.first(where: { $0.itemIdentifier == captureKeyboardIdentifier }) {
-            item.isHidden = liveDeviceIdentifier == nil || !supports("captureKeyboard")
-            item.isEnabled = isEnabled("captureKeyboard")
+            let capturesKeyboard = screen.capturesKeyboard
+            item.isHidden = !screen.supports("captureKeyboard")
+            item.isEnabled = screen.isEnabled("captureKeyboard")
             item.menuFormRepresentation?.state = capturesKeyboard ? .on : .off
             item.menuFormRepresentation?.isEnabled = item.isEnabled
             if let button = item.view as? NSButton {
@@ -761,47 +637,46 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
                 button.toolTip = capturesKeyboard ? "Release Keyboard — or hold Escape for one second." : "Capture Keyboard"
             }
         }
+        if let group = window?.toolbar?.items.first(where: { $0.itemIdentifier == canvasZoomIdentifier }) as? NSToolbarItemGroup {
+            group.isHidden = !screen.supports(CanvasZoom.Action.fit.rawValue)
+            for (index, action) in CanvasZoom.Action.allCases.enumerated() {
+                group.subitems[index].isEnabled = screen.isEnabled(action.rawValue)
+            }
+            if let selected = CanvasZoom.Action.allCases.firstIndex(where: { screen.canvasZoomIsSelected($0.rawValue) }) {
+                group.setSelected(true, at: selected)
+            } else {
+                // selectOne rejects clearing its last selection, including selectedIndex = -1.
+                group.selectionMode = .selectAny
+                for index in group.subitems.indices { group.setSelected(false, at: index) }
+                group.selectionMode = .selectOne
+            }
+        }
     }
 
     @objc private func resizeApp(_ sender: Any?) {
-        onScreenAction?("resizeApp")
+        deviceScreenViewController.liveScreen?.perform("resizeApp")
     }
 
-    @objc private func captureKeyboard(_ sender: Any?) { onScreenAction?("captureKeyboard") }
-    func updateCanvasZoom(supports: (String) -> Bool, isEnabled: (String) -> Bool, isSelected: (String) -> Bool) {
-        guard let group = window?.toolbar?.items.first(where: { $0.itemIdentifier == canvasZoomIdentifier }) as? NSToolbarItemGroup else { return }
-        group.isHidden = liveDeviceIdentifier == nil || !supports(CanvasZoom.Action.fit.rawValue)
-        for (index, action) in CanvasZoom.Action.allCases.enumerated() {
-            group.subitems[index].isEnabled = isEnabled(action.rawValue)
-        }
-        if let selected = CanvasZoom.Action.allCases.firstIndex(where: { isSelected($0.rawValue) }) {
-            group.setSelected(true, at: selected)
-        } else {
-            // selectOne rejects clearing its last selection, including selectedIndex = -1.
-            group.selectionMode = .selectAny
-            for index in group.subitems.indices { group.setSelected(false, at: index) }
-            group.selectionMode = .selectOne
-        }
-    }
+    @objc private func captureKeyboard(_ sender: Any?) { deviceScreenViewController.liveScreen?.perform("captureKeyboard") }
 
     @objc private func performCanvasZoom(_ sender: NSToolbarItemGroup) {
         guard CanvasZoom.Action.allCases.indices.contains(sender.selectedIndex) else { return }
-        onScreenAction?(CanvasZoom.Action.allCases[sender.selectedIndex].rawValue)
+        deviceScreenViewController.liveScreen?.perform(CanvasZoom.Action.allCases[sender.selectedIndex].rawValue)
     }
 
     @objc private func showCompactDeviceWindow(_ sender: Any?) {
-        guard let identifier = liveDeviceIdentifier, window?.attachedSheet == nil,
+        guard let identifier = deviceScreenViewController.liveDeviceIdentifier, window?.attachedSheet == nil,
               window?.styleMask.contains(.fullScreen) == false else { return }
         onShowCompactWindow?(identifier)
     }
 
     func validateToolbarItem(_ item: NSToolbarItem) -> Bool {
         if item.itemIdentifier == moreIdentifier {
-            return liveDeviceIdentifier.map { id in model.inventory.contains { $0.id == id } } == true
+            return deviceScreenViewController.liveDeviceIdentifier.map { id in model.inventory.contains { $0.id == id } } == true
                 && window?.attachedSheet == nil
         }
         if item.itemIdentifier == compactIdentifier {
-            return liveDeviceIdentifier != nil && window?.attachedSheet == nil && window?.styleMask.contains(.fullScreen) == false
+            return deviceScreenViewController.liveDeviceIdentifier != nil && window?.attachedSheet == nil && window?.styleMask.contains(.fullScreen) == false
         }
         return true
     }
@@ -854,19 +729,15 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
 
     private func artwork(for device: InventoryDevice) -> DeviceArtworkModel {
         let xcodeURL: URL?
-        if let preferred = preferredArtworkXcodeURL() { xcodeURL = preferred }
+        if let preferred = screens.displayXcodeURL { xcodeURL = preferred }
         else if case .simulator(let simulator) = device { xcodeURL = simulator.ownerXcodeURL }
         else { xcodeURL = nil }
         return artworkCache.artwork(modelIdentifier: device.modelIdentifier, family: family(of: device), xcodeURL: xcodeURL,
                                     resolveXcodeURLs: { [weak model] in await model?.artworkXcodeURLs(for: device) ?? [] })
     }
 
-    func reloadDeviceArtwork() {
-        for row in rows { table.reloadItem(row) }
-    }
-
     private func shouldRenderAsActive(_ device: InventoryDevice) -> Bool {
-        if isDeviceActivated(device.id) { return true }
+        if screens.screen(for: device.id) != nil { return true }
         switch device {
         case .simulator(let simulator):
             return ["Booting", "Shutting Down"].contains(simulator.state)
@@ -927,8 +798,6 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         }
     }
 
-    @objc private func cancelPendingScreenOpens(_ sender: Any?) { model.cancelPendingOpens() }
-
     @objc private func openSelectedDevice(_ sender: Any?) {
         let selection = sender is NSOutlineView ? visibleSelectedDevices : selectedDevices
         guard selection.count == 1, let device = selection.first, canViewScreen(device) else { return }
@@ -982,7 +851,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             button.setAccessibilityLabel(item.label)
             item.view = button
             item.autovalidates = false
-            item.isHidden = liveDeviceIdentifier == nil
+            item.isHidden = deviceScreenViewController.liveDeviceIdentifier == nil
             return item
         }
         if itemIdentifier == captureKeyboardIdentifier {
@@ -1002,7 +871,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             button.setAccessibilityLabel(item.label)
             item.view = button
             item.autovalidates = false
-            item.isHidden = liveDeviceIdentifier == nil
+            item.isHidden = deviceScreenViewController.liveDeviceIdentifier == nil
             return item
         }
         if itemIdentifier == canvasZoomIdentifier {
@@ -1021,7 +890,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             item.autovalidates = false
             for subitem in item.subitems { subitem.autovalidates = false }
             item.controlRepresentation = .expanded
-            item.isHidden = liveDeviceIdentifier == nil
+            item.isHidden = deviceScreenViewController.liveDeviceIdentifier == nil
             return item
         }
         if itemIdentifier == moreIdentifier {
@@ -1044,7 +913,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             item.image = NSImage(systemSymbolName: "arrow.up.forward.and.arrow.down.backward", accessibilityDescription: "Switch to Compact Window")
             item.target = self
             item.action = #selector(showCompactDeviceWindow(_:))
-            item.isHidden = liveDeviceIdentifier == nil
+            item.isHidden = deviceScreenViewController.liveDeviceIdentifier == nil
             return item
         }
         if itemIdentifier == inspectorIdentifier {
@@ -1127,8 +996,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             item.isEnabled = idle
             menu.addItem(item)
         }
-        if devices.count == 1, case .remote = devices[0], devices[0].id == liveDeviceIdentifier,
-           let controller = activeScreenCommandTarget as? RemoteDeviceWindowController {
+        if devices.count == 1, case .remote = devices[0], devices[0].id == deviceScreenViewController.liveDeviceIdentifier,
+           let controller = deviceScreenViewController.liveCommandTarget as? RemoteDeviceWindowController {
             let item = NSMenuItem(title: "Lock", action: #selector(lockDeviceFromMenu(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = devices[0].id
@@ -1254,8 +1123,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
 
     @objc private func lockDeviceFromMenu(_ sender: NSMenuItem) {
         guard let identifier = sender.representedObject as? DeviceInventoryID,
-              identifier == liveDeviceIdentifier else { return }
-        onScreenAction?("lock")
+              let screen = deviceScreenViewController.liveScreen, screen.id == identifier else { return }
+        screen.perform("lock")
     }
 
     @objc private func performManagement(_ sender: NSMenuItem) {

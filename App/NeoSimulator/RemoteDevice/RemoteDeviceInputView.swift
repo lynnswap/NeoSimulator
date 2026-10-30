@@ -209,16 +209,16 @@ final class RemoteDeviceInputView: NSView {
                   let locations = session.inputLocations(atWindowPoint: event.locationInWindow) else { return }
             scrollGesture = ScrollGesture(origin: event.locationInWindow)
             enqueueMouseInput(kind: .touch) { [session] in try await session.sendTouch(at: locations.touch, phase: .began) }
-        } else if event.phase.contains(.changed), var gesture = scrollGesture {
-            // Scrolling deltas already follow the person's scroll direction setting; content follows the touch.
-            gesture.translation.dx += event.scrollingDeltaX
-            gesture.translation.dy -= event.scrollingDeltaY
-            scrollGesture = gesture
-            guard let locations = session.inputLocations(atWindowPoint: gesture.location, clampingToDisplay: true) else { return }
-            enqueueMouseInput(kind: .touch) { [session] in try await session.sendTouch(at: locations.touch, phase: .moved) }
-        } else if !event.phase.isDisjoint(with: [.ended, .cancelled]) {
-            endScroll()
         }
+        // Every event from the one that begins the gesture to the one that ends it can carry movement.
+        guard !event.phase.isDisjoint(with: [.began, .changed, .ended, .cancelled]), var gesture = scrollGesture else { return }
+        // Scrolling deltas already follow the person's scroll direction setting; content follows the touch.
+        gesture.translation.dx += event.scrollingDeltaX
+        gesture.translation.dy -= event.scrollingDeltaY
+        scrollGesture = gesture
+        if !event.phase.isDisjoint(with: [.ended, .cancelled]) { return endScroll() }
+        guard let locations = session.inputLocations(atWindowPoint: gesture.location, clampingToDisplay: true) else { return }
+        enqueueMouseInput(kind: .touch) { [session] in try await session.sendTouch(at: locations.touch, phase: .moved) }
     }
 
     private func endScroll() {

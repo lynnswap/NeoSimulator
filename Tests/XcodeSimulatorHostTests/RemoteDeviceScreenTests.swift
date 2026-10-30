@@ -452,7 +452,9 @@ struct RemoteDeviceScreenTests {
             #expect(abs(screen.width / screen.height - (angle == 0 ? 1260.0 / 2736 : 2736.0 / 1260)) < 0.001)
             #expect(frame.bounds.insetBy(dx: 8, dy: 8).contains(screen), "Angle \(angle): \(screen) has no bezel in \(frame.bounds)")
             // The display's top-left corner is wherever the device frame turned it, and the frame itself takes no touches.
-            let corner = angle == 0 ? CGPoint(x: screen.minX + 1, y: screen.maxY - 1) : CGPoint(x: screen.maxX - 1, y: screen.maxY - 1)
+            // Input reaches within a quarter point of the display's edges, which fall between backing pixels.
+            let corner = angle == 0 ? CGPoint(x: screen.minX + 0.25, y: screen.maxY - 0.25)
+                : CGPoint(x: screen.maxX - 0.25, y: screen.maxY - 0.25)
             let origin = try #require(framebuffer.inputLocations(at: corner, from: frame, clampingToDisplay: false))
             #expect(origin.touch.x < 0.01 && origin.touch.y < 0.01, "Angle \(angle): \(origin.touch)")
             #expect(framebuffer.inputLocations(at: CGPoint(x: screen.minX - 2, y: screen.midY), from: frame, clampingToDisplay: false) == nil)
@@ -819,6 +821,35 @@ struct RemoteDeviceScreenTests {
         try await session.stop()
     }
 
+    @Test(.timeLimit(.minutes(1)))
+    func aFailedResizeSessionIsReportedOnceThePrimaryDisplayReturns() async throws {
+        let primary = ScreenFixtureTransport(), dedicated = ScreenFixtureTransport(), restored = ScreenFixtureTransport()
+        dedicated.automaticFrames = true
+        let resize = ScreenResizeFixtureTransport()
+        var primaryConnections = 0
+        let session = RemoteDeviceScreenSession(device: try device(), makeResizeTransport: { _ in resize }) { _, _, target in
+            if target != nil { return dedicated }
+            primaryConnections += 1
+            return primaryConnections == 1 ? primary : restored
+        }
+        // A report while the display is still changing would describe a screen that is not shown yet.
+        var reports: [(error: any Error, restored: Bool)] = []
+        let reported = AsyncStream<Void>.makeStream()
+        session.onAppResizeFailure = { [unowned session] in
+            reports.append(($0, session.state == .connected && !session.isChangingDisplay && !session.isResizingApp))
+            reported.continuation.yield()
+        }
+        try await session.start()
+        await wait(session) { session.canResizeApp }
+        try await session.startAppResize(size: CGSize(width: 400, height: 600))
+        resize.assertion.failUpdates(ScreenFixtureError.stream)
+        var arrivals = reported.stream.makeAsyncIterator()
+        await arrivals.next()
+        #expect(primaryConnections == 2 && session.lastError is ScreenFixtureError)
+        try await session.stop()
+        #expect(reports.count == 1 && reports.first?.error is ScreenFixtureError && reports.first?.restored == true)
+    }
+
     @Test(arguments: [false, true])
     func shutdownReclaimsAPrimaryTransportReturnedAfterCancellation(failCleanup: Bool) async throws {
         let primary = ScreenFixtureTransport()
@@ -876,10 +907,12 @@ struct RemoteDeviceScreenTests {
             if !observationFailure { throw ScreenFixtureError.stream }
             return resize
         }) { _, _, _ in primary }
+        var failures: [any Error] = []
+        session.onAppResizeFailure = { failures.append($0) }
         try await session.start()
         #expect(session.state == .connected && !primary.closed && session.canCaptureScreenshot)
         #expect(session.inputCapabilities == [.keyboard] && !session.supportsAppResize)
-        #expect(session.lastError is ScreenFixtureError)
+        #expect(session.lastError is ScreenFixtureError && failures.count == 1 && failures.first is ScreenFixtureError)
         if session.state == .connected {
             try await session.sendKey(4, state: .down)
             _ = try await session.captureScreenshot()
@@ -1691,6 +1724,7 @@ private final class ScreenResizeFixtureSession: AppResizeSession {
         adjusted.continuation.yield(size)
     }
     func emit(size: CGSize) { geometry.resolvedSize = size; continuation.yield(geometry) }
+    func failUpdates(_ error: any Error) { continuation.finish(throwing: error) }
     func awaitInvalidation() async throws {
         defer { invalidationReturns.continuation.yield(()) }
         if !invalidated { await withCheckedContinuation { invalidation = $0 } }
