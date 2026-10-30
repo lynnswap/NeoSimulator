@@ -39,8 +39,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     private let deviceFooter = NSStackView()
     private let activityStack = NSStackView()
     private let cancelOpening = NSButton(title: "Cancel Opening Screens", target: nil, action: nil)
-    private var canvasBottomToPane: NSLayoutConstraint?
-    private var canvasBottomToFooter: NSLayoutConstraint?
+    /// The footer's distance from the pane's safe area, and the space it leaves above itself.
+    private static let footerInset: CGFloat = 8, footerSpacing: CGFloat = 12
     private let activity = NSTextField(labelWithString: "")
     private let progress = NSProgressIndicator()
     private var inspectorHost: NSHostingController<ManagerDeviceSettingsView>?
@@ -239,11 +239,12 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
 
     private func updateDeviceFooter() {
         deviceFooter.isHidden = activityStack.isHidden
-        let showsFooter = !deviceFooter.isHidden
-        if canvasBottomToFooter?.isActive != showsFooter {
-            (showsFooter ? canvasBottomToPane : canvasBottomToFooter)?.isActive = false
-            (showsFooter ? canvasBottomToFooter : canvasBottomToPane)?.isActive = true
-        }
+        // A live screen keeps drawing behind the footer; the footer only narrows the area it fits within.
+        let liveView = liveScreenContainer.view
+        var insets = liveView.additionalSafeAreaInsets
+        insets.bottom = deviceFooter.isHidden ? 0
+            : Self.footerInset + deviceFooter.fittingSize.height + Self.footerSpacing
+        liveView.additionalSafeAreaInsets = insets
     }
 
     private var filteredDevices: [InventoryDevice] {
@@ -386,14 +387,13 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         liveView.isHidden = true
         liveView.clipsToBounds = true
         view.addSubview(liveView)
-        canvasBottomToPane = liveView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor)
-        canvasBottomToFooter = liveView.bottomAnchor.constraint(equalTo: deviceFooter.topAnchor, constant: -12)
+        // Presentations may draw behind the toolbar, bottom accessory and footer; each keeps its content in the safe area.
         NSLayoutConstraint.activate([
-            liveView.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
-            liveView.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
-            liveView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            liveView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            liveView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            liveView.topAnchor.constraint(equalTo: view.topAnchor),
+            liveView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
-        canvasBottomToPane?.isActive = true
         deviceImage.imageScaling = .scaleProportionallyUpOrDown
         deviceImage.translatesAutoresizingMaskIntoConstraints = false
         deviceImage.setAccessibilityHidden(true)
@@ -455,7 +455,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             deviceName.widthAnchor.constraint(lessThanOrEqualTo: stack.widthAnchor),
             deviceRuntime.widthAnchor.constraint(lessThanOrEqualTo: stack.widthAnchor),
             deviceFooter.centerXAnchor.constraint(equalTo: view.safeAreaLayoutGuide.centerXAnchor),
-            deviceFooter.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8),
+            deviceFooter.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -Self.footerInset),
             deviceFooter.leadingAnchor.constraint(greaterThanOrEqualTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 12),
             deviceFooter.trailingAnchor.constraint(lessThanOrEqualTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -12),
         ])

@@ -216,11 +216,13 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
             let view = self.presentationViewController.view
             view.translatesAutoresizingMaskIntoConstraints = false
             parent.view.addSubview(view)
+            // The main window's live container extends behind its toolbar and bottom accessory.
+            let area = parent.view.safeAreaLayoutGuide
             self.presentationConstraints = [
-                view.leadingAnchor.constraint(equalTo: parent.view.leadingAnchor),
-                view.trailingAnchor.constraint(equalTo: parent.view.trailingAnchor),
-                view.topAnchor.constraint(equalTo: parent.view.topAnchor),
-                view.bottomAnchor.constraint(equalTo: parent.view.bottomAnchor),
+                view.leadingAnchor.constraint(equalTo: area.leadingAnchor),
+                view.trailingAnchor.constraint(equalTo: area.trailingAnchor),
+                view.topAnchor.constraint(equalTo: area.topAnchor),
+                view.bottomAnchor.constraint(equalTo: area.bottomAnchor),
             ]
             NSLayoutConstraint.activate(self.presentationConstraints)
             self.window?.orderOut(nil)
