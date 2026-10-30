@@ -294,7 +294,11 @@ import Testing
         try await inspector.installApplication(at: URL(fileURLWithPath: "/fixture/App.app"))
         try await inspector.launchApplication(bundleIdentifier: "dev.example.app")
         try await inspector.uninstallApplication(bundleIdentifier: "dev.example.app")
-        #expect(await calls.commands.count == 4)
+        let commands = await calls.commands
+        #expect(commands.count == 4)
+        // devicectl passes every argument after the bundle identifier to the launched app.
+        let launch = try #require(commands.first { $0.arguments.starts(with: ["device", "process", "launch"]) })
+        #expect(launch.arguments.last == "dev.example.app" && launch.arguments.contains("core-command-id"))
     }
 
     @Test func packageInstallsItsExtractedMainApplicationOnTheSelectedDestination() async throws {
