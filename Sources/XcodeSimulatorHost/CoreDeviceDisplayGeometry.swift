@@ -125,11 +125,13 @@ final class CoreDeviceDisplayGeometry {
             if let displayUniqueID { return try unsafe bindings.uniqueID.unsafeInvoke(on: $0) == displayUniqueID }
             return try unsafe bindings.primary.unsafeInvoke(on: $0)
         }) else { return nil }
+        // DeviceKit's initializer consumes the CoreDevice display, so its identifier is read first.
+        let identifier = try unsafe bindings.identifier.unsafeInvoke(on: display)
         let value = try unsafe bindings.makeDisplay.unsafeInvoke(display, bindings.orientation.unsafeInvoke(on: displayInfo))
         let angle = try unsafe bindings.normalizedOrientation.unsafeInvoke(on: value).converted(to: .degrees).value
         let size = try unsafe bindings.pointSize.unsafeInvoke(on: bindings.displaySize.unsafeInvoke(on: value))
         guard size.width > 0, size.height > 0, angle.isFinite else { return nil }
-        return try unsafe RemoteScreenFramebuffer.Display(size: size, angle: angle, identifier: bindings.identifier.unsafeInvoke(on: display))
+        return RemoteScreenFramebuffer.Display(size: size, angle: angle, identifier: identifier)
     }
 }
 
