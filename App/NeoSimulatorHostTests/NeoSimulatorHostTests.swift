@@ -1919,6 +1919,21 @@ struct InputFocusTests {
         #expect(commands.allSatisfy { !$0.isEnabled })
     }
 
+    @Test func toolbarItemChangesStayInTheirOwnDeviceWindow() throws {
+        let controller = try makeController(TestDisplay())
+        defer { controller.invalidate() }
+        let other = try makeController(TestDisplay(), device: "other-device")
+        defer { other.invalidate() }
+        controller.showWindow(nil)
+        other.showWindow(nil)
+        let toolbar = try #require(controller.window?.toolbar)
+        let otherToolbar = try #require(other.window?.toolbar)
+        let otherItems = otherToolbar.items.map(\.itemIdentifier)
+        controller.onShowInMainWindow = {}
+        #expect(toolbar.items.first?.itemIdentifier.rawValue == "ShowInMainWindow")
+        #expect(otherToolbar.items.map(\.itemIdentifier) == otherItems)
+    }
+
     @Test func theSaveScreenButtonStopsARecordingAsInSimulatorApp() async throws {
         // The first recorder delays finalization after SIGINT; the second fails.
         var recordings = 0
