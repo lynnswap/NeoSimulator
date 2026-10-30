@@ -191,11 +191,31 @@ capture keeps its recoverable file; partial imports and device creation retain
 and report completed work. None of these failures changes the selected route
 or launches Device Hub as a fallback.
 
-Physical-device screens use CoreDevice's media stream and HID capabilities;
-VMs use Screen Sharing when a VNC endpoint is available. These private
-interfaces run inside the manager app. Screen Sharing's pasteboard sharing is
-disabled. A remote screen closes its owned connections and releases held
-inputs without shutting down the device.
+VMs use Screen Sharing when a VNC endpoint is available, with its pasteboard
+sharing disabled. A USB-connected physical device's primary display comes from
+the Mac capture source chosen for that device: `CoreDeviceCaptureTransport`
+receives IOSurface-backed frames through AVFoundation, and Metal copies the
+latest frame into the AppKit screen view. Input goes to the same CoreDevice
+device through its HID services, and CoreDevice also supplies the display
+geometry and, where supported, recording. Screenshots copy the latest captured
+frame. Resize App shows the app's dedicated display through CoreDevice's media
+stream and is unavailable unless the manager's signature has the
+`com.apple.videoconference.allow-conferencing` entitlement that the stream
+requires; the manager's signing profile does not include it. These transports
+run inside the manager app, which requests Camera access before capture
+starts. A remote screen closes its owned connections and releases held inputs
+without shutting down the device.
+
+macOS lists a connected device's screen as an AVFoundation capture source once
+the manager enables CoreMediaIO screen-capture devices for its process, but it
+does not report which CoreDevice device a source shows. A source's name does
+not identify the device either, so the screen does not connect until the user
+chooses its source. `ScreenCaptureSourceCatalog` stores the chosen source's AVFoundation
+unique ID and name under the device's CoreDevice identifier in the
+`RemoteScreenCaptureSources` preference of `dev.lynnswap.NeoSimulator`.
+Choosing a source removes it from any other device's entry. A later connection
+waits briefly for the stored source and fails if it does not reappear; choosing
+a source again replaces the entry.
 
 The screen session retains a native recording handle through start and stop,
 including a handle returned after cancellation. Stopping keeps the completed

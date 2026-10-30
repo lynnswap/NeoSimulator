@@ -187,7 +187,10 @@ final class CoreDeviceRemoteScreenDevice {
 
 @MainActor
 enum CoreDeviceScreenTransport {
-    static func make(_ device: CoreDeviceDevice, contentView: NSView, displayUniqueID: String?) async throws -> any RemoteScreenTransport {
+    /// Opens the primary display through Screen Sharing or the device's chosen Mac capture source,
+    /// and an app-resize display through CoreDevice's media stream.
+    static func make(_ device: CoreDeviceDevice, contentView: NSView, displayUniqueID: String?,
+                     captureSources: any RemoteScreenCaptureSourceCatalog) async throws -> any RemoteScreenTransport {
         let remote = try await CoreDeviceRemoteScreenDevice(identifier: device.identifier)
         if displayUniqueID == nil, let url = try remote.vncURL() {
             return try ScreenSharingDeviceTransport(remote: remote, url: url, contentView: contentView)
@@ -195,26 +198,37 @@ enum CoreDeviceScreenTransport {
         guard try remote.supports("com.apple.coredevice.feature.viewdevicescreen") else {
             throw CLIError.unavailable("remote-screen-capability", "The device does not currently expose a screen connection.")
         }
-        try requireMediaStreamEntitlement()
+        guard let displayUniqueID else {
+            // Capture sources do not reveal their device, so only an explicit choice selects one.
+            guard let source = captureSources.chosenSource(for: device.identifier) else {
+                throw RemoteScreenCaptureSourceError(reason: .unchosen, sourceName: nil)
+            }
+            try await captureSources.waitUntilConnected(source)
+            try await CoreDeviceDisplayGeometry.loadRuntime()
+            return try CoreDeviceCaptureTransport(remote: remote, source: source, contentView: contentView)
+        }
+        guard try hasMediaStreamEntitlement() else {
+            throw CLIError.unavailable("remote-screen-entitlement", "This build of NeoSimulator cannot open the app's display because it lacks the video conferencing entitlement CoreDevice's display stream requires.")
+        }
         try await CoreDeviceDisplayGeometry.loadRuntime()
         return try CoreDeviceMediaStreamTransport(remote: remote, contentView: contentView, displayUniqueID: displayUniqueID)
     }
 
     /// avconferenced rejects a stream from a process without this entitlement, and the native
     /// activation then never returns, so an unentitled build must not start the stream.
-    private static func requireMediaStreamEntitlement() throws {
+    private static func hasMediaStreamEntitlement() throws -> Bool {
         guard let task = SecTaskCreateFromSelf(nil) else {
-            throw CLIError.software("remote-screen-entitlement", "Could not inspect this app's entitlements before opening the device's live screen stream.")
+            throw CLIError.software("remote-screen-entitlement", "Could not inspect this app's entitlements before opening the device's display stream.")
         }
         var error: Unmanaged<CFError>?
         let value = SecTaskCopyValueForEntitlement(task, "com.apple.videoconference.allow-conferencing" as CFString, &error)
         if value == nil, let error { throw error.takeRetainedValue() }
-        guard value as? Bool == true else {
-            throw CLIError.unavailable("remote-screen-entitlement", "This build of NeoSimulator cannot open the device's live screen stream because it lacks the video conferencing entitlement the stream requires.")
-        }
+        return value as? Bool == true
     }
 
+    /// Resizing shows the app on a dedicated display, which only the media stream can show.
     static func resizeTransport(_ device: CoreDeviceDevice) async throws -> (any AppResizeTransport)? {
+        guard try hasMediaStreamEntitlement() else { return nil }
         let remote = try await CoreDeviceRemoteScreenDevice(identifier: device.identifier)
         guard try remote.supports("com.apple.coredevice.feature.viewdevicescreen"),
               try remote.supports(CoreDeviceScreenInput.universalHIDFeature) else { return nil }

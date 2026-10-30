@@ -99,8 +99,13 @@ for bundle in "$renderer" "$app"; do
     echo "Expected an arm64 executable in $bundle." >&2
     exit 1
   fi
-  codesign --force --options runtime --sign "$signing_identity" "$timestamp_option" "$bundle"
 done
+codesign --force --options runtime --sign "$signing_identity" "$timestamp_option" "$renderer"
+# The hardened runtime denies AVFoundation capture of a connected device's
+# screen without camera access, which only the manager uses.
+codesign --force --options runtime \
+  --entitlements "$repo_root/App/NeoSimulator/NeoSimulator.entitlements" \
+  --sign "$signing_identity" "$timestamp_option" "$app"
 codesign --verify --deep --strict "$app"
 rm -rf "$dist_root/arm64"
 mv "$staging" "$dist_root/arm64"

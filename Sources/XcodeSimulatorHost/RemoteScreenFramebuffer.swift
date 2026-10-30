@@ -15,15 +15,15 @@ final class RemoteScreenFramebuffer: NSView {
         var identifier: UInt32? = nil
     }
 
-    let sourceLayer = CALayer()
     private let plane = CALayer()
-    private let video = CALayer()
-    private var contentsObservation: NSKeyValueObservation?
+    /// The transport supplies the layer that shows its frames.
+    let video: CALayer
     private(set) var display: Display?
     private var attributes: RemoteDeviceVideoAttributes?
     var isReady: Bool { display != nil && attributes != nil && !plane.bounds.isEmpty }
 
-    override init(frame: NSRect) {
+    init(frame: NSRect, video: CALayer = CALayer()) {
+        self.video = video
         super.init(frame: frame)
         wantsLayer = true
         layer?.masksToBounds = true
@@ -31,12 +31,6 @@ final class RemoteScreenFramebuffer: NSView {
         video.contentsGravity = .resize
         layer?.addSublayer(plane)
         plane.addSublayer(video)
-        contentsObservation = sourceLayer.observe(\.contents, options: [.initial, .new]) { [weak self] _, _ in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                self.withoutAnimations { self.video.contents = self.sourceLayer.contents }
-            }
-        }
     }
 
     required init?(coder: NSCoder) { nil }
@@ -114,7 +108,7 @@ final class RemoteScreenFramebuffer: NSView {
         }
     }
 
-    private func withoutAnimations(_ operation: () -> Void) {
+    func withoutAnimations(_ operation: () -> Void) {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         operation()

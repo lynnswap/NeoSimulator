@@ -1,5 +1,7 @@
 import AppKit
+import CoreVideo
 import ImageIO
+import Metal
 import UniformTypeIdentifiers
 import Testing
 import IOKit
@@ -388,6 +390,90 @@ struct RemoteDeviceScreenTests {
         #expect(portrait.pointer == portrait.touch)
         framebuffer.update(display: nil)
         #expect(framebuffer.inputLocations(at: CGPoint(x: 300, y: 300), from: container, clampingToDisplay: true) == nil)
+    }
+
+    @Test func capturedFramesInTheInterfaceOrientationStayUprightOnTheRotatedDisplay() throws {
+        // The rotated 200×400 display fills 600×300 of the container, or 300×600 upside down.
+        let cases: [(angle: CGFloat, frame: CGSize, topLeft: CGPoint)] = [
+            (90, CGSize(width: 800, height: 400), CGPoint(x: 0, y: 450)),
+            (270, CGSize(width: 800, height: 400), CGPoint(x: 0, y: 450)),
+            (180, CGSize(width: 400, height: 800), CGPoint(x: 150, y: 600)),
+        ]
+        for (angle, frame, topLeft) in cases {
+            let container = NSView(frame: CGRect(x: 0, y: 0, width: 600, height: 600))
+            let video = CALayer()
+            let framebuffer = RemoteScreenFramebuffer(frame: container.bounds, video: video)
+            container.addSubview(framebuffer)
+            let display = RemoteScreenFramebuffer.Display(size: CGSize(width: 200, height: 400), angle: angle)
+            framebuffer.update(display: display)
+            framebuffer.update(attributes: CoreDeviceCaptureTransport.videoAttributes(frame: frame, display: display))
+            let corner = try #require(framebuffer.layer).convert(CGPoint(x: 0, y: frame.height), from: video)
+            #expect(abs(corner.x - topLeft.x) < 0.001 && abs(corner.y - topLeft.y) < 0.001, "Angle \(angle): \(corner)")
+        }
+        // A frame still in the display's native shape is not counter-rotated during a quarter turn.
+        let turning = RemoteScreenFramebuffer.Display(size: CGSize(width: 200, height: 400), angle: 90)
+        #expect(CoreDeviceCaptureTransport.videoAttributes(frame: CGSize(width: 400, height: 800), display: turning).orientation == .portrait)
+    }
+
+    @Test func captureStreamCapturesItsCurrentIOSurfaceFrameAndDropsFramesAfterStopping() async throws {
+        let gpu = try #require(MTLCreateSystemDefaultDevice())
+        let layer = CAMetalLayer()
+        layer.device = gpu
+        layer.pixelFormat = .bgra8Unorm
+        layer.framebufferOnly = false
+        let stream = try RemoteScreenCaptureStream(target: .init(layer: layer), device: gpu)
+        var events = stream.events.makeAsyncIterator()
+        await #expect(throws: CLIError.self) { try await stream.snapshot() }
+        await stream.receive(try capturedFrame(width: 4, height: 2, bgra: [0x10, 0x20, 0x30, 0xFF]))
+        guard case .frameSize(let size)? = await events.next() else { Issue.record("The first frame was not reported"); return }
+        #expect(size == CGSize(width: 4, height: 2))
+        layer.drawableSize = size
+        await stream.acceptDrawableSize(size)
+        await stream.receive(try capturedFrame(width: 4, height: 2, bgra: [0x40, 0x50, 0x60, 0xFF]))
+        let image = try await stream.snapshot()
+        let pixels = try #require(image.dataProvider?.data as Data?)
+        #expect(image.width == 4 && image.height == 2 && Array(pixels.prefix(3)) == [0x40, 0x50, 0x60])
+        await stream.stop()
+        await stream.receive(try capturedFrame(width: 8, height: 2, bgra: [0, 0, 0, 0xFF]))
+        await #expect(throws: CLIError.self) { try await stream.snapshot() }
+        // A failure, or the late frame's new size, would be an event before the stream ended.
+        #expect(await events.next() == nil)
+
+        let copying = try RemoteScreenCaptureStream(target: .init(layer: CAMetalLayer()), device: gpu)
+        var failures = copying.events.makeAsyncIterator()
+        await copying.receive(try capturedFrame(width: 4, height: 2, bgra: [0, 0, 0, 0xFF], ioSurface: false))
+        guard case .failure(let error)? = await failures.next() else { Issue.record("A CPU-only frame was accepted"); return }
+        #expect((error as? CLIError)?.identifier == "remote-screen-frame-surface")
+        await #expect(throws: CLIError.self) { try await copying.snapshot() }
+        await copying.stop()
+    }
+
+    @Test func aCaptureSourceChoiceBelongsToOneCoreDeviceAndIsRequiredBeforeConnecting() async throws {
+        let suite = "dev.lynnswap.NeoSimulator.tests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let catalog = ScreenCaptureSourceCatalog(defaults: defaults)
+        let transport = ScreenFixtureTransport()
+        var attempts = 0
+        let session = RemoteDeviceScreenSession(device: try device(), captureSources: catalog) { _, _, _ in
+            attempts += 1
+            if attempts == 1 { throw RemoteScreenCaptureSourceError(reason: .unchosen, sourceName: nil) }
+            return transport
+        }
+        #expect(session.captureSource == nil)
+        await #expect(throws: RemoteScreenCaptureSourceError.self) { try await session.start() }
+        #expect(session.state == .failed && session.needsCaptureSource)
+        let source = RemoteScreenCaptureSource(name: "Fixture Device", uniqueID: "opaque-capture-identity")
+        session.chooseCaptureSource(source)
+        #expect(session.captureSource == source && catalog.chosenSource(for: "hardware-identifier") == nil)
+        try await session.start()
+        #expect(session.state == .connected && !session.needsCaptureSource)
+        let other = RemoteDeviceScreenSession(device: try device(identifier: "other-command-identifier"), captureSources: catalog) { _, _, _ in
+            ScreenFixtureTransport()
+        }
+        other.chooseCaptureSource(source)
+        #expect(other.captureSource == source && session.captureSource == nil)
+        try await session.stop()
     }
 
     @Test func appResizeReplacesOneTransportAndRetiresOldFramesAndInputs() async throws {
@@ -918,10 +1004,29 @@ struct RemoteDeviceScreenTests {
         }
     }
 
-    private func device() throws -> CoreDeviceDevice {
-        let data = Data(#"{"result":{"devices":[{"identifier":"command-identifier","properties":{"hardware":{"reality":"physical","udid":"hardware-identifier"},"state":{"name":"Fixture Device"},"connection":{"state":"connected"}},"capabilities":[]}]}}"#.utf8)
+    private func device(identifier: String = "command-identifier") throws -> CoreDeviceDevice {
+        let data = Data(#"{"result":{"devices":[{"identifier":"\#(identifier)","properties":{"hardware":{"reality":"physical","udid":"hardware-identifier"},"state":{"name":"Fixture Device"},"connection":{"state":"connected"}},"capabilities":[]}]}}"#.utf8)
         return try #require(CoreDeviceInventoryDecoder.decode(data).first)
     }
+}
+
+/// Builds a BGRA frame like the capture output's, optionally without IOSurface backing.
+private func capturedFrame(width: Int, height: Int, bgra: [UInt8], ioSurface: Bool = true) throws -> sending CVPixelBuffer {
+    var buffer: CVPixelBuffer?
+    let attributes: [String: Any] = ioSurface ? [kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any]()] : [:]
+    let status = CVPixelBufferCreate(nil, width, height, kCVPixelFormatType_32BGRA, attributes as CFDictionary, &buffer)
+    let frame = try #require(buffer, "CoreVideo status \(status)")
+    #expect((CVPixelBufferGetIOSurface(frame) != nil) == ioSurface)
+    #expect(CVPixelBufferLockBaseAddress(frame, []) == kCVReturnSuccess)
+    defer { CVPixelBufferUnlockBaseAddress(frame, []) }
+    let base = try #require(CVPixelBufferGetBaseAddress(frame)).assumingMemoryBound(to: UInt8.self)
+    let bytesPerRow = CVPixelBufferGetBytesPerRow(frame)
+    for row in 0..<height {
+        for column in 0..<width {
+            for (channel, value) in bgra.enumerated() { base[row * bytesPerRow + column * 4 + channel] = value }
+        }
+    }
+    return frame
 }
 
 @MainActor

@@ -52,6 +52,8 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
     private let statusLabel = NSTextField(wrappingLabelWithString: "")
     private let progress = NSProgressIndicator()
     private let retryButton = NSButton(title: "Reconnect", target: nil, action: nil)
+    private let captureSourceButton = NSButton(title: "Capture Source…", target: nil, action: nil)
+    private var captureSourceTask: Task<Void, Never>?
     private let inputView: RemoteDeviceInputView
     // Keep key and modifier releases on the original responder after focus or native-view changes.
     private var capturedKeyboardResponder: NSView?
@@ -149,7 +151,7 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
         viewport.addSubview(session.contentView)
         inputView.translatesAutoresizingMaskIntoConstraints = false
         viewport.addSubview(inputView)
-        let footer = NSStackView(views: [progress, statusLabel, retryButton])
+        let footer = NSStackView(views: [progress, statusLabel, captureSourceButton, retryButton])
         footer.orientation = .horizontal
         footer.alignment = .centerY
         footer.spacing = 8
@@ -174,6 +176,9 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
         retryButton.target = self
         retryButton.action = #selector(reconnect(_:))
         retryButton.controlSize = .small
+        captureSourceButton.target = self
+        captureSourceButton.action = #selector(chooseCaptureSource(_:))
+        captureSourceButton.controlSize = .small
         NSLayoutConstraint.activate([
             viewport.leadingAnchor.constraint(equalTo: root.leadingAnchor), viewport.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             viewport.topAnchor.constraint(equalTo: root.topAnchor), viewport.bottomAnchor.constraint(equalTo: bottom.topAnchor),
@@ -422,6 +427,11 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
             ? screenActionPresentation("record")?.title : "Screen recording is not available for this display yet."
         retryButton.isHidden = session.state != .failed && session.state != .stopped
         retryButton.isEnabled = !closing && inventoryAvailable
+        let chosenSource = session.captureSource
+        captureSourceButton.isHidden = chosenSource == nil && !session.needsCaptureSource
+        captureSourceButton.isEnabled = canChooseCaptureSource
+        captureSourceButton.toolTip = chosenSource.map { "Shows this device’s screen from “\($0.name)”." }
+            ?? "Choose which connected screen-capture source shows this device."
         progress.isHidden = !busy
         if busy { progress.startAnimation(nil) } else { progress.stopAnimation(nil) }
         if let transportIssue = session.lastError?.localizedDescription {
@@ -552,6 +562,51 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
             catch is CancellationError {}
             catch { self.showIssue(error) }
         }
+    }
+
+    /// Changing the source reconnects the screen, so it follows Reconnect's availability.
+    private var canChooseCaptureSource: Bool {
+        captureSourceTask == nil && stoppingTask == nil && isScreenActionEnabled("reconnect")
+    }
+
+    @objc private func chooseCaptureSource(_ sender: NSButton) {
+        guard canChooseCaptureSource else { return }
+        captureSourceTask = Task { [weak self] in
+            guard let self else { return }
+            defer { self.captureSourceTask = nil; self.update() }
+            do {
+                let sources = try await self.session.availableCaptureSources()
+                try Task.checkCancellation()
+                guard !self.closing else { return }
+                guard !sources.isEmpty else {
+                    throw RemoteDeviceWindowError.unavailable("No device screen-capture sources are connected. Connect the device to this Mac with a USB cable.")
+                }
+                // macOS can list several devices under one name; numbering keeps each choice distinct.
+                let chosen = self.session.captureSource
+                let menu = NSMenu()
+                for (index, source) in sources.enumerated() {
+                    let earlier = sources[..<index].count { $0.name == source.name }
+                    let item = NSMenuItem(title: earlier == 0 ? source.name : "\(source.name) (\(earlier + 1))",
+                                          action: #selector(self.captureSourceSelected(_:)), keyEquivalent: "")
+                    item.target = self
+                    item.representedObject = source
+                    item.state = source == chosen ? .on : .off
+                    menu.addItem(item)
+                }
+                menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.maxY + 4), in: sender)
+            } catch is CancellationError {}
+            catch { self.showIssue(error) }
+        }
+        update()
+    }
+
+    @objc private func captureSourceSelected(_ item: NSMenuItem) {
+        guard let source = item.representedObject as? RemoteScreenCaptureSource, !closing, !mayClose else { return }
+        let unchanged = session.captureSource == source && session.state == .connected
+        session.chooseCaptureSource(source)
+        issue = nil
+        if !unchanged { reconnect(nil) }
+        update()
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
