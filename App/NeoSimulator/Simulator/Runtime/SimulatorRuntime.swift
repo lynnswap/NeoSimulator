@@ -156,6 +156,8 @@ struct SimulatorDisplayInterface {
     let showChrome: NativeSwiftMethod<(Bool) -> Void>
     let chromeView: NativeSwiftMethod<() -> NSView>
     let digitizerView: NativeSwiftMethod<() -> NSView>
+    /// `SimDisplayView.renderableView`, which shows the framebuffer: the screen without its bezel.
+    let renderableView: NativeSwiftMethod<() -> NSView>
     let renderScale: NativeSwiftMethod<() -> CGFloat>
     let setRenderScale: NativeSwiftMethod<(CGFloat) -> Void>
     /// `SimDisplayView.size(for:)`.
@@ -291,6 +293,8 @@ struct SimulatorDisplayInterface {
             "chromeView.getter : SimulatorKit.SimDisplayChromeView", as: (() -> NSView).self)))
         digitizerView = try await view.resolve(.swift(.getter(
             "digitizerView.getter : SimulatorKit.SimDigitizerInputView", as: (() -> NSView).self)))
+        renderableView = try await view.resolve(.swift(.getter(
+            "renderableView.getter : SimulatorKit.SimDisplayRenderableView", as: (() -> NSView).self)))
         renderScale = try await view.resolve(.swift(.getter("renderScale", as: (() -> CGFloat).self)))
         setRenderScale = try await view.resolve(.swift(.setter("renderScale", as: ((CGFloat) -> Void).self)))
         sizeForScale = try await view.resolve(.swift(.method("size(for:)", as: ((CGFloat) -> CGSize).self)))
@@ -1464,6 +1468,9 @@ protocol SimulatorDisplay: AnyObject {
     ) throws -> AnyObject?
     func setChromeVisible(_ visible: Bool)
     func setKeyboardEnabled(_ enabled: Bool)
+    /// Gives the screen the Mac trackpads' scrolling and pinches through the device's native trackpad, when it has one,
+    /// whatever the hardware keyboard's state. Taking them away ends the gestures in progress.
+    func setTrackpadEnabled(_ enabled: Bool)
     /// Controls whether digitizer scrolling reaches the device's crown or dial.
     func setSupportsScrolling(_ supports: Bool)
     /// Sets and posts `com.apple.UIKit.SimulatorWantsEdgeSwipes`.
@@ -1525,15 +1532,22 @@ final class SimulatorConnection: SimulatorDisplay {
     private let keyboard: NativeDeviceKeyboard?
     private let ownsKeyboard: Bool
     private var keyboardResponder: NativeKeyboardResponder?
+    /// The device's native trackpad, which takes the Mac trackpads' scrolling and pinches over the integrated screen
+    /// instead of SimulatorKit's digitizer. Its guest services have no display of their own, so this connection alone has
+    /// and owns it; external and app-resizing displays keep SimulatorKit's input.
+    private let trackpad: NativeDeviceTrackpad?
+    private var trackpadInput: NativeTrackpadInput?
 
     init(device: SimulatorDevice, screen: (identifier: UInt32, object: AnyObject), runtime: SimulatorRuntime,
-         nativeCanvas: NativeDeviceCanvas? = nil, keyboard: NativeDeviceKeyboard? = nil, ownsKeyboard: Bool = true) throws {
+         nativeCanvas: NativeDeviceCanvas? = nil, keyboard: NativeDeviceKeyboard? = nil, ownsKeyboard: Bool = true,
+         trackpad: NativeDeviceTrackpad? = nil) throws {
         self.nativeCanvas = nativeCanvas
         self.device = device
         self.runtime = runtime
         self.screen = screen.object
         self.keyboard = keyboard
         self.ownsKeyboard = ownsKeyboard
+        self.trackpad = trackpad
         connectedDisplayID = screen.identifier
         let display = runtime.display
         buttonTarget = try unsafe display.buttonTarget.unsafeInvoke(on: screen.object)
@@ -1556,6 +1570,11 @@ final class SimulatorConnection: SimulatorDisplay {
             try runtime.validateLoadedImages()
             digitizerView = try unsafe display.digitizerView.unsafeInvoke(on: view)
             chromeView = try unsafe display.chromeView.unsafeInvoke(on: view)
+            if let trackpad {
+                let framebuffer = try unsafe display.renderableView.unsafeInvoke(on: view)
+                trackpadInput = NativeTrackpadInput(display: view, framebuffer: framebuffer, send: trackpad.handle,
+                                                    endGestures: trackpad.endGestures)
+            }
         } catch {
             try? unsafe display.disconnect.unsafeInvoke(on: view, NativeSwiftClosure {})
             throw error
@@ -1828,6 +1847,9 @@ final class SimulatorConnection: SimulatorDisplay {
             try unsafe runtime.display.setKeyboardEnabled.unsafeInvoke(on: keyboard as AnyObject, enabled)
         }
     }
+    func setTrackpadEnabled(_ enabled: Bool) {
+        trackpadInput?.isEnabled = enabled && !disconnected
+    }
     func setSupportsScrolling(_ supports: Bool) {
         guard !disconnected, let digitizerView else { return }
         perform("enable scrolling") {
@@ -1903,6 +1925,14 @@ final class SimulatorConnection: SimulatorDisplay {
                 }
             }
         }
+        trackpadInput?.isEnabled = false
+        if let trackpad {
+            Task {
+                do { try await trackpad.stop() } catch {
+                    hostLog("Could not remove the native trackpad services: \(error.localizedDescription)")
+                }
+            }
+        }
     }
     isolated deinit { disconnect() }
 
@@ -1954,5 +1984,100 @@ final class NativeKeyboardResponder: NSResponder {
     }
     override func keyUp(with event: NSEvent) {
         if !handle(event) { super.keyUp(with: event) }
+    }
+}
+
+/// Takes the Mac trackpads' scrolling and pinches that begin over a SimulatorKit display's framebuffer, before its
+/// digitizer drops them, and the mouse movements over the framebuffer that place them, for the device's native trackpad.
+/// Events that begin elsewhere, such as over the bezel or a bar above the canvas, and Option-scrolling, which pans the
+/// canvas, continue as before.
+@MainActor
+final class NativeTrackpadInput: NSResponder {
+    private weak var display: NSView?
+    private weak var framebuffer: NSView?
+    private let send: @MainActor (NSEvent, CGAffineTransform) -> Void
+    private let endGestures: @MainActor () -> Void
+    private var monitor: Any?
+    private var tracking: NSTrackingArea?
+    /// Whether the scroll or the pinch in progress began over the framebuffer. AppKit delivers the rest of a gesture,
+    /// including a scroll's momentum, where it began, so those events follow it wherever the pointer goes.
+    private var takesScroll = false
+    private var takesPinch = false
+
+    /// While enabled, the device takes the gestures; disabling ends those in progress.
+    var isEnabled = false {
+        didSet {
+            guard isEnabled != oldValue else { return }
+            if isEnabled { start() } else { stop() }
+        }
+    }
+
+    init(display: NSView, framebuffer: NSView, send: @escaping @MainActor (NSEvent, CGAffineTransform) -> Void,
+         endGestures: @escaping @MainActor () -> Void) {
+        self.display = display
+        self.framebuffer = framebuffer
+        self.send = send
+        self.endGestures = endGestures
+        super.init()
+    }
+    required init?(coder: NSCoder) { nil }
+
+    isolated deinit {
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        if let tracking { framebuffer?.removeTrackingArea(tracking) }
+    }
+
+    private func start() {
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .magnify]) { [weak self] event in
+            self?.take(event) == true ? nil : event
+        }
+        guard let framebuffer else { return }
+        let area = NSTrackingArea(rect: .zero, options: [.mouseMoved, .activeInKeyWindow, .inVisibleRect], owner: self)
+        framebuffer.addTrackingArea(area)
+        tracking = area
+    }
+
+    private func stop() {
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        monitor = nil
+        if let tracking { framebuffer?.removeTrackingArea(tracking) }
+        tracking = nil
+        takesScroll = false
+        takesPinch = false
+        endGestures()
+    }
+
+    /// Sends `event` to the device when it belongs to a gesture over the framebuffer, which AppKit then does not deliver.
+    private func take(_ event: NSEvent) -> Bool {
+        guard let framebuffer else { return false }
+        switch event.type {
+        case .scrollWheel:
+            // A trackpad's scroll begins with one of these phases; each of a mouse wheel's phaseless events stands alone.
+            if !event.phase.isDisjoint(with: [.mayBegin, .began]) || (event.phase.isEmpty && event.momentumPhase.isEmpty) {
+                takesScroll = !event.modifierFlags.contains(.option) && isOverFramebuffer(event)
+            }
+            guard takesScroll else { return false }
+        case .magnify:
+            if event.phase.contains(.began) { takesPinch = isOverFramebuffer(event) }
+            guard takesPinch else { return false }
+            if !event.phase.isDisjoint(with: [.ended, .cancelled]) { takesPinch = false }
+        default:
+            return false
+        }
+        send(event, NativeDeviceTrackpad.coordinateTransform(fromWindowTo: framebuffer))
+        return true
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        guard isEnabled, let framebuffer, isOverFramebuffer(event) else { return }
+        send(event, NativeDeviceTrackpad.coordinateTransform(fromWindowTo: framebuffer))
+    }
+
+    /// Whether `event` is over the framebuffer where nothing above the display, such as a bar over the canvas, takes it.
+    private func isOverFramebuffer(_ event: NSEvent) -> Bool {
+        guard let display, let framebuffer, let window = display.window, event.window === window,
+              window.contentView?.superview?.hitTest(event.locationInWindow)?.isDescendant(of: display) == true
+        else { return false }
+        return framebuffer.bounds.contains(framebuffer.convert(event.locationInWindow, from: nil))
     }
 }
