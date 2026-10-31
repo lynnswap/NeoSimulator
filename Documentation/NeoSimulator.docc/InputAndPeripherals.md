@@ -105,11 +105,12 @@ for iPhone, iPad, and Apple Vision Pro while automatic sync is off. With some
 simulators, the Mac reads a received item's data from the device when you paste
 it, so keep the device's window open until you paste.
 
-**Automatically Sync Pasteboard** is off by default. When enabled, copies on
+**Automatically Sync Pasteboard** is on by default. While it is on, copies on
 the Mac go to every connected device window, and copies inside a device go to
 the Mac and the other devices. This includes passwords or other private text.
 A device connecting while sync is on receives the Mac pasteboard. Turning sync
-on sends nothing until the next copy. The setting is remembered.
+on sends nothing until the next copy. The setting is remembered, so sync stays
+off on later launches after you turn it off.
 
 ## Audio
 

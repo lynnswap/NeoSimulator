@@ -56,7 +56,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        SimulatorPreferences.migrateStandalonePreferences()
         CaptureThumbnail.reportDetached = { [weak self] error in self?.present(error) }
         simulatorMenus.toggleTestingDevices = {
             let defaults = HostPreferences.defaults
