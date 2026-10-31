@@ -3295,6 +3295,11 @@ struct InputFocusTests {
                               backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         defer { window.close() }
+        // A window's CGEvent holds its location both globally and from the window's top-left corner, and
+        // NSEvent(cgEvent:) reads either one, depending on the event and the macOS release. Both are the same while the
+        // window's top-left corner is the global origin, the top-left corner of the screen with the menu bar.
+        let screen = try #require(NSScreen.screens.first)
+        window.setFrameTopLeftPoint(NSPoint(x: screen.frame.minX, y: screen.frame.maxY))
         let content = try #require(window.contentView)
         // The canvas pans and magnifies the display, whose digitizer also covers the bezel around the framebuffer.
         // In the window, the framebuffer spans x 60–300 and y 80–480.
@@ -3318,11 +3323,12 @@ struct InputFocusTests {
                 windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 0, pressure: 0))
             let event = try #require(mouse.cgEvent)
             event.type = type
-            // A window's event carries its location from the window's top-left corner.
-            event.location = CGPoint(x: point.x, y: window.frame.height - point.y)
             event.flags = flags
             try configure(event)
-            return try #require(NSEvent(cgEvent: event))
+            let made = try #require(NSEvent(cgEvent: event))
+            try #require(made.window === window)
+            try #require(made.locationInWindow == point)
+            return made
         }
         func scroll(_ phase: CGScrollPhase?, momentum: CGMomentumScrollPhase = .none, at point: NSPoint,
                     flags: CGEventFlags = []) throws -> NSEvent {
