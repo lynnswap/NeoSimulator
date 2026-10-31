@@ -15,7 +15,7 @@
       "kind": "remote",
       "repository": "https://github.com/lynnswap/ABIBridge.git",
       "version": {
-        "version": "0.15.0-beta.2",
+        "revision": "d78cf5f170941635ff94e8617ca8743eebe40898",
       },
     }, {
       "kind": "local",

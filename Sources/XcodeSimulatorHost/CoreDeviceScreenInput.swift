@@ -379,7 +379,8 @@ final class NativeTrackpadGestures {
 }
 
 /// Forwards the Mac trackpads' scrolling and pinches over a simulator's screen, with the mouse movements that place them,
-/// to CoreDevice services that carry each trackpad's own HID properties. Device Hub gives an ordinary simulator this input
+/// to guest UniversalHID services that carry each trackpad's own HID properties, created through CoreDevice for a
+/// default-set simulator or with CoreDevice's requests for any simulator. Device Hub gives an ordinary simulator this input
 /// through its HID view when the simulator's CoreDevice record exposes UniversalHID; SimulatorKit's digitizer drops these
 /// events unless a crown or dial takes the scrolling.
 @_spi(NeoSimulator)
@@ -405,6 +406,14 @@ public final class NativeDeviceTrackpad {
         }
         try Task.checkCancellation()
         let transport = try await CoreDeviceTrackpadTransport(remote: remote)
+        return NativeDeviceTrackpad(gestures: NativeTrackpadGestures { transport })
+    }
+
+    /// Connects to the guest's UniversalHID service of a simulator in any device set. A trackpad's guest service is
+    /// created with its first event over the screen; connecting sends the guest nothing.
+    public static func connect(guest: SimulatorGuestHID) async throws -> NativeDeviceTrackpad {
+        let connection = try guest.connection(to: CoreDeviceScreenInput.universalHIDFeature)
+        let transport = try await CoreDeviceTrackpadTransport(runtime: .shared) { try await connection.createService($0) }
         return NativeDeviceTrackpad(gestures: NativeTrackpadGestures { transport })
     }
 
@@ -473,10 +482,11 @@ public final class NativeDeviceTrackpad {
     }
 }
 
-/// Sends a default-set simulator's touches on its integrated screen and its button usages through CoreDevice's
-/// digitizer and button services, in the order of the calls. Once a guest starts the services of its native input, it
-/// drops SimulatorKit's touches and buttons on services it had not used yet; a screen whose keyboard or trackpad input
-/// is native therefore sends these natively too, as Device Hub does.
+/// Sends a simulator's touches on its integrated screen and its button usages to the guest's touchscreen and button
+/// services, in the order of the calls: through CoreDevice's digitizer and button services for a default-set simulator,
+/// or with the messages that those services send for a simulator of any device set. Once a guest starts the services of
+/// its native input, it drops SimulatorKit's touches and buttons on services it had not used yet; a screen whose keyboard
+/// or trackpad input is native therefore sends these natively too, as Device Hub does.
 @_spi(NeoSimulator)
 @MainActor
 public final class NativeDeviceScreenInput {
@@ -498,6 +508,12 @@ public final class NativeDeviceScreenInput {
         }
         try Task.checkCancellation()
         return NativeDeviceScreenInput(input: CoreDeviceScreenInput(remote: remote))
+    }
+
+    /// Connects to the guest's touchscreen and button services of a simulator in any device set. Connecting sends the
+    /// guest nothing.
+    public static func connect(guest: SimulatorGuestHID) throws -> NativeDeviceScreenInput {
+        NativeDeviceScreenInput(input: try GuestScreenInput(guest: guest))
     }
 
     init(input: any NativeScreenInputTransport) {
@@ -569,12 +585,17 @@ protocol NativeTrackpadTransport: AnyObject {
 @MainActor
 final class CoreDeviceTrackpadTransport: NativeTrackpadTransport {
     private static let logger = Logger(subsystem: "dev.lynnswap.NeoSimulator", category: "Trackpad")
-    private let remote: CoreDeviceRemoteScreenDevice
     private let bindings: NativeTrackpadBindings
+    /// Creates the guest service that a CoreDevice `HIDServiceDescriptor` describes.
+    private let createService: @MainActor (NativeSwiftValue) async throws -> CoreDeviceHIDService
 
-    init(remote: CoreDeviceRemoteScreenDevice) async throws {
-        self.remote = remote
-        bindings = try await NativeTrackpadBindings(runtime: remote.runtime)
+    init(runtime: ABIRuntime, createService: @escaping @MainActor (NativeSwiftValue) async throws -> CoreDeviceHIDService) async throws {
+        bindings = try await NativeTrackpadBindings(runtime: runtime)
+        self.createService = createService
+    }
+
+    convenience init(remote: CoreDeviceRemoteScreenDevice) async throws {
+        try await self.init(runtime: remote.runtime) { try await CoreDeviceHIDService.connect(remote: remote, descriptor: $0) }
     }
 
     func sender(of event: NSEvent) throws -> UInt64 { try bindings.lookup.sender(of: event) }
@@ -586,8 +607,7 @@ final class CoreDeviceTrackpadTransport: NativeTrackpadTransport {
             return nil
         }
         let translator = try bindings.makeTranslator()
-        let service = try await CoreDeviceHIDService.connect(remote: remote,
-            descriptor: bindings.descriptor(serviceID: sender, properties: properties))
+        let service = try await createService(bindings.descriptor(serviceID: sender, properties: properties))
         Self.logger.log("Created the guest trackpad service for \(source, privacy: .public)")
         return (service, translator)
     }
