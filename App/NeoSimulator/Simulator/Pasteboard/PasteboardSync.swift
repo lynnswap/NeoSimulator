@@ -1,8 +1,10 @@
 import AppKit
 
 /// Coordinates app-wide pasteboard synchronization across all connected devices.
-/// SimPasteboardPlus ignores its own host writes, so a device-originated copy
-/// must be forwarded explicitly to the other devices.
+/// No connection sends a device-originated copy on by itself: SimPasteboardPlus
+/// ignores its own host writes, and the CoreDevice pasteboard skips Mac changes
+/// that originated on another pasteboard. Such a copy must be forwarded
+/// explicitly to the other devices.
 @MainActor
 final class PasteboardSync {
     private let preferences: any PreferenceStore

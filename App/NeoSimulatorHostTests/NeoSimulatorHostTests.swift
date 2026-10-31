@@ -3272,7 +3272,8 @@ struct InputFocusTests {
         var changes: [PasteboardTransfer] = []
         let deviceChange = try #require(transport.reportDeviceChange)
         let macChange = try #require(transport.reportMacChange)
-        deviceChange { changes.append(.get); return 1 }
+        deviceChange { changes.append(.get); return pasteboard.changeCount }
+        try await wait { changes == [.get] }
         macChange { changes.append(.send) }
         try await wait { changes.count == 2 }
         #expect(changes == [.get, .send])
@@ -3421,6 +3422,78 @@ struct InputFocusTests {
         ])
         // The copy queued for the connecting device behind its first send does not transfer.
         #expect(connecting.transfers == [.send, .send])
+    }
+
+    @Test func queuedAutomaticCoreDevicePasteboardTransfersGiveWayToLaterChanges() async throws {
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("dev.lynnswap.NeoSimulatorTests.\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        let preferences = MemoryPreferences()
+        preferences.values[HostPreferences.pasteboardAutomaticSync] = true
+        var sessions: [DeviceSession] = []
+        let sync = PasteboardSync(preferences: preferences) { sessions }
+        let transport = TestPasteboardTransport()
+        transport.holdsSends = true
+        let session = try makeSession(TestDisplay(), features: [DeviceCapabilities.pasteboard], pasteboard: pasteboard,
+                                      pasteboardSync: sync, pasteboardTransport: transport)
+        sessions.append(session)
+        defer { session.disconnect() }
+        session.startPasteboardSync()
+        try await wait { transport.observations == 2 && transport.heldSends == 1 }
+        try #require(transport.observations == 2 && transport.heldSends == 1)
+
+        // The device's pasteboard, which a Mac change's send replaces with the Mac pasteboard it captured.
+        var device = ""
+        let deviceChange = try #require(transport.reportDeviceChange)
+        let macChange = try #require(transport.reportMacChange)
+        func mac() -> String? { pasteboard.string(forType: .string) }
+        func replaceMac(with text: String) -> Int {
+            pasteboard.clearContents()
+            pasteboard.setString(text, forType: .string)
+            return pasteboard.changeCount
+        }
+        func copyOnDevice(_ text: String) {
+            device = text
+            deviceChange { replaceMac(with: text) }
+        }
+
+        // A device copy queued behind a send does not replace a later Mac copy, even when its turn comes before the
+        // Mac's observation reports that copy, which then reaches the device.
+        copyOnDevice("device copy")
+        _ = replaceMac(with: "Mac copy")
+        transport.holdsSends = false
+        transport.completeSend()
+        try await Task.sleep(for: .milliseconds(50))
+        macChange { device = "Mac copy" }
+        try await wait { device == "Mac copy" }
+        #expect(mac() == "Mac copy" && device == "Mac copy")
+
+        // A Mac copy queued behind a send is not sent once the device copies after it, and the device copy reaches
+        // the Mac instead.
+        transport.holdsSends = true
+        session.sendSynchronizedPasteboard()
+        try await wait { transport.heldSends == 1 }
+        try #require(transport.heldSends == 1)
+        _ = replaceMac(with: "later Mac copy")
+        macChange { device = "later Mac copy" }
+        copyOnDevice("later device copy")
+        transport.holdsSends = false
+        transport.completeSend()
+        try await wait { mac() == "later device copy" }
+        #expect(mac() == "later device copy" && device == "later device copy")
+
+        // A device copy observed while the connection writes the one before it still replaces the Mac pasteboard,
+        // which that write changed after the copy was observed.
+        var resumeWrite: CheckedContinuation<Void, Never>?
+        deviceChange {
+            await withCheckedContinuation { resumeWrite = $0 }
+            return replaceMac(with: "first device copy")
+        }
+        try await wait { resumeWrite != nil }
+        try #require(resumeWrite != nil)
+        copyOnDevice("second device copy")
+        resumeWrite?.resume()
+        try await wait { mac() == "second device copy" }
+        #expect(mac() == "second device copy")
     }
 
     @Test func commandHeldKeyUpReachesTheNativeInputUntilTheWindowCloses() throws {
