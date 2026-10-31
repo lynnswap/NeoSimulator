@@ -1527,6 +1527,26 @@ struct ManagerModelTests {
         #expect(await events.next() == .quit)
     }
 
+    @Test func reopeningDuringAShutDownCloseBootsTheDeviceAgain() async throws {
+        let device = simulator()
+        let source = ManagerModelSource(devices: [device])
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source)
+        await manager.refresh()
+        let cleanup = AsyncStream<Void>.makeStream()
+        manager.closeDevice(device.id, keepingDeviceRunning: false, after: Task { for await _ in cleanup.stream { break } })
+        // The inventory still reports the device running while its close waits for the screen's cleanup.
+        manager.openDevice(device.id)
+        await source.setDevices([simulator(state: "Shutdown")])
+        cleanup.continuation.yield(())
+        #expect(await events.next() == .close(device.id))
+        #expect(await events.next() == .open(device.id))
+        #expect(await source.lastOpenBootIfNeeded == true)
+        #expect(manager.holdsSettingsEdits)
+        await source.completeOpen()
+        try await manager.quitRenderer(keepingDevicesRunning: true)
+    }
+
     @Test func failedOpenCancellationPreventsQuitAndAllowsRetry() async throws {
         let device = simulator()
         let source = ManagerModelSource(devices: [device])

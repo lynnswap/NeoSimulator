@@ -170,11 +170,12 @@ final class SimulatorManagerModel {
         let activity: String
         let refreshCatalog: Bool
         let openDevice: SimulatorScreenOpenRequest?
-        /// Attaches a running device's screen without booting it, so later operations that do not wait for an attach
-        /// run while it connects.
-        let attachesScreen: Bool
-        let waitsForAttach: Bool
-        let run: @MainActor () async throws -> Void
+        /// Whether the open only attaches the screen, without booting, if the device is running when the queue admits it.
+        /// Later operations that do not wait for an attach run while it connects.
+        var attachesRunningDevice = false
+        var waitsForAttach = true
+        /// Receives whether the admitted open only attaches.
+        let run: @MainActor (_ attaches: Bool) async throws -> Void
     }
     private(set) var openingDeviceIDs: Set<DeviceInventoryID> = []
     @ObservationIgnored private var activeOpen: (request: SimulatorScreenOpenRequest, task: Task<Void, any Error>)?
@@ -247,13 +248,12 @@ final class SimulatorManagerModel {
         onDeviceOpenRequested?(identifier)
         openingDeviceIDs.insert(identifier)
         let request = controller.makeScreenOpenRequest(for: identifier)
-        // The host does not boot a device that stopped after this snapshot, so the snapshot decides only queue order.
-        let attaches = devices.contains { $0.inventoryID == identifier && $0.state == "Booted" }
-        perform("Opening simulator…", openDevice: request, attachesScreen: attaches) {
+        enqueue(PendingOperation(activity: "Opening simulator…", refreshCatalog: true, openDevice: request,
+                                 attachesRunningDevice: true) { attaches in
             try await self.controller.openDevice(request, xcodeURL: nil, bootIfNeeded: !attaches)
             try Task.checkCancellation()
             await self.deviceScreenDidConnect(identifier)
-        }
+        })
     }
 
     func restoreScreen(_ restoration: SimulatorScreenRestoration,
@@ -686,14 +686,18 @@ final class SimulatorManagerModel {
         backgroundIssue = message
     }
 
-    /// Runs operations in the order they were accepted. While a running device's screen attaches, later operations
-    /// that do not wait for an attach run; the next one that waits holds every operation after it.
     private func perform(_ activity: String, refreshCatalog: Bool = true, openDevice: SimulatorScreenOpenRequest? = nil,
-                         attachesScreen: Bool = false, waitsForAttach: Bool = true,
-                         operation: @escaping @MainActor () async throws -> Void) {
+                         waitsForAttach: Bool = true, operation: @escaping @MainActor () async throws -> Void) {
+        enqueue(PendingOperation(activity: activity, refreshCatalog: refreshCatalog, openDevice: openDevice,
+                                 waitsForAttach: waitsForAttach) { _ in try await operation() })
+    }
+
+    /// Runs operations in the order they were accepted. An open admitted while its device is running only attaches the
+    /// screen; later operations that do not wait for an attach run while it connects, and the next one that waits
+    /// holds every operation after it.
+    private func enqueue(_ operation: PendingOperation) {
         guard !stopping else { return }
-        pendingOperations.append(.init(activity: activity, refreshCatalog: refreshCatalog, openDevice: openDevice,
-                                       attachesScreen: attachesScreen, waitsForAttach: waitsForAttach, run: operation))
+        pendingOperations.append(operation)
         publishQueueState()
         guard operationTask == nil else {
             resumeOperations()
@@ -716,18 +720,20 @@ final class SimulatorManagerModel {
                     continue
                 }
                 self.pendingOperations.removeFirst()
-                self.runningOperation = next
+                // Earlier operations, such as a close that shut the device down, have left the inventory that decides
+                // this open. The host rejects an attach to a device that stops later instead of booting it.
+                let attaches = self.attachesOnAdmission(next)
+                if !self.attachingScreen { self.activity = next.activity }
+                if attaches { self.attachingScreen = true } else { self.runningOperation = next }
                 defer { self.runningOperation = nil }
                 self.publishQueueState()
-                if !self.attachingScreen { self.activity = next.activity }
                 if let request = next.openDevice {
                     let task = Task {
-                        try await next.run()
+                        try await next.run(attaches)
                         try Task.checkCancellation()
                     }
                     self.activeOpen = (request, task)
-                    if next.attachesScreen {
-                        self.attachingScreen = true
+                    if attaches {
                         Task {
                             await self.finishOpen(request, task, refreshesCatalog: next.refreshCatalog)
                             self.attachingScreen = false
@@ -738,7 +744,7 @@ final class SimulatorManagerModel {
                     } else { await self.finishOpen(request, task, refreshesCatalog: next.refreshCatalog) }
                 } else {
                     var failure: (any Error)?
-                    do { try await next.run() }
+                    do { try await next.run(false) }
                     catch { failure = error }
                     if !self.stopping, next.refreshCatalog || self.inventoryRefreshRequested { await self.refreshCatalog() }
                     if let failure { self.onError?(failure) }
@@ -763,9 +769,15 @@ final class SimulatorManagerModel {
     }
 
     private func publishQueueState() {
-        let operations = [runningOperation].compactMap { $0 } + pendingOperations
-        isBusy = attachingScreen || operations.contains { $0.refreshCatalog }
-        holdsSettingsEdits = operations.contains { $0.refreshCatalog && !$0.attachesScreen }
+        let running = runningOperation?.refreshCatalog == true
+        isBusy = attachingScreen || running || pendingOperations.contains { $0.refreshCatalog }
+        holdsSettingsEdits = running || pendingOperations.contains { $0.refreshCatalog && !attachesOnAdmission($0) }
+    }
+
+    /// Whether admitting `operation` now would only attach the screen of its running device.
+    private func attachesOnAdmission(_ operation: PendingOperation) -> Bool {
+        guard operation.attachesRunningDevice, let request = operation.openDevice else { return false }
+        return devices.contains { $0.inventoryID == request.deviceID && $0.state == "Booted" }
     }
 
     private func resumeOperations() {
