@@ -10540,7 +10540,7 @@ final class TestRemoteScreenTransport: RemoteScreenTransport {
         if case .button(_, _, let state) = input { buttons.append(state) }
         if case .key(let usage, let state) = input { keys.append((usage, state)) }
         if case .touch(let point, _, let phase, _) = input { touches.append((point, phase)) }
-        if case .pinch(let event) = input { pinches.append(event) }
+        if case .pinch(let event, _) = input { pinches.append(event) }
         if case .pointer(let point) = input { pointerMoves.append(point) }
         if case .gesturePointer(let event, let transform) = input { gesturePointers.append((event, transform)) }
     }
