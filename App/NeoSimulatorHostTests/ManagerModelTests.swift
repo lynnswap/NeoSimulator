@@ -1482,19 +1482,22 @@ struct ManagerModelTests {
 
         manager.openDevice(device.id)
         #expect(await events.next() == .open(device.id))
+        // A device that stops before the request reaches its host must not boot beside these edits.
+        #expect(await source.lastOpenBootIfNeeded == false)
         manager.openDevice(queued.id)
         #expect(manager.openingDeviceIDs == [device.id, queued.id])
+        #expect(manager.isBusy && !manager.holdsSettingsEdits)
         manager.setDeviceSetting(.appearance("dark"), for: device.id)
         manager.setDeviceSetting(.contentSize("large"), for: device.id)
         #expect(manager.settings.settings?.appearance == "dark")
         #expect(manager.settings.settings?.contentSize == "large")
         manager.cancelOpening(queued.id)
+        // The running device's screen is still connecting when the first edit reaches the device.
+        #expect(await events.next() == .write(device.id))
         manager.cancelOpening(device.id)
         #expect(source.cancelledOpenIDs == [device.id, queued.id])
         // The lower IPC deliberately returns success after cancellation.
         await source.completeOpen()
-        #expect(await events.next() == .write(device.id))
-        #expect(manager.openingDeviceIDs.isEmpty)
         await source.completeWrite()
         #expect(await events.next() == .write(device.id))
         let inputs = await source.writeInputs
@@ -1512,6 +1515,7 @@ struct ManagerModelTests {
         await source.completeWrite()
         #expect(await events.next() == .quit)
         try await quitting.value
+        #expect(manager.openingDeviceIDs.isEmpty)
         #expect(manager.settings.settings?.appearance == "dark")
         #expect(manager.settings.settings?.contentSize == "large")
         #expect(await source.readCount == 1)
@@ -1521,6 +1525,26 @@ struct ManagerModelTests {
         await source.completeOpen()
         try await manager.quitRenderer(keepingDevicesRunning: true)
         #expect(await events.next() == .quit)
+    }
+
+    @Test func reopeningDuringAShutDownCloseBootsTheDeviceAgain() async throws {
+        let device = simulator()
+        let source = ManagerModelSource(devices: [device])
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source)
+        await manager.refresh()
+        let cleanup = AsyncStream<Void>.makeStream()
+        manager.closeDevice(device.id, keepingDeviceRunning: false, after: Task { for await _ in cleanup.stream { break } })
+        // The inventory still reports the device running while its close waits for the screen's cleanup.
+        manager.openDevice(device.id)
+        await source.setDevices([simulator(state: "Shutdown")])
+        cleanup.continuation.yield(())
+        #expect(await events.next() == .close(device.id))
+        #expect(await events.next() == .open(device.id))
+        #expect(await source.lastOpenBootIfNeeded == true)
+        #expect(manager.holdsSettingsEdits)
+        await source.completeOpen()
+        try await manager.quitRenderer(keepingDevicesRunning: true)
     }
 
     @Test func failedOpenCancellationPreventsQuitAndAllowsRetry() async throws {
@@ -2325,6 +2349,7 @@ actor ManagerModelSource: SimulatorManagerSource {
     private(set) var readCount = 0
     private(set) var quitCount = 0
     private(set) var lastOpenXcodeURL: URL?
+    private(set) var lastOpenBootIfNeeded: Bool?
     private(set) var artworkXcodeRequests: [DeviceInventoryID] = []
     private(set) var installedXcodeReadCount = 0
     private(set) var managementRequests = 0
@@ -2434,9 +2459,10 @@ actor ManagerModelSource: SimulatorManagerSource {
     nonisolated func makeScreenOpenRequest(for deviceID: DeviceInventoryID) -> SimulatorScreenOpenRequest {
         SimulatorScreenOpenRequest(deviceID: deviceID) { self.cancelledOpens.withLock { $0.insert(deviceID) } }
     }
-    func openDevice(_ request: SimulatorScreenOpenRequest, xcodeURL: URL?) async throws {
+    func openDevice(_ request: SimulatorScreenOpenRequest, xcodeURL: URL?, bootIfNeeded: Bool) async throws {
         let deviceID = request.deviceID
         lastOpenXcodeURL = xcodeURL
+        lastOpenBootIfNeeded = bootIfNeeded
         try await withCheckedThrowingContinuation { waiting in
             openContinuation = waiting
             continuation.yield(.open(deviceID))
