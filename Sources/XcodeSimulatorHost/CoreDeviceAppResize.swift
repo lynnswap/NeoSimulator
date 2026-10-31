@@ -118,7 +118,7 @@ public final class CoreDeviceAppResizeTransport: AppResizeTransport {
     private func eligibility<Failure: Error>(failure: Failure) async throws -> AsyncThrowingStream<AppResizeEligibility, any Error> {
         let stateType = bindings.stateType
         let abis = bindings.abis
-        let stream = try NativeResizeStream(runtime: runtime, element: stateType, throwing: true)
+        let stream = try NativeAsyncStream(runtime: runtime, element: stateType, throwing: true)
         let observe = try implementation.type.resolveAndWait(.swift(.method("CoreDevice.ResizableAppManagementProtocol.observeFrontmostAppResizability()",
             as: (() async throws(Failure) -> NativeSwiftValue).self, valueABIs: abis.merging(stream.abis) { a, _ in a })))
         let value = try await unsafe observe.unsafeInvoke(on: implementation)
@@ -189,7 +189,7 @@ private final class CoreDeviceAppResizeSession: AppResizeSession {
     }
 
     func updates() throws -> AsyncThrowingStream<AppResizeGeometry, any Error> {
-        let stream = try NativeResizeStream(runtime: runtime, element: sceneType, throwing: false)
+        let stream = try NativeAsyncStream(runtime: runtime, element: sceneType, throwing: false)
         let observe = try assertion.type.resolveAndWait(.swift(.method("CoreDevice.ResizableAppSessionAssertion.sceneStateUpdates()",
             as: (() -> NativeSwiftValue).self, valueABIs: abis.merging(stream.abis) { a, _ in a })))
         let value = try unsafe observe.unsafeInvoke(on: assertion)
@@ -217,7 +217,7 @@ private final class CoreDeviceAppResizeSession: AppResizeSession {
 
 /// Keeps Swift's resilient AsyncStream and iterator values opaque across the ABI.
 @MainActor
-private struct NativeResizeStream {
+struct NativeAsyncStream {
     let abis: [NativeSwiftType: NativeType]
     private let isThrowing: Bool
     init(runtime: ABIRuntime, element: NativeSwiftType, throwing: Bool) throws {
@@ -230,19 +230,7 @@ private struct NativeResizeStream {
     }
     func values<Value: Sendable>(_ value: NativeSwiftValue,
                                 project: @escaping @MainActor (NativeSwiftValue) throws -> Value) throws -> AsyncThrowingStream<Value, any Error> {
-        let make = try value.type.resolveAndWait(.swift(.method("makeAsyncIterator()", as: (() -> NativeSwiftValue).self,
-            valueABIs: abis, receiverABI: .opaque(named: value.type.name))))
-        let iterator = try unsafe make.unsafeInvoke(on: value)
-        let readNext: @MainActor () async throws -> NativeSwiftValue?
-        if isThrowing {
-            let next = try iterator.type.resolveAndWait(.swift(.method("next()", as: (() async throws -> NativeSwiftValue?).self,
-                valueABIs: abis, receiverABI: .opaque(named: iterator.type.name))))
-            readNext = { try await unsafe next.unsafeInvoke(on: iterator) }
-        } else {
-            let next = try iterator.type.resolveAndWait(.swift(.method("next()", as: (() async -> NativeSwiftValue?).self,
-                valueABIs: abis, receiverABI: .opaque(named: iterator.type.name))))
-            readNext = { try await unsafe next.unsafeInvoke(on: iterator) }
-        }
+        let readNext = try iterate(value)
         try Task.checkCancellation()
         return AsyncThrowingStream { continuation in
             let task = Task { @MainActor in
@@ -256,5 +244,30 @@ private struct NativeResizeStream {
             }
             continuation.onTermination = { _ in task.cancel() }
         }
+    }
+
+    /// Hands each element to `body` in order, keeping it a native value for later native calls, until the sequence
+    /// ends. Cancelling the task ends the sequence and throws.
+    func forEach(_ value: NativeSwiftValue, _ body: @MainActor (NativeSwiftValue) throws -> Void) async throws {
+        let readNext = try iterate(value)
+        while let element = try await readNext() {
+            try Task.checkCancellation()
+            try body(element)
+        }
+        try Task.checkCancellation()
+    }
+
+    private func iterate(_ value: NativeSwiftValue) throws -> @MainActor () async throws -> NativeSwiftValue? {
+        let make = try value.type.resolveAndWait(.swift(.method("makeAsyncIterator()", as: (() -> NativeSwiftValue).self,
+            valueABIs: abis, receiverABI: .opaque(named: value.type.name))))
+        let iterator = try unsafe make.unsafeInvoke(on: value)
+        if isThrowing {
+            let next = try iterator.type.resolveAndWait(.swift(.method("next()", as: (() async throws -> NativeSwiftValue?).self,
+                valueABIs: abis, receiverABI: .opaque(named: iterator.type.name))))
+            return { try await unsafe next.unsafeInvoke(on: iterator) }
+        }
+        let next = try iterator.type.resolveAndWait(.swift(.method("next()", as: (() async -> NativeSwiftValue?).self,
+            valueABIs: abis, receiverABI: .opaque(named: iterator.type.name))))
+        return { try await unsafe next.unsafeInvoke(on: iterator) }
     }
 }

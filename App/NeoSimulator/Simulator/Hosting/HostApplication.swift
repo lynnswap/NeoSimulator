@@ -874,6 +874,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                                 if touchRoute == nil { keyboard = nil; trackpad = nil }
                             }
                         }
+                        let pasteboardTransport = try await device.deviceSetPath == nil ? nativePasteboard(of: device) : nil
                         try Task.checkCancellation()
                         let connection = try SimulatorConnection(device: device, screen: screen, runtime: runtime,
                                                                  nativeCanvas: nativeCanvas, keyboard: keyboard, trackpad: trackpad,
@@ -884,7 +885,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                             display: connection,
                             tools: try DeviceTools(identifier: identifier.identifier, xcodeURL: runtime.xcodeURL,
                                                    deviceSetPath: device.deviceSetPath),
-                            recordings: recordings, pasteboardSync: pasteboardSync,
+                            recordings: recordings, pasteboardSync: pasteboardSync, pasteboardTransport: pasteboardTransport,
                             externalDisplayChanges: externalDisplayChanges(of: device),
                             appResizeTransport: { try await CoreDeviceAppResizeTransport.make(simulatorUDID: identifier.identifier) })
                         do { try session.applyDebugSettings() } catch {
@@ -946,6 +947,20 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             throw CancellationError()
         } catch {
             hostLog("\(device.name) keeps SimulatorKit's keyboard, which the guest reads with a US layout: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    /// The device's CoreDevice pasteboard, which carries Get Pasteboard, Send Pasteboard, and automatic
+    /// synchronization. CoreDevice lists only the default device set. Without it, SimPasteboardPlus remains, whose sends
+    /// no longer replace an iOS 27.2 guest's pasteboard.
+    private func nativePasteboard(of device: SimulatorDevice) async throws -> (any PasteboardTransport)? {
+        do {
+            return try await CoreDevicePasteboardTransport.make(simulatorUDID: device.identifier)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            hostLog("\(device.name) keeps SimPasteboardPlus's pasteboard: \(error.localizedDescription)")
             return nil
         }
     }

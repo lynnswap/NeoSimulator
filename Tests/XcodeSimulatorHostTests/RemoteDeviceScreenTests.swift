@@ -994,6 +994,11 @@ struct RemoteDeviceScreenTests {
         _ = try CoreDeviceAppResizeTransport.GeometryBindings(type: bindings.sceneType, abis: bindings.abis)
     }
 
+    @Test func pasteboardBindingsPrepareWithoutADevice() throws {
+        try CoreDeviceRemoteScreenDevice.load(MacHIDServiceLookup.coreDeviceUtilitiesPath)
+        _ = try CoreDevicePasteboardTransport.Bindings(runtime: .shared)
+    }
+
     @Test func displayGeometryBindingsReadDeviceKitPointSizesWithoutADevice() async throws {
         try await CoreDeviceDisplayGeometry.loadRuntime()
         let runtime = ABIRuntime.shared

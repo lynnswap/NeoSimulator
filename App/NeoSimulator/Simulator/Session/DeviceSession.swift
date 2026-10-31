@@ -426,6 +426,9 @@ final class DeviceSession {
     /// Edit ▸ Automatically Sync Pasteboard, or nil when the session never
     /// synchronizes.
     @ObservationIgnored private let pasteboardSync: PasteboardSync?
+    /// The device's CoreDevice pasteboard, which carries every transfer when present; otherwise the display's
+    /// SimPasteboardPlus connection does.
+    @ObservationIgnored private let pasteboardTransport: (any PasteboardTransport)?
     /// The device's pasteboard connection, from the first transfer, or while
     /// synchronizing, until the device closes it or the session disconnects.
     @ObservationIgnored private var pasteboardConnection: (any SimulatorPasteboard)?
@@ -480,6 +483,7 @@ final class DeviceSession {
          preferences: any PreferenceStore = HostPreferences.defaults,
          hostKeyboardLanguage: @escaping @MainActor () -> String? = HostKeyboard.language,
          pasteboard: NSPasteboard? = nil, pasteboardSync: PasteboardSync? = nil,
+         pasteboardTransport: (any PasteboardTransport)? = nil,
          externalDisplayChanges: ExternalDisplayChanges = ExternalDisplayChanges(),
          externalScreenTimeout: Duration = .seconds(10),
          appResizeTransport: (@MainActor () async throws -> (any AppResizeTransport)?)? = nil) {
@@ -493,6 +497,7 @@ final class DeviceSession {
         self.hostKeyboardLanguage = hostKeyboardLanguage
         hostPasteboard = pasteboard
         self.pasteboardSync = pasteboardSync
+        self.pasteboardTransport = pasteboardTransport
         self.recordings = recordings
         let codec: DeviceTools.VideoCodec = capabilities.family == .vision ? .hevc : .h264
         if let recordingProcess { makeRecordingProcess = { url, mask, _ in recordingProcess(url, mask) } }
@@ -1239,8 +1244,13 @@ final class DeviceSession {
     }
 
     private func connectPasteboard() throws -> any SimulatorPasteboard {
-        let connection = try display.connectPasteboard(hostPasteboard ?? .general) { [weak self] in
-            self?.handlePasteboard($0)
+        let pasteboard = hostPasteboard ?? .general
+        let events: @MainActor (SimulatorPasteboardEvent) -> Void = { [weak self] in self?.handlePasteboard($0) }
+        let connection: any SimulatorPasteboard
+        if let pasteboardTransport {
+            connection = NativePasteboardConnection(transport: pasteboardTransport, managing: pasteboard, events: events)
+        } else {
+            connection = try display.connectPasteboard(pasteboard, events: events)
         }
         pasteboardConnection = connection
         isPasteboardActive = false
@@ -1271,6 +1281,12 @@ final class DeviceSession {
             } else {
                 pendingPulls.removeFirst()(error)
             }
+        case .failedToSend(let error):
+            if pendingPushes.isEmpty {
+                hostLog("Could not send the pasteboard to \(device.name): \(error.localizedDescription)")
+            } else {
+                pendingPushes.removeFirst()(error)
+            }
         case .lostConnection:
             let pending = pendingPulls + pendingPushes
             closePasteboard()
@@ -1284,6 +1300,10 @@ final class DeviceSession {
             if enabled != synchronizesPasteboard {
                 hostLog("The pasteboard synchronization of \(device.name) turned \(enabled ? "on" : "off") while Automatically Sync Pasteboard is \(synchronizesPasteboard ? "on" : "off")")
             }
+        case .synchronizationFailed(let error):
+            // The connection stays for manual transfers; updating synchronization, as selecting the device again
+            // does, starts it again.
+            hostLog("Could not synchronize the pasteboard of \(device.name): \(error.localizedDescription)")
         }
     }
 

@@ -1023,7 +1023,7 @@ struct SimulatorPasteboardInterface {
     }
 }
 
-/// A SimPasteboardPlus callback about a device's pasteboard connection.
+/// A callback about a device's pasteboard connection, as SimPasteboardPlus reports it.
 enum SimulatorPasteboardEvent {
     /// The connection became active: once after connecting, and again each
     /// time the device has taken a push, which `simctl pbsync` waits for.
@@ -1032,10 +1032,15 @@ enum SimulatorPasteboardEvent {
     case applied(generation: Int)
     /// Writing the device's pasteboard to the managed pasteboard failed.
     case failedToApply(Error)
+    /// Sending the managed pasteboard to the device failed. SimPasteboardPlus does not report it.
+    case failedToSend(Error)
     /// The device closed the connection. Later pushes and pulls on it do nothing.
     case lostConnection
     /// The connection started or stopped synchronizing automatically.
     case synchronizationChanged(Bool)
+    /// Observing a pasteboard failed, which stopped automatic synchronization until it is turned on again. The
+    /// connection still transfers on request. SimPasteboardPlus does not report it.
+    case synchronizationFailed(Error)
 }
 
 /// A device's pasteboard connection. Releasing it closes the connection.
