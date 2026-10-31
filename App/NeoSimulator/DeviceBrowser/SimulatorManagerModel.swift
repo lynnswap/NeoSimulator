@@ -260,7 +260,11 @@ final class SimulatorManagerModel {
             await self.stopDevicePosture(for: identifier)
             // The screen is already gone, so the device closes even when its cleanup failed, which is reported then.
             let cleanup = await finishing.result
-            try await self.controller.closeDevice(identifier, keepingDeviceRunning: keepingDeviceRunning)
+            do { try await self.controller.closeDevice(identifier, keepingDeviceRunning: keepingDeviceRunning) }
+            catch {
+                guard case .failure(let cleanupError) = cleanup else { throw error }
+                throw HostError.operation([error.localizedDescription, cleanupError.localizedDescription].joined(separator: "\n"))
+            }
             try cleanup.get()
         }
     }
