@@ -11,7 +11,7 @@ public struct DeviceActiveStates: Equatable, Sendable {
 
     init(_ values: [UUID: Bool]) { self.values = values }
 
-    /// DeviceKit's value for the device, or nil when DeviceKit reports none.
+    /// DeviceKit's value for the device, or nil when DeviceKit reports none or the observation did not request it.
     ///
     /// DeviceKit identifies devices by their CoreDevice identifier. Simulators in a custom device set have no
     /// CoreDevice record, so they have no value even when a default-set simulator shares their UDID.
@@ -29,22 +29,37 @@ public struct DeviceActiveStates: Equatable, Sendable {
 /// DeviceKit computes each value from the device's state and from the interaction and activation of DeviceKit
 /// views in this process, such as a native device canvas. Screens shown through SimulatorKit or Neo's remote-screen
 /// transports, and other processes such as Device Hub, do not request that interaction. Starting reads DeviceKit's
-/// device list, which starts its observation of every device, and the predicate creates a DeviceKit coordinator for
-/// each device. DeviceKit exports no API to stop either, so they stay with DeviceKit for the rest of the process.
-/// ``stop()`` ends only this object's reads and callbacks.
+/// device list, which starts its observation of every device. Evaluating a device's value creates a DeviceKit
+/// coordinator for that device, which can start the device's native HID services; a simulator whose screen keeps
+/// SimulatorKit's touches and buttons then stops accepting them. ``init(limitedTo:)`` evaluates only the devices it
+/// requests. DeviceKit exports no API to stop its observation or a coordinator, so they stay with DeviceKit for the
+/// rest of the process. ``stop()`` ends only this object's reads and callbacks.
 @MainActor
 public final class DeviceActiveStateObservation {
     public var onChange: ((DeviceActiveStates) -> Void)?
     public var onError: ((any Error) -> Void)?
 
     private let source: any DeviceActiveStateSource
+    private let deviceIdentifiers: (@MainActor () -> Set<UUID>)?
     private var startTask: Task<Void, Never>?
     private var stopped = false
     private var delivered: DeviceActiveStates?
 
+    /// Observes the value of every device that DeviceKit observes, creating DeviceKit's coordinator for each of them.
     public convenience init() { self.init(source: DeviceKitActiveStateSource()) }
 
-    init(source: any DeviceActiveStateSource) { self.source = source }
+    /// Observes only the devices whose CoreDevice identifiers `deviceIdentifiers` returns; other devices have no value.
+    ///
+    /// Each read calls `deviceIdentifiers` under Observation, so a change to the observable state that it reads
+    /// reports the values of the new set.
+    public convenience init(limitedTo deviceIdentifiers: @escaping @MainActor () -> Set<UUID>) {
+        self.init(source: DeviceKitActiveStateSource(), limitedTo: deviceIdentifiers)
+    }
+
+    init(source: any DeviceActiveStateSource, limitedTo deviceIdentifiers: (@MainActor () -> Set<UUID>)? = nil) {
+        self.source = source
+        self.deviceIdentifiers = deviceIdentifiers
+    }
 
     deinit { startTask?.cancel() }
 
@@ -72,7 +87,7 @@ public final class DeviceActiveStateObservation {
 
     private func observe() {
         let result = withObservationTracking {
-            Result { try source.read() }
+            Result { try source.read(deviceIdentifiers?()) }
         } onChange: { [weak self] in
             Task { @MainActor [weak self] in
                 guard let self, !self.stopped else { return }
@@ -95,8 +110,9 @@ public final class DeviceActiveStateObservation {
 @MainActor
 protocol DeviceActiveStateSource {
     func prepare() async throws
-    /// Reads the current values; Observation tracks the native properties that the read accesses.
-    func read() throws -> [UUID: Bool]
+    /// Reads the current values of the devices in `identifiers`, or of every device when it is nil, evaluating no
+    /// other device. Observation tracks the native properties that the read accesses.
+    func read(_ identifiers: Set<UUID>?) throws -> [UUID: Bool]
 }
 
 @MainActor
@@ -130,14 +146,17 @@ final class DeviceKitActiveStateSource: DeviceActiveStateSource {
         prepared = (bindings, try unsafe bindings.shared.unsafeInvoke())
     }
 
-    func read() throws -> [UUID: Bool] {
+    func read(_ identifiers: Set<UUID>?) throws -> [UUID: Bool] {
         guard let prepared else {
             throw CLIError.unavailable("device-active-state", "DeviceKit's device states have not been prepared.")
         }
         let bindings = prepared.bindings
         var values: [UUID: Bool] = [:]
         for device in try unsafe bindings.devices.unsafeInvoke(on: prepared.manager) {
-            values[try unsafe bindings.identifier.unsafeInvoke(on: device)] = try unsafe bindings.isActive.unsafeInvoke(device)
+            let identifier = try unsafe bindings.identifier.unsafeInvoke(on: device)
+            // The predicate creates the device's DeviceKit coordinator, so an unrequested device must not reach it.
+            guard identifiers?.contains(identifier) ?? true else { continue }
+            values[identifier] = try unsafe bindings.isActive.unsafeInvoke(device)
         }
         return values
     }

@@ -54,7 +54,7 @@ and buttons, so their touches keep their pressure. NeoSimulator does not send
 them native keyboard or trackpad input, which would stop their guest from
 accepting those touches and buttons. This does not restore a guest that has
 already stopped accepting them, for example after another app or an earlier
-NeoSimulator version sent it native input.
+NeoSimulator version started its native input.
 
 SimulatorKit retains touches through focus changes. Finish gestures and lift
 pinned fingers before closing a window that will leave its device running;
