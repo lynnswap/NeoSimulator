@@ -65,6 +65,7 @@ struct DeviceInventoryTests {
         #expect(!snapshot.devices.contains { $0.id == .simulator(udid: "coredevice-only-simulator", deviceSetPath: nil) })
         if case .simulator(let retained) = joined {
             #expect(retained.ownerXcodeURL == normal.ownerXcodeURL)
+            #expect(retained.catalogXcodeURL == normal.catalogXcodeURL)
             #expect(retained.name == normal.name && retained.modelIdentifier == normal.modelIdentifier)
             #expect(retained.deviceTypeIdentifier == "phone-type")
         } else { Issue.record("simctl record was replaced by a remote record") }
@@ -182,12 +183,23 @@ struct DeviceInventoryTests {
         #expect((issue.error as? CLIError)?.identifier == "testing-inventory")
         #expect(snapshot.devices.first { $0.id == .simulator(udid: "unavailable", deviceSetPath: "/testing") }?.isAvailable == false)
         #expect(snapshot.devices.first { $0.id == .simulator(udid: "unavailable", deviceSetPath: nil) }?.isAvailable == true)
+        func catalogXcodeURL(_ identifier: String, _ path: String?) -> URL? {
+            guard case .simulator(let device) = snapshot.devices.first(where: { $0.id == .simulator(udid: identifier, deviceSetPath: path) })
+            else { return nil }
+            return device.catalogXcodeURL
+        }
+        // The kept entry records the Xcode whose catalog first listed it as available.
+        #expect(catalogXcodeURL("ready", nil) == newer)
+        #expect(catalogXcodeURL("unavailable", nil) == older)
+        #expect(catalogXcodeURL("ready", "/testing") == older)
+        #expect(catalogXcodeURL("unavailable", "/testing") == nil)
     }
 
     private static func simulator(_ identifier: String, path: String? = nil) -> SimulatorHostDevice {
         SimulatorHostDevice(identifier: identifier, name: "Simulator Name", descriptiveName: "Simulator Name — iOS 27.0",
             runtimeIdentifier: "runtime", runtimeName: "iOS 27.0", productFamily: "iPhone", state: "Booted",
-            ownerXcodeURL: URL(fileURLWithPath: "/Applications/Xcode.app"), deviceSetPath: path, modelIdentifier: "iPhone99,2",
+            ownerXcodeURL: URL(fileURLWithPath: "/Applications/Xcode.app"),
+            catalogXcodeURL: URL(fileURLWithPath: "/Applications/Catalog Xcode.app"), deviceSetPath: path, modelIdentifier: "iPhone99,2",
             deviceTypeIdentifier: "phone-type")
     }
 
