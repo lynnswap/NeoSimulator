@@ -39,6 +39,15 @@ final class DeviceScreens {
 
     func screen(for identifier: DeviceInventoryID) -> DeviceScreen? { entries[identifier] }
 
+    /// The CoreDevice identifiers of the open screens that show DeviceKit's native device canvas. DeviceKit's Active
+    /// value depends on its views, and evaluating it for another device can start that device's native HID services.
+    var nativeCanvasDeviceIdentifiers: Set<UUID> {
+        Set(entries.values.filter(\.usesNativeCanvas).compactMap { screen in
+            guard case .simulator(let simulator) = model.inventory.first(where: { $0.id == screen.id }) else { return nil }
+            return simulator.coreDevice.flatMap { UUID(uuidString: $0.identifier) }
+        })
+    }
+
     // MARK: Registration
 
     /// Registers a host's simulator presentation, or returns its screen when the controller is already registered.

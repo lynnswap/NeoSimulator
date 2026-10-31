@@ -94,6 +94,12 @@ final class DeviceScreen {
         }
     }
 
+    /// Whether the screen shows DeviceKit's native device canvas, whose views supply DeviceKit's Active value.
+    var usesNativeCanvas: Bool {
+        guard case .simulator(let controller) = observedController else { return false }
+        return controller.session.display.usesNativeCanvas
+    }
+
     var nativePoseControls: NativeDevicePoseControls? {
         guard case .simulator(let controller) = observedController else { return nil }
         return controller.session.display.nativePoseControls

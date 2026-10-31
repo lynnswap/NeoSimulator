@@ -111,7 +111,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func startInventoryObservation() {
         if activeStateObservation == nil {
-            let observation = DeviceActiveStateObservation()
+            let observation = DeviceActiveStateObservation(limitedTo: { [screens] in screens.nativeCanvasDeviceIdentifiers })
             observation.onChange = { [weak self] in self?.model.activeStatesDidChange($0) }
             observation.onError = { [weak self] in self?.model.activeStateObservationFailed($0) }
             activeStateObservation = observation

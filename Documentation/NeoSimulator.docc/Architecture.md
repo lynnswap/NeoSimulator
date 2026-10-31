@@ -71,28 +71,34 @@ in the manager process through ABIBridge, so availability and ABI failures affec
 that process. Simulator display and clipboard sessions also run in the manager;
 headless renderer processes own guest boot, restart, and shutdown.
 
-The sidebar's Active priority and artwork come from DeviceKit's
-`SidebarModel.shouldRenderAsActive(_:)`, the predicate behind Device Hub's own
-sidebar. `DeviceActiveStateObservation` reads it in the manager for each device
-in DeviceKit's `ObservedDeviceManager` and rereads when the predicate's
-observable inputs change. DeviceKit matches devices by CoreDevice identifier, so
-simulators in custom device sets have no value. Within the same availability, a
-row that DeviceKit reports as Active comes first. A row without a value is
-ordered with the inactive rows by the remaining comparisons, and its artwork
-still follows Neo's open screens and booting or shutting-down states. A failed
-read clears every value and is reported with the other inventory issues.
+The sidebar's Active priority and artwork for a simulator shown in DeviceKit's
+native canvas come from DeviceKit's `SidebarModel.shouldRenderAsActive(_:)`, the
+predicate behind Device Hub's own sidebar. The predicate uses the interaction and
+activation state of DeviceKit views in the manager process, which only the native
+canvas supplies. Screens shown through SimulatorKit or Neo's remote-screen
+transports, Device Hub, and renderer processes do not contribute that state.
 
-The predicate uses the interaction and activation state of DeviceKit views in the
-manager process, such as the native canvas of a simulator that needs one.
-Screens shown through SimulatorKit or Neo's remote-screen transports, Device Hub,
-and renderer processes do not contribute that state. A device whose screen is
-shown that way is Active only when DeviceKit's other inputs make it so.
+Evaluating the predicate for a device creates a DeviceKit coordinator for it,
+which can start the device's native HID services. A simulator whose screen keeps
+SimulatorKit's touches and buttons then stops accepting them. The manager
+therefore creates `DeviceActiveStateObservation` with `init(limitedTo:)`, which
+evaluates the predicate only for the devices that `DeviceScreens` reports: open
+screens that use the native canvas, joined to the CoreDevice identifier of their
+inventory record. Each read requests that set under Observation, so opening or
+closing such a screen, replacing its session, or an inventory change rereads the
+values. DeviceKit matches devices by CoreDevice identifier, so simulators in
+custom device sets have no value.
 
-Reading DeviceKit's device list starts its observation of every device, and the
-predicate creates a DeviceKit coordinator for each device. DeviceKit exports no
-API to stop either, so they stay with DeviceKit for the rest of the manager
-process. Quitting stops Neo's reads and callbacks along with the inventory
-observation.
+Every other device has no value. Within the same availability, a row that
+DeviceKit reports as Active comes first. A row without a value is ordered with
+the inactive rows by the remaining comparisons, and its artwork follows Neo's
+open screens and booting or shutting-down states. A failed read clears every
+value and is reported with the other inventory issues.
+
+Starting the observation still reads DeviceKit's device list, which starts its
+observation of every device. DeviceKit exports no API to stop that observation or
+a coordinator, so they stay with DeviceKit for the rest of the manager process.
+Quitting stops Neo's reads and callbacks along with the inventory observation.
 
 Each Xcode installation has its own headless renderer process with a distinct
 bundle identity. The manager loads one compatible SimulatorKit UI toolkit for

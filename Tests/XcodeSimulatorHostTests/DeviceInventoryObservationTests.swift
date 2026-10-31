@@ -93,6 +93,40 @@ import Testing
         #expect(reports.count == 2)
     }
 
+    @Test func limitedValuesFollowTheRequestedDevicesAndStopEndsTheirUpdates() async throws {
+        let canvasID = UUID(), otherID = UUID()
+        let source = TestActiveStateSource(values: [canvasID: true, otherID: true])
+        source.requested = [canvasID]
+        let observation = DeviceActiveStateObservation(source: source, limitedTo: { source.requested })
+        var reports: [DeviceActiveStates] = []
+        var reported: CheckedContinuation<Void, Never>?
+        observation.onChange = {
+            reports.append($0)
+            reported?.resume()
+            reported = nil
+        }
+        await withCheckedContinuation { continuation in
+            reported = continuation
+            observation.start()
+        }
+        // DeviceKit has a value for the other device, but it was not requested.
+        #expect(reports.last == DeviceActiveStates([canvasID: true]))
+        await withCheckedContinuation { continuation in
+            reported = continuation
+            source.requested.insert(otherID)
+        }
+        #expect(reports.last == DeviceActiveStates([canvasID: true, otherID: true]))
+        await withCheckedContinuation { continuation in
+            reported = continuation
+            source.values[canvasID] = false
+        }
+        #expect(reports.last == DeviceActiveStates([canvasID: false, otherID: true]))
+        await observation.stop()
+        source.requested = [canvasID]
+        await Task { @MainActor in }.value
+        #expect(reports.count == 3)
+    }
+
     /// Resolution reads no DeviceKit singleton, so no device observation or coordinator starts.
     @Test func deviceKitBindingsResolveWithoutReadingItsDevices() async throws {
         try await CoreDeviceDisplayGeometry.loadRuntime()
@@ -117,6 +151,8 @@ import Testing
 @MainActor @Observable
 private final class TestActiveStateSource: DeviceActiveStateSource {
     var values: [UUID: Bool]
+    /// The devices that a limited observation requests, standing in for the app's screens.
+    var requested: Set<UUID> = []
     @ObservationIgnored private let preparationError: (any Error)?
 
     init(values: [UUID: Bool] = [:], preparationError: (any Error)? = nil) {
@@ -128,7 +164,10 @@ private final class TestActiveStateSource: DeviceActiveStateSource {
         if let preparationError { throw preparationError }
     }
 
-    func read() throws -> [UUID: Bool] { values }
+    func read(_ identifiers: Set<UUID>?) throws -> [UUID: Bool] {
+        guard let identifiers else { return values }
+        return values.filter { identifiers.contains($0.key) }
+    }
 }
 
 private struct ActiveStatePreparationFailure: Error, Equatable {
