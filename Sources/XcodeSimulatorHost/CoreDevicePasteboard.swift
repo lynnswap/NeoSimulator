@@ -51,7 +51,8 @@ public final class CoreDevicePasteboardTransport: PasteboardTransport {
         let capture: @MainActor (NSPasteboard) async throws -> NativeSwiftValue
         let write: @MainActor (NativeSwiftValue, NSPasteboard) async throws -> Int
         let changes: @MainActor (NSPasteboard) throws -> NativeSwiftValue
-        /// Whether a snapshot carries the origin stamp that a transfer leaves on its destination.
+        /// Whether a snapshot's items originated on another pasteboard. A pasteboard's own change names itself as its
+        /// origin, and a transfer leaves its source's origin on its destination.
         let isTransferred: @MainActor (NativeSwiftValue) throws -> Bool
         let snapshotStream: @MainActor (NativeSwiftValue) throws -> NativeSwiftValue
         let invalidate: @MainActor (NativeSwiftValue) throws -> Void
@@ -87,8 +88,12 @@ public final class CoreDevicePasteboardTransport: PasteboardTransport {
             let changes = try snapshotType.resolveAndWait(.swift(.staticMethod("changes(on:dataPolicy:)",
                 as: ((NSPasteboard, NativeSwiftValue) -> NativeSwiftValue).self,
                 valueABIs: abis.merging(macSnapshots.abis) { a, _ in a })))
+            let metadata = try snapshotType.resolveAndWait(.swift(.getter("metadata", as: (() -> NativeSwiftValue?).self,
+                valueABIs: abis, receiverABI: .opaque(named: snapshotType.name))))
             let source = try snapshotType.resolveAndWait(.swift(.getter("sourceMetadata", as: (() -> NativeSwiftValue?).self,
                 valueABIs: abis, receiverABI: .opaque(named: snapshotType.name))))
+            let isSame = try metadataType.resolveAndWait(.swift(.staticMethod("==(_:_:)",
+                as: ((NativeSwiftValue, NativeSwiftValue) -> Bool).self, valueABIs: abis)))
             let stream = try monitorType.resolveAndWait(.swift(.getter("snapshotStream", as: (() -> NativeSwiftValue).self,
                 valueABIs: deviceSnapshots.abis)))
             let invalidate = try monitorType.resolveAndWait(.swift(.method("invalidate()", as: (() -> Void).self)))
@@ -97,10 +102,15 @@ public final class CoreDevicePasteboardTransport: PasteboardTransport {
             self.policy = policy
             self.deviceSnapshots = deviceSnapshots
             self.macSnapshots = macSnapshots
-            self.capture = { pasteboard in try await unsafe capture.unsafeInvoke(pasteboard, policy) }
+            // An initializer owns its arguments, so passing the shared policy would consume it for every later call.
+            self.capture = { pasteboard in try await unsafe capture.unsafeInvoke(pasteboard, policy.copy()) }
             self.write = { snapshot, pasteboard in try await unsafe write.unsafeInvoke(on: snapshot, pasteboard) }
             self.changes = { pasteboard in try unsafe changes.unsafeInvoke(pasteboard, policy) }
-            isTransferred = { snapshot in try unsafe source.unsafeInvoke(on: snapshot) != nil }
+            isTransferred = { snapshot in
+                guard let origin = try unsafe source.unsafeInvoke(on: snapshot) else { return false }
+                guard let own = try unsafe metadata.unsafeInvoke(on: snapshot) else { return true }
+                return try unsafe !isSame.unsafeInvoke(origin, own)
+            }
             snapshotStream = { session in try unsafe stream.unsafeInvoke(on: session) }
             self.invalidate = { session in try unsafe invalidate.unsafeInvoke(on: session) }
         }

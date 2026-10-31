@@ -2,7 +2,8 @@ import AppKit
 @_spi(NeoSimulator) import XcodeSimulatorHost
 
 /// A device's CoreDevice pasteboard connection. Transfers run one at a time in the order they were requested or
-/// observed, and report the events SimPasteboardPlus reports.
+/// observed. Requested transfers report the events SimPasteboardPlus reports, and automatic ones their own, so that a
+/// requested transfer queued behind an automatic one, as after synchronization turns off, keeps its own result.
 @MainActor
 final class NativePasteboardConnection: SimulatorPasteboard {
     private let transport: any PasteboardTransport
@@ -42,6 +43,13 @@ final class NativePasteboardConnection: SimulatorPasteboard {
         }
     }
 
+    func pushAutomatically() {
+        enqueue { [transport, pasteboard] in
+            do { try await transport.send(pasteboard); return nil }
+            catch { return .automaticTransferFailed(.send, error) }
+        }
+    }
+
     func setAutomaticSync(_ enabled: Bool) {
         guard enabled == observations.isEmpty else { return }
         stopObserving()
@@ -51,8 +59,8 @@ final class NativePasteboardConnection: SimulatorPasteboard {
             observe { [weak self] in
                 try await transport.observeDeviceChanges(into: pasteboard) { write in
                     self?.enqueue(during: current) {
-                        do { return .applied(generation: try await write()) }
-                        catch { return .failedToApply(error) }
+                        do { return .appliedAutomatically(generation: try await write()) }
+                        catch { return .automaticTransferFailed(.get, error) }
                     }
                 }
             },
@@ -60,7 +68,7 @@ final class NativePasteboardConnection: SimulatorPasteboard {
                 try await transport.observeChanges(of: pasteboard) { send in
                     self?.enqueue(during: current) {
                         do { try await send(); return nil }
-                        catch { return .failedToSend(error) }
+                        catch { return .automaticTransferFailed(.send, error) }
                     }
                 }
             },

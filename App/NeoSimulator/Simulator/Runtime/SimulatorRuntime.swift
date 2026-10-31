@@ -1034,6 +1034,12 @@ enum SimulatorPasteboardEvent {
     case failedToApply(Error)
     /// Sending the managed pasteboard to the device failed. SimPasteboardPlus does not report it.
     case failedToSend(Error)
+    /// Automatic synchronization replaced the managed pasteboard with the device's; `generation` is its resulting
+    /// change count. It completes no Get Pasteboard. SimPasteboardPlus reports `applied` instead.
+    case appliedAutomatically(generation: Int)
+    /// An automatic transfer in the given direction failed. It fails no requested transfer. SimPasteboardPlus does not
+    /// report it.
+    case automaticTransferFailed(PasteboardTransfer, Error)
     /// The device closed the connection. Later pushes and pulls on it do nothing.
     case lostConnection
     /// The connection started or stopped synchronizing automatically.
@@ -1050,10 +1056,18 @@ protocol SimulatorPasteboard: AnyObject {
     func pull() throws
     /// SimPasteboardPlus `push`: Edit ▸ Send Pasteboard.
     func push() throws
+    /// Sends the managed pasteboard for automatic synchronization rather than for Send Pasteboard, so that its outcome
+    /// completes no requested transfer.
+    func pushAutomatically() throws
     /// Enables bidirectional automatic synchronization without an immediate transfer.
     func setAutomaticSync(_ enabled: Bool) throws
     /// Stops the connection's events.
     func disconnect()
+}
+
+extension SimulatorPasteboard {
+    /// SimPasteboardPlus reports every push alike.
+    func pushAutomatically() throws { try push() }
 }
 
 @MainActor

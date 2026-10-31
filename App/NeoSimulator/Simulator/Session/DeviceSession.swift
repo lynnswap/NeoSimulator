@@ -1214,7 +1214,7 @@ final class DeviceSession {
     /// Starts synchronization on connection by sending the Mac pasteboard to the device.
     func startPasteboardSync() {
         guard synchronizesPasteboard, exchangesPasteboard, pasteboardConnection == nil else { return }
-        do { try connectPasteboard().push() } catch {
+        do { try connectPasteboard().pushAutomatically() } catch {
             hostLog("Could not synchronize the pasteboard of \(device.name): \(error.localizedDescription)")
         }
     }
@@ -1238,7 +1238,7 @@ final class DeviceSession {
             hostLog("The Mac pasteboard still holds the pasteboard of \(device.name); it is not sent back")
             return
         }
-        do { try pasteboardConnection.push() } catch {
+        do { try pasteboardConnection.pushAutomatically() } catch {
             hostLog("Could not synchronize the pasteboard of \(device.name): \(error.localizedDescription)")
         }
     }
@@ -1287,6 +1287,14 @@ final class DeviceSession {
             } else {
                 pendingPushes.removeFirst()(error)
             }
+        case .appliedAutomatically(let generation):
+            lastReceivedGeneration = generation
+            pasteboardSync?.devicePasteboardDidReplaceHost(self)
+        case .automaticTransferFailed(.get, let error):
+            lastReceivedGeneration = nil
+            hostLog("Could not apply the pasteboard of \(device.name): \(error.localizedDescription)")
+        case .automaticTransferFailed(.send, let error):
+            hostLog("Could not send the pasteboard to \(device.name): \(error.localizedDescription)")
         case .lostConnection:
             let pending = pendingPulls + pendingPushes
             closePasteboard()
