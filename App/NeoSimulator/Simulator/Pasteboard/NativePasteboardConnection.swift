@@ -13,7 +13,8 @@ final class NativePasteboardConnection: SimulatorPasteboard {
     private var transfers: Task<Void, Never>?
     /// The device's and the Mac's pasteboard observations while synchronizing automatically.
     private var observations: [Task<Void, Never>] = []
-    /// Changes whenever the observations stop, so that the changes they reported no longer transfer.
+    /// Changes whenever synchronization turns off or fails, so that the automatic transfers queued before then no
+    /// longer run.
     private var synchronization = 0
 
     init(transport: any PasteboardTransport, managing pasteboard: NSPasteboard,
@@ -44,16 +45,15 @@ final class NativePasteboardConnection: SimulatorPasteboard {
     }
 
     func pushAutomatically() {
-        enqueue { [transport, pasteboard] in
+        enqueue(during: synchronization) { [transport, pasteboard] in
             do { try await transport.send(pasteboard); return nil }
             catch { return .automaticTransferFailed(.send, error) }
         }
     }
 
     func setAutomaticSync(_ enabled: Bool) {
-        guard enabled == observations.isEmpty else { return }
-        stopObserving()
-        guard enabled else { return }
+        guard enabled else { return stopObserving() }
+        guard observations.isEmpty else { return }
         let (transport, pasteboard, current) = (transport, pasteboard, synchronization)
         observations = [
             observe { [weak self] in
@@ -80,7 +80,7 @@ final class NativePasteboardConnection: SimulatorPasteboard {
         stopObserving()
     }
 
-    /// Ends both observations. The changes they reported that have not started transferring no longer transfer.
+    /// Ends both observations. The automatic transfers queued so far that have not started no longer run.
     private func stopObserving() {
         synchronization += 1
         for observation in observations { observation.cancel() }
@@ -97,7 +97,7 @@ final class NativePasteboardConnection: SimulatorPasteboard {
         }
     }
 
-    /// Queues an observed change, which no longer transfers once the observations that reported it stop.
+    /// Queues an automatic transfer, which does not run if synchronization turns off or fails before it starts.
     private func enqueue(during synchronization: Int, _ transfer: @escaping @MainActor () async -> SimulatorPasteboardEvent?) {
         enqueue { [weak self] in
             guard self?.synchronization == synchronization else { return nil }

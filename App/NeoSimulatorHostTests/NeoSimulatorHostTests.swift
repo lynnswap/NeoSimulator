@@ -3328,16 +3328,27 @@ struct InputFocusTests {
         #expect(transport.observations == 2 && transport.deviceObservations == 2)
 
         // An observation that ends without an error stops both the same way, and turning synchronization off and on
-        // starts them again.
+        // starts them again. Turning it off also drops a send that another device's copy queued after they ended,
+        // behind one in progress, but not the send requested next.
         transport.endMacObservation()
         try await wait { transport.observations == 0 }
         try await Task.sleep(for: .milliseconds(50))
         #expect(transport.observations == 0 && transport.deviceObservations == 2)
+        transport.holdsSends = true
+        session.sendSynchronizedPasteboard()
+        try await wait { transport.heldSends == 1 }
+        try #require(transport.heldSends == 1)
+        session.sendSynchronizedPasteboard()
         sync.toggle()
+        session.transferPasteboard(.send) { Issue.record($0) }
+        transport.holdsSends = false
+        transport.completeSend()
+        try await wait { transport.transfers == [.send, .send, .send] }
+        try await Task.sleep(for: .milliseconds(50))
         sync.toggle()
         try await wait { transport.observations == 2 }
         #expect(transport.observations == 2 && transport.deviceObservations == 3)
-        #expect(transport.transfers == [.send])
+        #expect(transport.transfers == [.send, .send, .send])
     }
 
     @Test func automaticCoreDevicePasteboardTransfersLeaveRequestedTransfersTheirOwnResults() async throws {
@@ -3408,6 +3419,8 @@ struct InputFocusTests {
             "receiving: Could not get the simulator's pasteboard: requested get failure",
             "sending: Could not send the pasteboard to the simulator: requested send failure",
         ])
+        // The copy queued for the connecting device behind its first send does not transfer.
+        #expect(connecting.transfers == [.send, .send])
     }
 
     @Test func commandHeldKeyUpReachesTheNativeInputUntilTheWindowCloses() throws {
