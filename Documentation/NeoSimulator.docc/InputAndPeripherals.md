@@ -101,9 +101,9 @@ windows.
 **Edit → Get Pasteboard** replaces the Mac pasteboard with the active device's
 contents. **Send Pasteboard** replaces the device's contents with the Mac's.
 They preserve all supported types, including text and images, and are available
-for iPhone, iPad, and Apple Vision Pro while automatic sync is off. Paste a
-received device item while its window is still open: the Mac reads its data
-from the device on demand.
+for iPhone, iPad, and Apple Vision Pro while automatic sync is off. With some
+simulators, the Mac reads a received item's data from the device when you paste
+it, so keep the device's window open until you paste.
 
 **Automatically Sync Pasteboard** is off by default. When enabled, copies on
 the Mac go to every connected device window, and copies inside a device go to

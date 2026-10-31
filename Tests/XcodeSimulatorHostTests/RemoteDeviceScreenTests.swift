@@ -994,6 +994,63 @@ struct RemoteDeviceScreenTests {
         _ = try CoreDeviceAppResizeTransport.GeometryBindings(type: bindings.sceneType, abis: bindings.abis)
     }
 
+    @Test(.timeLimit(.minutes(1)))
+    func pasteboardBindingsCaptureWriteAndObserveMacPasteboardsWithoutADevice() async throws {
+        try CoreDeviceRemoteScreenDevice.load(MacHIDServiceLookup.coreDeviceUtilitiesPath)
+        let bindings = try CoreDevicePasteboardTransport.Bindings(runtime: .shared)
+        let source = NSPasteboard(name: NSPasteboard.Name("dev.lynnswap.NeoSimulatorTests.\(UUID().uuidString)"))
+        let destination = NSPasteboard(name: NSPasteboard.Name("dev.lynnswap.NeoSimulatorTests.\(UUID().uuidString)"))
+        defer { source.releaseGlobally(); destination.releaseGlobally() }
+        source.clearContents()
+        source.setString("copied", forType: .string)
+        // Captures, observations, and device reads all pass the same data policy.
+        _ = try await bindings.capture(source)
+        let snapshot = try await bindings.capture(source)
+        #expect(!bindings.policy.isConsumed)
+        // The snapshot keeps the change count it was captured at, and its data, after the source changes again.
+        let captured = Int64(source.changeCount)
+        source.clearContents()
+        source.setString("later", forType: .string)
+        #expect(try bindings.version(snapshot)?.changeCount == captured && Int64(source.changeCount) != captured)
+        #expect(try bindings.write(snapshot, destination) == destination.changeCount)
+        #expect(destination.string(forType: .string) == "copied")
+        // The destination keeps the source's origin, so that its change does not go back.
+        let received = try await bindings.capture(destination)
+        #expect(try bindings.isTransferred(received))
+        // A pasteboard that relays a restored change to a device holds the change's items as its own change, without
+        // the origin the change named.
+        let relay = NSPasteboard(name: NSPasteboard.Name("dev.lynnswap.NeoSimulatorTests.\(UUID().uuidString)"))
+        defer { relay.releaseGlobally() }
+        _ = try bindings.write(bindings.unstampedCopy(received), relay)
+        let relayed = try await bindings.capture(relay)
+        #expect(try !bindings.isTransferred(relayed) && bindings.version(relayed)?.changeCount == Int64(relay.changeCount))
+        #expect(relay.string(forType: .string) == "copied")
+        // The observation reports a copy made on the Mac as the Mac's own, which goes to the device, with the change
+        // count that the copy left. Copying repeats until the first report because the framework decides when its
+        // observation starts.
+        var changeCounts = [source.changeCount]
+        let copying = Task {
+            while true {
+                try await Task.sleep(for: .milliseconds(100))
+                source.clearContents()
+                source.setString("copied", forType: .string)
+                changeCounts.append(source.changeCount)
+            }
+        }
+        defer { copying.cancel() }
+        var transferred: Bool?
+        var reported: Int64?
+        do {
+            try await bindings.macSnapshots.forEach(bindings.changes(source)) { change in
+                transferred = try bindings.isTransferred(change)
+                reported = try bindings.version(change)?.changeCount
+                throw CancellationError()
+            }
+        } catch is CancellationError {}
+        #expect(transferred == false)
+        #expect(reported.map { changeCounts.contains(Int($0)) } == true)
+    }
+
     @Test func displayGeometryBindingsReadDeviceKitPointSizesWithoutADevice() async throws {
         try await CoreDeviceDisplayGeometry.loadRuntime()
         let runtime = ABIRuntime.shared

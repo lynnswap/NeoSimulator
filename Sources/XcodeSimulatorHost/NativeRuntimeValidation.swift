@@ -61,6 +61,14 @@ public struct NativeRuntimeValidationReport: Codable, Equatable, Sendable {
             let bindings = try CoreDeviceAppResizeTransport.Bindings(runtime: .shared)
             _ = try CoreDeviceAppResizeTransport.GeometryBindings(type: bindings.sceneType, abis: bindings.abis)
         })
+        let pasteboard = await Preparation.check("nativePasteboard", unverified: [
+            "Device capability and pasteboard implementation witnesses", "The device pasteboard's name and its transfers",
+            "Change observation, origin stamps, and monitor invalidation",
+        ], load: {
+            try CoreDeviceRemoteScreenDevice.load(MacHIDServiceLookup.coreDeviceUtilitiesPath)
+        }, prepare: {
+            _ = try CoreDevicePasteboardTransport.Bindings(runtime: .shared)
+        })
         let hid = await Preparation.check("displayHIDValues", unverified: [
             "UniversalHID capability and implementation witnesses", "Service creation, reset and removal",
             "Report delivery to an actual display",
@@ -93,6 +101,6 @@ public struct NativeRuntimeValidationReport: Codable, Equatable, Sendable {
         ], load: { try await CoreDeviceDisplayGeometry.loadRuntime() }, prepare: {
             _ = try await DeviceKitActiveStateSource.Bindings(runtime: .shared)
         })
-        return Self(optionalBindings: [canvas, poses, resize, hid, keyboard, geometry, activeState])
+        return Self(optionalBindings: [canvas, poses, resize, pasteboard, hid, keyboard, geometry, activeState])
     }
 }

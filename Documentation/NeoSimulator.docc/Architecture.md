@@ -167,6 +167,7 @@ Hub mode.
 | `DeviceWindowController` | Present the device and forward user actions. |
 | `RemoteDeviceScreenSession` | Own one active physical-device or VM screen transport, its resize assertion and input resources, and unfinished or completed recordings. |
 | `CoreDeviceAppResizeTransport` | Bridge native app-resize eligibility and assertions for Simulator and remote sessions. |
+| `CoreDevicePasteboardTransport` | Transfer a default-set simulator's pasteboard and observe both pasteboards' changes through CoreDevice. Simulators that CoreDevice does not list keep SimPasteboardPlus. |
 | `RemoteDeviceWindowController` | Present a remote screen and drain accepted captures, recording saves, and input before disconnecting. |
 | `ExternalDisplayWindowController` | Present a device's external display. |
 | `DeviceCommand`, `MenuController` | Define commands and derive menu state from the active window. |

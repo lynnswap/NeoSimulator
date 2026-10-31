@@ -3225,6 +3225,378 @@ struct InputFocusTests {
         #expect(display.pasteboards.count == 3)
     }
 
+    @Test func coreDevicePasteboardCarriesTransfersInsteadOfSimPasteboardPlus() async throws {
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("dev.lynnswap.NeoSimulatorTests.\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        let display = TestDisplay()
+        let transport = TestPasteboardTransport()
+        let session = try makeSession(display, features: [DeviceCapabilities.pasteboard], pasteboard: pasteboard,
+                                      pasteboardTransport: transport)
+        defer { session.disconnect() }
+        var failures: [String] = []
+        func transfer(_ transfer: PasteboardTransfer) {
+            session.transferPasteboard(transfer) { failures.append($0.localizedDescription) }
+        }
+
+        // SimPasteboardPlus's sends no longer replace an iOS 27.2 guest's pasteboard, so it stays unconnected.
+        transfer(.send)
+        transfer(.get)
+        try await wait { transport.transfers.count == 2 }
+        #expect(transport.transfers == [.send, .get])
+        #expect(display.pasteboards.isEmpty)
+
+        // A failed send reaches Send Pasteboard, not the Get that follows it.
+        transport.sendError = HostError.operation("pasteboard communication failure")
+        transfer(.send)
+        transfer(.get)
+        try await wait { transport.transfers.count == 4 }
+        #expect(failures == ["Could not send the pasteboard to the simulator: pasteboard communication failure"])
+    }
+
+    @Test func coreDevicePasteboardSynchronizesOnlyWhileTurnedOn() async throws {
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("dev.lynnswap.NeoSimulatorTests.\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        var sessions: [DeviceSession] = []
+        let sync = PasteboardSync(preferences: MemoryPreferences()) { sessions }
+        let transport = TestPasteboardTransport()
+        let session = try makeSession(TestDisplay(), features: [DeviceCapabilities.pasteboard], pasteboard: pasteboard,
+                                      pasteboardSync: sync, pasteboardTransport: transport)
+        sessions.append(session)
+        defer { session.disconnect() }
+        session.transferPasteboard(.send) { Issue.record($0) }
+        try await wait { transport.transfers == [.send] }
+
+        // Turning synchronization on observes both pasteboards and sends nothing until a change.
+        sync.toggle()
+        try await wait { transport.observations == 2 }
+        var changes: [PasteboardTransfer] = []
+        let deviceChange = try #require(transport.reportDeviceChange)
+        let macChange = try #require(transport.reportMacChange)
+        deviceChange { _ in changes.append(.get); return pasteboard.changeCount }
+        try await wait { changes == [.get] }
+        macChange { changes.append(.send) }
+        try await wait { changes.count == 2 }
+        #expect(changes == [.get, .send])
+        #expect(transport.transfers == [.send])
+
+        // Turning it off ends both observations, and a change reported through them afterward does not transfer.
+        sync.toggle()
+        try await wait { transport.observations == 0 }
+        #expect(transport.observations == 0)
+        deviceChange { _ in changes.append(.get); return 2 }
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(changes == [.get, .send])
+
+        // Closing the device's window ends the observations that turning synchronization on again starts.
+        sync.toggle()
+        try await wait { transport.observations == 2 }
+        session.disconnect()
+        try await wait { transport.observations == 0 }
+        #expect(transport.observations == 0)
+        #expect(transport.transfers == [.send])
+    }
+
+    @Test func aFailedCoreDevicePasteboardObservationWaitsForSynchronizationToBeUpdated() async throws {
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("dev.lynnswap.NeoSimulatorTests.\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        let preferences = MemoryPreferences()
+        preferences.values[HostPreferences.pasteboardAutomaticSync] = true
+        var sessions: [DeviceSession] = []
+        let sync = PasteboardSync(preferences: preferences) { sessions }
+        let transport = TestPasteboardTransport()
+        let session = try makeSession(TestDisplay(), features: [DeviceCapabilities.pasteboard], pasteboard: pasteboard,
+                                      pasteboardSync: sync, pasteboardTransport: transport)
+        sessions.append(session)
+        defer { session.disconnect() }
+        session.startPasteboardSync()
+        try await wait { transport.observations == 2 && transport.transfers == [.send] }
+
+        // A failed observation ends both without restarting, and a change it reported no longer transfers. The
+        // synchronization choice stays on.
+        let deviceChange = try #require(transport.reportDeviceChange)
+        transport.endDeviceObservation(throwing: HostError.operation("The device closed the pasteboard monitor."))
+        try await wait { transport.observations == 0 }
+        var changes: [PasteboardTransfer] = []
+        deviceChange { _ in changes.append(.get); return 1 }
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(transport.observations == 0 && transport.deviceObservations == 1)
+        #expect(changes.isEmpty)
+        #expect(sync.isOn)
+
+        // Selecting the device again starts both observations, without a transfer.
+        session.updatePasteboardSync()
+        try await wait { transport.observations == 2 }
+        #expect(transport.observations == 2 && transport.deviceObservations == 2)
+
+        // An observation that ends without an error stops both the same way, and turning synchronization off and on
+        // starts them again. Turning it off also drops a send that another device's copy queued after they ended,
+        // behind one in progress, but not the send requested next.
+        transport.endMacObservation()
+        try await wait { transport.observations == 0 }
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(transport.observations == 0 && transport.deviceObservations == 2)
+        transport.holdsSends = true
+        session.sendSynchronizedPasteboard()
+        try await wait { transport.heldSends == 1 }
+        try #require(transport.heldSends == 1)
+        session.sendSynchronizedPasteboard()
+        sync.toggle()
+        session.transferPasteboard(.send) { Issue.record($0) }
+        transport.holdsSends = false
+        transport.completeSend()
+        try await wait { transport.transfers == [.send, .send, .send] }
+        try await Task.sleep(for: .milliseconds(50))
+        sync.toggle()
+        try await wait { transport.observations == 2 }
+        #expect(transport.observations == 2 && transport.deviceObservations == 3)
+        #expect(transport.transfers == [.send, .send, .send])
+    }
+
+    @Test func automaticCoreDevicePasteboardTransfersLeaveRequestedTransfersTheirOwnResults() async throws {
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("dev.lynnswap.NeoSimulatorTests.\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        let preferences = MemoryPreferences()
+        preferences.values[HostPreferences.pasteboardAutomaticSync] = true
+        var sessions: [DeviceSession] = []
+        let sync = PasteboardSync(preferences: preferences) { sessions }
+        let (connecting, sending, receiving) = (TestPasteboardTransport(), TestPasteboardTransport(), TestPasteboardTransport())
+        connecting.holdsSends = true
+        for (name, transport) in [("connecting", connecting), ("sending", sending), ("receiving", receiving)] {
+            sessions.append(try makeSession(TestDisplay(), features: [DeviceCapabilities.pasteboard], device: name,
+                                            pasteboard: pasteboard, pasteboardSync: sync, pasteboardTransport: transport))
+        }
+        defer { sessions.forEach { $0.disconnect() } }
+        sessions.forEach { $0.startPasteboardSync() }
+        try await wait {
+            connecting.heldSends == 1 && sending.transfers == [.send] && receiving.transfers == [.send]
+                && [connecting, sending, receiving].allSatisfy { $0.observations == 2 }
+        }
+
+        // A device copy whose write leaves a later Mac change in place replaces nothing, and a Get requested behind it
+        // while synchronization is off keeps its own result. The copy reaches no other device even though
+        // synchronization is on again when the write ends.
+        var resumeSuperseded: CheckedContinuation<Void, Never>?
+        let supersededChange = try #require(receiving.reportDeviceChange)
+        supersededChange { _ in
+            await withCheckedContinuation { resumeSuperseded = $0 }
+            return nil
+        }
+        try await wait { resumeSuperseded != nil }
+        sync.toggle()
+        try await wait { [connecting, sending, receiving].allSatisfy { $0.observations == 0 } }
+        var gets: [String] = []
+        receiving.readError = HostError.operation("requested get failure")
+        sessions[2].transferPasteboard(.get) { gets.append($0.localizedDescription) }
+        sync.toggle()
+        try await wait { [connecting, sending, receiving].allSatisfy { $0.observations == 2 } }
+        resumeSuperseded?.resume()
+        try await wait { gets.count == 1 }
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(gets == ["Could not get the simulator's pasteboard: requested get failure"] && sending.transfers == [.send])
+        receiving.readError = nil
+
+        // A device's automatic copy reaches the other devices and is not sent back to it.
+        let deviceChange = try #require(receiving.reportDeviceChange)
+        func copyOnDevice() -> Int {
+            pasteboard.clearContents()
+            pasteboard.setString("device", forType: .string)
+            return pasteboard.changeCount
+        }
+        deviceChange { shouldReplace in shouldReplace() ? copyOnDevice() : nil }
+        try await wait { sending.transfers == [.send, .send] }
+        sessions[2].sendSynchronizedPasteboard()
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(sending.transfers == [.send, .send] && receiving.transfers == [.send, .get])
+
+        // Automatic transfers that started before synchronization turned off finish after the transfers requested
+        // next: the connecting device's first send, a send of a Mac change, and a write of a device change.
+        var resumeSend: CheckedContinuation<Void, Never>?
+        var resumeWrite: CheckedContinuation<Void, Never>?
+        let macChange = try #require(sending.reportMacChange)
+        macChange {
+            await withCheckedContinuation { resumeSend = $0 }
+            throw HostError.operation("automatic send failure")
+        }
+        deviceChange { shouldReplace in
+            await withCheckedContinuation { resumeWrite = $0 }
+            return shouldReplace() ? copyOnDevice() : nil
+        }
+        try await wait { resumeSend != nil && resumeWrite != nil }
+        sync.toggle()
+
+        // Each requested transfer reports its own failure, and no automatic transfer reports one.
+        var failures: [String] = []
+        connecting.holdsSends = false
+        for transport in [connecting, sending] { transport.sendError = HostError.operation("requested send failure") }
+        receiving.readError = HostError.operation("requested get failure")
+        for (name, session, transfer) in [("connecting", sessions[0], PasteboardTransfer.send), ("sending", sessions[1], .send),
+                                          ("receiving", sessions[2], .get)] {
+            session.transferPasteboard(transfer) { failures.append("\(name): \($0.localizedDescription)") }
+        }
+        connecting.completeSend()
+        resumeSend?.resume()
+        resumeWrite?.resume()
+        try await wait { failures.count == 3 }
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(failures.sorted() == [
+            "connecting: Could not send the pasteboard to the simulator: requested send failure",
+            "receiving: Could not get the simulator's pasteboard: requested get failure",
+            "sending: Could not send the pasteboard to the simulator: requested send failure",
+        ])
+        // The copy queued for the connecting device behind its first send does not transfer.
+        #expect(connecting.transfers == [.send, .send])
+    }
+
+    @Test func queuedAutomaticCoreDevicePasteboardTransfersGiveWayToLaterChanges() async throws {
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("dev.lynnswap.NeoSimulatorTests.\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        let preferences = MemoryPreferences()
+        preferences.values[HostPreferences.pasteboardAutomaticSync] = true
+        var sessions: [DeviceSession] = []
+        let sync = PasteboardSync(preferences: preferences) { sessions }
+        let transport = TestPasteboardTransport()
+        transport.holdsSends = true
+        let session = try makeSession(TestDisplay(), features: [DeviceCapabilities.pasteboard], pasteboard: pasteboard,
+                                      pasteboardSync: sync, pasteboardTransport: transport)
+        sessions.append(session)
+        defer { session.disconnect() }
+        session.startPasteboardSync()
+        try await wait { transport.observations == 2 && transport.heldSends == 1 }
+        try #require(transport.observations == 2 && transport.heldSends == 1)
+
+        // The device's pasteboard, which a Mac change's send replaces with the Mac pasteboard it captured.
+        var device = ""
+        let deviceChange = try #require(transport.reportDeviceChange)
+        let macChange = try #require(transport.reportMacChange)
+        func mac() -> String? { pasteboard.string(forType: .string) }
+        func replaceMac(with text: String) -> Int {
+            pasteboard.clearContents()
+            pasteboard.setString(text, forType: .string)
+            return pasteboard.changeCount
+        }
+        func copyOnDevice(_ text: String) {
+            device = text
+            deviceChange { shouldReplace in shouldReplace() ? replaceMac(with: text) : nil }
+        }
+
+        // A device copy queued behind a send does not replace a later Mac copy, even when its turn comes before the
+        // Mac's observation reports that copy, which then reaches the device.
+        copyOnDevice("device copy")
+        _ = replaceMac(with: "Mac copy")
+        transport.holdsSends = false
+        transport.completeSend()
+        try await Task.sleep(for: .milliseconds(50))
+        macChange { device = "Mac copy" }
+        try await wait { device == "Mac copy" }
+        #expect(mac() == "Mac copy" && device == "Mac copy")
+
+        // A Mac copy queued behind a send is not sent once the device copies after it, and the device copy reaches
+        // the Mac instead.
+        transport.holdsSends = true
+        session.sendSynchronizedPasteboard()
+        try await wait { transport.heldSends == 1 }
+        try #require(transport.heldSends == 1)
+        _ = replaceMac(with: "later Mac copy")
+        macChange { device = "later Mac copy" }
+        copyOnDevice("later device copy")
+        transport.holdsSends = false
+        transport.completeSend()
+        try await wait { mac() == "later device copy" }
+        #expect(mac() == "later device copy" && device == "later device copy")
+
+        // A device copy observed while the connection writes the one before it replaces the Mac pasteboard, and the
+        // earlier write, ready only after it, leaves the Mac pasteboard to it.
+        var resumeWrite: CheckedContinuation<Void, Never>?
+        deviceChange { shouldReplace in
+            await withCheckedContinuation { resumeWrite = $0 }
+            return shouldReplace() ? replaceMac(with: "first device copy") : nil
+        }
+        try await wait { resumeWrite != nil }
+        try #require(resumeWrite != nil)
+        copyOnDevice("second device copy")
+        resumeWrite?.resume()
+        try await wait { mac() == "second device copy" }
+        #expect(mac() == "second device copy")
+
+        // A Mac copy that its observation reports only after a later device copy does not stop that copy's write. The
+        // Mac copy's send, queued behind the write, then finds the Mac pasteboard changed, as the CoreDevice transport
+        // checks before it sends, and both pasteboards keep the device copy.
+        let reported = replaceMac(with: "Mac copy reported late")
+        transport.holdsSends = true
+        session.sendSynchronizedPasteboard()
+        try await wait { transport.heldSends == 1 }
+        try #require(transport.heldSends == 1)
+        copyOnDevice("device copy after it")
+        var lateSendRan = false
+        macChange {
+            lateSendRan = true
+            if pasteboard.changeCount == reported { device = "Mac copy reported late" }
+        }
+        transport.holdsSends = false
+        transport.completeSend()
+        try await wait { lateSendRan }
+        #expect(mac() == "device copy after it" && device == "device copy after it")
+    }
+
+    @Test(arguments: [false, true])
+    func anEarlierDeviceCopyGivesWayToALaterOneFromAnotherDevice(earlierWriteStarted: Bool) async throws {
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("dev.lynnswap.NeoSimulatorTests.\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        let preferences = MemoryPreferences()
+        preferences.values[HostPreferences.pasteboardAutomaticSync] = true
+        var sessions: [DeviceSession] = []
+        let sync = PasteboardSync(preferences: preferences) { sessions }
+        let (earlier, later) = (TestPasteboardTransport(), TestPasteboardTransport())
+        // The later device's write waits behind its first send. The earlier device's waits too, or has started when
+        // the later device copies.
+        earlier.holdsSends = !earlierWriteStarted
+        later.holdsSends = true
+        for (name, transport) in [("earlier", earlier), ("later", later)] {
+            sessions.append(try makeSession(TestDisplay(), features: [DeviceCapabilities.pasteboard], device: name,
+                                            pasteboard: pasteboard, pasteboardSync: sync, pasteboardTransport: transport))
+        }
+        defer { sessions.forEach { $0.disconnect() } }
+        sessions.forEach { $0.startPasteboardSync() }
+        try await wait {
+            [earlier, later].allSatisfy { $0.observations == 2 } && earlier.transfers == [.send] && later.heldSends == 1
+                && earlier.heldSends == (earlierWriteStarted ? 0 : 1)
+        }
+        func mac() -> String? { pasteboard.string(forType: .string) }
+        // Each write replaces the Mac pasteboard, as the CoreDevice transport's does, only if the connection still
+        // lets it once the write is ready.
+        func replaceMac(with text: String, if shouldReplace: @MainActor () -> Bool) -> Int? {
+            guard shouldReplace() else { return nil }
+            pasteboard.clearContents()
+            pasteboard.setString(text, forType: .string)
+            return pasteboard.changeCount
+        }
+        let reportEarlier = try #require(earlier.reportDeviceChange)
+        let reportLater = try #require(later.reportDeviceChange)
+        var resumeEarlier: CheckedContinuation<Void, Never>?
+        reportEarlier { shouldReplace in
+            if earlierWriteStarted { await withCheckedContinuation { resumeEarlier = $0 } }
+            return replaceMac(with: "earlier copy", if: shouldReplace)
+        }
+        if earlierWriteStarted { try await wait { resumeEarlier != nil } }
+        reportLater { shouldReplace in replaceMac(with: "later copy", if: shouldReplace) }
+
+        // The earlier device's queue passes its copy first, which a send queued after it shows.
+        if earlierWriteStarted {
+            resumeEarlier?.resume()
+        } else {
+            earlier.holdsSends = false
+            earlier.completeSend()
+        }
+        sessions[0].sendSynchronizedPasteboard()
+        try await wait { earlier.transfers == [.send, .send] }
+        later.holdsSends = false
+        later.completeSend()
+
+        // The later copy reaches the Mac, and from there the earlier device but not the later one.
+        try await wait { earlier.transfers.count + later.transfers.count == 4 }
+        #expect(mac() == "later copy" && earlier.transfers == [.send, .send, .send] && later.transfers == [.send])
+    }
+
     @Test func commandHeldKeyUpReachesTheNativeInputUntilTheWindowCloses() throws {
         let display = TestDisplay()
         let controller = try makeController(display)
@@ -9046,6 +9418,7 @@ struct InputFocusTests {
                              keyboardLanguage: @escaping @MainActor () -> String? = { "fr" },
                              pasteboard: NSPasteboard? = nil,
                              pasteboardSync: PasteboardSync? = nil,
+                             pasteboardTransport: (any PasteboardTransport)? = nil,
                              externalDisplayChanges: ExternalDisplayChanges = ExternalDisplayChanges(),
                              userInterfacePlugin: Bool = false,
                              runtimeVersion: UInt32 = 0x1B_00_00,
@@ -9065,6 +9438,7 @@ struct InputFocusTests {
                                    simctl: simctl, devicectl: devicectl),
             recordingProcess: recordingProcess, openLog: openLog, preferences: preferences,
             hostKeyboardLanguage: keyboardLanguage, pasteboard: pasteboard, pasteboardSync: pasteboardSync,
+            pasteboardTransport: pasteboardTransport,
             externalDisplayChanges: externalDisplayChanges, externalScreenTimeout: .milliseconds(100),
             appResizeTransport: appResizeTransport)
     }
@@ -9917,6 +10291,66 @@ private final class TestPasteboard: SimulatorPasteboard {
     func setAutomaticSync(_ enabled: Bool) throws { automaticSync.append(enabled) }
     func disconnect() { isDisconnected = true }
     func send(_ event: SimulatorPasteboardEvent) { events(event) }
+}
+
+/// Records a CoreDevice pasteboard's transfers while tests report its observed changes.
+@MainActor
+private final class TestPasteboardTransport: PasteboardTransport {
+    private(set) var transfers: [PasteboardTransfer] = []
+    var readError: (any Error)?
+    /// Fails the sends that start while it is set.
+    var sendError: (any Error)?
+    /// Holds the sends that start while it is set until `completeSend()`.
+    var holdsSends = false
+    private var heldSendContinuations: [CheckedContinuation<Void, Never>] = []
+    var heldSends: Int { heldSendContinuations.count }
+    func completeSend() { heldSendContinuations.removeFirst().resume() }
+    /// The observations in progress, and how many of the device's have started.
+    private(set) var observations = 0
+    private(set) var deviceObservations = 0
+    /// The latest observations' change reports. A device change's write that replaces the Mac pasteboard asks
+    /// `shouldReplace` just before it does, as the CoreDevice transport's write does.
+    private(set) var reportDeviceChange: (@MainActor (@escaping @MainActor (_ shouldReplace: @escaping @MainActor () -> Bool) async throws -> Int?) -> Void)?
+    private(set) var reportMacChange: (@MainActor (@escaping @MainActor () async throws -> Void) -> Void)?
+    private var deviceObservationEnd: AsyncThrowingStream<Never, any Error>.Continuation?
+    private var macObservationEnd: AsyncThrowingStream<Never, any Error>.Continuation?
+
+    func read(into pasteboard: NSPasteboard) async throws -> Int {
+        transfers.append(.get)
+        if let readError { throw readError }
+        return pasteboard.changeCount
+    }
+    func send(_ pasteboard: NSPasteboard) async throws {
+        transfers.append(.send)
+        let error = sendError
+        if holdsSends { await withCheckedContinuation { heldSendContinuations.append($0) } }
+        if let error { throw error }
+    }
+    func observeDeviceChanges(into pasteboard: NSPasteboard,
+                              _ changed: @escaping @MainActor (@escaping @MainActor (@escaping @MainActor () -> Bool) async throws -> Int?) -> Void) async throws {
+        let end = AsyncThrowingStream<Never, any Error>.makeStream()
+        deviceObservations += 1
+        deviceObservationEnd = end.continuation
+        reportDeviceChange = changed
+        try await observe(until: end.stream)
+    }
+    func observeChanges(of pasteboard: NSPasteboard,
+                        _ changed: @escaping @MainActor (@escaping @MainActor () async throws -> Void) -> Void) async throws {
+        let end = AsyncThrowingStream<Never, any Error>.makeStream()
+        macObservationEnd = end.continuation
+        reportMacChange = changed
+        try await observe(until: end.stream)
+    }
+    func endDeviceObservation(throwing error: any Error) { deviceObservationEnd?.finish(throwing: error) }
+    func endMacObservation() { macObservationEnd?.finish() }
+
+    /// Counts the observation until `end` finishes or the task is cancelled.
+    private func observe(until end: AsyncThrowingStream<Never, any Error>) async throws {
+        observations += 1
+        defer { observations -= 1 }
+        for try await _ in end {}
+        try Task.checkCancellation()
+    }
 }
 
 @Suite @MainActor
