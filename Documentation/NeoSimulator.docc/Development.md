@@ -52,16 +52,19 @@ arm64/NeoSimulator.app/
   Contents/Helpers/NeoSimulatorGuestSettings
 ```
 
-The AppKit manager owns host selection and launches the embedded renderer when
-Neo is selected. Its main window uses `NSSplitViewController` for the sidebar,
-device canvas, and device-settings inspector. Each Xcode installation gets a
-separate renderer because its Apple
-frameworks remain loaded for the process lifetime. Devices using different
-Xcode versions can run concurrently.
+The AppKit manager owns host selection, presents device screens, and launches
+the embedded renderer when Neo is selected. Its main window uses
+`NSSplitViewController` for the sidebar, device canvas, and device-settings
+inspector. The manager loads one SimulatorKit UI toolkit, which stays loaded for
+its process lifetime, and opens an in-process host with its own CoreSimulator
+context for each Xcode whose simulators it shows. Each of those Xcode
+installations also gets a separate headless renderer process, which owns guest
+boot, restart, and shutdown. Devices using different Xcode versions can run
+concurrently.
 
 Source builds do not replace the app installed in Applications.
 
-The renderer's private interfaces are resolved through ABIBridge.
+The manager and renderer resolve their private interfaces through ABIBridge.
 `DeviceBrowser.swift` has previews using sample devices without connecting to
 CoreSimulator.
 
