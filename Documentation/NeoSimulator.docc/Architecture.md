@@ -168,8 +168,10 @@ Hub mode.
 | `PasteboardSync` | Exchange copies between the Mac and connected sessions. |
 | `ExternalDisplayChanges` | Serialize display and CarPlay changes across sessions for one device. |
 | `DisplayKeyboardInput`, `DisplayFitting` | Shared input-focus and geometry behavior for both window types. |
-| `NativeDeviceKeyboard` | Send a default-set simulator's keyboard input through one CoreDevice keyboard service per Mac keyboard, described by that keyboard's properties. |
-| `NativeDeviceTrackpad` | Send a default-set simulator's trackpad scrolling and pinches over its integrated screen through one CoreDevice UniversalHID service per sending Mac HID service, described by that Mac service's properties. Mouse movements, and each scroll or pinch as it begins, move the guest service's hidden pointer through the screen's current window-to-pointer transform. |
+| `NativeDeviceKeyboard` | Send a simulator's keyboard input through one guest UniversalHID service per Mac keyboard, described by that keyboard's properties, which CoreDevice creates for a default-set simulator and `SimulatorGuestHID` for one in another set. |
+| `NativeDeviceTrackpad` | Send a simulator's trackpad scrolling and pinches over its integrated screen through one guest UniversalHID service per sending Mac HID service, described by that Mac service's properties and created as for `NativeDeviceKeyboard`. Mouse movements, and each scroll or pinch as it begins, move the guest service's hidden pointer through the screen's current window-to-pointer transform. |
+| `NativeDeviceScreenInput` | Send the integrated screen's touches, as SimulatorKit's digitizer interprets them, and the device's button usages to the guest's touchscreen and button services, through CoreDevice or `SimulatorGuestHID`, once the screen's keyboard or trackpad input is native; release what they hold when the screen disconnects. |
+| `SimulatorGuestHID` | Reach the guest HID services of a simulator in a set that CoreDevice does not list, through the Mach services its `SimDevice` looks up, with the messages CoreDevice sends them. Each input stream owns its connection, and the guest removes a connection's services when the connection ends. |
 | `TVRemoteController` | Present the remote; sessions retain held inputs until release. |
 
 The manager's observable models stay on MainActor. SwiftUI observes their

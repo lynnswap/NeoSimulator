@@ -12,9 +12,11 @@ its visibility while the hardware keyboard is connected.
 
 Simulators in the default device set receive each Mac keyboard as its own
 hardware keyboard with that keyboard's properties, as in Device Hub, so the
-device uses its layout, such as JIS. Simulators in other device sets and Apple
-Vision Pro receive keys through SimulatorKit, which the device reads with a US
-layout.
+device uses its layout, such as JIS. In other device sets, which CoreDevice
+does not list, iPhone and iPad simulators without 3D Touch receive keyboards
+the same way through the guest's own HID services. Other simulators in those
+sets and Apple Vision Pro receive keys through SimulatorKit, which the device
+reads with a US layout.
 
 Choose **Capture Keyboard** above the device screen or in **I/O → Keyboard**
 to send Mac shortcuts to the device. Click the button again or hold Escape for
@@ -40,6 +42,12 @@ the mouse. Releasing Control alone does not lift it. Release the mouse before
 Option during a two-finger gesture; the reverse order leaves the fingers down
 until the next click.
 
+Once an iPhone or iPad simulator without 3D Touch receives native keyboard or
+trackpad input, its guest stops accepting SimulatorKit's touches and buttons.
+Its touches and button presses then go to the guest's native touchscreen and
+buttons, as in Device Hub, and SimulatorKit still interprets the pointer and
+the gestures above.
+
 SimulatorKit retains touches through focus changes. Finish gestures and lift
 pinned fingers before closing a window that will leave its device running;
 otherwise the touch remains until the next touch or a device restart. Resizing
@@ -48,13 +56,14 @@ position, so click that window position to release it. Three-finger and larger
 arbitrary gestures are unavailable.
 
 In the active device window, two-finger scrolling and pinches on a Mac trackpad
-over the screen reach simulators in the default device set as trackpad
-gestures, as in Device Hub. Each gesture happens where the pointer is on the
-device screen, including after you pan or zoom the canvas. **Connect Hardware
-Keyboard** does not affect them. Option-scrolling pans the canvas instead of
-scrolling the device. Trackpad gestures are unavailable on devices with a
-Digital Crown or Digital Dial, where scrolling turns the crown or dial, and on
-Apple Vision Pro, simulators in other device sets, and external displays.
+over the screen reach simulators in the default device set, and iPhone and
+iPad simulators without 3D Touch in other device sets, as trackpad gestures, as
+in Device Hub. Each gesture happens where the pointer is on the device screen,
+including after you pan or zoom the canvas. **Connect Hardware Keyboard** does
+not affect them. Option-scrolling pans the canvas instead of scrolling the
+device. Trackpad gestures are unavailable on devices with a Digital Crown or
+Digital Dial, where scrolling turns the crown or dial, and on Apple Vision Pro,
+other simulators in other device sets, and external displays.
 
 **I/O → Touch Pressure** appears for devices with 3D Touch. **Use Trackpad
 Force** needs a Force Touch trackpad. Shallow Press and Deep Press select click

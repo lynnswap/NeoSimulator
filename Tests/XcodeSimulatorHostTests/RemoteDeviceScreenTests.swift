@@ -6,6 +6,7 @@ import Metal
 import UniformTypeIdentifiers
 import Testing
 import IOKit
+import XPC
 import ABIBridge
 @_spi(NeoSimulator) @testable import XcodeSimulatorHost
 
@@ -1333,6 +1334,81 @@ struct RemoteDeviceScreenTests {
         #expect(transport.closed)
     }
 
+    @Test(.timeLimit(.minutes(1)))
+    func guestScreenInputSendsCoreDevicesIndigoEventsToEachGuestServiceAndReleasesWhatTheyHold() async throws {
+        let runtime = ABIRuntime.shared
+        let peers = GuestHIDPeerFixture()
+        let codec = try await GuestHIDCodec(runtime: runtime)
+        let input = try NativeDeviceScreenInput.connect(guest: SimulatorGuestHID(codec: codec, connect: peers.connect))
+        let digitizer = try #require(CoreDeviceScreenInput.features[.digitizer])
+        let button = try #require(CoreDeviceScreenInput.features[.button])
+        #expect(peers.lookUps == [digitizer, button])
+        var results: [String?] = []
+        input.sendTouch(at: CGPoint(x: 0.25, y: 0.5), secondPoint: nil, phase: .began, edge: .left)
+        input.sendTouch(at: CGPoint(x: 0.25, y: 0.4), secondPoint: CGPoint(x: 0.75, y: 0.6), phase: .moved, edge: .left)
+        try input.sendButton(usagePage: 0x0c, usage: 0x40, state: .down) { results.append($0?.localizedDescription) }
+        try await input.stop()
+        let touches = await peers.messages(to: digitizer, count: 3)
+        let buttons = await peers.messages(to: button, count: 2)
+        withExtendedLifetime(input) {}
+
+        // Each service receives CoreDevice's events in order. Stopping ends the held touch where it last was and
+        // releases the held button.
+        let events = try IndigoFixtureEvents(runtime: runtime)
+        let moved = (CGPoint(x: 0.25, y: 0.4), CGPoint(x: 0.75, y: 0.6))
+        let expectedTouches = try [
+            events.touch(CGPoint(x: 0.25, y: 0.5), nil, "start", edge: "left"),
+            events.touch(moved.0, moved.1, "position", edge: "left"),
+            events.touch(moved.0, moved.1, "end", edge: "left"),
+        ].map { try codec.message(.digitizerEvent, to: digitizer, payload: $0) }
+        let expectedButtons = try [events.button(0x0c, 0x40, "down"), events.button(0x0c, 0x40, "up")]
+            .map { try codec.message(.buttonEvent, to: button, payload: $0) }
+        #expect(touches.count == 3 && zip(touches, expectedTouches).allSatisfy { xpc_equal($0, $1) })
+        #expect(buttons.count == 2 && zip(buttons, expectedButtons).allSatisfy { xpc_equal($0, $1) })
+        #expect(results == [nil])
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func guestKeyboardCreatesItsServiceWithCoreDevicesRequestsAndRetriesOneThatTheGuestRefused() async throws {
+        let runtime = ABIRuntime.shared
+        let peers = GuestHIDPeerFixture()
+        let codec = try await GuestHIDCodec(runtime: runtime)
+        let wire = try UniversalHIDFixtureMessages(runtime: runtime)
+        // The guest refuses the first service with its own error and then creates service 7.
+        let refusal = NSError(domain: "dev.lynnswap.NeoSimulator.fixture", code: 5)
+        var refusals = 1
+        peers.reply = { reply in
+            if refusals > 0 { refusals -= 1; try wire.refuse(reply, with: refusal) } else { try wire.create(reply, id: 7) }
+        }
+        let keyboard = try await NativeDeviceKeyboard.connect(guest: SimulatorGuestHID(codec: codec, connect: peers.connect))
+        let universalHID = CoreDeviceScreenInput.universalHIDFeature
+        #expect(peers.lookUps == [universalHID])
+        var failures: [NSError] = []
+        keyboard.onFailure = { failures.append($0 as NSError) }
+        let keys = try [NSEvent.EventType.keyDown, .keyUp].map { type in
+            try #require(NSEvent.keyEvent(with: type, location: .zero, modifierFlags: [], timestamp: 1, windowNumber: 0,
+                context: nil, characters: "a", charactersIgnoringModifiers: "a", isARepeat: false, keyCode: 0))
+        }
+        for key in keys { keyboard.handle(key) }
+        // Removing the services waits for the keys' reports.
+        try await keyboard.removeServices()
+
+        // The guest's error reaches the keyboard's failures as the guest sent it. The key-up creates the main keyboard's
+        // service again and sends its reports there, and removal resets and removes that service.
+        #expect(failures.map(\.domain) == [refusal.domain] && failures.map(\.code) == [refusal.code])
+        let bindings = try await NativeKeyboardBindings(runtime: runtime)
+        let translator = try bindings.makeTranslator()
+        _ = try translator.reports(for: keys[0])
+        var requests: [NativeSwiftValue] = []
+        for _ in 0..<2 { requests.append(try await wire.createService(bindings.mainKeyboardDescriptor())) }
+        requests += try translator.reports(for: keys[1]).map { try wire.send($0, to: 7) }
+        requests += try [wire.request("resetGestureState", service: 7), wire.request("removeService", service: 7)]
+        let expected = try requests.map { try codec.message(.request, to: universalHID, payload: $0) }
+        let messages = await peers.messages(to: universalHID, count: expected.count)
+        withExtendedLifetime(keyboard) {}
+        #expect(messages.count == expected.count && zip(messages, expected).allSatisfy { xpc_equal($0, $1) })
+    }
+
     @Test func nativeTrackpadGesturesBeginWhereTheScreenNowShowsTheStillPointer() async throws {
         let runtime = ABIRuntime.shared
         let transport = TrackpadFixtureTransport(bindings: try await NativeTrackpadBindings(runtime: runtime))
@@ -1926,6 +2002,184 @@ private struct GuestPointerReports {
         let position = try unsafe makePointer.unsafeInvoke(report)
         return try unsafe CGPoint(x: (pointerX.unsafeInvoke(on: position) * 1000).rounded() / 1000,
                                   y: (pointerY.unsafeInvoke(on: position) * 1000).rounded() / 1000)
+    }
+}
+
+/// Anonymous XPC listeners that stand in for the guest's HID services, one for each Mach service name that is looked up.
+/// The production connections reach them as they reach the guest's own services.
+@MainActor
+private final class GuestHIDPeerFixture {
+    /// The Mach service names looked up, in order.
+    private(set) var lookUps: [String] = []
+    /// Fills the reply to each message that expects one, before the service sends it.
+    var reply: (@MainActor (xpc_object_t) throws -> Void)?
+    private var connections: [xpc_connection_t] = []
+    private var received: [String: [xpc_object_t]] = [:]
+    private var waiters: [(name: String, count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+
+    isolated deinit { connections.forEach(xpc_connection_cancel) }
+
+    /// A connection, not yet activated, to a new listener for the service `name`.
+    func connect(_ name: String) throws -> xpc_connection_t {
+        lookUps.append(name)
+        let listener = xpc_connection_create(nil, .main)
+        xpc_connection_set_event_handler(listener) { [weak self] peer in
+            guard xpc_get_type(peer) == XPC_TYPE_CONNECTION else { return }
+            nonisolated(unsafe) let connection = peer
+            MainActor.assumeIsolated { self?.accept(connection, for: name) }
+        }
+        xpc_connection_activate(listener)
+        connections.append(listener)
+        return xpc_connection_create_from_endpoint(xpc_endpoint_create(listener))
+    }
+
+    /// The messages that the service `name` received, once it has received `count`.
+    func messages(to name: String, count: Int) async -> [xpc_object_t] {
+        if received[name, default: []].count < count {
+            await withCheckedContinuation { waiters.append((name, count, $0)) }
+        }
+        return received[name, default: []]
+    }
+
+    private func accept(_ peer: xpc_connection_t, for name: String) {
+        connections.append(peer)
+        xpc_connection_set_target_queue(peer, .main)
+        xpc_connection_set_event_handler(peer) { [weak self] message in
+            guard xpc_get_type(message) == XPC_TYPE_DICTIONARY else { return }
+            nonisolated(unsafe) let received = message
+            MainActor.assumeIsolated { self?.receive(received, for: name) }
+        }
+        xpc_connection_activate(peer)
+    }
+
+    private func receive(_ message: xpc_object_t, for name: String) {
+        received[name, default: []].append(message)
+        if let response = xpc_dictionary_create_reply(message), let peer = xpc_dictionary_get_remote_connection(message) {
+            do { try reply?(response) } catch { Issue.record(error) }
+            xpc_connection_send_message(peer, response)
+        }
+        let count = received[name, default: []].count
+        let ready = waiters.filter { $0.name == name && $0.count <= count }
+        waiters.removeAll { $0.name == name && $0.count <= count }
+        ready.forEach { $0.continuation.resume() }
+    }
+}
+
+/// The UniversalHID requests that CoreDevice sends the guest, made from CoreDeviceUtilities' cases, and the replies that
+/// the guest sends, written with Mercury's encoder in the form that CoreDevice decodes.
+@MainActor
+private struct UniversalHIDFixtureMessages {
+    private let requestType: NativeSwiftType
+    private let errorKey: String
+    private let makeServiceID: NativeSwiftFunction<(UInt64) -> NativeSwiftValue>
+    private let makeCreated: NativeSwiftFunction<(NativeSwiftValue) -> NativeSwiftValue>
+    private let makeErrorContainer: NativeSwiftFunction<(NSError) -> NativeSwiftValue>
+    private let encodeCreated: (NativeSwiftValue, xpc_object_t) throws -> Void
+    private let encodeError: (NativeSwiftValue) throws -> xpc_object_t
+    private let readData: NativeSwiftMethod<() -> Data>
+
+    init(runtime: ABIRuntime) throws {
+        requestType = try runtime.resolveAndWait(.swift(.type("CoreDeviceUtilities.DDIUniversalHIDServicePayload.Request")))
+        let event = try runtime.resolveAndWait(.swift(.type("CoreDeviceUtilities.HIDXPCServiceEvent")))
+        errorKey = try unsafe event.resolveAndWait(.swift(.staticGetter("errorFieldName", as: (() -> String).self))).unsafeInvoke()
+        let serviceID = try runtime.resolveAndWait(.swift(.type("CoreDevice.HIDServiceID")))
+        let created = try runtime.resolveAndWait(.swift(.type("CoreDeviceUtilities.DDIUniversalHIDServicePayload.CreatedServiceID")))
+        let container = try runtime.resolveAndWait(.swift(.type("Mercury.NSErrorContainer")))
+        let abis = try Dictionary(uniqueKeysWithValues: [serviceID, created, container].map { ($0, try NativeType.opaque(named: $0.name)) })
+        makeServiceID = try serviceID.resolveAndWait(.swift(.initializer("init(id:)", as: ((UInt64) -> NativeSwiftValue).self,
+            valueABIs: abis)))
+        makeCreated = try created.resolveAndWait(.swift(.initializer("init(serviceID:)",
+            as: ((NativeSwiftValue) -> NativeSwiftValue).self, valueABIs: abis)))
+        makeErrorContainer = try container.resolveAndWait(.swift(.initializer("init(rawValue:)",
+            as: ((NSError) -> NativeSwiftValue).self, valueABIs: abis)))
+        let encoder = try runtime.resolveAndWait(.swift(.type("Mercury.XPCObjectEncoder")))
+        let makeEncoder = try encoder.resolveAndWait(.swift(.initializer("init()", as: (() -> NativeSwiftValue).self)))
+        let encodeInto = try encoder.resolveAndWait(.swift(.method(
+            "Mercury.XPCObjectEncoder.encode<A where A: Swift.Encodable>(_: A, into: __C.OS_xpc_object) throws -> ()",
+            as: ((NativeSwiftValue, xpc_object_t) throws -> Void).self, genericArguments: [.type(created)])))
+        let encode = try encoder.resolveAndWait(.swift(.method(
+            "Mercury.XPCObjectEncoder.encode<A where A: Swift.Encodable>(A) throws -> __C.OS_xpc_object",
+            as: ((NativeSwiftValue) throws -> xpc_object_t).self, genericArguments: [.type(container)])))
+        encodeCreated = { value, reply in try unsafe encodeInto.unsafeInvoke(on: makeEncoder.unsafeInvoke(), value, reply) }
+        encodeError = { value in try unsafe encode.unsafeInvoke(on: makeEncoder.unsafeInvoke(), value) }
+        let report = try CoreDeviceHIDService.reportABI(runtime: runtime)
+        let data = try runtime.resolveAndWait(.swift(.type("Foundation.Data")))
+        readData = try report.type.resolveAndWait(.swift(.getter("data", as: (() -> Data).self,
+            valueABIs: [report.type: report.abi, data: try .structure(named: data.name, fields: [.uint64, .uint64])],
+            receiverABI: report.abi)))
+    }
+
+    /// Fills `reply` with the ID of the service it created, which CoreDevice decodes from the reply itself.
+    func create(_ reply: xpc_object_t, id: UInt64) throws {
+        let value = try unsafe makeCreated.unsafeInvoke(makeServiceID.unsafeInvoke(id))
+        try encodeCreated(value, reply)
+    }
+
+    /// Fills `reply` with the guest's `error`, which CoreDevice decodes from the reply's error field.
+    func refuse(_ reply: xpc_object_t, with error: NSError) throws {
+        let container = try unsafe makeErrorContainer.unsafeInvoke(error)
+        let encoded = try encodeError(container)
+        xpc_dictionary_set_value(reply, errorKey, encoded)
+    }
+
+    func createService(_ descriptor: NativeSwiftValue) async throws -> NativeSwiftValue {
+        try await requestType.makeEnumCase(named: "createService", payload: descriptor)
+    }
+
+    /// The request that sends `report`, a report of CoreDevice's UniversalHID module, to the service `id`.
+    func send(_ report: NativeSwiftValue, to id: UInt64) throws -> NativeSwiftValue {
+        let data = try unsafe readData.unsafeInvoke(on: report)
+        let serviceID = try unsafe makeServiceID.unsafeInvoke(id)
+        return try requestType.makeEnumCaseAndWait(named: "send", associatedValues: data, serviceID)
+    }
+
+    /// The request of the case `name` whose only associated value is the service `id`.
+    func request(_ name: String, service id: UInt64) throws -> NativeSwiftValue {
+        let serviceID = try unsafe makeServiceID.unsafeInvoke(id)
+        return try requestType.makeEnumCaseAndWait(named: name, payload: serviceID)
+    }
+}
+
+/// The Indigo events that CoreDevice's digitizer and button services send, made with CoreDeviceUtilities' initializers
+/// from the names of their native cases.
+@MainActor
+private struct IndigoFixtureEvents {
+    private let eventType: NativeSwiftType
+    private let edge: NativeSwiftType
+    private let target: NativeSwiftType
+    private let state: NativeSwiftType
+    private let makePoint: NativeSwiftFunction<(CGFloat, CGFloat) -> NativeSwiftValue>
+    private let makeTouch: NativeSwiftFunction<(NativeSwiftValue, NativeSwiftValue?, NativeSwiftValue, NativeSwiftValue, NativeSwiftValue) -> NativeSwiftValue>
+    private let makeButton: NativeSwiftFunction<(UInt16, UInt16, NativeSwiftValue) -> NativeSwiftValue>
+
+    init(runtime: ABIRuntime) throws {
+        let point = try runtime.resolveAndWait(.swift(.type("CoreDevice.DigitizerPoint")))
+        let touch = try runtime.resolveAndWait(.swift(.type("CoreDeviceUtilities.IndigoDigitizerEvent")))
+        let button = try runtime.resolveAndWait(.swift(.type("CoreDeviceUtilities.IndigoButtonEvent")))
+        eventType = try runtime.resolveAndWait(.swift(.type("CoreDevice.DigitizerEventType")))
+        edge = try runtime.resolveAndWait(.swift(.type("CoreDevice.DigitizerEdge")))
+        target = try runtime.resolveAndWait(.swift(.type("CoreDevice.DigitizerTarget")))
+        state = try runtime.resolveAndWait(.swift(.type("CoreDevice.HIDButtonState")))
+        let abis = try Dictionary(uniqueKeysWithValues: [point, touch, button, eventType, edge, target, state]
+            .map { ($0, try NativeType.opaque(named: $0.name)) })
+        makePoint = try point.resolveAndWait(.swift(.initializer("init(x:y:)", as: ((CGFloat, CGFloat) -> NativeSwiftValue).self,
+            valueABIs: abis)))
+        makeTouch = try touch.resolveAndWait(.swift(.initializer("init(pointOne:pointTwo:eventType:edge:target:)",
+            as: ((NativeSwiftValue, NativeSwiftValue?, NativeSwiftValue, NativeSwiftValue, NativeSwiftValue) -> NativeSwiftValue).self,
+            valueABIs: abis)))
+        makeButton = try button.resolveAndWait(.swift(.initializer("init(usagePage:usageCode:state:)",
+            as: ((UInt16, UInt16, NativeSwiftValue) -> NativeSwiftValue).self, valueABIs: abis)))
+    }
+
+    /// A touch on the integrated screen.
+    func touch(_ point: CGPoint, _ second: CGPoint?, _ type: String, edge side: String) throws -> NativeSwiftValue {
+        try unsafe makeTouch.unsafeInvoke(makePoint.unsafeInvoke(point.x, point.y),
+            second.map { try unsafe makePoint.unsafeInvoke($0.x, $0.y) }, eventType.makeEnumCase(named: type),
+            edge.makeEnumCase(named: side), target.makeEnumCase(named: "mainScreen"))
+    }
+
+    func button(_ page: UInt16, _ usage: UInt16, _ buttonState: String) throws -> NativeSwiftValue {
+        try unsafe makeButton.unsafeInvoke(page, usage, state.makeEnumCase(named: buttonState))
     }
 }
 

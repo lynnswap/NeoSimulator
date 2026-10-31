@@ -14,7 +14,7 @@ let package = Package(
         ),
     ],
     dependencies: [
-        .package(url: "https://github.com/lynnswap/ABIBridge.git", exact: "0.15.0-beta.2"),
+        .package(url: "https://github.com/lynnswap/ABIBridge.git", revision: "d78cf5f170941635ff94e8617ca8743eebe40898"),
     ],
     targets: [
         .target(name: "XcodeSimulatorHost", dependencies: [.product(name: "ABIBridge", package: "ABIBridge")]),

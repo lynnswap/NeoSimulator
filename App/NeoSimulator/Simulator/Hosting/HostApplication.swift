@@ -835,23 +835,35 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                         var keyboard: NativeDeviceKeyboard?
                         var trackpad: NativeDeviceTrackpad?
                         var touchRoute: NativeTouchRoute?
-                        if device.deviceTypeIdentifier == "com.apple.CoreSimulator.SimDeviceType.iPhone-Duo", device.deviceSetPath == nil {
+                        let isDuo = device.deviceTypeIdentifier == "com.apple.CoreSimulator.SimDeviceType.iPhone-Duo"
+                        // A crown or dial takes the pointer's scrolling, and a device UI plugin's overlay takes the
+                        // screen's input, through SimulatorKit.
+                        let takesNativeTrackpad = !capabilities.hasCrownOrDial && !capabilities.hasUserInterfacePlugin
+                        // Once native keyboard or trackpad input starts, the guest drops SimulatorKit's touches and
+                        // buttons, so they go to the native touchscreen and buttons too. The native touchscreen has
+                        // no pressure, so a screen with touch pressure keeps SimulatorKit's touches.
+                        let takesNativeTouches = capabilities.isPhoneOrPad
+                            && !capabilities.supportsFeature(DeviceCapabilities.touchPressure)
+                        if isDuo, device.deviceSetPath == nil {
                             nativeCanvas = try await NativeDeviceCanvas.connect(simulatorUDID: device.identifier)
+                        } else if device.deviceSetPath != nil {
+                            nativeCanvas = nil
+                            // Without CoreDevice, every input stream reaches the guest's own services or none does.
+                            if !isDuo, capabilities.supportsFeature(DeviceCapabilities.keyboard), takesNativeTrackpad,
+                               takesNativeTouches, let input = try await guestInput(of: device) {
+                                keyboard = input.keyboard
+                                trackpad = input.trackpad
+                                touchRoute = input.touchRoute
+                            }
                         } else {
                             nativeCanvas = nil
-                            if device.deviceSetPath == nil, capabilities.supportsFeature(DeviceCapabilities.keyboard) {
+                            if capabilities.supportsFeature(DeviceCapabilities.keyboard) {
                                 keyboard = try await nativeKeyboard(of: device)
                             }
-                            // A crown or dial takes the pointer's scrolling, and a device UI plugin's overlay takes the
-                            // screen's input, through SimulatorKit.
-                            if device.deviceSetPath == nil, !capabilities.hasCrownOrDial, !capabilities.hasUserInterfacePlugin {
+                            if takesNativeTrackpad {
                                 trackpad = try await nativeTrackpad(of: device)
                             }
-                            // Once native keyboard or trackpad input starts, the guest drops SimulatorKit's touches and
-                            // buttons, so they go to the native touchscreen and buttons too. The native touchscreen has
-                            // no pressure, so a screen with touch pressure keeps SimulatorKit's touches.
-                            if keyboard != nil || trackpad != nil, capabilities.isPhoneOrPad,
-                               !capabilities.supportsFeature(DeviceCapabilities.touchPressure) {
+                            if keyboard != nil || trackpad != nil, takesNativeTouches {
                                 touchRoute = try await nativeTouchRoute(of: device)
                                 if touchRoute == nil { keyboard = nil; trackpad = nil }
                             }
@@ -960,6 +972,32 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                 hostLog("Could not send touches to \(name): \(error.localizedDescription)")
             }
             return NativeTouchRoute(input: input, interface: interface)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            hostLog("\(device.name) keeps SimulatorKit's keyboard and touches, without native trackpad input: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    /// The native keyboard, trackpad, touches, and buttons of a device outside the default device set, which CoreDevice
+    /// does not list. They reach the guest's HID services through the Mach services that the device itself looks up, so
+    /// they stay with the device's own set. Connecting them sends the guest nothing, so when one cannot connect, the device
+    /// keeps SimulatorKit's input for all of them: its keyboard, which the guest reads with a US layout, and its digitizer,
+    /// which drops trackpad scrolling and pinches.
+    private func guestInput(of device: SimulatorDevice) async throws
+        -> (keyboard: NativeDeviceKeyboard, trackpad: NativeDeviceTrackpad, touchRoute: NativeTouchRoute)? {
+        do {
+            let interface = try await runtime.touchInterface()
+            let guest = try await SimulatorGuestHID(lookUp: device.lookUp)
+            let keyboard = try await NativeDeviceKeyboard.connect(guest: guest)
+            let trackpad = try await NativeDeviceTrackpad.connect(guest: guest)
+            let input = try NativeDeviceScreenInput.connect(guest: guest)
+            let name = device.name
+            keyboard.onFailure = { hostLog("Could not send keyboard input to \(name): \($0.localizedDescription)") }
+            trackpad.onFailure = { hostLog("Could not send trackpad input to \(name): \($0.localizedDescription)") }
+            input.onFailure = { hostLog("Could not send touches to \(name): \($0.localizedDescription)") }
+            return (keyboard, trackpad, NativeTouchRoute(input: input, interface: interface))
         } catch is CancellationError {
             throw CancellationError()
         } catch {

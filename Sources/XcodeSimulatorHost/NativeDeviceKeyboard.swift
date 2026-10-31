@@ -2,9 +2,10 @@ import ABIBridge
 import AppKit
 import os
 
-/// Forwards a simulator's Mac keyboard input through CoreDevice keyboard services that carry each Mac keyboard's
-/// own HID properties. The guest derives a keyboard's hardware layout, such as JIS, from those properties, as it
-/// does for Device Hub; SimulatorKit's keyboard messages carry none, so the guest reads them with a US layout.
+/// Forwards a simulator's Mac keyboard input through guest UniversalHID keyboard services that carry each Mac keyboard's
+/// own HID properties, created through CoreDevice for a default-set simulator or with CoreDevice's requests for any
+/// simulator. The guest derives a keyboard's hardware layout, such as JIS, from those properties, as it does for Device
+/// Hub; SimulatorKit's keyboard messages carry none, so the guest reads them with a US layout.
 @_spi(NeoSimulator)
 @MainActor
 public final class NativeDeviceKeyboard {
@@ -40,6 +41,16 @@ public final class NativeDeviceKeyboard {
         }
         try Task.checkCancellation()
         return NativeDeviceKeyboard(transport: try await CoreDeviceKeyboardTransport(remote: remote))
+    }
+
+    /// Connects to the guest's UniversalHID service of a simulator in any device set, which CoreDevice's keyboard
+    /// services reach for a default-set simulator. A keyboard's guest service is created with its first report;
+    /// connecting sends the guest nothing.
+    public static func connect(guest: SimulatorGuestHID) async throws -> NativeDeviceKeyboard {
+        let connection = try guest.connection(to: CoreDeviceScreenInput.universalHIDFeature)
+        return NativeDeviceKeyboard(transport: try await CoreDeviceKeyboardTransport(runtime: .shared) {
+            try await connection.createService($0)
+        })
     }
 
     init(transport: any NativeKeyboardTransport) {
@@ -260,24 +271,29 @@ protocol NativeKeyboardService: AnyObject {
 
 @MainActor
 final class CoreDeviceKeyboardTransport: NativeKeyboardTransport {
-    private let remote: CoreDeviceRemoteScreenDevice
     private let bindings: NativeKeyboardBindings
+    /// Creates the guest service that a CoreDevice `HIDServiceDescriptor` describes.
+    private let createService: @MainActor (NativeSwiftValue) async throws -> CoreDeviceHIDService
 
-    init(remote: CoreDeviceRemoteScreenDevice) async throws {
-        self.remote = remote
-        bindings = try await NativeKeyboardBindings(runtime: remote.runtime)
+    init(runtime: ABIRuntime, createService: @escaping @MainActor (NativeSwiftValue) async throws -> CoreDeviceHIDService) async throws {
+        bindings = try await NativeKeyboardBindings(runtime: runtime)
+        self.createService = createService
+    }
+
+    convenience init(remote: CoreDeviceRemoteScreenDevice) async throws {
+        try await self.init(runtime: remote.runtime) { try await CoreDeviceHIDService.connect(remote: remote, descriptor: $0) }
     }
 
     func sender(of event: NSEvent) throws -> UInt64 { try bindings.lookup.sender(of: event) }
 
     func makeKeyboard(forSender sender: UInt64) throws -> (any NativeKeyboardService)? {
         guard let properties = try bindings.lookup.properties(ofHIDService: sender) else { return nil }
-        return try CoreDeviceKeyboardService(remote: remote, source: "Mac HID service 0x\(String(sender, radix: 16))",
+        return try CoreDeviceKeyboardService(createService: createService, source: "Mac HID service 0x\(String(sender, radix: 16))",
             descriptor: bindings.descriptor(serviceID: sender, properties: properties), bindings: bindings)
     }
 
     func makeMainKeyboard() throws -> any NativeKeyboardService {
-        try CoreDeviceKeyboardService(remote: remote, source: "synthesized input",
+        try CoreDeviceKeyboardService(createService: createService, source: "synthesized input",
             descriptor: bindings.mainKeyboardDescriptor(), bindings: bindings)
     }
 }
@@ -285,7 +301,7 @@ final class CoreDeviceKeyboardTransport: NativeKeyboardTransport {
 @MainActor
 private final class CoreDeviceKeyboardService: NativeKeyboardService {
     private static let logger = Logger(subsystem: "dev.lynnswap.NeoSimulator", category: "Keyboard")
-    private let remote: CoreDeviceRemoteScreenDevice
+    private let createService: @MainActor (NativeSwiftValue) async throws -> CoreDeviceHIDService
     private let source: String
     private let descriptor: NativeSwiftValue
     private let identity: NativeKeyboardBindings.Identity
@@ -294,9 +310,9 @@ private final class CoreDeviceKeyboardService: NativeKeyboardService {
     private(set) var modifierFlags: NSEvent.ModifierFlags = []
     private(set) var heldKeyCodes: Set<UInt16> = []
 
-    init(remote: CoreDeviceRemoteScreenDevice, source: String, descriptor: NativeSwiftValue,
-         bindings: NativeKeyboardBindings) throws {
-        self.remote = remote
+    init(createService: @escaping @MainActor (NativeSwiftValue) async throws -> CoreDeviceHIDService, source: String,
+         descriptor: NativeSwiftValue, bindings: NativeKeyboardBindings) throws {
+        self.createService = createService
         self.source = source
         self.descriptor = descriptor
         identity = try bindings.identity(of: descriptor)
@@ -315,7 +331,7 @@ private final class CoreDeviceKeyboardService: NativeKeyboardService {
         guard !reports.isEmpty else { return }
         let service: CoreDeviceHIDService
         if let existing = self.service { service = existing } else {
-            service = try await CoreDeviceHIDService.connect(remote: remote, descriptor: descriptor)
+            service = try await createService(descriptor)
             self.service = service
             Self.logger.log("Created the guest keyboard service for \(self.source, privacy: .public): \(self.identity.description, privacy: .public)")
         }
