@@ -3272,7 +3272,7 @@ struct InputFocusTests {
         var changes: [PasteboardTransfer] = []
         let deviceChange = try #require(transport.reportDeviceChange)
         let macChange = try #require(transport.reportMacChange)
-        deviceChange { changes.append(.get); return pasteboard.changeCount }
+        deviceChange { _ in changes.append(.get); return pasteboard.changeCount }
         try await wait { changes == [.get] }
         macChange { changes.append(.send) }
         try await wait { changes.count == 2 }
@@ -3283,7 +3283,7 @@ struct InputFocusTests {
         sync.toggle()
         try await wait { transport.observations == 0 }
         #expect(transport.observations == 0)
-        deviceChange { changes.append(.get); return 2 }
+        deviceChange { _ in changes.append(.get); return 2 }
         try await Task.sleep(for: .milliseconds(50))
         #expect(changes == [.get, .send])
 
@@ -3317,7 +3317,7 @@ struct InputFocusTests {
         transport.endDeviceObservation(throwing: HostError.operation("The device closed the pasteboard monitor."))
         try await wait { transport.observations == 0 }
         var changes: [PasteboardTransfer] = []
-        deviceChange { changes.append(.get); return 1 }
+        deviceChange { _ in changes.append(.get); return 1 }
         try await Task.sleep(for: .milliseconds(50))
         #expect(transport.observations == 0 && transport.deviceObservations == 1)
         #expect(changes.isEmpty)
@@ -3377,7 +3377,7 @@ struct InputFocusTests {
         // synchronization is on again when the write ends.
         var resumeSuperseded: CheckedContinuation<Void, Never>?
         let supersededChange = try #require(receiving.reportDeviceChange)
-        supersededChange {
+        supersededChange { _ in
             await withCheckedContinuation { resumeSuperseded = $0 }
             return nil
         }
@@ -3402,7 +3402,7 @@ struct InputFocusTests {
             pasteboard.setString("device", forType: .string)
             return pasteboard.changeCount
         }
-        deviceChange { copyOnDevice() }
+        deviceChange { shouldReplace in shouldReplace() ? copyOnDevice() : nil }
         try await wait { sending.transfers == [.send, .send] }
         sessions[2].sendSynchronizedPasteboard()
         try await Task.sleep(for: .milliseconds(50))
@@ -3417,9 +3417,9 @@ struct InputFocusTests {
             await withCheckedContinuation { resumeSend = $0 }
             throw HostError.operation("automatic send failure")
         }
-        deviceChange {
+        deviceChange { shouldReplace in
             await withCheckedContinuation { resumeWrite = $0 }
-            return copyOnDevice()
+            return shouldReplace() ? copyOnDevice() : nil
         }
         try await wait { resumeSend != nil && resumeWrite != nil }
         sync.toggle()
@@ -3476,7 +3476,7 @@ struct InputFocusTests {
         }
         func copyOnDevice(_ text: String) {
             device = text
-            deviceChange { replaceMac(with: text) }
+            deviceChange { shouldReplace in shouldReplace() ? replaceMac(with: text) : nil }
         }
 
         // A device copy queued behind a send does not replace a later Mac copy, even when its turn comes before the
@@ -3504,12 +3504,12 @@ struct InputFocusTests {
         try await wait { mac() == "later device copy" }
         #expect(mac() == "later device copy" && device == "later device copy")
 
-        // A device copy observed while the connection writes the one before it still replaces the Mac pasteboard,
-        // which that write changed after the copy was observed.
+        // A device copy observed while the connection writes the one before it replaces the Mac pasteboard, and the
+        // earlier write, ready only after it, leaves the Mac pasteboard to it.
         var resumeWrite: CheckedContinuation<Void, Never>?
-        deviceChange {
+        deviceChange { shouldReplace in
             await withCheckedContinuation { resumeWrite = $0 }
-            return replaceMac(with: "first device copy")
+            return shouldReplace() ? replaceMac(with: "first device copy") : nil
         }
         try await wait { resumeWrite != nil }
         try #require(resumeWrite != nil)
@@ -3517,6 +3517,84 @@ struct InputFocusTests {
         resumeWrite?.resume()
         try await wait { mac() == "second device copy" }
         #expect(mac() == "second device copy")
+
+        // A Mac copy that its observation reports only after a later device copy does not stop that copy's write. The
+        // Mac copy's send, queued behind the write, then finds the Mac pasteboard changed, as the CoreDevice transport
+        // checks before it sends, and both pasteboards keep the device copy.
+        let reported = replaceMac(with: "Mac copy reported late")
+        transport.holdsSends = true
+        session.sendSynchronizedPasteboard()
+        try await wait { transport.heldSends == 1 }
+        try #require(transport.heldSends == 1)
+        copyOnDevice("device copy after it")
+        var lateSendRan = false
+        macChange {
+            lateSendRan = true
+            if pasteboard.changeCount == reported { device = "Mac copy reported late" }
+        }
+        transport.holdsSends = false
+        transport.completeSend()
+        try await wait { lateSendRan }
+        #expect(mac() == "device copy after it" && device == "device copy after it")
+    }
+
+    @Test(arguments: [false, true])
+    func anEarlierDeviceCopyGivesWayToALaterOneFromAnotherDevice(earlierWriteStarted: Bool) async throws {
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("dev.lynnswap.NeoSimulatorTests.\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        let preferences = MemoryPreferences()
+        preferences.values[HostPreferences.pasteboardAutomaticSync] = true
+        var sessions: [DeviceSession] = []
+        let sync = PasteboardSync(preferences: preferences) { sessions }
+        let (earlier, later) = (TestPasteboardTransport(), TestPasteboardTransport())
+        // The later device's write waits behind its first send. The earlier device's waits too, or has started when
+        // the later device copies.
+        earlier.holdsSends = !earlierWriteStarted
+        later.holdsSends = true
+        for (name, transport) in [("earlier", earlier), ("later", later)] {
+            sessions.append(try makeSession(TestDisplay(), features: [DeviceCapabilities.pasteboard], device: name,
+                                            pasteboard: pasteboard, pasteboardSync: sync, pasteboardTransport: transport))
+        }
+        defer { sessions.forEach { $0.disconnect() } }
+        sessions.forEach { $0.startPasteboardSync() }
+        try await wait {
+            [earlier, later].allSatisfy { $0.observations == 2 } && earlier.transfers == [.send] && later.heldSends == 1
+                && earlier.heldSends == (earlierWriteStarted ? 0 : 1)
+        }
+        func mac() -> String? { pasteboard.string(forType: .string) }
+        // Each write replaces the Mac pasteboard, as the CoreDevice transport's does, only if the connection still
+        // lets it once the write is ready.
+        func replaceMac(with text: String, if shouldReplace: @MainActor () -> Bool) -> Int? {
+            guard shouldReplace() else { return nil }
+            pasteboard.clearContents()
+            pasteboard.setString(text, forType: .string)
+            return pasteboard.changeCount
+        }
+        let reportEarlier = try #require(earlier.reportDeviceChange)
+        let reportLater = try #require(later.reportDeviceChange)
+        var resumeEarlier: CheckedContinuation<Void, Never>?
+        reportEarlier { shouldReplace in
+            if earlierWriteStarted { await withCheckedContinuation { resumeEarlier = $0 } }
+            return replaceMac(with: "earlier copy", if: shouldReplace)
+        }
+        if earlierWriteStarted { try await wait { resumeEarlier != nil } }
+        reportLater { shouldReplace in replaceMac(with: "later copy", if: shouldReplace) }
+
+        // The earlier device's queue passes its copy first, which a send queued after it shows.
+        if earlierWriteStarted {
+            resumeEarlier?.resume()
+        } else {
+            earlier.holdsSends = false
+            earlier.completeSend()
+        }
+        sessions[0].sendSynchronizedPasteboard()
+        try await wait { earlier.transfers == [.send, .send] }
+        later.holdsSends = false
+        later.completeSend()
+
+        // The later copy reaches the Mac, and from there the earlier device but not the later one.
+        try await wait { earlier.transfers.count + later.transfers.count == 4 }
+        #expect(mac() == "later copy" && earlier.transfers == [.send, .send, .send] && later.transfers == [.send])
     }
 
     @Test func commandHeldKeyUpReachesTheNativeInputUntilTheWindowCloses() throws {
@@ -10230,8 +10308,9 @@ private final class TestPasteboardTransport: PasteboardTransport {
     /// The observations in progress, and how many of the device's have started.
     private(set) var observations = 0
     private(set) var deviceObservations = 0
-    /// The latest observations' change reports.
-    private(set) var reportDeviceChange: (@MainActor (@escaping @MainActor () async throws -> Int?) -> Void)?
+    /// The latest observations' change reports. A device change's write that replaces the Mac pasteboard asks
+    /// `shouldReplace` just before it does, as the CoreDevice transport's write does.
+    private(set) var reportDeviceChange: (@MainActor (@escaping @MainActor (_ shouldReplace: @escaping @MainActor () -> Bool) async throws -> Int?) -> Void)?
     private(set) var reportMacChange: (@MainActor (@escaping @MainActor () async throws -> Void) -> Void)?
     private var deviceObservationEnd: AsyncThrowingStream<Never, any Error>.Continuation?
     private var macObservationEnd: AsyncThrowingStream<Never, any Error>.Continuation?
@@ -10248,7 +10327,7 @@ private final class TestPasteboardTransport: PasteboardTransport {
         if let error { throw error }
     }
     func observeDeviceChanges(into pasteboard: NSPasteboard,
-                              _ changed: @escaping @MainActor (@escaping @MainActor () async throws -> Int?) -> Void) async throws {
+                              _ changed: @escaping @MainActor (@escaping @MainActor (@escaping @MainActor () -> Bool) async throws -> Int?) -> Void) async throws {
         let end = AsyncThrowingStream<Never, any Error>.makeStream()
         deviceObservations += 1
         deviceObservationEnd = end.continuation

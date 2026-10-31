@@ -12,10 +12,10 @@ public protocol PasteboardTransport: AnyObject {
     func send(_ pasteboard: NSPasteboard) async throws
     /// Observes the device's later pasteboard changes until the observation ends or the task is cancelled. For each
     /// change that a Mac did not send, `changed` receives the transfer that replaces `pasteboard` with it. The
-    /// transfer returns `pasteboard`'s resulting change count, or nil when it leaves a change that `pasteboard` got
-    /// during the transfer in place.
+    /// transfer calls `shouldReplace` just before it replaces `pasteboard`, without suspending in between, and
+    /// returns `pasteboard`'s resulting change count, or nil without replacing it when `shouldReplace` returns false.
     func observeDeviceChanges(into pasteboard: NSPasteboard,
-                              _ changed: @escaping @MainActor (_ write: @escaping @MainActor () async throws -> Int?) -> Void) async throws
+                              _ changed: @escaping @MainActor (_ write: @escaping @MainActor (_ shouldReplace: @escaping @MainActor () -> Bool) async throws -> Int?) -> Void) async throws
     /// Observes `pasteboard`'s later changes until the observation ends or the task is cancelled. For each change that
     /// a device did not write, `changed` receives the transfer that replaces the device's pasteboard with it. A change
     /// that `pasteboard` no longer holds when it is reported, or when its transfer starts, does not transfer.
@@ -210,7 +210,7 @@ public final class CoreDevicePasteboardTransport: PasteboardTransport {
     }
 
     public func observeDeviceChanges(into pasteboard: NSPasteboard,
-                                     _ changed: @escaping @MainActor (_ write: @escaping @MainActor () async throws -> Int?) -> Void) async throws {
+                                     _ changed: @escaping @MainActor (_ write: @escaping @MainActor (_ shouldReplace: @escaping @MainActor () -> Bool) async throws -> Int?) -> Void) async throws {
         let bindings = bindings
         let session = try await service().monitor()
         do {
@@ -223,7 +223,9 @@ public final class CoreDevicePasteboardTransport: PasteboardTransport {
                 if let version, let acknowledgedVersion, version == acknowledgedVersion || version.precedes(acknowledgedVersion) {
                     return
                 }
-                changed { try await self.write(snapshot, version: version, into: pasteboard) }
+                changed { shouldReplace in
+                    try await self.write(snapshot, version: version, into: pasteboard, shouldReplace: shouldReplace)
+                }
             }
         } catch {
             do { try bindings.invalidate(session) }
@@ -254,13 +256,13 @@ public final class CoreDevicePasteboardTransport: PasteboardTransport {
         }
     }
 
-    /// Writes a device change to `pasteboard`. A send that the device acknowledged after the change was observed
-    /// replaced it there, so the change's items first go back to the device as the latest copy observed on it. The
-    /// write then returns nil when `pasteboard` changed meanwhile, which keeps that later change. `pasteboard` gets the
-    /// change itself, whose origin keeps the Mac's observation from sending it back.
-    private func write(_ snapshot: NativeSwiftValue, version: Version?, into pasteboard: NSPasteboard) async throws -> Int? {
+    /// Writes a device change to `pasteboard` when `shouldReplace` allows it once the write is ready, and returns nil
+    /// otherwise. A send that the device acknowledged after the change was observed replaced it there, so the
+    /// change's items first go back to the device as the latest copy observed on it. `pasteboard` gets the change
+    /// itself, whose origin keeps the Mac's observation from sending it back.
+    private func write(_ snapshot: NativeSwiftValue, version: Version?, into pasteboard: NSPasteboard,
+                       shouldReplace: @MainActor () -> Bool) async throws -> Int? {
         if let version, let acknowledgedVersion, version.precedes(acknowledgedVersion) {
-            let generation = pasteboard.changeCount
             // The device kept its pasteboard when it was sent its own change back. The items go from a pasteboard of
             // their own instead, as a Mac copy does, so that the device's resulting change names that pasteboard as
             // its origin and its observation does not report it, even before the device acknowledges it.
@@ -268,8 +270,8 @@ public final class CoreDevicePasteboardTransport: PasteboardTransport {
             defer { relay.releaseGlobally() }
             _ = try bindings.write(bindings.unstampedCopy(snapshot), relay)
             try await replace(bindings.capture(relay), on: service())
-            guard pasteboard.changeCount == generation else { return nil }
         }
+        guard shouldReplace() else { return nil }
         return try bindings.write(snapshot, pasteboard)
     }
 

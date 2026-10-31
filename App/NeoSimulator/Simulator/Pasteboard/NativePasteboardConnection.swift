@@ -2,13 +2,17 @@ import AppKit
 @_spi(NeoSimulator) import XcodeSimulatorHost
 
 /// A device's CoreDevice pasteboard connection. Transfers run one at a time in the order they were requested or
-/// observed, and queued automatic transfers yield to later observed copies. Requested transfers report the events
+/// observed. A queued automatic send yields to a change that the connection observes later, and a device copy's
+/// write to a later copy from any device or a later Mac change. Requested transfers report the events
 /// SimPasteboardPlus reports, and automatic ones their own, so that a requested transfer queued behind an automatic
 /// one, as after synchronization turns off, keeps its own result.
 @MainActor
 final class NativePasteboardConnection: SimulatorPasteboard {
     private let transport: any PasteboardTransport
     private let pasteboard: NSPasteboard
+    /// Orders the device copies that every device's connection observes. A session without it does not synchronize
+    /// automatically, so no device copy waits for it.
+    private weak var sync: PasteboardSync?
     private var events: ((SimulatorPasteboardEvent) -> Void)?
     /// The last transfer queued, which the next one waits for.
     private var transfers: Task<Void, Never>?
@@ -17,18 +21,26 @@ final class NativePasteboardConnection: SimulatorPasteboard {
     /// Changes whenever synchronization turns off or fails, so that the automatic transfers queued before then no
     /// longer run.
     private var synchronization = 0
-    /// Counts the changes that the observations reported, so that the automatic transfers queued before a change no
-    /// longer run. One would carry an older pasteboard over the change, and as neither observation reports a
+    /// Counts the changes that the observations reported, so that the automatic sends queued before a change no
+    /// longer run. One would carry an older Mac pasteboard over the change, and as neither observation reports a
     /// transferred pasteboard, the two pasteboards would stay different.
     private var observedChanges = 0
-    /// The Mac pasteboard's change count that the device's latest change may replace: the count when the change was
-    /// observed, raised by the connection's own writes since. Any other count is a later Mac change.
-    private var replaceableGeneration = 0
 
-    init(transport: any PasteboardTransport, managing pasteboard: NSPasteboard,
+    /// A device copy waiting to replace the Mac pasteboard.
+    private struct DeviceCopy {
+        /// The synchronization during which the copy was observed.
+        let synchronization: Int
+        /// The copy's place among the device copies that the app's connections observed.
+        let number: Int
+        /// The Mac pasteboard's change count when the copy was observed.
+        let generation: Int
+    }
+
+    init(transport: any PasteboardTransport, managing pasteboard: NSPasteboard, sync: PasteboardSync?,
          events: @escaping @MainActor (SimulatorPasteboardEvent) -> Void) {
         self.transport = transport
         self.pasteboard = pasteboard
+        self.sync = sync
         self.events = events
         // DeviceSession counts the first activation as the connection's own and each later one as a completed push.
         enqueue { .activated }
@@ -39,10 +51,9 @@ final class NativePasteboardConnection: SimulatorPasteboard {
     }
 
     func pull() {
-        enqueue { [weak self, transport, pasteboard] in
+        enqueue { [transport, pasteboard] in
             do {
                 let generation = try await transport.read(into: pasteboard)
-                self?.didWrite(generation)
                 return .applied(generation: generation)
             } catch { return .failedToApply(error) }
         }
@@ -56,9 +67,9 @@ final class NativePasteboardConnection: SimulatorPasteboard {
     }
 
     func pushAutomatically() {
-        // Sending the Mac pasteboard is no change of its own: a device change queued before it already gives way to
-        // the Mac change it sends, and counting it would also stop a device change observed after that Mac change.
-        enqueue(during: synchronization) { [transport, pasteboard] in
+        // Sending the Mac pasteboard is no change of its own: a device copy observed before it already gives way to
+        // the Mac change it sends, which changed the Mac pasteboard's count.
+        enqueueSend(during: synchronization) { [transport, pasteboard] in
             do { try await transport.send(pasteboard); return nil }
             catch { return .automaticTransferFailed(.send, error) }
         }
@@ -94,17 +105,17 @@ final class NativePasteboardConnection: SimulatorPasteboard {
         observations = []
     }
 
-    /// Queues the write of the device's change, which does not run if anything but this connection changes the Mac
-    /// pasteboard first. A write that leaves a later Mac change in place reports nothing.
-    private func deviceDidChange(_ write: @escaping @MainActor () async throws -> Int?, during synchronization: Int) {
-        guard countChange(during: synchronization) else { return }
-        replaceableGeneration = pasteboard.changeCount
-        enqueue(during: synchronization) { [weak self, pasteboard] in
-            // A Mac copy changes the count at once, but its observation reports the copy only later.
-            guard pasteboard.changeCount == self?.replaceableGeneration else { return nil }
+    /// Queues the write of the device's copy, which replaces the Mac pasteboard only while the copy may replace it,
+    /// and reports nothing otherwise.
+    private func deviceDidChange(_ write: @escaping @MainActor (_ shouldReplace: @escaping @MainActor () -> Bool) async throws -> Int?,
+                                 during synchronization: Int) {
+        guard let sync, countChange(during: synchronization) else { return }
+        let copy = DeviceCopy(synchronization: synchronization, number: sync.observeDeviceCopy(), generation: pasteboard.changeCount)
+        enqueue { [weak self] in
+            let mayReplace: @MainActor () -> Bool = { self?.mayReplaceMac(with: copy) == true }
+            guard mayReplace() else { return nil }
             do {
-                guard let generation = try await write() else { return nil }
-                self?.didWrite(generation)
+                guard let generation = try await write(mayReplace) else { return nil }
                 return .appliedAutomatically(generation: generation)
             } catch { return .automaticTransferFailed(.get, error) }
         }
@@ -112,24 +123,30 @@ final class NativePasteboardConnection: SimulatorPasteboard {
 
     private func macDidChange(_ send: @escaping @MainActor () async throws -> Void, during synchronization: Int) {
         guard countChange(during: synchronization) else { return }
-        enqueue(during: synchronization) {
+        enqueueSend(during: synchronization) {
             do { try await send(); return nil }
             catch { return .automaticTransferFailed(.send, error) }
         }
     }
 
     /// Counts an observed change, unless observations that have since stopped reported it: such a change no longer
-    /// transfers, nor stops the automatic transfers queued after them.
+    /// transfers, nor stops the automatic sends queued before it.
     private func countChange(during synchronization: Int) -> Bool {
         guard self.synchronization == synchronization else { return false }
         observedChanges += 1
         return true
     }
 
-    /// Lets the device's latest change replace the connection's own write of the Mac pasteboard. The count only
-    /// rises, since a change observed after the write keeps the later count it was observed at.
-    private func didWrite(_ generation: Int) {
-        replaceableGeneration = max(replaceableGeneration, generation)
+    /// Whether a device copy may still replace the Mac pasteboard. Changes that this connection observed later do
+    /// not decide it: a late report of a Mac copy that the Mac pasteboard held before the device copy leaves its count
+    /// as it was, and replacing it keeps the device copy on both pasteboards.
+    private func mayReplaceMac(with copy: DeviceCopy) -> Bool {
+        // Synchronization stopped.
+        guard synchronization == copy.synchronization else { return false }
+        // A device copy was observed later, on this device or another.
+        guard sync?.isLatestDeviceCopy(copy.number) == true else { return false }
+        // The Mac pasteboard changed. A Mac copy changes the count at once, but its observation reports it only later.
+        return pasteboard.changeCount == copy.generation
     }
 
     /// Runs `transfer` after the transfers queued before it, and reports its event while the connection is connected.
@@ -142,9 +159,9 @@ final class NativePasteboardConnection: SimulatorPasteboard {
         }
     }
 
-    /// Queues an automatic transfer, which does not run if synchronization turns off or fails, or an observation
-    /// reports a change, before it starts.
-    private func enqueue(during synchronization: Int, _ transfer: @escaping @MainActor () async -> SimulatorPasteboardEvent?) {
+    /// Queues an automatic send, which does not run if synchronization turns off or fails, or an observation reports
+    /// a change, before it starts.
+    private func enqueueSend(during synchronization: Int, _ transfer: @escaping @MainActor () async -> SimulatorPasteboardEvent?) {
         let change = observedChanges
         enqueue { [weak self] in
             guard self?.synchronization == synchronization, self?.observedChanges == change else { return nil }

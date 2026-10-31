@@ -1248,7 +1248,8 @@ final class DeviceSession {
         let events: @MainActor (SimulatorPasteboardEvent) -> Void = { [weak self] in self?.handlePasteboard($0) }
         let connection: any SimulatorPasteboard
         if let pasteboardTransport {
-            connection = NativePasteboardConnection(transport: pasteboardTransport, managing: pasteboard, events: events)
+            connection = NativePasteboardConnection(transport: pasteboardTransport, managing: pasteboard, sync: pasteboardSync,
+                                                    events: events)
         } else {
             connection = try display.connectPasteboard(pasteboard, events: events)
         }

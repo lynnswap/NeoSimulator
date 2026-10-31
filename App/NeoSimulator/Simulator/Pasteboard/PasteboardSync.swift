@@ -15,6 +15,11 @@ final class PasteboardSync {
     /// The device whose pasteboard last replaced the Mac's, until the change
     /// is sent to the other devices.
     private var changedSession: DeviceSession?
+    /// The number of the latest device copy that a connection observed. A
+    /// device copy replaces the Mac pasteboard only while it is the latest, so
+    /// that an earlier copy from any device, whose write comes later, does not
+    /// replace a later one.
+    private var latestDeviceCopy = 0
 
     /// Reads the choice saved in `preferences`, which is off unless it was
     /// turned on.
@@ -31,6 +36,15 @@ final class PasteboardSync {
         preferences.set(isOn, forKey: HostPreferences.pasteboardAutomaticSync)
         for session in sessions() { session.updatePasteboardSync() }
     }
+
+    /// Numbers a device copy that a connection observed, as the latest one.
+    func observeDeviceCopy() -> Int {
+        latestDeviceCopy += 1
+        return latestDeviceCopy
+    }
+
+    /// Whether no device copy has been observed since the one `copy` numbers.
+    func isLatestDeviceCopy(_ copy: Int) -> Bool { copy == latestDeviceCopy }
 
     /// Coalesces device-originated copies until the end of the run-loop pass.
     /// Only the latest host pasteboard is forwarded to other devices.
