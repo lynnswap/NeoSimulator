@@ -254,12 +254,14 @@ final class SimulatorManagerModel {
         }
     }
 
-    func closeDevice(_ identifier: DeviceInventoryID, keepingDeviceRunning: Bool, after finishing: Task<Void, Never>) {
+    func closeDevice(_ identifier: DeviceInventoryID, keepingDeviceRunning: Bool, after finishing: Task<Void, any Error>) {
         // Accept the close before waiting, so a later open cannot overtake it.
         perform("Closing simulator…") {
             await self.stopDevicePosture(for: identifier)
-            await finishing.value
+            // The screen is already gone, so the device closes even when its cleanup failed, which is reported then.
+            let cleanup = await finishing.result
             try await self.controller.closeDevice(identifier, keepingDeviceRunning: keepingDeviceRunning)
+            try cleanup.get()
         }
     }
 

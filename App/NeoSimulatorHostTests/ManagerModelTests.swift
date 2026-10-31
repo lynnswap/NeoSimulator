@@ -1241,6 +1241,19 @@ struct ManagerModelTests {
         await manager.stopDevicePostures()
     }
 
+    @Test func closingAScreenClosesItsDeviceAndReportsItsFailedCleanup() async throws {
+        let device = simulator()
+        let source = ManagerModelSource(devices: [device])
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source)
+        var failures: [String] = []
+        manager.onError = { failures.append($0.localizedDescription) }
+        manager.closeDevice(device.id, keepingDeviceRunning: true, after: Task { throw ManagerModelSource.Failure.unavailable })
+        #expect(await events.next() == .close(device.id))
+        try await manager.quitRenderer(keepingDevicesRunning: true)
+        #expect(failures == [ManagerModelSource.Failure.unavailable.localizedDescription])
+    }
+
     @Test func aRemoteScreenUsesItsCommandIdentityAndClosingDuringManagementPreventsResubscription() async throws {
         let features = DevicePosturePayload.features.union(["com.apple.coredevice.feature.rebootdevice"])
         let data = try JSONSerialization.data(withJSONObject: ["result": ["devices": [[

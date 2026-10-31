@@ -1629,6 +1629,32 @@ struct InputFocusTests {
         #expect(display.disconnectCount == (preservingExisting ? 0 : 1))
     }
 
+    @Test(.timeLimit(.minutes(1)))
+    func releasingAScreenWaitsForItsNativeInputRemovalAndRetriesAFailedOne() async throws {
+        let display = TestDisplay()
+        display.holdsStop = true
+        let controller = try makeController(display)
+        // Hosts release and quit by invalidating the window, which starts the removal, then stopping its session.
+        controller.invalidate()
+        #expect(display.disconnectCount == 1 && display.stopCount == 1 && display.heldStop != nil)
+        var stopped = false
+        let failing = Task.immediate {
+            try await controller.session.stop()
+            stopped = true
+        }
+        #expect(display.stopCount == 1 && !stopped)
+        display.completeStop(throwing: HostError.operation("Could not remove the native keyboard services"))
+        await #expect(throws: HostError.self) { try await failing.value }
+        // Stopping again removes what remained instead of reporting the earlier attempt.
+        let retrying = Task.immediate {
+            try await controller.session.stop()
+            stopped = true
+        }
+        #expect(display.stopCount == 2 && display.heldStop != nil && !stopped)
+        display.completeStop()
+        try await retrying.value
+    }
+
     @Test func embeddedAndCompactPresentationsKeepOneSessionAndInputOwner() async throws {
         _ = NSApplication.shared
         let display = TestDisplay()
@@ -9564,6 +9590,18 @@ private final class TestDisplay: SimulatorDisplay {
     func beginResize() { isResizing = true }
     func endResize() { isResizing = false }
     func disconnect() { disconnectCount += 1; onDisconnect() }
+    /// Holds each removal of the native input until `completeStop(throwing:)`.
+    var holdsStop = false
+    var heldStop: CheckedContinuation<Void, any Error>?
+    private(set) var stopCount = 0
+    func completeStop(throwing error: (any Error)? = nil) {
+        if let error { heldStop?.resume(throwing: error) } else { heldStop?.resume() }
+        heldStop = nil
+    }
+    func stop() async throws {
+        stopCount += 1
+        if holdsStop { try await withCheckedThrowingContinuation { heldStop = $0 } }
+    }
 }
 
 /// Records "input <route>" and "output <route>" requests; tests report external changes.

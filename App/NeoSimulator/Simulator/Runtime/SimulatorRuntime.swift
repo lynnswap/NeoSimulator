@@ -1491,6 +1491,10 @@ protocol SimulatorDisplay: AnyObject {
     func beginResize()
     func endResize()
     func disconnect()
+    /// Disconnects, then removes the native input services the display owns once they have sent the input they
+    /// accepted. Every removal is attempted and their failures are thrown together, unless the device has shut down;
+    /// the input owners keep what they could not remove, which the next call removes again.
+    func stop() async throws
 }
 
 extension SimulatorDisplay {
@@ -1915,24 +1919,26 @@ final class SimulatorConnection: SimulatorDisplay {
         onPropertiesChange = nil
         hidClient = nil
         keyboardResponder?.detach()
-        if let keyboard {
-            keyboard.setEnabled(false, for: self)
-            if ownsKeyboard {
-                Task {
-                    do { try await keyboard.stop() } catch {
-                        hostLog("Could not remove the native keyboard services: \(error.localizedDescription)")
-                    }
-                }
-            }
-        }
+        keyboard?.setEnabled(false, for: self)
         trackpadInput?.isEnabled = false
-        if let trackpad {
-            Task {
-                do { try await trackpad.stop() } catch {
-                    hostLog("Could not remove the native trackpad services: \(error.localizedDescription)")
-                }
-            }
+    }
+    func stop() async throws {
+        disconnect()
+        var failures: [String] = []
+        if ownsKeyboard, let keyboard {
+            do { try await keyboard.stop() }
+            catch { failures.append("Could not remove the native keyboard services: \(error.localizedDescription)") }
         }
+        if let trackpad {
+            do { try await trackpad.stop() }
+            catch { failures.append("Could not remove the native trackpad services: \(error.localizedDescription)") }
+        }
+        guard !failures.isEmpty else { return }
+        let failure = HostError.operation(failures.joined(separator: "\n"))
+        // Only a shut-down guest (SimDeviceState 1) no longer holds the input. Shutting down (4) and a state that
+        // cannot be read (read as 0) keep the failure, and the services for the next call.
+        guard device.state == 1 else { throw failure }
+        hostLog(failure.localizedDescription)
     }
     isolated deinit { disconnect() }
 
