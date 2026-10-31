@@ -2,9 +2,9 @@ import AppKit
 @_spi(NeoSimulator) import XcodeSimulatorHost
 
 /// A device's CoreDevice pasteboard connection. Transfers run one at a time in the order they were requested or
-/// observed, except automatic ones that a later change made stale, so that both pasteboards end up with the latest
-/// change. Requested transfers report the events SimPasteboardPlus reports, and automatic ones their own, so that a
-/// requested transfer queued behind an automatic one, as after synchronization turns off, keeps its own result.
+/// observed, and queued automatic transfers yield to later observed copies. Requested transfers report the events
+/// SimPasteboardPlus reports, and automatic ones their own, so that a requested transfer queued behind an automatic
+/// one, as after synchronization turns off, keeps its own result.
 @MainActor
 final class NativePasteboardConnection: SimulatorPasteboard {
     private let transport: any PasteboardTransport
@@ -95,15 +95,15 @@ final class NativePasteboardConnection: SimulatorPasteboard {
     }
 
     /// Queues the write of the device's change, which does not run if anything but this connection changes the Mac
-    /// pasteboard first.
-    private func deviceDidChange(_ write: @escaping @MainActor () async throws -> Int, during synchronization: Int) {
+    /// pasteboard first. A write that leaves a later Mac change in place reports nothing.
+    private func deviceDidChange(_ write: @escaping @MainActor () async throws -> Int?, during synchronization: Int) {
         guard countChange(during: synchronization) else { return }
         replaceableGeneration = pasteboard.changeCount
         enqueue(during: synchronization) { [weak self, pasteboard] in
             // A Mac copy changes the count at once, but its observation reports the copy only later.
             guard pasteboard.changeCount == self?.replaceableGeneration else { return nil }
             do {
-                let generation = try await write()
+                guard let generation = try await write() else { return nil }
                 self?.didWrite(generation)
                 return .appliedAutomatically(generation: generation)
             } catch { return .automaticTransferFailed(.get, error) }

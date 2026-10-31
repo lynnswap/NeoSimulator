@@ -3372,6 +3372,29 @@ struct InputFocusTests {
                 && [connecting, sending, receiving].allSatisfy { $0.observations == 2 }
         }
 
+        // A device copy whose write leaves a later Mac change in place replaces nothing, and a Get requested behind it
+        // while synchronization is off keeps its own result. The copy reaches no other device even though
+        // synchronization is on again when the write ends.
+        var resumeSuperseded: CheckedContinuation<Void, Never>?
+        let supersededChange = try #require(receiving.reportDeviceChange)
+        supersededChange {
+            await withCheckedContinuation { resumeSuperseded = $0 }
+            return nil
+        }
+        try await wait { resumeSuperseded != nil }
+        sync.toggle()
+        try await wait { [connecting, sending, receiving].allSatisfy { $0.observations == 0 } }
+        var gets: [String] = []
+        receiving.readError = HostError.operation("requested get failure")
+        sessions[2].transferPasteboard(.get) { gets.append($0.localizedDescription) }
+        sync.toggle()
+        try await wait { [connecting, sending, receiving].allSatisfy { $0.observations == 2 } }
+        resumeSuperseded?.resume()
+        try await wait { gets.count == 1 }
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(gets == ["Could not get the simulator's pasteboard: requested get failure"] && sending.transfers == [.send])
+        receiving.readError = nil
+
         // A device's automatic copy reaches the other devices and is not sent back to it.
         let deviceChange = try #require(receiving.reportDeviceChange)
         func copyOnDevice() -> Int {
@@ -3383,7 +3406,7 @@ struct InputFocusTests {
         try await wait { sending.transfers == [.send, .send] }
         sessions[2].sendSynchronizedPasteboard()
         try await Task.sleep(for: .milliseconds(50))
-        #expect(sending.transfers == [.send, .send] && receiving.transfers == [.send])
+        #expect(sending.transfers == [.send, .send] && receiving.transfers == [.send, .get])
 
         // Automatic transfers that started before synchronization turned off finish after the transfers requested
         // next: the connecting device's first send, a send of a Mac change, and a write of a device change.
@@ -10208,7 +10231,7 @@ private final class TestPasteboardTransport: PasteboardTransport {
     private(set) var observations = 0
     private(set) var deviceObservations = 0
     /// The latest observations' change reports.
-    private(set) var reportDeviceChange: (@MainActor (@escaping @MainActor () async throws -> Int) -> Void)?
+    private(set) var reportDeviceChange: (@MainActor (@escaping @MainActor () async throws -> Int?) -> Void)?
     private(set) var reportMacChange: (@MainActor (@escaping @MainActor () async throws -> Void) -> Void)?
     private var deviceObservationEnd: AsyncThrowingStream<Never, any Error>.Continuation?
     private var macObservationEnd: AsyncThrowingStream<Never, any Error>.Continuation?
@@ -10225,7 +10248,7 @@ private final class TestPasteboardTransport: PasteboardTransport {
         if let error { throw error }
     }
     func observeDeviceChanges(into pasteboard: NSPasteboard,
-                              _ changed: @escaping @MainActor (@escaping @MainActor () async throws -> Int) -> Void) async throws {
+                              _ changed: @escaping @MainActor (@escaping @MainActor () async throws -> Int?) -> Void) async throws {
         let end = AsyncThrowingStream<Never, any Error>.makeStream()
         deviceObservations += 1
         deviceObservationEnd = end.continuation
