@@ -9,7 +9,9 @@ struct ManagerDeviceSettingsView: View {
     private var device: InventoryDevice? { model.device }
     private var settings: SimulatorDeviceSettings? { model.settings }
     private var issue: String? { model.issue }
-    private var isBusy: Bool { manager.isBusy || device.map { manager.managingDeviceIDs.contains($0.id) } == true }
+    private var holdsEdits: Bool {
+        manager.holdsSettingsEdits || device.map { manager.managingDeviceIDs.contains($0.id) } == true
+    }
     private func apply(_ setting: SimulatorDeviceSetting) {
         guard let identifier = device?.id else { return }
         manager.setDeviceSetting(setting, for: identifier)
@@ -72,7 +74,7 @@ struct ManagerDeviceSettingsView: View {
         }
         .formStyle(.grouped)
         .labelStyle(.titleAndIcon)
-        .disabled(isBusy)
+        .disabled(holdsEdits)
     }
 
     private var appearanceRows: some View {
