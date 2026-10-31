@@ -49,6 +49,9 @@ public struct SimulatorHostDevice: Sendable, Equatable {
     public let productFamily: String
     public let state: String
     public let ownerXcodeURL: URL?
+    /// The Xcode whose catalog listed this entry as available during an inventory read, if any.
+    /// It records where the entry came from; `ownerXcodeURL` remains the renderer that owns the device.
+    public let catalogXcodeURL: URL?
     public let deviceSetPath: String?
     public let modelIdentifier: String?
     /// CoreSimulator's device-type identifier, used with a runtime to validate companion creation.
@@ -62,7 +65,7 @@ public struct SimulatorHostDevice: Sendable, Equatable {
     /// CoreDevice's matching default-set record, including host connection information.
     public let coreDevice: CoreDeviceDevice?
 
-    public init(identifier: String, name: String, descriptiveName: String, runtimeIdentifier: String, runtimeName: String, productFamily: String, state: String, ownerXcodeURL: URL? = nil, deviceSetPath: String? = nil, modelIdentifier: String? = nil, deviceTypeIdentifier: String? = nil, isAvailable: Bool = true, lastUsedAt: Date? = nil, capabilities: Set<String> = [], pairIdentifiers: Set<String> = [], activePairedDeviceID: DeviceInventoryID? = nil, coreDevice: CoreDeviceDevice? = nil) {
+    public init(identifier: String, name: String, descriptiveName: String, runtimeIdentifier: String, runtimeName: String, productFamily: String, state: String, ownerXcodeURL: URL? = nil, catalogXcodeURL: URL? = nil, deviceSetPath: String? = nil, modelIdentifier: String? = nil, deviceTypeIdentifier: String? = nil, isAvailable: Bool = true, lastUsedAt: Date? = nil, capabilities: Set<String> = [], pairIdentifiers: Set<String> = [], activePairedDeviceID: DeviceInventoryID? = nil, coreDevice: CoreDeviceDevice? = nil) {
         self.identifier = identifier
         self.name = name
         self.descriptiveName = descriptiveName
@@ -71,6 +74,7 @@ public struct SimulatorHostDevice: Sendable, Equatable {
         self.productFamily = productFamily
         self.state = state
         self.ownerXcodeURL = ownerXcodeURL
+        self.catalogXcodeURL = catalogXcodeURL
         self.deviceSetPath = deviceSetPath
         self.modelIdentifier = modelIdentifier
         self.deviceTypeIdentifier = deviceTypeIdentifier
@@ -1045,7 +1049,8 @@ enum SimulatorDeviceCatalog {
         catch { onFailure(error); return devices }
     }
 
-    static func decode(_ data: Data, deviceSetPath: String? = nil, includeUnavailable: Bool = false) throws -> [SimulatorHostDevice] {
+    static func decode(_ data: Data, deviceSetPath: String? = nil, includeUnavailable: Bool = false,
+                       catalogXcodeURL: URL? = nil) throws -> [SimulatorHostDevice] {
         let catalog = try JSONDecoder().decode(Catalog.self, from: data)
         let supportedFamilies: Set<String> = ["iPhone", "iPad", "Apple TV", "Apple Watch", "Apple Vision"]
         let supportedTypes = Dictionary(uniqueKeysWithValues: catalog.devicetypes.filter { supportedFamilies.contains($0.productFamily) }.map { ($0.identifier, $0) })
@@ -1072,6 +1077,7 @@ enum SimulatorDeviceCatalog {
                     runtimeName: runtimeName,
                     productFamily: type?.productFamily ?? "",
                     state: device.state,
+                    catalogXcodeURL: available ? catalogXcodeURL : nil,
                     deviceSetPath: deviceSetPath,
                     modelIdentifier: type?.modelIdentifier,
                     deviceTypeIdentifier: device.deviceTypeIdentifier,

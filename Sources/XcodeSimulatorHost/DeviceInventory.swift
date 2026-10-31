@@ -325,7 +325,8 @@ struct SimulatorInventoryReader {
             let paths: [String?] = testingDeviceSetPath.map { [nil, $0] } ?? [nil]
             for path in paths {
                 do {
-                    for device in try SimulatorDeviceCatalog.decode(readCatalog(xcode, path), deviceSetPath: path, includeUnavailable: true) {
+                    for device in try SimulatorDeviceCatalog.decode(readCatalog(xcode, path), deviceSetPath: path,
+                                                                    includeUnavailable: true, catalogXcodeURL: xcode) {
                         let item = InventoryDevice.simulator(device)
                         if let position = positions[item.id] {
                             if !devices[position].isAvailable && item.isAvailable { devices[position] = item }
@@ -350,7 +351,7 @@ extension SimulatorHostDevice {
     func inventoryCopy(ownerXcodeURL: URL?, capabilities: Set<String>? = nil, coreDevice: CoreDeviceDevice? = nil) -> Self {
         Self(identifier: identifier, name: name, descriptiveName: descriptiveName, runtimeIdentifier: runtimeIdentifier,
              runtimeName: runtimeName, productFamily: productFamily, state: state, ownerXcodeURL: ownerXcodeURL,
-             deviceSetPath: deviceSetPath, modelIdentifier: modelIdentifier, deviceTypeIdentifier: deviceTypeIdentifier,
+             catalogXcodeURL: catalogXcodeURL, deviceSetPath: deviceSetPath, modelIdentifier: modelIdentifier, deviceTypeIdentifier: deviceTypeIdentifier,
              isAvailable: isAvailable,
              lastUsedAt: lastUsedAt, capabilities: capabilities ?? coreDevice?.capabilities ?? self.capabilities, pairIdentifiers: pairIdentifiers,
              activePairedDeviceID: activePairedDeviceID, coreDevice: coreDevice ?? self.coreDevice)
