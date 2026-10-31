@@ -83,6 +83,78 @@ struct ManagerModelTests {
         #expect(Set(recent.devices.prefix(4).map(\.id)) == Set(grouped.sections[0].devices.map(\.id)))
     }
 
+    @Test func deviceKitActiveStateOrdersAndDrawsRowsWithoutChangingSelection() async throws {
+        _ = NSApplication.shared
+        let domain = "NeoSimulator.SidebarFixture.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
+        // One section, so availability and the Active priority order rows across it.
+        defaults.set(DeviceBrowserPresentation.SortOrder.fidelity.rawValue, forKey: "SidebarSortOrder")
+        let ids = Dictionary(uniqueKeysWithValues: ["Alpha", "Mike", "Zulu", "Echo"].map { ($0, UUID()) })
+        // Booting gives Alpha and Mike Neo's own active artwork; Echo is unavailable.
+        let data = try JSONSerialization.data(withJSONObject: ["result": ["devices": [
+            ("Alpha", "connected", ["bootState": "booting"]), ("Mike", "connected", ["bootState": "booting"]),
+            ("Zulu", "connected", [:]), ("Echo", "unavailable", [:]),
+        ].map { name, connection, state in
+            ["identifier": ids[name]!.uuidString, "properties": ["hardware": ["reality": "physical"],
+                "state": state.merging(["name": name]) { $1 }, "connection": ["state": connection]]]
+        }]])
+        let model = SimulatorManagerModel(source: ManagerModelSource(devices: try CoreDeviceInventoryDecoder.decode(data).map(InventoryDevice.remote)))
+        model.settings.setReadingSuspended(true)
+        await model.refresh()
+        let controller = ManagerWindowController(model: model, screens: DeviceScreens(model: model),
+                                                 menus: MenuController(application: nil), defaults: defaults)
+        controller.window?.setFrameAutosaveName("")
+        defer { controller.window?.close() }
+        // The unshown window is only tall enough for every row when an earlier run saved its autosave frame.
+        controller.window?.setContentSize(NSSize(width: 1040, height: 700))
+        let content = try #require(controller.window?.contentView)
+        content.layoutSubtreeIfNeeded()
+        let outline = try #require(inspectorViews(content).compactMap { $0 as? NSOutlineView }.first)
+        controller.selectDevice(.coreDevice(ids["Mike"]!.uuidString))
+        func rows() -> [String: Int] {
+            Dictionary(uniqueKeysWithValues: (0..<outline.numberOfRows).compactMap { row in
+                outline.item(atRow: row).flatMap { controller.outlineView(outline, typeSelectStringFor: nil, item: $0) }.map { ($0, row) }
+            })
+        }
+        func order() -> [String] { rows().sorted { $0.value < $1.value }.map(\.key) }
+        func artwork() -> [String: Bool] {
+            content.layoutSubtreeIfNeeded()
+            return rows().compactMapValues { row in
+                outline.view(atColumn: 0, row: row, makeIfNecessary: false)?.subviews
+                    .compactMap { $0 as? NSHostingView<SidebarDeviceArtwork> }.first?.rootView.isActive
+            }
+        }
+        func update(_ change: () -> Void, until expected: [String]) async throws {
+            change()
+            let updated = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                MainActor.assumeIsolated { order() == expected }
+            }, object: nil)
+            try #require(await XCTWaiter.fulfillment(of: [updated], timeout: 5) == .completed)
+            #expect(controller.selectedIdentifiers == [.coreDevice(ids["Mike"]!.uuidString)])
+            #expect(outline.selectedRow == rows()["Mike"])
+        }
+        #expect(order() == ["Alpha", "Mike", "Zulu", "Echo"])
+        #expect(artwork() == ["Alpha": true, "Mike": true, "Zulu": false, "Echo": false])
+
+        // Native false overrides Neo's booting artwork; unknown Mike keeps it without being promoted or demoted.
+        try await update({ model.activeStatesDidChange(DeviceActiveStates([ids["Zulu"]!: true, ids["Alpha"]!: false, ids["Echo"]!: true])) },
+                         until: ["Zulu", "Alpha", "Mike", "Echo"])
+        #expect(artwork() == ["Alpha": false, "Mike": true, "Zulu": true, "Echo": true])
+        // The same order still redraws the row whose value changed.
+        model.activeStatesDidChange(DeviceActiveStates([ids["Zulu"]!: true, ids["Alpha"]!: false, ids["Mike"]!: false, ids["Echo"]!: true]))
+        let redrawn = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            MainActor.assumeIsolated { artwork()["Mike"] == false }
+        }, object: nil)
+        try #require(await XCTWaiter.fulfillment(of: [redrawn], timeout: 5) == .completed)
+        #expect(order() == ["Zulu", "Alpha", "Mike", "Echo"])
+
+        try await update({ model.activeStateObservationFailed(ManagerModelSource.Failure.unavailable) },
+                         until: ["Alpha", "Mike", "Zulu", "Echo"])
+        #expect(artwork() == ["Alpha": true, "Mike": true, "Zulu": false, "Echo": false])
+        #expect(model.backgroundIssue?.contains("Active devices are unavailable") == true)
+    }
+
     @Test(arguments: [(nil as String?, "Other"), ("  ßeta  ", "SS"), ("\nAlpha", "#"), ("", "#")])
     func sidebarNameGroupsUseTheReportedFirstCharacter(_ name: String?, _ expected: String) throws {
         var state: [String: String] = [:]
@@ -1429,19 +1501,22 @@ struct ManagerModelTests {
 
         manager.openDevice(device.id)
         #expect(await events.next() == .open(device.id))
+        // A device that stops before the request reaches its host must not boot beside these edits.
+        #expect(await source.lastOpenBootIfNeeded == false)
         manager.openDevice(queued.id)
         #expect(manager.openingDeviceIDs == [device.id, queued.id])
+        #expect(manager.isBusy && !manager.holdsSettingsEdits)
         manager.setDeviceSetting(.appearance("dark"), for: device.id)
         manager.setDeviceSetting(.contentSize("large"), for: device.id)
         #expect(manager.settings.settings?.appearance == "dark")
         #expect(manager.settings.settings?.contentSize == "large")
         manager.cancelOpening(queued.id)
+        // The running device's screen is still connecting when the first edit reaches the device.
+        #expect(await events.next() == .write(device.id))
         manager.cancelOpening(device.id)
         #expect(source.cancelledOpenIDs == [device.id, queued.id])
         // The lower IPC deliberately returns success after cancellation.
         await source.completeOpen()
-        #expect(await events.next() == .write(device.id))
-        #expect(manager.openingDeviceIDs.isEmpty)
         await source.completeWrite()
         #expect(await events.next() == .write(device.id))
         let inputs = await source.writeInputs
@@ -1459,6 +1534,7 @@ struct ManagerModelTests {
         await source.completeWrite()
         #expect(await events.next() == .quit)
         try await quitting.value
+        #expect(manager.openingDeviceIDs.isEmpty)
         #expect(manager.settings.settings?.appearance == "dark")
         #expect(manager.settings.settings?.contentSize == "large")
         #expect(await source.readCount == 1)
@@ -1468,6 +1544,26 @@ struct ManagerModelTests {
         await source.completeOpen()
         try await manager.quitRenderer(keepingDevicesRunning: true)
         #expect(await events.next() == .quit)
+    }
+
+    @Test func reopeningDuringAShutDownCloseBootsTheDeviceAgain() async throws {
+        let device = simulator()
+        let source = ManagerModelSource(devices: [device])
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source)
+        await manager.refresh()
+        let cleanup = AsyncStream<Void>.makeStream()
+        manager.closeDevice(device.id, keepingDeviceRunning: false, after: Task { for await _ in cleanup.stream { break } })
+        // The inventory still reports the device running while its close waits for the screen's cleanup.
+        manager.openDevice(device.id)
+        await source.setDevices([simulator(state: "Shutdown")])
+        cleanup.continuation.yield(())
+        #expect(await events.next() == .close(device.id))
+        #expect(await events.next() == .open(device.id))
+        #expect(await source.lastOpenBootIfNeeded == true)
+        #expect(manager.holdsSettingsEdits)
+        await source.completeOpen()
+        try await manager.quitRenderer(keepingDevicesRunning: true)
     }
 
     @Test func failedOpenCancellationPreventsQuitAndAllowsRetry() async throws {
@@ -2273,6 +2369,7 @@ actor ManagerModelSource: SimulatorManagerSource {
     private(set) var readCount = 0
     private(set) var quitCount = 0
     private(set) var lastOpenXcodeURL: URL?
+    private(set) var lastOpenBootIfNeeded: Bool?
     private(set) var artworkXcodeRequests: [DeviceInventoryID] = []
     private(set) var installedXcodeReadCount = 0
     private(set) var managementRequests = 0
@@ -2382,9 +2479,10 @@ actor ManagerModelSource: SimulatorManagerSource {
     nonisolated func makeScreenOpenRequest(for deviceID: DeviceInventoryID) -> SimulatorScreenOpenRequest {
         SimulatorScreenOpenRequest(deviceID: deviceID) { self.cancelledOpens.withLock { $0.insert(deviceID) } }
     }
-    func openDevice(_ request: SimulatorScreenOpenRequest, xcodeURL: URL?) async throws {
+    func openDevice(_ request: SimulatorScreenOpenRequest, xcodeURL: URL?, bootIfNeeded: Bool) async throws {
         let deviceID = request.deviceID
         lastOpenXcodeURL = xcodeURL
+        lastOpenBootIfNeeded = bootIfNeeded
         try await withCheckedThrowingContinuation { waiting in
             openContinuation = waiting
             continuation.yield(.open(deviceID))

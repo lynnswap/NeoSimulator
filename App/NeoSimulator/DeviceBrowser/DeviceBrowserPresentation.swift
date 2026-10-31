@@ -60,7 +60,7 @@ struct DeviceBrowserPresentation {
         }
     }
 
-    init(devices: [InventoryDevice], sortOrder: SortOrder,
+    init(devices: [InventoryDevice], sortOrder: SortOrder, activeStates: DeviceActiveStates = DeviceActiveStates(),
          calendar: Calendar = .current, locale: Locale = .current, now: Date = .now) {
         let formatter = DateFormatter()
         formatter.calendar = calendar
@@ -114,7 +114,9 @@ struct DeviceBrowserPresentation {
         case .platform: keys.sort()
         }
         sections = keys.map { key in
-            let members = (grouped[key] ?? []).sorted { Self.precedes($0, $1, order: sortOrder, calendar: calendar, now: now) }
+            let members = (grouped[key] ?? []).sorted {
+                Self.precedes($0, $1, order: sortOrder, activeStates: activeStates, calendar: calendar, now: now)
+            }
             let title: String = switch sortOrder {
             case .availability: key == "available" ? "Available" : "Unavailable"
             case .fidelity: Self.realityTitle(key)
@@ -213,7 +215,7 @@ struct DeviceBrowserPresentation {
     }
 
     private static func precedes(_ lhs: InventoryDevice, _ rhs: InventoryDevice, order: SortOrder,
-                                 calendar: Calendar, now: Date) -> Bool {
+                                 activeStates: DeviceActiveStates, calendar: Calendar, now: Date) -> Bool {
         let names = (reportedName(lhs) ?? "").localizedCaseInsensitiveCompare(reportedName(rhs) ?? "")
         if order == .name, names != .orderedSame { return names == .orderedAscending }
         if order == .operatingSystem {
@@ -224,9 +226,12 @@ struct DeviceBrowserPresentation {
             default: break
             }
         }
-        // Inventory does not contain DeviceKit's transient presentation-active state.
         let aAvailable = isAvailable(lhs), bAvailable = isAvailable(rhs)
         if aAvailable != bAvailable { return aAvailable }
+        // Only DeviceKit's reported Active value promotes a device. One without a value keeps the residual order,
+        // as an inactive device does, so the order stays transitive.
+        let aActive = activeStates.isActive(lhs) == true, bActive = activeStates.isActive(rhs) == true
+        if aActive != bActive { return aActive }
         if order != .recent {
             let aProvisioning = isBeingProvisioned(lhs), bProvisioning = isBeingProvisioned(rhs)
             if aProvisioning != bProvisioning { return aProvisioning }

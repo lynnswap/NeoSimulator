@@ -424,15 +424,18 @@ public actor SimulatorHostController {
         screenOpenCancellations.request(for: deviceID)
     }
 
+    /// Opens the requested simulator's screen. With `bootIfNeeded` false, the request only attaches a running
+    /// simulator: it does not start one that stopped before the request reached its host.
     @_spi(NeoSimulator)
-    public func openDevice(_ request: SimulatorScreenOpenRequest, xcodeURL: URL? = nil) async throws {
+    public func openDevice(_ request: SimulatorScreenOpenRequest, xcodeURL: URL? = nil, bootIfNeeded: Bool = true) async throws {
         _ = try request.deviceID.simulatorAddress
         try await withTaskCancellationHandler {
             try await operation {
                 try await self.screenOpen(request) {
                     // An explicit request supersedes the saved startup selection.
                     await self.supersedeStartupSelection()
-                    try await self.openDeviceBody(deviceID: request.deviceID, xcodeURL: xcodeURL, purpose: .requested)
+                    try await self.openDeviceBody(deviceID: request.deviceID, xcodeURL: xcodeURL, bootIfNeeded: bootIfNeeded,
+                                                  purpose: .requested)
                 }
             }
         } onCancel: { request.cancel() }
