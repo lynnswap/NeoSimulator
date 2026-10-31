@@ -834,6 +834,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                         let nativeCanvas: NativeDeviceCanvas?
                         var keyboard: NativeDeviceKeyboard?
                         var trackpad: NativeDeviceTrackpad?
+                        var touchRoute: NativeTouchRoute?
                         if device.deviceTypeIdentifier == "com.apple.CoreSimulator.SimDeviceType.iPhone-Duo", device.deviceSetPath == nil {
                             nativeCanvas = try await NativeDeviceCanvas.connect(simulatorUDID: device.identifier)
                         } else {
@@ -846,10 +847,19 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                             if device.deviceSetPath == nil, !capabilities.hasCrownOrDial, !capabilities.hasUserInterfacePlugin {
                                 trackpad = try await nativeTrackpad(of: device)
                             }
+                            // Once native keyboard or trackpad input starts, the guest drops SimulatorKit's touches and
+                            // buttons, so they go to the native touchscreen and buttons too. The native touchscreen has
+                            // no pressure, so a screen with touch pressure keeps SimulatorKit's touches.
+                            if keyboard != nil || trackpad != nil, capabilities.isPhoneOrPad,
+                               !capabilities.supportsFeature(DeviceCapabilities.touchPressure) {
+                                touchRoute = try await nativeTouchRoute(of: device)
+                                if touchRoute == nil { keyboard = nil; trackpad = nil }
+                            }
                         }
                         try Task.checkCancellation()
                         let connection = try SimulatorConnection(device: device, screen: screen, runtime: runtime,
-                                                                 nativeCanvas: nativeCanvas, keyboard: keyboard, trackpad: trackpad)
+                                                                 nativeCanvas: nativeCanvas, keyboard: keyboard, trackpad: trackpad,
+                                                                 touchRoute: touchRoute)
                         if nativeCanvas != nil { capabilities.controlsOrientation = false }
                         let session = DeviceSession(
                             device: Self.describe(device), capabilities: capabilities,
@@ -935,6 +945,25 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             throw CancellationError()
         } catch {
             hostLog("\(device.name) keeps SimulatorKit's digitizer, which drops trackpad scrolling and pinches: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    /// The native route of the integrated screen's touches and buttons. Without it, the screen keeps SimulatorKit's
+    /// keyboard and touches and no native trackpad, since the guest drops SimulatorKit's touches and buttons once native
+    /// input starts.
+    private func nativeTouchRoute(of device: SimulatorDevice) async throws -> NativeTouchRoute? {
+        do {
+            let interface = try await runtime.touchInterface()
+            let input = try await NativeDeviceScreenInput.connect(simulatorUDID: device.identifier)
+            input.onFailure = { [name = device.name] error in
+                hostLog("Could not send touches to \(name): \(error.localizedDescription)")
+            }
+            return NativeTouchRoute(input: input, interface: interface)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            hostLog("\(device.name) keeps SimulatorKit's keyboard and touches, without native trackpad input: \(error.localizedDescription)")
             return nil
         }
     }

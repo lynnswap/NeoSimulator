@@ -118,6 +118,16 @@ final class SimulatorRuntime {
             interface: coreSimulator,
             developerDirectory: xcodeURL.appendingPathComponent("Contents/Developer").path, path: path)
     }
+
+    private static var touchPreparation: Task<SimulatorTouchInterface, any Error>?
+
+    /// The SimulatorKit members that move a digitizer's touches to a device's native touchscreen, prepared once for
+    /// the process's SimulatorKit. A failure to prepare them stays for the process.
+    func touchInterface() async throws -> SimulatorTouchInterface {
+        let preparation = Self.touchPreparation ?? Task { try await SimulatorTouchInterface(runtime: .shared) }
+        Self.touchPreparation = preparation
+        return try await CoreDeviceRuntime.preparedValue(of: preparation)
+    }
 }
 
 /// SimulatorKit display members and the IDEPlaygroundSimulator display factory.
@@ -861,6 +871,102 @@ struct SimulatorInputInterface {
     }
 }
 
+/// The SimulatorKit members that give a digitizer's interpreted touches to a device's native touchscreen through a
+/// `SimDigitizerInputViewDelegate` whose methods are this host's callbacks.
+@MainActor
+struct SimulatorTouchInterface {
+    static let delegateProtocol = "SimulatorKit.SimDigitizerInputViewDelegate"
+
+    /// `SimDigitizerInputView.delegate`, an optional `SimDigitizerInputViewDelegate` that the view keeps weakly.
+    let delegate: NativeSwiftMethod<() -> NativeSwiftValue?>
+    let setDelegate: NativeSwiftMethod<(NativeSwiftValue?) -> Void>
+    /// The conventions of the delegate's resilient event arguments, which are passed indirectly.
+    let eventABIs: [NativeSwiftType: NativeType]
+    /// `SimDigitizerInputView.TouchEvent`'s `touch1`, `touch2`, `type`, and `edge`.
+    private let firstPoint: NativeSwiftMethod<() -> NativeSwiftValue>
+    private let secondPoint: NativeSwiftMethod<() -> NativeSwiftValue>
+    private let eventType: NativeSwiftMethod<() -> Int>
+    private let edge: NativeSwiftMethod<() -> Int>
+    /// `SimDigitizerInputView.DeviceUnitPoint`'s coordinates.
+    private let x: NativeSwiftMethod<() -> CGFloat>
+    private let y: NativeSwiftMethod<() -> CGFloat>
+
+    init(runtime: ABIRuntime) async throws {
+        let digitizer = try await runtime.resolve(.swift(.type("SimulatorKit.SimDigitizerInputView")))
+        delegate = try await digitizer.resolve(.swift(.getter("delegate", as: (() -> NativeSwiftValue?).self)))
+        setDelegate = try await digitizer.resolve(.swift(.setter("delegate", as: ((NativeSwiftValue?) -> Void).self)))
+        let event = try await runtime.resolve(.swift(.type("SimulatorKit.SimDigitizerInputView.TouchEvent")))
+        let pressureEvent = try await runtime.resolve(.swift(.type("SimulatorKit.SimDigitizerInputView.PressureEvent")))
+        let scrollEvent = try await runtime.resolve(.swift(.type("SimulatorKit.SimDigitizerInputView.ScrollEvent")))
+        let point = try await runtime.resolve(.swift(.type("SimulatorKit.SimDigitizerInputView.DeviceUnitPoint")))
+        let optionalPoint = try await runtime.resolve(.swift(.type("Swift.Optional", genericArguments: [.type(point)])))
+        // SimulatorKit does not export the descriptors of the imported C types of `type` and `edge`, integers returned
+        // in a register.
+        let int = try await runtime.resolve(.swift(.type("Swift.Int")))
+        eventABIs = try Dictionary(uniqueKeysWithValues: [event, pressureEvent, scrollEvent]
+            .map { ($0, try NativeType.opaque(named: $0.name)) })
+        let abis = try eventABIs.merging([point, optionalPoint].map { ($0, try NativeType.opaque(named: $0.name)) }) { $1 }
+            .merging([int: .int]) { $1 }
+        firstPoint = try await event.resolve(.swift(.getter("touch1", as: (() -> NativeSwiftValue).self,
+            valueABIs: abis, receiverABI: abis[event])))
+        secondPoint = try await event.resolve(.swift(.getter("touch2", as: (() -> NativeSwiftValue).self,
+            valueABIs: abis, receiverABI: abis[event])))
+        eventType = try await event.resolve(.swift(.getter("type.getter : __C.NSEventType", as: (() -> Int).self,
+            valueABIs: abis, receiverABI: abis[event])))
+        edge = try await event.resolve(.swift(.getter("edge.getter : __C.IndigoHIDEdge", as: (() -> Int).self,
+            valueABIs: abis, receiverABI: abis[event])))
+        x = try await point.resolve(.swift(.getter("x", as: (() -> CGFloat).self, receiverABI: abis[point])))
+        y = try await point.resolve(.swift(.getter("y", as: (() -> CGFloat).self, receiverABI: abis[point])))
+    }
+
+    /// A touch event of a digitizer, in unit coordinates from the top-left corner of the screen in its own orientation,
+    /// which SimulatorKit also sends in its Indigo messages. Nil for an event that changes no touch.
+    func touch(_ event: NativeSwiftBorrowedValue) throws -> NativeDigitizerTouch? {
+        guard let phase = Self.phase(try unsafe eventType.unsafeInvoke(on: event)) else { return nil }
+        let second = try unsafe secondPoint.unsafeInvoke(on: event).copyEnumPayloadAndWait(forCase: "some")
+        return NativeDigitizerTouch(point: try point(unsafe firstPoint.unsafeInvoke(on: event)),
+                                    secondPoint: try second.map(point), phase: phase,
+                                    edge: Self.edge(try unsafe edge.unsafeInvoke(on: event)))
+    }
+
+    /// The touch phase of a touch event's `NSEvent.EventType`. SimulatorKit's own delegate does not read the event's
+    /// phase: it passes the type to `IndigoHIDMessageForMouseNSEvent`, which starts a touch for a mouse-down, ends it for
+    /// a mouse-up, and moves it for a drag. Other types change no touch.
+    static func phase(_ type: Int) -> RemoteDeviceTouchPhase? {
+        switch NSEvent.EventType(rawValue: UInt(bitPattern: type)) {
+        case .leftMouseDown, .rightMouseDown: .began
+        case .leftMouseUp, .rightMouseUp: .ended
+        case .leftMouseDragged, .rightMouseDragged: .moved
+        default: nil
+        }
+    }
+
+    private func point(_ value: NativeSwiftValue) throws -> CGPoint {
+        CGPoint(x: try unsafe x.unsafeInvoke(on: value), y: try unsafe y.unsafeInvoke(on: value))
+    }
+
+    /// The edge of an `IndigoHIDEdge`. SimulatorKit's digitizer measures a touch's start from each edge of its
+    /// unflipped bounds and gives the nearest as 1 for the top, 2 for the left, 3 for the bottom, and 4 for the right.
+    /// Other values mark no edge.
+    static func edge(_ rawValue: Int) -> RemoteDeviceTouchEdge {
+        switch rawValue {
+        case 1: .top
+        case 2: .left
+        case 3: .bottom
+        case 4: .right
+        default: .none
+        }
+    }
+}
+
+/// A touch of a SimulatorKit digitizer, as its delegate receives it.
+struct NativeDigitizerTouch: Equatable {
+    var point: CGPoint
+    var secondPoint: CGPoint?
+    var phase: RemoteDeviceTouchPhase
+    var edge: RemoteDeviceTouchEdge
+}
+
 /// SimPasteboardPlus, which CoreSimulator loads: the host end of a device's
 /// pasteboard connection, which Simulator.app and `simctl pbsync` use.
 @MainActor
@@ -1221,6 +1327,25 @@ enum DeviceButton: UInt32 {
     case actionSting = 3001
     /// The Action button on devices with the `com.apple.hid.staccato` feature.
     case actionStaccato = 3002
+
+    /// The HID usage page and usage that CoreDevice's and DeviceKit's buttons send for this button.
+    var nativeUsage: (page: Int, usage: Int) {
+        switch self {
+        case .home: (0x0c, 0x40)
+        case .lock: (0x0c, 0x30)
+        // AL Digital Wallet.
+        case .applePay: (0x0c, 0x1ba)
+        // Eject, which DeviceKit's Toggle Software Keyboard sends.
+        case .softwareKeyboard: (0x0c, 0xb8)
+        // Voice Command.
+        case .siri: (0x0c, 0xcf)
+        case .side: (0x0c, 0x95)
+        // User Defined 1 on Apple's vendor keyboard page, which DeviceKit's watchOS Action button sends.
+        case .actionSting: (0xff01, 0x200)
+        // A telephony-page usage, which DeviceKit's iOS Action button sends.
+        case .actionStaccato: (0x0b, 0x2d)
+        }
+    }
 }
 
 /// A button of the Apple TV Remote, by the Indigo HID button number that
@@ -1282,6 +1407,16 @@ enum HIDInput: Hashable {
     static let screenshot = HIDInput.usage(page: 0x0c, usage: 0x65)
     static let volumeUp = HIDInput.usage(page: 0x0c, usage: 0xe9)
     static let volumeDown = HIDInput.usage(page: 0x0c, usage: 0xea)
+
+    /// The HID usage that a device's native button service takes for this input. Nil for the Apple TV Remote's inputs,
+    /// which go to the remote's own targets.
+    var nativeButtonUsage: (page: Int, usage: Int)? {
+        switch self {
+        case .button(let button): button.nativeUsage
+        case .usage(let page, let usage): (Int(page), Int(usage))
+        case .tvRemote, .tvRemoteTouch: nil
+        }
+    }
 }
 
 enum HIDState: UInt32 { case down = 1, up = 2 }
@@ -1541,17 +1676,23 @@ final class SimulatorConnection: SimulatorDisplay {
     /// and owns it; external and app-resizing displays keep SimulatorKit's input.
     private let trackpad: NativeDeviceTrackpad?
     private var trackpadInput: NativeTrackpadInput?
+    /// The device's native touchscreen and buttons, which take the touches that SimulatorKit's digitizer interprets on the
+    /// integrated screen and the device's buttons and HID usages, instead of SimulatorKit's Indigo messages. This
+    /// connection owns them; external and app-resizing displays keep SimulatorKit's input.
+    private let screenInput: NativeDeviceScreenInput?
+    private var digitizerTouches: NativeDigitizerTouches?
 
+    /// A `touchRoute` that the display's digitizer cannot take leaves the screen with SimulatorKit's keyboard and
+    /// touches, without `keyboard` and `trackpad`: the guest drops SimulatorKit's touches and buttons once native input
+    /// starts.
     init(device: SimulatorDevice, screen: (identifier: UInt32, object: AnyObject), runtime: SimulatorRuntime,
          nativeCanvas: NativeDeviceCanvas? = nil, keyboard: NativeDeviceKeyboard? = nil, ownsKeyboard: Bool = true,
-         trackpad: NativeDeviceTrackpad? = nil) throws {
+         trackpad: NativeDeviceTrackpad? = nil, touchRoute: NativeTouchRoute? = nil) throws {
         self.nativeCanvas = nativeCanvas
         self.device = device
         self.runtime = runtime
         self.screen = screen.object
-        self.keyboard = keyboard
         self.ownsKeyboard = ownsKeyboard
-        self.trackpad = trackpad
         connectedDisplayID = screen.identifier
         let display = runtime.display
         buttonTarget = try unsafe display.buttonTarget.unsafeInvoke(on: screen.object)
@@ -1561,6 +1702,9 @@ final class SimulatorConnection: SimulatorDisplay {
             view.frame.size = nativeCanvas.naturalSize
             digitizerView = nil
             chromeView = nil
+            self.keyboard = keyboard
+            self.trackpad = trackpad
+            screenInput = nil
             nativeCanvas.onSizeChange = { [weak self] in self?.onPropertiesChange?() }
             return
         }
@@ -1570,19 +1714,41 @@ final class SimulatorConnection: SimulatorDisplay {
             throw HostError.unavailable("SimulatorKit returned no display")
         }
         self.view = view
+        var keyboard = keyboard, trackpad = trackpad
         do {
             try runtime.validateLoadedImages()
-            digitizerView = try unsafe display.digitizerView.unsafeInvoke(on: view)
+            let digitizer = try unsafe display.digitizerView.unsafeInvoke(on: view)
+            digitizerView = digitizer
             chromeView = try unsafe display.chromeView.unsafeInvoke(on: view)
+            if let touchRoute {
+                do {
+                    digitizerTouches = try NativeDigitizerTouches(digitizer: digitizer, interface: touchRoute.interface) {
+                        [input = touchRoute.input] touch in
+                        input.sendTouch(at: touch.point, secondPoint: touch.secondPoint, phase: touch.phase, edge: touch.edge)
+                    }
+                } catch {
+                    hostLog("\(device.name) keeps SimulatorKit's keyboard and touches, without native trackpad input: \(error.localizedDescription)")
+                    keyboard = nil
+                    trackpad = nil
+                }
+            }
             if let trackpad {
                 let framebuffer = try unsafe display.renderableView.unsafeInvoke(on: view)
                 trackpadInput = NativeTrackpadInput(display: view, framebuffer: framebuffer, send: trackpad.handle,
                                                     endGestures: trackpad.endGestures)
             }
         } catch {
+            if let digitizerTouches {
+                do { try digitizerTouches.restore() } catch {
+                    hostLog("Could not give the digitizer its own delegate back: \(error.localizedDescription)")
+                }
+            }
             try? unsafe display.disconnect.unsafeInvoke(on: view, NativeSwiftClosure {})
             throw error
         }
+        self.keyboard = keyboard
+        self.trackpad = trackpad
+        screenInput = digitizerTouches == nil ? nil : touchRoute?.input
         let handler = try SimulatorDisplayInterface.ScreenEventHandler { [weak self] _, _ in
             MainActor.assumeIsolated { self?.onPropertiesChange?() }
         }
@@ -1736,17 +1902,15 @@ final class SimulatorConnection: SimulatorDisplay {
     }
 
     func send(_ message: HIDMessage, completion: (@MainActor (Error?) -> Void)?) throws {
-        if let nativeCanvas {
-            let usage: (page: Int, usage: Int)? = switch message.input {
-            case .button(.home): (0x0c, 0x40)
-            case .button(.lock): (0x0c, 0x30)
-            case .usage(let page, let code): (Int(page), Int(code))
-            default: nil
-            }
-            if let usage {
-                try nativeCanvas.sendButton(usagePage: usage.page, usage: usage.usage,
-                    state: message.state == .down ? .down : .up)
+        if let usage = message.input.nativeButtonUsage {
+            let state: RemoteDeviceButtonState = message.state == .down ? .down : .up
+            if let nativeCanvas {
+                try nativeCanvas.sendButton(usagePage: usage.page, usage: usage.usage, state: state)
                 completion?(nil)
+                return
+            }
+            if let screenInput, !disconnected {
+                try screenInput.sendButton(usagePage: usage.page, usage: usage.usage, state: state) { completion?($0) }
                 return
             }
         }
@@ -1908,6 +2072,13 @@ final class SimulatorConnection: SimulatorDisplay {
     func disconnect() {
         guard !disconnected else { return }
         disconnected = true
+        // The digitizer gets its own delegate back before SimulatorKit disconnects the display, so no more touches reach
+        // the native touchscreen. A failed restore leaves the replacement with this connection, which `stop()` retries.
+        if let digitizerTouches {
+            do { try digitizerTouches.restore(); self.digitizerTouches = nil } catch {
+                hostLog("Could not give the digitizer its own delegate back: \(error.localizedDescription)")
+            }
+        }
         if let nativeCanvas { nativeCanvas.onSizeChange = nil; nativeCanvas.disconnect() }
         else {
             perform("disconnect the display") {
@@ -1925,6 +2096,10 @@ final class SimulatorConnection: SimulatorDisplay {
     func stop() async throws {
         disconnect()
         var failures: [String] = []
+        if let digitizerTouches {
+            do { try digitizerTouches.restore(); self.digitizerTouches = nil }
+            catch { failures.append("Could not give the digitizer its own delegate back: \(error.localizedDescription)") }
+        }
         if ownsKeyboard, let keyboard {
             do { try await keyboard.stop() }
             catch { failures.append("Could not remove the native keyboard services: \(error.localizedDescription)") }
@@ -1932,6 +2107,10 @@ final class SimulatorConnection: SimulatorDisplay {
         if let trackpad {
             do { try await trackpad.stop() }
             catch { failures.append("Could not remove the native trackpad services: \(error.localizedDescription)") }
+        }
+        if let screenInput {
+            do { try await screenInput.stop() }
+            catch { failures.append("Could not release the native touchscreen and buttons: \(error.localizedDescription)") }
         }
         guard !failures.isEmpty else { return }
         let failure = HostError.operation(failures.joined(separator: "\n"))
@@ -1953,6 +2132,148 @@ final class SimulatorConnection: SimulatorDisplay {
             hostLog("Could not \(operation): \(error.localizedDescription)")
             return fallback
         }
+    }
+}
+
+/// The native route of an integrated screen's touches and buttons: the device's services, and the SimulatorKit members
+/// that take the screen's digitizer touches for them.
+struct NativeTouchRoute {
+    let input: NativeDeviceScreenInput
+    let interface: SimulatorTouchInterface
+}
+
+/// Gives a SimulatorKit digitizer a delegate whose methods are this host's callbacks, until `restore()`. The delegate
+/// sends the touches the digitizer interprets, after its Option two-finger, pinned-finger, and edge handling, and passes
+/// the digitizer's other callbacks, such as its first-responder requests, to the delegate it replaces.
+@MainActor
+final class NativeDigitizerTouches {
+    private weak var digitizer: NSView?
+    private let interface: SimulatorTouchInterface
+    private let send: (NativeDigitizerTouch) -> Void
+    /// The digitizer's own delegate, which `restore()` gives back.
+    private let original: NativeSwiftValue?
+    private let forwarding: NativeDigitizerForwarding?
+    /// The digitizer keeps its delegate weakly, so this keeps the replacement for as long as the digitizer has it.
+    private var replacement: NativeSwiftValue?
+
+    init(digitizer: NSView, interface: SimulatorTouchInterface, send: @escaping (NativeDigitizerTouch) -> Void) throws {
+        self.digitizer = digitizer
+        self.interface = interface
+        self.send = send
+        original = try unsafe interface.delegate.unsafeInvoke(on: digitizer)
+        forwarding = try original.map { try NativeDigitizerForwarding(delegate: $0, interface: interface) }
+        let replacement = try makeDelegate()
+        // The setter consumes its value, so it takes a copy of the delegate that this owner keeps.
+        try unsafe interface.setDelegate.unsafeInvoke(on: digitizer, replacement.copy())
+        self.replacement = replacement
+        // A screen whose digitizer did not keep the delegate would have no touches while its other input is native.
+        guard try unsafe interface.delegate.unsafeInvoke(on: digitizer).map(Self.object) === Self.object(replacement) else {
+            let failure = HostError.unavailable("SimulatorKit's digitizer did not keep NeoSimulator's touch delegate.")
+            do { try restore() } catch {
+                throw HostError.operation([failure.localizedDescription, error.localizedDescription].joined(separator: "\n"))
+            }
+            throw failure
+        }
+    }
+
+    /// Gives the digitizer its own delegate back. After a failure, the digitizer and this owner keep the replacement.
+    func restore() throws {
+        guard replacement != nil else { return }
+        if let digitizer { try unsafe interface.setDelegate.unsafeInvoke(on: digitizer, original?.copy()) }
+        replacement = nil
+    }
+
+    private func makeDelegate() throws -> NativeSwiftValue {
+        // SimDigitizerInputView, an NSView, calls its delegate on the main thread while it handles AppKit events, and
+        // each callback reads its borrowed arguments before it returns, so the touches keep the events' order.
+        try ABIRuntime.shared.makeSwiftProtocolValueAndWait(SimulatorTouchInterface.delegateProtocol, methods: [
+            try NativeSwiftProtocolMethod("simDigitizerInputView(_:touchEvent:)") {
+                [weak self] (_: NativeSwiftBorrowedValue, event: NativeSwiftBorrowedValue) in
+                nonisolated(unsafe) let event = event
+                MainActor.assumeIsolated { self?.receive(event) }
+            },
+            try NativeSwiftProtocolMethod("simDigitizerInputView(_:wantsMouseMovedEvents:)") {
+                [weak self] (view: NativeSwiftBorrowedValue, wants: Bool) in
+                nonisolated(unsafe) let view = view
+                MainActor.assumeIsolated { self?.forward("mouse-moved") { try $0.wantsMouseMovedEvents(view, wants) } }
+            },
+            try NativeSwiftProtocolMethod("simDigitizerInputView(_:wantsFirstResponder:)") {
+                [weak self] (view: NativeSwiftBorrowedValue, wants: Bool) in
+                nonisolated(unsafe) let view = view
+                MainActor.assumeIsolated { self?.forward("first-responder") { try $0.wantsFirstResponder(view, wants) } }
+            },
+            try NativeSwiftProtocolMethod("simDigitizerInputView(_:pressureEvent:)") {
+                [weak self] (view: NativeSwiftBorrowedValue, event: NativeSwiftBorrowedValue) in
+                nonisolated(unsafe) let view = view
+                nonisolated(unsafe) let event = event
+                MainActor.assumeIsolated { self?.forward("pressure") { try $0.pressureEvent(view, event) } }
+            },
+            try NativeSwiftProtocolMethod("simDigitizerInputView(_:scrollEvent:)") {
+                [weak self] (view: NativeSwiftBorrowedValue, event: NativeSwiftBorrowedValue) in
+                nonisolated(unsafe) let view = view
+                nonisolated(unsafe) let event = event
+                MainActor.assumeIsolated { self?.forward("scroll") { try $0.scrollEvent(view, event) } }
+            },
+        ], valueABIs: interface.eventABIs)
+    }
+
+    private func receive(_ event: NativeSwiftBorrowedValue) {
+        do { if let touch = try interface.touch(event) { send(touch) } } catch {
+            hostLog("Could not read a touch of the screen: \(error.localizedDescription)")
+        }
+    }
+
+    private func forward(_ callback: String, _ body: (NativeDigitizerForwarding) throws -> Void) {
+        guard let forwarding else { return }
+        do { try body(forwarding) } catch {
+            hostLog("Could not pass the digitizer's \(callback) callback to its delegate: \(error.localizedDescription)")
+        }
+    }
+
+    /// The object of a class-bound protocol existential, which identifies the delegate whatever its concrete type.
+    private static func object(_ value: NativeSwiftValue) throws -> AnyObject {
+        try value.withCopy { $0 as AnyObject }
+    }
+}
+
+/// Calls a digitizer delegate's requirements other than its touch events, through the protocol's requirements, which
+/// select the witnesses of the delegate's own conformance.
+@MainActor
+final class NativeDigitizerForwarding {
+    private let delegate: NativeSwiftValue
+    private let mouseMoved: NativeSwiftMethod<(NativeSwiftBorrowedValue, Bool) -> Void>
+    private let firstResponder: NativeSwiftMethod<(NativeSwiftBorrowedValue, Bool) -> Void>
+    private let pressure: NativeSwiftMethod<(NativeSwiftBorrowedValue, NativeSwiftBorrowedValue) -> Void>
+    private let scroll: NativeSwiftMethod<(NativeSwiftBorrowedValue, NativeSwiftBorrowedValue) -> Void>
+
+    init(delegate existential: NativeSwiftValue, interface: SimulatorTouchInterface) throws {
+        let delegate = try existential.copyUnderlyingValue()
+        let name = SimulatorTouchInterface.delegateProtocol + ".simDigitizerInputView"
+        mouseMoved = try delegate.type.resolveAndWait(.swift(.method(name + "(_:wantsMouseMovedEvents:)",
+            as: ((NativeSwiftBorrowedValue, Bool) -> Void).self)))
+        firstResponder = try delegate.type.resolveAndWait(.swift(.method(name + "(_:wantsFirstResponder:)",
+            as: ((NativeSwiftBorrowedValue, Bool) -> Void).self)))
+        pressure = try delegate.type.resolveAndWait(.swift(.method(name + "(_:pressureEvent:)",
+            as: ((NativeSwiftBorrowedValue, NativeSwiftBorrowedValue) -> Void).self, valueABIs: interface.eventABIs)))
+        scroll = try delegate.type.resolveAndWait(.swift(.method(name + "(_:scrollEvent:)",
+            as: ((NativeSwiftBorrowedValue, NativeSwiftBorrowedValue) -> Void).self, valueABIs: interface.eventABIs)))
+        self.delegate = delegate
+    }
+
+    func wantsMouseMovedEvents(_ view: NativeSwiftBorrowedValue, _ wants: Bool) throws {
+        try unsafe mouseMoved.unsafeInvoke(on: delegate, view, wants)
+    }
+
+    func wantsFirstResponder(_ view: NativeSwiftBorrowedValue, _ wants: Bool) throws {
+        try unsafe firstResponder.unsafeInvoke(on: delegate, view, wants)
+    }
+
+    func pressureEvent(_ view: NativeSwiftBorrowedValue, _ event: NativeSwiftBorrowedValue) throws {
+        try unsafe pressure.unsafeInvoke(on: delegate, view, event)
+    }
+
+    func scrollEvent(_ view: NativeSwiftBorrowedValue, _ event: NativeSwiftBorrowedValue) throws {
+        try unsafe scroll.unsafeInvoke(on: delegate, view, event)
     }
 }
 

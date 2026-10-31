@@ -1301,6 +1301,38 @@ struct RemoteDeviceScreenTests {
         #expect(transport.services.map(\.resets) == [3, 2] && transport.services.map(\.removes) == [1, 1])
     }
 
+    @Test func nativeScreenInputSendsAcceptedTouchesAndButtonsInOrderBeforeItStops() async throws {
+        let transport = ScreenFixtureTransport()
+        let input = NativeDeviceScreenInput(input: transport)
+        var failures: [String] = []
+        input.onFailure = { failures.append($0.localizedDescription) }
+        var results: [String?] = []
+        // The first touch waits inside the transport. The touches and buttons accepted after it wait as well, rather
+        // than reaching the device first, and a button's result reaches its caller.
+        let sending = ScreenFixtureGate()
+        transport.holdingSend = sending
+        input.sendTouch(at: CGPoint(x: 0.5, y: 0.5), secondPoint: nil, phase: .began, edge: .bottom)
+        input.sendTouch(at: CGPoint(x: 0.5, y: 0.4), secondPoint: CGPoint(x: 0.4, y: 0.4), phase: .moved, edge: .bottom)
+        try input.sendButton(usagePage: 0x0c, usage: 0x40, state: .down) { results.append($0?.localizedDescription) }
+        input.sendTouch(at: CGPoint(x: 0.5, y: 0.3), secondPoint: nil, phase: .ended, edge: .bottom)
+        try input.sendButton(usagePage: 0x0c, usage: 0x40, state: .up) { results.append($0?.localizedDescription) }
+        await sending.wait()
+        // The next touch and button fail: the touch's failure is reported, the button's goes to its caller, and the
+        // input after them is still sent.
+        transport.sendFailures = 2
+
+        // Stopping waits for the accepted input before it releases what the device holds. Input after it is not sent.
+        let stopping = Task.immediate { try await input.stop() }
+        input.sendTouch(at: CGPoint(x: 0.5, y: 0.5), secondPoint: nil, phase: .began, edge: .none)
+        #expect(throws: CLIError.self) { try input.sendButton(usagePage: 0x0c, usage: 0x40, state: .down) { _ in } }
+        #expect(transport.releases == 0)
+        sending.resume()
+        try await stopping.value
+        #expect(transport.deliveries == ["touch began", "touch ended", "button up", "release"])
+        #expect(failures == ["fixture stream failed"] && results == ["fixture stream failed", nil])
+        #expect(transport.closed)
+    }
+
     @Test func nativeTrackpadGesturesBeginWhereTheScreenNowShowsTheStillPointer() async throws {
         let runtime = ABIRuntime.shared
         let transport = TrackpadFixtureTransport(bindings: try await NativeTrackpadBindings(runtime: runtime))
@@ -1957,6 +1989,11 @@ private final class ScreenFixtureTransport: RemoteScreenTransport {
     var pointerTransform: CGAffineTransform?
     /// Receives the gesture input that CoreDeviceScreenInput sends to the trackpads' services.
     var gestures: NativeTrackpadGestures?
+    /// Holds the next input inside `send(_:)` until the gate resumes.
+    var holdingSend: ScreenFixtureGate?
+    var sendFailures = 0
+    /// The touches and buttons that reached the transport, and its releases, in order.
+    private(set) var deliveries: [String] = []
     private(set) var recordedDisplay: String?
     func startRecording(displayUniqueID: String?) async throws -> any RemoteScreenRecordingHandle {
         recordedDisplay = displayUniqueID
@@ -2034,10 +2071,14 @@ private final class ScreenFixtureTransport: RemoteScreenTransport {
     }
 
     func send(_ input: RemoteScreenInput) async throws {
+        if sendFailures > 0 { sendFailures -= 1; throw ScreenFixtureError.stream }
+        if let holdingSend { self.holdingSend = nil; await holdingSend.hold() }
         pressed.record(input)
         switch input {
         case .pinch(let event, let transform): try await gestures?.send(event, coordinateTransform: transform)
         case .gesturePointer(let event, let transform): try await gestures?.movePointer(event, coordinateTransform: transform)
+        case .touch(_, _, let phase, _): deliveries.append("touch \(phase.rawValue)")
+        case .button(_, _, let state): deliveries.append("button \(state.rawValue)")
         default: break
         }
     }
@@ -2048,6 +2089,7 @@ private final class ScreenFixtureTransport: RemoteScreenTransport {
 
     func releaseInputs() async throws {
         releases += 1
+        deliveries.append("release")
         if failCleanup { throw ScreenFixtureError.cleanup }
         pressed = RemoteScreenPressedInputs()
     }
@@ -2066,6 +2108,8 @@ private final class ScreenFixtureTransport: RemoteScreenTransport {
 
     func emit(_ event: RemoteScreenTransportEvent) { events?(event) }
 }
+
+extension ScreenFixtureTransport: NativeScreenInputTransport {}
 
 private enum ScreenCapabilityFixture: Hashable {
     case hid(RemoteDeviceInputKind), unrelated

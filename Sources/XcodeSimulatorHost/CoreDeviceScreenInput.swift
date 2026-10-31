@@ -473,6 +473,90 @@ public final class NativeDeviceTrackpad {
     }
 }
 
+/// Sends a default-set simulator's touches on its integrated screen and its button usages through CoreDevice's
+/// digitizer and button services, in the order of the calls. Once a guest starts the services of its native input, it
+/// drops SimulatorKit's touches and buttons on services it had not used yet; a screen whose keyboard or trackpad input
+/// is native therefore sends these natively too, as Device Hub does.
+@_spi(NeoSimulator)
+@MainActor
+public final class NativeDeviceScreenInput {
+    /// Receives failures of touches that were already accepted.
+    public var onFailure: (any Error) -> Void = { _ in }
+    private let input: any NativeScreenInputTransport
+    private var lastOperation: Task<Void, Never>?
+    private var isStopped = false
+
+    /// Connects to the simulator's CoreDevice record, which exists only for the default device set.
+    public static func connect(simulatorUDID: String) async throws -> NativeDeviceScreenInput {
+        guard let identifier = try await CoreDeviceRemoteScreenDevice.simulatorIdentifier(udid: simulatorUDID) else {
+            throw CLIError.unavailable("native-screen-input", "The simulator is not available in CoreDevice.")
+        }
+        let remote = try await CoreDeviceRemoteScreenDevice(identifier: identifier)
+        guard try remote.supports(CoreDeviceScreenInput.features[.digitizer]!),
+              try remote.supports(CoreDeviceScreenInput.features[.button]!) else {
+            throw CLIError.unavailable("native-screen-input", "The simulator does not expose CoreDevice's touchscreen and button services.")
+        }
+        try Task.checkCancellation()
+        return NativeDeviceScreenInput(input: CoreDeviceScreenInput(remote: remote))
+    }
+
+    init(input: any NativeScreenInputTransport) {
+        self.input = input
+    }
+
+    /// Sends a touch at `point`, and `secondPoint` for a second finger, in unit coordinates from the top-left corner
+    /// of the screen in its own orientation. A touch whose input has stopped is dropped.
+    public func sendTouch(at point: CGPoint, secondPoint: CGPoint?, phase: RemoteDeviceTouchPhase, edge: RemoteDeviceTouchEdge) {
+        guard !isStopped else { return }
+        enqueue { [weak self, input] in
+            do { try await input.send(.touch(point, secondPoint, phase, edge)) } catch { self?.onFailure(error) }
+        }
+    }
+
+    /// Sends a button's HID usage after the input accepted before it. `completion` receives the result; a thrown
+    /// error means the input has stopped and nothing was sent.
+    public func sendButton(usagePage: Int, usage: Int, state: RemoteDeviceButtonState,
+                           completion: @escaping @MainActor ((any Error)?) -> Void) throws {
+        guard !isStopped else { throw CLIError.unavailable("native-screen-input", "The device's screen input has stopped.") }
+        enqueue { [input] in
+            do {
+                try await input.send(.button(usagePage, usage, state))
+                completion(nil)
+            } catch {
+                completion(error)
+            }
+        }
+    }
+
+    /// Releases the touch and buttons that the device still holds, after the input already accepted; later input is
+    /// dropped. What could not be released is released by the next stop.
+    public func stop() async throws {
+        isStopped = true
+        try await enqueue { [input] in try await input.stop() }.value
+    }
+
+    @discardableResult
+    private func enqueue(_ operation: @escaping @MainActor () async throws -> Void) -> Task<Void, any Error> {
+        let previous = lastOperation
+        let task = Task { @MainActor in
+            await previous?.value
+            try await operation()
+        }
+        lastOperation = Task { _ = await task.result }
+        return task
+    }
+}
+
+/// The device services that a screen's touches and buttons reach.
+@MainActor
+protocol NativeScreenInputTransport: AnyObject {
+    func send(_ input: RemoteScreenInput) async throws
+    /// Releases what the services hold and removes them.
+    func stop() async throws
+}
+
+extension CoreDeviceScreenInput: NativeScreenInputTransport {}
+
 /// The Mac HID services that send trackpad gestures and the guest services that receive them.
 @MainActor
 protocol NativeTrackpadTransport: AnyObject {
