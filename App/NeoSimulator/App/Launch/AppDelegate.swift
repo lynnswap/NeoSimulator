@@ -24,6 +24,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var connectionTimer: Timer?
     private var inventoryObservation: DeviceInventoryObservation?
     private var inventoryObservationTask: Task<Void, Never>?
+    private var activeStateObservation: DeviceActiveStateObservation?
     private var quitKeepingDevicesRunning: Bool?
     private var restartsAfterQuitting = false
     private lazy var simulatorMenus = MenuController(application: nil,
@@ -109,6 +110,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func startInventoryObservation() {
+        if activeStateObservation == nil {
+            let observation = DeviceActiveStateObservation()
+            observation.onChange = { [weak self] in self?.model.activeStatesDidChange($0) }
+            observation.onError = { [weak self] in self?.model.activeStateObservationFailed($0) }
+            activeStateObservation = observation
+            observation.start()
+        }
         guard inventoryObservationTask == nil, inventoryObservation == nil else { return }
         inventoryObservationTask = Task { [weak self] in
             guard let self else { return }
@@ -157,6 +165,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 await inventoryObservation?.stop()
                 await inventoryObservationTask?.value
                 inventoryObservation = nil
+                await activeStateObservation?.stop()
+                activeStateObservation = nil
                 await screens.waitForRemoteHostCleanup()
                 try await stopScreens()
                 try await model.quitRenderer(keepingDevicesRunning: quitKeepingDevicesRunning)

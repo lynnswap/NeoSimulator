@@ -118,6 +118,8 @@ final class SimulatorManagerModel {
     @ObservationIgnored private let controller: any SimulatorManagerSource
     private(set) var status: SimulatorHostStatus?
     private(set) var inventory: [InventoryDevice] = []
+    /// DeviceKit's sidebar Active values in this process; a device without one is unknown.
+    private(set) var activeStates = DeviceActiveStates()
     var devices: [SimulatorHostDevice] {
         inventory.compactMap { item in
             guard case .simulator(let device) = item, device.isAvailable else { return nil }
@@ -157,6 +159,7 @@ final class SimulatorManagerModel {
     @ObservationIgnored private var statusRefreshTask: Task<Void, Never>?
     private var statusIssue: (any Error)?
     private var observationIssue: String?
+    private var activeStateIssue: String?
     private var inventoryIssues: [DeviceInventoryIssue] = []
     var isRemoteInventoryComplete: Bool { !inventoryIssues.contains { $0.source == .coreDevice } }
     @ObservationIgnored private var synchronizing = false
@@ -565,10 +568,10 @@ final class SimulatorManagerModel {
     }
 
     private func updateInventoryIssue() {
-        if inventoryIssues.isEmpty, statusIssue == nil, observationIssue == nil { backgroundIssue = nil }
+        if inventoryIssues.isEmpty, statusIssue == nil, observationIssue == nil, activeStateIssue == nil { backgroundIssue = nil }
         else {
             reportBackgroundError(InventoryReadError(issues: inventoryIssues, statusError: statusIssue,
-                                                     observationIssue: observationIssue))
+                                                     observationIssue: observationIssue, activeStateIssue: activeStateIssue))
         }
     }
 
@@ -590,6 +593,24 @@ final class SimulatorManagerModel {
         observationIssue = "Live device updates are unavailable. The list will update when you return to NeoSimulator."
         updateInventoryIssue()
 
+    }
+
+    // Unlike the inventory callbacks, these also apply while quitting. The observation reports only changes, so a
+    // value dropped during a quit that is then cancelled would not arrive again.
+    func activeStatesDidChange(_ states: DeviceActiveStates) {
+        activeStates = states
+        if activeStateIssue != nil {
+            activeStateIssue = nil
+            updateInventoryIssue()
+        }
+    }
+
+    /// Earlier values could be stale, so every device becomes unknown.
+    func activeStateObservationFailed(_ error: any Error) {
+        NSLog("NeoSimulator active device states: %@", String(describing: error))
+        activeStates = DeviceActiveStates()
+        activeStateIssue = "Active devices are unavailable. The list does not show which devices are active."
+        updateInventoryIssue()
     }
 
     func synchronizeConnections() async {
@@ -770,6 +791,7 @@ private struct InventoryReadError: LocalizedError {
     let issues: [DeviceInventoryIssue]
     let statusError: (any Error)?
     let observationIssue: String?
+    let activeStateIssue: String?
 
     var errorDescription: String? {
         let messages = issues.map { issue in
@@ -780,7 +802,8 @@ private struct InventoryReadError: LocalizedError {
             }
             return "\(source): \(issue.error.localizedDescription)"
         }
-        return (messages + [statusError?.localizedDescription, observationIssue].compactMap { $0 }).joined(separator: "\n")
+        return (messages + [statusError?.localizedDescription, observationIssue, activeStateIssue].compactMap { $0 })
+            .joined(separator: "\n")
     }
 }
 
