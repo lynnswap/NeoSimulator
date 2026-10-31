@@ -438,7 +438,7 @@ extension SimulatorHostController {
     }
 
     private static func settingsBackend(device: InventoryDevice, xcodeURL: URL?,
-                                        readCommand: ((SimulatorSettingsBackend.Tool, [String]) async throws -> Data)? = nil) -> SimulatorSettingsBackend {
+                                        readCommand: (@Sendable (SimulatorSettingsBackend.Tool, [String]) async throws -> Data)? = nil) -> SimulatorSettingsBackend {
         SimulatorSettingsBackend(run: { tool, arguments in
             let runner = SystemCommandRunner()
             let result: CommandOutput
@@ -461,22 +461,24 @@ extension SimulatorHostController {
 }
 
 /// Keeps the command transport replaceable while tests exercise the same partial-result and write paths.
-struct SimulatorSettingsBackend {
+struct SimulatorSettingsBackend: Sendable {
     enum Tool { case simctl, devicectl, guestSettings }
-    var run: (Tool, [String]) throws -> Data
-    var readCommand: (Tool, [String]) async throws -> Data
-    var audioDevices: () throws -> (input: [SimulatorAudioDevice], output: [SimulatorAudioDevice])
+    var run: @Sendable (Tool, [String]) throws -> Data
+    var readCommand: @Sendable (Tool, [String]) async throws -> Data
+    var audioDevices: @Sendable () throws -> (input: [SimulatorAudioDevice], output: [SimulatorAudioDevice])
 
-    init(run: @escaping (Tool, [String]) throws -> Data,
-         readCommand: ((Tool, [String]) async throws -> Data)? = nil,
-         audioDevices: @escaping () throws -> (input: [SimulatorAudioDevice], output: [SimulatorAudioDevice])) {
+    init(run: @escaping @Sendable (Tool, [String]) throws -> Data,
+         readCommand: (@Sendable (Tool, [String]) async throws -> Data)? = nil,
+         audioDevices: @escaping @Sendable () throws -> (input: [SimulatorAudioDevice], output: [SimulatorAudioDevice])) {
         self.run = run
         self.readCommand = readCommand ?? { try run($0, $1) }
         self.audioDevices = audioDevices
     }
 
+    /// Declaration order is the merge order: simctl values take priority over CoreDevice's
+    /// appearance values, and issues keep the same order however the commands finish.
     private enum Query: CaseIterable {
-        case simulatorAppearance, simulatorContentSize, simulatorContrast, boldText, displayZoom, appearance, voiceOver, audio, location
+        case simulatorAppearance, simulatorContentSize, simulatorContrast, displayZoom, boldText, appearance, voiceOver, audio, location
 
         var issueNames: [String] {
             switch self {
@@ -565,83 +567,18 @@ struct SimulatorSettingsBackend {
                 settings.locationScenarios = []
             }
         }
-        let identifier = device.settingsIdentifier
-        func capture<T>(_ name: String, _ operation: () async throws -> T) async -> T? {
-            guard !Task.isCancelled else { return nil }
-            do { return try await operation() }
-            catch {
-                if !Task.isCancelled { settings.issues.append("\(name): \(error.localizedDescription)") }
-                return nil
+        let results = await withTaskGroup(of: (Query, QueryResult).self) { group in
+            for query in queries {
+                group.addTask { await (query, self.result(of: query, device: device, refreshAudioDevices: refreshAudioDevices)) }
             }
+            var finished: [Query: QueryResult] = [:]
+            for await (query, result) in group { finished[query] = result }
+            return finished
         }
-        func ui(_ name: String) async -> String? {
-            await capture(name) { String(decoding: try await readCommand(.simctl, ["ui", identifier, name]), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) }
-        }
-        if case .simulator = device {
-            if queries.contains(.simulatorAppearance) {
-                let appearance = await ui("appearance")
-                settings.appearance = appearance.flatMap { ["light", "dark"].contains($0) ? $0 : nil }
-            }
-            if queries.contains(.simulatorContentSize) {
-                let size = await ui("content_size")
-                settings.contentSize = size.flatMap { SimulatorDeviceSettings.contentSizes.contains($0) ? $0 : nil }
-            }
-            if queries.contains(.simulatorContrast) {
-                let contrast = await ui("increase_contrast")
-                settings.increaseContrast = contrast == "enabled" ? true : contrast == "disabled" ? false : nil
-            }
-        }
-
-        if queries.contains(.displayZoom), device.supportsIOSDisplaySettings,
-           let zoom = await capture("Display Zoom", {
-               try Self.displayZoomResult(await readCommand(.guestSettings, [identifier, "display-zoom", "read"]))
-           }) {
-            settings.displayZoom = zoom.current
-            settings.supportedDisplayZoomModes = zoom.modes
-        }
-        if queries.contains(.boldText), device.supportsIOSDisplaySettings {
-            settings.boldText = await capture("Bold Text") {
-                let data = try await readCommand(.simctl, ["spawn", identifier, "defaults", "export", Self.boldTextDomain, "-"])
-                let values = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
-                guard let values else { throw CLIError.io("bold-text-value", "The device returned an invalid accessibility preferences dictionary.") }
-                return (values[Self.boldTextKey] as? NSNumber)?.intValue == 1
-            }
-        }
-        if queries.contains(.appearance), device.supportsSettingsQuery(.appearance), let appearance = await capture("appearance settings", { try await query(Appearance.self, ["device", "info", "appearance"], identifier) }) {
-            settings.lookAndFeel = appearance.lookAndFeel
-            settings.supportedLooksAndFeels = (appearance.supportedLooksAndFeels ?? []).compactMap(Self.lookAndFeel)
-            settings.liquidGlassOpacity = appearance.liquidGlassOpacity
-            settings.reduceMotion = appearance.reduceMotion?.enabled
-            settings.reduceTransparency = appearance.reduceTransparency?.enabled
-            settings.showBorders = appearance.showBorders?.enabled
-            if settings.appearance == nil { settings.appearance = appearance.userInterfaceStyle.flatMap { ["light", "dark"].contains($0) ? $0 : nil } }
-            if settings.contentSize == nil { settings.contentSize = appearance.textSize.flatMap(Self.contentSize) }
-            if settings.increaseContrast == nil { settings.increaseContrast = appearance.increaseContrast }
-            if let filter = appearance.colorFilter {
-                if !filter.enabled { settings.colorFilter = SimulatorColorFilter.none }
-                else if let type = filter.filterType.flatMap({ Self.colorFilter($0.name) }) { settings.colorFilter = type }
-                else { settings.issues.append("color filter: The device returned an unrecognized enabled color filter.") }
-                settings.colorFilterIntensity = filter.intensity
-            }
-        }
-        if queries.contains(.voiceOver), device.supportsSettingsQuery(.voiceOver), let voice = await capture("VoiceOver", { try await query(VoiceOver.self, ["device", "info", "voiceover"], identifier) }) {
-            settings.voiceOver = voice.enabled
-        }
-        if queries.contains(.audio), device.supportsSettingsQuery(.audio), let audio = await capture("audio", { try await query(Audio.self, ["device", "info", "audio"], identifier) }) {
-            settings.volume = audio.volume
-            settings.audioInputDevice = audio.audioInputDevice?.identifier
-            settings.audioOutputDevice = audio.audioOutputDevice?.identifier
-            if refreshAudioDevices, let devices = await capture("audio devices", { try audioDevices() }) {
-                settings.audioInputDevices = devices.input
-                settings.audioOutputDevices = devices.output
-            }
-        }
-        if queries.contains(.location), device.supportsSettingsQuery(.location), let scenarios = await capture("location scenarios", { try await query(Scenarios.self, ["device", "simulate", "location", "list"], identifier) }) {
-            settings.locationAvailable = true
-            settings.locationScenarios = scenarios.availableScenarios.map { SimulatorLocationScenario(name: $0.name, displayName: $0.localizedName ?? $0.name) }
-        } else if queries.contains(.location), case .simulator = device, let text = await capture("location", { String(decoding: try await readCommand(.simctl, ["location", identifier, "list"]), as: UTF8.self) }) {
-            settings.locationAvailable = true
-            settings.locationScenarios = Self.locationScenarios(text)
+        for query in Query.allCases {
+            guard let result = results[query] else { continue }
+            settings.issues += result.issues
+            result.apply(&settings)
         }
         if case .remote = device {
             if !device.supportsSettingsFeature("customizeuistyle") { settings.appearance = nil }
@@ -668,6 +605,109 @@ struct SimulatorSettingsBackend {
             }
         }
         return settings
+    }
+
+    /// One query's issues, and the values it applies when merged in `Query` order.
+    private struct QueryResult: Sendable {
+        var issues: [String] = []
+        var apply: @Sendable (inout SimulatorDeviceSettings) -> Void = { _ in }
+    }
+
+    private func result(of query: Query, device: InventoryDevice, refreshAudioDevices: Bool) async -> QueryResult {
+        var result = QueryResult()
+        let identifier = device.settingsIdentifier
+        func capture<T>(_ name: String, _ operation: () async throws -> T) async -> T? {
+            guard !Task.isCancelled else { return nil }
+            do { return try await operation() }
+            catch {
+                if !Task.isCancelled { result.issues.append("\(name): \(error.localizedDescription)") }
+                return nil
+            }
+        }
+        func ui(_ name: String) async -> String? {
+            await capture(name) { String(decoding: try await readCommand(.simctl, ["ui", identifier, name]), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) }
+        }
+        switch query {
+        case .simulatorAppearance:
+            guard case .simulator = device else { break }
+            let appearance = await ui("appearance")
+            result.apply = { $0.appearance = appearance.flatMap { ["light", "dark"].contains($0) ? $0 : nil } }
+        case .simulatorContentSize:
+            guard case .simulator = device else { break }
+            let size = await ui("content_size")
+            result.apply = { $0.contentSize = size.flatMap { SimulatorDeviceSettings.contentSizes.contains($0) ? $0 : nil } }
+        case .simulatorContrast:
+            guard case .simulator = device else { break }
+            let contrast = await ui("increase_contrast")
+            result.apply = { $0.increaseContrast = contrast == "enabled" ? true : contrast == "disabled" ? false : nil }
+        case .displayZoom:
+            guard device.supportsIOSDisplaySettings, let zoom = await capture("Display Zoom", {
+                try Self.displayZoomResult(await readCommand(.guestSettings, [identifier, "display-zoom", "read"]))
+            }) else { break }
+            result.apply = {
+                $0.displayZoom = zoom.current
+                $0.supportedDisplayZoomModes = zoom.modes
+            }
+        case .boldText:
+            guard device.supportsIOSDisplaySettings else { break }
+            let boldText: Bool? = await capture("Bold Text") {
+                let data = try await readCommand(.simctl, ["spawn", identifier, "defaults", "export", Self.boldTextDomain, "-"])
+                let values = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
+                guard let values else { throw CLIError.io("bold-text-value", "The device returned an invalid accessibility preferences dictionary.") }
+                return (values[Self.boldTextKey] as? NSNumber)?.intValue == 1
+            }
+            result.apply = { $0.boldText = boldText }
+        case .appearance:
+            guard device.supportsSettingsQuery(.appearance), let appearance = await capture("appearance settings", { try await self.query(Appearance.self, ["device", "info", "appearance"], identifier) }) else { break }
+            result.apply = { settings in
+                settings.lookAndFeel = appearance.lookAndFeel
+                settings.supportedLooksAndFeels = (appearance.supportedLooksAndFeels ?? []).compactMap(Self.lookAndFeel)
+                settings.liquidGlassOpacity = appearance.liquidGlassOpacity
+                settings.reduceMotion = appearance.reduceMotion?.enabled
+                settings.reduceTransparency = appearance.reduceTransparency?.enabled
+                settings.showBorders = appearance.showBorders?.enabled
+                if settings.appearance == nil { settings.appearance = appearance.userInterfaceStyle.flatMap { ["light", "dark"].contains($0) ? $0 : nil } }
+                if settings.contentSize == nil { settings.contentSize = appearance.textSize.flatMap(Self.contentSize) }
+                if settings.increaseContrast == nil { settings.increaseContrast = appearance.increaseContrast }
+                if let filter = appearance.colorFilter {
+                    if !filter.enabled { settings.colorFilter = SimulatorColorFilter.none }
+                    else if let type = filter.filterType.flatMap({ Self.colorFilter($0.name) }) { settings.colorFilter = type }
+                    else { settings.issues.append("color filter: The device returned an unrecognized enabled color filter.") }
+                    settings.colorFilterIntensity = filter.intensity
+                }
+            }
+        case .voiceOver:
+            guard device.supportsSettingsQuery(.voiceOver), let voice = await capture("VoiceOver", { try await self.query(VoiceOver.self, ["device", "info", "voiceover"], identifier) }) else { break }
+            result.apply = { $0.voiceOver = voice.enabled }
+        case .audio:
+            guard device.supportsSettingsQuery(.audio), let audio = await capture("audio", { try await self.query(Audio.self, ["device", "info", "audio"], identifier) }) else { break }
+            var devices: (input: [SimulatorAudioDevice], output: [SimulatorAudioDevice])?
+            if refreshAudioDevices { devices = await capture("audio devices") { try audioDevices() } }
+            result.apply = { [devices] settings in
+                settings.volume = audio.volume
+                settings.audioInputDevice = audio.audioInputDevice?.identifier
+                settings.audioOutputDevice = audio.audioOutputDevice?.identifier
+                if let devices {
+                    settings.audioInputDevices = devices.input
+                    settings.audioOutputDevices = devices.output
+                }
+            }
+        case .location:
+            if device.supportsSettingsQuery(.location), let scenarios = await capture("location scenarios", { try await self.query(Scenarios.self, ["device", "simulate", "location", "list"], identifier) }) {
+                let values = scenarios.availableScenarios.map { SimulatorLocationScenario(name: $0.name, displayName: $0.localizedName ?? $0.name) }
+                result.apply = {
+                    $0.locationAvailable = true
+                    $0.locationScenarios = values
+                }
+            } else if case .simulator = device, let text = await capture("location", { String(decoding: try await readCommand(.simctl, ["location", identifier, "list"]), as: UTF8.self) }) {
+                let values = Self.locationScenarios(text)
+                result.apply = {
+                    $0.locationAvailable = true
+                    $0.locationScenarios = values
+                }
+            }
+        }
+        return result
     }
 
     func set(_ setting: SimulatorDeviceSetting, device: InventoryDevice) throws {
