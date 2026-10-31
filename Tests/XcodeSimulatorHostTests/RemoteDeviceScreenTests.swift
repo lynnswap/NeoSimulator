@@ -1172,28 +1172,39 @@ struct RemoteDeviceScreenTests {
         let onScreen = CGAffineTransform(scaleX: 1 / 2000, y: 1 / 2000)
         try await gestures.movePointer(mouseMovement(sender: 0xA), coordinateTransform: onScreen)
         for pinch in try [trackpadPinch(.began, sender: 0xA), trackpadPinch(.changed, magnification: 0.2, sender: 0xA),
-                          trackpadPinch(.began, sender: 0xB), trackpadPinch(.began, sender: nil),
+                          trackpadPinch(.began, sender: 0xB), trackpadPinch(.ended, sender: 0xA), trackpadPinch(.began, sender: nil),
                           trackpadPinch(.began, sender: 0x99), trackpadPinch(.changed, magnification: 0.2, sender: 0x99)] {
             try await gestures.send(pinch)
         }
         try await gestures.movePointer(mouseMovement(sender: nil), coordinateTransform: onScreen)
         try await gestures.movePointer(mouseMovement(sender: 0x99), coordinateTransform: onScreen)
-        #expect(transport.services.map(\.sender) == [0xA, 0xB] && transport.services.map(\.reports) == [3, 1])
+        #expect(transport.services.map(\.sender) == [0xA, 0xB] && transport.services.map(\.reports) == [4, 1])
         #expect(transport.lookups == [0xA, 0xB, 0x99])
-        // Releasing input ends the pinch each service holds.
+        // Releasing input resets every service, so the pinch that one trackpad holds after another's ended also ends.
         try gestures.resetGestures()
         #expect(transport.services.map(\.resets) == [1, 1])
         // The device invalidates the services with its gesture capability, so the trackpad's next pinch creates another.
         gestures.discardServices()
         try await gestures.send(trackpadPinch(.began, sender: 0xA))
-        #expect(transport.services.map(\.sender) == [0xA, 0xB, 0xA] && transport.services.map(\.reports) == [3, 1, 1])
+        #expect(transport.services.map(\.sender) == [0xA, 0xB, 0xA] && transport.services.map(\.reports) == [4, 1, 1])
         try await gestures.stop()
         #expect(transport.services.last?.removes == 1)
     }
 
     @Test func trackpadServicesCreatedWhileGestureInputEndsAreNotKept() async throws {
         let transport = TrackpadFixtureTransport(bindings: try await NativeTrackpadBindings(runtime: .shared))
-        let gestures = NativeTrackpadGestures { transport }
+        let preparing = ScreenFixtureGate()
+        var holdsPreparation = true
+        let gestures = NativeTrackpadGestures {
+            if holdsPreparation { holdsPreparation = false; await preparing.hold() }
+            return transport
+        }
+        // The device can invalidate the services while the first pinch prepares the transport; that pinch is not sent.
+        let stale = Task { try await gestures.send(trackpadPinch(.began, sender: 0xA)) }
+        await preparing.wait()
+        gestures.discardServices()
+        preparing.resume()
+        try await #require(throws: CLIError.self) { try await stale.value }
         // A service that the device invalidates while it is created is not used; the trackpad's next pinch creates another.
         let invalidating = ScreenFixtureGate()
         transport.connecting = invalidating

@@ -92,11 +92,8 @@ final class CoreDeviceScreenInput {
             do { try await sendNative(.touch(point, second, .ended, edge)); pressed.touch = nil }
             catch { if generations[.digitizer, default: 0] == generation { failures.append(error.localizedDescription) } }
         }
-        if pressed.pinching {
-            let generation = generations[.gesture, default: 0]
-            do { try gestures.resetGestures(); pressed.pinching = false }
-            catch { if generations[.gesture, default: 0] == generation { failures.append(error.localizedDescription) } }
-        }
+        // Each trackpad's service can hold its own pinch, so every service is reset.
+        do { try gestures.resetGestures() } catch { failures.append(error.localizedDescription) }
         for (button, point) in pressed.pointerButtons.sorted(by: { $0.key < $1.key }) {
             guard pressed.pointerButtons[button] != nil else { continue }
             let generation = generations[.pointer, default: 0]
@@ -245,7 +242,8 @@ final class NativeTrackpadGestures {
     private var services: [UInt64: Service] = [:]
     /// Senders that are not Mac HID services, such as other processes' event sources.
     private var unknownSenders: Set<UInt64> = []
-    /// Changes when the device invalidates the services, so that one created meanwhile is not used.
+    /// Changes when the device invalidates the services, so that an event whose transport or service was prepared
+    /// meanwhile is not sent.
     private var generation = 0
     private var isStopped = false
 
@@ -269,8 +267,8 @@ final class NativeTrackpadGestures {
     /// Moves the hidden pointer of the service of the Mac HID service that sent `event`, a mouse movement, to where
     /// `coordinateTransform` maps the event's window location, so that the service's later gestures happen there.
     func movePointer(_ event: NSEvent, coordinateTransform: CGAffineTransform) async throws {
-        // Device Hub moves a shared touchscreen gesture service's pointer for a movement that no Mac HID service sent.
-        // Only that service's own gestures would happen there, and this screen sends it none.
+        // Device Hub moves a shared touchscreen gesture service's pointer for a movement that no Mac HID service sent;
+        // here such a movement reaches no service.
         guard let service = try await service(sending: event) else { return }
         for report in try service.translator.reports(for: event, coordinateTransform: coordinateTransform) {
             try service.service.send(report)
@@ -280,27 +278,38 @@ final class NativeTrackpadGestures {
     /// The service of the Mac HID service that sent `event`, created for its first event, or nil when no Mac HID service sent it.
     private func service(sending event: NSEvent) async throws -> Service? {
         guard !isStopped else { throw CLIError.unavailable("remote-gesture-input", "The device's gesture input has stopped.") }
-        let transport = if let transport { transport } else { try await makeTransport() }
-        self.transport = transport
+        let generation = self.generation
+        let transport: any NativeTrackpadTransport
+        if let prepared = self.transport { transport = prepared } else {
+            transport = try await makeTransport()
+            try checkPreparation(since: generation)
+            self.transport = transport
+        }
         let sender = try transport.sender(of: event)
         guard sender != 0, !unknownSenders.contains(sender) else { return nil }
         if let existing = services[sender] { return existing }
-        let generation = self.generation
         guard let created = try await transport.connect(sender: sender) else {
             unknownSenders.insert(sender)
             return nil
         }
-        if isStopped {
+        do { try checkPreparation(since: generation) } catch {
             // Stopping removed the services it found, so this one is removed here; the next stop retries a failure.
-            do { try await created.service.stop() } catch { services[sender] = created; throw error }
-            throw CLIError.unavailable("remote-gesture-input", "The device's gesture input stopped while preparing the input.")
-        }
-        // The device invalidated its services while this one was created.
-        guard generation == self.generation else {
-            throw CLIError.unavailable("remote-input-capability", "The device's input service changed while preparing the input.")
+            if isStopped { do { try await created.service.stop() } catch { services[sender] = created; throw error } }
+            throw error
         }
         services[sender] = created
         return created
+    }
+
+    /// Throws when, after an event prepared its transport or service, the gesture input has stopped or the device has
+    /// invalidated the services since `generation`.
+    private func checkPreparation(since generation: Int) throws {
+        guard !isStopped else {
+            throw CLIError.unavailable("remote-gesture-input", "The device's gesture input stopped while preparing the input.")
+        }
+        guard generation == self.generation else {
+            throw CLIError.unavailable("remote-input-capability", "The device's input service changed while preparing the input.")
+        }
     }
 
     /// Ends the gestures each service holds on the device, as Device Hub's HID reset does for each of its services.
@@ -416,8 +425,6 @@ struct RemoteScreenPressedInputs {
     var buttons: Set<Button> = []
     var pointerButtons: [Int: CGPoint] = [:]
     var touch: (CGPoint, CGPoint?, RemoteDeviceTouchEdge)?
-    /// Whether a pinch the screen sent has begun and has not ended or been cancelled.
-    var pinching = false
 
     mutating func record(_ input: RemoteScreenInput) {
         switch input {
@@ -431,9 +438,7 @@ struct RemoteScreenPressedInputs {
             else { pointerButtons[button] = point }
         case .touch(let point, let second, let phase, let edge):
             touch = phase == .ended ? nil : (point, second, edge)
-        case .pinch(let event):
-            pinching = event.phase.isDisjoint(with: [.ended, .cancelled])
-        case .pointer, .gesturePointer: break
+        case .pointer, .pinch, .gesturePointer: break
         }
     }
 
@@ -442,7 +447,6 @@ struct RemoteScreenPressedInputs {
         if kinds.contains(.button) { buttons.removeAll() }
         if kinds.contains(.pointer) { pointerButtons.removeAll() }
         if kinds.contains(.digitizer) { touch = nil }
-        if kinds.contains(.gesture) { pinching = false }
     }
 }
 
