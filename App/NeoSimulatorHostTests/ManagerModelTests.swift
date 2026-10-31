@@ -688,7 +688,7 @@ struct ManagerModelTests {
         let controller = RemoteDeviceWindowController(device: a, session: session, presentCompactWindow: { _ in })
         app.screens.attach(controller)
         main.selectDevice(aID)
-        try await app.presentConnectedScreen(aID, purpose: .requested)
+        try await main.presentConnectedScreen(aID, purpose: .requested)
         // The screen and its frame can cover the canvas and its context menu, so the menu bar offers the command.
         let command = NSMenuItem(title: "Choose Screen Source…", action: NSSelectorFromString("chooseCaptureSource:"), keyEquivalent: "")
         let action = try #require(command.action)
@@ -697,7 +697,8 @@ struct ManagerModelTests {
         #expect(!controller.validateMenuItem(command))
         catalog.choose(RemoteScreenCaptureSource(name: "A", uniqueID: "a-capture-identity"), for: a.identifier)
         #expect(controller.validateMenuItem(command))
-        main.onShowCompactWindow?(aID)
+        let compact = try #require(main.window?.toolbar?.items.first { $0.itemIdentifier.rawValue == "CompactDeviceWindow" })
+        #expect(NSApp.sendAction(try #require(compact.action), to: compact.target, from: compact))
         let compacted = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             MainActor.assumeIsolated { pane.liveDeviceIdentifier == nil && !controller.isEmbedded }
         }, object: nil)
