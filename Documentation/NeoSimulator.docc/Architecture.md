@@ -71,6 +71,29 @@ in the manager process through ABIBridge, so availability and ABI failures affec
 that process. Simulator display and clipboard sessions also run in the manager;
 headless renderer processes own guest boot, restart, and shutdown.
 
+The sidebar's Active priority and artwork come from DeviceKit's
+`SidebarModel.shouldRenderAsActive(_:)`, the predicate behind Device Hub's own
+sidebar. `DeviceActiveStateObservation` reads it in the manager for each device
+in DeviceKit's `ObservedDeviceManager` and rereads when the predicate's
+observable inputs change. DeviceKit matches devices by CoreDevice identifier, so
+simulators in custom device sets have no value. Within the same availability, a
+row that DeviceKit reports as Active comes first. A row without a value is
+ordered with the inactive rows by the remaining comparisons, and its artwork
+still follows Neo's open screens and booting or shutting-down states. A failed
+read clears every value and is reported with the other inventory issues.
+
+The predicate uses the interaction and activation state of DeviceKit views in the
+manager process, such as the native canvas of a simulator that needs one.
+Screens shown through SimulatorKit or Neo's remote-screen transports, Device Hub,
+and renderer processes do not contribute that state. A device whose screen is
+shown that way is Active only when DeviceKit's other inputs make it so.
+
+Reading DeviceKit's device list starts its observation of every device, and the
+predicate creates a DeviceKit coordinator for each device. DeviceKit exports no
+API to stop either, so they stay with DeviceKit for the rest of the manager
+process. Quitting stops Neo's reads and callbacks along with the inventory
+observation.
+
 Each Xcode installation has its own headless renderer process with a distinct
 bundle identity. The manager loads one compatible SimulatorKit UI toolkit for
 its process lifetime and opens device service contexts for each owning Xcode.
@@ -124,7 +147,7 @@ Hub mode.
 | Owner | Responsibility |
 | --- | --- |
 | `SimulatorHostController` | Serialize route changes, track renderer ownership, and resolve the Xcode for each device. |
-| `SimulatorManagerModel` | Own observable inventory, loading state, and the accepted operation queue. |
+| `SimulatorManagerModel` | Own observable inventory and its DeviceKit Active values, loading state, and the accepted operation queue. |
 | `DeviceSettingsModel` | Own the selected settings snapshot, cancellable reads, and readback after queued edits. |
 | `DeviceInspectorModel` | Own inspector records and reject results from an earlier selection or page. |
 | `ManagerWindowController` | Present the sidebar, device screen pane, and settings inspector in `NSSplitViewController`, own the selection, the toolbar, and the latest placement choice for the selected device, and decide where each opened or restored screen goes. |
