@@ -406,6 +406,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         }
         isKey = false
         keyboard.setEnabled(false)
+        updateTrackpadInput()
     }
 
     private func observePresentationWindow() {
@@ -455,6 +456,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
             guard let self else { return }
             if !self.isFullScreen { self.saveWindowGeometry() }
             self.keyboard.setEnabled(false)
+            self.session.display.setTrackpadEnabled(false)
             self.session.display.onPropertiesChange = nil
         }
         session.onDisplayChange = { [weak self] in self?.appDisplayChanged() }
@@ -866,6 +868,11 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     /// The key window receives keyboard input only when the device's hardware keyboard is connected.
     private func updateKeyboardInput() {
         keyboard.setEnabled(isKey && session.connectsHardwareKeyboard)
+    }
+
+    /// The key window's screen takes trackpad gestures whether or not the hardware keyboard is connected.
+    private func updateTrackpadInput() {
+        session.display.setTrackpadEnabled(isKey)
     }
 
     /// Starts changes before returning to preserve input-source order. Failures are logged.
@@ -1538,12 +1545,14 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         guard !closed else { return }
         isKey = true
         updateKeyboardInput()
+        updateTrackpadInput()
         if focusingInput { focusInput() }
     }
     func windowDidResignKey(_ notification: Notification) {
         guard !closed else { return }
         isKey = false
         updateKeyboardInput()
+        updateTrackpadInput()
     }
     func windowWillStartLiveResize(_ notification: Notification) { if !closed { fitting.willStartLiveResize() } }
     /// A manual resize updates toolbar style while preserving content height, then fits the display.

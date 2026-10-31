@@ -97,9 +97,7 @@ final class RemoteScreenFramebuffer: NSView {
             .rotated(by: display.angle * .pi / 180).translatedBy(x: -0.5, y: -0.5)
         // The views and layers between `view` and the plane only move, scale, and turn it, so three points give the
         // affine transform of the whole conversion, which then maps to touch coordinates like `touch` without the clamp.
-        let origin = locate(.zero), xAxis = locate(CGPoint(x: 1, y: 0)), yAxis = locate(CGPoint(x: 0, y: 1))
-        let toPlane = CGAffineTransform(a: xAxis.x - origin.x, b: xAxis.y - origin.y, c: yAxis.x - origin.x,
-                                        d: yAxis.y - origin.y, tx: origin.x, ty: origin.y)
+        let toPlane = CGAffineTransform(sampling: locate)
         let toTouch = CGAffineTransform(a: 1 / size.width, b: 0, c: 0, d: -1 / size.height, tx: 0, ty: 1)
         return RemoteDeviceInputLocations(touch: touch, pointer: touch.applying(correction),
                                           pointerTransform: toPlane.concatenating(toTouch).concatenating(correction))
@@ -124,5 +122,15 @@ final class RemoteScreenFramebuffer: NSView {
         CATransaction.setDisableActions(true)
         operation()
         CATransaction.commit()
+    }
+}
+
+extension CGAffineTransform {
+    /// The transform of `convert`, a conversion that only moves, scales, and turns points, from the points it gives the
+    /// origin and the ends of the unit axes.
+    init(sampling convert: (CGPoint) -> CGPoint) {
+        let origin = convert(.zero), xAxis = convert(CGPoint(x: 1, y: 0)), yAxis = convert(CGPoint(x: 0, y: 1))
+        self.init(a: xAxis.x - origin.x, b: xAxis.y - origin.y, c: yAxis.x - origin.x, d: yAxis.y - origin.y,
+                  tx: origin.x, ty: origin.y)
     }
 }

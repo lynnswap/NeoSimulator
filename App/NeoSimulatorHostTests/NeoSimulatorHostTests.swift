@@ -1668,7 +1668,7 @@ struct InputFocusTests {
         #expect(controller.validateMenuItem(screenshot))
         #expect(display.view.isDescendant(of: controller.presentationViewController.view))
         controller.focusInput()
-        #expect(window.firstResponder === display.inputView)
+        #expect(window.firstResponder === display.inputView && display.trackpad.last == true)
         #expect(controller.session === session && display.disconnectCount == 0)
         #expect(DeviceCommand.command(.fitScreen).isEnabled(controller))
         #expect(!DeviceCommand.command(.stayOnTop).isEnabled(controller))
@@ -1691,7 +1691,8 @@ struct InputFocusTests {
         #expect(controls.isDescendant(of: accessory.view))
         controller.detachPresentation()
         #expect(controller.presentationViewController.parent == nil && content.superview == nil)
-        #expect(display.disconnectCount == 0 && closes == 0)
+        // Moving the screen ends its trackpad gestures, which the next presentation's window takes again.
+        #expect(display.disconnectCount == 0 && closes == 0 && display.trackpad.last == false)
         controller.showCompactWindow()
         #expect(!controller.isEmbedded && compactPresentations == 1)
         let compactWindow = try #require(controller.window)
@@ -2743,12 +2744,14 @@ struct InputFocusTests {
         b.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification, object: b.window))
         #expect(first.keyboard == [true, false])
         #expect(second.keyboard == [true])
+        // The key window's screen also takes trackpad gestures; losing focus ends them.
+        #expect(first.trackpad == [true, false] && second.trackpad == [true])
         #expect(events.map(\.flags) == [flags, [], flags])
         #expect(events.map(\.keyboards) == [[[true], []], [[true], []], [[true, false], [true]]])
         a.invalidate()
         a.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification))
         a.windowDidResignKey(Notification(name: NSWindow.didResignKeyNotification))
-        #expect(first.keyboard == [true, false])
+        #expect(first.keyboard == [true, false] && first.trackpad == [true, false])
         #expect(events.count == 3)
     }
 
@@ -3225,6 +3228,10 @@ struct InputFocusTests {
         for _ in 0..<100 {
             #expect(try unsafe display.digitizerView.unsafeInvoke(on: view) === input)
         }
+        // The native trackpad places its gestures within the framebuffer's view, which the digitizer does not contain.
+        let framebuffer = try unsafe display.renderableView.unsafeInvoke(on: view)
+        #expect(String(describing: Swift.type(of: framebuffer)) == "SimDisplayRenderableView")
+        #expect(framebuffer.isDescendant(of: view) && !framebuffer.isDescendant(of: input))
         let chrome = try unsafe display.chromeView.unsafeInvoke(on: view)
         try unsafe display.setRenderScale.unsafeInvoke(on: view, 0.75)
         #expect(try unsafe display.renderScale.unsafeInvoke(on: view) == 0.75)
@@ -3280,6 +3287,103 @@ struct InputFocusTests {
         #expect(handled.map { $0.1.contains(.command) } == [false, false, true, true])
         responder.detach()
         #expect(input.nextResponder === view)
+    }
+
+    @Test func trackpadGesturesThatBeginOverTheFramebufferReachTheNativeTrackpadInsteadOfTheDigitizer() throws {
+        _ = NSApplication.shared
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 600), styleMask: .titled,
+                              backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        // A window's CGEvent holds its location both globally and from the window's top-left corner, and
+        // NSEvent(cgEvent:) reads either one, depending on the event and the macOS release. Both are the same while the
+        // window's top-left corner is the global origin, the top-left corner of the screen with the menu bar.
+        let screen = try #require(NSScreen.screens.first)
+        window.setFrameTopLeftPoint(NSPoint(x: screen.frame.minX, y: screen.frame.maxY))
+        let content = try #require(window.contentView)
+        // The canvas pans and magnifies the display, whose digitizer also covers the bezel around the framebuffer.
+        // In the window, the framebuffer spans x 60–300 and y 80–480.
+        let canvas = NSView(frame: content.bounds)
+        canvas.bounds = NSRect(x: 40, y: 60, width: 200, height: 300)
+        content.addSubview(canvas)
+        let display = NSView(frame: NSRect(x: 50, y: 70, width: 160, height: 260))
+        canvas.addSubview(display)
+        let framebuffer = NSView(frame: NSRect(x: 20, y: 30, width: 120, height: 200))
+        display.addSubview(framebuffer)
+        display.addSubview(NSView(frame: display.bounds))
+        // A bar above the canvas covers the framebuffer's lower edge.
+        content.addSubview(NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 140)))
+        var sent: [(event: NSEvent, transform: CGAffineTransform)] = []
+        var ends = 0
+        let input = NativeTrackpadInput(display: display, framebuffer: framebuffer,
+                                        send: { sent.append(($0, $1)) }, endGestures: { ends += 1 })
+        func event(_ type: CGEventType, at point: NSPoint, flags: CGEventFlags = [],
+                   _ configure: (CGEvent) throws -> Void) throws -> NSEvent {
+            let mouse = try #require(NSEvent.mouseEvent(with: .mouseMoved, location: point, modifierFlags: [], timestamp: 0,
+                windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 0, pressure: 0))
+            let event = try #require(mouse.cgEvent)
+            event.type = type
+            event.flags = flags
+            try configure(event)
+            let made = try #require(NSEvent(cgEvent: event))
+            try #require(made.window === window)
+            try #require(made.locationInWindow == point)
+            return made
+        }
+        func scroll(_ phase: CGScrollPhase?, momentum: CGMomentumScrollPhase = .none, at point: NSPoint,
+                    flags: CGEventFlags = []) throws -> NSEvent {
+            try event(.scrollWheel, at: point, flags: flags) {
+                $0.setIntegerValueField(.scrollWheelEventScrollPhase, value: Int64(phase?.rawValue ?? 0))
+                $0.setIntegerValueField(.scrollWheelEventMomentumPhase, value: Int64(momentum.rawValue))
+            }
+        }
+        /// A trackpad's magnify event with its gesture phase: 1 began, 2 changed, 4 ended.
+        func pinch(_ phase: Int64, at point: NSPoint) throws -> NSEvent {
+            try event(try #require(CGEventType(rawValue: 29)), at: point) {
+                $0.setIntegerValueField(try #require(CGEventField(rawValue: 110)), value: 8)
+                $0.setIntegerValueField(try #require(CGEventField(rawValue: 132)), value: phase)
+            }
+        }
+        let inside = NSPoint(x: 180, y: 300), beside = NSPoint(x: 40, y: 300), underBar = NSPoint(x: 180, y: 100)
+        // Until the screen's window gives it the gestures, AppKit delivers them to the digitizer.
+        NSApp.sendEvent(try scroll(.began, at: inside))
+        input.isEnabled = true
+        // A scroll that begins over the framebuffer reaches the device until its momentum ends, also once the pointer
+        // leaves the framebuffer, and so does a pinch; each event of a mouse wheel stands alone. AppKit delivers the
+        // others, which begin beside the framebuffer, over the bar, or with Option, which pans the canvas.
+        let taken = try [scroll(.began, at: inside), scroll(.changed, at: beside), scroll(.ended, at: beside),
+                         scroll(nil, momentum: .begin, at: beside), scroll(nil, momentum: .end, at: beside),
+                         scroll(nil, at: inside), pinch(1, at: inside), pinch(2, at: beside), pinch(4, at: beside)]
+        let passed = try [scroll(.began, at: beside), scroll(.changed, at: inside), scroll(.began, at: inside, flags: .maskAlternate),
+                          pinch(1, at: beside), pinch(2, at: inside), scroll(.began, at: underBar), pinch(1, at: underBar)]
+        for event in taken + passed { NSApp.sendEvent(event) }
+        #expect(sent.map { ObjectIdentifier($0.event) } == taken.map(ObjectIdentifier.init))
+
+        // A mouse movement over the framebuffer places the trackpad's gestures. Its transform maps window locations
+        // through the canvas's pan and magnification to the framebuffer's unit coordinates from its top-left corner.
+        func mouseMoved(to point: NSPoint) throws -> NSEvent {
+            try #require(NSEvent.mouseEvent(with: .mouseMoved, location: point, modifierFlags: [], timestamp: 0,
+                windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 0, pressure: 0))
+        }
+        let moved = try mouseMoved(to: inside)
+        input.mouseMoved(with: moved)
+        input.mouseMoved(with: try mouseMoved(to: beside))
+        try #require(sent.count == taken.count + 1 && sent.last?.event === moved)
+        let transform = try #require(sent.last?.transform)
+        for (point, unit) in [(NSPoint(x: 60, y: 480), CGPoint.zero), (NSPoint(x: 300, y: 80), CGPoint(x: 1, y: 1)),
+                              (inside, CGPoint(x: 0.5, y: 0.45))] {
+            let mapped = point.applying(transform)
+            #expect(abs(mapped.x - unit.x) < 0.001 && abs(mapped.y - unit.y) < 0.001, "\(point) -> \(mapped)")
+        }
+
+        // Losing the gestures ends a pinch in progress, whose remaining steps no longer reach the device.
+        NSApp.sendEvent(try pinch(1, at: inside))
+        input.isEnabled = false
+        NSApp.sendEvent(try pinch(2, at: inside))
+        input.isEnabled = true
+        NSApp.sendEvent(try pinch(4, at: inside))
+        #expect(ends == 1 && sent.count == taken.count + 2)
+        input.isEnabled = false
     }
 
     @Test func aUserInterfacePluginGivesTheWindowItsToolbarAndTakesTheInput() throws {
@@ -8386,6 +8490,8 @@ struct InputFocusTests {
         a.windowDidResignKey(Notification(name: NSWindow.didResignKeyNotification, object: a.window))
         a.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification, object: a.window))
         #expect(first.keyboard == [true, false])
+        // Trackpad gestures do not need the hardware keyboard.
+        #expect(first.trackpad == [true, false, true])
         #expect(!software.isEnabled(a) && software.isEnabled(b))
         a.perform(.toggleSoftwareKeyboard)
         #expect(first.events.isEmpty)
@@ -9353,6 +9459,8 @@ private final class TestDisplay: SimulatorDisplay {
     func size(for scale: CGFloat) -> NSSize { NSSize(width: outerSize.width * scale, height: outerSize.height * scale) }
     func scale(for size: NSSize) -> CGFloat { min(size.width / outerSize.width, size.height / outerSize.height) }
     func setKeyboardEnabled(_ enabled: Bool) { keyboard.append(enabled) }
+    var trackpad: [Bool] = []
+    func setTrackpadEnabled(_ enabled: Bool) { trackpad.append(enabled) }
     var hardwareKeyboard: [Bool] = []
     var keyboardLanguages: [String] = []
     var hardwareKeyboardError: Error?

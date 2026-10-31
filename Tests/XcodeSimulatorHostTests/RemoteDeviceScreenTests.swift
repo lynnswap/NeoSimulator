@@ -1233,6 +1233,130 @@ struct RemoteDeviceScreenTests {
         #expect(transport.services.dropFirst().map(\.removes) == [2, 1])
     }
 
+    @Test func trackpadScrollsBecomeScrollReportsLikeTheirPinches() async throws {
+        let runtime = ABIRuntime.shared
+        let bindings = try await NativeTrackpadBindings(runtime: runtime)
+        let translator = try bindings.makeTranslator()
+        let report = try CoreDeviceHIDService.reportABI(runtime: runtime)
+        let scroll = try CoreDeviceHIDService.universalHIDType("ScrollReport", runtime: runtime)
+        let reportID = try CoreDeviceHIDService.universalHIDType("ReportID", runtime: runtime)
+        let abis: [NativeSwiftType: NativeType] = [report.type: report.abi, reportID: try .structure(named: reportID.name, fields: [.uint8])]
+        let rawID = try reportID.resolveAndWait(.swift(.getter("rawValue", as: (() -> UInt8).self, valueABIs: abis, receiverABI: abis[reportID])))
+        let readID = try report.type.resolveAndWait(.swift(.getter("reportID", as: (() -> NativeSwiftValue).self, valueABIs: abis, receiverABI: report.abi)))
+        let scrollID = try unsafe rawID.unsafeInvoke(on: scroll.resolveAndWait(.swift(.staticGetter("reportID",
+            as: (() -> NativeSwiftValue).self, valueABIs: abis))).unsafeInvoke())
+        // Each step of a trackpad's scroll, through its momentum, and each event of a mouse wheel reaches the device as a
+        // scroll report for the service of the Mac HID service that sent it, as each step of a pinch does as a scale report.
+        for event in try [trackpadScroll(.began, delta: -12, sender: 0x1234), trackpadScroll(.changed, delta: -30, sender: 0x1234),
+                          trackpadScroll(.ended, sender: 0x1234), trackpadScroll(nil, momentum: .begin, delta: -20, sender: 0x1234),
+                          trackpadScroll(nil, momentum: .end, sender: 0x1234), trackpadScroll(nil, units: .line, delta: -3, sender: 0x1234)] {
+            #expect(try bindings.lookup.sender(of: event) == 0x1234)
+            let ids = try translator.reports(for: event).map { try unsafe rawID.unsafeInvoke(on: readID.unsafeInvoke(on: $0)) }
+            #expect(ids == [scrollID], "phase \(event.phase.rawValue), momentum \(event.momentumPhase.rawValue)")
+        }
+    }
+
+    @Test func nativeTrackpadSendsEventsInOrderAndDropsThoseOfEndedGestures() async throws {
+        let transport = TrackpadFixtureTransport(bindings: try await NativeTrackpadBindings(runtime: .shared))
+        let trackpad = NativeDeviceTrackpad(gestures: NativeTrackpadGestures { transport })
+        var failures: [String] = []
+        trackpad.onFailure = { failures.append($0.localizedDescription) }
+        let onScreen = CGAffineTransform(scaleX: 1 / 400, y: 1 / 600)
+        // A trackpad's first event waits for the device to create its service. The events after it wait too, instead of
+        // creating another service or reaching the device first.
+        let creating = ScreenFixtureGate()
+        transport.connecting = creating
+        for event in try [mouseMovement(sender: 0xA), trackpadScroll(.began, delta: -10, sender: 0xA), trackpadPinch(.began, sender: 0xA)] {
+            trackpad.handle(event, coordinateTransform: onScreen)
+        }
+        await creating.wait()
+        #expect(transport.lookups == [0xA] && transport.services.isEmpty)
+        transport.connecting = nil
+        creating.resume()
+
+        // Ending the gestures, as losing focus does, while another trackpad's service is created ends those the services
+        // hold and drops the events not yet sent. The service is kept for that trackpad's next gesture.
+        let ending = ScreenFixtureGate()
+        transport.connecting = ending
+        trackpad.handle(try trackpadScroll(.began, delta: -10, sender: 0xB), coordinateTransform: onScreen)
+        await ending.wait()
+        #expect(transport.services.map(\.reports) == [5])
+        trackpad.handle(try trackpadPinch(.changed, magnification: 0.2, sender: 0xA), coordinateTransform: onScreen)
+        trackpad.endGestures()
+        #expect(transport.services.map(\.resets) == [1])
+        transport.connecting = nil
+        ending.resume()
+        trackpad.handle(try trackpadScroll(.began, delta: -10, sender: 0xB), coordinateTransform: onScreen)
+
+        // A step that fails ends the gestures, so its remaining steps are dropped, and the failure is reported.
+        try #require(transport.services.first).sendFailures = 1
+        for event in try [trackpadPinch(.began, sender: 0xA), trackpadPinch(.changed, magnification: 0.2, sender: 0xA)] {
+            trackpad.handle(event, coordinateTransform: onScreen)
+        }
+        // Stopping removes the services after the events before it; later events reach none.
+        try await trackpad.stop()
+        trackpad.handle(try trackpadPinch(.began, sender: 0xA), coordinateTransform: onScreen)
+        #expect(transport.lookups == [0xA, 0xB] && transport.services.map(\.sender) == [0xA, 0xB])
+        #expect(transport.services.map(\.reports) == [5, 2] && failures == ["fixture stream failed"])
+        #expect(transport.services.map(\.resets) == [3, 2] && transport.services.map(\.removes) == [1, 1])
+    }
+
+    @Test func nativeTrackpadGesturesBeginWhereTheScreenNowShowsTheStillPointer() async throws {
+        let runtime = ABIRuntime.shared
+        let transport = TrackpadFixtureTransport(bindings: try await NativeTrackpadBindings(runtime: runtime))
+        let trackpad = NativeDeviceTrackpad(gestures: NativeTrackpadGestures { transport })
+        var failures: [String] = []
+        trackpad.onFailure = { failures.append($0.localizedDescription) }
+        let report = try CoreDeviceHIDService.reportABI(runtime: runtime)
+        let pointer = try CoreDeviceHIDService.universalHIDType("AbsolutePointerReport", runtime: runtime)
+        let reportID = try CoreDeviceHIDService.universalHIDType("ReportID", runtime: runtime)
+        let abis: [NativeSwiftType: NativeType] = [
+            report.type: report.abi,
+            pointer: try .structure(named: pointer.name, fields: [.uint64, .uint64]),
+            reportID: try .structure(named: reportID.name, fields: [.uint8]),
+        ]
+        let rawID = try reportID.resolveAndWait(.swift(.getter("rawValue", as: (() -> UInt8).self, valueABIs: abis, receiverABI: abis[reportID])))
+        let readID = try report.type.resolveAndWait(.swift(.getter("reportID", as: (() -> NativeSwiftValue).self, valueABIs: abis, receiverABI: report.abi)))
+        let pointerID = try unsafe rawID.unsafeInvoke(on: pointer.resolveAndWait(.swift(.staticGetter("reportID",
+            as: (() -> NativeSwiftValue).self, valueABIs: abis))).unsafeInvoke())
+        let makePointer = try pointer.resolveAndWait(.swift(.initializer("init(_report:)", as: ((NativeSwiftValue) -> NativeSwiftValue).self, valueABIs: abis)))
+        let pointerX = try pointer.resolveAndWait(.swift(.getter("x", as: (() -> Double).self, valueABIs: abis, receiverABI: abis[pointer])))
+        let pointerY = try pointer.resolveAndWait(.swift(.getter("y", as: (() -> Double).self, valueABIs: abis, receiverABI: abis[pointer])))
+        /// Where a report moves the service's hidden pointer, to the nearest thousandth, or nil for a gesture's report.
+        func placement(_ report: NativeSwiftValue) throws -> CGPoint? {
+            guard try unsafe rawID.unsafeInvoke(on: readID.unsafeInvoke(on: report)) == pointerID else { return nil }
+            let position = try unsafe makePointer.unsafeInvoke(report)
+            return try unsafe CGPoint(x: (pointerX.unsafeInvoke(on: position) * 1000).rounded() / 1000,
+                                      y: (pointerY.unsafeInvoke(on: position) * 1000).rounded() / 1000)
+        }
+        /// A screen that the canvas turned, scaled, and moved so that it shows `target` at `event`'s window location.
+        func showing(_ target: CGPoint, at event: NSEvent) -> CGAffineTransform {
+            let turn = CGAffineTransform(a: 0, b: 1 / 600, c: -1 / 300, d: 0, tx: 0, ty: 0)
+            let turned = event.locationInWindow.applying(turn)
+            return turn.concatenating(CGAffineTransform(translationX: target.x - turned.x, y: target.y - turned.y))
+        }
+
+        // A mouse movement places the trackpad's hidden pointer. The canvas then moves the screen under the still Mac
+        // pointer, so a scroll, a pinch, and each of a mouse wheel's events first move the hidden pointer to what the
+        // screen now shows under the Mac pointer. A gesture's later steps, including its momentum, stay where it began
+        // even when the canvas moves meanwhile.
+        trackpad.handle(try mouseMovement(sender: 0xA), coordinateTransform: CGAffineTransform(scaleX: 1 / 2000, y: 1 / 2000))
+        let scroll = try trackpadScroll(.began, delta: -10, sender: 0xA)
+        let pinch = try trackpadPinch(.began, sender: 0xA)
+        let wheel = try trackpadScroll(nil, units: .line, delta: -3, sender: 0xA)
+        let panned = showing(CGPoint(x: 0.3, y: 0.8), at: scroll), zoomed = showing(CGPoint(x: 0.6, y: 0.2), at: pinch)
+        for (event, transform) in try [(scroll, panned), (trackpadScroll(.changed, delta: -30, sender: 0xA), zoomed),
+                                       (trackpadScroll(nil, momentum: .begin, delta: -20, sender: 0xA), zoomed), (pinch, zoomed),
+                                       (trackpadPinch(.changed, magnification: 0.2, sender: 0xA), panned),
+                                       (wheel, showing(CGPoint(x: 0.5, y: 0.4), at: wheel))] {
+            trackpad.handle(event, coordinateTransform: transform)
+        }
+        try await trackpad.stop()
+        let placements = try #require(transport.services.first).sent.dropFirst().map(placement)
+        #expect(placements == [CGPoint(x: 0.3, y: 0.8), nil, nil, nil, CGPoint(x: 0.6, y: 0.2), nil, nil, CGPoint(x: 0.5, y: 0.4), nil],
+                "Failures \(failures)")
+    }
+
     @Test func failedHIDServiceRemovalKeepsTheOwnedServiceForCleanupRetry() async throws {
         var removes = 0
         var resets = 0
@@ -1657,7 +1781,10 @@ private final class KeyboardFixtureTransport: NativeKeyboardTransport {
 private final class TrackpadFixtureTransport: NativeTrackpadTransport {
     final class Service {
         let sender: UInt64
-        var reports = 0
+        /// The reports the device received, in order.
+        var sent: [NativeSwiftValue] = []
+        var reports: Int { sent.count }
+        var sendFailures = 0
         var resets = 0
         var removes = 0
         var removeFailures = 0
@@ -1682,7 +1809,10 @@ private final class TrackpadFixtureTransport: NativeTrackpadTransport {
         await connecting?.hold()
         let record = Service(sender: sender)
         services.append(record)
-        let service = CoreDeviceHIDService(send: { _ in record.reports += 1 }, reset: { record.resets += 1 }, remove: {
+        let service = CoreDeviceHIDService(send: { report in
+            if record.sendFailures > 0 { record.sendFailures -= 1; throw ScreenFixtureError.stream }
+            record.sent.append(report)
+        }, reset: { record.resets += 1 }, remove: {
             record.removes += 1
             if record.removeFailures > 0 { record.removeFailures -= 1; throw ScreenFixtureError.cleanup }
         })
@@ -1739,6 +1869,16 @@ private func trackpadPinch(_ phase: TrackpadPinchPhase, magnification: Double = 
     event.setIntegerValueField(try #require(CGEventField(rawValue: 110)), value: 8)
     event.setIntegerValueField(try #require(CGEventField(rawValue: 132)), value: phase.rawValue)
     event.setDoubleValueField(try #require(CGEventField(rawValue: 113)), value: magnification)
+    if let sender { event.setIntegerValueField(try #require(CGEventField(rawValue: 87)), value: Int64(sender)) }
+    return try #require(NSEvent(cgEvent: event))
+}
+
+/// A trackpad's two-finger scroll step, or with no phases a mouse wheel's, whose sender UniversalHIDKit reads as it does a pinch's.
+private func trackpadScroll(_ phase: CGScrollPhase?, momentum: CGMomentumScrollPhase = .none, units: CGScrollEventUnit = .pixel,
+                            delta: Int32 = 0, sender: UInt64?) throws -> NSEvent {
+    let event = try #require(CGEvent(scrollWheelEvent2Source: nil, units: units, wheelCount: 1, wheel1: delta, wheel2: 0, wheel3: 0))
+    event.setIntegerValueField(.scrollWheelEventScrollPhase, value: Int64(phase?.rawValue ?? 0))
+    event.setIntegerValueField(.scrollWheelEventMomentumPhase, value: Int64(momentum.rawValue))
     if let sender { event.setIntegerValueField(try #require(CGEventField(rawValue: 87)), value: Int64(sender)) }
     return try #require(NSEvent(cgEvent: event))
 }

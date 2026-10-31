@@ -47,6 +47,15 @@ preserves a pinned finger's device position, but rotation preserves its window
 position, so click that window position to release it. Three-finger and larger
 arbitrary gestures are unavailable.
 
+In the active device window, two-finger scrolling and pinches on a Mac trackpad
+over the screen reach simulators in the default device set as trackpad
+gestures, as in Device Hub. Each gesture happens where the pointer is on the
+device screen, including after you pan or zoom the canvas. **Connect Hardware
+Keyboard** does not affect them. Option-scrolling pans the canvas instead of
+scrolling the device. Trackpad gestures are unavailable on devices with a
+Digital Crown or Digital Dial, where scrolling turns the crown or dial, and on
+Apple Vision Pro, simulators in other device sets, and external displays.
+
 **I/O → Touch Pressure** appears for devices with 3D Touch. **Use Trackpad
 Force** needs a Force Touch trackpad. Shallow Press and Deep Press select click
 pressure on supported watches. These settings apply across device windows.

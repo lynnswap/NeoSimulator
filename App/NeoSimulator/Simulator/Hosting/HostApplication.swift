@@ -825,6 +825,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                         var capabilities = Self.capabilities(of: device)
                         let nativeCanvas: NativeDeviceCanvas?
                         var keyboard: NativeDeviceKeyboard?
+                        var trackpad: NativeDeviceTrackpad?
                         if device.deviceTypeIdentifier == "com.apple.CoreSimulator.SimDeviceType.iPhone-Duo", device.deviceSetPath == nil {
                             nativeCanvas = try await NativeDeviceCanvas.connect(simulatorUDID: device.identifier)
                         } else {
@@ -832,10 +833,15 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                             if device.deviceSetPath == nil, capabilities.supportsFeature(DeviceCapabilities.keyboard) {
                                 keyboard = try await nativeKeyboard(of: device)
                             }
+                            // A crown or dial takes the pointer's scrolling, and a device UI plugin's overlay takes the
+                            // screen's input, through SimulatorKit.
+                            if device.deviceSetPath == nil, !capabilities.hasCrownOrDial, !capabilities.hasUserInterfacePlugin {
+                                trackpad = try await nativeTrackpad(of: device)
+                            }
                         }
                         try Task.checkCancellation()
                         let connection = try SimulatorConnection(device: device, screen: screen, runtime: runtime,
-                                                                 nativeCanvas: nativeCanvas, keyboard: keyboard)
+                                                                 nativeCanvas: nativeCanvas, keyboard: keyboard, trackpad: trackpad)
                         if nativeCanvas != nil { capabilities.controlsOrientation = false }
                         let session = DeviceSession(
                             device: Self.describe(device), capabilities: capabilities,
@@ -904,6 +910,23 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             throw CancellationError()
         } catch {
             hostLog("\(device.name) keeps SimulatorKit's keyboard, which the guest reads with a US layout: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    /// The device's native trackpad, which gives the guest the Mac trackpads' scrolling and pinches over the integrated
+    /// screen. CoreDevice lists only the default device set. Without it, SimulatorKit's digitizer drops them.
+    private func nativeTrackpad(of device: SimulatorDevice) async throws -> NativeDeviceTrackpad? {
+        do {
+            let trackpad = try await NativeDeviceTrackpad.connect(simulatorUDID: device.identifier)
+            trackpad.onFailure = { [name = device.name] error in
+                hostLog("Could not send trackpad input to \(name): \(error.localizedDescription)")
+            }
+            return trackpad
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            hostLog("\(device.name) keeps SimulatorKit's digitizer, which drops trackpad scrolling and pinches: \(error.localizedDescription)")
             return nil
         }
     }

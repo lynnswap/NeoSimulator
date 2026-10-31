@@ -146,6 +146,7 @@ Hub mode.
 | `ExternalDisplayChanges` | Serialize display and CarPlay changes across sessions for one device. |
 | `DisplayKeyboardInput`, `DisplayFitting` | Shared input-focus and geometry behavior for both window types. |
 | `NativeDeviceKeyboard` | Send a default-set simulator's keyboard input through one CoreDevice keyboard service per Mac keyboard, described by that keyboard's properties. |
+| `NativeDeviceTrackpad` | Send a default-set simulator's trackpad scrolling and pinches over its integrated screen through one CoreDevice UniversalHID service per sending Mac HID service, described by that Mac service's properties. Mouse movements, and each scroll or pinch as it begins, move the guest service's hidden pointer through the screen's current window-to-pointer transform. |
 | `TVRemoteController` | Present the remote; sessions retain held inputs until release. |
 
 The manager's observable models stay on MainActor. SwiftUI observes their
