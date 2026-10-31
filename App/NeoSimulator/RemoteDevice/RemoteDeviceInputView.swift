@@ -66,6 +66,7 @@ final class RemoteDeviceInputView: NSView {
         for kind in kinds { capabilityGenerations[kind, default: 0] += 1 }
         mouseGestures = mouseGestures.filter { !kinds.contains($0.value.kind.capability) }
         if kinds.contains(.digitizer) { scrollGesture = nil }
+        if kinds.contains(.gesture) { interruptPinch() }
     }
 
     func enqueueInput(for kind: RemoteDeviceInputKind, _ operation: @escaping @MainActor () async throws -> Void) {
@@ -94,6 +95,10 @@ final class RemoteDeviceInputView: NSView {
         var location: CGPoint { CGPoint(x: origin.x + translation.dx, y: origin.y + translation.dy) }
     }
     private var scrollGesture: ScrollGesture?
+    /// A pinch that began over the screen, which the device performs until the trackpad's pinch ends. When the
+    /// screen loses input first, the rest of that pinch reaches neither the device nor the views around the screen.
+    private enum PinchGesture { case forwarding, interrupted }
+    private var pinchGesture: PinchGesture?
     private var inputGeneration = 0
     private var capabilityGenerations: [RemoteDeviceInputKind: Int] = [:]
     private var pointerTracking: NSTrackingArea?
@@ -110,16 +115,26 @@ final class RemoteDeviceInputView: NSView {
         inputGeneration += 1
         mouseGestures.removeAll()
         scrollGesture = nil
+        interruptPinch()
+    }
+
+    private func interruptPinch() {
+        if pinchGesture != nil { pinchGesture = .interrupted }
     }
 
     private func enqueueMouseInput(kind: MouseInputKind, _ operation: @escaping @MainActor () async throws -> Void) {
+        enqueueGestureInput(for: kind.capability, operation)
+    }
+
+    /// Sends a step of a gesture. A failure ends the view's gestures and releases what the device holds.
+    private func enqueueGestureInput(for capability: RemoteDeviceInputKind, _ operation: @escaping @MainActor () async throws -> Void) {
         let generation = inputGeneration
-        let capabilityGeneration = capabilityGenerations[kind.capability, default: 0]
-        enqueueInput(for: kind.capability) { [weak self, session] in
+        let capabilityGeneration = capabilityGenerations[capability, default: 0]
+        enqueueInput(for: capability) { [weak self, session] in
             guard self?.inputGeneration == generation else { return }
             do { try await operation() }
             catch {
-                guard self?.capabilityGenerations[kind.capability, default: 0] == capabilityGeneration else { throw error }
+                guard self?.capabilityGenerations[capability, default: 0] == capabilityGeneration else { throw error }
                 if self?.inputGeneration == generation { self?.resetMouseGestures() }
                 do { try await session.releaseInputs() }
                 catch let cleanup {
@@ -189,7 +204,8 @@ final class RemoteDeviceInputView: NSView {
         guard isInputEnabled, event.hasPreciseScrollingDeltas else { return super.scrollWheel(with: event) }
         if event.phase.contains(.began) {
             endScroll()
-            guard mouseGestures.isEmpty, session.inputCapabilities.contains(.digitizer),
+            // The device's pinch takes both fingers, so they do not also drag a touch.
+            guard mouseGestures.isEmpty, pinchGesture != .forwarding, session.inputCapabilities.contains(.digitizer),
                   let locations = session.inputLocations(atWindowPoint: event.locationInWindow) else { return }
             scrollGesture = ScrollGesture(origin: event.locationInWindow)
             enqueueMouseInput(kind: .touch) { [session] in try await session.sendTouch(at: locations.touch, phase: .began) }
@@ -215,10 +231,31 @@ final class RemoteDeviceInputView: NSView {
         enqueueMouseInput(kind: .touch) { [session] in try await session.sendTouch(at: locations.touch, phase: .ended) }
     }
 
+    /// A pinch that begins over the screen pinches the device's app; others magnify whatever contains the screen.
+    override func magnify(with event: NSEvent) {
+        if event.phase.contains(.began) {
+            pinchGesture = nil
+            guard isInputEnabled, session.inputCapabilities.contains(.gesture),
+                  session.inputLocations(atWindowPoint: event.locationInWindow) != nil else { return super.magnify(with: event) }
+            endScroll()
+            pinchGesture = .forwarding
+        } else if let gesture = pinchGesture {
+            if !event.phase.isDisjoint(with: [.ended, .cancelled]) { pinchGesture = nil }
+            guard gesture == .forwarding else { return }
+        } else {
+            return super.magnify(with: event)
+        }
+        enqueueGestureInput(for: .gesture) { [session] in try await session.sendPinch(event) }
+    }
+
     override func mouseMoved(with event: NSEvent) {
-        guard isInputEnabled, session.inputCapabilities.contains(.pointer),
-              let locations = session.inputLocations(atWindowPoint: event.locationInWindow) else { return }
-        enqueueMouseInput(kind: .pointer) { [session] in try await session.movePointer(to: locations.pointer) }
+        guard isInputEnabled, let locations = session.inputLocations(atWindowPoint: event.locationInWindow) else { return }
+        if session.inputCapabilities.contains(.pointer) {
+            enqueueMouseInput(kind: .pointer) { [session] in try await session.movePointer(to: locations.pointer) }
+        } else if session.inputCapabilities.contains(.gesture) {
+            // Without a pointer connection, as on a dedicated display, the mouse still places the trackpad's pinches.
+            enqueueGestureInput(for: .gesture) { [session] in try await session.moveGesturePointer(with: event, at: locations) }
+        }
     }
 
     private static let keyUsage: [UInt16: UInt16] = {

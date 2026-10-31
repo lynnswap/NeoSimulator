@@ -87,6 +87,7 @@ final class CoreDeviceInputCapabilitySource: RemoteScreenInputCapabilitySource {
         var markerTypes: [RemoteDeviceInputKind: String] = [
             .keyboard: "CoreDevice.KeyboardHIDCapability", .pointer: "CoreDevice.PointerHIDCapability",
             .digitizer: "CoreDevice.DigitizerHIDCapability", .button: "CoreDevice.ButtonHIDCapability",
+            .gesture: "CoreDevice.UniversalHIDServiceCapability",
         ]
         if dedicatedDisplay {
             markerTypes.removeValue(forKey: .pointer)
