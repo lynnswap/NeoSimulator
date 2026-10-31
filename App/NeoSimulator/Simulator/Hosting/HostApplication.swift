@@ -855,6 +855,12 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                                 trackpad = input.trackpad
                                 touchRoute = input.touchRoute
                             }
+                        } else if capabilities.isPhoneOrPad, capabilities.supportsFeature(DeviceCapabilities.touchPressure) {
+                            nativeCanvas = nil
+                            // Native keyboard or trackpad input would make the guest drop SimulatorKit's touches, which
+                            // keep their pressure, and its buttons. The screen therefore keeps SimulatorKit's keyboard,
+                            // which the guest reads with a US layout, and its digitizer, which drops trackpad scrolling
+                            // and pinches.
                         } else {
                             nativeCanvas = nil
                             if capabilities.supportsFeature(DeviceCapabilities.keyboard) {
