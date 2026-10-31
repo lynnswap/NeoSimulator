@@ -106,7 +106,10 @@ struct ManagerModelTests {
                                                  menus: MenuController(application: nil), defaults: defaults)
         controller.window?.setFrameAutosaveName("")
         defer { controller.window?.close() }
+        // The unshown window is only tall enough for every row when an earlier run saved its autosave frame.
+        controller.window?.setContentSize(NSSize(width: 1040, height: 700))
         let content = try #require(controller.window?.contentView)
+        content.layoutSubtreeIfNeeded()
         let outline = try #require(inspectorViews(content).compactMap { $0 as? NSOutlineView }.first)
         controller.selectDevice(.coreDevice(ids["Mike"]!.uuidString))
         func rows() -> [String: Int] {
@@ -115,11 +118,11 @@ struct ManagerModelTests {
             })
         }
         func order() -> [String] { rows().sorted { $0.value < $1.value }.map(\.key) }
-        func artwork() throws -> [String: Bool] {
-            outline.layoutSubtreeIfNeeded()
-            return try rows().mapValues { row in
-                let cell = try #require(outline.view(atColumn: 0, row: row, makeIfNecessary: false))
-                return try #require(cell.subviews.compactMap { $0 as? NSHostingView<SidebarDeviceArtwork> }.first).rootView.isActive
+        func artwork() -> [String: Bool] {
+            content.layoutSubtreeIfNeeded()
+            return rows().compactMapValues { row in
+                outline.view(atColumn: 0, row: row, makeIfNecessary: false)?.subviews
+                    .compactMap { $0 as? NSHostingView<SidebarDeviceArtwork> }.first?.rootView.isActive
             }
         }
         func update(_ change: () -> Void, until expected: [String]) async throws {
@@ -132,23 +135,23 @@ struct ManagerModelTests {
             #expect(outline.selectedRow == rows()["Mike"])
         }
         #expect(order() == ["Alpha", "Mike", "Zulu", "Echo"])
-        #expect(try artwork() == ["Alpha": true, "Mike": true, "Zulu": false, "Echo": false])
+        #expect(artwork() == ["Alpha": true, "Mike": true, "Zulu": false, "Echo": false])
 
         // Native false overrides Neo's booting artwork; unknown Mike keeps it without being promoted or demoted.
         try await update({ model.activeStatesDidChange(DeviceActiveStates([ids["Zulu"]!: true, ids["Alpha"]!: false, ids["Echo"]!: true])) },
                          until: ["Zulu", "Alpha", "Mike", "Echo"])
-        #expect(try artwork() == ["Alpha": false, "Mike": true, "Zulu": true, "Echo": true])
+        #expect(artwork() == ["Alpha": false, "Mike": true, "Zulu": true, "Echo": true])
         // The same order still redraws the row whose value changed.
         model.activeStatesDidChange(DeviceActiveStates([ids["Zulu"]!: true, ids["Alpha"]!: false, ids["Mike"]!: false, ids["Echo"]!: true]))
         let redrawn = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            MainActor.assumeIsolated { (try? artwork())?["Mike"] == false }
+            MainActor.assumeIsolated { artwork()["Mike"] == false }
         }, object: nil)
         try #require(await XCTWaiter.fulfillment(of: [redrawn], timeout: 5) == .completed)
         #expect(order() == ["Zulu", "Alpha", "Mike", "Echo"])
 
         try await update({ model.activeStateObservationFailed(ManagerModelSource.Failure.unavailable) },
                          until: ["Alpha", "Mike", "Zulu", "Echo"])
-        #expect(try artwork() == ["Alpha": true, "Mike": true, "Zulu": false, "Echo": false])
+        #expect(artwork() == ["Alpha": true, "Mike": true, "Zulu": false, "Echo": false])
         #expect(model.backgroundIssue?.contains("Active devices are unavailable") == true)
     }
 
