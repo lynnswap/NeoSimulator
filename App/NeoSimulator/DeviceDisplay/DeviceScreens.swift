@@ -15,6 +15,9 @@ final class DeviceScreens {
     private(set) var displayXcodeURL: URL?
     @ObservationIgnored private let model: SimulatorManagerModel
     @ObservationIgnored private var hosts: [URL: HostApplication] = [:]
+    /// Hosts that stopped while the app kept running, after a host conflict or a failed quit. Stopping the screens
+    /// stops them again, which retries the native input they could not remove.
+    @ObservationIgnored private var stoppedHosts: [HostApplication] = []
     /// Set while the app quits, until a cancelled quit resumes.
     @ObservationIgnored private(set) var isQuitting = false
     @ObservationIgnored private var lastRemoteHost: SimulatorHost?
@@ -174,9 +177,12 @@ final class DeviceScreens {
         return host
     }
 
-    /// Releases the screens whose sessions their host ended, and the hosts that stopped.
+    /// Releases the screens whose sessions their host ended, and retires the hosts that stopped.
     private func hostsChanged() {
-        for (url, host) in hosts where host.isStopped { hosts.removeValue(forKey: url) }
+        for (url, host) in hosts where host.isStopped {
+            hosts.removeValue(forKey: url)
+            stoppedHosts.append(host)
+        }
         let opened = Set(hosts.values.flatMap(\.openedDeviceIdentifiers).map(\.inventoryID))
         remove(simulatorIdentifiers.filter { !opened.contains($0) })
     }
@@ -325,8 +331,9 @@ final class DeviceScreens {
     func stopAll() async throws {
         do {
             await model.stopDevicePostures()
-            for host in hosts.values { try await host.stop(keepingDevicesRunning: true) }
+            for host in stoppedHosts + hosts.values { try await host.stop(keepingDevicesRunning: true) }
             hosts.removeAll()
+            stoppedHosts.removeAll()
             remove(simulatorIdentifiers)
             try await stopRemoteScreens()
         } catch {

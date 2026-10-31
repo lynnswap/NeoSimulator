@@ -12,7 +12,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     private let isInProcess: Bool
     private let suppliedPasteboardSync: PasteboardSync?
     var onPresent: ((DeviceWindowController) -> Void)?
-    var onClose: ((SimulatorDeviceIdentifier, DeviceLifetimeChoice?, Task<Void, Never>) -> Void)?
+    var onClose: ((SimulatorDeviceIdentifier, DeviceLifetimeChoice?, Task<Void, any Error>) -> Void)?
     var onError: ((Error) -> Void)?
     var onChange: (() -> Void)?
     var onRestart: ((SimulatorDeviceIdentifier, Bool) -> Void)?
@@ -49,6 +49,9 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     private var suppressed: Set<SimulatorDeviceIdentifier> = []
     /// Shutdowns of devices whose windows closed, which quitting waits for.
     private var closingShutdowns: [SimulatorDeviceIdentifier: Task<Void, Never>] = [:]
+    /// Sessions whose windows closed, until they have removed their native input. Their input owners keep the
+    /// services they could not remove, which releasing the device and quitting remove again.
+    private var disconnectedSessions: [DeviceSession] = []
     /// Per-device queues outlive individual sessions; quitting waits for all of them.
     private var externalDisplayQueues: [SimulatorDeviceIdentifier: (name: String, changes: ExternalDisplayChanges)] = [:]
     /// Whether another simulator host took over, which leaves devices running.
@@ -335,7 +338,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     private func releaseDevice(_ identifier: SimulatorDeviceIdentifier,
                                beforeInvalidating: ((DeviceWindowController) -> Void)? = nil) async throws {
         guard ownedDeviceIdentifiers.contains(identifier) || sessions[identifier] != nil
-                || connections[identifier] != nil || closingShutdowns[identifier] != nil else { return }
+                || connections[identifier] != nil || closingShutdowns[identifier] != nil
+                || disconnectedSessions.contains(where: { $0.device.identity == identifier }) else { return }
         guard !releasingDevices.contains(identifier) else {
             throw HostError.operation("This simulator is already being handed over.")
         }
@@ -360,8 +364,12 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             beforeInvalidating?(controller)
             controller.invalidate()
             sessions.removeValue(forKey: identifier)
+            disconnectedSessions.append(controller.session)
         }
         awaitingReconnect.removeValue(forKey: identifier)
+        // Like an unfinished external display, input that was not removed keeps the device for another release.
+        let inputFailures = await finishDisconnectedInput(of: identifier)
+        guard inputFailures.isEmpty else { throw HostError.operation(inputFailures.joined(separator: "\n")) }
         if let changes = externalDisplayQueues[identifier]?.changes {
             let deadline = ContinuousClock.now + .seconds(HostPreferences.defaults.double(forKey: HostPreferences.terminationTimeout))
             guard await changes.idle(before: deadline) else {
@@ -974,28 +982,34 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
 
     /// Closes the device unless this close or DetachOnWindowClose requests keeping it booted.
     private func deviceWindowClosed(_ controller: DeviceWindowController, choice: DeviceLifetimeChoice?) {
-        let identifier = controller.session.device.identity
+        let session = controller.session
+        let identifier = session.device.identity
         sessions.removeValue(forKey: identifier)
         awaitingReconnect.removeValue(forKey: identifier)
         ownedDeviceIdentifiers.remove(identifier)
         // A device left running keeps its window closed until it shuts down.
         suppressed.insert(identifier)
+        disconnectedSessions.append(session)
+        // A failed removal is logged, and the session stays for releasing the device or quitting to retry it.
+        let removal = Task { try await finishInput(of: session) }
         let keepsRunning = choice.map { $0 == .keepRunning }
             ?? HostPreferences.defaults.bool(forKey: HostPreferences.detachOnWindowClose)
-        if !isInProcess, !keepsRunning { shutDownClosedDevice(controller.session) }
+        if !isInProcess, !keepsRunning { shutDownClosedDevice(session, after: removal) }
         updateRegistration()
         if isInProcess {
-            let session = controller.session
-            let finishing = Task { await session.finishRecording() }
+            let finishing = Task {
+                await session.finishRecording()
+                try await removal.value
+            }
             onClose?(identifier, choice, finishing)
             onChange?()
         }
         else if sessions.isEmpty { showDeviceBrowser() }
     }
 
-    /// Shuts down a device whose window closed once its recording is saved,
+    /// Shuts down a device whose window closed once its native input's removal ends and its recording is saved,
     /// abandoning a restart in progress.
-    private func shutDownClosedDevice(_ session: DeviceSession) {
+    private func shutDownClosedDevice(_ session: DeviceSession, after removal: Task<Void, any Error>) {
         let identifier = session.device.identity
         // The restart stays tracked until it unwinds, so opening waits for it.
         let restart = restarting[identifier]
@@ -1011,6 +1025,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             return
         }
         closingShutdowns[identifier] = Task { [weak self] in
+            _ = await removal.result
             await restart?.value
             await session.finishRecording()
             guard let self, !self.yieldedToAnotherHost,
@@ -1113,6 +1128,24 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         for (name, changes) in externalDisplayQueues.values {
             guard await !changes.idle(before: deadline) else { continue }
             failures.append("The external display of \(name) did not turn off within \(Int(timeout)) seconds of quitting.")
+        }
+        return failures
+    }
+
+    /// Waits until a disconnected session has removed its native input, then lets it go. A session whose removal
+    /// failed stays for the next release or quit.
+    private func finishInput(of session: DeviceSession) async throws {
+        try await session.stop()
+        disconnectedSessions.removeAll { $0 === session }
+    }
+
+    /// Waits for the native input of the disconnected sessions, all or those of one device, retrying failed
+    /// removals. Returns each session's failure.
+    private func finishDisconnectedInput(of identifier: SimulatorDeviceIdentifier? = nil) async -> [String] {
+        var failures: [String] = []
+        for session in disconnectedSessions where identifier == nil || session.device.identity == identifier {
+            do { try await finishInput(of: session) }
+            catch { failures.append("\(session.device.name): \(error.localizedDescription)") }
         }
         return failures
     }
@@ -1283,9 +1316,11 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         yieldToAnotherHost()
         shutdown()
         // A conflict can arrive on the main dispatch queue. Finish recordings
-        // before terminating.
+        // and native input before terminating.
         Task {
             await recordings.finishAll()
+            // The sessions log their removal failures; the other host keeps the devices.
+            _ = await finishDisconnectedInput()
             guard !isTerminating else { return }
             // A handover ends the host without waiting on alerts.
             for error in recordingTerminationErrors {
@@ -1302,8 +1337,8 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         return true
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
-    /// Finalizes recordings, disconnects windows, waits for external-display cleanup, then shuts down.
-    /// Explicit detach choices, DetachOnAppQuit, and handover preserve booted devices.
+    /// Finalizes recordings, disconnects windows, waits for their native input and external-display cleanup, then
+    /// shuts down. Explicit detach choices, DetachOnAppQuit, and handover preserve booted devices.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if isManaged, !managerRequestedQuit, !handoverRequested, !yieldedToAnotherHost, !ownerExitRequested {
             openManager(command: "quit")
@@ -1319,8 +1354,9 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         let devices = keepsRunning ? [] : ownedDeviceIdentifiers.union(sessions.keys).sorted().map {
             (identifier: $0.identifier, deviceSetPath: $0.deviceSetPath)
         }
+        // Every window waits for its native input, also when its device keeps running.
         guard recordings.hasActiveRecordings || !devices.isEmpty || !closingShutdowns.isEmpty
-                || sessions.values.contains(where: { $0.session.hasExternalDisplay })
+                || !sessions.isEmpty || !disconnectedSessions.isEmpty
                 || externalDisplayQueues.values.contains(where: { $0.changes.isBusy }) else {
             if ownerExitRequested { captureFailures.forEach { hostLog($0.localizedDescription) } }
             else if !captureFailures.isEmpty, !handoverRequested { Self.alert(captureFailures) }
@@ -1343,22 +1379,25 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             for restart in restarts { restart.cancel() }
             for tools in bootOperations.values { tools.cancel() }
             for restart in restarts { await restart.value }
-            // Windows disconnect before their devices shut down. Host conflicts
-            // are still handled meanwhile and cancel the shutdowns.
+            // Windows disconnect and remove their native input before their devices shut down.
+            // Host conflicts are still handled meanwhile and cancel the shutdowns.
             for session in sessions.values { session.invalidate() }
+            disconnectedSessions += sessions.values.map(\.session)
             sessions.removeAll()
             awaitingReconnect.removeAll()
+            let inputFailures = await finishDisconnectedInput()
             let displayFailures = await finishExternalDisplayChanges()
             let failures = await shutDownForTermination(devices)
             shutdown()
+            let allFailures = inputFailures + displayFailures + failures
             if ownerExitRequested {
-                for failure in displayFailures + failures { hostLog(failure) }
-            } else if !displayFailures.isEmpty || !failures.isEmpty, !handoverRequested {
+                for failure in allFailures { hostLog(failure) }
+            } else if !allFailures.isEmpty, !handoverRequested {
                 let alert = NSAlert()
-                alert.messageText = failures.isEmpty
-                    ? "Some external displays could not be turned off."
-                    : "Some simulated devices could not be shut down."
-                alert.informativeText = (displayFailures + failures).joined(separator: "\n")
+                alert.messageText = !failures.isEmpty ? "Some simulated devices could not be shut down."
+                    : !displayFailures.isEmpty ? "Some external displays could not be turned off."
+                    : "Some keyboards and trackpads could not be disconnected from the simulators."
+                alert.informativeText = allFailures.joined(separator: "\n")
                 alert.runModal()
             }
             sender.reply(toApplicationShouldTerminate: true)
@@ -1371,11 +1410,16 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         shutdown()
     }
 
-    /// Finishes presentation resources without terminating the owning application.
+    /// Finishes presentation resources without terminating the owning application. Stopping again retries the
+    /// native input that an earlier stop could not remove.
     /// The headless backend remains responsible for guest lifetime in integrated mode.
     func stop(keepingDevicesRunning: Bool? = nil) async throws {
         if let stoppingTask { try await stoppingTask.value; return }
-        guard !stopped else { return }
+        guard !stopped else {
+            let failures = await finishDisconnectedInput()
+            if !failures.isEmpty { throw HostError.operation(failures.joined(separator: "\n")) }
+            return
+        }
         isTerminating = true
         let task = Task { try await finishStopping(keepingDevicesRunning: keepingDevicesRunning) }
         stoppingTask = task
@@ -1397,12 +1441,14 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         for task in pending { await task.value }
         for task in requests { await task.value }
         for controller in sessions.values { controller.invalidate() }
+        disconnectedSessions += sessions.values.map(\.session)
         await recordings.finishAll()
         sessions.removeAll()
         awaitingReconnect.removeAll()
         presentationRestarts.removeAll()
+        let inputFailures = await finishDisconnectedInput()
         let displayFailures = await finishExternalDisplayChanges()
-        let failures = displayFailures + (await shutDownForTermination(devices))
+        let failures = inputFailures + displayFailures + (await shutDownForTermination(devices))
         let captureFailures = recordingTerminationErrors + CaptureThumbnail.finishAll()
         recordingTerminationErrors.removeAll()
         shutdown()
@@ -1454,6 +1500,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         awaitingReconnect.removeAll()
         presentationRestarts.removeAll()
         for session in sessions.values { session.invalidate() }
+        disconnectedSessions += sessions.values.map(\.session)
         sessions.removeAll()
         browser?.close()
         newSimulator?.close()

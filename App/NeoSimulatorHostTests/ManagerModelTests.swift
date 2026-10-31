@@ -1313,6 +1313,25 @@ struct ManagerModelTests {
         await manager.stopDevicePostures()
     }
 
+    @Test func closingAScreenClosesItsDeviceAndReportsItsFailedCleanup() async throws {
+        let device = simulator()
+        let source = ManagerModelSource(devices: [device])
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source)
+        var failures: [String] = []
+        manager.onError = { failures.append($0.localizedDescription) }
+        manager.closeDevice(device.id, keepingDeviceRunning: true, after: Task { throw ManagerModelSource.Failure.unavailable })
+        #expect(await events.next() == .close(device.id))
+        // When the device's close fails too, both failures are reported.
+        await source.failClose()
+        manager.closeDevice(device.id, keepingDeviceRunning: true, after: Task { throw ManagerModelSource.Failure.unavailable })
+        #expect(await events.next() == .close(device.id))
+        try await manager.quitRenderer(keepingDevicesRunning: true)
+        let cleanup = ManagerModelSource.Failure.unavailable.localizedDescription
+        let close = ManagerModelSource.Failure.native.localizedDescription
+        #expect(failures == [cleanup, [close, cleanup].joined(separator: "\n")])
+    }
+
     @Test func aRemoteScreenUsesItsCommandIdentityAndClosingDuringManagementPreventsResubscription() async throws {
         let features = DevicePosturePayload.features.union(["com.apple.coredevice.feature.rebootdevice"])
         let data = try JSONSerialization.data(withJSONObject: ["result": ["devices": [[
@@ -2340,6 +2359,7 @@ actor ManagerModelSource: SimulatorManagerSource {
     private var holdsInventoryReads = false
     private var inventoryRead: CheckedContinuation<Void, Never>?
     private var holdsManagement = false
+    private var failsClose = false
     private var immediateRead: SimulatorDeviceSettings?
     private var readContinuation: CheckedContinuation<SimulatorDeviceSettings, any Error>?
     private var openContinuation: CheckedContinuation<Void, any Error>?
@@ -2470,7 +2490,11 @@ actor ManagerModelSource: SimulatorManagerSource {
     }
     func completeOpen() { openContinuation?.resume(); openContinuation = nil }
     func failOpen() { openContinuation?.resume(throwing: Failure.unavailable); openContinuation = nil }
-    func closeDevice(_ deviceID: DeviceInventoryID, keepingDeviceRunning: Bool) { continuation.yield(.close(deviceID)) }
+    func closeDevice(_ deviceID: DeviceInventoryID, keepingDeviceRunning: Bool) throws {
+        continuation.yield(.close(deviceID))
+        if failsClose { throw Failure.native }
+    }
+    func failClose() { failsClose = true }
     func creationCatalog() throws -> SimulatorCreationContext { throw Failure.unavailable }
     func creationCatalog(for deviceID: DeviceInventoryID) throws -> SimulatorCreationContext { throw Failure.unavailable }
     func createSimulator(named name: String, deviceType: String, runtime: String, context: SimulatorCreationContext) throws -> String { throw Failure.unavailable }

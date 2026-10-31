@@ -452,6 +452,8 @@ final class DeviceSession {
     @ObservationIgnored private var releasesInFlight: [HIDInput: Int] = [:]
     @ObservationIgnored private var lastDownGeneration = 0
     @ObservationIgnored private var isDisconnected = false
+    /// The removal of the display's native input that disconnecting starts and `stop()` joins, until it fails.
+    @ObservationIgnored private var inputRemoval: Task<Void, any Error>?
     /// A tool operation or a modal step that leads to one is in progress.
     private(set) var isBusy = false
     private(set) var isConnected = true
@@ -1796,6 +1798,30 @@ final class DeviceSession {
         // While the display is connected, its device reports whether it is booted.
         disconnectExternalScreen()
         display.disconnect()
+        inputRemoval = removeInput()
+    }
+
+    /// Disconnects, then waits until the display has sent the native input it accepted and removed its services.
+    /// After a failure, the next call removes what the display's input owners kept.
+    func stop() async throws {
+        disconnect()
+        let removal = inputRemoval ?? removeInput()
+        inputRemoval = removal
+        do { try await removal.value } catch {
+            if inputRemoval == removal { inputRemoval = nil }
+            throw error
+        }
+    }
+
+    /// Starts removing the display's native input before returning. The failure is also logged, because a
+    /// disconnect that nothing awaits, such as the deinitializer's, would otherwise drop it.
+    private func removeInput() -> Task<Void, any Error> {
+        Task.immediate { [primaryDisplay] in
+            do { try await primaryDisplay.stop() } catch {
+                hostLog(error.localizedDescription)
+                throw error
+            }
+        }
     }
 
     isolated deinit { disconnect() }
