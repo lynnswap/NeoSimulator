@@ -3320,8 +3320,13 @@ struct InputFocusTests {
         let runtime = try await makeRuntime()
         let display = runtime.display
         let interface = try await runtime.touchInterface()
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 600), styleMask: .titled,
+                              backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
         let type = try #require(NSClassFromString("SimulatorKit.SimDisplayView") as? NSView.Type)
-        let view = type.init(frame: .zero)
+        let view = type.init(frame: NSRect(x: 0, y: 0, width: 400, height: 600))
+        window.contentView = view
         defer { _ = try? unsafe display.disconnect.unsafeInvoke(on: view, NativeSwiftClosure {}) }
         let input = try unsafe display.digitizerView.unsafeInvoke(on: view)
         // The digitizer measures edge touches in its unflipped bounds, which SimulatorTouchInterface.edge(_:) assumes.
@@ -3348,7 +3353,8 @@ struct InputFocusTests {
 
         // The native delegate replaces it. A call of its first-responder requirement, as the digitizer makes, reaches the
         // digitizer's own delegate.
-        let touches = try NativeDigitizerTouches(digitizer: input, interface: interface) { _ in }
+        var received: [NativeDigitizerTouch] = []
+        let touches = try NativeDigitizerTouches(digitizer: input, interface: interface) { received.append($0) }
         weak var replacement = try delegate()
         #expect(replacement != nil && replacement !== ownDelegate)
         do {
@@ -3362,6 +3368,20 @@ struct InputFocusTests {
             try unsafe wantsFirstResponder.unsafeInvoke(on: installed, digitizer, true)
         }
         #expect(requests.values.withLock { $0 } == [true])
+        // A click on the enabled digitizer reaches the native touchscreen as a touch that begins and then ends. The
+        // digitizer marks a click's start and end by the event's type, not by its phase.
+        try unsafe await ABIRuntime.shared.resolve(.swift(.type("SimulatorKit.SimDigitizerInputView")))
+            .resolve(.swift(.setter("isEnabled", as: ((Bool) -> Void).self))).unsafeInvoke(on: input, true)
+        view.layoutSubtreeIfNeeded()
+        try #require(!input.bounds.isEmpty)
+        let center = input.convert(NSPoint(x: input.bounds.midX, y: input.bounds.midY), to: nil)
+        for eventType in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            let click = try #require(NSEvent.mouseEvent(with: eventType, location: center, modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil,
+                eventNumber: 0, clickCount: 1, pressure: eventType == .leftMouseDown ? 1 : 0))
+            if eventType == .leftMouseDown { input.mouseDown(with: click) } else { input.mouseUp(with: click) }
+        }
+        #expect(received.map(\.phase) == [.began, .ended])
         // Restoring gives the digitizer its own delegate back. The digitizer keeps its delegate weakly, so the restored
         // replacement no longer exists.
         try touches.restore()
