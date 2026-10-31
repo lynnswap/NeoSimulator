@@ -161,8 +161,8 @@ that are already booted when the manager starts. See <doc:Configuration>.
 ## Arrange windows
 
 Drag a device bezel to move its window, or drag its corners to resize it. With
-the bezel hidden, resize from the window edges. **Window → Show Device Bezels**
-and **Stay on Top** control its presentation.
+the bezel hidden, resize from the window edges. **View → Show Device Bezels**
+and **Stay On Top** control its presentation.
 
 | Window scale | Shortcut |
 | --- | --- |

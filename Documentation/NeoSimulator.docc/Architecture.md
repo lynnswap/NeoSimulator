@@ -59,9 +59,9 @@ CoreDevice contributes capabilities without duplicating those simulator rows.
 
 Management actions retain the selected identities through asynchronous work.
 The controller reports each device's result and completed steps, so a partial
-failure does not require repeating successful operations. Operations on a live
-simulator wait for the renderer's recording and display cleanup before running
-commands that remove its session.
+failure does not require repeating successful operations. Operations that
+restart, erase, shut down, or remove a live simulator first wait for the manager
+to finish its screen's recording and disconnect the screen.
 
 The manager observes CoreDevice's device-change stream and refreshes inventory
 when a device connects or disconnects. The observation does not advertise the
@@ -79,15 +79,17 @@ canvas supplies. Screens shown through SimulatorKit or Neo's remote-screen
 transports, Device Hub, and renderer processes do not contribute that state.
 
 Evaluating the predicate for a device creates a DeviceKit coordinator for it,
-which can start the device's native HID services. A simulator whose screen keeps
-SimulatorKit's touches and buttons then stops accepting them. The manager
-therefore creates `DeviceActiveStateObservation` with `init(limitedTo:)`, which
-evaluates the predicate only for the devices that `DeviceScreens` reports: open
-screens that use the native canvas, joined to the CoreDevice identifier of their
-inventory record. Each read requests that set under Observation, so opening or
-closing such a screen, replacing its session, or an inventory change rereads the
-values. DeviceKit matches devices by CoreDevice identifier, so simulators in
-custom device sets have no value.
+which can start the device's native HID services. iOS simulators whose screens
+kept SimulatorKit's touches and buttons were observed to stop accepting them
+afterward, although a fresh tvOS 27.2 simulator still accepted SimulatorKit's
+Home button after its native keyboard and the guest's `dtuhidd` had started.
+The manager therefore creates `DeviceActiveStateObservation` with
+`init(limitedTo:)`, which evaluates the predicate only for the devices that
+`DeviceScreens` reports: open screens that use the native canvas, joined to the
+CoreDevice identifier of their inventory record. Each read requests that set
+under Observation, so opening or closing such a screen, replacing its session,
+or an inventory change rereads the values. DeviceKit matches devices by
+CoreDevice identifier, so simulators in custom device sets have no value.
 
 Every other device has no value. Within the same availability, a row that
 DeviceKit reports as Active comes first. A row without a value is ordered with
@@ -100,8 +102,9 @@ observation of every device. DeviceKit exports no API to stop that observation o
 a coordinator, so they stay with DeviceKit for the rest of the manager process.
 Quitting stops Neo's reads and callbacks along with the inventory observation.
 
-Each Xcode installation has its own headless renderer process with a distinct
-bundle identity. The manager loads one compatible SimulatorKit UI toolkit for
+Each Xcode installation has its own headless renderer process, a separate
+instance of the embedded renderer app, whose bundle identifier differs from the
+manager's. The manager loads one compatible SimulatorKit UI toolkit for
 its process lifetime and opens device service contexts for each owning Xcode.
 Loaded Objective-C framework classes cannot be unloaded, so UI toolkit selection
 stays fixed while device operations retain their own developer context.
@@ -113,8 +116,8 @@ finishes recording and disconnects presentation before the headless backend
 mutates the guest, then reconnects the retained presentation controller.
 
 Termination checks the running app's bundle identifier and normalized bundle
-URL. The renderer's startup acknowledgement follows runtime creation,
-device-set subscription, activation, and initial window handling. A
+URL. The renderer's startup acknowledgement follows runtime creation, ownership
+registration, device-set subscription, and a final competing-host check. A
 LaunchServices result alone does not establish successful startup.
 
 `HostConflictMonitor` rejects a competing host at startup and observes later
@@ -162,7 +165,7 @@ Hub mode.
 | `DeviceScreen` | Keep one open screen's canvas controls current from its state, and send their actions to that screen's device. |
 | `SimulatorRuntime` | Load and validate private framework interfaces through ABIBridge. |
 | `CoreSimulator` | Device-set access and simulator model data. |
-| `HostApplication` | Observe device sets, own sessions and windows, and coordinate launch and shutdown. |
+| `HostApplication` | Observe device sets. In the manager, own one Xcode's simulator sessions and their presentation controllers; in a headless renderer, boot, restart, and shut down the devices it owns. |
 | `DeviceSession` | Device connection, input, pasteboard, audio, external-display state, and device operations. |
 | `DeviceWindowController` | Present the device and forward user actions. |
 | `RemoteDeviceScreenSession` | Own one active physical-device or VM screen transport, its resize assertion and input resources, and unfinished or completed recordings. |
@@ -177,7 +180,7 @@ Hub mode.
 | `DisplayKeyboardInput`, `DisplayFitting` | Shared input-focus and geometry behavior for both window types. |
 | `NativeDeviceKeyboard` | Send a simulator's keyboard input through one guest UniversalHID service per Mac keyboard, described by that keyboard's properties, which CoreDevice creates for a default-set simulator and `SimulatorGuestHID` for one in another set. |
 | `NativeDeviceTrackpad` | Send a simulator's trackpad scrolling and pinches over its integrated screen through one guest UniversalHID service per sending Mac HID service, described by that Mac service's properties and created as for `NativeDeviceKeyboard`. Mouse movements, and each scroll or pinch as it begins, move the guest service's hidden pointer through the screen's current window-to-pointer transform. |
-| `NativeDeviceScreenInput` | Send the integrated screen's touches, as SimulatorKit's digitizer interprets them, and the device's button usages to the guest's touchscreen and button services, through CoreDevice or `SimulatorGuestHID`, once the screen's keyboard or trackpad input is native; release what they hold when the screen disconnects. |
+| `NativeDeviceScreenInput` | For an iPhone or iPad simulator without touch pressure, send the integrated screen's touches, as SimulatorKit's digitizer interprets them, and the device's button usages to the guest's touchscreen and button services, through CoreDevice or `SimulatorGuestHID`, once the screen's keyboard or trackpad input is native; release what they hold when the screen disconnects. |
 | `SimulatorGuestHID` | Reach the guest HID services of a simulator in a set that CoreDevice does not list, through the Mach services its `SimDevice` looks up, with the messages CoreDevice sends them. Each input stream owns its connection, and the guest removes a connection's services when the connection ends. |
 | `TVRemoteController` | Present the remote; sessions retain held inputs until release. |
 
@@ -193,10 +196,10 @@ run in `@concurrent` helpers. Initial native bindings resolve asynchronously
 while UI receivers and framework loading stay on MainActor. Concurrent loads of
 the same context join its preparation without changing the fixed UI toolkit.
 
-Within a renderer, the active device comes from `NSApp.keyWindow`; an
-external-display window refers to its owning device. The manager's sidebar
-selection identifies the inspector target independently of the active device
-window.
+The active device comes from `NSApp.keyWindow`, including the main window while
+it shows a device screen; an external-display window refers to its owning
+device. The manager's sidebar selection identifies the inspector target
+independently of the active device window.
 
 ## Device lifecycle
 
