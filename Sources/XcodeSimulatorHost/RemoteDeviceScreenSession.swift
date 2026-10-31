@@ -366,8 +366,16 @@ public final class RemoteDeviceScreenSession {
 
     /// Sends one magnify event of a trackpad pinch, whose phase begins, continues, ends, or cancels the device's pinch.
     /// The pinch reaches a guest service that carries the properties of the Mac trackpad that sent the event; an event
-    /// that no Mac HID service sent, such as a synthesized one, reaches no service. The event carries only its scale.
-    public func sendPinch(_ event: NSEvent) async throws { try await send(.pinch(event)) }
+    /// that no Mac HID service sent, such as a synthesized one, reaches no service. On a screen without a pointer
+    /// connection, where `moveGesturePointer(with:at:)` places the pinches, a pinch that begins first moves that
+    /// service's hidden pointer the same way to the event's window location, with the screen's input locations when the
+    /// pinch is sent. A pinch that begins after the screen moved under a still mouse therefore happens where the screen
+    /// now shows the mouse. Its later steps carry only their scale, and a pinch that begins where the screen has no input
+    /// locations happens where the pointer already is.
+    public func sendPinch(_ event: NSEvent) async throws {
+        let locations = inputCapabilities.contains(.pointer) ? nil : inputLocations(atWindowPoint: event.locationInWindow)
+        try await send(.pinch(event, locations?.pointerTransform))
+    }
 
     /// Moves the hidden pointer of the guest service that carries the Mac HID service that sent `event`, a mouse movement
     /// over the screen, so that the service's later pinches center there, as Device Hub does while clicks touch the screen.
@@ -728,8 +736,9 @@ enum RemoteScreenInput {
     case pointerButton(Int, RemoteDevicePointerPhase, Int, CGPoint)
     case touch(CGPoint, CGPoint?, RemoteDeviceTouchPhase, RemoteDeviceTouchEdge)
     case button(Int, Int, RemoteDeviceButtonState)
-    /// UniversalHIDKit translates the AppKit event itself, as it does for Device Hub.
-    case pinch(NSEvent)
+    /// UniversalHIDKit translates the AppKit event itself, as it does for Device Hub. A pinch that begins first moves the
+    /// service's pointer where the transform, when there is one, maps the event's window location.
+    case pinch(NSEvent, CGAffineTransform?)
     /// A mouse movement, which UniversalHIDKit places where the transform maps the event's window location.
     case gesturePointer(NSEvent, CGAffineTransform)
 }

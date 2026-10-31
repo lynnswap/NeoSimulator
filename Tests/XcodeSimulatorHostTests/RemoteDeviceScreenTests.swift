@@ -1307,34 +1307,7 @@ struct RemoteDeviceScreenTests {
         let trackpad = NativeDeviceTrackpad(gestures: NativeTrackpadGestures { transport })
         var failures: [String] = []
         trackpad.onFailure = { failures.append($0.localizedDescription) }
-        let report = try CoreDeviceHIDService.reportABI(runtime: runtime)
-        let pointer = try CoreDeviceHIDService.universalHIDType("AbsolutePointerReport", runtime: runtime)
-        let reportID = try CoreDeviceHIDService.universalHIDType("ReportID", runtime: runtime)
-        let abis: [NativeSwiftType: NativeType] = [
-            report.type: report.abi,
-            pointer: try .structure(named: pointer.name, fields: [.uint64, .uint64]),
-            reportID: try .structure(named: reportID.name, fields: [.uint8]),
-        ]
-        let rawID = try reportID.resolveAndWait(.swift(.getter("rawValue", as: (() -> UInt8).self, valueABIs: abis, receiverABI: abis[reportID])))
-        let readID = try report.type.resolveAndWait(.swift(.getter("reportID", as: (() -> NativeSwiftValue).self, valueABIs: abis, receiverABI: report.abi)))
-        let pointerID = try unsafe rawID.unsafeInvoke(on: pointer.resolveAndWait(.swift(.staticGetter("reportID",
-            as: (() -> NativeSwiftValue).self, valueABIs: abis))).unsafeInvoke())
-        let makePointer = try pointer.resolveAndWait(.swift(.initializer("init(_report:)", as: ((NativeSwiftValue) -> NativeSwiftValue).self, valueABIs: abis)))
-        let pointerX = try pointer.resolveAndWait(.swift(.getter("x", as: (() -> Double).self, valueABIs: abis, receiverABI: abis[pointer])))
-        let pointerY = try pointer.resolveAndWait(.swift(.getter("y", as: (() -> Double).self, valueABIs: abis, receiverABI: abis[pointer])))
-        /// Where a report moves the service's hidden pointer, to the nearest thousandth, or nil for a gesture's report.
-        func placement(_ report: NativeSwiftValue) throws -> CGPoint? {
-            guard try unsafe rawID.unsafeInvoke(on: readID.unsafeInvoke(on: report)) == pointerID else { return nil }
-            let position = try unsafe makePointer.unsafeInvoke(report)
-            return try unsafe CGPoint(x: (pointerX.unsafeInvoke(on: position) * 1000).rounded() / 1000,
-                                      y: (pointerY.unsafeInvoke(on: position) * 1000).rounded() / 1000)
-        }
-        /// A screen that the canvas turned, scaled, and moved so that it shows `target` at `event`'s window location.
-        func showing(_ target: CGPoint, at event: NSEvent) -> CGAffineTransform {
-            let turn = CGAffineTransform(a: 0, b: 1 / 600, c: -1 / 300, d: 0, tx: 0, ty: 0)
-            let turned = event.locationInWindow.applying(turn)
-            return turn.concatenating(CGAffineTransform(translationX: target.x - turned.x, y: target.y - turned.y))
-        }
+        let placement = try GuestPointerReports(runtime: runtime).placement
 
         // A mouse movement places the trackpad's hidden pointer. The canvas then moves the screen under the still Mac
         // pointer, so a scroll, a pinch, and each of a mouse wheel's events first move the hidden pointer to what the
@@ -1355,6 +1328,37 @@ struct RemoteDeviceScreenTests {
         let placements = try #require(transport.services.first).sent.dropFirst().map(placement)
         #expect(placements == [CGPoint(x: 0.3, y: 0.8), nil, nil, nil, CGPoint(x: 0.6, y: 0.2), nil, nil, CGPoint(x: 0.5, y: 0.4), nil],
                 "Failures \(failures)")
+    }
+
+    @Test func remotePinchesBeginWhereTheScreenNowShowsTheStillPointer() async throws {
+        let trackpads = TrackpadFixtureTransport(bindings: try await NativeTrackpadBindings(runtime: .shared))
+        let transport = ScreenFixtureTransport()
+        transport.gestures = NativeTrackpadGestures { trackpads }
+        let session = RemoteDeviceScreenSession(device: try device()) { _, _, _ in transport }
+        try await session.start()
+        let placement = try GuestPointerReports(runtime: .shared).placement
+
+        // Without a pointer connection, as on a resized app's dedicated display, a mouse movement places the trackpad's
+        // hidden pointer. The canvas then moves the screen under the still Mac pointer, so a pinch first moves the hidden
+        // pointer to what the screen shows there as the pinch begins. Its later steps stay where it began.
+        transport.inputCapabilities = [.digitizer, .gesture]
+        let movement = try mouseMovement(sender: 0xA)
+        transport.pointerTransform = CGAffineTransform(scaleX: 1 / 2000, y: 1 / 2000)
+        try await session.moveGesturePointer(with: movement,
+                                             at: #require(session.inputLocations(atWindowPoint: movement.locationInWindow)))
+        let pinch = try trackpadPinch(.began, sender: 0xA)
+        transport.pointerTransform = showing(CGPoint(x: 0.6, y: 0.2), at: pinch)
+        try await session.sendPinch(pinch)
+        transport.pointerTransform = showing(CGPoint(x: 0.3, y: 0.8), at: pinch)
+        for event in try [trackpadPinch(.changed, magnification: 0.2, sender: 0xA), trackpadPinch(.ended, sender: 0xA)] {
+            try await session.sendPinch(event)
+        }
+        // On a screen with a pointer connection, mouse movements move that pointer instead, and pinches leave the hidden one.
+        transport.inputCapabilities.insert(.pointer)
+        try await session.sendPinch(trackpadPinch(.began, sender: 0xA))
+        try await session.stop()
+        let placements = try #require(trackpads.services.first).sent.dropFirst().map(placement)
+        #expect(placements == [CGPoint(x: 0.6, y: 0.2), nil, nil, nil, nil])
     }
 
     @Test func failedHIDServiceRemovalKeepsTheOwnedServiceForCleanupRetry() async throws {
@@ -1857,6 +1861,51 @@ private struct GuestPointerService {
     }
 }
 
+/// Reads where the reports that a guest trackpad service receives move its hidden pointer.
+private struct GuestPointerReports {
+    private let pointerID: UInt8
+    private let rawID: NativeSwiftMethod<() -> UInt8>
+    private let readID: NativeSwiftMethod<() -> NativeSwiftValue>
+    private let makePointer: NativeSwiftFunction<(NativeSwiftValue) -> NativeSwiftValue>
+    private let pointerX: NativeSwiftMethod<() -> Double>
+    private let pointerY: NativeSwiftMethod<() -> Double>
+
+    @MainActor init(runtime: ABIRuntime) throws {
+        let report = try CoreDeviceHIDService.reportABI(runtime: runtime)
+        let pointer = try CoreDeviceHIDService.universalHIDType("AbsolutePointerReport", runtime: runtime)
+        let reportID = try CoreDeviceHIDService.universalHIDType("ReportID", runtime: runtime)
+        let abis: [NativeSwiftType: NativeType] = [
+            report.type: report.abi,
+            pointer: try .structure(named: pointer.name, fields: [.uint64, .uint64]),
+            reportID: try .structure(named: reportID.name, fields: [.uint8]),
+        ]
+        rawID = try reportID.resolveAndWait(.swift(.getter("rawValue", as: (() -> UInt8).self, valueABIs: abis, receiverABI: abis[reportID])))
+        readID = try report.type.resolveAndWait(.swift(.getter("reportID", as: (() -> NativeSwiftValue).self, valueABIs: abis, receiverABI: report.abi)))
+        pointerID = try unsafe rawID.unsafeInvoke(on: pointer.resolveAndWait(.swift(.staticGetter("reportID",
+            as: (() -> NativeSwiftValue).self, valueABIs: abis))).unsafeInvoke())
+        makePointer = try pointer.resolveAndWait(.swift(.initializer("init(_report:)", as: ((NativeSwiftValue) -> NativeSwiftValue).self, valueABIs: abis)))
+        pointerX = try pointer.resolveAndWait(.swift(.getter("x", as: (() -> Double).self, valueABIs: abis, receiverABI: abis[pointer])))
+        pointerY = try pointer.resolveAndWait(.swift(.getter("y", as: (() -> Double).self, valueABIs: abis, receiverABI: abis[pointer])))
+    }
+
+    /// Where `report` moves the service's hidden pointer, to the nearest thousandth, or nil for a gesture's report.
+    func placement(_ report: NativeSwiftValue) throws -> CGPoint? {
+        guard try unsafe rawID.unsafeInvoke(on: readID.unsafeInvoke(on: report)) == pointerID else { return nil }
+        let position = try unsafe makePointer.unsafeInvoke(report)
+        return try unsafe CGPoint(x: (pointerX.unsafeInvoke(on: position) * 1000).rounded() / 1000,
+                                  y: (pointerY.unsafeInvoke(on: position) * 1000).rounded() / 1000)
+    }
+}
+
+/// The pointer transform of a screen that the canvas turned, scaled, and moved so that it shows `target` at `event`'s
+/// window location.
+@MainActor
+private func showing(_ target: CGPoint, at event: NSEvent) -> CGAffineTransform {
+    let turn = CGAffineTransform(a: 0, b: 1 / 600, c: -1 / 300, d: 0, tx: 0, ty: 0)
+    let turned = event.locationInWindow.applying(turn)
+    return turn.concatenating(CGAffineTransform(translationX: target.x - turned.x, y: target.y - turned.y))
+}
+
 /// The gesture phases of a trackpad's magnify events.
 private enum TrackpadPinchPhase: Int64 { case began = 1, changed = 2, ended = 4, cancelled = 8 }
 
@@ -1904,6 +1953,10 @@ private final class ScreenFixtureTransport: RemoteScreenTransport {
     let stopEvents = AsyncStream<Void>.makeStream()
     var recordingHandle: ScreenResizeRecordingHandle?
     var canRecordScreen: Bool { recordingHandle != nil }
+    /// The screen's window-to-pointer transform; without one the screen has no input locations.
+    var pointerTransform: CGAffineTransform?
+    /// Receives the gesture input that CoreDeviceScreenInput sends to the trackpads' services.
+    var gestures: NativeTrackpadGestures?
     private(set) var recordedDisplay: String?
     func startRecording(displayUniqueID: String?) async throws -> any RemoteScreenRecordingHandle {
         recordedDisplay = displayUniqueID
@@ -1982,6 +2035,15 @@ private final class ScreenFixtureTransport: RemoteScreenTransport {
 
     func send(_ input: RemoteScreenInput) async throws {
         pressed.record(input)
+        switch input {
+        case .pinch(let event, let transform): try await gestures?.send(event, coordinateTransform: transform)
+        case .gesturePointer(let event, let transform): try await gestures?.movePointer(event, coordinateTransform: transform)
+        default: break
+        }
+    }
+
+    func inputLocations(atWindowPoint point: CGPoint, clampingToDisplay: Bool) -> RemoteDeviceInputLocations? {
+        pointerTransform.map { RemoteDeviceInputLocations(touch: point.applying($0), pointer: point.applying($0), pointerTransform: $0) }
     }
 
     func releaseInputs() async throws {

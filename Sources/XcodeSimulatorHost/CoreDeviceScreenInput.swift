@@ -213,11 +213,11 @@ final class CoreDeviceScreenInput {
             let event = switch phase { case .began: "start"; case .moved: "position"; case .ended: "end" }
             try unsafe send.unsafeInvoke(on: implementation, point, second, eventType.makeEnumCase(named: event),
                                          nativeEdge.makeEnumCase(named: edge.rawValue), target.makeEnumCase(named: "mainScreen"))
-        case .pinch(let event):
+        case .pinch(let event, let transform):
             guard try remote.supports(Self.universalHIDFeature) else {
                 throw CLIError.unavailable("remote-input-capability", "The device no longer exposes trackpad gestures.")
             }
-            try await gestures.send(event)
+            try await gestures.send(event, coordinateTransform: transform)
         case .gesturePointer(let event, let transform):
             guard try remote.supports(Self.universalHIDFeature) else {
                 throw CLIError.unavailable("remote-input-capability", "The device no longer exposes trackpad gestures.")
@@ -229,8 +229,9 @@ final class CoreDeviceScreenInput {
 
 /// Sends the Mac trackpads' gestures over a screen to guest services that carry each trackpad's own HID properties, as
 /// Device Hub does while clicks on the screen become touches. Mouse movements over the screen move the services' hidden
-/// pointers, where their gestures happen. An event reaches the service created for the Mac HID service that sent it, so
-/// one that no Mac HID service sent, such as a synthesized event, reaches none.
+/// pointers, where their gestures happen; a gesture sent with the screen's coordinate transform first moves its pointer
+/// to where the gesture begins. An event reaches the service created for the Mac HID service that sent it, so one that
+/// no Mac HID service sent, such as a synthesized event, reaches none.
 @MainActor
 final class NativeTrackpadGestures {
     /// A trackpad's guest service, with the observer that keeps that trackpad's gesture state.
@@ -252,15 +253,24 @@ final class NativeTrackpadGestures {
         makeTransport = transport
     }
 
-    /// Sends a gesture's reports to its trackpad's service, which the trackpad's first event creates.
-    func send(_ event: NSEvent) async throws {
+    /// Sends a gesture's reports to its trackpad's service, which the trackpad's first event creates, as
+    /// `send(_:coordinateTransform:to:)` does.
+    func send(_ event: NSEvent, coordinateTransform: CGAffineTransform? = nil) async throws {
         // Device Hub drops a gesture that no Mac HID service sent rather than giving it a trackpad the Mac does not have.
         guard let service = try await service(sending: event) else { return }
-        try send(event, to: service)
+        try send(event, coordinateTransform: coordinateTransform, to: service)
     }
 
-    /// Sends `event`, a step of a scroll or pinch, to `service`, the service of the Mac HID service that sent it.
-    func send(_ event: NSEvent, to service: Service) throws {
+    /// Sends `event`, a step of a scroll or pinch, to `service`, the service of the Mac HID service that sent it. When
+    /// `event` begins its gesture, the service's hidden pointer first moves to where `coordinateTransform` maps the
+    /// event's window location; without a transform, the gesture happens where the pointer already is. The gesture's
+    /// later steps stay where it began.
+    func send(_ event: NSEvent, coordinateTransform: CGAffineTransform?, to service: Service) throws {
+        // Panning, zooming, or turning the canvas moves the screen under a still pointer without a mouse movement, so a
+        // gesture first moves the trackpad's pointer to what the screen now shows under it.
+        if let coordinateTransform, let movement = try Self.pointerMovement(beginning: event) {
+            try movePointer(movement, coordinateTransform: coordinateTransform, on: service)
+        }
         let reports = try service.translator.reports(for: event)
         // Without a report, the device would not start the gesture or would keep one the trackpad already ended.
         guard !reports.isEmpty else {
@@ -309,6 +319,22 @@ final class NativeTrackpadGestures {
         }
         services[sender] = created
         return created
+    }
+
+    /// A mouse movement to `event`'s location when `event` begins a scroll or pinch, which the observer of the trackpad's
+    /// service translates as it does the trackpad's own movements; nil for a gesture's later step.
+    private static func pointerMovement(beginning event: NSEvent) throws -> NSEvent? {
+        // A trackpad's scroll begins with one of these phases; each of a mouse wheel's phaseless events stands alone.
+        let begins = event.type == .scrollWheel
+            ? !event.phase.isDisjoint(with: [.mayBegin, .began]) || (event.phase.isEmpty && event.momentumPhase.isEmpty)
+            : event.phase.contains(.began)
+        guard begins else { return nil }
+        guard let movement = NSEvent.mouseEvent(with: .mouseMoved, location: event.locationInWindow,
+            modifierFlags: event.modifierFlags, timestamp: event.timestamp, windowNumber: event.windowNumber, context: nil,
+            eventNumber: 0, clickCount: 0, pressure: 0) else {
+            throw CLIError.software("native-trackpad-pointer", "AppKit could not create the pointer movement of a gesture.")
+        }
+        return movement
     }
 
     /// Throws when, after an event prepared its transport or service, the gesture input has stopped or the device has
@@ -410,12 +436,7 @@ public final class NativeDeviceTrackpad {
                 if event.type == .mouseMoved {
                     try gestures.movePointer(event, coordinateTransform: coordinateTransform, on: service)
                 } else {
-                    // Panning, zooming, or turning the canvas moves the screen under a still pointer without a mouse
-                    // movement, so a gesture first moves the trackpad's pointer to what the screen now shows under it.
-                    if let movement = try Self.pointerMovement(beginning: event) {
-                        try gestures.movePointer(movement, coordinateTransform: coordinateTransform, on: service)
-                    }
-                    try gestures.send(event, to: service)
+                    try gestures.send(event, coordinateTransform: coordinateTransform, to: service)
                 }
             } catch {
                 guard generation == token else { return }
@@ -438,22 +459,6 @@ public final class NativeDeviceTrackpad {
     public func stop() async throws {
         isStopped = true
         try await enqueue { [gestures] in try await gestures.stop() }.value
-    }
-
-    /// A mouse movement to `event`'s location when `event` begins a scroll or pinch, which the observer of the trackpad's
-    /// service translates as it does the trackpad's own movements; nil for a gesture's later step.
-    private static func pointerMovement(beginning event: NSEvent) throws -> NSEvent? {
-        // A trackpad's scroll begins with one of these phases; each of a mouse wheel's phaseless events stands alone.
-        let begins = event.type == .scrollWheel
-            ? !event.phase.isDisjoint(with: [.mayBegin, .began]) || (event.phase.isEmpty && event.momentumPhase.isEmpty)
-            : event.phase.contains(.began)
-        guard begins else { return nil }
-        guard let movement = NSEvent.mouseEvent(with: .mouseMoved, location: event.locationInWindow,
-            modifierFlags: event.modifierFlags, timestamp: event.timestamp, windowNumber: event.windowNumber, context: nil,
-            eventNumber: 0, clickCount: 0, pressure: 0) else {
-            throw CLIError.software("native-trackpad-pointer", "AppKit could not create the pointer movement of a gesture.")
-        }
-        return movement
     }
 
     @discardableResult

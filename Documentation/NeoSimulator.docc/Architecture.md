@@ -231,9 +231,13 @@ report with the event's phase and magnification. On a screen without a pointer
 connection, such as a resized app's dedicated display, a mouse movement over the
 display goes to the service of the Mac HID service that sent it; the observer
 maps the event's window location with the display's window-to-pointer transform
-into an absolute pointer report, so the service's pinches happen at the mouse.
-A synthesized pinch or movement, which no Mac HID service sent, reaches no
-service. When the screen loses input during a
+into an absolute pointer report, and the service's pinches happen at that
+pointer. Panning or zooming the canvas moves the display under a still mouse
+without a mouse movement, so a pinch that begins first places the pointer the
+same way at the pinch's own window location, using the display's transform at
+the time the session sends the pinch. The pinch's later steps stay where it
+began. A synthesized pinch or movement, which no Mac HID service sent, reaches
+no service. When the screen loses input during a
 pinch, the session resets these services' gesture state; disconnecting the
 screen removes them.
 
