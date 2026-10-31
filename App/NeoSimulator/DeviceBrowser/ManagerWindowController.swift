@@ -57,6 +57,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     private var rows: [DeviceRow] = []
     private var rowsByID: [DeviceInventoryID: DeviceRow] = [:]
     private var devicesByID: [DeviceInventoryID: InventoryDevice] = [:]
+    /// The values that ordered the rows; their artwork reads the same values.
+    private var displayedActiveStates = DeviceActiveStates()
     private var groups: [DeviceGroup] = []
     private var groupsByID: [String: DeviceGroup] = [:]
     private var displayedManagingIDs: Set<DeviceInventoryID> = []
@@ -189,7 +191,10 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     }
 
     private func observeInventory() {
-        withObservationTracking { _ = model.inventory } onChange: { [weak self] in
+        withObservationTracking {
+            _ = model.inventory
+            _ = model.activeStates
+        } onChange: { [weak self] in
             Task { @MainActor in
                 self?.update()
                 self?.observeInventory()
@@ -278,6 +283,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
 
     private func reloadRows() {
         let previousDevices = devicesByID
+        let previousActiveStates = displayedActiveStates
         let previousRows = rows.map(\.id)
         let previousMembers = groups.map { $0.rows.map(\.id) }
         rebuildRows()
@@ -286,7 +292,13 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             && (!options.showGroups || (displayedGroups == groups.map(\.id)
                 && previousMembers == groups.map { $0.rows.map(\.id) }))
         if sameStructure {
-            for row in rows where previousDevices[row.id] != devicesByID[row.id] { table.reloadItem(row) }
+            for row in rows {
+                guard let device = devicesByID[row.id] else { continue }
+                if previousDevices[row.id] != device
+                    || previousActiveStates.isActive(device) != displayedActiveStates.isActive(device) {
+                    table.reloadItem(row)
+                }
+            }
         } else { table.reloadData() }
         displayedGrouping = options.showGroups
         displayedGroups = groups.map(\.id)
@@ -295,7 +307,9 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     private func rebuildRows() {
         devicesByID = Dictionary(model.inventory.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         rowsByID = rowsByID.filter { devicesByID[$0.key] != nil }
-        let presentation = DeviceBrowserPresentation(devices: filteredDevices, sortOrder: options.sortOrder)
+        displayedActiveStates = model.activeStates
+        let presentation = DeviceBrowserPresentation(devices: filteredDevices, sortOrder: options.sortOrder,
+                                                     activeStates: displayedActiveStates)
         rows = presentation.devices.map { device in
             if let row = rowsByID[device.id] { return row }
             let row = DeviceRow(id: device.id)
@@ -511,7 +525,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
 
     private var selectedDevices: [InventoryDevice] {
         DeviceBrowserPresentation(devices: model.inventory.filter { selectedIdentifiers.contains($0.id) },
-                                  sortOrder: options.sortOrder).devices
+                                  sortOrder: options.sortOrder, activeStates: displayedActiveStates).devices
     }
 
     private var visibleSelectedDevices: [InventoryDevice] {
@@ -839,6 +853,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     }
 
     private func shouldRenderAsActive(_ device: InventoryDevice) -> Bool {
+        if let active = displayedActiveStates.isActive(device) { return active }
+        // Without DeviceKit's value, keep Neo's own screen and transition state, which do not reorder the row.
         if screens.screen(for: device.id) != nil { return true }
         switch device {
         case .simulator(let simulator):

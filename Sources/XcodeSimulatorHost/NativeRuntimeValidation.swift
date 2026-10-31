@@ -87,6 +87,12 @@ public struct NativeRuntimeValidationReport: Codable, Equatable, Sendable {
         ], load: { try await CoreDeviceDisplayGeometry.loadRuntime() }, prepare: {
             _ = try CoreDeviceDisplayGeometry.Bindings(runtime: .shared)
         })
-        return Self(optionalBindings: [canvas, poses, resize, hid, keyboard, geometry])
+        let activeState = await Preparation.check("sidebarActiveState", unverified: [
+            "ObservedDeviceManager singleton and its device observation",
+            "Per-device coordinator creation and the Active predicate's result", "Observation of the predicate's inputs",
+        ], load: { try await CoreDeviceDisplayGeometry.loadRuntime() }, prepare: {
+            _ = try await DeviceKitActiveStateSource.Bindings(runtime: .shared)
+        })
+        return Self(optionalBindings: [canvas, poses, resize, hid, keyboard, geometry, activeState])
     }
 }

@@ -28,9 +28,9 @@ The compatibility gate checks:
 The embedded renderer's internal `--validate-runtime` mode prepares the required
 Simulator interfaces without creating an application or device session. This
 required-only mode produces no stdout on success. Add `--include-native-bindings`
-to explicitly prepare optional native canvas, pose, app-resize, display-HID, and
-remote display-geometry bindings and write their JSON diagnostic report to
-stdout after the required checks succeed. Each result records
+to explicitly prepare optional native canvas, pose, app-resize, display-HID,
+remote display-geometry, and sidebar Active-state bindings and write their JSON
+diagnostic report to stdout after the required checks succeed. Each result records
 its preparation stage, any unavailable declaration or failure, and the remaining
 device, provider, or service checks. Successful preparation does not establish
 device support or working rendering and I/O. Optional preparation failures do
