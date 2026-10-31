@@ -30,6 +30,7 @@
         { "path": "main.m", "target-membership": [ "NeoSimulatorGuestSettings/compile-sources" ] },
         { "path": "GuestSettings.entitlements" },
         { "path": "GuestVirtual.entitlements" },
+        { "path": "DisplayAndBrightnessSettings.tbd" },
       ],
     }, {
       "kind": "group",
@@ -763,6 +764,13 @@
         "CODE_SIGN_STYLE": "Manual",
         "IPHONEOS_DEPLOYMENT_TARGET": "17.0",
         "LD_ENTITLEMENTS_SECTION": "$(SRCROOT)/NeoSimulatorGuestSettings/GuestVirtual.entitlements",
+        "OTHER_LDFLAGS": [
+          "$(inherited)",
+          "-Xlinker",
+          "-weak_library",
+          "-Xlinker",
+          "\"$(SRCROOT)/NeoSimulatorGuestSettings/DisplayAndBrightnessSettings.tbd\"",
+        ],
         "PRODUCT_NAME": "NeoSimulatorGuestSettings",
         "SDKROOT": "iphonesimulator",
         "SKIP_INSTALL": "YES",
