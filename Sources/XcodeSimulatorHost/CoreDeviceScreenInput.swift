@@ -1,7 +1,8 @@
 import ABIBridge
-import Foundation
+import AppKit
 import IOKit
 import Observation
+import os
 
 @MainActor
 final class CoreDeviceScreenInput {
@@ -11,6 +12,7 @@ final class CoreDeviceScreenInput {
     private var digitizerReports: CoreDeviceDigitizerReports?
     private var displayIdentifier: UInt32?
     private var displayInputNeedsReconnect = false
+    private let gestures: NativeTrackpadGestures
     private var implementations: [RemoteDeviceInputKind: NativeSwiftValue] = [:]
     private var pressed = RemoteScreenPressedInputs()
     private var generations: [RemoteDeviceInputKind: UInt] = [:]
@@ -22,12 +24,14 @@ final class CoreDeviceScreenInput {
         .pointer: "com.apple.coredevice.feature.remote.hid.pointer",
         .digitizer: "com.apple.coredevice.feature.remote.hid.digitizer",
         .button: "com.apple.coredevice.feature.remote.hid.button",
+        .gesture: universalHIDFeature,
     ]
     static let universalHIDFeature = "com.apple.coredevice.feature.remote.universalhidservice"
 
     init(remote: CoreDeviceRemoteScreenDevice, displayUniqueID: String? = nil) {
         self.remote = remote
         self.displayUniqueID = displayUniqueID
+        gestures = NativeTrackpadGestures { try await CoreDeviceTrackpadTransport(remote: remote) }
     }
 
     func connectDisplay(identifier: UInt32) async throws {
@@ -72,6 +76,7 @@ final class CoreDeviceScreenInput {
         // Other services retain their pressed state and continue normally.
         pressed.discard(for: kinds)
         if displayUniqueID != nil, kinds.contains(.digitizer) { displayInputNeedsReconnect = true }
+        if kinds.contains(.gesture) { gestures.discardServices() }
         for kind in kinds {
             generations[kind, default: 0] += 1
             implementations.removeValue(forKey: kind)
@@ -87,6 +92,8 @@ final class CoreDeviceScreenInput {
             do { try await sendNative(.touch(point, second, .ended, edge)); pressed.touch = nil }
             catch { if generations[.digitizer, default: 0] == generation { failures.append(error.localizedDescription) } }
         }
+        // Each trackpad's service can hold its own pinch, so every service is reset.
+        do { try gestures.resetGestures() } catch { failures.append(error.localizedDescription) }
         for (button, point) in pressed.pointerButtons.sorted(by: { $0.key < $1.key }) {
             guard pressed.pointerButtons[button] != nil else { continue }
             let generation = generations[.pointer, default: 0]
@@ -120,6 +127,8 @@ final class CoreDeviceScreenInput {
                 self.displayInput = nil
             }
         }
+        do { try await gestures.stop() }
+        catch { failure = failure.map { RemoteDeviceScreenSession.combining($0, cleanup: error) } ?? error }
         if let failure { throw failure }
     }
 
@@ -204,9 +213,210 @@ final class CoreDeviceScreenInput {
             let event = switch phase { case .began: "start"; case .moved: "position"; case .ended: "end" }
             try unsafe send.unsafeInvoke(on: implementation, point, second, eventType.makeEnumCase(named: event),
                                          nativeEdge.makeEnumCase(named: edge.rawValue), target.makeEnumCase(named: "mainScreen"))
+        case .pinch(let event):
+            guard try remote.supports(Self.universalHIDFeature) else {
+                throw CLIError.unavailable("remote-input-capability", "The device no longer exposes trackpad gestures.")
+            }
+            try await gestures.send(event)
+        case .gesturePointer(let event, let transform):
+            guard try remote.supports(Self.universalHIDFeature) else {
+                throw CLIError.unavailable("remote-input-capability", "The device no longer exposes trackpad gestures.")
+            }
+            try await gestures.movePointer(event, coordinateTransform: transform)
+        }
+    }
+}
+
+/// Sends the Mac trackpads' gestures over a screen to guest services that carry each trackpad's own HID properties, as
+/// Device Hub does while clicks on the screen become touches. Mouse movements over the screen move the services' hidden
+/// pointers, where their gestures happen. An event reaches the service created for the Mac HID service that sent it, so
+/// one that no Mac HID service sent, such as a synthesized event, reaches none.
+@MainActor
+final class NativeTrackpadGestures {
+    /// A trackpad's guest service, with the observer that keeps that trackpad's gesture state.
+    typealias Service = (service: CoreDeviceHIDService, translator: CoreDeviceEventReports.Translator)
+
+    private let makeTransport: @MainActor () async throws -> any NativeTrackpadTransport
+    private var transport: (any NativeTrackpadTransport)?
+    /// Guest services by the registry ID of the Mac HID service they carry.
+    private var services: [UInt64: Service] = [:]
+    /// Senders that are not Mac HID services, such as other processes' event sources.
+    private var unknownSenders: Set<UInt64> = []
+    /// Changes when the device invalidates the services, so that an event whose transport or service was prepared
+    /// meanwhile is not sent.
+    private var generation = 0
+    private var isStopped = false
+
+    /// `transport` is prepared with the first gesture.
+    init(transport: @escaping @MainActor () async throws -> any NativeTrackpadTransport) {
+        makeTransport = transport
+    }
+
+    /// Sends a gesture's reports to its trackpad's service, which the trackpad's first event creates.
+    func send(_ event: NSEvent) async throws {
+        // Device Hub drops a gesture that no Mac HID service sent rather than giving it a trackpad the Mac does not have.
+        guard let service = try await service(sending: event) else { return }
+        let reports = try service.translator.reports(for: event)
+        // Without a report, the device would not start the pinch or would keep one the trackpad already ended.
+        guard !reports.isEmpty else {
+            throw CLIError.unavailable("remote-gesture-report", "UniversalHIDKit did not translate the gesture.")
+        }
+        for report in reports { try service.service.send(report) }
+    }
+
+    /// Moves the hidden pointer of the service of the Mac HID service that sent `event`, a mouse movement, to where
+    /// `coordinateTransform` maps the event's window location, so that the service's later gestures happen there.
+    func movePointer(_ event: NSEvent, coordinateTransform: CGAffineTransform) async throws {
+        // Device Hub moves a shared touchscreen gesture service's pointer for a movement that no Mac HID service sent;
+        // here such a movement reaches no service.
+        guard let service = try await service(sending: event) else { return }
+        for report in try service.translator.reports(for: event, coordinateTransform: coordinateTransform) {
+            try service.service.send(report)
         }
     }
 
+    /// The service of the Mac HID service that sent `event`, created for its first event, or nil when no Mac HID service sent it.
+    private func service(sending event: NSEvent) async throws -> Service? {
+        guard !isStopped else { throw CLIError.unavailable("remote-gesture-input", "The device's gesture input has stopped.") }
+        let generation = self.generation
+        let transport: any NativeTrackpadTransport
+        if let prepared = self.transport { transport = prepared } else {
+            transport = try await makeTransport()
+            try checkPreparation(since: generation)
+            self.transport = transport
+        }
+        let sender = try transport.sender(of: event)
+        guard sender != 0, !unknownSenders.contains(sender) else { return nil }
+        if let existing = services[sender] { return existing }
+        guard let created = try await transport.connect(sender: sender) else {
+            unknownSenders.insert(sender)
+            return nil
+        }
+        do { try checkPreparation(since: generation) } catch {
+            // Stopping removed the services it found, so this one is removed here; the next stop retries a failure.
+            if isStopped { do { try await created.service.stop() } catch { services[sender] = created; throw error } }
+            throw error
+        }
+        services[sender] = created
+        return created
+    }
+
+    /// Throws when, after an event prepared its transport or service, the gesture input has stopped or the device has
+    /// invalidated the services since `generation`.
+    private func checkPreparation(since generation: Int) throws {
+        guard !isStopped else {
+            throw CLIError.unavailable("remote-gesture-input", "The device's gesture input stopped while preparing the input.")
+        }
+        guard generation == self.generation else {
+            throw CLIError.unavailable("remote-input-capability", "The device's input service changed while preparing the input.")
+        }
+    }
+
+    /// Ends the gestures each service holds on the device, as Device Hub's HID reset does for each of its services.
+    func resetGestures() throws {
+        var failures: [String] = []
+        for (_, service) in services.sorted(by: { $0.key < $1.key }) {
+            do { try service.service.resetGestures() } catch { failures.append(error.localizedDescription) }
+        }
+        if !failures.isEmpty { throw CLIError.io("remote-gesture-reset", failures.joined(separator: "\n")) }
+    }
+
+    /// Retires the services, which the device invalidates with its gesture capability, without claiming they ended
+    /// their gestures. A trackpad's next gesture creates its service again.
+    func discardServices() {
+        services.removeAll()
+        generation += 1
+    }
+
+    /// Removes the services; later gestures create none. A service that could not be removed is retried by the next stop.
+    func stop() async throws {
+        isStopped = true
+        let stopping = services
+        services = [:]
+        var failures: [String] = []
+        for (sender, service) in stopping.sorted(by: { $0.key < $1.key }) {
+            do { try await service.service.stop() } catch { failures.append(error.localizedDescription) }
+            if !service.service.isRemoved { services[sender] = service }
+        }
+        if !failures.isEmpty { throw CLIError.io("remote-gesture-removal", failures.joined(separator: "\n")) }
+    }
+}
+
+/// The Mac HID services that send trackpad gestures and the guest services that receive them.
+@MainActor
+protocol NativeTrackpadTransport: AnyObject {
+    /// The registry ID of the Mac HID service that produced the event, or 0 for a synthesized event.
+    func sender(of event: NSEvent) throws -> UInt64
+    /// Creates a guest service described by the Mac HID service `sender`, or returns nil when no such service exists.
+    func connect(sender: UInt64) async throws -> NativeTrackpadGestures.Service?
+}
+
+@MainActor
+final class CoreDeviceTrackpadTransport: NativeTrackpadTransport {
+    private static let logger = Logger(subsystem: "dev.lynnswap.NeoSimulator", category: "Trackpad")
+    private let remote: CoreDeviceRemoteScreenDevice
+    private let bindings: NativeTrackpadBindings
+
+    init(remote: CoreDeviceRemoteScreenDevice) async throws {
+        self.remote = remote
+        bindings = try await NativeTrackpadBindings(runtime: remote.runtime)
+    }
+
+    func sender(of event: NSEvent) throws -> UInt64 { try bindings.lookup.sender(of: event) }
+
+    func connect(sender: UInt64) async throws -> NativeTrackpadGestures.Service? {
+        let source = "Mac HID service 0x\(String(sender, radix: 16))"
+        guard let properties = try bindings.lookup.properties(ofHIDService: sender) else {
+            Self.logger.error("The gestures of \(source, privacy: .public) reach no guest service: the Mac has no such HID service")
+            return nil
+        }
+        let translator = try bindings.makeTranslator()
+        let service = try await CoreDeviceHIDService.connect(remote: remote,
+            descriptor: bindings.descriptor(serviceID: sender, properties: properties))
+        Self.logger.log("Created the guest trackpad service for \(source, privacy: .public)")
+        return (service, translator)
+    }
+}
+
+/// Describes a Mac trackpad's guest service and translates the trackpad's gestures, as Device Hub does.
+@MainActor
+struct NativeTrackpadBindings {
+    /// The Mac HID services that gestures come from.
+    let lookup: MacHIDServiceLookup
+    private let events: CoreDeviceEventReports
+    private let adjust: (NativeSwiftValue) throws -> Void
+
+    init(runtime: ABIRuntime) async throws {
+        lookup = try await MacHIDServiceLookup(runtime: runtime)
+        // Like Device Hub's, the observer translates both the trackpad's magnify events and its mouse movements.
+        events = try await CoreDeviceEventReports(runtime: runtime, eventType: nil)
+        let descriptorType = try await runtime.resolve(.swift(.type("CoreDevice.HIDServiceDescriptor")))
+        let abi = try NativeType.opaque(named: descriptorType.name)
+        let abis = [descriptorType: abi]
+        let isPointer = try await descriptorType.resolve(.swift(.getter("isBackBoardPointer", as: (() -> Bool).self,
+            valueABIs: abis, receiverABI: abi)))
+        let routeEvents = try await descriptorType.resolve(.swift(.setter("routeEventsIgnoringSystemShellPolicy",
+            as: ((Bool?) -> Void).self, valueABIs: abis, receiverABI: abi)))
+        let suppressPointer = try await descriptorType.resolve(.swift(.setter("suppressMousePointer",
+            as: ((Bool?) -> Void).self, valueABIs: abis, receiverABI: abi)))
+        // Device Hub adjusts each pointer service it creates. While clicks touch the screen, as they do here, it hides
+        // the service's pointer; the service's events also bypass the guest's system shell policy.
+        adjust = { descriptor in
+            guard try unsafe isPointer.unsafeInvoke(on: descriptor) else { return }
+            try unsafe routeEvents.unsafeInvoke(on: descriptor, true)
+            try unsafe suppressPointer.unsafeInvoke(on: descriptor, true)
+        }
+    }
+
+    /// An observer with one trackpad's gesture state.
+    func makeTranslator() throws -> CoreDeviceEventReports.Translator { try events.makeTranslator() }
+
+    /// The descriptor of a guest service that carries a Mac trackpad's `properties` under its registry ID `serviceID`.
+    func descriptor(serviceID: UInt64, properties: [String: Any]) throws -> NativeSwiftValue {
+        let descriptor = try lookup.descriptor(serviceID: serviceID, properties: properties)
+        try adjust(descriptor)
+        return descriptor
+    }
 }
 
 struct RemoteScreenPressedInputs {
@@ -228,7 +438,7 @@ struct RemoteScreenPressedInputs {
             else { pointerButtons[button] = point }
         case .touch(let point, let second, let phase, let edge):
             touch = phase == .ended ? nil : (point, second, edge)
-        case .pointer: break
+        case .pointer, .pinch, .gesturePointer: break
         }
     }
 
@@ -247,6 +457,7 @@ private extension RemoteScreenInput {
         case .button: .button
         case .pointer, .pointerButton: .pointer
         case .touch: .digitizer
+        case .pinch, .gesturePointer: .gesture
         }
     }
 }

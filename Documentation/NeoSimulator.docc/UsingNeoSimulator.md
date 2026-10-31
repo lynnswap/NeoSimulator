@@ -35,7 +35,7 @@ controls that the selected device supports.
 A physical device's screen appears inside the same device frame that Device Hub
 draws, and the frame's side buttons press the device's buttons. Click or drag
 on the screen to touch it; scroll with two fingers on a trackpad to drag the
-screen's content.
+screen's content, and pinch on the screen to pinch in the device's app.
 
 NeoSimulator shows a physical device's screen while the device is connected to
 the Mac with a cable, through a screen source that macOS presents to apps as a
