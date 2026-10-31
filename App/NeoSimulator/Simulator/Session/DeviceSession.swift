@@ -185,12 +185,12 @@ enum HostPreferences {
     /// device follows: see `PreferenceStore.recentAudioRoutes(in:)`.
     static let recentAudioInputDeviceUIDs = "RecentAudioInputDeviceUIDs"
     static let recentAudioOutputDeviceUIDs = "RecentAudioOutputDeviceUIDs"
-    /// Edit ▸ Automatically Sync Pasteboard: see `PasteboardSync`.
+    /// Edit ▸ Automatically Sync Pasteboard, on unless turned off: see `PasteboardSync`.
     static let pasteboardAutomaticSync = "PasteboardAutomaticSync"
     /// Whether dragging the bezel moves the window; defaults to on.
     static let allowsMoveByDragOnWindowChrome = "AllowsMoveByDragOnWindowChrome"
 
-    /// Registers shared defaults. Pasteboard synchronization is opt-in.
+    /// Registers shared defaults.
     /// Show Pinch Gestures follows Simulator.app's registered default, not its Settings.bundle fallback.
     static func registerDefaults() {
         HostPreferences.defaults.register(defaults: [
@@ -203,7 +203,7 @@ enum HostPreferences {
             locationMode: LocationSelection.customMode, locationLatitude: 37.785834, locationLongitude: -122.406417,
             enableKeyboardSync: true, connectHardwareKeyboard: true, useTrackpadForce: true,
             showSingleTouches: false, showPinches: true, showPinchPivotPoint: false, highlightEdgeGestures: false,
-            pasteboardAutomaticSync: false, allowsMoveByDragOnWindowChrome: true,
+            pasteboardAutomaticSync: true, allowsMoveByDragOnWindowChrome: true,
         ])
     }
 

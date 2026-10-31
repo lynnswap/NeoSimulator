@@ -21,8 +21,9 @@ final class PasteboardSync {
     /// replace a later one.
     private var latestDeviceCopy = 0
 
-    /// Reads the choice saved in `preferences`, which is off unless it was
-    /// turned on.
+    /// Reads the choice saved in `preferences`. Without one, it uses the default
+    /// that `HostPreferences.registerDefaults()` registers, which is on, so
+    /// defaults must be registered first.
     init(preferences: any PreferenceStore = HostPreferences.defaults,
          sessions: @escaping () -> [DeviceSession]) {
         self.preferences = preferences

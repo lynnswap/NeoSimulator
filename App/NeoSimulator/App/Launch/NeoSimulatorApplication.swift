@@ -12,6 +12,10 @@ enum NeoSimulatorApplication {
             NSAlert(presenting: error).runModal()
             return
         }
+        // A launch URL can create the menus before launch finishes, and their
+        // pasteboard synchronization reads its saved choice or default when created.
+        SimulatorPreferences.migrateStandalonePreferences()
+        HostPreferences.registerDefaults()
         let delegate = AppDelegate()
         app.delegate = delegate
         withExtendedLifetime(delegate) { app.run() }

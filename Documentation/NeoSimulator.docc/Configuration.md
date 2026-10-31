@@ -65,7 +65,7 @@ Per-device location choices use `DeviceLocationPreset.<UDID>` in
 | `ShowSingleTouches`, `ShowPinches` | Show touch indicators; initially off and on respectively. |
 | `ScreenShotSaveLocation`, `ScreenShotUseMask` | Screenshot folder and capture mask. |
 | `GifMaxFrameSize`, `GifMaxFramerate` | GIF export size and frame rate. |
-| `PasteboardAutomaticSync` | Automatic pasteboard exchange; initially off. |
+| `PasteboardAutomaticSync` | Automatic pasteboard exchange; initially on. |
 | `EnableKeyboardSync` | Follow the Mac input-source language; initially on. |
 | `UseTrackpadForce` | Use Force Touch pressure. |
 | `RecentAudioInputDeviceUIDs`, `RecentAudioOutputDeviceUIDs` | Preferred available audio devices. |

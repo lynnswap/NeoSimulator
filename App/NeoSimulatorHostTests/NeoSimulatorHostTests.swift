@@ -2862,16 +2862,16 @@ struct InputFocusTests {
         #expect(edit.items.suffix(3).allSatisfy { $0.keyEquivalent.isEmpty })
     }
 
-    @Test func automaticPasteboardSyncIsOffUntilChosen() throws {
+    @Test func automaticPasteboardSyncIsOnUnlessTurnedOff() throws {
         _ = NSApplication.shared
-        // Simulator.app registers PasteboardAutomaticSync on; NeoSimulator
-        // registers it off. Registered values are not saved.
+        // Simulator.app also registers PasteboardAutomaticSync on. A saved
+        // choice takes precedence over the registered value when read again.
+        let domain = "NeoSimulatorTests.\(UUID().uuidString)"
+        let preferences = try #require(UserDefaults(suiteName: domain))
+        defer { preferences.removePersistentDomain(forName: domain) }
         HostPreferences.registerDefaults()
-        #expect(UserDefaults.standard.volatileDomain(forName: UserDefaults.registrationDomain)[
-            HostPreferences.pasteboardAutomaticSync] as? Bool == false)
-        let preferences = MemoryPreferences()
         let sync = PasteboardSync(preferences: preferences) { [] }
-        #expect(!sync.isOn)
+        #expect(sync.isOn)
         let menu = MenuController(application: nil, pasteboardSync: sync)
         menu.install()
         defer { NSApp.mainMenu = nil }
@@ -2879,18 +2879,18 @@ struct InputFocusTests {
         let item = try #require(edit.items.first { $0.title == "Automatically Sync Pasteboard" })
         let action = try #require(item.action)
         #expect(menu.validateMenuItem(item))
-        #expect(item.state == .off)
-        #expect(NSApp.sendAction(action, to: item.target, from: item))
-        #expect(sync.isOn)
-        #expect(preferences.values[HostPreferences.pasteboardAutomaticSync] as? Bool == true)
-        #expect(menu.validateMenuItem(item))
         #expect(item.state == .on)
-        #expect(PasteboardSync(preferences: preferences) { [] }.isOn)
         #expect(NSApp.sendAction(action, to: item.target, from: item))
         #expect(!sync.isOn)
-        #expect(preferences.values[HostPreferences.pasteboardAutomaticSync] as? Bool == false)
         #expect(menu.validateMenuItem(item))
         #expect(item.state == .off)
+        #expect(!PasteboardSync(preferences: preferences) { [] }.isOn)
+        #expect(NSApp.sendAction(action, to: item.target, from: item))
+        #expect(sync.isOn)
+        // Saved, so the choice does not depend on the registered default.
+        #expect(preferences.persistentDomain(forName: domain)?[HostPreferences.pasteboardAutomaticSync] as? Bool == true)
+        #expect(menu.validateMenuItem(item))
+        #expect(item.state == .on)
         #expect(!MenuController(application: nil).validateMenuItem(item))
     }
 
