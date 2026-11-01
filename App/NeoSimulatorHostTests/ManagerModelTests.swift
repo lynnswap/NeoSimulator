@@ -1001,6 +1001,7 @@ struct ManagerModelTests {
         split.view.layoutSubtreeIfNeeded()
         #expect(accessory.view.frame.height > 0)
         #expect(accessory.view.window === window)
+        window.makeKeyAndOrderFront(nil)
         let frame = window.frame
 
         func click(_ index: Int, collapsed: Bool, page: DeviceInspectorModel.Page? = nil) throws {
@@ -1021,7 +1022,6 @@ struct ManagerModelTests {
 
         #expect(!inspector.isCollapsed && tabs.selectedSegment == 0)
         try click(0, collapsed: true)
-        window.makeKeyAndOrderFront(nil)
         let toggleAction = try #require(inspectorToggle.action)
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0
