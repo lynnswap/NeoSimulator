@@ -74,6 +74,7 @@ struct ManagerDeviceSettingsView: View {
         }
         .formStyle(.grouped)
         .labelStyle(.titleAndIcon)
+        .labelReservedIconWidth(20)
         .disabled(holdsEdits)
     }
 

@@ -225,6 +225,8 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
             child.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: child === infoView ? 0 : -16).isActive = true
         }
         contentView.heightAnchor.constraint(greaterThanOrEqualToConstant: 260).isActive = true
+        // The unavailable state, not the rows below it, takes the height of the hidden list or information.
+        unavailableView.setContentHuggingPriority(.defaultLow - 1, for: .vertical)
         updateVisibility()
         updateControls()
         observeRecords()
@@ -339,7 +341,7 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
             return ("Profiles", message, "checkmark.seal")
         }
         if showingReports && device.kind == .simulator {
-            return ("Reports", "Crash, log, spin, and diagnostic reports are unavailable for simulators.", "text.document")
+            return ("Reports", "Crash, log, spin, and diagnostic reports are unavailable for simulators.", "text.page.slash.fill")
         }
         if showingReports, let inspector, !inspector.supportsReportListing {
             return ("Reports", "Connect and unlock this device to inspect its reports.", "text.document")
@@ -353,12 +355,14 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
         infoPicker.selectedSegment = content == .info ? 0 : (showingApplications ? 1 : 2)
         contentView.isHidden = showingInfo || unavailable != nil
         infoView.isHidden = !showingInfo || unavailable != nil
-        buttons.isHidden = showingInfo
+        // Refreshing cannot make reports available for a simulator.
+        buttons.isHidden = showingInfo || showingReports && device?.kind == .simulator
         unavailableView.isHidden = unavailable == nil
         if let unavailable {
             unavailableView.rootView = AnyView(ContentUnavailableView {
-                Image(systemName: unavailable.symbol).accessibilityLabel(unavailable.title)
-            } description: { Text(unavailable.message) })
+                Label(unavailable.title, systemImage: unavailable.symbol).labelStyle(.iconOnly)
+            } description: { Text(unavailable.message) }
+                .frame(maxWidth: .infinity, maxHeight: .infinity))
         }
         let hasBothProfileKinds = supports("configurationprofiles") && supports("provisioningprofiles")
         profileKindPicker.isHidden = !showingProfiles || !hasBothProfileKinds
@@ -414,7 +418,7 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
         else { message = lastIssue ?? "" }
         if status.stringValue != message { status.stringValue = message }
         status.isHidden = status.stringValue.isEmpty || unavailableState != nil
-        footer.isHidden = showingInfo && progress.isHidden && status.isHidden
+        footer.isHidden = (showingInfo || unavailableState != nil) && progress.isHidden && status.isHidden
         stackBottomConstraint?.constant = showingInfo && footer.isHidden ? 0 : -8
     }
 
