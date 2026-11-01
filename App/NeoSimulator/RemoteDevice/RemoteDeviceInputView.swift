@@ -65,8 +65,7 @@ final class RemoteDeviceInputView: NSView {
     func invalidateInputs(for kinds: Set<RemoteDeviceInputKind>) {
         for kind in kinds { capabilityGenerations[kind, default: 0] += 1 }
         mouseGestures = mouseGestures.filter { !kinds.contains($0.value.kind.capability) }
-        if kinds.contains(.digitizer) { scrollGesture = nil }
-        if kinds.contains(.gesture) { interruptPinch() }
+        if kinds.contains(.gesture) { interruptTrackpadGestures() }
     }
 
     func enqueueInput(for kind: RemoteDeviceInputKind, _ operation: @escaping @MainActor () async throws -> Void) {
@@ -88,17 +87,11 @@ final class RemoteDeviceInputView: NSView {
         let clicks: Int
     }
     private var mouseGestures: [Int: MouseGesture] = [:]
-    /// A two-finger scroll drags one touch from where it began, as a finger on the screen would.
-    private struct ScrollGesture {
-        let origin: CGPoint
-        var translation = CGVector.zero
-        var location: CGPoint { CGPoint(x: origin.x + translation.dx, y: origin.y + translation.dy) }
-    }
-    private var scrollGesture: ScrollGesture?
-    /// A pinch that began over the screen, which the device performs until the trackpad's pinch ends. When the
-    /// screen loses input first, the rest of that pinch reaches neither the device nor the views around the screen.
-    private enum PinchGesture { case forwarding, interrupted }
-    private var pinchGesture: PinchGesture?
+    /// A gesture keeps its original destination until it ends, including momentum after the fingers lift.
+    /// Losing input consumes its remaining events so they do not reach the device or the surrounding canvas.
+    private enum TrackpadGesture { case forwarding, interrupted }
+    private var scrollGesture: TrackpadGesture?
+    private var pinchGesture: TrackpadGesture?
     private var inputGeneration = 0
     private var capabilityGenerations: [RemoteDeviceInputKind: Int] = [:]
     private var pointerTracking: NSTrackingArea?
@@ -114,11 +107,11 @@ final class RemoteDeviceInputView: NSView {
     private func resetMouseGestures() {
         inputGeneration += 1
         mouseGestures.removeAll()
-        scrollGesture = nil
-        interruptPinch()
+        interruptTrackpadGestures()
     }
 
-    private func interruptPinch() {
+    private func interruptTrackpadGestures() {
+        if scrollGesture != nil { scrollGesture = .interrupted }
         if pinchGesture != nil { pinchGesture = .interrupted }
     }
 
@@ -148,7 +141,6 @@ final class RemoteDeviceInputView: NSView {
     override func mouseDown(with event: NSEvent) {
         guard isInputEnabled else { return }
         window?.makeFirstResponder(self)
-        endScroll()
         let kind: MouseInputKind
         if event.buttonNumber == 0, session.inputCapabilities.contains(.digitizer) { kind = .touch }
         else if session.inputCapabilities.contains(.pointer) { kind = .pointer }
@@ -199,36 +191,22 @@ final class RemoteDeviceInputView: NSView {
     override func otherMouseUp(with event: NSEvent) { mouseUp(with: event) }
 
     override func scrollWheel(with event: NSEvent) {
-        // Momentum arrives after the fingers lift; iOS decelerates from the drag's own velocity instead.
-        guard event.momentumPhase.isEmpty else { return }
-        guard isInputEnabled, event.hasPreciseScrollingDeltas else { return super.scrollWheel(with: event) }
-        if event.phase.contains(.began) {
-            endScroll()
-            // The device's pinch takes both fingers, so they do not also drag a touch.
-            guard mouseGestures.isEmpty, pinchGesture != .forwarding, session.inputCapabilities.contains(.digitizer),
-                  let locations = session.inputLocations(atWindowPoint: event.locationInWindow) else { return }
-            scrollGesture = ScrollGesture(origin: event.locationInWindow)
-            enqueueMouseInput(kind: .touch) { [session] in try await session.sendTouch(at: locations.touch, phase: .began) }
+        let begins = !event.phase.isDisjoint(with: [.mayBegin, .began])
+            || (event.phase.isEmpty && event.momentumPhase.isEmpty)
+        if begins {
+            scrollGesture = nil
+            guard isInputEnabled, session.inputCapabilities.contains(.gesture),
+                  session.inputLocations(atWindowPoint: event.locationInWindow) != nil else {
+                return super.scrollWheel(with: event)
+            }
+            scrollGesture = .forwarding
+        } else {
+            guard let gesture = scrollGesture else { return super.scrollWheel(with: event) }
+            guard gesture == .forwarding else { return }
         }
-        // Every event from the one that begins the gesture to the one that ends it can carry movement.
-        guard !event.phase.isDisjoint(with: [.began, .changed, .ended, .cancelled]), var gesture = scrollGesture else { return }
-        // Scrolling deltas already follow the person's scroll direction setting; content follows the touch.
-        gesture.translation.dx += event.scrollingDeltaX
-        gesture.translation.dy -= event.scrollingDeltaY
-        scrollGesture = gesture
-        if !event.phase.isDisjoint(with: [.ended, .cancelled]) { return endScroll() }
-        guard let locations = session.inputLocations(atWindowPoint: gesture.location, clampingToDisplay: true) else { return }
-        enqueueMouseInput(kind: .touch) { [session] in try await session.sendTouch(at: locations.touch, phase: .moved) }
-    }
-
-    private func endScroll() {
-        guard let gesture = scrollGesture else { return }
-        scrollGesture = nil
-        guard let locations = session.inputLocations(atWindowPoint: gesture.location, clampingToDisplay: true) else {
-            releaseFocus()
-            return
-        }
-        enqueueMouseInput(kind: .touch) { [session] in try await session.sendTouch(at: locations.touch, phase: .ended) }
+        // A physical ended event can be followed by momentum, which belongs to the same destination.
+        if event.phase.contains(.cancelled) || event.momentumPhase.contains(.ended) { scrollGesture = nil }
+        enqueueGestureInput(for: .gesture) { [session] in try await session.sendTrackpadGesture(event) }
     }
 
     /// A pinch that begins over the screen pinches the device's app; others magnify whatever contains the screen.
@@ -237,7 +215,6 @@ final class RemoteDeviceInputView: NSView {
             pinchGesture = nil
             guard isInputEnabled, session.inputCapabilities.contains(.gesture),
                   session.inputLocations(atWindowPoint: event.locationInWindow) != nil else { return super.magnify(with: event) }
-            endScroll()
             pinchGesture = .forwarding
         } else if let gesture = pinchGesture {
             if !event.phase.isDisjoint(with: [.ended, .cancelled]) { pinchGesture = nil }
@@ -245,7 +222,7 @@ final class RemoteDeviceInputView: NSView {
         } else {
             return super.magnify(with: event)
         }
-        enqueueGestureInput(for: .gesture) { [session] in try await session.sendPinch(event) }
+        enqueueGestureInput(for: .gesture) { [session] in try await session.sendTrackpadGesture(event) }
     }
 
     override func mouseMoved(with event: NSEvent) {

@@ -107,12 +107,12 @@ struct InputFocusTests {
         try await session.stop()
     }
 
-    @Test func remoteScreenTakesItsDisplayOnlyAndDragsATouchForTwoFingerScrolling() async throws {
+    @Test func remoteScreenForwardsScrollingWithoutLimitingItToTheTouchscreenEdges() async throws {
         _ = NSApplication.shared
         let data = Data(#"{"result":{"devices":[{"identifier":"fixture-command","properties":{"hardware":{"reality":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)
         let device = try #require(CoreDeviceInventoryDecoder.decode(data).first)
         let transport = TestRemoteScreenTransport()
-        transport.inputCapabilities = [.digitizer]
+        transport.inputCapabilities = [.digitizer, .gesture]
         let session = RemoteDeviceScreenSession(device: device) { _, _, _ in transport }
         try await session.start()
         let viewport = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 600))
@@ -122,7 +122,6 @@ struct InputFocusTests {
         input.isInputEnabled = true
         var operations: [@MainActor () async throws -> Void] = []
         input.enqueue = { operations.append($0) }
-        // The device frame around the display keeps clicks on its side buttons.
         let display = CGRect(x: 100, y: 100, width: 200, height: 400)
         transport.locate = { point, clamping in
             clamping || display.contains(point) ? RemoteDeviceInputLocations(touch: point, pointer: point, pointerTransform: .identity) : nil
@@ -130,24 +129,44 @@ struct InputFocusTests {
         #expect(input.hitTest(NSPoint(x: 50, y: 300)) == nil)
         #expect(input.hitTest(NSPoint(x: 200, y: 300)) === input)
         transport.locate = { point, _ in RemoteDeviceInputLocations(touch: point, pointer: point, pointerTransform: .identity) }
-        func scroll(_ phase: CGScrollPhase?, momentum: CGMomentumScrollPhase = .none, dx: Int32 = 0, dy: Int32 = 0) throws -> NSEvent {
-            let event = try #require(CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2, wheel1: dy, wheel2: dx, wheel3: 0))
+        func scroll(_ phase: CGScrollPhase?, momentum: CGMomentumScrollPhase = .none, dx: Int32 = 0) throws -> NSEvent {
+            let event = try #require(CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2, wheel1: 0, wheel2: dx, wheel3: 0))
             event.setIntegerValueField(.scrollWheelEventScrollPhase, value: Int64(phase?.rawValue ?? 0))
             event.setIntegerValueField(.scrollWheelEventMomentumPhase, value: Int64(momentum.rawValue))
             return try #require(NSEvent(cgEvent: event))
         }
-        // The events that begin and end a scroll carry movement too, so even a brief scroll drags instead of tapping.
-        let began = try scroll(.began, dx: 10, dy: -30)
-        let origin = began.locationInWindow
-        // Moving two fingers up scrolls content up, as dragging one finger up on the screen does.
-        for event in [began, try scroll(.ended, dy: -20), began, try scroll(.changed, dy: -20), try scroll(.ended),
-                      try scroll(nil, momentum: .begin, dy: -50), try scroll(nil, momentum: .end)] {
+        func send() async throws {
+            for operation in operations { try await operation() }
+            operations.removeAll()
+        }
+        // A long swipe exceeds the visible screen, and its momentum continues after the fingers lift.
+        let events = try [scroll(.began, dx: 2), scroll(.changed, dx: 1200), scroll(.ended),
+                          scroll(nil, momentum: .begin, dx: 40), scroll(nil, momentum: #require(CGMomentumScrollPhase(rawValue: 2)), dx: 20),
+                          scroll(nil, momentum: .end)]
+        for event in events { input.scrollWheel(with: event) }
+        try await send()
+        #expect(transport.trackpadEvents.map(ObjectIdentifier.init) == events.map(ObjectIdentifier.init))
+        #expect(transport.touches.isEmpty)
+
+        // Losing focus ends the device's gesture and excludes its remaining events.
+        let unfocused = try scroll(.began, dx: -2)
+        input.scrollWheel(with: unfocused)
+        try await send()
+        input.releaseFocus()
+        for event in try [scroll(.changed, dx: -1000), scroll(.ended), scroll(nil, momentum: .end)] {
             input.scrollWheel(with: event)
         }
-        for operation in operations { try await operation() }
-        let moved = CGPoint(x: origin.x + 10, y: origin.y + 30), dragged = CGPoint(x: origin.x + 10, y: origin.y + 50)
-        #expect(transport.touches.map(\.phase) == [.began, .moved, .ended, .began, .moved, .moved, .ended])
-        #expect(transport.touches.map(\.point) == [origin, moved, dragged, origin, moved, dragged, dragged])
+        try await send()
+        #expect(transport.trackpadEvents.count == events.count + 1)
+        #expect(transport.inputReleases == 1)
+
+        let lost = try scroll(.began, dx: 2)
+        input.scrollWheel(with: lost)
+        try await send()
+        input.invalidateInputs(for: [.gesture])
+        for event in try [scroll(.changed, dx: 1000), scroll(.ended)] { input.scrollWheel(with: event) }
+        try await send()
+        #expect(transport.trackpadEvents.map(ObjectIdentifier.init) == (events + [unfocused, lost]).map(ObjectIdentifier.init))
         try await session.stop()
     }
 
@@ -169,11 +188,6 @@ struct InputFocusTests {
         func pinch(_ phase: TrackpadPinchPhase, by magnification: Double = 0) throws -> NSEvent {
             try trackpadPinchEvent(phase, magnification: magnification)
         }
-        func scroll(_ phase: CGScrollPhase) throws -> NSEvent {
-            let event = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2, wheel1: 0, wheel2: 0, wheel3: 0)
-            event?.setIntegerValueField(.scrollWheelEventScrollPhase, value: Int64(phase.rawValue))
-            return try #require(event.flatMap(NSEvent.init(cgEvent:)))
-        }
         func send() async throws {
             for operation in operations { try await operation() }
             operations.removeAll()
@@ -184,12 +198,9 @@ struct InputFocusTests {
         for event in beside { input.magnify(with: event) }
 
         // Over the display, the device performs the trackpad's pinch until it ends or is cancelled.
-        // The pinch takes both fingers, so it ends a scroll's touch drag and a scroll during it drags nothing.
         transport.locate = { point, _ in RemoteDeviceInputLocations(touch: point, pointer: point, pointerTransform: .identity) }
-        input.scrollWheel(with: try scroll(.began))
         let ended = try [pinch(.began), pinch(.changed, by: 0.25), pinch(.changed, by: -0.1), pinch(.ended)]
         input.magnify(with: ended[0])
-        input.scrollWheel(with: try scroll(.began))
         for event in ended.dropFirst() { input.magnify(with: event) }
         let cancelled = try [pinch(.began), pinch(.cancelled)]
         // Losing focus releases a pinch in progress, and the rest of it reaches neither the device nor the canvas.
@@ -212,10 +223,9 @@ struct InputFocusTests {
         for event in unsupported { input.magnify(with: event) }
         try await send()
 
-        #expect(transport.pinches.map(ObjectIdentifier.init) == (ended + cancelled + unfocused + [lost]).map(ObjectIdentifier.init))
+        #expect(transport.trackpadEvents.map(ObjectIdentifier.init) == (ended + cancelled + unfocused + [lost]).map(ObjectIdentifier.init))
         #expect(canvas.magnified.map(ObjectIdentifier.init) == (beside + unsupported).map(ObjectIdentifier.init))
-        // Only the scroll before the pinch drags a touch, from its first event's movement until the pinch begins.
-        #expect(transport.touches.map(\.phase) == [.began, .moved, .ended])
+        #expect(transport.touches.isEmpty)
         try await session.stop()
     }
 
@@ -251,7 +261,7 @@ struct InputFocusTests {
         let inside = try mouseMoved(to: CGPoint(x: 150, y: 200)), beside = try mouseMoved(to: CGPoint(x: 50, y: 200))
 
         // Without a pointer connection, as on a dedicated display, a movement over the display moves the pointer where the
-        // trackpad's pinches happen, with the geometry that places it; a movement beside the display moves nothing.
+        // trackpad's gestures happen, with the geometry that places it; a movement beside the display moves nothing.
         transport.inputCapabilities = [.digitizer, .gesture]
         for event in [inside, beside] { input.mouseMoved(with: event) }
         try await send()
@@ -11074,7 +11084,7 @@ final class TestRemoteScreenTransport: RemoteScreenTransport {
     private(set) var buttons: [RemoteDeviceButtonState] = []
     private(set) var keys: [(usage: UInt16, state: RemoteDeviceButtonState)] = []
     private(set) var touches: [(point: CGPoint, phase: RemoteDeviceTouchPhase)] = []
-    private(set) var pinches: [NSEvent] = []
+    private(set) var trackpadEvents: [NSEvent] = []
     private(set) var pointerMoves: [CGPoint] = []
     private(set) var gesturePointers: [(event: NSEvent, transform: CGAffineTransform)] = []
     private(set) var inputReleases = 0
@@ -11091,7 +11101,7 @@ final class TestRemoteScreenTransport: RemoteScreenTransport {
         if case .button(_, _, let state) = input { buttons.append(state) }
         if case .key(let usage, let state) = input { keys.append((usage, state)) }
         if case .touch(let point, _, let phase, _) = input { touches.append((point, phase)) }
-        if case .pinch(let event, _) = input { pinches.append(event) }
+        if case .trackpad(let event, _) = input { trackpadEvents.append(event) }
         if case .pointer(let point) = input { pointerMoves.append(point) }
         if case .gesturePointer(let event, let transform) = input { gesturePointers.append((event, transform)) }
     }

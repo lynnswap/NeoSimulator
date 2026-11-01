@@ -334,7 +334,7 @@ final class GuestScreenInput: NativeScreenInputTransport {
                 throw CLIError.unavailable("guest-button-usage", "The guest's buttons take 16-bit usage pages and usages.")
             }
             try buttons.post(.buttonEvent, codec.buttonEvent(usagePage: usagePage, usage: usageCode, state: state))
-        case .key, .pointer, .pointerButton, .pinch, .gesturePointer:
+        case .key, .pointer, .pointerButton, .trackpad, .gesturePointer:
             throw CLIError.unavailable("remote-display-input", "The guest's screen input carries only touches and buttons.")
         }
         pressed.record(input)

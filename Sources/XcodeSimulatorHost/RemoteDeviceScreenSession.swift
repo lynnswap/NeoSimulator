@@ -3,7 +3,7 @@ import OSLog
 
 public enum RemoteDeviceInputKind: Hashable, Sendable {
     case keyboard, pointer, digitizer, button
-    /// Trackpad gestures over the touchscreen, such as pinches.
+    /// Trackpad scrolling and pinches over the touchscreen.
     case gesture
 }
 public enum RemoteDeviceButtonState: String, Sendable { case down, up }
@@ -364,17 +364,13 @@ public final class RemoteDeviceScreenSession {
         try await send(.button(usagePage, usage, state))
     }
 
-    /// Sends one magnify event of a trackpad pinch, whose phase begins, continues, ends, or cancels the device's pinch.
-    /// The pinch reaches a guest service that carries the properties of the Mac trackpad that sent the event; an event
-    /// that no Mac HID service sent, such as a synthesized one, reaches no service. On a screen without a pointer
-    /// connection, where `moveGesturePointer(with:at:)` places the pinches, a pinch that begins first moves that
-    /// service's hidden pointer the same way to the event's window location, with the screen's input locations when the
-    /// pinch is sent. A pinch that begins after the screen moved under a still mouse therefore happens where the screen
-    /// now shows the mouse. Its later steps carry only their scale, and a pinch that begins where the screen has no input
-    /// locations happens where the pointer already is.
-    public func sendPinch(_ event: NSEvent) async throws {
+    /// Sends a scroll or magnify event, including its phase and momentum, to the originating Mac trackpad's guest service.
+    /// An event that no Mac HID service sent, such as a synthesized one, reaches no service. On a screen without a
+    /// pointer connection, the gesture's first event places that service's hidden pointer using the screen's current
+    /// input geometry. Later events keep the gesture at that position even if the screen moves beneath the Mac pointer.
+    public func sendTrackpadGesture(_ event: NSEvent) async throws {
         let locations = inputCapabilities.contains(.pointer) ? nil : inputLocations(atWindowPoint: event.locationInWindow)
-        try await send(.pinch(event, locations?.pointerTransform))
+        try await send(.trackpad(event, locations?.pointerTransform))
     }
 
     /// Moves the hidden pointer of the guest service that carries the Mac HID service that sent `event`, a mouse movement
@@ -736,9 +732,9 @@ enum RemoteScreenInput {
     case pointerButton(Int, RemoteDevicePointerPhase, Int, CGPoint)
     case touch(CGPoint, CGPoint?, RemoteDeviceTouchPhase, RemoteDeviceTouchEdge)
     case button(Int, Int, RemoteDeviceButtonState)
-    /// UniversalHIDKit translates the AppKit event itself, as it does for Device Hub. A pinch that begins first moves the
+    /// UniversalHIDKit translates the AppKit event itself, as it does for Device Hub. A gesture that begins first moves the
     /// service's pointer where the transform, when there is one, maps the event's window location.
-    case pinch(NSEvent, CGAffineTransform?)
+    case trackpad(NSEvent, CGAffineTransform?)
     /// A mouse movement, which UniversalHIDKit places where the transform maps the event's window location.
     case gesturePointer(NSEvent, CGAffineTransform)
 }
