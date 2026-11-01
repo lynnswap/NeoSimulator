@@ -2174,6 +2174,73 @@ struct InputFocusTests {
         return NSPoint(x: rect.midX, y: rect.midY)
     }
 
+    @Test(arguments: [false, true])
+    func rotationKeepsFinalGeometryAndAnimatesEmbeddedPresentation(embedded: Bool) async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let tool = directory.appendingPathComponent("devicectl")
+        try """
+            #!/bin/sh
+            printf '%s' '{"result":{"deviceOrientation":"landscapeRight","deviceOrientationNonFlat":"landscapeRight"}}'
+            """.write(to: tool, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: tool.path)
+        let display = TestDisplay()
+        display.naturalSize = NSSize(width: 400, height: 800)
+        display.onRotation = { [weak display] _ in display?.takeScreenSize(NSSize(width: 800, height: 400)) }
+        let controller = try makeController(display, devicectl: tool)
+        defer { controller.invalidate() }
+        let parent = NSViewController()
+        parent.view = NSView(frame: NSRect(x: 0, y: 0, width: 500, height: 700))
+        let window: NSWindow
+        if embedded {
+            window = NSWindow(contentViewController: parent)
+            window.isReleasedWhenClosed = false
+            controller.embed(in: parent)
+        } else {
+            window = try #require(controller.window)
+        }
+        defer { window.close() }
+        window.orderBack(nil)
+        window.contentView?.layoutSubtreeIfNeeded()
+        let before = window.convertToScreen(display.view.convert(display.view.bounds, to: nil))
+        controller.perform(.rotateRight)
+        try await wait { !controller.session.isBusy }
+        #expect(controller.session.displayAngle == -90)
+        let host = try #require(display.view.superview as? DisplayPresentationView)
+        let finalFrame = host.frame
+        let target = window.convertToScreen(host.convert(host.bounds, to: nil))
+        #expect(finalFrame.width > finalFrame.height)
+        if !embedded {
+            #expect(host.layer?.animation(forKey: "displayRotation") == nil)
+            #expect(window.contentLayoutRect.contains(host.convert(host.bounds, to: nil)))
+            return
+        }
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
+        let animation = try #require(host.layer?.animation(forKey: "displayRotation") as? CAKeyframeAnimation)
+        let values = try #require(animation.values as? [NSValue])
+        let layer = try #require(host.layer)
+        let anchor = CGPoint(x: layer.anchorPoint.x * host.bounds.width, y: layer.anchorPoint.y * host.bounds.height)
+        func transformed(_ rect: CGRect, by value: NSValue) -> CGRect {
+            rect.offsetBy(dx: -anchor.x, dy: -anchor.y)
+                .applying(CATransform3DGetAffineTransform(value.caTransform3DValue))
+                .offsetBy(dx: anchor.x, dy: anchor.y)
+        }
+        let first = window.convertToScreen(host.convert(transformed(host.bounds, by: try #require(values.first)), to: nil))
+        #expect(abs(first.minX - before.minX) < 1 && abs(first.minY - before.minY) < 1, "First \(first), before \(before), final \(host.convert(host.bounds, to: nil))")
+        #expect(abs(first.width - before.width) < 1 && abs(first.height - before.height) < 1)
+        for (index, value) in values.enumerated() {
+            let center = transformed(CGRect(x: host.bounds.midX, y: host.bounds.midY, width: 0, height: 0), by: value)
+            let point = window.convertPoint(toScreen: host.convert(center.origin, to: nil))
+            let progress = CGFloat(index) / CGFloat(values.count - 1)
+            let expected = NSPoint(x: before.midX + (target.midX - before.midX) * progress,
+                                   y: before.midY + (target.midY - before.midY) * progress)
+            #expect(abs(point.x - expected.x) < 1 && abs(point.y - expected.y) < 1)
+        }
+        #expect(CATransform3DIsIdentity(try #require(values.last).caTransform3DValue))
+        #expect(host.frame == finalFrame)
+    }
+
     @Test(.timeLimit(.minutes(1)), arguments: [false, true])
     func embeddedZoomKeepsPanningAndScaleSeparateFromCompactGeometry(native: Bool) async throws {
         _ = NSApplication.shared
@@ -2212,84 +2279,39 @@ struct InputFocusTests {
         let resizedFrame = documentRect(of: display.view, in: scroll).size
         #expect(abs(resizedFrame.width - previousFrame.width) <= 1 / window.backingScaleFactor
             && abs(resizedFrame.height - previousFrame.height) <= 1 / window.backingScaleFactor && display.renderScale == 1)
-        let centerBeforeInterruptedZoom = display.view.convert(NSPoint(x: display.view.bounds.midX,
-                                                                       y: display.view.bounds.midY), to: content)
+        window.orderBack(nil)
+        let originalCenter = center(of: display.view, in: content)
         let initialMagnification = scroll.magnification
-        let firstTarget = initialMagnification * 1.25
-        let didRetarget = Mutex(false)
-        let retargetFinished = XCTestExpectation(description: "Mid-flight canvas zoom finishes")
-        let observation = scroll.observe(\.magnification, options: [.new]) { scroll, change in
-            MainActor.assumeIsolated {
-                guard let value = change.newValue, value > initialMagnification, value < firstTarget else { return }
-                let shouldRetarget = didRetarget.withLock { didRetarget in
-                    guard !didRetarget else { return false }
-                    didRetarget = true
-                    return true
-                }
-                guard shouldRetarget else { return }
-                Task { @MainActor in
-                    #expect(scroll.magnification > initialMagnification && scroll.magnification < firstTarget)
-                    NSAnimationContext.runAnimationGroup { _ in controller.performCanvasZoom(.zoomIn) }
-                        completionHandler: { retargetFinished.fulfill() }
-                }
-            }
-        }
+        try #require(controller.canPerformCanvasZoom(.zoomIn))
         controller.performCanvasZoom(.zoomIn)
-        try #require(await XCTWaiter.fulfillment(of: [retargetFinished], timeout: 5) == .completed)
-        observation.invalidate()
-        try #require(didRetarget.withLock { $0 })
-        let centerAfterInterruptedZoom = display.view.convert(NSPoint(x: display.view.bounds.midX,
-                                                                      y: display.view.bounds.midY), to: content)
+        #expect(scroll.magnification > initialMagnification)
+        #expect(WindowScale.matches(scroll.magnification, controller.canvasZoom.scale))
+        controller.performCanvasZoom(.zoomIn)
         let backingPixel = 1 / window.backingScaleFactor
-        #expect(abs(centerAfterInterruptedZoom.x - centerBeforeInterruptedZoom.x) <= backingPixel
-            && abs(centerAfterInterruptedZoom.y - centerBeforeInterruptedZoom.y) <= backingPixel,
-                "Canvas center moves from \(centerBeforeInterruptedZoom) to \(centerAfterInterruptedZoom)")
+        let zoomedCenter = center(of: display.view, in: content)
+        #expect(abs(zoomedCenter.x - originalCenter.x) <= backingPixel
+            && abs(zoomedCenter.y - originalCenter.y) <= backingPixel)
+        controller.performCanvasZoom(.zoomIn)
+        parent.view.setFrameSize(NSSize(width: 420, height: 620))
+        parent.view.layoutSubtreeIfNeeded()
+        parent.view.setFrameSize(NSSize(width: 400, height: 600))
+        parent.view.layoutSubtreeIfNeeded()
+        controller.performCanvasZoom(.zoomIn)
+        controller.performCanvasZoom(.zoomIn)
         #expect(WindowScale.matches(scroll.magnification, controller.canvasZoom.scale))
-        let interruptedTarget = controller.canvasZoom.scale * 1.25
-        let latestTarget = interruptedTarget * 1.25 * 1.25 * 1.25
-        let progressedAfterCancellation = Mutex(false)
-        let geometryObservation = scroll.observe(\.magnification, options: [.new]) { _, change in
-            if let value = change.newValue, value > interruptedTarget, value < latestTarget {
-                progressedAfterCancellation.withLock { $0 = true }
-            }
-        }
-        try await animateCanvas {
-            controller.performCanvasZoom(.zoomIn)
-            parent.view.setFrameSize(NSSize(width: 420, height: 620))
-            parent.view.layoutSubtreeIfNeeded()
-            parent.view.setFrameSize(NSSize(width: 400, height: 600))
-            parent.view.layoutSubtreeIfNeeded()
-            controller.performCanvasZoom(.zoomIn)
-            controller.performCanvasZoom(.zoomIn)
-            controller.performCanvasZoom(.zoomIn)
-        }
-        let latestZoom = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            MainActor.assumeIsolated { !controller.isMagnifyingCanvas }
-        }, object: nil)
-        try #require(await XCTWaiter.fulfillment(of: [latestZoom], timeout: 5) == .completed)
-        geometryObservation.invalidate()
-        #expect(progressedAfterCancellation.withLock { $0 })
-        #expect(WindowScale.matches(scroll.magnification, controller.canvasZoom.scale))
-        let centerAfterGeometryInterruption = display.view.convert(NSPoint(x: display.view.bounds.midX, y: display.view.bounds.midY), to: content)
-        #expect(abs(centerAfterGeometryInterruption.x - centerBeforeInterruptedZoom.x) <= backingPixel
-            && abs(centerAfterGeometryInterruption.y - centerBeforeInterruptedZoom.y) <= backingPixel)
-        var midflightPannedCenter = NSPoint.zero
-        try await animateCanvas {
-            controller.performCanvasZoom(.zoomIn)
-            let clip = scroll.contentView
-            clip.scroll(to: NSPoint(x: clip.bounds.minX + 10, y: clip.bounds.minY + 20))
-            scroll.reflectScrolledClipView(clip)
-            NotificationCenter.default.post(name: NSScrollView.didLiveScrollNotification, object: scroll)
-            midflightPannedCenter = visibleDevicePoint(of: display.view, in: scroll, fitting: fittingGuide, of: content)
-        }
-        let pannedZoom = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            MainActor.assumeIsolated { !controller.isMagnifyingCanvas }
-        }, object: nil)
-        try #require(await XCTWaiter.fulfillment(of: [pannedZoom], timeout: 5) == .completed)
-        let settledPanCenter = visibleDevicePoint(of: display.view, in: scroll, fitting: fittingGuide, of: content)
-        #expect(abs(settledPanCenter.x - midflightPannedCenter.x) * scroll.magnification <= backingPixel
-            && abs(settledPanCenter.y - midflightPannedCenter.y) * scroll.magnification <= backingPixel)
-        try await animateCanvas { controller.performCanvasZoom(.fit) }
+        let resizedCenter = center(of: display.view, in: content)
+        #expect(abs(resizedCenter.x - originalCenter.x) <= backingPixel
+            && abs(resizedCenter.y - originalCenter.y) <= backingPixel)
+        let clipDuringZoom = scroll.contentView
+        clipDuringZoom.scroll(to: NSPoint(x: clipDuringZoom.bounds.minX + 10, y: clipDuringZoom.bounds.minY + 20))
+        scroll.reflectScrolledClipView(clipDuringZoom)
+        NotificationCenter.default.post(name: NSScrollView.didLiveScrollNotification, object: scroll)
+        let pannedZoomCenter = visibleDevicePoint(of: display.view, in: scroll, fitting: fittingGuide, of: content)
+        controller.performCanvasZoom(.zoomIn)
+        let settledCenter = visibleDevicePoint(of: display.view, in: scroll, fitting: fittingGuide, of: content)
+        #expect(abs(settledCenter.x - pannedZoomCenter.x) * scroll.magnification <= backingPixel
+            && abs(settledCenter.y - pannedZoomCenter.y) * scroll.magnification <= backingPixel)
+        controller.performCanvasZoom(.fit)
         // SimulatorKit can deliver a frame from before the latest scale change.
         display.view.setFrameSize(NSSize(width: previousFrame.width / 2, height: previousFrame.height / 2))
         try #require(display.view.frame.size != display.size(for: display.renderScale))

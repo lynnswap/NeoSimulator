@@ -42,7 +42,8 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
     private var selectedRecordID: String?
     private var reloadingTable = false
     private let profileKindPicker = NSPopUpButton()
-    private let infoPicker = NSSegmentedControl(labels: ["Info", "Apps", "Profiles"], trackingMode: .selectOne, target: nil, action: nil)
+    let categoryAccessory = InspectorCategoryAccessoryViewController()
+    private var infoPicker: NSSegmentedControl { categoryAccessory.picker }
     private let profileHeading = NSTextField(labelWithString: "Configuration")
     private let unavailableView = NSHostingView(rootView: AnyView(EmptyView()))
     private let search = NSSearchField()
@@ -89,8 +90,6 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
         view = NSView()
         infoPicker.target = self
         infoPicker.action = #selector(changeInfoCategory(_:))
-        infoPicker.segmentDistribution = .fill
-        infoPicker.setAccessibilityLabel("Inspector Subcategory")
         profileKindPicker.addItems(withTitles: ["Configuration", "Provisioning"])
         profileKindPicker.target = self
         profileKindPicker.action = #selector(changeProfileKind(_:))
@@ -205,12 +204,11 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
         status.font = .systemFont(ofSize: 11)
         status.textColor = .secondaryLabelColor
         status.setAccessibilityLabel("Inspector Status")
-        let stack = NSStackView(views: [infoPicker, contentView, infoView, unavailableView, buttons, footer])
+        let stack = NSStackView(views: [contentView, infoView, unavailableView, buttons, footer])
         stack.orientation = .vertical
         stack.distribution = .fill
         stack.alignment = .centerX
         stack.spacing = 10
-        stack.setCustomSpacing(8, after: infoPicker)
         stack.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(stack)
         let bottom = stack.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8)
@@ -351,7 +349,7 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
 
     private func updateVisibility() {
         let unavailable = unavailableState
-        infoPicker.isHidden = page == .reports || device == nil
+        categoryAccessory.isHidden = !isVisible || page == .reports || device == nil
         infoPicker.selectedSegment = content == .info ? 0 : (showingApplications ? 1 : 2)
         contentView.isHidden = showingInfo || unavailable != nil
         infoView.isHidden = !showingInfo || unavailable != nil

@@ -1,10 +1,12 @@
 import AppKit
+import SwiftUI
 
 @MainActor
 final class SettingsViewController: NSTabViewController {
     let general: GeneralSettingsViewController
     let devices: DevicesSettingsViewController
     let capture: CaptureSettingsViewController
+    var onContentSizeChange: ((NSSize) -> Void)?
 
     init(model: SimulatorManagerModel, restart: @escaping () -> Void,
          makeSimulator: @escaping () async throws -> NewSimulatorModel,
@@ -14,6 +16,13 @@ final class SettingsViewController: NSTabViewController {
         devices = DevicesSettingsViewController(makeSimulator: makeSimulator, reportFailure: reportFailure)
         capture = CaptureSettingsViewController(preferences: preferences)
         super.init(nibName: nil, bundle: nil)
+        general.sizingOptions = []
+        devices.sizingOptions = []
+        capture.sizingOptions = []
+        general.onContentSizeChange = contentSizeHandler(for: general)
+        devices.onContentSizeChange = contentSizeHandler(for: devices)
+        capture.onContentSizeChange = contentSizeHandler(for: capture)
+        transitionOptions = []
         tabStyle = .toolbar
         canPropagateSelectedChildViewControllerTitle = true
         for (controller, symbol) in [(general as NSViewController, "gear"), (devices, "iphone"), (capture, "camera")] {
@@ -28,12 +37,21 @@ final class SettingsViewController: NSTabViewController {
     required init?(coder: NSCoder) { nil }
 
     override var selectedTabViewItemIndex: Int {
-        didSet {
-            guard let window = viewIfLoaded?.window else { return }
-            NSAnimationContext.runAnimationGroup { context in
-                context.allowsImplicitAnimation = window.isVisible && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-                window.layoutIfNeeded()
-            }
+        didSet { onContentSizeChange?(selectedContentSize) }
+    }
+
+    var selectedContentSize: NSSize {
+        switch selectedTabViewItemIndex {
+        case 1: devices.sizeThatFits(in: .zero)
+        case 2: capture.sizeThatFits(in: .zero)
+        default: general.sizeThatFits(in: .zero)
+        }
+    }
+
+    private func contentSizeHandler(for controller: NSViewController) -> (NSSize) -> Void {
+        { [weak self, weak controller] size in
+            guard let self, tabView.selectedTabViewItem?.viewController === controller else { return }
+            onContentSizeChange?(size)
         }
     }
 

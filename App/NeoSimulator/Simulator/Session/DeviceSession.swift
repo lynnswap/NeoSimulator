@@ -390,6 +390,8 @@ final class DeviceSession {
     var display: any SimulatorDisplay { appDisplay ?? primaryDisplay }
     @ObservationIgnored var onDisplayWillChange: (() -> Void)?
     @ObservationIgnored var onDisplayChange: (() -> Void)?
+    /// Lets the presentation owner capture its geometry before applying a rotation synchronously.
+    @ObservationIgnored var onDisplayRotation: ((_ angle: Double, _ update: () -> Void) -> Void)?
     @ObservationIgnored var onAppResizeGeometryChange: (() -> Void)?
     @ObservationIgnored var onAppResizeError: ((any Error) -> Void)?
     @ObservationIgnored private var resizeTransport: (any AppResizeTransport)?
@@ -1702,8 +1704,12 @@ final class DeviceSession {
     }
 
     private func rotateDisplay(_ degrees: Double) {
-        displayAngle = degrees
-        display.setRotation(degrees: degrees)
+        let update = {
+            self.displayAngle = degrees
+            self.display.setRotation(degrees: degrees)
+        }
+        if let onDisplayRotation { onDisplayRotation(degrees, update) }
+        else { update() }
     }
 
     /// Saves the screen to a file chosen in a save panel, replacing it.

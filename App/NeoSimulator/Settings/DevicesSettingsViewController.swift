@@ -25,7 +25,7 @@ final class DevicesSettingsState {
 }
 
 @MainActor
-final class DevicesSettingsViewController: NSHostingController<DevicesSettingsView> {
+final class DevicesSettingsViewController: SettingsHostingController<DevicesSettingsView> {
     let state = DevicesSettingsState()
     private let makeSimulator: () async throws -> NewSimulatorModel
     private let reportFailure: (Error) -> Void
