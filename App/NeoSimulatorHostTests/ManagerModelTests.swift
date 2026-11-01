@@ -891,6 +891,58 @@ struct ManagerModelTests {
         #expect(app.screens.screen(for: aID) == nil && pane.liveDeviceIdentifier == nil)
     }
 
+    @Test func inspectorTabsToggleVisibilityAndSwitchPages() throws {
+        _ = NSApplication.shared
+        let domain = "NeoSimulator.InspectorFixture.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
+        let model = SimulatorManagerModel(source: ManagerModelSource(devices: []))
+        model.settings.setReadingSuspended(true)
+        let controller = ManagerWindowController(model: model, screens: DeviceScreens(model: model),
+                                                 menus: MenuController(application: nil), defaults: defaults)
+        let window = try #require(controller.window)
+        window.setFrameAutosaveName("")
+        defer { window.close() }
+        let split = try #require(window.contentViewController as? NSSplitViewController)
+        let inspector = try #require(split.splitViewItems.last)
+        let tabs = try #require(window.toolbar?.items.compactMap { $0 as? NSToolbarItemGroup }
+            .first { $0.itemIdentifier.rawValue == "DeviceInspector" })
+        window.setContentSize(NSSize(width: 1200, height: 800))
+        split.view.layoutSubtreeIfNeeded()
+        let frame = window.frame
+
+        func click(_ index: Int, collapsed: Bool, page: DeviceInspectorModel.Page? = nil) throws {
+            let action = try #require(tabs.action)
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0
+                tabs.setSelected(!tabs.isSelected(at: index), at: index)
+                #expect(NSApp.sendAction(action, to: tabs.target, from: tabs))
+            }
+            #expect(inspector.isCollapsed == collapsed)
+            #expect(tabs.subitems.indices.filter { tabs.isSelected(at: $0) } == (collapsed ? [] : [index]))
+            #expect(!tabs.isHidden)
+            #expect(window.frame == frame, "Tab \(index), collapsed \(collapsed): frame \(window.frame), original \(frame)")
+            #expect(controller.deviceInspector.inspection.isVisible == (!collapsed && index != 0))
+            if let page { #expect(controller.deviceInspector.inspection.page == page) }
+        }
+
+        #expect(!inspector.isCollapsed && tabs.selectedIndex == 0)
+        try click(0, collapsed: true)
+        try click(0, collapsed: false)
+        try click(1, collapsed: false, page: .reports)
+        try click(1, collapsed: true, page: .reports)
+        try click(2, collapsed: false, page: .info)
+        try click(2, collapsed: true, page: .info)
+        try click(2, collapsed: false, page: .info)
+
+        inspector.isCollapsed = true
+        #expect(tabs.subitems.indices.allSatisfy { !tabs.isSelected(at: $0) })
+        #expect(!controller.deviceInspector.inspection.isVisible)
+        inspector.isCollapsed = false
+        #expect(tabs.selectedIndex == 2 && controller.deviceInspector.inspection.isVisible)
+        try click(0, collapsed: false)
+    }
+
     @Test(arguments: [(DeviceInspectorModel.Page.info, DeviceInspectorModel.Content.applications),
                       (.info, .configuration), (.reports, .info)])
     func sameDeviceInventoryUpdatesKeepInspectorRecordsAndSelection(selection: (page: DeviceInspectorModel.Page, content: DeviceInspectorModel.Content)) async throws {

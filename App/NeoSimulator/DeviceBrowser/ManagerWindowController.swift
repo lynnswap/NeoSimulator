@@ -71,6 +71,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     private var displayedGroups: [String] = []
     private let deviceMenu = NSMenu(title: "Device Actions")
     private var sidebarObservation: NSKeyValueObservation?
+    private var inspectorObservation: NSKeyValueObservation?
     private var toolbarAppearanceObservation: NSKeyValueObservation?
     private let newSimulatorIdentifier = NSToolbarItem.Identifier("NewSimulator")
     private let filterIdentifier = NSToolbarItem.Identifier("FilterSimulators")
@@ -164,6 +165,12 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         }
         sidebarObservation = splitController.splitViewItems[0].observe(\.isCollapsed, options: [.initial, .new]) { [weak self] _, _ in
             MainActor.assumeIsolated { self?.updateSidebarToolbarItems() }
+        }
+        inspectorObservation = splitController.splitViewItems[2].observe(\.isCollapsed, options: [.initial, .new]) { [weak self] _, _ in
+            MainActor.assumeIsolated {
+                self?.updateInspectorToolbarItems()
+                self?.updateDeviceSettings()
+            }
         }
         window.center()
         window.setFrameAutosaveName("NeoSimulatorDevices")
@@ -401,7 +408,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         let inspector = NSSplitViewItem(inspectorWithViewController: inspectorContainer)
         inspector.minimumThickness = 280
         inspector.maximumThickness = 440
-        inspector.canCollapse = false
+        inspector.canCollapse = true
+        inspector.collapseBehavior = .preferResizingSiblingsWithFixedSplitView
         splitController.addSplitViewItem(inspector)
         showInspectorController(host)
     }
@@ -425,12 +433,20 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     }
 
     @objc private func changeInspector(_ sender: NSToolbarItemGroup) {
-        inspectorMode = sender.selectedIndex
+        let index = sender.selectedIndex
+        let inspector = splitController.splitViewItems[2]
+        if index == inspectorMode && !inspector.isCollapsed {
+            inspector.animator().isCollapsed = true
+            return
+        }
+        inspectorMode = index
         if inspectorMode == 0, let inspectorHost { showInspectorController(inspectorHost) }
         else {
             deviceInspector.setPage(inspectorMode == 1 ? .reports : .info)
             showInspectorController(deviceInspector)
         }
+        inspector.animator().isCollapsed = false
+        updateInspectorToolbarItems()
         updateDeviceSettings()
     }
 
@@ -800,7 +816,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     func updateDeviceSettings() {
         let selection = selectedDevices.count == 1 ? selectedDevices.first : nil
         deviceInspector.update(device: selection, isManaging: selection.map { model.managingDeviceIDs.contains($0.id) } == true,
-                               isVisible: inspectorMode != 0)
+                               isVisible: !splitController.splitViewItems[2].isCollapsed && inspectorMode != 0)
     }
 
     private func presentLocationEditor(for identifier: DeviceInventoryID, latitude: String = "0", longitude: String = "0") {
@@ -942,6 +958,14 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         }
     }
 
+    private func updateInspectorToolbarItems() {
+        let collapsed = splitController.splitViewItems[2].isCollapsed
+        guard let item = window?.toolbar?.items.first(where: { $0.itemIdentifier == inspectorIdentifier }) as? NSToolbarItemGroup else { return }
+        for index in item.subitems.indices {
+            item.setSelected(!collapsed && index == inspectorMode, at: index)
+        }
+    }
+
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [.toggleSidebar, .flexibleSpace, newSimulatorIdentifier, filterIdentifier, .sidebarTrackingSeparator,
          .flexibleSpace, captureKeyboardIdentifier, resizeAppIdentifier, canvasZoomIdentifier, compactIdentifier, moreIdentifier, .inspectorTrackingSeparator, .flexibleSpace, inspectorIdentifier]
@@ -1038,10 +1062,10 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             let images = ["slider.horizontal.3", "text.document", "info"].compactMap {
                 NSImage(systemSymbolName: $0, accessibilityDescription: nil)
             }
-            let item = NSToolbarItemGroup(itemIdentifier: itemIdentifier, images: images, selectionMode: .selectOne,
+            let item = NSToolbarItemGroup(itemIdentifier: itemIdentifier, images: images, selectionMode: .selectAny,
                                           labels: ["Settings", "Reports", "Info"], target: self, action: #selector(changeInspector(_:)))
             item.label = "Device Inspector"
-            item.selectedIndex = inspectorMode
+            item.setSelected(!splitController.splitViewItems[2].isCollapsed, at: inspectorMode)
             item.visibilityPriority = .high
             item.controlRepresentation = .expanded
             for (subitem, title) in zip(item.subitems, ["Settings", "Reports", "Info"]) { subitem.toolTip = title }
