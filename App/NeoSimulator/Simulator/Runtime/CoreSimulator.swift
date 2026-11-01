@@ -328,7 +328,7 @@ final class SimulatorDevice {
 
     func notificationState(_ name: String) throws -> UInt64 {
         var state: UInt64 = 0
-        try unsafe withUnsafeMutablePointer(to: &state) {
+        try withUnsafeMutablePointer(to: &state) {
             try unsafe interface.darwinNotificationState.unsafeInvoke(on: object, $0, name)
         }
         return state

@@ -1080,6 +1080,11 @@ struct ManagerModelTests {
         #expect(!accessory.isHidden && accessory.view.frame.height > 0)
         #expect((0..<categories.segmentCount).map { categories.label(forSegment: $0) } == ["Info", "Apps", "Profiles"])
         #expect(!categories.isDescendant(of: controller.deviceInspector.view))
+        let informationScroll = try #require(inspectorViews(controller.deviceInspector.view)
+            .compactMap { $0 as? NSScrollView }.first { !$0.isHiddenOrHasHiddenAncestor })
+        let viewport = informationScroll.convert(informationScroll.bounds, to: nil)
+        let accessoryFrame = accessory.view.convert(accessory.view.bounds, to: nil)
+        #expect(viewport.maxY > accessoryFrame.minY)
         categories.selectedSegment = 1
         #expect(NSApp.sendAction(try #require(categories.action), to: categories.target, from: categories))
         #expect(controller.deviceInspector.inspection.content == .applications)
@@ -2674,7 +2679,7 @@ actor ManagerModelSource: SimulatorManagerSource {
     func quitRenderer(keepingDevicesRunning: Bool?) { quitCount += 1; continuation.yield(.quit) }
     func selectHost(_ host: SimulatorHost, xcodeURL: URL?) throws { throw Failure.unavailable }
     nonisolated func makeScreenOpenRequest(for deviceID: DeviceInventoryID) -> SimulatorScreenOpenRequest {
-        SimulatorScreenOpenRequest(deviceID: deviceID) { self.cancelledOpens.withLock { $0.insert(deviceID) } }
+        SimulatorScreenOpenRequest(deviceID: deviceID) { _ = self.cancelledOpens.withLock { $0.insert(deviceID) } }
     }
     func openDevice(_ request: SimulatorScreenOpenRequest, xcodeURL: URL?, bootIfNeeded: Bool) async throws {
         let deviceID = request.deviceID

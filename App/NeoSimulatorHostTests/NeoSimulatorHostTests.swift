@@ -11,6 +11,10 @@ import IOKit.hidsystem
 
 @Suite(.serialized) @MainActor
 struct InputFocusTests {
+    @MainActor private final class RemoteTarget {
+        weak var controller: DeviceWindowController?
+    }
+
     @Test(arguments: [false, true])
     func relaunchRestoresIndependentCompactWindowsAndHonorsNewerChoice(_ showsCompactDeviceInMain: Bool) async throws {
         _ = NSApplication.shared
@@ -3759,7 +3763,7 @@ struct InputFocusTests {
         // digitizer's own delegate.
         var received: [NativeDigitizerTouch] = []
         let touches = try NativeDigitizerTouches(digitizer: input, interface: interface) { received.append($0) }
-        weak var replacement = try delegate()
+        weak let replacement = try delegate()
         #expect(replacement != nil && replacement !== ownDelegate)
         do {
             let installed = try #require(try unsafe interface.delegate.unsafeInvoke(on: input)).copyUnderlyingValue()
@@ -4214,8 +4218,8 @@ struct InputFocusTests {
     @Test func theRemotesButtonsHoldTheAppleTVsButtonsAsInSimulatorApp() throws {
         _ = NSApplication.shared
         let display = TestDisplay()
-        var target: DeviceWindowController?
-        let remote = TVRemoteController(target: { target })
+        let target = RemoteTarget()
+        let remote = TVRemoteController(target: { target.controller })
         let tv = try makeController(display, family: .tv, features: [DeviceCapabilities.tvRemote], tvRemote: remote)
         let phoneDisplay = TestDisplay()
         let phone = try makeController(phoneDisplay, tvRemote: remote)
@@ -4224,7 +4228,7 @@ struct InputFocusTests {
             phone.invalidate()
             remote.close()
         }
-        target = tv
+        target.controller = tv
         remote.showWindow(nil)
         let content = try #require(remote.window?.contentView)
         func view(_ label: String) throws -> NSView {
@@ -4245,11 +4249,11 @@ struct InputFocusTests {
             #expect(display.events.last?.input == .tvRemote(button) && display.events.last?.state == .up, "\(label)")
         }
         #expect(display.events.count == 14)
-        target = phone
+        target.controller = phone
         try view("Menu").mouseDown(with: click)
         try view("Menu").mouseUp(with: click)
         #expect(phoneDisplay.events.isEmpty)
-        target = tv
+        target.controller = tv
         try view("Siri").mouseDown(with: click)
         remote.close()
         #expect(display.events.suffix(2).map(\.input) == [.tvRemote(.siri), .tvRemote(.siri)])
@@ -4266,8 +4270,8 @@ struct InputFocusTests {
     @Test func theRemotesTouchSurfaceTouchesWhileOptionIsHeldAsInSimulatorApp() throws {
         _ = NSApplication.shared
         let display = TestDisplay(), other = TestDisplay()
-        var target: DeviceWindowController?
-        let remote = TVRemoteController(target: { target })
+        let target = RemoteTarget()
+        let remote = TVRemoteController(target: { target.controller })
         let tv = try makeController(display, family: .tv, features: [DeviceCapabilities.tvRemote], tvRemote: remote)
         let otherTV = try makeController(other, family: .tv, features: [DeviceCapabilities.tvRemote], tvRemote: remote)
         defer {
@@ -4275,7 +4279,7 @@ struct InputFocusTests {
             otherTV.invalidate()
             remote.close()
         }
-        target = tv
+        target.controller = tv
         remote.showWindow(nil)
         let window = try #require(remote.window)
         let surface = try #require(window.contentView?.subviews.compactMap { $0 as? TVRemoteTouchSurface }.first)
@@ -4313,14 +4317,14 @@ struct InputFocusTests {
         surface.optionChanged(isDown: true)
         #expect(display.remoteTouches.suffix(2) == [touch(.began, 0.25, 0.5), touch(.ended, 1, 0.5)])
         surface.mouseEntered(with: try event(.mouseEntered, 0.5, 0.5, option: true))
-        target = otherTV
+        target.controller = otherTV
         surface.mouseMoved(with: try event(.mouseMoved, 0.5, 0.75, option: true))
         #expect(display.remoteTouches.suffix(2) == [touch(.began, 0.5, 0.5), touch(.ended, 0.5, 0.75)])
         #expect(other.remoteTouches == [touch(.began, 0.5, 0.75)])
         remote.close()
         #expect(other.remoteTouches.last == touch(.ended, 0.5, 0.75))
         remote.showWindow(nil)
-        target = tv
+        target.controller = tv
         surface.mouseEntered(with: try event(.mouseEntered, 0.25, 0.25, option: true))
         tv.session.disconnect()
         surface.mouseExited(with: try event(.mouseExited, 0, 0.25, option: true))
@@ -4331,14 +4335,14 @@ struct InputFocusTests {
     @Test func aDragOffTheRemotesTouchSurfaceEndsTheTouchAtItsEdge() throws {
         _ = NSApplication.shared
         let display = TestDisplay()
-        var target: DeviceWindowController?
-        let remote = TVRemoteController(target: { target })
+        let target = RemoteTarget()
+        let remote = TVRemoteController(target: { target.controller })
         let tv = try makeController(display, family: .tv, features: [DeviceCapabilities.tvRemote], tvRemote: remote)
         defer {
             tv.invalidate()
             remote.close()
         }
-        target = tv
+        target.controller = tv
         remote.showWindow(nil)
         let window = try #require(remote.window)
         let content = try #require(window.contentView)
@@ -4382,14 +4386,14 @@ struct InputFocusTests {
     @Test func aRemoteReleaseThatIsNotDeliveredIsSentAgainAsAHeldInputsIs() throws {
         _ = NSApplication.shared
         let display = TestDisplay()
-        var target: DeviceWindowController?
-        let remote = TVRemoteController(target: { target })
+        let target = RemoteTarget()
+        let remote = TVRemoteController(target: { target.controller })
         let tv = try makeController(display, family: .tv, features: [DeviceCapabilities.tvRemote], tvRemote: remote)
         defer {
             tv.invalidate()
             remote.close()
         }
-        target = tv
+        target.controller = tv
         remote.showWindow(nil)
         let window = try #require(remote.window)
         let content = try #require(window.contentView)
@@ -4447,8 +4451,8 @@ struct InputFocusTests {
     @Test func closingTheRemoteSendsAgainWhatAnotherAppleTVStillHolds() throws {
         _ = NSApplication.shared
         let first = TestDisplay(), second = TestDisplay()
-        var target: DeviceWindowController?
-        let remote = TVRemoteController(target: { target })
+        let target = RemoteTarget()
+        let remote = TVRemoteController(target: { target.controller })
         let a = try makeController(first, family: .tv, features: [DeviceCapabilities.tvRemote], device: "a", tvRemote: remote)
         let b = try makeController(second, family: .tv, features: [DeviceCapabilities.tvRemote], device: "b", tvRemote: remote)
         defer {
@@ -4476,21 +4480,21 @@ struct InputFocusTests {
             TVRemoteTouch(phase: phase, point: CGPoint(x: x, y: y))
         }
         // Switching targets leaves A's failed touch-end pending while B receives input.
-        target = a
+        target.controller = a
         surface.mouseEntered(with: try event(.mouseEntered, 0.5, 0.5))
         first.undeliveredTouches = 1
-        target = b
+        target.controller = b
         surface.mouseMoved(with: try event(.mouseMoved, 0.5, 0.75))
         remote.close()
         #expect(first.remoteTouches == [touch(.began, 0.5, 0.5), touch(.ended, 0.5, 0.75), touch(.ended, 0.5, 0.75)])
         #expect(second.remoteTouches == [touch(.began, 0.5, 0.75), touch(.ended, 0.5, 0.75)])
         // Both devices may hold Menu when A's release fails before switching to B.
         remote.showWindow(nil)
-        target = a
+        target.controller = a
         first.undeliveredEvents = [1]
         menu.mouseDown(with: try event(.leftMouseDown, 0, 0))
         menu.mouseUp(with: try event(.leftMouseUp, 0, 0))
-        target = b
+        target.controller = b
         menu.mouseDown(with: try event(.leftMouseDown, 0, 0))
         remote.close()
         #expect(first.events.map(\.state) == [.down, .up, .up])
@@ -4673,7 +4677,7 @@ struct InputFocusTests {
             ["Simulate Memory Warning", "-", "Show Gaze Target", "-", "Show Parallel Testing Devices"])
         #expect(!visible(debug, device(.vision, [DeviceCapabilities.opticID])).contains("Show Gaze Target"))
         let gaze = try #require(debug.items.first { $0.title == "Show Gaze Target" })
-        #expect(gaze.action == Selector(("toggleShowGazeTarget:")) && gaze.target == nil)
+        #expect(gaze.action == #selector(PluginOverlay.toggleShowGazeTarget(_:)) && gaze.target == nil)
     }
 
     @Test(arguments: [false, true]) func onlyADeviceThatRotatesReadsItsOrientation(embedded: Bool) async throws {
@@ -8500,11 +8504,14 @@ struct InputFocusTests {
             runtimes: [.init(identifier: "old", name: "iOS 26.0"), .init(identifier: "new", name: "iOS 27.0"),
                        .init(identifier: "empty", name: "iOS 28.0")],
             supportedDeviceTypes: ["old": ["b"], "new": ["a", "c"]], canPair: { _, _, _, _ in true })
-        var created: [[String]] = []
-        var failure: Error?
+        @MainActor final class Creation {
+            var requests: [[String]] = []
+            var failure: Error?
+        }
+        let creation = Creation()
         let model = NewSimulatorModel(catalog: catalog, create: { name, type, runtime in
-            if let failure { throw failure }
-            created.append([name, type, runtime])
+            if let failure = creation.failure { throw failure }
+            creation.requests.append([name, type, runtime])
             return "device"
         }, pair: { _, _ in Issue.record("paired without a watch") })
         #expect(model.deviceTypes.map(\.identifier) == ["a", "b", "x"])
@@ -8519,14 +8526,14 @@ struct InputFocusTests {
         #expect(model.runtime == "new" && model.canProceed)
         model.selectRuntime("old")
         #expect(model.deviceType == "b")
-        failure = HostError.operation("creation failed")
+        creation.failure = HostError.operation("creation failed")
         model.forward()
         await model.waitForCreation()
-        #expect(model.error == "creation failed" && created.isEmpty && model.canProceed)
-        failure = nil
+        #expect(model.error == "creation failed" && creation.requests.isEmpty && model.canProceed)
+        creation.failure = nil
         model.forward()
         await model.waitForCreation()
-        #expect(created == [["iPhone B", "b", "old"]] && model.error == nil)
+        #expect(creation.requests == [["iPhone B", "b", "old"]] && model.error == nil)
     }
 
     @Test func newSimulatorWithoutRuntimesCannotCreate() {

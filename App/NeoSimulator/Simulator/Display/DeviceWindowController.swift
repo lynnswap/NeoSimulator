@@ -2254,7 +2254,7 @@ enum DeviceLifetimeChoice: Equatable {
     case shutDown, keepRunning
 
     /// Return chooses the default action.
-    static func alert(quitting: Bool, keepsRunningByDefault: Bool) -> NSAlert {
+    @MainActor static func alert(quitting: Bool, keepsRunningByDefault: Bool) -> NSAlert {
         let alert = NSAlert()
         if quitting {
             alert.messageText = "Do you want to shut down the simulated devices?"
@@ -2279,7 +2279,7 @@ enum DeviceLifetimeChoice: Equatable {
 
     /// The choice an alert response names, saved as the default under `key`
     /// when the suppression box is checked. Cancel names none.
-    static func choice(for response: NSApplication.ModalResponse, of alert: NSAlert,
+    @MainActor static func choice(for response: NSApplication.ModalResponse, of alert: NSAlert,
                        rememberingAs key: String) -> Self? {
         let choice: Self
         switch response {
