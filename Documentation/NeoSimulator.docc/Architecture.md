@@ -255,25 +255,24 @@ transports draw in a screen view placed at DeviceKit's framebuffer frame,
 masked by the framebuffer mask and turned with the display's orientation. The
 frame does not start DeviceKit's own display stream. Its side buttons send the
 HID usages their `chrome.json` declares. A resized app's dedicated display is
-shown without the frame. A two-finger trackpad scroll on the screen drags one
-digitizer touch from where it began and ends it when the fingers lift, so the
-device applies its own deceleration. As in Device Hub, a trackpad pinch that
-begins on the screen goes to a UniversalHID service that carries the properties
+shown without the frame. As in Device Hub, trackpad scrolling and pinches that
+begin on the screen go to a UniversalHID service that carries the properties
 of the Mac trackpad that sent it, under that trackpad's HID service registry ID
 and with its pointer hidden. The trackpad's first event creates the service, and
-UniversalHIDKit's `EventObserver` translates each magnify event into a scale
-report with the event's phase and magnification. On a screen without a pointer
+UniversalHIDKit's `EventObserver` translates scroll and magnify events into
+native reports, preserving phases, scrolling deltas, momentum, and magnification.
+On a screen without a pointer
 connection, such as a resized app's dedicated display, a mouse movement over the
 display goes to the service of the Mac HID service that sent it; the observer
 maps the event's window location with the display's window-to-pointer transform
-into an absolute pointer report, and the service's pinches happen at that
+into an absolute pointer report, and the service's gestures happen at that
 pointer. Panning or zooming the canvas moves the display under a still mouse
-without a mouse movement, so a pinch that begins first places the pointer the
-same way at the pinch's own window location, using the display's transform at
-the time the session sends the pinch. The pinch's later steps stay where it
-began. A synthesized pinch or movement, which no Mac HID service sent, reaches
-no service. When the screen loses input during a
-pinch, the session resets these services' gesture state; disconnecting the
+without a mouse movement, so a gesture that begins first places the pointer the
+same way at its own window location, using the display's transform at
+the time the session sends the event. Later steps stay where the gesture
+began. A synthesized gesture or movement, which no Mac HID service sent, reaches
+no service. When the screen loses input during a gesture,
+the session resets these services' gesture state; disconnecting the
 screen removes them.
 
 macOS lists a connected device's screen as an AVFoundation capture source once

@@ -93,6 +93,11 @@ pointer input when available. Right clicks, other mouse buttons, and pointer
 movement require pointer support. Keyboard input is available when the device
 supports it. NeoSimulator releases held inputs when the window loses focus.
 
+On connections that support trackpad gestures, two-finger scrolling and pinches
+over the screen reach the device through its native trackpad input. Scrolling
+continues beyond a screen's width or height, including momentum after the
+fingers lift.
+
 Simulator's Option and Control gestures described above apply only to simulator
 windows.
 

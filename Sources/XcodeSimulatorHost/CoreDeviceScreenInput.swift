@@ -92,7 +92,7 @@ final class CoreDeviceScreenInput {
             do { try await sendNative(.touch(point, second, .ended, edge)); pressed.touch = nil }
             catch { if generations[.digitizer, default: 0] == generation { failures.append(error.localizedDescription) } }
         }
-        // Each trackpad's service can hold its own pinch, so every service is reset.
+        // Each trackpad's service can hold its own gesture, so every service is reset.
         do { try gestures.resetGestures() } catch { failures.append(error.localizedDescription) }
         for (button, point) in pressed.pointerButtons.sorted(by: { $0.key < $1.key }) {
             guard pressed.pointerButtons[button] != nil else { continue }
@@ -213,7 +213,7 @@ final class CoreDeviceScreenInput {
             let event = switch phase { case .began: "start"; case .moved: "position"; case .ended: "end" }
             try unsafe send.unsafeInvoke(on: implementation, point, second, eventType.makeEnumCase(named: event),
                                          nativeEdge.makeEnumCase(named: edge.rawValue), target.makeEnumCase(named: "mainScreen"))
-        case .pinch(let event, let transform):
+        case .trackpad(let event, let transform):
             guard try remote.supports(Self.universalHIDFeature) else {
                 throw CLIError.unavailable("remote-input-capability", "The device no longer exposes trackpad gestures.")
             }
@@ -673,7 +673,7 @@ struct RemoteScreenPressedInputs {
             else { pointerButtons[button] = point }
         case .touch(let point, let second, let phase, let edge):
             touch = phase == .ended ? nil : (point, second, edge)
-        case .pointer, .pinch, .gesturePointer: break
+        case .pointer, .trackpad, .gesturePointer: break
         }
     }
 
@@ -692,7 +692,7 @@ private extension RemoteScreenInput {
         case .button: .button
         case .pointer, .pointerButton: .pointer
         case .touch: .digitizer
-        case .pinch, .gesturePointer: .gesture
+        case .trackpad, .gesturePointer: .gesture
         }
     }
 }

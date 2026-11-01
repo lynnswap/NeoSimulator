@@ -1513,14 +1513,14 @@ struct RemoteDeviceScreenTests {
                                              at: #require(session.inputLocations(atWindowPoint: movement.locationInWindow)))
         let pinch = try trackpadPinch(.began, sender: 0xA)
         transport.pointerTransform = showing(CGPoint(x: 0.6, y: 0.2), at: pinch)
-        try await session.sendPinch(pinch)
+        try await session.sendTrackpadGesture(pinch)
         transport.pointerTransform = showing(CGPoint(x: 0.3, y: 0.8), at: pinch)
         for event in try [trackpadPinch(.changed, magnification: 0.2, sender: 0xA), trackpadPinch(.ended, sender: 0xA)] {
-            try await session.sendPinch(event)
+            try await session.sendTrackpadGesture(event)
         }
         // On a screen with a pointer connection, mouse movements move that pointer instead, and pinches leave the hidden one.
         transport.inputCapabilities.insert(.pointer)
-        try await session.sendPinch(trackpadPinch(.began, sender: 0xA))
+        try await session.sendTrackpadGesture(trackpadPinch(.began, sender: 0xA))
         try await session.stop()
         let placements = try #require(trackpads.services.first).sent.dropFirst().map(placement)
         #expect(placements == [CGPoint(x: 0.6, y: 0.2), nil, nil, nil, nil])
@@ -2386,7 +2386,7 @@ private final class ScreenFixtureTransport: RemoteScreenTransport {
         if let holdingSend { self.holdingSend = nil; await holdingSend.hold() }
         pressed.record(input)
         switch input {
-        case .pinch(let event, let transform): try await gestures?.send(event, coordinateTransform: transform)
+        case .trackpad(let event, let transform): try await gestures?.send(event, coordinateTransform: transform)
         case .gesturePointer(let event, let transform): try await gestures?.movePointer(event, coordinateTransform: transform)
         case .touch(_, _, let phase, _): deliveries.append("touch \(phase.rawValue)")
         case .button(_, _, let state): deliveries.append("button \(state.rawValue)")
