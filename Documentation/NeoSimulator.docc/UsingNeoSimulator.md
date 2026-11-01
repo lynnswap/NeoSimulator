@@ -11,8 +11,10 @@ to start a device or reopen its window. The manager's device menus group devices
 by OS version.
 The browser lists simulators, physical devices, and virtual machines in
 Available and Unavailable groups. Search by name, model, or operating system.
-Use the filter button beside **+** to choose a device kind, availability, or
-family, change the sort order, or turn grouping off. **+** opens New Simulator.
+Use the filter button beside the gear button to choose a device kind, availability,
+or family, change the sort order, or turn grouping off. The gear button opens Settings.
+Choose **Devices** in Settings, then choose a device family, model, and OS version
+and enter a name to create a simulator. The device family is remembered for next time.
 Open Simulator groups devices by runtime; a
 checkmark means a device has a window, and a dash means it is running without
 one. Hold Option to show its runtime and device type.

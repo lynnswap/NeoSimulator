@@ -73,7 +73,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     private var sidebarObservation: NSKeyValueObservation?
     private var inspectorObservation: NSKeyValueObservation?
     private var toolbarAppearanceObservation: NSKeyValueObservation?
-    private let newSimulatorIdentifier = NSToolbarItem.Identifier("NewSimulator")
+    private let settingsIdentifier = NSToolbarItem.Identifier("Settings")
     private let filterIdentifier = NSToolbarItem.Identifier("FilterSimulators")
     private var filterItem: NSMenuToolbarItem?
     private var kindFilter = DeviceKindFilter.all
@@ -953,7 +953,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
 
     private func updateSidebarToolbarItems() {
         let hidden = splitController.splitViewItems[0].isCollapsed
-        for item in window?.toolbar?.items ?? [] where item.itemIdentifier == newSimulatorIdentifier || item.itemIdentifier == filterIdentifier {
+        for item in window?.toolbar?.items ?? [] where item.itemIdentifier == settingsIdentifier || item.itemIdentifier == filterIdentifier {
             item.isHidden = hidden
         }
     }
@@ -967,7 +967,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.toggleSidebar, .flexibleSpace, newSimulatorIdentifier, filterIdentifier, .sidebarTrackingSeparator,
+        [.toggleSidebar, .flexibleSpace, settingsIdentifier, filterIdentifier, .sidebarTrackingSeparator,
          .flexibleSpace, captureKeyboardIdentifier, resizeAppIdentifier, canvasZoomIdentifier, compactIdentifier, moreIdentifier, .inspectorTrackingSeparator, .flexibleSpace, inspectorIdentifier]
     }
 
@@ -1071,13 +1071,13 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             for (subitem, title) in zip(item.subitems, ["Settings", "Reports", "Info"]) { subitem.toolTip = title }
             return item
         }
-        if itemIdentifier == newSimulatorIdentifier {
+        if itemIdentifier == settingsIdentifier {
             let item = NSToolbarItem(itemIdentifier: itemIdentifier)
-            item.label = "New Simulator"
-            item.toolTip = "New Simulator"
-            item.image = NSImage(systemSymbolName: "plus", accessibilityDescription: "New Simulator")
+            item.label = "Settings"
+            item.toolTip = "Settings"
+            item.image = NSImage(systemSymbolName: "gear", accessibilityDescription: "Settings")
             item.target = NSApp.delegate
-            item.action = #selector(AppDelegate.showNewSimulator(_:))
+            item.action = #selector(AppDelegate.showSettings(_:))
             item.visibilityPriority = .high
             return item
         }

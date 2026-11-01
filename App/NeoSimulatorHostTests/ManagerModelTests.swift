@@ -9,6 +9,95 @@ import Synchronization
 
 @Suite(.serialized, .timeLimit(.minutes(1))) @MainActor
 struct ManagerModelTests {
+    @Test func settingsProvideSimulatorCreationAndKeepExistingPreferences() async throws {
+        _ = NSApplication.shared
+        let domain = "NeoSimulator.SettingsFixture.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
+        let preferences = SimulatorPreferences(defaults: defaults, creationDefaults: defaults)
+        let model = SimulatorManagerModel(source: ManagerModelSource(devices: []))
+        let browser = ManagerWindowController(model: model, screens: DeviceScreens(model: model),
+                                              menus: MenuController(application: nil), defaults: defaults)
+        defer { browser.window?.close() }
+        let items = try #require(browser.window?.toolbar?.items)
+        #expect(items.first(where: { $0.itemIdentifier.rawValue == "Settings" })?.action == #selector(AppDelegate.showSettings(_:)))
+        #expect(items.allSatisfy { $0.itemIdentifier.rawValue != "NewSimulator" })
+        var created: [String] = []
+        var attempts = 0
+        let controller = SettingsViewController(model: model, restart: {}, makeSimulator: {
+            attempts += 1
+            if attempts == 1 { throw HostError.operation("Catalog unavailable") }
+            return NewSimulatorModel(catalog: SimulatorCatalog(
+                deviceTypes: [.init(identifier: "phone", name: "iPhone", productFamily: 1)],
+                runtimes: [.init(identifier: "ios", name: "iOS")],
+                supportedDeviceTypes: ["ios": ["phone"]], canPair: { _, _, _, _ in false }),
+                create: { name, type, runtime in created = [name, type, runtime]; return "created" },
+                pair: { _, _ in Issue.record("Unexpected pairing") })
+        }, preferences: preferences, reportFailure: { _ in Issue.record("Unexpected failure") })
+        let settingsWindow = NSWindow(contentViewController: controller)
+        defer { settingsWindow.close() }
+        settingsWindow.layoutIfNeeded()
+        #expect(settingsWindow.contentLayoutRect.height >= controller.general.preferredContentSize.height)
+        controller.selectedTabViewItemIndex = 1
+        await controller.simulatorLoading?.value
+        #expect(controller.devices.state.issue == "Catalog unavailable")
+        controller.devices.state.retry?()
+        await controller.simulatorLoading?.value
+        let form = try #require(controller.devices.state.form)
+        settingsWindow.layoutIfNeeded()
+        #expect(settingsWindow.contentLayoutRect.height >= controller.devices.preferredContentSize.height)
+        form.name = "My Phone"
+        form.forward()
+        await form.waitForCreation()
+        #expect(created == ["My Phone", "phone", "ios"])
+        preferences.showSingleTouches = true
+        preferences.startLastDevice = false
+        #expect(defaults.bool(forKey: "ShowSingleTouches"))
+        #expect(!defaults.bool(forKey: "StartLastDeviceOnLaunch") && !defaults.bool(forKey: "SessionOnLaunch"))
+        #expect(preferences.gifImageSize == 640)
+        let externalDefaults = try #require(UserDefaults(suiteName: domain))
+        externalDefaults.set(true, forKey: HostPreferences.screenShotUseMask)
+        #expect(preferences.includeDeviceMask)
+        preferences.startLastDevice = true
+        #expect(defaults.bool(forKey: HostPreferences.startLastDeviceOnLaunch) && defaults.bool(forKey: HostPreferences.sessionOnLaunch))
+    }
+
+    @Test func settingsRefreshRuntimesAndRememberTheDeviceFamily() async throws {
+        let domain = "NeoSimulator.CreationFixture.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
+        var runtimeInstalled = false
+        let model = SimulatorManagerModel(source: ManagerModelSource(devices: []))
+        func makeForm() -> NewSimulatorModel {
+            NewSimulatorModel(catalog: SimulatorCatalog(
+                deviceTypes: [.init(identifier: "phone", name: "iPhone", productFamily: 1),
+                              .init(identifier: "pad", name: "iPad", productFamily: 2)],
+                runtimes: runtimeInstalled ? [.init(identifier: "ios", name: "iOS")] : [],
+                supportedDeviceTypes: runtimeInstalled ? ["ios": ["phone", "pad"]] : [:],
+                canPair: { _, _, _, _ in false }),
+                create: { _, _, _ in "created" }, pair: { _, _ in },
+                preferences: SimulatorPreferences(defaults: defaults, creationDefaults: defaults))
+        }
+        let controller = SettingsViewController(model: model, restart: {}, makeSimulator: { makeForm() },
+                                                preferences: SimulatorPreferences(defaults: defaults, creationDefaults: defaults),
+                                                reportFailure: { _ in Issue.record("Unexpected failure") })
+        _ = controller.view
+        controller.selectedTabViewItemIndex = 1
+        await controller.simulatorLoading?.value
+        let first = try #require(controller.devices.state.form)
+        #expect(!first.canProceed)
+        first.name = "My iPad"
+        first.selectFamily(2)
+        runtimeInstalled = true
+        controller.reloadSimulatorIfVisible()
+        await controller.simulatorLoading?.value
+        let refreshed = try #require(controller.devices.state.form)
+        #expect(refreshed !== first && refreshed.name == "My iPad")
+        #expect(refreshed.family == 2 && refreshed.deviceType == "pad")
+        #expect(refreshed.runtime == "ios" && refreshed.canProceed)
+        #expect(makeForm().family == 2)
+    }
+
     @Test(arguments: DeviceBrowserPresentation.SortOrder.allCases)
     func sidebarSortsOwnTheirSections(_ order: DeviceBrowserPresentation.SortOrder) throws {
         let records = try CoreDeviceInventoryDecoder.decode(Data(#"""

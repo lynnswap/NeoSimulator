@@ -5,6 +5,13 @@ import AppKit
 enum NeoSimulatorApplication {
     @MainActor static func main() {
         let app = NSApplication.shared
+#if DEBUG
+        let environment = ProcessInfo.processInfo.environment
+        if environment["XCODE_RUNNING_FOR_PREVIEWS"] == "1" {
+            app.run()
+            return
+        }
+#endif
         app.setActivationPolicy(.regular)
         do {
             try CoreDeviceRuntime.configureUIFrameworks(xcodeURL: UIFrameworkSettings.selection(in: .standard))
