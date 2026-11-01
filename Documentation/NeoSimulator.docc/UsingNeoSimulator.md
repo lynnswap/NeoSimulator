@@ -261,8 +261,8 @@ active device.
 
 ## Browse device reports
 
-Select a device in the main window and choose **Reports** in the right
-inspector's toolbar. Physical-device and VM report operations depend on the
+Select a device in the main window and choose **Reports** at the top of the right
+inspector. Physical-device and VM report operations depend on the
 connected device's capabilities. Crash, log, spin, and diagnostic reports are
 unavailable for simulators.
 

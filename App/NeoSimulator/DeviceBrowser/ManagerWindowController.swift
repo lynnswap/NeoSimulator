@@ -41,6 +41,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     private var moreItem: NSMenuToolbarItem?
     private var inspectorHost: NSHostingController<ManagerDeviceSettingsView>?
     private let inspectorContainer = NSViewController()
+    private weak var inspectorContent: NSViewController?
     private(set) lazy var deviceInspector: ManagerDeviceInspectorController = {
         let inspector = ManagerDeviceInspectorController(model: model)
         inspector.onPairingMenu = { [weak self] in self?.pairingMenu(for: $0) ?? NSMenu() }
@@ -52,7 +53,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         return inspector
     }()
     private var inspectorMode = 0
-    private let inspectorIdentifier = NSToolbarItem.Identifier("DeviceInspector")
+    private let inspectorAccessory = InspectorAccessoryViewController()
     private var updatingSelection = false
     private var rows: [DeviceRow] = []
     private var rowsByID: [DeviceInventoryID: DeviceRow] = [:]
@@ -168,7 +169,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         }
         inspectorObservation = splitController.splitViewItems[2].observe(\.isCollapsed, options: [.initial, .new]) { [weak self] _, _ in
             MainActor.assumeIsolated {
-                self?.updateInspectorToolbarItems()
+                self?.updateInspectorSelection()
                 self?.updateDeviceSettings()
             }
         }
@@ -410,17 +411,19 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         inspector.maximumThickness = 440
         inspector.canCollapse = true
         inspector.collapseBehavior = .preferResizingSiblingsWithFixedSplitView
+        inspectorAccessory.onSelect = { [weak self] in self?.selectInspector($0) }
+        inspector.addTopAlignedAccessoryViewController(inspectorAccessory)
         splitController.addSplitViewItem(inspector)
         showInspectorController(host)
     }
 
     private func showInspectorController(_ controller: NSViewController) {
-        guard inspectorContainer.children.first !== controller else { return }
-        for child in inspectorContainer.children {
-            child.view.removeFromSuperview()
-            child.removeFromParent()
-        }
+        guard inspectorContent !== controller else { return }
+        // Split-view accessories are also children of the container; replace only its content page.
+        inspectorContent?.view.removeFromSuperview()
+        inspectorContent?.removeFromParent()
         inspectorContainer.addChild(controller)
+        inspectorContent = controller
         let view = controller.view
         view.translatesAutoresizingMaskIntoConstraints = false
         inspectorContainer.view.addSubview(view)
@@ -432,8 +435,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         ])
     }
 
-    @objc private func changeInspector(_ sender: NSToolbarItemGroup) {
-        let index = sender.selectedIndex
+    private func selectInspector(_ index: Int) {
         let inspector = splitController.splitViewItems[2]
         if index == inspectorMode && !inspector.isCollapsed {
             inspector.animator().isCollapsed = true
@@ -446,7 +448,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             showInspectorController(deviceInspector)
         }
         inspector.animator().isCollapsed = false
-        updateInspectorToolbarItems()
+        updateInspectorSelection()
         updateDeviceSettings()
     }
 
@@ -958,17 +960,14 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         }
     }
 
-    private func updateInspectorToolbarItems() {
+    private func updateInspectorSelection() {
         let collapsed = splitController.splitViewItems[2].isCollapsed
-        guard let item = window?.toolbar?.items.first(where: { $0.itemIdentifier == inspectorIdentifier }) as? NSToolbarItemGroup else { return }
-        for index in item.subitems.indices {
-            item.setSelected(!collapsed && index == inspectorMode, at: index)
-        }
+        inspectorAccessory.select(collapsed ? nil : inspectorMode)
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [.toggleSidebar, .flexibleSpace, settingsIdentifier, filterIdentifier, .sidebarTrackingSeparator,
-         .flexibleSpace, captureKeyboardIdentifier, resizeAppIdentifier, canvasZoomIdentifier, compactIdentifier, moreIdentifier, .inspectorTrackingSeparator, .flexibleSpace, inspectorIdentifier]
+         .flexibleSpace, captureKeyboardIdentifier, resizeAppIdentifier, canvasZoomIdentifier, compactIdentifier, moreIdentifier, .inspectorTrackingSeparator, .flexibleSpace, .toggleInspector]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { toolbarDefaultItemIdentifiers(toolbar) }
@@ -1056,19 +1055,6 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             item.target = self
             item.action = #selector(showCompactDeviceWindow(_:))
             item.isHidden = deviceScreenViewController.liveDeviceIdentifier == nil
-            return item
-        }
-        if itemIdentifier == inspectorIdentifier {
-            let images = ["slider.horizontal.3", "text.document", "info"].compactMap {
-                NSImage(systemSymbolName: $0, accessibilityDescription: nil)
-            }
-            let item = NSToolbarItemGroup(itemIdentifier: itemIdentifier, images: images, selectionMode: .selectAny,
-                                          labels: ["Settings", "Reports", "Info"], target: self, action: #selector(changeInspector(_:)))
-            item.label = "Device Inspector"
-            item.setSelected(!splitController.splitViewItems[2].isCollapsed, at: inspectorMode)
-            item.visibilityPriority = .high
-            item.controlRepresentation = .expanded
-            for (subitem, title) in zip(item.subitems, ["Settings", "Reports", "Info"]) { subitem.toolTip = title }
             return item
         }
         if itemIdentifier == settingsIdentifier {

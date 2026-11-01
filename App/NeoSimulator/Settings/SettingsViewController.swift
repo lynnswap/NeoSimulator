@@ -26,6 +26,17 @@ final class SettingsViewController: NSTabViewController {
     }
 
     required init?(coder: NSCoder) { nil }
+
+    override var selectedTabViewItemIndex: Int {
+        didSet {
+            guard let window = viewIfLoaded?.window else { return }
+            NSAnimationContext.runAnimationGroup { context in
+                context.allowsImplicitAnimation = window.isVisible && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+                window.layoutIfNeeded()
+            }
+        }
+    }
+
     var simulatorLoading: Task<Void, Never>? { devices.loading }
 
     override func tabView(_ tabView: NSTabView, didSelect tabViewItem: NSTabViewItem?) {
