@@ -243,6 +243,27 @@
                     "NeoSimulatorRenderer/compile-sources",
                     "NeoSimulatorHostTests/compile-sources",
                   ],
+                }, {
+                  "path": "NewSimulatorViewController.swift",
+                  "target-membership": [
+                    "NeoSimulator/compile-sources",
+                    "NeoSimulatorRenderer/compile-sources",
+                    "NeoSimulatorHostTests/compile-sources",
+                  ],
+                }, {
+                  "path": "NewSimulatorModel.swift",
+                  "target-membership": [
+                    "NeoSimulator/compile-sources",
+                    "NeoSimulatorRenderer/compile-sources",
+                    "NeoSimulatorHostTests/compile-sources",
+                  ],
+                }, {
+                  "path": "NewSimulatorView.swift",
+                  "target-membership": [
+                    "NeoSimulator/compile-sources",
+                    "NeoSimulatorRenderer/compile-sources",
+                    "NeoSimulatorHostTests/compile-sources",
+                  ],
                 },
               ],
             }, {
@@ -390,6 +411,30 @@
                     "NeoSimulatorHostTests/compile-sources",
                   ],
                 },
+              ],
+            }, {
+              "path": "SettingsViewController.swift",
+              "target-membership": [
+                "NeoSimulator/compile-sources",
+                "NeoSimulatorHostTests/compile-sources",
+              ],
+            }, {
+              "path": "GeneralSettingsViewController.swift",
+              "target-membership": [
+                "NeoSimulator/compile-sources",
+                "NeoSimulatorHostTests/compile-sources",
+              ],
+            }, {
+              "path": "CaptureSettingsViewController.swift",
+              "target-membership": [
+                "NeoSimulator/compile-sources",
+                "NeoSimulatorHostTests/compile-sources",
+              ],
+            }, {
+              "path": "DevicesSettingsViewController.swift",
+              "target-membership": [
+                "NeoSimulator/compile-sources",
+                "NeoSimulatorHostTests/compile-sources",
               ],
             },
           ],
@@ -829,6 +874,8 @@
         "GENERATE_INFOPLIST_FILE": "NO",
         "GENERATE_PKGINFO_FILE": "NO",
         "INFOPLIST_FILE": "NeoSimulator/Info.plist",
+        "INFOPLIST_PREPROCESS": "YES",
+        "INFOPLIST_PREPROCESSOR_DEFINITIONS[config=Debug]": "NEOSIMULATOR_ALLOW_MULTIPLE_INSTANCES=1",
         "LD_RUNPATH_SEARCH_PATHS": [
           "$(inherited)",
           "@executable_path/../Frameworks",

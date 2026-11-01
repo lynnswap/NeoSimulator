@@ -33,8 +33,10 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
+#if !NEOSIMULATOR_ALLOW_MULTIPLE_INSTANCES
 	<key>LSMultipleInstancesProhibited</key>
 	<true/>
+#endif
 	<key>NSCameraUsageDescription</key>
 	<string>NeoSimulator displays the screen of an iPhone or iPad connected by USB. macOS provides that screen to apps as a camera.</string>
 	<key>NSHighResolutionCapable</key>

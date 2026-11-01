@@ -67,6 +67,11 @@ Source builds do not replace the app installed in Applications.
 The manager and renderer resolve their private interfaces through ABIBridge.
 `DeviceBrowser.swift` has previews using sample devices without connecting to
 CoreSimulator.
+The three settings panes have independent previews in
+`GeneralSettingsViewController.swift`, `DevicesSettingsViewController.swift`,
+and `CaptureSettingsViewController.swift`. They use sample catalogs and a
+separate preferences domain. Debug builds allow Xcode's preview process to run
+alongside the app and skip application startup in preview processes.
 
 ## Tests
 

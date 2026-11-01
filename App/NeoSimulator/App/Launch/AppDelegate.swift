@@ -15,6 +15,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return screens
     }()
     private(set) var mainWindow: ManagerWindowController?
+    private let preferences = SimulatorPreferences()
     private var settingsWindow: SettingsWindowController?
     private var newSimulatorWindows: [DeviceInventoryID?: NewSimulatorWindowController] = [:]
     private var preparingNewSimulators: Set<DeviceInventoryID?> = []
@@ -240,9 +241,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate()
     }
 
-    @objc private func showSettings(_ sender: Any?) {
+    @objc func showSettings(_ sender: Any?) {
         if settingsWindow == nil {
-            settingsWindow = SettingsWindowController(model: model, restart: { [weak self] in self?.restartForFrameworkChange() })
+            settingsWindow = SettingsWindowController(model: model,
+                restart: { [weak self] in self?.restartForFrameworkChange() },
+                makeSimulator: { [weak self] in
+                    guard let self else { throw CancellationError() }
+                    return try await self.makeNewSimulatorModel(pairingWith: nil)
+                }, preferences: preferences, reportFailure: { [weak self] error in self?.present(error) })
         }
         model.frameworks.reload()
         settingsWindow?.showWindow(nil)
@@ -268,25 +274,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             defer { self.preparingNewSimulators.remove(creationID) }
             do {
-                let context: SimulatorCreationContext
-                let existingDevice: NewSimulatorWindowController.ExistingDevice?
-                if let device {
-                    guard let type = device.deviceTypeIdentifier else {
-                        throw HostError.operation("The selected simulator's device type is unavailable.")
-                    }
-                    context = try await self.model.creationCatalog(for: device.inventoryID)
-                    existingDevice = .init(identifier: device.identifier, name: device.name, productFamily: device.productFamily,
-                                           deviceType: type, runtime: device.runtimeIdentifier)
-                } else {
-                    context = try await self.model.creationCatalog()
-                    existingDevice = nil
-                }
-                let snapshot = try await SimulatorCatalog.Snapshot.decode(context.data)
+                let content = try await self.makeNewSimulatorModel(pairingWith: device)
                 guard !self.quitting else { return }
-                let form = NewSimulatorWindowController(catalog: snapshot.catalog(), pairingWith: existingDevice, create: { [model = self.model] name, type, runtime in
-                    try await model.createSimulator(named: name, deviceType: type, runtime: runtime, context: context)
-                }, pair: { [model = self.model] watch, phone in
-                    try await model.pairSimulators(watch: watch, phone: phone, context: context)
+                let form = NewSimulatorWindowController(model: content, reportFailure: { [weak self] error in
+                    self?.present(error)
                 }, onClose: { [weak self] in
                     self?.newSimulatorWindows[creationID] = nil
                 })
@@ -296,6 +287,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 NSApp.activate()
             } catch { self.present(error) }
         }
+    }
+
+    private func makeNewSimulatorModel(pairingWith device: SimulatorHostDevice?) async throws -> NewSimulatorModel {
+        let context: SimulatorCreationContext
+        let existingDevice: NewSimulatorModel.ExistingDevice?
+        if let device {
+            guard let type = device.deviceTypeIdentifier else {
+                throw HostError.operation("The selected simulator's device type is unavailable.")
+            }
+            context = try await model.creationCatalog(for: device.inventoryID)
+            existingDevice = .init(identifier: device.identifier, name: device.name, productFamily: device.productFamily,
+                                   deviceType: type, runtime: device.runtimeIdentifier)
+        } else {
+            context = try await model.creationCatalog()
+            existingDevice = nil
+        }
+        let snapshot = try await SimulatorCatalog.Snapshot.decode(context.data)
+        try Task.checkCancellation()
+        return NewSimulatorModel(catalog: snapshot.catalog(), pairingWith: existingDevice,
+            create: { [model] name, type, runtime in
+                try await model.createSimulator(named: name, deviceType: type, runtime: runtime, context: context)
+            }, pair: { [model] watch, phone in
+                try await model.pairSimulators(watch: watch, phone: phone, context: context)
+            }, preferences: preferences)
     }
 
     private func restartForFrameworkChange() {
