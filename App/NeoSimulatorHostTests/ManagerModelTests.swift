@@ -24,7 +24,7 @@ struct ManagerModelTests {
         #expect(items.allSatisfy { $0.itemIdentifier.rawValue != "NewSimulator" })
         var created: [String] = []
         var attempts = 0
-        let controller = SettingsViewController(model: model, restart: {}, makeSimulator: {
+        let windowController = SettingsWindowController(model: model, restart: {}, makeSimulator: {
             attempts += 1
             if attempts == 1 { throw HostError.operation("Catalog unavailable") }
             return NewSimulatorModel(catalog: SimulatorCatalog(
@@ -34,10 +34,11 @@ struct ManagerModelTests {
                 create: { name, type, runtime in created = [name, type, runtime]; return "created" },
                 pair: { _, _ in Issue.record("Unexpected pairing") })
         }, preferences: preferences, reportFailure: { _ in Issue.record("Unexpected failure") })
-        let settingsWindow = NSWindow(contentViewController: controller)
+        let controller = windowController.settings
+        let settingsWindow = try #require(windowController.window)
         defer { settingsWindow.close() }
         settingsWindow.layoutIfNeeded()
-        #expect(settingsWindow.contentLayoutRect.height >= controller.general.preferredContentSize.height)
+        #expect(settingsWindow.contentLayoutRect.height == ceil(controller.selectedContentSize.height))
         controller.selectedTabViewItemIndex = 1
         await controller.simulatorLoading?.value
         #expect(controller.devices.state.issue == "Catalog unavailable")
@@ -45,7 +46,7 @@ struct ManagerModelTests {
         await controller.simulatorLoading?.value
         let form = try #require(controller.devices.state.form)
         settingsWindow.layoutIfNeeded()
-        #expect(settingsWindow.contentLayoutRect.height >= controller.devices.preferredContentSize.height)
+        #expect(settingsWindow.contentLayoutRect.height == ceil(controller.selectedContentSize.height))
         form.name = "My Phone"
         form.forward()
         await form.waitForCreation()
@@ -60,6 +61,40 @@ struct ManagerModelTests {
         #expect(preferences.includeDeviceMask)
         preferences.startLastDevice = true
         #expect(defaults.bool(forKey: HostPreferences.startLastDeviceOnLaunch) && defaults.bool(forKey: HostPreferences.sessionOnLaunch))
+    }
+
+    @Test func settingsWindowAnimatesItsFrameWhenSwitchingTabs() throws {
+        let domain = "NeoSimulator.SettingsAnimation.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
+        let model = SimulatorManagerModel(source: ManagerModelSource(devices: []))
+        let controller = SettingsWindowController(model: model, restart: {},
+            makeSimulator: { throw HostError.operation("Unused") },
+            preferences: SimulatorPreferences(defaults: defaults, creationDefaults: defaults),
+            reportFailure: { _ in Issue.record("Unexpected failure") })
+        let window = try #require(controller.window)
+        defer { window.close() }
+        window.makeKeyAndOrderFront(nil)
+        window.layoutIfNeeded()
+        let samples = SettingsWindowFrameSamples()
+        NotificationCenter.default.addObserver(samples, selector: #selector(SettingsWindowFrameSamples.resized(_:)),
+                                                name: NSWindow.didResizeNotification, object: window)
+        defer { NotificationCenter.default.removeObserver(samples) }
+        for index in [2, 0] {
+            let before = window.frame
+            samples.frames = []
+            controller.settings.selectedTabViewItemIndex = index
+            window.layoutIfNeeded()
+            let after = window.frame
+            #expect(after.height != before.height)
+            #expect(abs(after.maxY - before.maxY) < 1)
+            #expect(window.contentLayoutRect.height == ceil(controller.settings.selectedContentSize.height))
+            if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+                #expect(samples.frames.contains {
+                    $0.height > min(before.height, after.height) && $0.height < max(before.height, after.height)
+                })
+            }
+        }
     }
 
     @Test func settingsRefreshRuntimesAndRememberTheDeviceFamily() async throws {
@@ -995,11 +1030,11 @@ struct ManagerModelTests {
         let split = try #require(window.contentViewController as? NSSplitViewController)
         let inspector = try #require(split.splitViewItems.last)
         let accessory = try #require(inspector.topAlignedAccessoryViewControllers.first)
-        let tabs = try #require(inspectorViews(accessory.view).compactMap { $0 as? NSSegmentedControl }.first)
-        let inspectorToggle = try #require(window.toolbar?.items.first { $0.itemIdentifier == .toggleInspector })
+        let tabs = try #require(window.toolbar?.items.first { $0.itemIdentifier.rawValue == "DeviceInspector" }?.view as? NSSegmentedControl)
+        let categories = try #require(inspectorViews(accessory.view).compactMap { $0 as? NSSegmentedControl }.first)
         window.setContentSize(NSSize(width: 1200, height: 800))
         split.view.layoutSubtreeIfNeeded()
-        #expect(accessory.view.frame.height > 0)
+        #expect(accessory.isHidden)
         #expect(accessory.view.window === window)
         window.makeKeyAndOrderFront(nil)
         let frame = window.frame
@@ -1022,11 +1057,7 @@ struct ManagerModelTests {
 
         #expect(!inspector.isCollapsed && tabs.selectedSegment == 0)
         try click(0, collapsed: true)
-        let toggleAction = try #require(inspectorToggle.action)
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0
-            #expect(NSApp.sendAction(toggleAction, to: inspectorToggle.target, from: inspectorToggle))
-        }
+        try click(0, collapsed: false)
         #expect(!inspector.isCollapsed && tabs.selectedSegment == 0)
         try click(1, collapsed: false, page: .reports)
         try click(1, collapsed: true, page: .reports)
@@ -1040,6 +1071,21 @@ struct ManagerModelTests {
         inspector.isCollapsed = false
         #expect(tabs.selectedSegment == 2 && controller.deviceInspector.inspection.isVisible)
         try click(0, collapsed: false)
+        #expect(accessory.isHidden)
+        let device = simulator()
+        controller.deviceInspector.update(device: device, isManaging: false, isVisible: true)
+        try click(2, collapsed: false, page: .info)
+        controller.deviceInspector.update(device: device, isManaging: false, isVisible: true)
+        window.layoutIfNeeded()
+        #expect(!accessory.isHidden && accessory.view.frame.height > 0)
+        #expect((0..<categories.segmentCount).map { categories.label(forSegment: $0) } == ["Info", "Apps", "Profiles"])
+        #expect(!categories.isDescendant(of: controller.deviceInspector.view))
+        categories.selectedSegment = 1
+        #expect(NSApp.sendAction(try #require(categories.action), to: categories.target, from: categories))
+        #expect(controller.deviceInspector.inspection.content == .applications)
+        try click(1, collapsed: false, page: .reports)
+        #expect(accessory.isHidden)
+        controller.stopInspectorReads()
     }
 
     @Test(arguments: [(DeviceInspectorModel.Page.info, DeviceInspectorModel.Content.applications),
@@ -2726,6 +2772,14 @@ actor ManagerModelSource: SimulatorManagerSource {
     func restore(force: Bool) throws { throw Failure.unavailable }
     func synchronizeXcodeConnections() -> Bool { false }
     func testingDeviceVisibilityDidChange() {}
+}
+
+@MainActor
+private final class SettingsWindowFrameSamples: NSObject {
+    var frames: [NSRect] = []
+    @objc func resized(_ notification: Notification) {
+        if let window = notification.object as? NSWindow { frames.append(window.frame) }
+    }
 }
 
 @MainActor

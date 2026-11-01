@@ -15,7 +15,7 @@
       "kind": "remote",
       "repository": "https://github.com/lynnswap/ABIBridge.git",
       "version": {
-        "revision": "d78cf5f170941635ff94e8617ca8743eebe40898",
+        "version": "0.15.0",
       },
     }, {
       "kind": "local",
@@ -273,12 +273,6 @@
                 "NeoSimulatorRenderer/compile-sources",
                 "NeoSimulatorHostTests/compile-sources",
               ],
-            }, {
-              "path": "InspectorAccessoryViewController.swift",
-              "target-membership": [
-                "NeoSimulator/compile-sources",
-                "NeoSimulatorHostTests/compile-sources",
-              ],
             },
           ],
         }, {
@@ -363,6 +357,12 @@
                 "NeoSimulator/compile-sources",
                 "NeoSimulatorHostTests/compile-sources",
               ],
+            }, {
+              "path": "InspectorCategoryAccessoryViewController.swift",
+              "target-membership": [
+                "NeoSimulator/compile-sources",
+                "NeoSimulatorHostTests/compile-sources",
+              ],
             },
           ],
         }, {
@@ -442,6 +442,12 @@
                 "NeoSimulator/compile-sources",
                 "NeoSimulatorHostTests/compile-sources",
               ],
+            }, {
+              "path": "SettingsHostingController.swift",
+              "target-membership": [
+                "NeoSimulator/compile-sources",
+                "NeoSimulatorHostTests/compile-sources",
+              ],
             },
           ],
         }, {
@@ -502,6 +508,13 @@
                   ],
                 }, {
                   "path": "WindowScale.swift",
+                  "target-membership": [
+                    "NeoSimulator/compile-sources",
+                    "NeoSimulatorRenderer/compile-sources",
+                    "NeoSimulatorHostTests/compile-sources",
+                  ],
+                }, {
+                  "path": "DisplayPresentationView.swift",
                   "target-membership": [
                     "NeoSimulator/compile-sources",
                     "NeoSimulatorRenderer/compile-sources",

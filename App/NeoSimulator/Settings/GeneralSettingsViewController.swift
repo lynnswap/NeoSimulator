@@ -3,7 +3,7 @@ import SwiftUI
 @_spi(NeoSimulator) import XcodeSimulatorHost
 
 @MainActor
-final class GeneralSettingsViewController: NSHostingController<GeneralSettingsView> {
+final class GeneralSettingsViewController: SettingsHostingController<GeneralSettingsView> {
     init(model: SimulatorManagerModel, preferences: SimulatorPreferences, frameworks: UIFrameworkSettings,
          restart: @escaping () -> Void) {
         super.init(rootView: GeneralSettingsView(model: model, preferences: preferences, frameworks: frameworks, restart: restart))

@@ -53,7 +53,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         return inspector
     }()
     private var inspectorMode = 0
-    private let inspectorAccessory = InspectorAccessoryViewController()
+    private let inspectorIdentifier = NSToolbarItem.Identifier("DeviceInspector")
     private var updatingSelection = false
     private var rows: [DeviceRow] = []
     private var rowsByID: [DeviceInventoryID: DeviceRow] = [:]
@@ -411,8 +411,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         inspector.maximumThickness = 440
         inspector.canCollapse = true
         inspector.collapseBehavior = .preferResizingSiblingsWithFixedSplitView
-        inspectorAccessory.onSelect = { [weak self] in self?.selectInspector($0) }
-        inspector.addTopAlignedAccessoryViewController(inspectorAccessory)
+        inspector.addTopAlignedAccessoryViewController(deviceInspector.categoryAccessory)
         splitController.addSplitViewItem(inspector)
         showInspectorController(host)
     }
@@ -435,7 +434,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         ])
     }
 
-    private func selectInspector(_ index: Int) {
+    @objc private func changeInspector(_ sender: NSSegmentedControl) {
+        let index = sender.selectedSegment
         let inspector = splitController.splitViewItems[2]
         if index == inspectorMode && !inspector.isCollapsed {
             inspector.animator().isCollapsed = true
@@ -962,12 +962,15 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
 
     private func updateInspectorSelection() {
         let collapsed = splitController.splitViewItems[2].isCollapsed
-        inspectorAccessory.select(collapsed ? nil : inspectorMode)
+        guard let tabs = window?.toolbar?.items.first(where: { $0.itemIdentifier == inspectorIdentifier })?.view as? NSSegmentedControl else { return }
+        for index in 0..<tabs.segmentCount {
+            tabs.setSelected(!collapsed && index == inspectorMode, forSegment: index)
+        }
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [.toggleSidebar, .flexibleSpace, settingsIdentifier, filterIdentifier, .sidebarTrackingSeparator,
-         .flexibleSpace, captureKeyboardIdentifier, resizeAppIdentifier, canvasZoomIdentifier, compactIdentifier, moreIdentifier, .inspectorTrackingSeparator, .flexibleSpace, .toggleInspector]
+         .flexibleSpace, captureKeyboardIdentifier, resizeAppIdentifier, canvasZoomIdentifier, compactIdentifier, moreIdentifier, .inspectorTrackingSeparator, .flexibleSpace, inspectorIdentifier]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { toolbarDefaultItemIdentifiers(toolbar) }
@@ -1055,6 +1058,22 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             item.target = self
             item.action = #selector(showCompactDeviceWindow(_:))
             item.isHidden = deviceScreenViewController.liveDeviceIdentifier == nil
+            return item
+        }
+        if itemIdentifier == inspectorIdentifier {
+            let labels = ["Settings", "Reports", "Info"]
+            let images = zip(["slider.horizontal.3", "text.document", "info"], labels).map {
+                NSImage(systemSymbolName: $0.0, accessibilityDescription: $0.1)!
+            }
+            let tabs = NSSegmentedControl(images: images, trackingMode: .selectOne, target: self, action: #selector(changeInspector(_:)))
+            tabs.selectedSegmentBezelColor = .unemphasizedSelectedContentBackgroundColor
+            tabs.setSelected(!splitController.splitViewItems[2].isCollapsed, forSegment: inspectorMode)
+            tabs.setAccessibilityLabel("Device Inspector")
+            for (index, label) in labels.enumerated() { tabs.setToolTip(label, forSegment: index) }
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            item.label = "Device Inspector"
+            item.view = tabs
+            item.visibilityPriority = .high
             return item
         }
         if itemIdentifier == settingsIdentifier {
