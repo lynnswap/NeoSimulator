@@ -74,6 +74,8 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
     private let reloadButton = NSButton(image: NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "Refresh Inspector")!, target: nil, action: nil)
     private let buttons = NSStackView()
     private let footer = NSStackView()
+    private var fullHeightTopConstraint: NSLayoutConstraint?
+    private var insetTopConstraint: NSLayoutConstraint?
     private var stackBottomConstraint: NSLayoutConstraint?
     private let contentView = NSView()
     private let infoView = NSView()
@@ -212,11 +214,12 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
         stack.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(stack)
         let bottom = stack.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8)
+        fullHeightTopConstraint = stack.topAnchor.constraint(equalTo: view.topAnchor)
+        insetTopConstraint = stack.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8)
         stackBottomConstraint = bottom
         NSLayoutConstraint.activate([
             stack.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
-            stack.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
             bottom,
         ])
         for child in stack.views {
@@ -353,6 +356,13 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
         infoPicker.selectedSegment = content == .info ? 0 : (showingApplications ? 1 : 2)
         contentView.isHidden = showingInfo || unavailable != nil
         infoView.isHidden = !showingInfo || unavailable != nil
+        if infoView.isHidden {
+            fullHeightTopConstraint?.isActive = false
+            insetTopConstraint?.isActive = true
+        } else {
+            insetTopConstraint?.isActive = false
+            fullHeightTopConstraint?.isActive = true
+        }
         // Refreshing cannot make reports available for a simulator.
         buttons.isHidden = showingInfo || showingReports && device?.kind == .simulator
         unavailableView.isHidden = unavailable == nil

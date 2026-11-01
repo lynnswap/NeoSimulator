@@ -6,7 +6,7 @@ final class InspectorCategoryAccessoryViewController: NSSplitViewItemAccessoryVi
 
     init() {
         super.init(nibName: nil, bundle: nil)
-        preferredScrollEdgeEffectStyle = .soft
+        preferredScrollEdgeEffectStyle = .hard
         picker.segmentDistribution = .fill
         picker.setAccessibilityLabel("Inspector Subcategory")
         let controls = NSStackView(views: [picker])

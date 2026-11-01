@@ -1080,6 +1080,11 @@ struct ManagerModelTests {
         #expect(!accessory.isHidden && accessory.view.frame.height > 0)
         #expect((0..<categories.segmentCount).map { categories.label(forSegment: $0) } == ["Info", "Apps", "Profiles"])
         #expect(!categories.isDescendant(of: controller.deviceInspector.view))
+        let informationScroll = try #require(inspectorViews(controller.deviceInspector.view)
+            .compactMap { $0 as? NSScrollView }.first { !$0.isHiddenOrHasHiddenAncestor })
+        let viewport = informationScroll.convert(informationScroll.bounds, to: nil)
+        let accessoryFrame = accessory.view.convert(accessory.view.bounds, to: nil)
+        #expect(viewport.maxY > accessoryFrame.minY)
         categories.selectedSegment = 1
         #expect(NSApp.sendAction(try #require(categories.action), to: categories.target, from: categories))
         #expect(controller.deviceInspector.inspection.content == .applications)
