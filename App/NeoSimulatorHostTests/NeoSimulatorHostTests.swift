@@ -2733,12 +2733,12 @@ struct InputFocusTests {
             controller.windowDidResize(Notification(name: NSWindow.didResizeNotification, object: window))
             let content = try #require(window.contentView)
             let display = controller.session.display
-            let frame = display.view.frame
+            let frame = display.view.convert(display.view.bounds, to: content)
             #expect(frame.minX >= 0)
             #expect(frame.minY >= 0)
             #expect(frame.maxX <= content.bounds.maxX)
             #expect(frame.maxY <= window.contentLayoutRect.maxY)
-            #expect(frame.size == display.size(for: display.renderScale))
+            #expect(display.view.frame.size == display.size(for: display.renderScale))
             #expect(abs(frame.midX - content.bounds.midX) < 0.001)
             #expect(try #require(window.standardWindowButton(.closeButton)).isHidden == false)
         }
@@ -5704,9 +5704,12 @@ struct InputFocusTests {
         controller.canvasControls = controls
         controls.update(supports: { _ in true }, isEnabled: { _ in true }, recordingTitle: "Record Screen")
         controller.perform(.pointAccurate)
-        let occupiedHeight = window.frame.height - display.view.frame.height
+        let content = try #require(window.contentView)
+        let displayFrame = display.view.convert(display.view.bounds, to: content)
+        let controlsFrame = controls.convert(controls.bounds, to: content)
+        let occupiedHeight = window.frame.height - displayFrame.height
         #expect(occupiedHeight > header + controls.bounds.height)
-        #expect(display.view.frame.minY >= controls.frame.maxY)
+        #expect(displayFrame.minY >= controlsFrame.maxY)
         display.naturalSize = NSSize(width: 200, height: visible.height - occupiedHeight)
         #expect(controller.canSetScale(.pointAccurate))
         display.naturalSize.height += 1
