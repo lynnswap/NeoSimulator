@@ -181,8 +181,10 @@ struct CaptureAndImportTests {
             return process
         }, onFinished: {})
         var handedOver: [(url: URL, afterStop: Bool)] = []
-        var stopped = false, finished = false
-        let recording = try store.start(to: .capture { handedOver.append(($0, stopped)) }, process: { url in
+        @MainActor final class StopState { var stopped = false }
+        let state = StopState()
+        var finished = false
+        let recording = try store.start(to: .capture { handedOver.append(($0, state.stopped)) }, process: { url in
             // simctl finalizes the movie on SIGINT.
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/bin/sh")
@@ -197,7 +199,7 @@ struct CaptureAndImportTests {
         let startedAt = try #require(recording.startDate)
         #expect(startedAt <= Date())
         #expect(handedOver.isEmpty)
-        stopped = true
+        state.stopped = true
         recording.stop()
         #expect(recording.startDate == nil)
         try await recording.waitUntilFinished()

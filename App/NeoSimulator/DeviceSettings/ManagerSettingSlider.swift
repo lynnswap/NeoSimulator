@@ -31,7 +31,7 @@ struct ManagerSettingSlider: NSViewRepresentable {
         slider.setAccessibilityLabel(label)
     }
 
-    final class Coordinator: NSObject {
+    @MainActor final class Coordinator: NSObject {
         var changed: (Double) -> Void
         init(changed: @escaping (Double) -> Void) { self.changed = changed }
         @objc func change(_ sender: NSSlider) { changed(sender.doubleValue) }

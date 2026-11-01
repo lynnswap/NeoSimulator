@@ -1173,16 +1173,20 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     /// AppKit termination inside a main-queue block or modal loop deadlocks pending main-actor work.
     private static func requestTermination() {
         RunLoop.main.perform(inModes: [.common]) {
-            if NSApp.modalWindow != nil {
-                NSApp.abortModal()
-                // The modal loop notices the abort after its next event.
-                if let event = NSEvent.otherEvent(with: .applicationDefined, location: .zero, modifierFlags: [],
-                                                  timestamp: 0, windowNumber: 0, context: nil, subtype: 0,
-                                                  data1: 0, data2: 0) {
-                    NSApp.postEvent(event, atStart: false)
+            MainActor.assumeIsolated {
+                if NSApp.modalWindow != nil {
+                    NSApp.abortModal()
+                    // The modal loop notices the abort after its next event.
+                    if let event = NSEvent.otherEvent(with: .applicationDefined, location: .zero, modifierFlags: [],
+                                                      timestamp: 0, windowNumber: 0, context: nil, subtype: 0,
+                                                      data1: 0, data2: 0) {
+                        NSApp.postEvent(event, atStart: false)
+                    }
+                }
+                RunLoop.main.perform(inModes: [.default]) {
+                    MainActor.assumeIsolated { NSApp.terminate(nil) }
                 }
             }
-            RunLoop.main.perform(inModes: [.default]) { NSApp.terminate(nil) }
         }
     }
 

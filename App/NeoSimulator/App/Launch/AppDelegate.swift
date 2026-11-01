@@ -414,8 +414,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let editItem = NSMenuItem(title: "Edit", action: nil, keyEquivalent: "")
         editItem.submenu = edit
         main.addItem(editItem)
-        addItem("Undo", action: Selector("undo:"), key: "z", to: edit).target = nil
-        let redo = addItem("Redo", action: Selector("redo:"), key: "z", to: edit)
+        addItem("Undo", action: NSSelectorFromString("undo:"), key: "z", to: edit).target = nil
+        let redo = addItem("Redo", action: NSSelectorFromString("redo:"), key: "z", to: edit)
         redo.target = nil
         redo.keyEquivalentModifierMask = [.command, .shift]
         edit.addItem(.separator())

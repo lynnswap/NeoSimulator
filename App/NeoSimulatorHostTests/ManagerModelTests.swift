@@ -2679,7 +2679,7 @@ actor ManagerModelSource: SimulatorManagerSource {
     func quitRenderer(keepingDevicesRunning: Bool?) { quitCount += 1; continuation.yield(.quit) }
     func selectHost(_ host: SimulatorHost, xcodeURL: URL?) throws { throw Failure.unavailable }
     nonisolated func makeScreenOpenRequest(for deviceID: DeviceInventoryID) -> SimulatorScreenOpenRequest {
-        SimulatorScreenOpenRequest(deviceID: deviceID) { self.cancelledOpens.withLock { $0.insert(deviceID) } }
+        SimulatorScreenOpenRequest(deviceID: deviceID) { _ = self.cancelledOpens.withLock { $0.insert(deviceID) } }
     }
     func openDevice(_ request: SimulatorScreenOpenRequest, xcodeURL: URL?, bootIfNeeded: Bool) async throws {
         let deviceID = request.deviceID
