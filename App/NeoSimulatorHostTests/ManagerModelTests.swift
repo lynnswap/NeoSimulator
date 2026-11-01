@@ -63,7 +63,7 @@ struct ManagerModelTests {
         #expect(defaults.bool(forKey: HostPreferences.startLastDeviceOnLaunch) && defaults.bool(forKey: HostPreferences.sessionOnLaunch))
     }
 
-    @Test func settingsWindowAnimatesItsFrameWhenSwitchingTabs() throws {
+    @Test func settingsToolbarResizesWindowWithoutIntermediateFrames() throws {
         let domain = "NeoSimulator.SettingsAnimation.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: domain))
         defer { defaults.removePersistentDomain(forName: domain) }
@@ -83,17 +83,17 @@ struct ManagerModelTests {
         for index in [2, 0] {
             let before = window.frame
             samples.frames = []
-            controller.settings.selectedTabViewItemIndex = index
+            let item = try #require(window.toolbar?.items.first {
+                $0.label == controller.settings.tabViewItems[index].label
+            })
+            let action = try #require(item.action)
+            #expect(NSApp.sendAction(action, to: item.target, from: item))
             window.layoutIfNeeded()
             let after = window.frame
             #expect(after.height != before.height)
             #expect(abs(after.maxY - before.maxY) < 1)
             #expect(window.contentLayoutRect.height == ceil(controller.settings.selectedContentSize.height))
-            if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
-                #expect(samples.frames.contains {
-                    $0.height > min(before.height, after.height) && $0.height < max(before.height, after.height)
-                })
-            }
+            #expect(samples.frames.allSatisfy { $0 == after })
         }
     }
 

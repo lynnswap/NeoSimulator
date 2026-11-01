@@ -442,12 +442,6 @@
                 "NeoSimulator/compile-sources",
                 "NeoSimulatorHostTests/compile-sources",
               ],
-            }, {
-              "path": "SettingsHostingController.swift",
-              "target-membership": [
-                "NeoSimulator/compile-sources",
-                "NeoSimulatorHostTests/compile-sources",
-              ],
             },
           ],
         }, {
@@ -895,11 +889,11 @@
         "INFOPLIST_FILE": "NeoSimulator/Info.plist",
         "INFOPLIST_PREPROCESS": "YES",
         "INFOPLIST_PREPROCESSOR_DEFINITIONS[config=Debug]": "NEOSIMULATOR_ALLOW_MULTIPLE_INSTANCES=1",
-        "LM_SKIP_METADATA_EXTRACTION": "YES",
         "LD_RUNPATH_SEARCH_PATHS": [
           "$(inherited)",
           "@executable_path/../Frameworks",
         ],
+        "LM_SKIP_METADATA_EXTRACTION": "YES",
         "MARKETING_VERSION": "0.0.0",
         "PRODUCT_BUNDLE_IDENTIFIER": "dev.lynnswap.NeoSimulator",
         "PRODUCT_NAME": "NeoSimulator",
@@ -937,11 +931,11 @@
         "GENERATE_INFOPLIST_FILE": "NO",
         "GENERATE_PKGINFO_FILE": "NO",
         "INFOPLIST_FILE": "NeoSimulatorRenderer/Info.plist",
-        "LM_SKIP_METADATA_EXTRACTION": "YES",
         "LD_RUNPATH_SEARCH_PATHS": [
           "$(inherited)",
           "@executable_path/../Frameworks",
         ],
+        "LM_SKIP_METADATA_EXTRACTION": "YES",
         "MARKETING_VERSION": "0.0.0",
         "PRODUCT_BUNDLE_IDENTIFIER": "dev.lynnswap.NeoSimulator.Renderer",
         "PRODUCT_NAME": "NeoSimulatorRenderer",
@@ -984,8 +978,8 @@
         ],
         "GENERATE_INFOPLIST_FILE": "YES",
         "IPHONEOS_DEPLOYMENT_TARGET": "27.0",
-        "LOCALIZATION_PREFERS_STRING_CATALOGS": "YES",
         "LM_SKIP_METADATA_EXTRACTION": "YES",
+        "LOCALIZATION_PREFERS_STRING_CATALOGS": "YES",
         "MACOSX_DEPLOYMENT_TARGET": "26.4",
         "MARKETING_VERSION": "1.0",
         "PRODUCT_BUNDLE_IDENTIFIER": "dev.lynnswap.NeoSimulatorHostTests",

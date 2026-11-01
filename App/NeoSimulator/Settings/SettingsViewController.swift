@@ -16,12 +16,9 @@ final class SettingsViewController: NSTabViewController {
         devices = DevicesSettingsViewController(makeSimulator: makeSimulator, reportFailure: reportFailure)
         capture = CaptureSettingsViewController(preferences: preferences)
         super.init(nibName: nil, bundle: nil)
-        general.sizingOptions = []
-        devices.sizingOptions = []
-        capture.sizingOptions = []
-        general.onContentSizeChange = contentSizeHandler(for: general)
-        devices.onContentSizeChange = contentSizeHandler(for: devices)
-        capture.onContentSizeChange = contentSizeHandler(for: capture)
+        general.sizingOptions = [.preferredContentSize]
+        devices.sizingOptions = [.preferredContentSize]
+        capture.sizingOptions = [.preferredContentSize]
         transitionOptions = []
         tabStyle = .toolbar
         canPropagateSelectedChildViewControllerTitle = true
@@ -36,29 +33,21 @@ final class SettingsViewController: NSTabViewController {
 
     required init?(coder: NSCoder) { nil }
 
-    override var selectedTabViewItemIndex: Int {
-        didSet { onContentSizeChange?(selectedContentSize) }
-    }
-
     var selectedContentSize: NSSize {
-        switch selectedTabViewItemIndex {
-        case 1: devices.sizeThatFits(in: .zero)
-        case 2: capture.sizeThatFits(in: .zero)
-        default: general.sizeThatFits(in: .zero)
-        }
+        tabView.selectedTabViewItem?.viewController?.preferredContentSize ?? .zero
     }
 
-    private func contentSizeHandler(for controller: NSViewController) -> (NSSize) -> Void {
-        { [weak self, weak controller] size in
-            guard let self, tabView.selectedTabViewItem?.viewController === controller else { return }
-            onContentSizeChange?(size)
-        }
+    override func preferredContentSizeDidChange(for viewController: NSViewController) {
+        super.preferredContentSizeDidChange(for: viewController)
+        guard tabView.selectedTabViewItem?.viewController === viewController else { return }
+        onContentSizeChange?(viewController.preferredContentSize)
     }
 
     var simulatorLoading: Task<Void, Never>? { devices.loading }
 
     override func tabView(_ tabView: NSTabView, didSelect tabViewItem: NSTabViewItem?) {
         super.tabView(tabView, didSelect: tabViewItem)
+        onContentSizeChange?(selectedContentSize)
         if tabViewItem?.viewController === devices { devices.reload() }
     }
 

@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 @MainActor
-final class CaptureSettingsViewController: SettingsHostingController<CaptureSettingsView> {
+final class CaptureSettingsViewController: NSHostingController<CaptureSettingsView> {
     init(preferences: SimulatorPreferences) {
         super.init(rootView: CaptureSettingsView(preferences: preferences))
         title = "Capture"
