@@ -4,6 +4,20 @@ import SwiftUI
 
 @MainActor @Observable
 final class DevicesSettingsState {
+    enum Content {
+        case loading
+        case unavailable(String)
+        case form(NewSimulatorModel)
+    }
+
+    var content: Content {
+        switch (issue, form) {
+        case (let issue?, _): .unavailable(issue)
+        case (nil, let form?): .form(form)
+        case (nil, nil): .loading
+        }
+    }
+
     var form: NewSimulatorModel?
     var isLoading = false
     var issue: String?
@@ -65,23 +79,28 @@ struct DevicesSettingsView: View {
     let state: DevicesSettingsState
 
     var body: some View {
-        VStack {
-            if let form = state.form {
-                NewSimulatorView(model: form).disabled(state.isLoading)
-            } else if state.issue == nil {
-                Form { ProgressView("Loading simulator runtimes…") }
-                    .formStyle(.grouped)
-                    .frame(width: 560)
-            }
-            if let issue = state.issue {
-                Form {
+        Group {
+            switch state.content {
+            case .loading:
+                ContentUnavailableView {
+                    ProgressView()
+                } description: {
+                    Text("Loading simulator runtimes…")
+                }
+            case .unavailable(let issue):
+                ContentUnavailableView {
+                    Label("Unable to Load Simulator Runtimes", systemImage: "exclamationmark.triangle")
+                } description: {
                     Text(issue)
+                } actions: {
                     Button("Retry") { state.retry?() }
                 }
-                .formStyle(.grouped)
-                .frame(width: 560)
+            case .form(let form):
+                NewSimulatorView(model: form)
+                    .disabled(state.isLoading)
             }
         }
+        .frame(width: 560)
         .fixedSize(horizontal: false, vertical: true)
     }
 }
@@ -91,5 +110,17 @@ struct DevicesSettingsView: View {
     let controller = DevicesSettingsViewController(makeSimulator: { SettingsPreview.simulator() }, reportFailure: { _ in })
     controller.reload()
     return controller
+}
+
+#Preview("Devices — Loading", traits: .sizeThatFitsLayout) {
+    let state = DevicesSettingsState()
+    state.isLoading = true
+    return DevicesSettingsView(state: state)
+}
+
+#Preview("Devices — Unavailable", traits: .sizeThatFitsLayout) {
+    let state = DevicesSettingsState()
+    state.issue = "The simulator runtime catalog could not be loaded."
+    return DevicesSettingsView(state: state)
 }
 #endif
