@@ -6438,9 +6438,13 @@ struct InputFocusTests {
         let display = TestDisplay()
         let controller = try makeController(display, features: features)
         defer { controller.invalidate() }
+        let manager = SimulatorManagerModel(source: ManagerModelSource(devices: []))
+        let screens = DeviceScreens(model: manager)
+        let screen = screens.attach(controller, as: .simulator(udid: controller.session.device.identifier, deviceSetPath: nil))
         let slow = DeviceCommand.command(.toggleSlowAnimations)
         #expect(slow.stateTitle?(controller) == "Slow Animations" && slow.state?(controller) == .off)
-        controller.perform(.toggleSlowAnimations)
+        #expect(screen.supports("slowAnimations") && screen.isEnabled("slowAnimations"))
+        screen.perform("slowAnimations")
         #expect(slow.state?(controller) == .on)
         controller.perform(.graphicsQualityLow)
         #expect(DeviceCommand.command(.graphicsQualityLow).state?(controller) == .on)
@@ -6461,10 +6465,11 @@ struct InputFocusTests {
         #expect(older.postedNotifications.isEmpty)
 
         // Simulator.app toggles slow animation in the frontmost app when the guest lacks support.
-        let other = try makeController(older, features: [])
+        let other = try makeController(older, features: [], device: "other")
         defer { other.invalidate() }
+        let otherScreen = screens.attach(other, as: .simulator(udid: "other", deviceSetPath: nil))
         #expect(slow.stateTitle?(other) == "Toggle Slow Animations in Frontmost App" && slow.state?(other) == .off)
-        other.perform(.toggleSlowAnimations)
+        otherScreen.perform("slowAnimations")
         #expect(older.notificationStates == [slowMotion: 0])
         #expect(!UserDefaults.standard.bool(forKey: HostPreferences.slowMotionAnimation))
     }
