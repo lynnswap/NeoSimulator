@@ -440,7 +440,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     func applicationsChanged(on deviceID: DeviceInventoryID) { deviceInspector.applicationsChanged(on: deviceID) }
 
     private func makeDeviceSettingsView() -> ManagerDeviceSettingsView {
-        ManagerDeviceSettingsView(manager: model, model: model.settings, customLocation: { [weak self] in
+        ManagerDeviceSettingsView(manager: model, model: model.settings, screens: screens, customLocation: { [weak self] in
             guard let self, let identifier = self.model.settings.device?.id else { return }
             self.presentLocationEditor(for: identifier)
         })

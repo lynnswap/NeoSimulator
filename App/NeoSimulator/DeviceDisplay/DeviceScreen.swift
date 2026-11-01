@@ -207,6 +207,7 @@ final class DeviceScreen {
         case "capture": .saveScreen
         case "record": controller.session.recording == nil ? .recordScreen : .stopRecording
         case "captureKeyboard": .captureKeyboard
+        case "slowAnimations": .toggleSlowAnimations
         default: nil
         }
     }

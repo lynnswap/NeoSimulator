@@ -5,10 +5,16 @@ import SwiftUI
 struct ManagerDeviceSettingsView: View {
     let manager: SimulatorManagerModel
     let model: DeviceSettingsModel
+    let screens: DeviceScreens
     let customLocation: () -> Void
+    @AppStorage(HostPreferences.slowMotionAnimation, store: HostPreferences.defaults) private var slowAnimations = false
     private var device: InventoryDevice? { model.device }
     private var settings: SimulatorDeviceSettings? { model.settings }
     private var issue: String? { model.issue }
+    private var simulatorScreen: DeviceScreen? {
+        guard let device, case .simulator = device else { return nil }
+        return screens.screen(for: device.id)
+    }
     private var holdsEdits: Bool {
         manager.holdsSettingsEdits || device.map { manager.managingDeviceIDs.contains($0.id) } == true
     }
@@ -46,8 +52,8 @@ struct ManagerDeviceSettingsView: View {
     }
 
     private var hasAvailableSettings: Bool {
-        guard let settings else { return false }
-        return settings.appearance != nil || settings.liquidGlassOpacity != nil || settings.colorFilter != nil
+        guard let settings else { return simulatorScreen?.simulatorCapabilities != nil }
+        return simulatorScreen?.simulatorCapabilities != nil || settings.appearance != nil || settings.liquidGlassOpacity != nil || settings.colorFilter != nil
             || textSizeIndex != nil || settings.boldText != nil || settings.displayZoom != nil || settings.reduceMotion != nil || settings.increaseContrast != nil
             || settings.showBorders != nil || settings.reduceTransparency != nil || settings.voiceOver != nil
             || settings.locationAvailable || settings.volume != nil
@@ -114,10 +120,37 @@ struct ManagerDeviceSettingsView: View {
         Group {
             toggle("Bold Text", symbol: "bold", keyPath: \.boldText, setting: SimulatorDeviceSetting.boldText)
             toggle("Reduce Motion", symbol: "figure.walk.motion", keyPath: \.reduceMotion, setting: SimulatorDeviceSetting.reduceMotion)
+            slowAnimationsRow
             toggle("Increase Contrast", symbol: "circle.lefthalf.striped.horizontal", keyPath: \.increaseContrast, setting: SimulatorDeviceSetting.increaseContrast)
             toggle("Show Borders", symbol: "square.dashed", keyPath: \.showBorders, setting: SimulatorDeviceSetting.showBorders)
             toggle("Reduce Transparency", symbol: "square.on.square", keyPath: \.reduceTransparency, setting: SimulatorDeviceSetting.reduceTransparency)
             toggle("VoiceOver", symbol: "person.wave.2", keyPath: \.voiceOver, setting: SimulatorDeviceSetting.voiceOver)
+        }
+    }
+
+    @ViewBuilder
+    private var slowAnimationsRow: some View {
+        if case .simulator = device {
+            if let screen = simulatorScreen, let capabilities = screen.simulatorCapabilities {
+                if capabilities.supportsFeature(DeviceCapabilities.slowMotionStateful) {
+                    Toggle(isOn: Binding(get: { slowAnimations }, set: { _ in screen.perform("slowAnimations") })) {
+                        Label("Slow Animations", systemImage: "tortoise")
+                    }
+                    .toggleStyle(.switch)
+                    .disabled(!screen.isEnabled("slowAnimations"))
+                } else {
+                    LabeledContent {
+                        Button("Toggle") { screen.perform("slowAnimations") }
+                            .disabled(!screen.isEnabled("slowAnimations"))
+                    } label: {
+                        Label("Slow Animations", systemImage: "tortoise")
+                    }
+                    .help("Toggle slow animations in the frontmost app.")
+                }
+            } else {
+                unavailable("Slow Animations", symbol: "tortoise")
+                    .help("View this simulator's screen to change slow animations.")
+            }
         }
     }
 
