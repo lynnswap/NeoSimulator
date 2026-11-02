@@ -48,6 +48,7 @@ jobs:
         run: scripts/test-input-focus.sh
 
       - name: Build release products
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: scripts/build-local.sh
 
       - name: Validate distribution scripts
