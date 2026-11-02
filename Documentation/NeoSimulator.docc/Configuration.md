@@ -4,7 +4,8 @@ Select a display host and restore saved Xcode preferences from the app.
 
 ## Select a display host
 
-Choose **NeoSimulator** or **Device Hub** under **Display Host** in Settings.
+Choose **NeoSimulator** or **Device Hub** under **Display Host** in
+**Settings → General**.
 This is an app-wide choice; changing hosts leaves devices running. Routing
 preferences apply across Xcode installations.
 
@@ -38,16 +39,19 @@ was absent or false. If another tool changed a managed preference, review the
 reported conflict. Choose **Restore Saved Values…** and confirm only when you
 intend to replace the current routing preferences with the saved originals.
 
-The recovery receipt remains at
-`~/Library/Application Support/xcode-simulator-host/state.plist`, including for
-installations migrated from the previous CLI. Keep it until recovery is complete.
+The saved original settings are stored in
+`~/Library/Application Support/xcode-simulator-host/state.plist`. The app reads
+the same file as the previous CLI, so moving to the app requires no manual
+transfer or restore step. Keep this file while you still need to restore the
+original settings, even after removing the old CLI installation.
 A host launch failure after committing preferences leaves this receipt available
 for restoration. Device-operation failures appear in that device's window and
 do not select another host.
 
 ## App preferences
 
-**NeoSimulator → Settings…** (Command-,) contains General and Capture settings.
+**NeoSimulator → Settings…** (Command-,) contains General, Devices, and Capture
+settings.
 General controls the display host, UI framework installation, reopening the last simulator, keeping devices
 running when closing or quitting, and touch indicators. Capture controls the
 device mask, GIF image size, and the file-size versus animation-smoothness choice.
