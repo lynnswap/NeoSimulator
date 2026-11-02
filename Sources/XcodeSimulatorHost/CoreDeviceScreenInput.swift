@@ -27,11 +27,32 @@ final class CoreDeviceScreenInput {
         .gesture: universalHIDFeature,
     ]
     static let universalHIDFeature = "com.apple.coredevice.feature.remote.universalhidservice"
+    private nonisolated static let buttonRequest = NativeRequest.swift(.method(
+        "CoreDevice.HIDButton.sendCustomButton(usagePage:usageCode:state:)",
+        as: ((Int, Int, NativeSwiftValue) throws -> Void).self))
+    private nonisolated static let digitizerRequest = NativeRequest.swift(.method(
+        "(extension in CoreDevice):CoreDevice.HIDDigitizer.send(pointOne:pointTwo:eventType:edge:target:)",
+        as: ((CGPoint, CGPoint?, NativeSwiftValue, NativeSwiftValue, NativeSwiftValue) throws -> Void).self))
 
     init(remote: CoreDeviceRemoteScreenDevice, displayUniqueID: String? = nil) {
         self.remote = remote
         self.displayUniqueID = displayUniqueID
         gestures = NativeTrackpadGestures { try await CoreDeviceTrackpadTransport(remote: remote) }
+    }
+
+    /// Prepares input types and calls before the screen becomes interactive. ABIBridge owns the cached results
+    /// and revalidates them when the loaded images or captured implementations change.
+    func prepareSimulatorInput() async throws {
+        let button = try await implementation(.button, named: "ButtonHIDCapability").type
+        let digitizer = try await implementation(.digitizer, named: "DigitizerHIDCapability").type
+        try await remote.runtime.prepare { runtime in
+            _ = try runtime.resolveAndWait(.swift(.type("CoreDevice.HIDButtonState")))
+            _ = try runtime.resolveAndWait(.swift(.type("CoreDevice.DigitizerEventType")))
+            _ = try runtime.resolveAndWait(.swift(.type("CoreDevice.DigitizerEdge")))
+            _ = try runtime.resolveAndWait(.swift(.type("CoreDevice.DigitizerTarget")))
+            _ = try button.resolveAndWait(Self.buttonRequest)
+            _ = try digitizer.resolveAndWait(Self.digitizerRequest)
+        }
     }
 
     func connectDisplay(identifier: UInt32) async throws {
@@ -171,8 +192,7 @@ final class CoreDeviceScreenInput {
         case .button(let page, let usage, let state):
             let implementation = try await implementation(.button, named: "ButtonHIDCapability")
             let buttonState = try runtime.resolveAndWait(.swift(.type("CoreDevice.HIDButtonState")))
-            let send = try implementation.type.resolveAndWait(.swift(.method("CoreDevice.HIDButton.sendCustomButton(usagePage:usageCode:state:)",
-                as: ((Int, Int, NativeSwiftValue) throws -> Void).self)))
+            let send = try implementation.type.resolveAndWait(Self.buttonRequest)
             try unsafe send.unsafeInvoke(on: implementation, page, usage, buttonState.makeEnumCase(named: state.rawValue))
         case .pointer(let point):
             guard displayUniqueID == nil else { throw CLIError.unavailable("remote-display-input", "This display has no pointer connection.") }
@@ -207,9 +227,7 @@ final class CoreDeviceScreenInput {
             let eventType = try runtime.resolveAndWait(.swift(.type("CoreDevice.DigitizerEventType")))
             let nativeEdge = try runtime.resolveAndWait(.swift(.type("CoreDevice.DigitizerEdge")))
             let target = try runtime.resolveAndWait(.swift(.type("CoreDevice.DigitizerTarget")))
-            let send = try implementation.type.resolveAndWait(.swift(.method(
-                "(extension in CoreDevice):CoreDevice.HIDDigitizer.send(pointOne:pointTwo:eventType:edge:target:)",
-                as: ((CGPoint, CGPoint?, NativeSwiftValue, NativeSwiftValue, NativeSwiftValue) throws -> Void).self)))
+            let send = try implementation.type.resolveAndWait(Self.digitizerRequest)
             let event = switch phase { case .began: "start"; case .moved: "position"; case .ended: "end" }
             try unsafe send.unsafeInvoke(on: implementation, point, second, eventType.makeEnumCase(named: event),
                                          nativeEdge.makeEnumCase(named: edge.rawValue), target.makeEnumCase(named: "mainScreen"))
@@ -506,8 +524,10 @@ public final class NativeDeviceScreenInput {
               try remote.supports(CoreDeviceScreenInput.features[.button]!) else {
             throw CLIError.unavailable("native-screen-input", "The simulator does not expose CoreDevice's touchscreen and button services.")
         }
+        let input = CoreDeviceScreenInput(remote: remote)
+        try await input.prepareSimulatorInput()
         try Task.checkCancellation()
-        return NativeDeviceScreenInput(input: CoreDeviceScreenInput(remote: remote))
+        return NativeDeviceScreenInput(input: input)
     }
 
     /// Connects to the guest's touchscreen and button services of a simulator in any device set. Connecting sends the
