@@ -1921,7 +1921,6 @@ private final class DeviceContentView: NSView, DisplayContentView {
                 }
             }
         canvasScrollView.isHidden = true
-        canvasScrollView.toolTip = "Use the scroll bars or Option-scroll to pan the device."
         // Above the clip view and below its scrollers.
         canvasOverlay.clipsToBounds = true
         canvasScrollView.addSubview(canvasOverlay, positioned: .above, relativeTo: canvasScrollView.contentView)
