@@ -822,7 +822,6 @@
         "frameworks",
       ],
       "build-settings": {
-        "ARCHS": "arm64",
         "CLANG_ENABLE_OBJC_ARC": "YES",
         "CODE_SIGN_ENTITLEMENTS": "NeoSimulatorGuestSettings/GuestVirtual.entitlements",
         "CODE_SIGN_IDENTITY": "-",
@@ -964,7 +963,6 @@
         },
       ],
       "build-settings": {
-        "ARCHS": "arm64",
         "ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS": "YES",
         "CLANG_CXX_LANGUAGE_STANDARD": "gnu++20",
         "CODE_SIGN_IDENTITY": "-",
@@ -1062,6 +1060,6 @@
     "SWIFT_OPTIMIZATION_LEVEL[config=Release]": "-O",
     "SWIFT_VERSION": "5.0",
   },
-  "last-upgrade": "27.0",
+  "last-upgrade": "27.2",
   "last-swift-update": "27.0",
 }
