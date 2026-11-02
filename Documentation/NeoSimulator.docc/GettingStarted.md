@@ -1,6 +1,6 @@
 # Getting started
 
-Install NeoSimulator.app to display and control your simulators.
+Install NeoSimulator.app to display simulators, and keep using Xcode for Build & Run.
 
 ## Requirements
 
@@ -8,30 +8,47 @@ Install NeoSimulator.app to display and control your simulators.
 - Xcode 27 or later, selected with `xcode-select`.
 - Simulator runtimes installed through Xcode.
 
-## Install and open NeoSimulator
+## Install
 
-Download the DMG from [Releases](https://github.com/lynnswap/NeoSimulator/releases),
-open it, and drag **NeoSimulator.app** to **Applications**. Launch the app to
-use NeoSimulator for simulator screens. Quitting restores Xcode's previous
-display settings, normally Device Hub. NeoSimulator does not launch automatically.
+1. Download a `.dmg` asset from [Releases](https://github.com/lynnswap/NeoSimulator/releases).
+2. Open it and drag **NeoSimulator.app** to **Applications**.
+3. Open NeoSimulator. New installations use its simulator display by default.
 
-Use Xcode for Build & Run as usual. To use Device Hub while NeoSimulator is open,
-choose **Device Hub** under **Preferred Display Host** in Settings. NeoSimulator
-remains in the Dock, so you can switch back at any time.
-Switching hosts leaves devices running for the next host to attach.
+If you already use the CLI, follow
+[Migrating from the CLI](https://github.com/lynnswap/NeoSimulator/blob/main/Documentation/MigratingFromCLI.md).
 
-Select a device in the main window and choose **View Screen** to open it.
+## Open a simulator
+
+In NeoSimulator mode, select a device in the main window and choose
+**View Screen** to display it in the center pane. **Switch to Compact Window**
+moves the screen to a separate window; **Show in Main Window** brings it back.
 You can also open **Device** in the Dock menu or **File → Open Simulator** and
-choose its OS version and name. Selecting an already-running device brings its
-window forward.
+choose its OS version and name.
 
-## Update or uninstall
+Use Xcode for Build & Run as usual. Change **Preferred Display Host** in
+**Settings → General** to switch to Device Hub or back to NeoSimulator. Existing
+choices are preserved. Switching leaves simulator devices running, and NeoSimulator
+stays in the Dock in either mode.
 
-Quit NeoSimulator, replace the app in Applications with the new version, and
-reopen it. Before uninstalling, choose **Restore Original Settings…** in Settings
-to restore the original preferences saved when host management began. See
-<doc:Configuration> for recovery and the receipt location.
+Quitting restores Xcode's previous display settings, normally Device Hub.
+NeoSimulator does not launch automatically.
 
-The app replaces the previous CLI distribution and Legacy mode. It keeps the
-existing recovery receipt. For exact cleanup paths for an older CLI install,
-see the [migration instructions](https://github.com/lynnswap/NeoSimulator#migrating-from-the-cli).
+See <doc:UsingNeoSimulator> for device controls, screen capture, and app
+management.
+
+## Update
+
+Quit NeoSimulator, open the new DMG, and drag **NeoSimulator.app** to
+**Applications**, choosing **Replace**. Reopen the app. Restoring Xcode settings
+is not required for an update.
+
+## Uninstall
+
+Choose **Restore Original Settings…** in **Settings → General** if available
+to restore the saved Xcode routing preferences. Then quit NeoSimulator and remove the app from
+Applications. Your simulator devices are kept. See <doc:Configuration> if
+restoration reports a conflict.
+
+If you previously installed the CLI, its files remain until you remove them.
+See [Migrating from the CLI](https://github.com/lynnswap/NeoSimulator/blob/main/Documentation/MigratingFromCLI.md)
+for the cleanup commands and the settings record that should be kept.
