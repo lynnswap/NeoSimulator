@@ -30,6 +30,21 @@ struct ManagerModelTests {
         #expect(manager.status?.host == .deviceHub)
     }
 
+    @Test func failedExitPreparationKeepsTheSessionAvailableForAnotherAttempt() async throws {
+        let source = ManagerModelSource(devices: [])
+        let manager = SimulatorManagerModel(source: source)
+        manager.start()
+        do {
+            try await manager.quitRenderer(keepingDevicesRunning: true) {
+                throw ManagerModelSource.Failure.unavailable
+            }
+            Issue.record("Exit preparation should have failed")
+        } catch ManagerModelSource.Failure.unavailable {}
+        #expect(await !source.sessionEvents.contains("end"))
+        try await manager.quitRenderer(keepingDevicesRunning: true)
+        #expect(await source.sessionEvents.last == "end")
+    }
+
     @Test func settingsProvideSimulatorCreationAndKeepExistingPreferences() async throws {
         _ = NSApplication.shared
         let domain = "NeoSimulator.SettingsFixture.\(UUID().uuidString)"

@@ -51,10 +51,11 @@ available. Selecting Device Hub closes the managed renderers, changes the
 route, and opens Device Hub. Handover leaves simulator devices running.
 
 Startup queues the display session before the initial URL requests, including
-screen restoration after relaunch. It applies the preference using the same Xcode
+screen restoration after relaunch. It reads and applies the preference in one
+transaction, using the same Xcode
 resolution as device operations, without launching a renderer; screen requests start
-renderers as needed. After the manager has closed its screens and renderers on normal quit,
-it releases the route to the receipt's original values while retaining the preferred
+renderers as needed. After the manager has closed its screens and renderers and
+prepared any requested relaunch, it releases the route to the receipt's original values while retaining the preferred
 host. Release does not open Device Hub or shut down devices. Managers register their
 process identifier and launch date in `display-sessions.json` under the same lock as
 preference changes. Each normal exit removes its session; the last session restores

@@ -10,7 +10,7 @@ struct ManagerRelaunch: Codable, Sendable {
     let deviceURLs: [URL]
 
     @concurrent
-    func schedule(using helperURL: URL) async throws {
+    func schedule(using helperURL: URL) async throws -> Process {
         let process = Process()
         process.executableURL = helperURL
         process.arguments = ["--relaunch-manager"]
@@ -29,6 +29,7 @@ struct ManagerRelaunch: Codable, Sendable {
             if process.isRunning { process.terminate() }
             throw error
         }
+        return process
     }
 
     static func waitForExit(of pid: Int32, ready: @escaping @Sendable () -> Void) async {

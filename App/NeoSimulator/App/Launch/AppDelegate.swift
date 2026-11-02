@@ -160,6 +160,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let preparation = Task.immediate { try await model.prepareForQuit() }
         let restoring = restartsAfterQuitting ? screens.restorations() : []
         Task {
+            var relaunchProcess: Process?
             do {
                 mainWindow?.stopInspectorReads()
                 try await preparation.value
@@ -172,15 +173,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 activeStateObservation = nil
                 await screens.waitForRemoteHostCleanup()
                 try await stopScreens()
-                try await model.quitRenderer(keepingDevicesRunning: quitKeepingDevicesRunning)
-                if restartsAfterQuitting {
-                    let urls = restoring.map(\.url)
-                    let helper = rendererURL.appendingPathComponent("Contents/MacOS/NeoSimulatorRenderer")
-                    try await ManagerRelaunch(processIdentifier: ProcessInfo.processInfo.processIdentifier,
-                        applicationURL: Bundle.main.bundleURL, deviceURLs: urls).schedule(using: helper)
+                try await model.quitRenderer(keepingDevicesRunning: quitKeepingDevicesRunning) {
+                    if self.restartsAfterQuitting {
+                        let urls = restoring.map(\.url)
+                        let helper = self.rendererURL.appendingPathComponent("Contents/MacOS/NeoSimulatorRenderer")
+                        relaunchProcess = try await ManagerRelaunch(processIdentifier: ProcessInfo.processInfo.processIdentifier,
+                            applicationURL: Bundle.main.bundleURL, deviceURLs: urls).schedule(using: helper)
+                    }
                 }
                 sender.reply(toApplicationShouldTerminate: true)
             } catch {
+                if let relaunchProcess, relaunchProcess.isRunning { relaunchProcess.terminate() }
                 quitting = false
                 if restartsAfterQuitting { quitKeepingDevicesRunning = nil }
                 restartsAfterQuitting = false

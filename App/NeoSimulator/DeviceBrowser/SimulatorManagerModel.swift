@@ -679,10 +679,11 @@ final class SimulatorManagerModel {
         }
     }
 
-    func quitRenderer(keepingDevicesRunning: Bool?) async throws {
+    func quitRenderer(keepingDevicesRunning: Bool?, beforeEndingSession: () async throws -> Void = {}) async throws {
         do {
             try await prepareForQuit()
             try await controller.quitRenderer(keepingDevicesRunning: keepingDevicesRunning)
+            try await beforeEndingSession()
             try await controller.endSession()
         } catch { resumeAfterCancelledQuit(); throw error }
     }
