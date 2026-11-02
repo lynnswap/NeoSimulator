@@ -113,6 +113,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     }
     /// The window of the device's external display while the display is on.
     private(set) var externalDisplayWindow: ExternalDisplayWindowController?
+    private var externalDisplayOpening: Task<Void, Never>?
     /// How often and how long the window looks for its display's
     /// user-interface plugin.
     private let userInterfacePluginLookUp: (attempts: Int, interval: Duration)
@@ -1172,23 +1173,45 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         guard !closed else { return }
         guard let state = session.externalScreen, state.isPoweredOn else { return closeExternalDisplayWindow() }
         if let externalDisplayWindow { return externalDisplayWindow.screenChanged(state) }
-        do {
-            let controller = try ExternalDisplayWindowController(
-                session: session, display: session.makeExternalDisplay(), state: state, deviceWindow: self,
-                preferences: preferences, keyboardCaptureTap: makeKeyboardCaptureTap(),
-                applicationIsActive: applicationIsActive, makeWindow: makeExternalDisplayWindow) { [weak self] in
-                    self?.externalDisplayWindowClosed()
+        guard externalDisplayOpening == nil else { return }
+        var completed = false
+        let opening = Task.immediate { [weak self, session] in
+            defer { completed = true }
+            guard let self else { return }
+            var retry = false
+            defer {
+                externalDisplayOpening = nil
+                if retry { syncExternalDisplayWindow() }
+            }
+            do {
+                let display = try await session.makeExternalDisplay()
+                guard !Task.isCancelled, !closed, self.session === session,
+                      let state = session.externalScreen, state.isPoweredOn else {
+                    retry = true
+                    try await display.stop()
+                    return
                 }
-            controller.keyboard.capture.failure = { [weak self] in self?.present($0) }
-            externalDisplayWindow = controller
-            controller.showNewWindow(cascadingFrom: window)
-        } catch {
-            present(HostError.operation(
-                "Could not show the external display of \(session.device.name): \(error.localizedDescription)"))
+                let controller = try ExternalDisplayWindowController(
+                    session: session, display: display, state: state, deviceWindow: self,
+                    preferences: preferences, keyboardCaptureTap: makeKeyboardCaptureTap(),
+                    applicationIsActive: applicationIsActive, makeWindow: makeExternalDisplayWindow) { [weak self] in
+                        self?.externalDisplayWindowClosed()
+                    }
+                controller.keyboard.capture.failure = { [weak self] in self?.present($0) }
+                externalDisplayWindow = controller
+                controller.showNewWindow(cascadingFrom: window)
+            } catch is CancellationError {
+                retry = Task.isCancelled
+            } catch {
+                present(HostError.operation(
+                    "Could not show the external display of \(session.device.name): \(error.localizedDescription)"))
+            }
         }
+        if !completed { externalDisplayOpening = opening }
     }
 
     private func closeExternalDisplayWindow() {
+        externalDisplayOpening?.cancel()
         externalDisplayWindow?.invalidate()
         externalDisplayWindow = nil
     }

@@ -482,6 +482,14 @@ struct SimulatorDisplayInterface {
 final class ScreenAdapterGetter {
     private var getter: NativeSwiftMethod<() -> AnyObject?>?
 
+    /// Resolves the extension before synchronous screen enumeration or registration starts.
+    func prepare(for device: AnyObject) async throws {
+        guard getter == nil else { return }
+        getter = try await ABIRuntime.shared.object(device).resolve(.swift(.getter(
+            "(extension in SimulatorKit):__C.SimDevice.screenAdapter.getter : SimulatorKit.SimDeviceScreenAdapter?",
+            as: (() -> AnyObject?).self))).method
+    }
+
     /// The device's `SimDeviceScreenAdapter`, which SimulatorKit keeps for
     /// the device's lifetime, or nil when it has none.
     func adapter(of device: AnyObject) throws -> AnyObject? {
@@ -547,7 +555,7 @@ protocol SimulatorExternalScreen: AnyObject {
     /// A throw means nothing was sent; completion reports send status on the main actor.
     func setCarPlayService(connected: Bool, completion: @escaping @MainActor (Error?) -> Void) throws
     /// A display of the screen from the display factory, for its own window.
-    func makeDisplay() throws -> any SimulatorDisplay
+    func makeDisplay() async throws -> any SimulatorDisplay
     /// Stops the change reports.
     func disconnect()
 }
@@ -671,8 +679,8 @@ final class SimulatorExternalScreenConnection: SimulatorExternalScreen {
                                              client: client, completion: completion)
     }
 
-    func makeDisplay() throws -> any SimulatorDisplay {
-        try SimulatorConnection(device: device, screen: (screenID, screen), runtime: runtime, keyboard: keyboard, ownsKeyboard: false)
+    func makeDisplay() async throws -> any SimulatorDisplay {
+        try await SimulatorConnection(device: device, screen: (screenID, screen), runtime: runtime, keyboard: keyboard, ownsKeyboard: false)
     }
 
     func disconnect() {
@@ -1706,7 +1714,7 @@ final class SimulatorConnection: SimulatorDisplay {
     /// starts.
     init(device: SimulatorDevice, screen: (identifier: UInt32, object: AnyObject), runtime: SimulatorRuntime,
          nativeCanvas: NativeDeviceCanvas? = nil, keyboard: NativeDeviceKeyboard? = nil, ownsKeyboard: Bool = true,
-         trackpad: NativeDeviceTrackpad? = nil, touchRoute: NativeTouchRoute? = nil) throws {
+         trackpad: NativeDeviceTrackpad? = nil, touchRoute: NativeTouchRoute? = nil) async throws {
         self.nativeCanvas = nativeCanvas
         self.device = device
         self.runtime = runtime
@@ -1741,16 +1749,19 @@ final class SimulatorConnection: SimulatorDisplay {
             chromeView = try unsafe display.chromeView.unsafeInvoke(on: view)
             if let touchRoute {
                 do {
-                    digitizerTouches = try NativeDigitizerTouches(digitizer: digitizer, interface: touchRoute.interface) {
+                    digitizerTouches = try await NativeDigitizerTouches(digitizer: digitizer, interface: touchRoute.interface) {
                         [input = touchRoute.input] touch in
                         input.sendTouch(at: touch.point, secondPoint: touch.secondPoint, phase: touch.phase, edge: touch.edge)
                     }
+                } catch is CancellationError {
+                    throw CancellationError()
                 } catch {
                     hostLog("\(device.name) keeps SimulatorKit's keyboard and touches, without native trackpad input: \(error.localizedDescription)")
                     keyboard = nil
                     trackpad = nil
                 }
             }
+            try Task.checkCancellation()
             if let trackpad {
                 let framebuffer = try unsafe display.renderableView.unsafeInvoke(on: view)
                 trackpadInput = NativeTrackpadInput(display: view, framebuffer: framebuffer, send: trackpad.handle,
@@ -1793,7 +1804,7 @@ final class SimulatorConnection: SimulatorDisplay {
             try Task.checkCancellation()
             guard isBooted else { throw HostError.unavailable("The simulator disconnected while preparing app resizing.") }
             if let screen = try runtime.display.appScreen(uniqueID: uniqueID, of: device) {
-                let connection = try SimulatorConnection(device: device, screen: screen, runtime: runtime,
+                let connection = try await SimulatorConnection(device: device, screen: screen, runtime: runtime,
                                                          keyboard: keyboard, ownsKeyboard: false)
                 connection.setChromeVisible(false)
                 return connection
@@ -2175,13 +2186,18 @@ final class NativeDigitizerTouches {
     /// The digitizer keeps its delegate weakly, so this keeps the replacement for as long as the digitizer has it.
     private var replacement: NativeSwiftValue?
 
-    init(digitizer: NSView, interface: SimulatorTouchInterface, send: @escaping (NativeDigitizerTouch) -> Void) throws {
+    init(digitizer: NSView, interface: SimulatorTouchInterface, send: @escaping (NativeDigitizerTouch) -> Void) async throws {
         self.digitizer = digitizer
         self.interface = interface
         self.send = send
         original = try unsafe interface.delegate.unsafeInvoke(on: digitizer)
-        forwarding = try original.map { try NativeDigitizerForwarding(delegate: $0, interface: interface) }
-        let replacement = try makeDelegate()
+        if let original {
+            forwarding = try await NativeDigitizerForwarding(delegate: original, interface: interface)
+        } else {
+            forwarding = nil
+        }
+        let replacement = try await makeDelegate()
+        try Task.checkCancellation()
         // The setter consumes its value, so it takes a copy of the delegate that this owner keeps.
         try unsafe interface.setDelegate.unsafeInvoke(on: digitizer, replacement.copy())
         self.replacement = replacement
@@ -2202,10 +2218,10 @@ final class NativeDigitizerTouches {
         replacement = nil
     }
 
-    private func makeDelegate() throws -> NativeSwiftValue {
+    private func makeDelegate() async throws -> NativeSwiftValue {
         // SimDigitizerInputView, an NSView, calls its delegate on the main thread while it handles AppKit events, and
         // each callback reads its borrowed arguments before it returns, so the touches keep the events' order.
-        try ABIRuntime.shared.makeSwiftProtocolValueAndWait(SimulatorTouchInterface.delegateProtocol, methods: [
+        try await ABIRuntime.shared.makeSwiftProtocolValue(SimulatorTouchInterface.delegateProtocol, methods: [
             try NativeSwiftProtocolMethod("simDigitizerInputView(_:touchEvent:)") {
                 [weak self] (_: NativeSwiftBorrowedValue, event: NativeSwiftBorrowedValue) in
                 nonisolated(unsafe) let event = event
@@ -2265,16 +2281,16 @@ final class NativeDigitizerForwarding {
     private let pressure: NativeSwiftMethod<(NativeSwiftBorrowedValue, NativeSwiftBorrowedValue) -> Void>
     private let scroll: NativeSwiftMethod<(NativeSwiftBorrowedValue, NativeSwiftBorrowedValue) -> Void>
 
-    init(delegate existential: NativeSwiftValue, interface: SimulatorTouchInterface) throws {
+    init(delegate existential: NativeSwiftValue, interface: SimulatorTouchInterface) async throws {
         let delegate = try existential.copyUnderlyingValue()
         let name = SimulatorTouchInterface.delegateProtocol + ".simDigitizerInputView"
-        mouseMoved = try delegate.type.resolveAndWait(.swift(.method(name + "(_:wantsMouseMovedEvents:)",
+        mouseMoved = try await delegate.type.resolve(.swift(.method(name + "(_:wantsMouseMovedEvents:)",
             as: ((NativeSwiftBorrowedValue, Bool) -> Void).self)))
-        firstResponder = try delegate.type.resolveAndWait(.swift(.method(name + "(_:wantsFirstResponder:)",
+        firstResponder = try await delegate.type.resolve(.swift(.method(name + "(_:wantsFirstResponder:)",
             as: ((NativeSwiftBorrowedValue, Bool) -> Void).self)))
-        pressure = try delegate.type.resolveAndWait(.swift(.method(name + "(_:pressureEvent:)",
+        pressure = try await delegate.type.resolve(.swift(.method(name + "(_:pressureEvent:)",
             as: ((NativeSwiftBorrowedValue, NativeSwiftBorrowedValue) -> Void).self, valueABIs: interface.eventABIs)))
-        scroll = try delegate.type.resolveAndWait(.swift(.method(name + "(_:scrollEvent:)",
+        scroll = try await delegate.type.resolve(.swift(.method(name + "(_:scrollEvent:)",
             as: ((NativeSwiftBorrowedValue, NativeSwiftBorrowedValue) -> Void).self, valueABIs: interface.eventABIs)))
         self.delegate = delegate
     }
