@@ -6,7 +6,7 @@ import IOKit.hidsystem
 @MainActor
 final class CoreDeviceHIDService {
     /// CoreDevice consumes its bundled module; DeviceKit can also load the system module with the same name.
-    static let universalHIDURL = URL(fileURLWithPath: "/Library/Developer/PrivateFrameworks/CoreDevice.framework/Versions/A/Frameworks/UniversalHID.framework/Versions/A/UniversalHID")
+    nonisolated static let universalHIDURL = URL(fileURLWithPath: "/Library/Developer/PrivateFrameworks/CoreDevice.framework/Versions/A/Frameworks/UniversalHID.framework/Versions/A/UniversalHID")
 
     private let sendNative: (NativeSwiftValue) throws -> Void
     private let resetNative: () throws -> Void
@@ -21,14 +21,14 @@ final class CoreDeviceHIDService {
     }
 
     /// Resolves a type from CoreDevice's own UniversalHID module.
-    static func universalHIDType(_ name: String, runtime: ABIRuntime) throws -> NativeSwiftType {
+    nonisolated static func universalHIDType(_ name: String, runtime: ABIRuntime) throws -> NativeSwiftType {
         try CoreDeviceRemoteScreenDevice.load(universalHIDURL.path)
         return try runtime.resolveAndWait(.swift(.type("UniversalHID." + name)), in: .path(universalHIDURL), loading: .loadedOnly)
     }
 
     /// `HIDReport` wraps the report's `Data`; its exported members pass those two words directly,
     /// while native value witnesses still own and copy the payload.
-    static func reportABI(runtime: ABIRuntime) throws -> (type: NativeSwiftType, abi: NativeType) {
+    nonisolated static func reportABI(runtime: ABIRuntime) throws -> (type: NativeSwiftType, abi: NativeType) {
         let type = try universalHIDType("HIDReport", runtime: runtime)
         return (type, try .structure(named: type.name, fields: [.uint64, .uint64]))
     }
@@ -36,8 +36,8 @@ final class CoreDeviceHIDService {
     /// Creates the service `descriptor` describes. Its reports must come from CoreDevice's UniversalHID module.
     static func connect(remote: CoreDeviceRemoteScreenDevice, descriptor: NativeSwiftValue) async throws -> CoreDeviceHIDService {
         let runtime = remote.runtime
-        let errorType = try runtime.resolveAndWait(.swift(.type("CoreDevice.CoreDeviceError")))
-        let readError = try errorType.resolveAndWait(.swift(.staticGetter("ioError", as: (() -> NativeSwiftValue).self,
+        let errorType = try await runtime.resolve(.swift(.type("CoreDevice.CoreDeviceError")))
+        let readError = try await errorType.resolve(.swift(.staticGetter("ioError", as: (() -> NativeSwiftValue).self,
             valueABIs: [errorType: try .opaque(named: errorType.name)])))
         guard let failure = try unsafe readError.unsafeInvoke().withCopy({ $0 as? any Error }) else {
             throw CLIError.io("remote-hid-service", "The native HID service error type could not be resolved.")
@@ -50,9 +50,9 @@ final class CoreDeviceHIDService {
         let runtime = remote.runtime
         let implementation = try await remote.implementation(capability: "UniversalHIDServiceCapability",
                                                              feature: CoreDeviceScreenInput.universalHIDFeature)
-        let descriptorType = try runtime.resolveAndWait(.swift(.type("CoreDevice.HIDServiceDescriptor")))
-        let serviceIDType = try runtime.resolveAndWait(.swift(.type("CoreDevice.HIDServiceID")))
-        let report = try reportABI(runtime: runtime)
+        let descriptorType = try await runtime.resolve(.swift(.type("CoreDevice.HIDServiceDescriptor")))
+        let serviceIDType = try await runtime.resolve(.swift(.type("CoreDevice.HIDServiceID")))
+        let report = try await runtime.prepare { try reportABI(runtime: $0) }
         let abis: [NativeSwiftType: NativeType] = [
             report.type: report.abi,
             descriptorType: try .opaque(named: descriptorType.name),
@@ -60,16 +60,16 @@ final class CoreDeviceHIDService {
         ]
         // CoreDevice also declares `Swift.UInt64` service-ID overloads of `send` and `resetGestureState`, which runtime-value
         // arguments cannot tell apart by labels. Every requirement names the `HIDServiceID` declaration that `createService` returns.
-        let create = try implementation.type.resolveAndWait(.swift(.method(
+        let create = try await implementation.type.resolve(.swift(.method(
             "CoreDevice.UniversalHIDService.createService(descriptor: CoreDevice.HIDServiceDescriptor) async throws(CoreDevice.CoreDeviceError) -> CoreDevice.HIDServiceID",
             as: ((NativeSwiftValue) async throws(Failure) -> NativeSwiftValue).self, valueABIs: abis)))
-        let send = try implementation.type.resolveAndWait(.swift(.method(
+        let send = try await implementation.type.resolve(.swift(.method(
             "CoreDevice.UniversalHIDService.send(report: UniversalHID.HIDReport, to: CoreDevice.HIDServiceID) throws(CoreDevice.CoreDeviceError) -> ()",
             as: ((NativeSwiftValue, NativeSwiftValue) throws(Failure) -> Void).self, valueABIs: abis)))
-        let reset = try implementation.type.resolveAndWait(.swift(.method(
+        let reset = try await implementation.type.resolve(.swift(.method(
             "CoreDevice.UniversalHIDService.resetGestureState(service: CoreDevice.HIDServiceID) throws(CoreDevice.CoreDeviceError) -> ()",
             as: ((NativeSwiftValue) throws(Failure) -> Void).self, valueABIs: abis)))
-        let remove = try implementation.type.resolveAndWait(.swift(.method(
+        let remove = try await implementation.type.resolve(.swift(.method(
             "CoreDevice.UniversalHIDService.remove(service: CoreDevice.HIDServiceID) async throws(CoreDevice.CoreDeviceError) -> ()",
             as: ((NativeSwiftValue) async throws(Failure) -> Void).self, valueABIs: abis)))
         let serviceID = try await unsafe create.unsafeInvoke(on: implementation, nativeDescriptor)
@@ -81,21 +81,21 @@ final class CoreDeviceHIDService {
     }
 
     static func touchscreenDescriptor(displayID: UInt32, uniqueID: String, runtime: ABIRuntime) async throws -> NativeSwiftValue {
-        let serviceType = try runtime.resolveAndWait(.swift(.type("CoreDeviceUtilities.HIDServiceType")))
-        let descriptorType = try runtime.resolveAndWait(.swift(.type("CoreDevice.HIDServiceDescriptor")))
-        let array = try runtime.resolveAndWait(.swift(.type("Swift.Array", genericArguments: [.type((displayID: UInt32, uniqueID: String?).self)])))
-        let read = try array.resolveAndWait(.swift(.getter("Swift.Array.subscript.getter : (Swift.Int) -> A",
+        let serviceType = try await runtime.resolve(.swift(.type("CoreDeviceUtilities.HIDServiceType")))
+        let descriptorType = try await runtime.resolve(.swift(.type("CoreDevice.HIDServiceDescriptor")))
+        let array = try await runtime.resolve(.swift(.type("Swift.Array", genericArguments: [.type((displayID: UInt32, uniqueID: String?).self)])))
+        let read = try await array.resolve(.swift(.getter("Swift.Array.subscript.getter : (Swift.Int) -> A",
             as: ((Int) -> NativeSwiftValue).self)))
         let payload = try unsafe read.unsafeInvoke(on: [(displayID: displayID, uniqueID: Optional(uniqueID))], 0)
         let screen = try await serviceType.makeEnumCase(named: "touchscreen", payload: payload)
-        let serviceIDType = try runtime.resolveAndWait(.swift(.type("CoreDevice.HIDServiceID")))
+        let serviceIDType = try await runtime.resolve(.swift(.type("CoreDevice.HIDServiceID")))
         let abis: [NativeSwiftType: NativeType] = [serviceType: try .opaque(named: serviceType.name),
             descriptorType: try .opaque(named: descriptorType.name), serviceIDType: try .opaque(named: serviceIDType.name)]
-        let descriptor = try serviceType.resolveAndWait(.swift(.method("descriptor()", as: (() -> NativeSwiftValue).self,
+        let descriptor = try await serviceType.resolve(.swift(.method("descriptor()", as: (() -> NativeSwiftValue).self,
             valueABIs: abis, receiverABI: abis[serviceType])))
-        let serviceID = try serviceType.resolveAndWait(.swift(.getter("serviceID", as: (() -> NativeSwiftValue).self,
+        let serviceID = try await serviceType.resolve(.swift(.getter("serviceID", as: (() -> NativeSwiftValue).self,
             valueABIs: abis, receiverABI: abis[serviceType])))
-        let setServiceID = try descriptorType.resolveAndWait(.swift(.setter("serviceID", as: ((NativeSwiftValue) -> Void).self,
+        let setServiceID = try await descriptorType.resolve(.swift(.setter("serviceID", as: ((NativeSwiftValue) -> Void).self,
             valueABIs: abis, receiverABI: abis[descriptorType])))
         let result = try unsafe descriptor.unsafeInvoke(on: screen)
         // descriptor() supplies the service properties; its ID starts unassigned.
@@ -238,7 +238,7 @@ struct CoreDeviceEventReports {
         let observerType = try await runtime.resolve(.swift(.type("UniversalHIDKit.EventObserver",
             genericArguments: [.type(NSEvent.self)])), in: .path(Self.universalHIDKitURL), loading: .loadedOnly)
         let systemReport = try await runtime.resolve(.swift(.type("UniversalHID.HIDReport")), in: .path(system), loading: .loadedOnly)
-        let coreDeviceReport = try CoreDeviceHIDService.reportABI(runtime: runtime)
+        let coreDeviceReport = try await runtime.prepare { try CoreDeviceHIDService.reportABI(runtime: $0) }
         let data = try await runtime.resolve(.swift(.type("Foundation.Data")))
         let dataABI = try NativeType.structure(named: data.name, fields: [.uint64, .uint64])
         // These single-field and Data-wrapping values pass their stored words directly, as DeviceKit passes them.
@@ -341,7 +341,7 @@ struct MacHIDServiceLookup {
             "(extension in UniversalHIDKit):UniversalHIDKit.NSEventProtocol.senderID.getter : Swift.UInt64",
             as: (() -> UInt64).self))).method
 
-        let keyType = try CoreDeviceHIDService.universalHIDType("HIDServicePropertyKey", runtime: runtime)
+        let keyType = try await runtime.prepare { try CoreDeviceHIDService.universalHIDType("HIDServicePropertyKey", runtime: $0) }
         let allKeys = try await keyType.resolve(.swift(.staticGetter("allCases", as: (() -> NativeSwiftValue).self,
             valueABIs: [keyType: try .structure(named: keyType.name, fields: [.uint64, .uint64])])))
         guard let keys = try unsafe allKeys.unsafeInvoke().withCopy({ value in
@@ -360,7 +360,7 @@ struct MacHIDServiceLookup {
             return unsafe Unmanaged<IOHIDEventSystemClient>.fromOpaque(UnsafeRawPointer(client)).takeRetainedValue()
         }
 
-        let properties = try CoreDeviceHIDService.universalHIDType("HIDServiceProperties", runtime: runtime)
+        let properties = try await runtime.prepare { try CoreDeviceHIDService.universalHIDType("HIDServiceProperties", runtime: $0) }
         let descriptorType = try await runtime.resolve(.swift(.type("CoreDevice.HIDServiceDescriptor")))
         let descriptorABIs: [NativeSwiftType: NativeType] = [
             properties: try .structure(named: properties.name, fields: [.uint64, .uint64]),

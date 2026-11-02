@@ -1549,9 +1549,9 @@ final class DeviceSession {
     }
 
     /// A display of the external display for its window.
-    func makeExternalDisplay() throws -> any SimulatorDisplay {
+    func makeExternalDisplay() async throws -> any SimulatorDisplay {
         guard let externalScreenConnection else { throw HostError.unavailable("The external display is not connected.") }
-        return try externalScreenConnection.makeDisplay()
+        return try await externalScreenConnection.makeDisplay()
     }
 
     private func applyExternalDisplay(_ mode: ExternalDisplayMode, failure: @escaping @MainActor (Error) -> Void) {
