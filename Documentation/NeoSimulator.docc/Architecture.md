@@ -24,19 +24,23 @@ A lock serializes operations. Writes are journaled before mutation and verified
 afterward. Recovery handles interrupted writes, preserves conflicting external
 changes, and keeps the original tri-state values for restore.
 
-Ordinary startup, status, connection synchronization, and screen opening read
-the saved display choice rather than another app's preferences. A settled
-receipt supplies the managed intent; without a receipt, `display-host.txt` in
-the same state directory supplies the last selected host, initially Device Hub.
-An interrupted transaction disables automatic attachment until an explicit
-host change or restore resolves it. This local metadata does not establish the
-current Xcode preferences. Only explicit host changes and restoration validate
-those values and check for external conflicts. A restore relinquishes automatic
-Neo hosting even when the original preferences used the CoreSimulator route.
+`display-host.txt` in the same state directory records the preferred display host.
+An installation without that file uses a legacy receipt's intent when available,
+or NeoSimulator by default. The receipt records managed Xcode settings independently
+of that preference. Status, connection synchronization, and screen opening use
+local metadata. Startup applies the preference and checks Xcode's settings for
+external conflicts, as do explicit host changes, release, and restoration.
+
+The controller also tracks whether this manager session successfully applied its
+display preference. Participating sessions follow the shared preferred host. The
+preference alone does not enable Neo presentation after a failed startup.
+An interrupted transaction disables automatic attachment until a host
+change or restore resolves it. Restore relinquishes automatic Neo hosting even
+when the original preferences used the CoreSimulator route.
 
 ## Host switching
 
-Display Host is an app-wide setting in Settings. Before changing the route,
+Preferred Display Host is an app-wide setting in Settings. Before changing the route,
 the manager validates its internally resolved Xcode, managed preferences, and
 Device Hub identity. Renderer-specific compatibility checks also run before
 receipt recovery or process termination; see <doc:SimulatorIntegration>.
@@ -45,6 +49,19 @@ Selecting Neo commits the CoreSimulator route if needed, closes Device Hub,
 and starts a renderer when one is needed. Existing renderer processes remain
 available. Selecting Device Hub closes the managed renderers, changes the
 route, and opens Device Hub. Handover leaves simulator devices running.
+
+Startup queues the display session before the initial URL requests, including
+screen restoration after relaunch. It applies the preference using the same Xcode
+resolution as device operations, without launching a renderer; screen requests start
+renderers as needed. After the manager has closed its screens and renderers on normal quit,
+it releases the route to the receipt's original values while retaining the preferred
+host. Release does not open Device Hub or shut down devices. Managers register their
+process identifier and launch date in `display-sessions.json` under the same lock as
+preference changes. Each normal exit removes its session; the last session restores
+settings even when other processes are still finishing their exit. Stale entries from
+exited processes are removed on the next change. External preference conflicts are preserved.
+Force quit and crashes leave the receipt for recovery on the next launch and normal
+quit; no background launch service is installed.
 
 The manager remains in the Dock in both modes. Its Dock Device menu and File
 Open Simulator menu share the device catalog and launch action. They group

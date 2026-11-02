@@ -152,6 +152,7 @@ final class WorkspaceRecorder {
     }
 
     var runningXcodes: [RunningApplication] = []
+    var runningManagers: [RendererOwnerIdentity] = []
     var runningNeoHosts: [RunningApplication] = []
     var deviceHubCount = 0
     var neoHostCount = 0
@@ -170,6 +171,7 @@ final class WorkspaceRecorder {
 
     var client: WorkspaceClient {
         WorkspaceClient(
+            runningManagers: { self.runningManagers },
             runningXcodes: { self.runningXcodes },
             runningNeoHosts: { self.runningNeoHosts },
             terminateDeviceHubs: { url in

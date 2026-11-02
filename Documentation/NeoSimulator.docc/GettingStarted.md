@@ -1,6 +1,6 @@
 # Getting started
 
-Install NeoSimulator.app and choose the host that displays your simulators.
+Install NeoSimulator.app to display and control your simulators.
 
 ## Requirements
 
@@ -8,14 +8,16 @@ Install NeoSimulator.app and choose the host that displays your simulators.
 - Xcode 27 or later, selected with `xcode-select`.
 - Simulator runtimes installed through Xcode.
 
-## Install and choose a host
+## Install and open NeoSimulator
 
 Download the DMG from [Releases](https://github.com/lynnswap/NeoSimulator/releases),
-open it, and drag **NeoSimulator.app** to **Applications**. Launch the app and
-choose **NeoSimulator** or **Device Hub** under **Display Host** in Settings.
+open it, and drag **NeoSimulator.app** to **Applications**. Launch the app to
+use NeoSimulator for simulator screens. Quitting restores Xcode's previous
+display settings, normally Device Hub. NeoSimulator does not launch automatically.
 
-Use Xcode for Build & Run as usual. NeoSimulator remains in the Dock while
-Device Hub displays devices, so you can switch back at any time.
+Use Xcode for Build & Run as usual. To use Device Hub while NeoSimulator is open,
+choose **Device Hub** under **Preferred Display Host** in Settings. NeoSimulator
+remains in the Dock, so you can switch back at any time.
 Switching hosts leaves devices running for the next host to attach.
 
 Select a device in the main window and choose **View Screen** to open it.

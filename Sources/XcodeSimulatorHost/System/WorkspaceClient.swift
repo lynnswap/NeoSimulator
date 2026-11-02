@@ -17,7 +17,7 @@ struct RunningApplication: Equatable, Sendable {
     }
 }
 
-struct RendererOwnerIdentity: Equatable, Sendable {
+struct RendererOwnerIdentity: Codable, Equatable, Sendable {
     let processIdentifier: pid_t
     let launchDate: Date
 
@@ -191,6 +191,7 @@ private final class ApplicationTerminationWaiter {
 }
 
 struct WorkspaceClient: Sendable {
+    var runningManagers: @MainActor @Sendable () -> [RendererOwnerIdentity] = { [] }
     var runningXcodes: @MainActor @Sendable () -> [RunningApplication]
     var runningNeoHosts: @MainActor @Sendable () -> [RunningApplication]
     var terminateDeviceHubs: @MainActor @Sendable (URL) async throws -> Int
@@ -203,6 +204,12 @@ struct WorkspaceClient: Sendable {
     @MainActor static var live: WorkspaceClient { live(headlessRenderers: false) }
 
     @MainActor static func live(headlessRenderers: Bool) -> WorkspaceClient { WorkspaceClient(
+        runningManagers: {
+            NSRunningApplication.runningApplications(withBundleIdentifier: ToolConstants.neoManagerBundleIdentifier)
+                .compactMap { app in
+                    app.launchDate.map { RendererOwnerIdentity(processIdentifier: app.processIdentifier, launchDate: $0) }
+                }
+        },
         runningXcodes: {
             runningApplications(
                 withBundleIdentifier: ToolConstants.xcodeBundleIdentifier

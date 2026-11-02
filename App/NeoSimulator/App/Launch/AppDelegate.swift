@@ -56,6 +56,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return controller
     }
 
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        model.beforeStoppingScreens = { [weak self] in try await self?.stopScreens() }
+        model.beforeManagingRemoteDevices = { [weak self] identifiers in
+            try await self?.screens.stopRemoteScreens(for: identifiers)
+        }
+        model.beforeManagingSimulators = { [weak self] action, devices in
+            try await self?.screens.prepareSimulatorManagement(action, devices: devices)
+        }
+        model.afterManagingSimulators = { [weak self] action, devices in
+            try await self?.screens.finishSimulatorManagement(action, devices: devices)
+        }
+        model.onError = { [weak self] error in
+            if !(error is CancellationError) { self?.present(error) }
+        }
+        model.start()
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         CaptureThumbnail.reportDetached = { [weak self] error in self?.present(error) }
         simulatorMenus.toggleTestingDevices = {
@@ -70,19 +87,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         installMenu()
         screens.observeRemoteDevices()
-        model.beforeStoppingScreens = { [weak self] in try await self?.stopScreens() }
-        model.beforeManagingRemoteDevices = { [weak self] identifiers in
-            try await self?.screens.stopRemoteScreens(for: identifiers)
-        }
-        model.beforeManagingSimulators = { [weak self] action, devices in
-            try await self?.screens.prepareSimulatorManagement(action, devices: devices)
-        }
-        model.afterManagingSimulators = { [weak self] action, devices in
-            try await self?.screens.finishSimulatorManagement(action, devices: devices)
-        }
-        model.onError = { [weak self] error in
-            if !(error is CancellationError) { self?.present(error) }
-        }
         rendererDevicesObserver = DistributedNotificationCenter.default().addObserver(
             forName: Notification.Name("dev.lynnswap.NeoSimulator.RendererDevicesDidChange"), object: nil, queue: .main
         ) { [weak self] notification in
@@ -99,7 +103,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task { @MainActor in await self?.model.refresh() }
         }
         showDevices(nil)
-        model.start()
         startInventoryObservation()
         connectionTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in

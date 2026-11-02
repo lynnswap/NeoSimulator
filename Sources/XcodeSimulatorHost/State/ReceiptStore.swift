@@ -9,6 +9,28 @@ struct ReceiptStore {
     private let fileManager: FileManager
 
     private var hostSelectionURL: URL { directoryURL.appendingPathComponent("display-host.txt") }
+    private var hostSessionsURL: URL { directoryURL.appendingPathComponent("display-sessions.json") }
+
+    func loadHostSessions() throws -> [RendererOwnerIdentity] {
+        let data: Data
+        do { data = try Data(contentsOf: hostSessionsURL) }
+        catch CocoaError.fileReadNoSuchFile { return [] }
+        catch { throw CLIError.io("host-sessions-read", "Could not read display sessions: \(error.localizedDescription)") }
+        do { return try JSONDecoder().decode([RendererOwnerIdentity].self, from: data) }
+        catch { throw CLIError.configuration("host-sessions-decode", "Could not decode display sessions: \(error.localizedDescription)") }
+    }
+
+    func saveHostSessions(_ owners: [RendererOwnerIdentity]) throws {
+        do {
+            if owners.isEmpty {
+                do { try fileManager.removeItem(at: hostSessionsURL) }
+                catch CocoaError.fileNoSuchFile {}
+            } else {
+                try JSONEncoder().encode(owners).write(to: hostSessionsURL, options: .atomic)
+                try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: hostSessionsURL.path)
+            }
+        } catch { throw CLIError.io("host-sessions-write", "Could not save display sessions: \(error.localizedDescription)") }
+    }
 
     func loadHostSelection() throws -> SimulatorHost? {
         let data: Data

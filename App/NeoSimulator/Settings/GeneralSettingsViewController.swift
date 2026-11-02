@@ -23,13 +23,19 @@ struct GeneralSettingsView: View {
     var body: some View {
         Form {
             Section("Display") {
-                Picker("Display Host", selection: Binding(
-                    get: { model.status?.host ?? .neo }, set: { model.select($0) }
+                Picker("Preferred Display Host", selection: Binding(
+                    get: { model.status?.preferredHost ?? .neo }, set: { model.select($0) }
                 )) {
                     Text("NeoSimulator").tag(SimulatorHost.neo)
                     Text("Device Hub").tag(SimulatorHost.deviceHub)
                 }
                 .disabled(model.isBusy || model.status == nil)
+                Text("NeoSimulator displays simulators while it is open. When you quit, Xcode returns to its previous display settings.")
+                    .foregroundStyle(.secondary)
+                if model.status?.preferredHost == .neo, model.status?.host != .neo {
+                    Button("Use NeoSimulator") { model.select(.neo) }
+                        .disabled(model.isBusy)
+                }
                 Picker("UI Frameworks", selection: Binding(
                     get: { frameworks.selectedXcodeURL }, set: { frameworks.select($0) }
                 )) {

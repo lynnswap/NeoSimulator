@@ -36,15 +36,55 @@ struct HostModeController {
         }
     }
 
-    /// Local metadata records intent only. External changes are checked by use/restore,
-    /// so ordinary startup and catalog polling do not open protected app containers.
+    /// Local metadata records preference only. Applying or releasing a session checks live settings;
+    /// catalog polling does not open protected app containers.
     func selectionStatus() throws -> SimulatorHostSelectionStatus {
         try readStatusSnapshot {
             let receipt = try receiptStore.load()
-            let host = try receipt.map { $0.expectedCurrent == .coreSimulator ? SimulatorHost.neo : .deviceHub }
-                ?? receiptStore.loadHostSelection() ?? .deviceHub
+            let host = try receiptStore.loadHostSelection()
+                ?? receipt.map { $0.expectedCurrent == .coreSimulator ? SimulatorHost.neo : .deviceHub } ?? .neo
             return SimulatorHostSelectionStatus(host: host, restorationAvailable: receipt != nil,
                 allowsAutomaticHosting: host == .neo && receipt?.pending == nil)
+        }
+    }
+
+    /// Applies the saved preference without opening a display. Screen requests start renderers as needed.
+    nonisolated(nonsending) func beginSession(xcodeURL: URL? = nil, owner: RendererOwnerIdentity? = nil) async throws -> SimulatorHost {
+        let host = try selectionStatus().host
+        _ = try await use(host, xcodeURL: xcodeURL, launchDisplay: false, owner: owner)
+        return host
+    }
+
+    /// Relinquishes the managed route while retaining the preferred display host.
+    /// A release never opens a host or changes the lifetime of a simulator.
+    nonisolated(nonsending) func release(owner: RendererOwnerIdentity? = nil) async throws -> Bool {
+        try rejectRootMutation()
+        guard try receiptStore.stateDirectoryExists() else { return false }
+        return try await receiptStore.withExistingExclusiveLock {
+            let live = await workspace.runningManagers()
+            let remaining = try receiptStore.loadHostSessions().filter { live.contains($0) && $0 != owner }
+            guard remaining.isEmpty else {
+                try receiptStore.saveHostSessions(remaining)
+                return false
+            }
+            guard let originalReceipt = try receiptStore.load() else {
+                try receiptStore.saveHostSessions([])
+                return false
+            }
+            let preferred = try receiptStore.loadHostSelection()
+                ?? (originalReceipt.expectedCurrent == .coreSimulator ? SimulatorHost.neo : .deviceHub)
+            try receiptStore.saveHostSelection(preferred)
+            let changed: Bool
+            if let receipt = try recoverManagedContext().receipt {
+                changed = try transition(to: receipt.original, capturingWith: nil)
+            } else { changed = false }
+            do { try receiptStore.saveHostSessions([]) }
+            catch {
+                throw hostPartialSuccessError(receiptURL: nil,
+                    identifier: "host-session-release-partial-success", error: error,
+                    message: "Display settings were restored, but the session record could not be removed")
+            }
+            return changed
         }
     }
 
@@ -73,7 +113,7 @@ struct HostModeController {
         }
     }
 
-    nonisolated(nonsending) func use(_ request: SimulatorHost, xcodeURL: URL? = nil, launchNeoHost: Bool = true, initialDeviceIdentifier: String? = nil) async throws -> ModeChangeReport {
+    nonisolated(nonsending) func use(_ request: SimulatorHost, xcodeURL: URL? = nil, launchDisplay: Bool = true, initialDeviceIdentifier: String? = nil, owner: RendererOwnerIdentity? = nil) async throws -> ModeChangeReport {
         try rejectRootMutation()
         return try await receiptStore.withExclusiveLock {
             let xcode = try installationInspector.validatedTargetXcode(at: xcodeURL)
@@ -84,6 +124,12 @@ struct HostModeController {
             _ = try recoverManagedContext()
             let terminatedNeo = request == .deviceHub
                 ? try await workspace.terminateNeoHosts(installationInspector.neoHostApplicationURL()) : 0
+            if let owner {
+                let live = await workspace.runningManagers()
+                var sessions = try receiptStore.loadHostSessions().filter { live.contains($0) }
+                if !sessions.contains(owner) { sessions.append(owner) }
+                try receiptStore.saveHostSessions(sessions)
+            }
             let didChange = try transition(to: host.mode.targetState, capturingWith: xcode)
             let receiptURL = try receiptStore.load() == nil ? nil : receiptStore.receiptURL
             do { try receiptStore.saveHostSelection(request) }
@@ -106,8 +152,9 @@ struct HostModeController {
                 }
                 switch host {
                 case .neo(let renderer):
-                    if launchNeoHost { _ = try await workspace.openNeoHost(renderer.applicationURL, xcode.applicationURL, initialDeviceIdentifier) }
-                case .deviceHub: _ = try await workspace.openDeviceHub(xcode.deviceHubApplicationURL)
+                    if launchDisplay { _ = try await workspace.openNeoHost(renderer.applicationURL, xcode.applicationURL, initialDeviceIdentifier) }
+                case .deviceHub:
+                    if launchDisplay { _ = try await workspace.openDeviceHub(xcode.deviceHubApplicationURL) }
                 }
             } catch {
                 let identifier = (error as? CLIError)?.identifier == "preference-conflict"

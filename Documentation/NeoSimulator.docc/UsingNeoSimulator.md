@@ -4,7 +4,8 @@ Open devices, manage their apps and profiles, and capture their screens.
 
 ## Open and create devices
 
-Open NeoSimulator.app and select **NeoSimulator** as the display host. Select a
+Open NeoSimulator.app. If you previously chose Device Hub, select **NeoSimulator**
+under **Preferred Display Host** in Settings. Select a
 device in the main window and choose **View Screen** to use its screen in the center pane. You can also
 use **Device** in the Dock menu, **File → Open Simulator**, or **View → Show Devices**
 to start a device or reopen its window. The manager's device menus group devices
@@ -233,7 +234,7 @@ that can supply them.
 If saving a screenshot fails, **Save Screenshot…** retries with the same captured
 image, even after disconnection. To capture a new image, save the retained one
 or confirm **Discard Screenshot…** first. Before closing, quitting, reconnecting,
-or switching Display Host, NeoSimulator asks you to save or discard an unsaved
+or switching Preferred Display Host, NeoSimulator asks you to save or discard an unsaved
 screenshot. Cancel in the save panel or close confirmation keeps the image;
 cancelling Close also keeps the window open.
 
@@ -246,7 +247,7 @@ file in the save panel permits replacing it after the panel's confirmation.
 
 If saving fails or you cancel the save panel, the completed recording remains
 in memory. Choose **Save Recording…** to try another destination. Closing the
-window, quitting, reconnecting, or switching Display Host finishes a pending
+window, quitting, reconnecting, or switching Preferred Display Host finishes a pending
 recording before disconnecting. An unsaved recording offers Save, Cancel, and
 Don't Save; Cancel keeps the connection open. **Discard Recording…** explicitly
 removes a retained recording after confirmation.

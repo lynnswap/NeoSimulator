@@ -9,10 +9,12 @@ Requires Apple Silicon, macOS 26.4+, and Xcode 27+.
 
 1. Download the DMG from [Releases](https://github.com/lynnswap/NeoSimulator/releases).
 2. Open it and drag **NeoSimulator.app** to **Applications**.
-3. Open NeoSimulator and choose **NeoSimulator** or **Device Hub** in Settings.
+3. Open NeoSimulator. It displays simulators while the app is running by default.
 
-The app stays in the Dock in either mode. Choose **Display Host** in Settings
-to switch hosts while leaving simulator devices running.
+The app stays in the Dock in either mode. Choose **Preferred Display Host** in
+Settings to use Device Hub instead. Switching hosts leaves simulator devices
+running. Quitting restores Xcode's previous display settings, normally Device Hub,
+and keeps your preferred host for the next launch.
 To update, quit NeoSimulator, replace the app in Applications, and reopen it.
 
 NeoSimulator supports iPhone, iPad, Apple Watch, Apple TV, and Apple Vision Pro,
