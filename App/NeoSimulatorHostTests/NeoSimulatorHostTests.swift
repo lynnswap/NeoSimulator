@@ -1926,6 +1926,23 @@ struct InputFocusTests {
         #expect(controller.session === session && display.disconnectCount == 0)
     }
 
+    @Test func nativeCanvasKeepsTheCompactWindowResizableWithDeviceBezels() throws {
+        let display = TestDisplay()
+        display.usesNativeCanvas = true
+        display.bezelPadding = NSSize(width: 10, height: 9)
+        let controller = try makeController(display, presentCompactWindow: { _ in })
+        defer { controller.invalidate() }
+        controller.showCompactWindow()
+        let window = try #require(controller.window)
+        #expect(window.styleMask.contains(.resizable))
+        controller.setDeviceBezelVisible(false)
+        controller.setDeviceBezelVisible(true)
+        #expect(window.styleMask.contains(.resizable))
+        controller.windowWillEnterFullScreen(Notification(name: NSWindow.willEnterFullScreenNotification, object: window))
+        controller.windowDidExitFullScreen(Notification(name: NSWindow.didExitFullScreenNotification, object: window))
+        #expect(window.styleMask.contains(.resizable))
+    }
+
     @Test func nativeCanvasMovesBetweenWindowsWithoutLosingItsViewport() async throws {
         _ = NSApplication.shared
         let display = TestDisplay()

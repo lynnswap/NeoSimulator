@@ -802,7 +802,9 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         else if !isFullScreen { window.backgroundColor = .black }
         updateContentMinimumSize()
         guard !isFullScreen else { return }
-        if padding == nil { window.styleMask.insert(.resizable) } else { window.styleMask.remove(.resizable) }
+        // Native canvases use AppKit resizing; only SimulatorKit supplies bezel resize handles.
+        if session.display.usesNativeCanvas || padding == nil { window.styleMask.insert(.resizable) }
+        else { window.styleMask.remove(.resizable) }
     }
 
     /// Lays out the toolbar immediately so size calculations use its final header height.
