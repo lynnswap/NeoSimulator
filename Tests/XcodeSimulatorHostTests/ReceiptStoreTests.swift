@@ -5,6 +5,18 @@ import Testing
 
 @Suite
 struct ReceiptStoreTests {
+    @Test func hostSessionsPreserveSubsecondProcessIdentities() throws {
+        let directory = try TemporaryTestDirectory()
+        let store = try ReceiptStore(directoryURL: directory.url)
+        let owner = RendererOwnerIdentity(processIdentifier: 42, launchDate: Date(timeIntervalSince1970: 100.125))
+        try store.withExclusiveLock {
+            try store.saveHostSessions([owner])
+            #expect(try store.loadHostSessions() == [owner])
+            try store.saveHostSessions([])
+            #expect(try store.loadHostSessions().isEmpty)
+        }
+    }
+
     @Test func receiptRoundTripsAndDeletes() throws {
         let directory = try TemporaryTestDirectory()
         let store = try ReceiptStore(directoryURL: directory.url)

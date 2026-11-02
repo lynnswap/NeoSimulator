@@ -36,15 +36,60 @@ struct HostModeController {
         }
     }
 
-    /// Local metadata records intent only. External changes are checked by use/restore,
-    /// so ordinary startup and catalog polling do not open protected app containers.
+    /// Local metadata records preference only. Applying or releasing a session checks live settings;
+    /// catalog polling does not open protected app containers.
     func selectionStatus() throws -> SimulatorHostSelectionStatus {
-        try readStatusSnapshot {
-            let receipt = try receiptStore.load()
-            let host = try receipt.map { $0.expectedCurrent == .coreSimulator ? SimulatorHost.neo : .deviceHub }
-                ?? receiptStore.loadHostSelection() ?? .deviceHub
-            return SimulatorHostSelectionStatus(host: host, restorationAvailable: receipt != nil,
-                allowsAutomaticHosting: host == .neo && receipt?.pending == nil)
+        try readStatusSnapshot { try makeSelectionStatus() }
+    }
+
+    private func makeSelectionStatus() throws -> SimulatorHostSelectionStatus {
+        let receipt = try receiptStore.load()
+        let host = try receiptStore.loadHostSelection()
+            ?? receipt.map { $0.expectedCurrent == .coreSimulator ? SimulatorHost.neo : .deviceHub } ?? .neo
+        return SimulatorHostSelectionStatus(host: host, restorationAvailable: receipt != nil,
+            allowsAutomaticHosting: host == .neo && receipt?.pending == nil)
+    }
+
+    /// Applies the saved preference without opening a display. Screen requests start renderers as needed.
+    nonisolated(nonsending) func beginSession(xcodeURL: URL? = nil, owner: RendererOwnerIdentity? = nil) async throws -> SimulatorHost {
+        try rejectRootMutation()
+        return try await receiptStore.withExclusiveLock {
+            let host = try makeSelectionStatus().host
+            _ = try await apply(host, xcodeURL: xcodeURL, launchDisplay: false, initialDeviceIdentifier: nil, owner: owner)
+            return host
+        }
+    }
+
+    /// Relinquishes the managed route while retaining the preferred display host.
+    /// A release never opens a host or changes the lifetime of a simulator.
+    nonisolated(nonsending) func release(owner: RendererOwnerIdentity? = nil) async throws -> Bool {
+        try rejectRootMutation()
+        guard try receiptStore.stateDirectoryExists() else { return false }
+        return try await receiptStore.withExistingExclusiveLock {
+            let live = await workspace.runningManagers()
+            let remaining = try receiptStore.loadHostSessions().filter { live.contains($0) && $0 != owner }
+            guard remaining.isEmpty else {
+                try receiptStore.saveHostSessions(remaining)
+                return false
+            }
+            guard let originalReceipt = try receiptStore.load() else {
+                try receiptStore.saveHostSessions([])
+                return false
+            }
+            let preferred = try receiptStore.loadHostSelection()
+                ?? (originalReceipt.expectedCurrent == .coreSimulator ? SimulatorHost.neo : .deviceHub)
+            try receiptStore.saveHostSelection(preferred)
+            let changed: Bool
+            if let receipt = try recoverManagedContext().receipt {
+                changed = try transition(to: receipt.original, capturingWith: nil)
+            } else { changed = false }
+            do { try receiptStore.saveHostSessions([]) }
+            catch {
+                throw hostPartialSuccessError(receiptURL: nil,
+                    identifier: "host-session-release-partial-success", error: error,
+                    message: "Display settings were restored, but the session record could not be removed")
+            }
+            return changed
         }
     }
 
@@ -73,49 +118,62 @@ struct HostModeController {
         }
     }
 
-    nonisolated(nonsending) func use(_ request: SimulatorHost, xcodeURL: URL? = nil, launchNeoHost: Bool = true, initialDeviceIdentifier: String? = nil) async throws -> ModeChangeReport {
+    nonisolated(nonsending) func use(_ request: SimulatorHost, xcodeURL: URL? = nil, launchDisplay: Bool = true, initialDeviceIdentifier: String? = nil, owner: RendererOwnerIdentity? = nil) async throws -> ModeChangeReport {
         try rejectRootMutation()
         return try await receiptStore.withExclusiveLock {
-            let xcode = try installationInspector.validatedTargetXcode(at: xcodeURL)
-            let host: ResolvedHost = switch request {
-            case .neo: .neo(try installationInspector.validatedNeoHost(for: xcode))
-            case .deviceHub: .deviceHub
-            }
-            _ = try recoverManagedContext()
-            let terminatedNeo = request == .deviceHub
-                ? try await workspace.terminateNeoHosts(installationInspector.neoHostApplicationURL()) : 0
-            let didChange = try transition(to: host.mode.targetState, capturingWith: xcode)
-            let receiptURL = try receiptStore.load() == nil ? nil : receiptStore.receiptURL
-            do { try receiptStore.saveHostSelection(request) }
-            catch {
-                throw hostPartialSuccessError(receiptURL: receiptURL, identifier: "host-selection-partial-success", error: error,
-                    message: "The route is configured, but the display choice could not be saved and its UI host was not opened")
-            }
-            var terminatedDeviceHub = 0
-            if case .neo = host {
-                do {
-                    terminatedDeviceHub = try await workspace.terminateDeviceHubs(xcode.deviceHubApplicationURL)
-                } catch {
-                    throw hostPartialSuccessError(receiptURL: receiptURL, identifier: "device-hub-termination-partial-success", error: error, message: "NeoSimulator mode is configured, but Device Hub could not be closed and the renderer was not opened")
-                }
-            }
-            do {
-                let observed = try defaultsStore.readState()
-                guard observed == host.mode.targetState else {
-                    throw conflictError(expected: host.mode.targetState, observed: observed)
-                }
-                switch host {
-                case .neo(let renderer):
-                    if launchNeoHost { _ = try await workspace.openNeoHost(renderer.applicationURL, xcode.applicationURL, initialDeviceIdentifier) }
-                case .deviceHub: _ = try await workspace.openDeviceHub(xcode.deviceHubApplicationURL)
-                }
-            } catch {
-                let identifier = (error as? CLIError)?.identifier == "preference-conflict"
-                    ? "\(host.mode.rawValue)-host-invalidated" : "\(host.mode.rawValue)-host-launch-partial-success"
-                throw hostPartialSuccessError(receiptURL: receiptURL, identifier: identifier, error: error, message: "\(host.mode.rawValue) mode is configured, but its UI host could not be opened")
-            }
-            return ModeChangeReport(host: host, didChangePreferences: didChange, xcode: xcode, receiptURL: receiptURL, terminatedDeviceHubCount: terminatedDeviceHub, terminatedNeoHostCount: terminatedNeo)
+            try await apply(request, xcodeURL: xcodeURL, launchDisplay: launchDisplay,
+                            initialDeviceIdentifier: initialDeviceIdentifier, owner: owner)
         }
+    }
+
+    nonisolated(nonsending) private func apply(_ request: SimulatorHost, xcodeURL: URL?, launchDisplay: Bool,
+                                             initialDeviceIdentifier: String?, owner: RendererOwnerIdentity?) async throws -> ModeChangeReport {
+        let xcode = try installationInspector.validatedTargetXcode(at: xcodeURL)
+        let host: ResolvedHost = switch request {
+        case .neo: .neo(try installationInspector.validatedNeoHost(for: xcode))
+        case .deviceHub: .deviceHub
+        }
+        _ = try recoverManagedContext()
+        let terminatedNeo = request == .deviceHub
+            ? try await workspace.terminateNeoHosts(installationInspector.neoHostApplicationURL()) : 0
+        if let owner {
+            let live = await workspace.runningManagers()
+            var sessions = try receiptStore.loadHostSessions().filter { live.contains($0) }
+            if !sessions.contains(owner) { sessions.append(owner) }
+            try receiptStore.saveHostSessions(sessions)
+        }
+        let didChange = try transition(to: host.mode.targetState, capturingWith: xcode)
+        let receiptURL = try receiptStore.load() == nil ? nil : receiptStore.receiptURL
+        do { try receiptStore.saveHostSelection(request) }
+        catch {
+            throw hostPartialSuccessError(receiptURL: receiptURL, identifier: "host-selection-partial-success", error: error,
+                message: "The route is configured, but the display choice could not be saved and its UI host was not opened")
+        }
+        var terminatedDeviceHub = 0
+        if case .neo = host {
+            do {
+                terminatedDeviceHub = try await workspace.terminateDeviceHubs(xcode.deviceHubApplicationURL)
+            } catch {
+                throw hostPartialSuccessError(receiptURL: receiptURL, identifier: "device-hub-termination-partial-success", error: error, message: "NeoSimulator mode is configured, but Device Hub could not be closed and the renderer was not opened")
+            }
+        }
+        do {
+            let observed = try defaultsStore.readState()
+            guard observed == host.mode.targetState else {
+                throw conflictError(expected: host.mode.targetState, observed: observed)
+            }
+            switch host {
+            case .neo(let renderer):
+                if launchDisplay { _ = try await workspace.openNeoHost(renderer.applicationURL, xcode.applicationURL, initialDeviceIdentifier) }
+            case .deviceHub:
+                if launchDisplay { _ = try await workspace.openDeviceHub(xcode.deviceHubApplicationURL) }
+            }
+        } catch {
+            let identifier = (error as? CLIError)?.identifier == "preference-conflict"
+                ? "\(host.mode.rawValue)-host-invalidated" : "\(host.mode.rawValue)-host-launch-partial-success"
+            throw hostPartialSuccessError(receiptURL: receiptURL, identifier: identifier, error: error, message: "\(host.mode.rawValue) mode is configured, but its UI host could not be opened")
+        }
+        return ModeChangeReport(host: host, didChangePreferences: didChange, xcode: xcode, receiptURL: receiptURL, terminatedDeviceHubCount: terminatedDeviceHub, terminatedNeoHostCount: terminatedNeo)
     }
 
     nonisolated(nonsending) func restore(force: Bool = false) async throws -> RestoreReport {

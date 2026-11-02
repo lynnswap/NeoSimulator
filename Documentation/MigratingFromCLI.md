@@ -9,7 +9,7 @@ restoration.
 
 1. Quit the old NeoSimulator app, or the Xcode 26 **Simulator** app if you used
    `xcode-simulator-host use legacy`.
-2. [Install the new app](../README.md#installation) and choose a **Display Host** in Settings. Its
+2. [Install the new app](../README.md#installation) and choose a **Preferred Display Host** in Settings. Its
    **NeoSimulator** and **Device Hub** choices replace the CLI's host-switching
    commands; Legacy mode is not provided.
 

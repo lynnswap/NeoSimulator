@@ -91,6 +91,8 @@ final class UIFrameworkSettings {
 
 protocol SimulatorManagerSource: DeviceSettingsSource {
     func status() async throws -> SimulatorHostStatus
+    func beginSession() async throws
+    func endSession() async throws
     func inventory() async -> DeviceInventorySnapshot
     func xcodeURL(forDevice deviceID: DeviceInventoryID) async throws -> URL
     func installedXcodes() async throws -> [SimulatorXcode]
@@ -222,6 +224,11 @@ final class SimulatorManagerModel {
 
     func start() {
         perform("Loading devices…") {
+            do { try await self.controller.beginSession() }
+            catch {
+                self.status = try? await self.controller.status()
+                throw error
+            }
             let status = try await self.controller.status()
             self.status = status
         }
@@ -672,10 +679,12 @@ final class SimulatorManagerModel {
         }
     }
 
-    func quitRenderer(keepingDevicesRunning: Bool?) async throws {
+    func quitRenderer(keepingDevicesRunning: Bool?, beforeEndingSession: () async throws -> Void = {}) async throws {
         do {
             try await prepareForQuit()
             try await controller.quitRenderer(keepingDevicesRunning: keepingDevicesRunning)
+            try await beforeEndingSession()
+            try await controller.endSession()
         } catch { resumeAfterCancelledQuit(); throw error }
     }
 

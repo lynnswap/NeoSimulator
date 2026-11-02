@@ -56,6 +56,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return controller
     }
 
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        model.beforeStoppingScreens = { [weak self] in try await self?.stopScreens() }
+        model.beforeManagingRemoteDevices = { [weak self] identifiers in
+            try await self?.screens.stopRemoteScreens(for: identifiers)
+        }
+        model.beforeManagingSimulators = { [weak self] action, devices in
+            try await self?.screens.prepareSimulatorManagement(action, devices: devices)
+        }
+        model.afterManagingSimulators = { [weak self] action, devices in
+            try await self?.screens.finishSimulatorManagement(action, devices: devices)
+        }
+        model.onError = { [weak self] error in
+            if !(error is CancellationError) { self?.present(error) }
+        }
+        model.start()
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         CaptureThumbnail.reportDetached = { [weak self] error in self?.present(error) }
         simulatorMenus.toggleTestingDevices = {
@@ -70,19 +87,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         installMenu()
         screens.observeRemoteDevices()
-        model.beforeStoppingScreens = { [weak self] in try await self?.stopScreens() }
-        model.beforeManagingRemoteDevices = { [weak self] identifiers in
-            try await self?.screens.stopRemoteScreens(for: identifiers)
-        }
-        model.beforeManagingSimulators = { [weak self] action, devices in
-            try await self?.screens.prepareSimulatorManagement(action, devices: devices)
-        }
-        model.afterManagingSimulators = { [weak self] action, devices in
-            try await self?.screens.finishSimulatorManagement(action, devices: devices)
-        }
-        model.onError = { [weak self] error in
-            if !(error is CancellationError) { self?.present(error) }
-        }
         rendererDevicesObserver = DistributedNotificationCenter.default().addObserver(
             forName: Notification.Name("dev.lynnswap.NeoSimulator.RendererDevicesDidChange"), object: nil, queue: .main
         ) { [weak self] notification in
@@ -99,7 +103,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task { @MainActor in await self?.model.refresh() }
         }
         showDevices(nil)
-        model.start()
         startInventoryObservation()
         connectionTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in
@@ -157,6 +160,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let preparation = Task.immediate { try await model.prepareForQuit() }
         let restoring = restartsAfterQuitting ? screens.restorations() : []
         Task {
+            var relaunchProcess: Process?
             do {
                 mainWindow?.stopInspectorReads()
                 try await preparation.value
@@ -169,15 +173,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 activeStateObservation = nil
                 await screens.waitForRemoteHostCleanup()
                 try await stopScreens()
-                try await model.quitRenderer(keepingDevicesRunning: quitKeepingDevicesRunning)
-                if restartsAfterQuitting {
-                    let urls = restoring.map(\.url)
-                    let helper = rendererURL.appendingPathComponent("Contents/MacOS/NeoSimulatorRenderer")
-                    try await ManagerRelaunch(processIdentifier: ProcessInfo.processInfo.processIdentifier,
-                        applicationURL: Bundle.main.bundleURL, deviceURLs: urls).schedule(using: helper)
+                try await model.quitRenderer(keepingDevicesRunning: quitKeepingDevicesRunning) {
+                    if self.restartsAfterQuitting {
+                        let urls = restoring.map(\.url)
+                        let helper = self.rendererURL.appendingPathComponent("Contents/MacOS/NeoSimulatorRenderer")
+                        relaunchProcess = try await ManagerRelaunch(processIdentifier: ProcessInfo.processInfo.processIdentifier,
+                            applicationURL: Bundle.main.bundleURL, deviceURLs: urls).schedule(using: helper)
+                    }
                 }
                 sender.reply(toApplicationShouldTerminate: true)
             } catch {
+                if let relaunchProcess, relaunchProcess.isRunning { relaunchProcess.terminate() }
                 quitting = false
                 if restartsAfterQuitting { quitKeepingDevicesRunning = nil }
                 restartsAfterQuitting = false

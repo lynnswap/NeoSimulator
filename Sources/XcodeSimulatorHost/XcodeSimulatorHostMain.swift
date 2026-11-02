@@ -34,8 +34,10 @@ public struct SimulatorPresentationContext: Sendable {
 }
 
 public struct SimulatorHostStatus: Sendable {
-    /// The app's saved display choice. Reading status does not validate Xcode's live preferences.
+    /// The display host available in this app session.
     public let host: SimulatorHost
+    /// The saved preference, including when applying it in this session failed.
+    public let preferredHost: SimulatorHost
     public let restorationAvailable: Bool
     public let rendererRunning: Bool
 }
@@ -118,7 +120,7 @@ public struct SimulatorHostFailure: Error, LocalizedError, Sendable {
         underlyingRecoverySuggestion = (error as? any LocalizedError)?.recoverySuggestion
         let identifier = (error as? CLIError)?.identifier ?? ""
         technicalDetails = identifier.isEmpty ? error.localizedDescription : "\(identifier): \(error.localizedDescription)"
-        if ["preference-conflict", "ambiguous-intermediate"].contains(identifier) || identifier.hasSuffix("-host-invalidated") {
+        if ["preference-conflict", "ambiguous-intermediate", "inconsistent-preferences"].contains(identifier) || identifier.hasSuffix("-host-invalidated") {
             kind = .preferencesChanged
         } else if identifier.hasSuffix("-partial-success") {
             kind = .partialSuccess
@@ -278,6 +280,7 @@ public actor SimulatorHostController {
     private let bootTracker = SimulatorBootTracker()
     private nonisolated let screenOpenCancellations = ScreenOpenCancellations()
     private var startupHandled = false
+    private var allowsSessionHosting = false
     private var startupDeviceIdentifier: DeviceInventoryID?
     private var operationInProgress = false
     private var operationWaiters: [(id: UUID, continuation: CheckedContinuation<Void, any Error>)] = []
@@ -291,12 +294,36 @@ public actor SimulatorHostController {
 
     public func status() async throws -> SimulatorHostStatus {
         try await operation {
-            let selection = try await self.hostSelectionStatus()
+            let preferred = try await self.savedHostSelectionStatus()
+            let selection = self.effectiveSelection(preferred)
             return SimulatorHostStatus(
                 host: selection.host,
+                preferredHost: preferred.host,
                 restorationAvailable: selection.restorationAvailable,
                 rendererRunning: try await !self.registeredRenderers().isEmpty
             )
+        }
+    }
+
+    /// Applies the preferred display host for this manager's lifetime without opening a screen.
+    public func beginSession() async throws {
+        try await operation {
+            let xcode = try await self.resolveXcode(nil)
+            try await self.beginHostSession(xcodeURL: xcode.applicationURL)
+            self.allowsSessionHosting = true
+        }
+    }
+
+    /// Returns Xcode's managed settings to their saved values without changing the preference or opening Device Hub.
+    public func endSession() async throws {
+        try await operation {
+            do {
+                try await self.releaseHostSession()
+                self.allowsSessionHosting = false
+            } catch {
+                self.invalidateHostAfterFailedChange(error)
+                throw error
+            }
         }
     }
 
@@ -391,7 +418,12 @@ public actor SimulatorHostController {
 
     public func restore(force: Bool = false) async throws {
         try await operation {
-            try await self.restoreHost(force: force)
+            do { try await self.restoreHost(force: force) }
+            catch {
+                self.invalidateHostAfterFailedChange(error)
+                throw error
+            }
+            self.allowsSessionHosting = false
             self.startupHandled = true
             self.startupDeviceIdentifier = nil
         }
@@ -713,10 +745,23 @@ public actor SimulatorHostController {
         let previousHost = try await hostSelectionStatus().host
         if host == .deviceHub || previousHost == .deviceHub { bootTracker.reset() }
         let existing = xcodeURL == nil ? renderers.first : renderers.first { sameURL(URL(fileURLWithPath: $0.xcodePath), xcode.applicationURL) }
-        try await useHost(host, xcodeURL: xcode.applicationURL, launchNeoHost: existing == nil)
+        do {
+            try await useHost(host, xcodeURL: xcode.applicationURL, launchDisplay: host == .deviceHub || existing == nil)
+        } catch {
+            invalidateHostAfterFailedChange(error)
+            throw error
+        }
+        allowsSessionHosting = true
         if host == .neo {
             if let existing { send("activate", to: existing) }
             else if let launched = try await registeredRenderers().first(where: { sameURL(URL(fileURLWithPath: $0.xcodePath), xcode.applicationURL) }) { send("show-browser", to: launched) }
+        }
+    }
+
+    private func invalidateHostAfterFailedChange(_ error: any Error) {
+        switch SimulatorHostFailure(error).kind {
+        case .partialSuccess, .preferencesChanged: allowsSessionHosting = false
+        default: break
         }
     }
 
@@ -914,9 +959,34 @@ public actor SimulatorHostController {
     }
 
     @concurrent
-    private func hostSelectionStatus() async throws -> SimulatorHostSelectionStatus {
+    private func savedHostSelectionStatus() async throws -> SimulatorHostSelectionStatus {
         let workspace = await WorkspaceClient.live(headlessRenderers: presentSimulator != nil)
         return try makeCore(workspace: workspace).selectionStatus()
+    }
+
+    private func hostSelectionStatus() async throws -> SimulatorHostSelectionStatus {
+        let preferred = try await savedHostSelectionStatus()
+        return effectiveSelection(preferred)
+    }
+
+    private func effectiveSelection(_ preferred: SimulatorHostSelectionStatus) -> SimulatorHostSelectionStatus {
+        let host: SimulatorHost = allowsSessionHosting && preferred.allowsAutomaticHosting ? preferred.host : .deviceHub
+        return SimulatorHostSelectionStatus(host: host, restorationAvailable: preferred.restorationAvailable,
+                                            allowsAutomaticHosting: host == .neo && preferred.allowsAutomaticHosting)
+    }
+
+    @concurrent
+    private func beginHostSession(xcodeURL: URL) async throws {
+        let workspace = await WorkspaceClient.live(headlessRenderers: presentSimulator != nil)
+        let owner = try await RendererOwnerIdentity.current()
+        _ = try await makeCore(workspace: workspace).beginSession(xcodeURL: xcodeURL, owner: owner)
+    }
+
+    @concurrent
+    private func releaseHostSession() async throws {
+        let workspace = await WorkspaceClient.live(headlessRenderers: presentSimulator != nil)
+        let owner = try await RendererOwnerIdentity.current()
+        _ = try await makeCore(workspace: workspace).release(owner: owner)
     }
 
     @concurrent
@@ -926,9 +996,10 @@ public actor SimulatorHostController {
     }
 
     @concurrent
-    private func useHost(_ host: SimulatorHost, xcodeURL: URL, launchNeoHost: Bool) async throws {
+    private func useHost(_ host: SimulatorHost, xcodeURL: URL, launchDisplay: Bool) async throws {
         let workspace = await WorkspaceClient.live(headlessRenderers: presentSimulator != nil)
-        _ = try await makeCore(workspace: workspace).use(host, xcodeURL: xcodeURL, launchNeoHost: launchNeoHost)
+        let owner = try await RendererOwnerIdentity.current()
+        _ = try await makeCore(workspace: workspace).use(host, xcodeURL: xcodeURL, launchDisplay: launchDisplay, owner: owner)
     }
 
     @concurrent

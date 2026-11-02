@@ -4,15 +4,21 @@ Select a display host and restore saved Xcode preferences from the app.
 
 ## Select a display host
 
-Choose **NeoSimulator** or **Device Hub** under **Display Host** in
-**Settings → General**.
-This is an app-wide choice; changing hosts leaves devices running. Routing
+Choose **NeoSimulator** or **Device Hub** under **Preferred Display Host** in
+**Settings → General**. New installations use NeoSimulator while the app is open.
+Existing choices are preserved. Changing hosts leaves devices running. Routing
 preferences apply across Xcode installations.
 
-Startup, catalog updates, and opening device screens use the saved display
-choice. Selecting a host in Settings or restoring original settings checks
-Xcode's current preferences, including changes made by other tools. macOS may
-request access to other apps' data for those explicit operations.
+Startup applies the saved preference. Quitting restores Xcode's previous display
+settings, normally Device Hub, without opening its window or changing the saved
+preference. NeoSimulator does not launch automatically. After a force quit or
+crash, open NeoSimulator and quit normally to restore the display settings.
+
+Startup, quitting, selecting a host, and restoring original settings check Xcode's
+current preferences, including changes made by other tools. macOS may request
+access to other apps' data. Catalog updates and opening device screens use local
+state. If startup cannot apply NeoSimulator, the settings keep your preference
+and show **Use NeoSimulator** to retry after resolving the reported error.
 
 Continue using Xcode for Build & Run. The main window's inspector contains
 settings for the selected simulator, separate from the app-wide display host.
@@ -52,7 +58,7 @@ do not select another host.
 
 **NeoSimulator → Settings…** (Command-,) contains General, Devices, and Capture
 settings.
-General controls the display host, UI framework installation, reopening the last simulator, keeping devices
+General controls the preferred display host, UI framework installation, reopening the last simulator, keeping devices
 running when closing or quitting, and touch indicators. Capture controls the
 device mask, GIF image size, and the file-size versus animation-smoothness choice.
 

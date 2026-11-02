@@ -9,6 +9,42 @@ import Synchronization
 
 @Suite(.serialized, .timeLimit(.minutes(1))) @MainActor
 struct ManagerModelTests {
+    @Test func launchAppliesThePreferenceAndQuitReleasesItAfterTheRenderer() async throws {
+        let source = ManagerModelSource(devices: [])
+        let manager = SimulatorManagerModel(source: source)
+        manager.start()
+        try await manager.quitRenderer(keepingDevicesRunning: true)
+        #expect(await source.sessionEvents == ["begin", "status", "quit", "end"])
+    }
+
+    @Test func aFailedLaunchStillExposesThePreferredHostForRetry() async throws {
+        let source = ManagerModelSource(devices: [])
+        await source.failSessionStart()
+        let manager = SimulatorManagerModel(source: source)
+        var reported = false
+        manager.onError = { _ in reported = true }
+        manager.start()
+        try await manager.prepareForQuit()
+        #expect(reported)
+        #expect(manager.status?.preferredHost == .neo)
+        #expect(manager.status?.host == .deviceHub)
+    }
+
+    @Test func failedExitPreparationKeepsTheSessionAvailableForAnotherAttempt() async throws {
+        let source = ManagerModelSource(devices: [])
+        let manager = SimulatorManagerModel(source: source)
+        manager.start()
+        do {
+            try await manager.quitRenderer(keepingDevicesRunning: true) {
+                throw ManagerModelSource.Failure.unavailable
+            }
+            Issue.record("Exit preparation should have failed")
+        } catch ManagerModelSource.Failure.unavailable {}
+        #expect(await !source.sessionEvents.contains("end"))
+        try await manager.quitRenderer(keepingDevicesRunning: true)
+        #expect(await source.sessionEvents.last == "end")
+    }
+
     @Test func settingsProvideSimulatorCreationAndKeepExistingPreferences() async throws {
         _ = NSApplication.shared
         let domain = "NeoSimulator.SettingsFixture.\(UUID().uuidString)"
@@ -1600,6 +1636,26 @@ struct ManagerModelTests {
     }
 
 
+    @Test func initialURLRestorationWaitsForTheDisplaySession() async throws {
+        _ = NSApplication.shared
+        let source = ManagerModelSource(devices: [simulator()])
+        let app = AppDelegate()
+        app.model = SimulatorManagerModel(source: source)
+        defer { app.mainWindow?.window?.close() }
+        var events = source.events.makeAsyncIterator()
+        let restoration = SimulatorScreenRestoration(device: SimulatorDeviceIdentifier("same-udid"),
+            xcodeURL: URL(fileURLWithPath: "/Xcode.app"), presentation: .compact)
+        app.applicationWillFinishLaunching(Notification(name: NSApplication.willFinishLaunchingNotification))
+        app.application(NSApp, open: [restoration.url])
+        while let event = await events.next() {
+            if event == .open(restoration.deviceID) { break }
+        }
+        #expect(await source.sessionEvents.first == "begin")
+        #expect(app.model.status?.preferredHost == .neo)
+        await source.completeOpen()
+        try await app.model.quitRenderer(keepingDevicesRunning: true)
+    }
+
     @Test func relaunchWaitsForTheOldProcessToExit() async throws {
         let owner = Process()
         owner.executableURL = URL(fileURLWithPath: "/bin/cat")
@@ -2544,6 +2600,14 @@ struct ManagerModelTests {
 }
 
 actor ManagerModelSource: SimulatorManagerSource {
+    private var failsSessionStart = false
+    private(set) var sessionEvents: [String] = []
+    func failSessionStart() { failsSessionStart = true }
+    func beginSession() throws {
+        sessionEvents.append("begin")
+        if failsSessionStart { throw Failure.unavailable }
+    }
+    func endSession() { sessionEvents.append("end") }
     private nonisolated let cancelledOpens = Mutex<Set<DeviceInventoryID>>([])
     nonisolated var cancelledOpenIDs: Set<DeviceInventoryID> { cancelledOpens.withLock { $0 } }
     enum Event: Equatable, Sendable { case read(DeviceInventoryID), write(DeviceInventoryID), open(DeviceInventoryID), close(DeviceInventoryID), inspect(DeviceInventoryID), inventory, quit, manage(DeviceManagementAction, [DeviceInventoryID]) }
@@ -2613,7 +2677,11 @@ actor ManagerModelSource: SimulatorManagerSource {
         inventoryRead?.resume()
         inventoryRead = nil
     }
-    func status() -> SimulatorHostStatus { SimulatorHostStatus(host: .neo, restorationAvailable: false, rendererRunning: false) }
+    func status() -> SimulatorHostStatus {
+        sessionEvents.append("status")
+        return SimulatorHostStatus(host: failsSessionStart ? .deviceHub : .neo, preferredHost: .neo,
+                                   restorationAvailable: false, rendererRunning: false)
+    }
     func deviceSettings(for device: InventoryDevice) async throws -> SimulatorDeviceSettings {
         readCount += 1
         if let immediateRead {
@@ -2676,7 +2744,7 @@ actor ManagerModelSource: SimulatorManagerSource {
             waiting?.resume(throwing: Failure.unavailable)
         }
     }
-    func quitRenderer(keepingDevicesRunning: Bool?) { quitCount += 1; continuation.yield(.quit) }
+    func quitRenderer(keepingDevicesRunning: Bool?) { sessionEvents.append("quit"); quitCount += 1; continuation.yield(.quit) }
     func selectHost(_ host: SimulatorHost, xcodeURL: URL?) throws { throw Failure.unavailable }
     nonisolated func makeScreenOpenRequest(for deviceID: DeviceInventoryID) -> SimulatorScreenOpenRequest {
         SimulatorScreenOpenRequest(deviceID: deviceID) { _ = self.cancelledOpens.withLock { $0.insert(deviceID) } }
