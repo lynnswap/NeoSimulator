@@ -485,11 +485,8 @@ public actor SimulatorHostController {
     func screenOpen(_ request: SimulatorScreenOpenRequest, processStartedAt: TimeInterval? = nil,
                     operation: @escaping @Sendable () async throws -> Void) async throws {
         try await withTaskCancellationHandler {
-            let task = Task {
-                try Task.checkCancellation()
-                try await operation()
-                try Task.checkCancellation()
-            }
+            // The actor hop keeps the operation behind admission, even when its closure is nonisolated.
+            let task = Task { try await self.performScreenOpen(operation) }
             if !screenOpenCancellations.admit(request, task: task, processStartedAt: processStartedAt) { task.cancel() }
             defer {
                 screenOpenCancellations.finish(request)
@@ -497,6 +494,12 @@ public actor SimulatorHostController {
             }
             try await task.value
         } onCancel: { request.cancel() }
+    }
+
+    private func performScreenOpen(_ operation: @Sendable () async throws -> Void) async throws {
+        try Task.checkCancellation()
+        try await operation()
+        try Task.checkCancellation()
     }
 
     nonisolated func isCancelledScreenConnection(_ connection: XcodeSimulatorConnection) -> Bool {
