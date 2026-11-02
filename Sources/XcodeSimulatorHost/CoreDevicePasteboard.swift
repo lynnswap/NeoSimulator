@@ -83,57 +83,59 @@ public final class CoreDevicePasteboardTransport: PasteboardTransport {
         let snapshotStream: @MainActor (NativeSwiftValue) throws -> NativeSwiftValue
         let invalidate: @MainActor (NativeSwiftValue) throws -> Void
 
-        init(runtime: ABIRuntime) throws {
-            let errorType = try runtime.resolveAndWait(.swift(.type("CoreDevice.CoreDeviceError")))
-            let sampleError = try errorType.resolveAndWait(.swift(.staticGetter("ioError", as: (() -> NativeSwiftValue).self,
+        init(runtime: ABIRuntime) async throws {
+            let errorType = try await runtime.resolve(.swift(.type("CoreDevice.CoreDeviceError")))
+            let sampleError = try await errorType.resolve(.swift(.staticGetter("ioError", as: (() -> NativeSwiftValue).self,
                 valueABIs: [errorType: try .opaque(named: errorType.name)])))
             let owner = try unsafe sampleError.unsafeInvoke()
             // Open the framework's actual Error representation instead of mirroring its resilient layout.
             guard let failure = try owner.withCopy({ $0 as? any Error }) else {
                 throw CLIError.unavailable("pasteboard-error-type", "The native pasteboard error type could not be resolved.")
             }
-            try self.init(runtime: runtime, failure: failure)
+            try await self.init(runtime: runtime, failure: failure)
         }
 
-        private init<Failure: Error>(runtime: ABIRuntime, failure: Failure) throws {
-            let snapshotType = try runtime.resolveAndWait(.swift(.type("CoreDeviceUtilities.PasteboardSnapshot")))
-            let metadataType = try runtime.resolveAndWait(.swift(.type("CoreDeviceUtilities.PasteboardSnapshotMetadata")))
-            let policyType = try runtime.resolveAndWait(.swift(.type("CoreDeviceUtilities.PasteboardDataInclusionPolicy")))
-            let itemType = try runtime.resolveAndWait(.swift(.type("CoreDeviceUtilities.PasteboardItem")))
-            let monitorType = try runtime.resolveAndWait(.swift(.type("CoreDevice.PasteboardMonitorSession")))
+        private init<Failure: Error>(runtime: ABIRuntime, failure: Failure) async throws {
+            let snapshotType = try await runtime.resolve(.swift(.type("CoreDeviceUtilities.PasteboardSnapshot")))
+            let metadataType = try await runtime.resolve(.swift(.type("CoreDeviceUtilities.PasteboardSnapshotMetadata")))
+            let policyType = try await runtime.resolve(.swift(.type("CoreDeviceUtilities.PasteboardDataInclusionPolicy")))
+            let itemType = try await runtime.resolve(.swift(.type("CoreDeviceUtilities.PasteboardItem")))
+            let monitorType = try await runtime.resolve(.swift(.type("CoreDevice.PasteboardMonitorSession")))
             let abis = try Dictionary(uniqueKeysWithValues: [snapshotType, metadataType, policyType, itemType].map {
                 ($0, try NativeType.opaque(named: $0.name))
             })
-            let deviceSnapshots = try NativeAsyncStream(runtime: runtime, element: snapshotType, throwing: true)
-            let macSnapshots = try NativeAsyncStream(runtime: runtime, element: snapshotType, throwing: false)
+            let (deviceSnapshots, macSnapshots) = try await runtime.prepare { runtime in
+                (try NativeAsyncStream(runtime: runtime, element: snapshotType, throwing: true),
+                 try NativeAsyncStream(runtime: runtime, element: snapshotType, throwing: false))
+            }
             let policy = try policyType.makeEnumCase(named: "allResolved")
-            let capture = try snapshotType.resolveAndWait(.swift(.initializer("init(from:dataPolicy:)",
+            let capture = try await snapshotType.resolve(.swift(.initializer("init(from:dataPolicy:)",
                 as: ((NSPasteboard, NativeSwiftValue) async throws(Failure) -> NativeSwiftValue).self, valueABIs: abis)))
-            let write = try snapshotType.resolveAndWait(.swift(.method("write(to:)",
+            let write = try await snapshotType.resolve(.swift(.method("write(to:)",
                 as: ((NSPasteboard) throws(Failure) -> Int).self, valueABIs: abis,
                 receiverABI: .opaque(named: snapshotType.name))))
-            let changes = try snapshotType.resolveAndWait(.swift(.staticMethod("changes(on:dataPolicy:)",
+            let changes = try await snapshotType.resolve(.swift(.staticMethod("changes(on:dataPolicy:)",
                 as: ((NSPasteboard, NativeSwiftValue) -> NativeSwiftValue).self,
                 valueABIs: abis.merging(macSnapshots.abis) { a, _ in a })))
-            let metadata = try snapshotType.resolveAndWait(.swift(.getter("metadata", as: (() -> NativeSwiftValue?).self,
+            let metadata = try await snapshotType.resolve(.swift(.getter("metadata", as: (() -> NativeSwiftValue?).self,
                 valueABIs: abis, receiverABI: .opaque(named: snapshotType.name))))
-            let source = try snapshotType.resolveAndWait(.swift(.getter("sourceMetadata", as: (() -> NativeSwiftValue?).self,
+            let source = try await snapshotType.resolve(.swift(.getter("sourceMetadata", as: (() -> NativeSwiftValue?).self,
                 valueABIs: abis, receiverABI: .opaque(named: snapshotType.name))))
-            let isSame = try metadataType.resolveAndWait(.swift(.staticMethod("==(_:_:)",
+            let isSame = try await metadataType.resolve(.swift(.staticMethod("==(_:_:)",
                 as: ((NativeSwiftValue, NativeSwiftValue) -> Bool).self, valueABIs: abis)))
-            let nonce = try metadataType.resolveAndWait(.swift(.getter("nonce", as: (() -> String).self,
+            let nonce = try await metadataType.resolve(.swift(.getter("nonce", as: (() -> String).self,
                 valueABIs: abis, receiverABI: .opaque(named: metadataType.name))))
-            let pasteboardName = try metadataType.resolveAndWait(.swift(.getter("pasteboardName", as: (() -> String).self,
+            let pasteboardName = try await metadataType.resolve(.swift(.getter("pasteboardName", as: (() -> String).self,
                 valueABIs: abis, receiverABI: .opaque(named: metadataType.name))))
-            let changeCount = try metadataType.resolveAndWait(.swift(.getter("changeCount", as: (() -> Int64).self,
+            let changeCount = try await metadataType.resolve(.swift(.getter("changeCount", as: (() -> Int64).self,
                 valueABIs: abis, receiverABI: .opaque(named: metadataType.name))))
-            let items = try snapshotType.resolveAndWait(.swift(.getter("items", as: (() -> [NativeSwiftValue]).self,
+            let items = try await snapshotType.resolve(.swift(.getter("items", as: (() -> [NativeSwiftValue]).self,
                 valueABIs: abis, receiverABI: .opaque(named: snapshotType.name))))
-            let makeSnapshot = try snapshotType.resolveAndWait(.swift(.initializer("init(items:metadata:sourceMetadata:)",
+            let makeSnapshot = try await snapshotType.resolve(.swift(.initializer("init(items:metadata:sourceMetadata:)",
                 as: (([NativeSwiftValue], NativeSwiftValue?, NativeSwiftValue?) -> NativeSwiftValue).self, valueABIs: abis)))
-            let stream = try monitorType.resolveAndWait(.swift(.getter("snapshotStream", as: (() -> NativeSwiftValue).self,
+            let stream = try await monitorType.resolve(.swift(.getter("snapshotStream", as: (() -> NativeSwiftValue).self,
                 valueABIs: deviceSnapshots.abis)))
-            let invalidate = try monitorType.resolveAndWait(.swift(.method("invalidate()", as: (() -> Void).self)))
+            let invalidate = try await monitorType.resolve(.swift(.method("invalidate()", as: (() -> Void).self)))
             self.abis = abis
             self.failure = failure
             self.policy = policy
@@ -168,15 +170,15 @@ public final class CoreDevicePasteboardTransport: PasteboardTransport {
         let replace: @MainActor (NativeSwiftValue) async throws -> NativeSwiftValue
         let monitor: @MainActor () async throws -> NativeSwiftValue
 
-        init<Failure: Error>(implementation: NativeSwiftValue, bindings: Bindings, failure: Failure) throws {
+        init<Failure: Error>(implementation: NativeSwiftValue, bindings: Bindings, failure: Failure) async throws {
             let (name, policy, abis) = (CoreDevicePasteboardTransport.devicePasteboard, bindings.policy, bindings.abis)
-            let current = try implementation.type.resolveAndWait(.swift(.method(
+            let current = try await implementation.type.resolve(.swift(.method(
                 "CoreDevice.PasteboardProtocol.currentPasteboardSnapshot(pasteboardName:dataPolicy:)",
                 as: ((String, NativeSwiftValue) async throws(Failure) -> NativeSwiftValue).self, valueABIs: abis)))
-            let replace = try implementation.type.resolveAndWait(.swift(.method(
+            let replace = try await implementation.type.resolve(.swift(.method(
                 "CoreDevice.PasteboardProtocol.setPasteboardContents(pasteboardName:pasteboardSnapshot:)",
                 as: ((String, NativeSwiftValue) async throws(Failure) -> NativeSwiftValue).self, valueABIs: abis)))
-            let monitor = try implementation.type.resolveAndWait(.swift(.method(
+            let monitor = try await implementation.type.resolve(.swift(.method(
                 "CoreDevice.PasteboardProtocol.monitorPasteboardChanges(pasteboardName:dataPolicy:includeInitialState:)",
                 as: ((String, NativeSwiftValue, Bool) async throws(Failure) -> NativeSwiftValue).self, valueABIs: abis)))
             self.current = { try await unsafe current.unsafeInvoke(on: implementation, name, policy) }
@@ -191,7 +193,7 @@ public final class CoreDevicePasteboardTransport: PasteboardTransport {
         guard let identifier = try await CoreDeviceRemoteScreenDevice.simulatorIdentifier(udid: simulatorUDID) else { return nil }
         let remote = try await CoreDeviceRemoteScreenDevice(identifier: identifier)
         guard try remote.supports(feature) else { return nil }
-        return try CoreDevicePasteboardTransport(remote: remote, bindings: Bindings(runtime: remote.runtime))
+        return try await CoreDevicePasteboardTransport(remote: remote, bindings: Bindings(runtime: remote.runtime))
     }
 
     private init(remote: CoreDeviceRemoteScreenDevice, bindings: Bindings) {
@@ -293,7 +295,7 @@ public final class CoreDevicePasteboardTransport: PasteboardTransport {
     private func service() async throws -> Service {
         if let resolvedService { return resolvedService }
         let implementation = try await remote.implementation(capability: "PasteboardCapability", feature: Self.feature)
-        let service = try Service(implementation: implementation, bindings: bindings, failure: bindings.failure)
+        let service = try await Service(implementation: implementation, bindings: bindings, failure: bindings.failure)
         resolvedService = service
         return service
     }

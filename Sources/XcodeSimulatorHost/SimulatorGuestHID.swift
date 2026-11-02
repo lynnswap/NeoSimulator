@@ -213,7 +213,7 @@ struct GuestHIDCodec {
             try unsafe makeButton.unsafeInvoke(page, usage, buttonState.makeEnumCase(named: state.rawValue))
         }
 
-        let report = try CoreDeviceHIDService.reportABI(runtime: runtime)
+        let report = try await runtime.prepare { try CoreDeviceHIDService.reportABI(runtime: $0) }
         let data = try await runtime.resolve(.swift(.type("Foundation.Data")))
         readReportData = try await report.type.resolve(.swift(.getter("data", as: (() -> Data).self,
             valueABIs: [report.type: report.abi, data: try .structure(named: data.name, fields: [.uint64, .uint64])],

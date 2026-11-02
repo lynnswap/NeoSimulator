@@ -825,6 +825,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                 rescan()
             }
             do {
+                try await runtime.display.screenAdapter.prepare(for: device.object)
                 // CoreSimulator reports Booted before its integrated screen is ready.
                 for _ in 0..<40 {
                     try Task.checkCancellation()
@@ -877,7 +878,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                         }
                         let pasteboardTransport = try await device.deviceSetPath == nil ? nativePasteboard(of: device) : nil
                         try Task.checkCancellation()
-                        let connection = try SimulatorConnection(device: device, screen: screen, runtime: runtime,
+                        let connection = try await SimulatorConnection(device: device, screen: screen, runtime: runtime,
                                                                  nativeCanvas: nativeCanvas, keyboard: keyboard, trackpad: trackpad,
                                                                  touchRoute: touchRoute)
                         if nativeCanvas != nil { capabilities.controlsOrientation = false }

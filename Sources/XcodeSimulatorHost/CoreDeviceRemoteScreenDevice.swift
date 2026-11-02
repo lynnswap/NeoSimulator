@@ -166,18 +166,18 @@ final class CoreDeviceRemoteScreenDevice {
         guard try supports(feature) else {
             throw CLIError.unavailable("remote-input-capability", "The device does not currently expose the requested input operation.")
         }
-        let capability = try runtime.resolveAndWait(.swift(.type("CoreDevice." + name)))
-        let markerType = try runtime.resolveAndWait(.swift(.type("CoreDevice.CapabilityStaticMember", genericArguments: [.type(capability)])))
+        let capability = try await runtime.resolve(.swift(.type("CoreDevice." + name)))
+        let markerType = try await runtime.resolve(.swift(.type("CoreDevice.CapabilityStaticMember", genericArguments: [.type(capability)])))
         let abis: [NativeSwiftType: NativeType] = [markerType: try .opaque(named: markerType.name)]
-        let make = try markerType.resolveAndWait(.swift(.initializer("init()", as: (() -> NativeSwiftValue).self, valueABIs: abis)))
+        let make = try await markerType.resolve(.swift(.initializer("init()", as: (() -> NativeSwiftValue).self, valueABIs: abis)))
         let marker = try unsafe make.unsafeInvoke()
-        let get = try type.resolveAndWait(.swift(.method("getImplementation(for:)",
+        let get = try await type.resolve(.swift(.method("getImplementation(for:)",
             as: ((NativeSwiftValue) async throws -> NativeSwiftValue).self,
             genericArguments: [.type(capability)], valueABIs: abis)))
         return try await unsafe get.unsafeInvoke(on: object, marker).copyUnderlyingValue()
     }
 
-    static func load(_ path: String) throws {
+    nonisolated static func load(_ path: String) throws {
         guard dlopen(path, RTLD_NOW | RTLD_LOCAL) != nil else {
             let detail = dlerror().map { String(cString: $0) } ?? "Unknown loader error"
             throw CLIError.unavailable("remote-screen-runtime", "Could not load \(path): \(detail)")

@@ -997,7 +997,7 @@ struct RemoteDeviceScreenTests {
     @Test(.timeLimit(.minutes(1)))
     func pasteboardBindingsCaptureWriteAndObserveMacPasteboardsWithoutADevice() async throws {
         try CoreDeviceRemoteScreenDevice.load(MacHIDServiceLookup.coreDeviceUtilitiesPath)
-        let bindings = try CoreDevicePasteboardTransport.Bindings(runtime: .shared)
+        let bindings = try await CoreDevicePasteboardTransport.Bindings(runtime: .shared)
         let source = NSPasteboard(name: NSPasteboard.Name("dev.lynnswap.NeoSimulatorTests.\(UUID().uuidString)"))
         let destination = NSPasteboard(name: NSPasteboard.Name("dev.lynnswap.NeoSimulatorTests.\(UUID().uuidString)"))
         defer { source.releaseGlobally(); destination.releaseGlobally() }

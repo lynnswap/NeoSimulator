@@ -67,7 +67,7 @@ public struct NativeRuntimeValidationReport: Codable, Equatable, Sendable {
         ], load: {
             try CoreDeviceRemoteScreenDevice.load(MacHIDServiceLookup.coreDeviceUtilitiesPath)
         }, prepare: {
-            _ = try CoreDevicePasteboardTransport.Bindings(runtime: .shared)
+            _ = try await CoreDevicePasteboardTransport.Bindings(runtime: .shared)
         })
         let hid = await Preparation.check("displayHIDValues", unverified: [
             "UniversalHID capability and implementation witnesses", "Service creation, reset and removal",

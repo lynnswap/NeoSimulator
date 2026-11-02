@@ -3779,7 +3779,7 @@ struct InputFocusTests {
         // The native delegate replaces it. A call of its first-responder requirement, as the digitizer makes, reaches the
         // digitizer's own delegate.
         var received: [NativeDigitizerTouch] = []
-        let touches = try NativeDigitizerTouches(digitizer: input, interface: interface) { received.append($0) }
+        let touches = try await NativeDigitizerTouches(digitizer: input, interface: interface) { received.append($0) }
         weak let replacement = try delegate()
         #expect(replacement != nil && replacement !== ownDelegate)
         do {
@@ -7302,6 +7302,34 @@ struct InputFocusTests {
         #expect(controller.externalDisplayWindow != nil && screen.displays.count == 2)
     }
 
+    @Test(arguments: [false, true])
+    func pendingExternalDisplayDoesNotOpenAfterPowerOffOrClosingTheDevice(_ closesDevice: Bool) async throws {
+        let screen = TestExternalScreen()
+        var resume: CheckedContinuation<Void, Never>?
+        var preparations = 0
+        screen.prepareDisplay = {
+            preparations += 1
+            await withCheckedContinuation { resume = $0 }
+        }
+        let (controller, _) = try makeExternalDisplayController(screen)
+        defer { controller.invalidate() }
+        controller.perform(.externalDisplay1280x720)
+        let pending = try #require(resume)
+        screen.report { $0.pixelSize = CGSize(width: 1920, height: 1080) }
+        #expect(preparations == 1 && controller.externalDisplayWindow == nil)
+        if closesDevice { controller.invalidate() }
+        else { controller.perform(.externalDisplayDisabled) }
+        screen.prepareDisplay = nil
+        pending.resume()
+        try await wait { screen.displays.first?.disconnectCount == 1 }
+        #expect(screen.displays.count == 1 && controller.externalDisplayWindow == nil)
+        if !closesDevice {
+            controller.perform(.externalDisplay1280x720)
+            try await wait { controller.externalDisplayWindow != nil }
+            #expect(screen.displays.count == 2)
+        }
+    }
+
     @Test func externalDisplayGeometryKeepsSameUDIDDeviceSetsSeparate() throws {
         _ = NSApplication.shared
         let preferences = MemoryPreferences()
@@ -10252,7 +10280,10 @@ private final class TestExternalScreen: SimulatorExternalScreen {
         for completion in completions { completion() }
     }
 
-    func makeDisplay() throws -> any SimulatorDisplay {
+    var prepareDisplay: (() async -> Void)?
+
+    func makeDisplay() async throws -> any SimulatorDisplay {
+        await prepareDisplay?()
         let display = TestDisplay()
         display.naturalSize = NSSize(width: current.pixelSize.width / current.scale,
                                      height: current.pixelSize.height / current.scale)

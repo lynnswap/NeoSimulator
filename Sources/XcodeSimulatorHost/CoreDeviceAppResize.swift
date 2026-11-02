@@ -220,7 +220,7 @@ private final class CoreDeviceAppResizeSession: AppResizeSession {
 struct NativeAsyncStream {
     let abis: [NativeSwiftType: NativeType]
     private let isThrowing: Bool
-    init(runtime: ABIRuntime, element: NativeSwiftType, throwing: Bool) throws {
+    nonisolated init(runtime: ABIRuntime, element: NativeSwiftType, throwing: Bool) throws {
         isThrowing = throwing
         let name = throwing ? "Swift.AsyncThrowingStream" : "Swift.AsyncStream"
         let arguments: [NativeSwiftGenericArgument] = throwing ? [.type(element), .type((any Error).self)] : [.type(element)]
@@ -230,11 +230,11 @@ struct NativeAsyncStream {
     }
     func values<Value: Sendable>(_ value: NativeSwiftValue,
                                 project: @escaping @MainActor (NativeSwiftValue) throws -> Value) throws -> AsyncThrowingStream<Value, any Error> {
-        let readNext = try iterate(value)
         try Task.checkCancellation()
         return AsyncThrowingStream { continuation in
             let task = Task { @MainActor in
                 do {
+                    let readNext = try await iterate(value)
                     while let element = try await readNext() {
                         try Task.checkCancellation()
                         continuation.yield(try project(element))
@@ -249,7 +249,7 @@ struct NativeAsyncStream {
     /// Hands each element to `body` in order, keeping it a native value for later native calls, until the sequence
     /// ends. Cancelling the task ends the sequence and throws.
     func forEach(_ value: NativeSwiftValue, _ body: @MainActor (NativeSwiftValue) throws -> Void) async throws {
-        let readNext = try iterate(value)
+        let readNext = try await iterate(value)
         while let element = try await readNext() {
             try Task.checkCancellation()
             try body(element)
@@ -257,16 +257,16 @@ struct NativeAsyncStream {
         try Task.checkCancellation()
     }
 
-    private func iterate(_ value: NativeSwiftValue) throws -> @MainActor () async throws -> NativeSwiftValue? {
-        let make = try value.type.resolveAndWait(.swift(.method("makeAsyncIterator()", as: (() -> NativeSwiftValue).self,
+    private func iterate(_ value: NativeSwiftValue) async throws -> @MainActor () async throws -> NativeSwiftValue? {
+        let make = try await value.type.resolve(.swift(.method("makeAsyncIterator()", as: (() -> NativeSwiftValue).self,
             valueABIs: abis, receiverABI: .opaque(named: value.type.name))))
         let iterator = try unsafe make.unsafeInvoke(on: value)
         if isThrowing {
-            let next = try iterator.type.resolveAndWait(.swift(.method("next()", as: (() async throws -> NativeSwiftValue?).self,
+            let next = try await iterator.type.resolve(.swift(.method("next()", as: (() async throws -> NativeSwiftValue?).self,
                 valueABIs: abis, receiverABI: .opaque(named: iterator.type.name))))
             return { try await unsafe next.unsafeInvoke(on: iterator) }
         }
-        let next = try iterator.type.resolveAndWait(.swift(.method("next()", as: (() async -> NativeSwiftValue?).self,
+        let next = try await iterator.type.resolve(.swift(.method("next()", as: (() async -> NativeSwiftValue?).self,
             valueABIs: abis, receiverABI: .opaque(named: iterator.type.name))))
         return { try await unsafe next.unsafeInvoke(on: iterator) }
     }
