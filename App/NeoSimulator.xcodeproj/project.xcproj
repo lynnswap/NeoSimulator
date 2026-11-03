@@ -815,6 +815,12 @@
         },
         { "path": "NeoSimulator.entitlements" },
       ],
+    }, {
+      "path": "Credits.rtf",
+      "target-membership": [
+        "NeoSimulator/resources",
+        "NeoSimulatorRenderer/resources",
+      ],
     },
   ],
   "targets": [
