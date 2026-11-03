@@ -58,7 +58,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillFinishLaunching(_ notification: Notification) {
-        model.requestHostPreferenceAccess = { [hostPreferenceAccess] in try hostPreferenceAccess.request() }
+        model.requestHostPreferenceAccess = { [hostPreferenceAccess] in hostPreferenceAccess.request() }
         model.beforeStoppingScreens = { [weak self] in try await self?.stopScreens() }
         model.beforeManagingRemoteDevices = { [weak self] identifiers in
             try await self?.screens.stopRemoteScreens(for: identifiers)
