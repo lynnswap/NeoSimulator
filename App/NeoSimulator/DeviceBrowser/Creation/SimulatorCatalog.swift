@@ -11,6 +11,39 @@ struct SimulatorCatalog {
     struct Runtime: Codable, Equatable, Sendable {
         let identifier: String
         let name: String
+        let buildVersion: String?
+
+        init(identifier: String, name: String, buildVersion: String? = nil) {
+            self.identifier = identifier
+            self.name = name
+            self.buildVersion = buildVersion
+        }
+    }
+
+    struct RuntimeNames: Decodable, Sendable {
+        struct Downloadable: Decodable, Sendable {
+            struct Version: Decodable, Sendable {
+                let buildUpdate: String
+            }
+            let name: String
+            let simulatorVersion: Version?
+        }
+
+        let downloadables: [Downloadable]
+        let otherDownloadables: [Downloadable]
+
+        @concurrent
+        static func decode(_ data: Data) async throws -> [String: String] {
+            let index = try PropertyListDecoder().decode(Self.self, from: data)
+            var names: [String: String] = [:]
+            let suffix = " Simulator Runtime"
+            for item in index.downloadables + index.otherDownloadables {
+                guard let version = item.simulatorVersion else { continue }
+                names[version.buildUpdate] = item.name.hasSuffix(suffix)
+                    ? String(item.name.dropLast(suffix.count)) : item.name
+            }
+            return names
+        }
     }
 
     let deviceTypes: [DeviceType]

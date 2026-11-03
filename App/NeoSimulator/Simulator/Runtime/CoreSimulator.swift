@@ -55,6 +55,8 @@ struct CoreSimulatorInterface {
     let lookup: NativeObjCMethod<UInt32, String, AutoreleasingUnsafeMutablePointer<NSError?>?>
     let runtimeName: NativeObjCMethod<String?>
     let runtimeIdentifier: NativeObjCMethod<String?>
+    let systemRuntime: NativeObjCMethod<AnyObject?, String>
+    let runtimeBuildVersion: NativeObjCMethod<String?>
     let runtimeAvailable: NativeObjCMethod<Bool>
     let runtimeSupportsDeviceType: NativeObjCMethod<Bool, AnyObject>
     let runtimeVersion: NativeObjCMethod<UInt32>
@@ -205,6 +207,12 @@ struct CoreSimulatorInterface {
             on: simRuntime)
         runtimeIdentifier = try await runtime.resolve(
             .objc(.method("identifier", as: (() -> String?).self)),
+            on: simRuntime)
+        systemRuntime = try await runtime.resolve(
+            .objc(.method("_runtimeMatchingSystemPolicyForIdentifier:", as: ((String) -> AnyObject?).self)),
+            on: serviceClass)
+        runtimeBuildVersion = try await runtime.resolve(
+            .objc(.method("buildVersionString", as: (() -> String?).self)),
             on: simRuntime)
         runtimeAvailable = try await runtime.resolve(
             .objc(.method("available", as: (() -> Bool).self)),
@@ -522,11 +530,15 @@ final class SimulatorDeviceSet {
         var runtimes: [SimulatorCatalog.Runtime] = []
         var runtimeObjects: [String: AnyObject] = [:]
         var supported: [String: Set<String>] = [:]
-        for object in try unsafe interface.supportedRuntimes.unsafeInvoke(on: context) {
-            guard try unsafe interface.runtimeAvailable.unsafeInvoke(on: object),
-                  let identifier = try unsafe interface.runtimeIdentifier.unsafeInvoke(on: object) else { continue }
+        for runtime in try unsafe interface.supportedRuntimes.unsafeInvoke(on: context) {
+            guard let identifier = try unsafe interface.runtimeIdentifier.unsafeInvoke(on: runtime),
+                  runtimeObjects[identifier] == nil,
+                  let object = try unsafe interface.systemRuntime.unsafeInvoke(on: context, identifier),
+                  try unsafe interface.runtimeAvailable.unsafeInvoke(on: object) else { continue }
+            // Creation uses the system policy even when simctl receives another build's bundle path.
             runtimes.append(SimulatorCatalog.Runtime(
-                identifier: identifier, name: try unsafe interface.runtimeName.unsafeInvoke(on: object) ?? identifier))
+                identifier: identifier, name: try unsafe interface.runtimeName.unsafeInvoke(on: object) ?? identifier,
+                buildVersion: try unsafe interface.runtimeBuildVersion.unsafeInvoke(on: object)))
             runtimeObjects[identifier] = object
             supported[identifier] = Set(try deviceTypes.filter {
                 try unsafe interface.runtimeSupportsDeviceType.unsafeInvoke(on: object, $0.object)

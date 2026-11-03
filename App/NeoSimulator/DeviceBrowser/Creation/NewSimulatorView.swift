@@ -26,6 +26,7 @@ struct NewSimulatorView: View {
             }
         }
         .formStyle(.grouped)
+        .task(id: ObjectIdentifier(model)) { await model.loadRuntimeNames() }
         .frame(width: 560)
         .fixedSize(horizontal: false, vertical: true)
         .alert("Unable to Create Simulator", isPresented: Binding(
@@ -54,7 +55,7 @@ struct NewSimulatorView: View {
         Picker("OS Version", selection: Binding(get: { model.runtime }, set: model.selectRuntime)) {
             if model.runtimes.isEmpty { Text("No Runtimes Available").tag(String?.none) }
             ForEach(model.runtimes, id: \.identifier) { runtime in
-                Text(runtime.name).tag(Optional(runtime.identifier))
+                Text(model.runtimeName(runtime)).tag(Optional(runtime.identifier))
             }
         }
         .disabled(model.runtimes.isEmpty)
@@ -73,7 +74,7 @@ struct NewSimulatorView: View {
             Picker("OS Version", selection: Binding(get: { model.watchRuntime }, set: model.selectWatchRuntime)) {
                 if model.availableWatchRuntimes.isEmpty { Text("No Runtimes Available").tag(String?.none) }
                 ForEach(model.availableWatchRuntimes, id: \.identifier) { runtime in
-                    Text(runtime.name).tag(Optional(runtime.identifier))
+                    Text(model.runtimeName(runtime)).tag(Optional(runtime.identifier))
                 }
             }
             .disabled(model.availableWatchRuntimes.isEmpty)
