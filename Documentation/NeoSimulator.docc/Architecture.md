@@ -176,6 +176,7 @@ Hub mode.
 | `SimulatorHostController` | Serialize route changes, track renderer ownership, and resolve the Xcode for each device. |
 | `SimulatorManagerModel` | Own observable inventory and its DeviceKit Active values, loading state, and the accepted operation queue. |
 | `DeviceSettingsModel` | Own the selected settings snapshot, cancellable reads, and readback after queued edits. |
+| `BackgroundServicesModel` | Show the selected simulator's background services as launchd last reported them, with accepted changes on top until the readback after each queued change. |
 | `DeviceInspectorModel` | Own inspector records and reject results from an earlier selection or page. |
 | `ManagerWindowController` | Present the sidebar, device screen pane, and settings inspector in `NSSplitViewController`, own the selection, the toolbar, and the latest placement choice for the selected device, and decide where each opened or restored screen goes. |
 | `DeviceScreenViewController` | Show the selected device's screen or preview in the center pane, with its canvas controls and activity footer; move screens in the order the window accepts them, stopping a move once a later choice replaces it; and return to the preview when that screen closes. |

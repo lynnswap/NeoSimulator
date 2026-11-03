@@ -87,6 +87,7 @@ right side of the toolbar:
 | Page | Contents |
 | --- | --- |
 | Settings | The selected device's available appearance, accessibility, location, and sound controls. |
+| Background Services | Switches for a booted simulator's background services, such as Spotlight indexing and iCloud sync. |
 | Reports | Reports from physical devices and VMs that support report access. |
 | Info | Grouped device information and the Info, Apps, and Profiles categories. |
 
@@ -320,3 +321,19 @@ down. Their rotation and orientation commands are unavailable because
 
 For gestures, pasteboard, platform-specific controls, audio, and external
 displays, see <doc:InputAndPeripherals>.
+
+### Background services
+
+The inspector's **Background Services** tab turns off a running simulator's
+background services, such as Spotlight indexing, iCloud sync, and Siri,
+without restarting it. Each category says what stops working while it is
+off; expand it to switch its services one at a time. The change stays in effect
+when the simulator restarts or is erased, until you turn the services back on.
+
+Services the system needs are marked **Always On**. After a change, the
+inspector lists services it kept on because another enabled category uses them
+or, on watchOS and visionOS, the platform needs them, and services that cannot
+start again until the next boot. While a change runs, the simulator's
+management actions other than **Force Shut Down** are unavailable. Start a
+simulator to change its background services; physical devices and virtual
+machines do not offer them.
