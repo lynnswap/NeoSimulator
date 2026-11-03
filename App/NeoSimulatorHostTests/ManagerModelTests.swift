@@ -2154,6 +2154,83 @@ struct ManagerModelTests {
         try await manager.quitRenderer(keepingDevicesRunning: true)
     }
 
+    @Test func backgroundServiceChangesRunInOrderAndQuitWaitsForThem() async throws {
+        let device = simulator()
+        let source = ManagerModelSource(devices: [device])
+        await source.holdServiceReads()
+        var events = source.events.makeAsyncIterator()
+        let search = try #require(SimulatorBackgroundServiceCategory.all.first { $0.id == "search" })
+        let labels = Set(search.services.map(\.label))
+        let reported = AsyncStream<(any Error, SimulatorBackgroundServiceState?)>.makeStream()
+        var errors = reported.stream.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source)
+        manager.onError = { reported.continuation.yield(($0, manager.backgroundServices.services?.state(of: search))) }
+        await manager.refresh()
+        manager.backgroundServices.inspect(device)
+        #expect(await events.next() == .readServices(device.id))
+        await source.completeServiceRead(disabled: [])
+        await manager.backgroundServices.finishReading()
+
+        manager.setBackgroundServices([.category("search")], enabled: false, for: device.id)
+        #expect(await events.next() == .changeServices(device.id))
+        manager.setBackgroundServices([.service("com.apple.searchd")], enabled: true, for: device.id)
+        #expect(!manager.backgroundServices.isEnabled(search))
+        #expect(manager.backgroundServices.isEnabled("com.apple.searchd"))
+        #expect(!manager.canManage(.erase, deviceIDs: [device.id]))
+        #expect(manager.canManage(.forceShutdown, deviceIDs: [device.id]))
+
+        let beganQuitting = AsyncStream<Void>.makeStream()
+        var quitEvents = beganQuitting.stream.makeAsyncIterator()
+        let quitting = Task {
+            beganQuitting.continuation.yield(())
+            try await manager.quitRenderer(keepingDevicesRunning: true)
+        }
+        await quitEvents.next()
+        // The first change stops partway; its readback shows before the error is reported.
+        await source.failServiceChange(disabled: labels.subtracting(["com.apple.searchd"]))
+        let failure = try #require(await errors.next())
+        #expect(failure.0 is SimulatorHostFailure && failure.1 == .partiallyDisabled)
+        #expect(await events.next() == .changeServices(device.id))
+        await source.completeServiceChange(disabled: labels.subtracting(["com.apple.searchd"]), notStarted: ["com.apple.searchd"])
+        #expect(await events.next() == .quit)
+        try await quitting.value
+        #expect(await source.serviceChanges == [.init(targets: [.category("search")], enabled: false),
+                                                .init(targets: [.service("com.apple.searchd")], enabled: true)])
+        #expect(manager.backgroundServices.outcome?.notStartedLabels == ["com.apple.searchd"])
+    }
+
+    @Test func backgroundServiceResultsStayWithTheirDevice() async throws {
+        let first = simulator(deviceSet: "/first")
+        let second = simulator(deviceSet: "/second")
+        let source = ManagerModelSource(devices: [first, second])
+        await source.holdServiceReads()
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source)
+        await manager.refresh()
+        let model = manager.backgroundServices
+        model.inspect(first)
+        #expect(await events.next() == .readServices(first.id))
+        model.inspect(second)
+        await source.completeServiceRead(disabled: ["com.apple.searchd"])
+        #expect(await events.next() == .readServices(second.id))
+        #expect(model.services == nil)
+        await source.completeServiceRead(disabled: [])
+        await model.finishReading()
+        #expect(model.services?.disabledLabels == [])
+
+        manager.setBackgroundServices([.category("search")], enabled: false, for: second.id)
+        #expect(await events.next() == .changeServices(second.id))
+        model.inspect(first)
+        #expect(!model.isChanging)
+        await source.completeServiceChange(disabled: ["com.apple.searchd"], notStarted: ["com.apple.searchtoold"])
+        #expect(await events.next() == .readServices(first.id))
+        await source.completeServiceRead(disabled: [])
+        await model.finishReading()
+        #expect(model.services?.disabledLabels == [])
+        #expect(model.outcome == nil)
+        try await manager.quitRenderer(keepingDevicesRunning: true)
+    }
+
     @Test func artworkResolvesXcodeBeforeOpeningAScreen() async throws {
         let device = simulator(deviceSet: "/tmp/artwork-device-set")
         let source = ManagerModelSource(devices: [device])
@@ -2638,7 +2715,11 @@ actor ManagerModelSource: SimulatorManagerSource {
     func endSession() { sessionEvents.append("end") }
     private nonisolated let cancelledOpens = Mutex<Set<DeviceInventoryID>>([])
     nonisolated var cancelledOpenIDs: Set<DeviceInventoryID> { cancelledOpens.withLock { $0 } }
-    enum Event: Equatable, Sendable { case read(DeviceInventoryID), write(DeviceInventoryID), open(DeviceInventoryID), close(DeviceInventoryID), inspect(DeviceInventoryID), inventory, quit, manage(DeviceManagementAction, [DeviceInventoryID]) }
+    enum Event: Equatable, Sendable { case read(DeviceInventoryID), write(DeviceInventoryID), open(DeviceInventoryID), close(DeviceInventoryID), inspect(DeviceInventoryID), inventory, quit, manage(DeviceManagementAction, [DeviceInventoryID]), readServices(DeviceInventoryID), changeServices(DeviceInventoryID) }
+    struct ServiceChange: Equatable, Sendable {
+        let targets: [SimulatorBackgroundServiceTarget]
+        let enabled: Bool
+    }
     enum Failure: LocalizedError {
         case unavailable, native
         var errorDescription: String? { self == .native ? "Native shutdown failed" : "Unavailable" }
@@ -2660,6 +2741,10 @@ actor ManagerModelSource: SimulatorManagerSource {
     private var writeContinuation: CheckedContinuation<SimulatorDeviceSettings, any Error>?
     private var pendingWrite: SimulatorDeviceSettings?
     private(set) var writeInputs: [SimulatorDeviceSettings?] = []
+    private var holdsServiceReads = false
+    private var serviceRead: CheckedContinuation<SimulatorBackgroundServices, any Error>?
+    private var serviceChange: CheckedContinuation<SimulatorBackgroundServicesUpdate, any Error>?
+    private(set) var serviceChanges: [ServiceChange] = []
     private(set) var readCount = 0
     private(set) var quitCount = 0
     private(set) var lastOpenXcodeURL: URL?
@@ -2771,6 +2856,42 @@ actor ManagerModelSource: SimulatorManagerSource {
         } else {
             waiting?.resume(throwing: Failure.unavailable)
         }
+    }
+    /// Background service reads return no overrides at once unless a test holds them.
+    func holdServiceReads() { holdsServiceReads = true }
+    func backgroundServices(for device: InventoryDevice) async throws -> SimulatorBackgroundServices {
+        guard holdsServiceReads else { return SimulatorBackgroundServices(disabled: [], loaded: [], productFamily: "iPhone") }
+        return try await withCheckedThrowingContinuation { waiting in
+            serviceRead = waiting
+            continuation.yield(.readServices(device.id))
+        }
+    }
+    func completeServiceRead(disabled: Set<String>) {
+        let waiting = serviceRead
+        serviceRead = nil
+        waiting?.resume(returning: SimulatorBackgroundServices(disabled: disabled, loaded: [], productFamily: "iPhone"))
+    }
+    func setBackgroundServices(_ targets: [SimulatorBackgroundServiceTarget], enabled: Bool,
+                               for device: InventoryDevice) async throws -> SimulatorBackgroundServicesUpdate {
+        serviceChanges.append(ServiceChange(targets: targets, enabled: enabled))
+        return try await withCheckedThrowingContinuation { waiting in
+            serviceChange = waiting
+            continuation.yield(.changeServices(device.id))
+        }
+    }
+    func completeServiceChange(disabled: Set<String>, notStarted: [String] = []) {
+        let waiting = serviceChange
+        serviceChange = nil
+        waiting?.resume(returning: SimulatorBackgroundServicesUpdate(
+            services: SimulatorBackgroundServices(disabled: disabled, loaded: [], productFamily: "iPhone"),
+            stillEnabledLabels: [], notStartedLabels: notStarted))
+    }
+    func failServiceChange(disabled: Set<String>) {
+        let waiting = serviceChange
+        serviceChange = nil
+        waiting?.resume(throwing: SimulatorBackgroundServicesUpdateFailure(
+            services: SimulatorBackgroundServices(disabled: disabled, loaded: [], productFamily: "iPhone"),
+            underlyingError: SimulatorHostFailure(Failure.unavailable)))
     }
     func quitRenderer(keepingDevicesRunning: Bool?) { sessionEvents.append("quit"); quitCount += 1; continuation.yield(.quit) }
     func selectHost(_ host: SimulatorHost, xcodeURL: URL?) throws { throw Failure.unavailable }

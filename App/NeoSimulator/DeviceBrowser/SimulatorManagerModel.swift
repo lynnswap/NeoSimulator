@@ -89,7 +89,7 @@ final class UIFrameworkSettings {
     isolated deinit { loading?.cancel() }
 }
 
-protocol SimulatorManagerSource: DeviceSettingsSource {
+protocol SimulatorManagerSource: DeviceSettingsSource, BackgroundServicesSource {
     func status() async throws -> SimulatorHostStatus
     func beginSession() async throws
     func endSession() async throws
@@ -143,6 +143,7 @@ final class SimulatorManagerModel {
     private(set) var activity = ""
     private(set) var backgroundIssue: String?
     let settings: DeviceSettingsModel
+    let backgroundServices: BackgroundServicesModel
     private(set) var devicePostures: [DeviceInventoryID: DevicePostureModel] = [:]
     @ObservationIgnored private var postureStarts: [DeviceInventoryID: Task<Void, Never>] = [:]
     @ObservationIgnored private var postureStops: [DeviceInventoryID: Task<Void, Never>] = [:]
@@ -213,6 +214,7 @@ final class SimulatorManagerModel {
         makeDevicePosture = { DevicePostureModel(deviceID: $0) }
         frameworks = UIFrameworkSettings { try await controller.installedXcodes() }
         settings = DeviceSettingsModel(source: controller)
+        backgroundServices = BackgroundServicesModel(source: controller)
     }
 
     init(source: any SimulatorManagerSource,
@@ -221,6 +223,7 @@ final class SimulatorManagerModel {
         self.makeDevicePosture = makeDevicePosture
         frameworks = UIFrameworkSettings { try await source.installedXcodes() }
         settings = DeviceSettingsModel(source: source)
+        backgroundServices = BackgroundServicesModel(source: source)
     }
 
     func start() {
@@ -427,6 +430,8 @@ final class SimulatorManagerModel {
 
     func canManage(_ action: DeviceManagementAction, deviceIDs: Set<DeviceInventoryID>) -> Bool {
         guard !stopping, !deviceIDs.isEmpty else { return false }
+        // A background service change spans many launchctl calls; only Force Shut Down may interrupt it.
+        guard action == .forceShutdown || deviceIDs.isDisjoint(with: backgroundServices.changingDeviceIDs) else { return false }
         let overlapping = managementRequests.values.filter { !$0.identifiers.isDisjoint(with: deviceIDs) }
         if overlapping.isEmpty { return !isBusy }
         guard action == .forceShutdown, overlapping.count == 1, let shutdown = overlapping.first,
@@ -554,6 +559,7 @@ final class SimulatorManagerModel {
         else { refreshing = true }
         defer {
             settings.requestRefresh()
+            backgroundServices.requestRefresh()
             if refreshWaiters.isEmpty { refreshing = false }
             else { refreshWaiters.removeFirst().resume() }
         }
@@ -669,17 +675,27 @@ final class SimulatorManagerModel {
         }
     }
 
+    func setBackgroundServices(_ targets: [SimulatorBackgroundServiceTarget], enabled: Bool, for identifier: DeviceInventoryID) {
+        guard !stopping, !managingDeviceIDs.contains(identifier), let device = inventory.first(where: { $0.id == identifier }) else { return }
+        let change = backgroundServices.accept(targets, enabled: enabled, for: device)
+        perform("Updating background services…", refreshCatalog: false, waitsForAttach: false) {
+            try await self.backgroundServices.apply(change)
+        }
+    }
+
     func prepareForQuit() async throws {
         stopping = true
         let opening = activeOpen?.task
         cancelPendingOpens()
         settings.stopReading()
+        backgroundServices.stopReading()
         await stopDevicePostures()
         statusRefreshTask?.cancel()
         await operationTask?.value
         for task in managementRequests.values.compactMap(\.task) { await task.value }
         await statusRefreshTask?.value
         await settings.finishReading()
+        await backgroundServices.finishReading()
         if let opening, case .failure(let error) = await opening.result, !(error is CancellationError) {
             throw error
         }
@@ -697,6 +713,7 @@ final class SimulatorManagerModel {
     func resumeAfterCancelledQuit() {
         stopping = false
         settings.resumeReading()
+        backgroundServices.resumeReading()
     }
 
     private func reportBackgroundError(_ error: any Error) {
@@ -725,6 +742,7 @@ final class SimulatorManagerModel {
             return
         }
         settings.setReadingSuspended(true)
+        backgroundServices.setReadingSuspended(true)
         operationTask = Task {
             defer {
                 self.operationTask = nil
@@ -733,6 +751,7 @@ final class SimulatorManagerModel {
                 self.reconcileDevicePostures()
                 self.activity = ""
                 self.settings.setReadingSuspended(false)
+                self.backgroundServices.setReadingSuspended(false)
             }
             while !self.pendingOperations.isEmpty || self.attachingScreen {
                 guard let next = self.pendingOperations.first, !self.attachingScreen || !next.waitsForAttach else {

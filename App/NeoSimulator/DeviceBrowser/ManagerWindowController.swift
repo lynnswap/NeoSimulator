@@ -572,6 +572,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         }
         updateDeviceSettings()
         model.settings.inspect(selectedDevice, selectionCount: selections.count)
+        model.backgroundServices.inspect(selectedDevice)
     }
 
     func selectDevice(_ identifier: DeviceInventoryID) {
