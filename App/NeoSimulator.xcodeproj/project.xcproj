@@ -285,6 +285,12 @@
                 "NeoSimulatorRenderer/compile-sources",
                 "NeoSimulatorHostTests/compile-sources",
               ],
+            }, {
+              "path": "DeviceBrowserState.swift",
+              "target-membership": [
+                "NeoSimulator/compile-sources",
+                "NeoSimulatorHostTests/compile-sources",
+              ],
             },
           ],
         }, {

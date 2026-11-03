@@ -46,9 +46,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         try await screens.stopAll()
     }
 
-    @discardableResult func prepareMainWindow() -> ManagerWindowController {
+    @discardableResult func prepareMainWindow(defaults: UserDefaults = .standard) -> ManagerWindowController {
         if let mainWindow { return mainWindow }
-        let controller = ManagerWindowController(model: model, screens: screens, menus: simulatorMenus)
+        let controller = ManagerWindowController(model: model, screens: screens, menus: simulatorMenus, defaults: defaults)
         controller.onError = { [weak self] error in self?.present(error) }
         model.onOpenRemoteDevice = { [weak self] device in try await self?.openRemoteScreen(device) }
         model.onDeviceOpenRequested = { [weak controller] identifier in controller?.showDevice(identifier) }

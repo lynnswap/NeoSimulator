@@ -896,6 +896,9 @@ struct ManagerModelTests {
     @Test(arguments: [false, true])
     func automaticPresentationPreservesSelectionAndInitialPresentation(_ initial: Bool) async throws {
         _ = NSApplication.shared
+        let domain = "NeoSimulator.AutomaticPresentation.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
         let devices = try CoreDeviceInventoryDecoder.decode(Data(#"{"result":{"devices":[{"identifier":"A","properties":{"hardware":{"reality":"physical"},"state":{"name":"A"}}},{"identifier":"B","properties":{"hardware":{"reality":"physical"},"state":{"name":"B"}}}]}}"#.utf8))
         let a = try #require(devices.first), b = try #require(devices.last)
         let aID = DeviceInventoryID.coreDevice(a.identifier), bID = DeviceInventoryID.coreDevice(b.identifier)
@@ -904,7 +907,7 @@ struct ManagerModelTests {
         await model.refresh()
         let app = AppDelegate()
         app.model = model
-        app.prepareMainWindow()
+        app.prepareMainWindow(defaults: defaults)
         let main = try #require(app.mainWindow)
         main.window?.setFrameAutosaveName("")
         let pane = main.deviceScreenViewController
@@ -1101,6 +1104,79 @@ struct ManagerModelTests {
         }, object: nil)
         try #require(await XCTWaiter.fulfillment(of: [previewed], timeout: 5) == .completed)
         #expect(app.screens.screen(for: aID) == nil && pane.liveDeviceIdentifier == nil)
+    }
+
+    @Test func browserRestoresPanesAndSelectionWhenInventoryArrives() async throws {
+        let domain = "NeoSimulator.BrowserRestoration.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
+        let devices = [simulator(state: "Shutdown"), simulator(deviceSet: "/tmp/OtherDeviceSet", state: "Shutdown")]
+        let source = ManagerModelSource(devices: devices)
+        let model = SimulatorManagerModel(source: source)
+        model.settings.setReadingSuspended(true)
+        model.backgroundServices.setReadingSuspended(true)
+        await model.refresh()
+        func browser() -> ManagerWindowController {
+            let controller = ManagerWindowController(model: model, screens: DeviceScreens(model: model),
+                menus: MenuController(application: nil), defaults: defaults)
+            controller.window?.setFrameAutosaveName("")
+            return controller
+        }
+        func split(_ controller: ManagerWindowController) throws -> NSSplitViewController {
+            try #require(controller.window?.contentViewController as? NSSplitViewController)
+        }
+        func tabs(_ controller: ManagerWindowController) throws -> NSSegmentedControl {
+            try #require(controller.window?.toolbar?.items.first { $0.itemIdentifier.rawValue == "DeviceInspector" }?.view as? NSSegmentedControl)
+        }
+        let first = browser()
+        defer { first.window?.close() }
+        let firstSplit = try split(first)
+        let outline = try #require(inspectorViews(firstSplit.splitViewItems[0].viewController.view)
+            .compactMap { $0 as? NSOutlineView }.first)
+        let rows = (0..<outline.numberOfRows).filter {
+            outline.item(atRow: $0).map { first.outlineView(outline, shouldSelectItem: $0) } == true
+        }
+        outline.selectRowIndexes(IndexSet(rows), byExtendingSelection: false)
+        #expect(first.selectedIdentifiers == Set(devices.map(\.id)))
+        let firstTabs = try tabs(first)
+        await NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0
+            firstTabs.selectedSegment = 3
+            NSApp.sendAction(firstTabs.action!, to: firstTabs.target, from: firstTabs)
+            firstSplit.splitViewItems[0].isCollapsed = true
+        }
+        first.window?.close()
+
+        await source.setDevices([])
+        await model.refresh()
+        let second = browser()
+        defer { second.window?.close() }
+        let secondSplit = try split(second)
+        #expect(secondSplit.splitViewItems[0].isCollapsed)
+        #expect(!secondSplit.splitViewItems[2].isCollapsed)
+        #expect(try tabs(second).selectedSegment == 3)
+        #expect(second.selectedIdentifiers.isEmpty)
+        await source.setDevices(devices)
+        await model.refresh()
+        second.update()
+        #expect(second.selectedIdentifiers == Set(devices.map(\.id)))
+        let restoredOutline = try #require(inspectorViews(secondSplit.splitViewItems[0].viewController.view)
+            .compactMap { $0 as? NSOutlineView }.first)
+        #expect(restoredOutline.selectedRowIndexes.count == 2)
+        let secondTabs = try tabs(second)
+        await NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0
+            secondTabs.selectedSegment = 3
+            NSApp.sendAction(secondTabs.action!, to: secondTabs.target, from: secondTabs)
+        }
+        second.window?.close()
+        let third = browser()
+        defer { third.window?.close() }
+        #expect(try split(third).splitViewItems[2].isCollapsed)
+        let thirdTabs = try tabs(third)
+        thirdTabs.selectedSegment = 3
+        NSApp.sendAction(thirdTabs.action!, to: thirdTabs.target, from: thirdTabs)
+        #expect(try !split(third).splitViewItems[2].isCollapsed)
     }
 
     @Test func inspectorTabsToggleVisibilityAndSwitchPages() throws {
@@ -2377,6 +2453,10 @@ struct ManagerModelTests {
         #expect(outline.outline.tableColumns.first?.width == columnWidth)
         let row = outline.outline.row(forItem: item)
         let cell = try #require(outline.outline.view(atColumn: 0, row: row, makeIfNecessary: true))
+        let label = try #require(inspectorViews(cell).compactMap { $0 as? NSTextField }.first { $0.stringValue == item.label })
+        label.selectText(nil)
+        let text = try #require(label.currentEditor())
+        #expect(text.string == item.label && text.selectedRange == NSRange(location: 0, length: item.label.utf16.count))
         let toggle = try #require(cell.subviews.compactMap { $0 as? NSSwitch }.first)
         toggle.state = .off
         let action = try #require(toggle.action)

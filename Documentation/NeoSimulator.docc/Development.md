@@ -87,6 +87,10 @@ previous disclosure state when cleared. The settings pane keeps its search when
 switching profiles. `ObservationBridge` subscriptions update controls when model
 properties change.
 
+`DeviceBrowserState` saves pane visibility, inspector tabs, and selected device
+identifiers in user defaults. Selection is restored as devices arrive in the
+inventory, including simulators in custom device sets.
+
 `BackgroundServicesModel` and `DeviceSettingsModel` own reads and accepted edits.
 Their displayed snapshots are recomputed when those inputs change. Inspector
 models own presentation state and send device commands through

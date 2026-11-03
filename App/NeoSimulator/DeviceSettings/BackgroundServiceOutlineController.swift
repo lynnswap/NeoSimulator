@@ -193,6 +193,8 @@ private final class BackgroundServiceCell: NSTableCellView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         title.lineBreakMode = .byTruncatingMiddle
+        title.isSelectable = true
+        detail.isSelectable = true
         detail.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         detail.textColor = .secondaryLabelColor
         detail.maximumNumberOfLines = 2
