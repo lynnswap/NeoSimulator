@@ -109,6 +109,29 @@ struct ManagerModelTests {
         #expect(defaults.bool(forKey: HostPreferences.startLastDeviceOnLaunch) && defaults.bool(forKey: HostPreferences.sessionOnLaunch))
     }
 
+    @Test func deviceFilterShowsNativeSelectionWithoutChangingItsSymbol() throws {
+        let domain = "NeoSimulator.DeviceFilter.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
+        let model = SimulatorManagerModel(source: ManagerModelSource(devices: []))
+        let browser = ManagerWindowController(model: model, screens: DeviceScreens(model: model),
+                                              menus: MenuController(application: nil), defaults: defaults)
+        defer { browser.window?.close() }
+        let item = try #require(browser.window?.toolbar?.items.first { $0.itemIdentifier.rawValue == "FilterSimulators" })
+        let button = try #require(item.view as? NSButton)
+        let image = try #require(button.image)
+        let menu = try #require(item.menuFormRepresentation?.submenu)
+        browser.menuNeedsUpdate(menu)
+        #expect(button.state == .off)
+        let simulators = try #require(menu.items.first { $0.title == "Simulators" })
+        #expect(NSApp.sendAction(try #require(simulators.action), to: simulators.target, from: simulators))
+        #expect(button.state == .on && button.image === image)
+        #expect(item.menuFormRepresentation?.state == .on)
+        let all = try #require(menu.items.first { $0.title == "All Devices" })
+        #expect(NSApp.sendAction(try #require(all.action), to: all.target, from: all))
+        #expect(button.state == .off && button.image === image)
+    }
+
     @Test func settingsToolbarResizesWindowWithoutIntermediateFrames() throws {
         let domain = "NeoSimulator.SettingsAnimation.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: domain))
@@ -427,8 +450,8 @@ struct ManagerModelTests {
         defer { controller.window?.close() }
         let content = try #require(controller.window?.contentView)
         let outline = try #require(inspectorViews(content).compactMap { $0 as? NSOutlineView }.first)
-        let menu = try #require(controller.window?.toolbar?.items.compactMap { $0 as? NSMenuToolbarItem }
-            .first { $0.itemIdentifier.rawValue == "FilterSimulators" }?.menu)
+        let menu = try #require(controller.window?.toolbar?.items
+            .first { $0.itemIdentifier.rawValue == "FilterSimulators" }?.menuFormRepresentation?.submenu)
         func choose(_ title: String) throws {
             controller.menuNeedsUpdate(menu)
             let item = try #require(menu.items.first { $0.title == title && !$0.isSectionHeader })
@@ -1097,7 +1120,8 @@ struct ManagerModelTests {
         let accessory = try #require(inspector.topAlignedAccessoryViewControllers.first)
         let tabs = try #require(window.toolbar?.items.first { $0.itemIdentifier.rawValue == "DeviceInspector" }?.view as? NSSegmentedControl)
         let categories = try #require(inspectorViews(accessory.view).compactMap { $0 as? NSSegmentedControl }.first)
-        let servicesAccessory = try #require(inspector.topAlignedAccessoryViewControllers.last as? BackgroundServicesAccessoryViewController)
+        let servicesAccessory = try #require(inspector.topAlignedAccessoryViewControllers.compactMap { $0 as? BackgroundServicesAccessoryViewController }.first)
+        let searchAccessory = try #require(inspector.topAlignedAccessoryViewControllers.compactMap { $0 as? BackgroundServiceSearchAccessoryViewController }.first)
         #expect(servicesAccessory.isHidden)
         #expect((0..<tabs.segmentCount).map { tabs.toolTip(forSegment: $0) } == ["Settings", "Reports", "Info", "Background Services"])
         window.setContentSize(NSSize(width: 1200, height: 800))
@@ -1165,10 +1189,10 @@ struct ManagerModelTests {
         model.backgroundServices.inspect(device, selectionCount: 1)
         try click(3, collapsed: false)
         window.layoutIfNeeded()
-        #expect(!servicesAccessory.isHidden)
+        #expect(!servicesAccessory.isHidden && !searchAccessory.isHidden)
         #expect(servicesAccessory.view.convert(servicesAccessory.view.bounds, to: nil).maxY <= window.contentLayoutRect.maxY)
         try click(0, collapsed: false)
-        #expect(servicesAccessory.isHidden)
+        #expect(servicesAccessory.isHidden && searchAccessory.isHidden)
         controller.stopInspectorReads()
     }
 
@@ -2300,12 +2324,14 @@ struct ManagerModelTests {
         let category = try #require(model.categories.first { $0.id == "search" })
         let item = try #require(category.items.first { $0.label == "com.apple.searchd" })
         let controller = BackgroundServicesViewController(model: model)
+        controller.isVisible = true
         let accessory = BackgroundServicesAccessoryViewController(model: model)
         accessory.isActive = true
         let pane = NSSplitViewItem(inspectorWithViewController: controller)
         pane.minimumThickness = 280
         pane.maximumThickness = 440
         pane.addTopAlignedAccessoryViewController(accessory)
+        pane.addTopAlignedAccessoryViewController(controller.searchAccessory)
         let split = NSSplitViewController()
         split.splitView.isVertical = true
         split.addSplitViewItem(pane)
@@ -2327,6 +2353,27 @@ struct ManagerModelTests {
         outline.outline.expandItem(category)
         view.layoutSubtreeIfNeeded()
         #expect(category.isExpanded)
+        #expect(outline.outline.tableColumns.first?.width == columnWidth)
+        let widgets = try #require(model.categories.first { $0.id == "widgets" })
+        widgets.isExpanded = false
+        let search = controller.searchAccessory.searchField
+        search.stringValue = "COM.APPLE.CHRONOD"
+        #expect(NSApp.sendAction(try #require(search.action), to: search.target, from: search))
+        let filtered = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            MainActor.assumeIsolated { outline.outline.numberOfRows == 2 && outline.outline.isItemExpanded(widgets) }
+        }, object: nil)
+        try #require(await XCTWaiter.fulfillment(of: [filtered], timeout: 5) == .completed)
+        #expect(outline.model.sections.flatMap(\.items).map(\.label) == ["com.apple.chronod"])
+        #expect(!widgets.isExpanded && category.isExpanded)
+        search.stringValue = "no-matching-service"
+        #expect(NSApp.sendAction(try #require(search.action), to: search.target, from: search))
+        #expect(outline.model.sections.isEmpty)
+        search.stringValue = ""
+        #expect(NSApp.sendAction(try #require(search.action), to: search.target, from: search))
+        let restored = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            MainActor.assumeIsolated { outline.outline.isItemExpanded(category) && !outline.outline.isItemExpanded(widgets) }
+        }, object: nil)
+        try #require(await XCTWaiter.fulfillment(of: [restored], timeout: 5) == .completed)
         #expect(outline.outline.tableColumns.first?.width == columnWidth)
         let row = outline.outline.row(forItem: item)
         let cell = try #require(outline.outline.view(atColumn: 0, row: row, makeIfNecessary: true))
@@ -2403,6 +2450,9 @@ struct ManagerModelTests {
         window.contentViewController = controller
         window.makeKeyAndOrderFront(nil)
         defer { window.close() }
+        let search = try #require(inspectorViews(controller.splitViewItems[1].viewController.view).compactMap { $0 as? BackgroundServiceSearchField }.first)
+        search.stringValue = "com.apple.searchd"
+        #expect(NSApp.sendAction(try #require(search.action), to: search.target, from: search))
         controller.model.create()
         let focused = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             MainActor.assumeIsolated {
@@ -2419,6 +2469,12 @@ struct ManagerModelTests {
             .first { !($0 is NSOutlineView) })
         window.makeFirstResponder(table)
         #expect(first.name == "Focused")
+        #expect(search.stringValue == "com.apple.searchd")
+        let details = try #require(controller.splitViewItems[1].viewController.children.compactMap { $0 as? BackgroundServiceOutlineController }.first)
+        let filtered = try #require(details.model.sections.first?.items.first)
+        filtered.setEnabled(false)
+        #expect(first.configuration.disabledLabels == ["com.apple.searchd"])
+        #expect(ServiceProfile.default.configuration.disabledLabels.isEmpty)
         controller.model.create()
         #expect(controller.model.selectedProfile.name == "Profile (1)")
         controller.model.create()

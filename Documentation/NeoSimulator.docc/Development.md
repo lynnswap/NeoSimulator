@@ -80,7 +80,12 @@ background-services inspector uses an `NSOutlineView`, with a SwiftUI `Form`
 for profile controls in a top-aligned split-view accessory. Profile settings
 use an `NSSplitViewController` with an `NSTableView` for profile selection.
 Their controllers retain the list views when switching to an unavailable-state view.
-`ObservationBridge` subscriptions update controls when model properties change.
+Both service lists use an `NSSearchField`, placed in a top-aligned accessory in
+the device inspector and above the list in settings. Search filters categories
+and service identifiers, expands matches, and restores the
+previous disclosure state when cleared. The settings pane keeps its search when
+switching profiles. `ObservationBridge` subscriptions update controls when model
+properties change.
 
 `BackgroundServicesModel` and `DeviceSettingsModel` own reads and accepted edits.
 Their displayed snapshots are recomputed when those inputs change. Inspector

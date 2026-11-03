@@ -57,10 +57,12 @@ final class BackgroundServicesPreviewController: NSViewController {
         let split = NSSplitViewController()
         split.splitView.isVertical = true
         let controller = BackgroundServicesViewController(model: inspector)
+        controller.isVisible = true
         let accessory = BackgroundServicesAccessoryViewController(model: inspector)
         accessory.isActive = true
         let item = NSSplitViewItem(inspectorWithViewController: controller)
         item.addTopAlignedAccessoryViewController(accessory)
+        item.addTopAlignedAccessoryViewController(controller.searchAccessory)
         split.addSplitViewItem(item)
         addChild(split)
         view = split.view

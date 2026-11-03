@@ -83,7 +83,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     private var toolbarAppearanceObservation: NSKeyValueObservation?
     private let settingsIdentifier = NSToolbarItem.Identifier("Settings")
     private let filterIdentifier = NSToolbarItem.Identifier("FilterSimulators")
-    private var filterItem: NSMenuToolbarItem?
+    private var filterItem: NSToolbarItem?
+    private let filterMenu = NSMenu(title: "Filter and Sort Devices")
     private var kindFilter = DeviceKindFilter.all
     private var availabilityFilter = DeviceAvailabilityFilter.all
     private var familyFilter: String?
@@ -424,6 +425,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         inspector.collapseBehavior = .preferResizingSiblingsWithFixedSplitView
         inspector.addTopAlignedAccessoryViewController(deviceInspector.categoryAccessory)
         inspector.addTopAlignedAccessoryViewController(servicesAccessory)
+        backgroundServices.searchAccessory.isHidden = true
+        inspector.addTopAlignedAccessoryViewController(backgroundServices.searchAccessory)
         splitController.addSplitViewItem(inspector)
         showInspectorController(host)
     }
@@ -833,6 +836,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
                                isVisible: showsInspector && (inspectorMode == 1 || inspectorMode == 2))
         model.backgroundServices.setVisible(showsInspector && inspectorMode == 3)
         backgroundServicesAccessory?.isActive = showsInspector && inspectorMode == 3
+        backgroundServicesHost?.isVisible = showsInspector && inspectorMode == 3
     }
 
     private func presentLocationEditor(for identifier: DeviceInventoryID, latitude: String = "0", longitude: String = "0") {
@@ -1101,13 +1105,26 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             return item
         }
         if itemIdentifier == filterIdentifier {
-            let item = NSMenuToolbarItem(itemIdentifier: itemIdentifier)
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
             item.label = "Filter"
             item.toolTip = "Filter and Sort Devices"
-            item.showsIndicator = false
             item.visibilityPriority = .high
-            item.menu = NSMenu(title: "Filter and Sort Devices")
-            item.menu.delegate = self
+            let button = NSButton(image: NSImage(systemSymbolName: "line.3.horizontal.decrease",
+                                                accessibilityDescription: "Filter and Sort Devices")!,
+                                  target: self, action: #selector(showDeviceFilters(_:)))
+            button.bezelStyle = .toolbar
+            button.controlSize = .extraLarge
+            button.setButtonType(.onOff)
+            button.isBordered = true
+            button.imagePosition = .imageOnly
+            button.imageScaling = .scaleProportionallyDown
+            button.setAccessibilityLabel("Filter and Sort Devices")
+            item.image = button.image
+            item.view = button
+            filterMenu.delegate = self
+            let menuItem = NSMenuItem(title: "Filter and Sort Devices", action: nil, keyEquivalent: "")
+            menuItem.submenu = filterMenu
+            item.menuFormRepresentation = menuItem
             filterItem = item
             updateFilterItem()
             return item
@@ -1355,14 +1372,20 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
 
     private func updateFilterItem() {
         let active = kindFilter != .all || availabilityFilter != .all || familyFilter != nil
-        filterItem?.image = NSImage(systemSymbolName: active ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease",
-                                   accessibilityDescription: active ? "Filter, active" : "Filter")
+        (filterItem?.view as? NSButton)?.state = active ? .on : .off
+        filterItem?.menuFormRepresentation?.state = active ? .on : .off
+    }
+
+    @objc private func showDeviceFilters(_ sender: NSButton) {
+        sender.state = .on
+        filterMenu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.maxY), in: sender)
+        updateFilterItem()
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         if menu === deviceMenu { updateDeviceMenu(for: table.clickedRow); return }
         if menu === moreItem?.menu { updateCanvasMenu(menu); return }
-        guard menu === filterItem?.menu else { return }
+        guard menu === filterMenu else { return }
         menu.removeAllItems()
         menu.addItem(.sectionHeader(title: "Devices"))
         for filter in DeviceKindFilter.allCases {

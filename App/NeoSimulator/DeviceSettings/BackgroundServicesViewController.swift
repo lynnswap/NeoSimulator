@@ -6,6 +6,13 @@ import SwiftUI
 final class BackgroundServicesViewController: NSViewController {
     let model: BackgroundServicesInspectorModel
     private lazy var outline = BackgroundServiceOutlineController(categories: model.categories, showsDetails: false)
+    var searchAccessory: BackgroundServiceSearchAccessoryViewController { outline.searchAccessory }
+    var isVisible = false { didSet { updateSearchVisibility() } }
+
+    private func updateSearchVisibility() {
+        if case .simulator = model.content { searchAccessory.isHidden = !isVisible }
+        else { searchAccessory.isHidden = true }
+    }
     private let placeholder = NSHostingView(rootView: BackgroundServicesUnavailable(content: .noSelection))
     private var observation: PortableObservationTracking.Token?
     private var shownContent: BackgroundServicesInspectorModel.Content?
@@ -38,6 +45,7 @@ final class BackgroundServicesViewController: NSViewController {
     }
 
     private func update() {
+        updateSearchVisibility()
         let current = model.content
         if shownContent != current {
             shownContent = current
@@ -47,6 +55,7 @@ final class BackgroundServicesViewController: NSViewController {
         outline.view.isHidden = !hasServices
         placeholder.isHidden = hasServices
         outline.isEnabled = !model.holdsChanges
+        searchAccessory.searchField.isEnabled = hasServices
     }
 }
 

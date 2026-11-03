@@ -10,8 +10,9 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
                                   target: nil, action: nil)
     private let detailsController = NSViewController()
     private let listContainer = NSView()
-    private var outline: BackgroundServiceOutlineController?
+    private lazy var outline = BackgroundServiceOutlineController(categories: model.selectedProfile.categories, showsDetails: true)
     private var displayedProfile: ServiceProfile?
+    private lazy var searchField = BackgroundServiceSearchField(model: outline.model)
     private var observation: PortableObservationTracking.Token?
     private var profiles: [ServiceProfile] = []
     private var selecting = false
@@ -62,10 +63,19 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
         sidebar.spacing = 0
         let details = OpaqueSettingsPane()
         detailsController.view = details
+        let search = NSStackView(views: [searchField])
+        search.orientation = .horizontal
+        search.distribution = .fill
+        search.edgeInsets = NSEdgeInsets(top: 12, left: 16, bottom: 10, right: 16)
+        search.translatesAutoresizingMaskIntoConstraints = false
+        details.addSubview(search)
         listContainer.translatesAutoresizingMaskIntoConstraints = false
         details.addSubview(listContainer)
         NSLayoutConstraint.activate([
-            listContainer.topAnchor.constraint(equalTo: details.topAnchor, constant: 8),
+            search.topAnchor.constraint(equalTo: details.topAnchor),
+            search.leadingAnchor.constraint(equalTo: details.leadingAnchor),
+            search.trailingAnchor.constraint(equalTo: details.trailingAnchor),
+            listContainer.topAnchor.constraint(equalTo: search.bottomAnchor),
             listContainer.leadingAnchor.constraint(equalTo: details.leadingAnchor, constant: 8),
             listContainer.trailingAnchor.constraint(equalTo: details.trailingAnchor, constant: -8),
             listContainer.bottomAnchor.constraint(equalTo: details.bottomAnchor, constant: -8),
@@ -96,6 +106,16 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
         sidebarItem.maximumThickness = 240
         sidebarItem.holdingPriority = .defaultHigh
         addSplitViewItem(sidebarItem)
+        detailsController.addChild(outline)
+        let list = outline.view
+        list.translatesAutoresizingMaskIntoConstraints = false
+        listContainer.addSubview(list)
+        NSLayoutConstraint.activate([
+            list.leadingAnchor.constraint(equalTo: listContainer.leadingAnchor),
+            list.trailingAnchor.constraint(equalTo: listContainer.trailingAnchor),
+            list.topAnchor.constraint(equalTo: listContainer.topAnchor),
+            list.bottomAnchor.constraint(equalTo: listContainer.bottomAnchor),
+        ])
         addSplitViewItem(NSSplitViewItem(viewController: detailsController))
     }
 
@@ -135,22 +155,9 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
 
     private func showProfile(_ profile: ServiceProfile) {
         guard displayedProfile !== profile else { return }
-        outline?.view.removeFromSuperview()
-        outline?.removeFromParent()
         displayedProfile = profile
-        let outline = BackgroundServiceOutlineController(categories: profile.categories, showsDetails: true)
+        outline.model.setCategories(profile.categories)
         outline.isEnabled = profile.canEdit
-        self.outline = outline
-        detailsController.addChild(outline)
-        let view = outline.view
-        view.translatesAutoresizingMaskIntoConstraints = false
-        listContainer.addSubview(view)
-        NSLayoutConstraint.activate([
-            view.leadingAnchor.constraint(equalTo: listContainer.leadingAnchor),
-            view.trailingAnchor.constraint(equalTo: listContainer.trailingAnchor),
-            view.topAnchor.constraint(equalTo: listContainer.topAnchor),
-            view.bottomAnchor.constraint(equalTo: listContainer.bottomAnchor),
-        ])
     }
 
     override func viewDidAppear() {
