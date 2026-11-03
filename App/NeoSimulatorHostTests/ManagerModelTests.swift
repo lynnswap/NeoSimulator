@@ -120,6 +120,7 @@ struct ManagerModelTests {
             reportFailure: { _ in Issue.record("Unexpected failure") })
         let window = try #require(controller.window)
         defer { window.close() }
+        #expect(controller.settings.serviceProfiles.rootView.selection.profileID == ServiceProfile.default.id)
         window.makeKeyAndOrderFront(nil)
         window.layoutIfNeeded()
         let samples = SettingsWindowFrameSamples()
@@ -2209,7 +2210,7 @@ struct ManagerModelTests {
         let device = simulator().id
         let label = "com.apple.searchd"
         #expect(store.profile(ServiceProfile.default.id)?.configuration.disabledLabels.isEmpty == true)
-        #expect(store.profiles.isEmpty)
+        #expect(store.availableProfiles == [.default])
         try store.record([.service(label)], enabled: false, for: device, productFamily: "iPhone")
         let changed = try #require(store.binding(for: device))
         #expect(changed.profileID == ServiceProfile.default.id)

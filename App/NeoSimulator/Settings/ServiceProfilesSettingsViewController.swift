@@ -5,7 +5,7 @@ import SwiftUI
 
 @MainActor @Observable
 final class ServiceProfilesSelection {
-    var profileID: UUID?
+    var profileID: UUID? = ServiceProfile.default.id
 }
 
 @MainActor
@@ -33,17 +33,21 @@ struct ServiceProfilesSettingsView: View {
     @State private var deleting: ServiceProfile?
     @State private var error: String?
 
-    private var selected: ServiceProfile? { selection.profileID.flatMap(store.profile) }
+    private var selected: ServiceProfile { selection.profileID.flatMap(store.profile) ?? .default }
 
     var body: some View {
         HStack(spacing: 0) {
             VStack(spacing: 0) {
                 List(selection: $selection.profileID) {
-                    ForEach(store.profiles) { profile in
+                    ForEach(store.availableProfiles) { profile in
                         VStack(alignment: .leading, spacing: 3) {
                             Text(profile.name)
-                            Text("Used by \(store.usageCount(profile.id)) simulators")
-                                .font(.caption).foregroundStyle(.secondary)
+                            if profile.id == ServiceProfile.default.id {
+                                Text("Built-in Profile").font(.caption).foregroundStyle(.secondary)
+                            } else {
+                                Text("Used by \(store.usageCount(profile.id)) simulators")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
                         }
                         .tag(profile.id)
                     }
@@ -60,7 +64,7 @@ struct ServiceProfilesSettingsView: View {
                     } label: { Image(systemName: "minus") }
                     .help("Delete Service Profile")
                     .accessibilityLabel("Delete Service Profile")
-                    .disabled(selected == nil)
+                    .disabled(selected.id == ServiceProfile.default.id)
                     Spacer()
                 }
                 .buttonStyle(.borderless)
@@ -75,16 +79,12 @@ struct ServiceProfilesSettingsView: View {
                     Button("Try Again") { store.reload() }
                 }
                 .frame(maxWidth: .infinity)
-            } else if let selected {
+            } else {
                 ServiceProfileDetails(profile: selected, usageCount: store.usageCount(selected.id),
                                       edit: { draft = ServiceProfileDraft(profileID: selected.id, name: selected.name,
                                                                           configuration: selected.configuration) },
                                       duplicate: { draft = ServiceProfileDraft(name: "\(selected.name) Copy",
                                                                                configuration: selected.configuration) })
-            } else {
-                ContentUnavailableView("Select a Service Profile", systemImage: "cpu",
-                                       description: Text("Create a profile here, or save a simulator's current configuration from Background Services."))
-                    .frame(maxWidth: .infinity)
             }
         }
         .frame(width: 720, height: 520)
@@ -104,7 +104,7 @@ struct ServiceProfilesSettingsView: View {
                 Button("Delete", role: .destructive) {
                     do {
                         try store.delete(deleting.id)
-                        selection.profileID = nil
+                        selection.profileID = ServiceProfile.default.id
                     } catch { self.error = error.localizedDescription }
                     self.deleting = nil
                 }
@@ -128,9 +128,15 @@ private struct ServiceProfileDetails: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text(profile.name).font(.title2.bold())
-            Text("Used by \(usageCount) simulators").foregroundStyle(.secondary)
+            if profile.id == ServiceProfile.default.id {
+                Text("Built-in Profile").foregroundStyle(.secondary)
+            } else {
+                Text("Used by \(usageCount) simulators").foregroundStyle(.secondary)
+            }
             HStack {
-                Button("Edit…", action: edit)
+                if profile.id != ServiceProfile.default.id {
+                    Button("Edit…", action: edit)
+                }
                 Button("Duplicate…", action: duplicate)
             }
             Divider()
@@ -146,8 +152,13 @@ private struct ServiceProfileDetails: View {
                 }
             }
             .listStyle(.plain)
-            Text("Editing a profile does not change its simulators until you apply the update in Background Services.")
-                .font(.caption).foregroundStyle(.secondary)
+            if profile.id == ServiceProfile.default.id {
+                Text("Default enables all background services. Duplicate it to create your own profile.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                Text("Editing a profile does not change its simulators until you apply the update in Background Services.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
         }
         .padding(20)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -212,6 +223,12 @@ struct ServiceProfileEditor: View {
     let selection = ServiceProfilesSelection()
     selection.profileID = store.profiles.first?.id
     return ServiceProfilesSettingsView(store: store, selection: selection)
+}
+
+#Preview("Default Profile", traits: .sizeThatFitsLayout) {
+    ServiceProfilesSettingsView(
+        store: ServiceProfileStore(defaults: UserDefaults(suiteName: "NeoSimulator.DefaultServiceProfilePreview")!),
+        selection: ServiceProfilesSelection())
 }
 
 #Preview("Edit Service Profile", traits: .sizeThatFitsLayout) {

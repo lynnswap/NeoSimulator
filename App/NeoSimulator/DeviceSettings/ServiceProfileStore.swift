@@ -104,6 +104,7 @@ final class ServiceProfileStore {
     }
 
     var profiles: [ServiceProfile] { state.profiles }
+    var availableProfiles: [ServiceProfile] { [.default] + state.profiles }
     func profile(_ id: UUID) -> ServiceProfile? { id == ServiceProfile.default.id ? .default : state.profiles.first { $0.id == id } }
     func binding(for device: DeviceInventoryID) -> DeviceServiceProfile? { state.devices[device] }
     func usageCount(_ id: UUID) -> Int { state.devices.values.filter { $0.profileID == id }.count }

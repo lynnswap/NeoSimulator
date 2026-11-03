@@ -77,7 +77,7 @@ private struct ServiceProfileControls: View {
     var body: some View {
         Picker("Profile", selection: Binding(get: { selectedProfileID },
                                             set: { manager.selectServiceProfile($0, for: device.id) })) {
-            ForEach([ServiceProfile.default] + store.profiles) { profile in
+            ForEach(store.availableProfiles) { profile in
                 if selectedProfileID == profile.id && isModified {
                     Text("\(profile.name) (Modified)").tag(profile.id)
                 } else {
