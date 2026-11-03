@@ -233,6 +233,11 @@ public struct DeviceInventoryIssue: Sendable {
 public struct DeviceInventorySnapshot: Sendable {
     public let devices: [InventoryDevice]
     public let issues: [DeviceInventoryIssue]
+
+    @_spi(NeoSimulator) public init(devices: [InventoryDevice], issues: [DeviceInventoryIssue]) {
+        self.devices = devices
+        self.issues = issues
+    }
 }
 
 extension SimulatorHostController {

@@ -125,6 +125,28 @@ private struct ServiceProfileControls: View {
     }
 }
 
+#if DEBUG
+#Preview("Profile + Overrides", traits: .sizeThatFitsLayout) {
+    BackgroundServicesPreview(.overrides)
+}
+
+#Preview("Profile Update Available", traits: .sizeThatFitsLayout) {
+    BackgroundServicesPreview(.profileUpdate)
+}
+
+#Preview("Unapplied Changes", traits: .sizeThatFitsLayout) {
+    BackgroundServicesPreview(.unapplied)
+}
+
+#Preview("No Profile", traits: .sizeThatFitsLayout) {
+    BackgroundServicesPreview(.noProfile)
+}
+
+#Preview("Stopped Simulator", traits: .sizeThatFitsLayout) {
+    BackgroundServicesPreview(.stopped)
+}
+#endif
+
 private struct BackgroundServiceOutcomeView: View {
     let outcome: BackgroundServicesModel.Outcome?
     let issue: String?

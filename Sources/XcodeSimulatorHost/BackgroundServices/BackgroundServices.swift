@@ -120,6 +120,13 @@ public struct SimulatorBackgroundServicesUpdate: Sendable {
     public let stillEnabledLabels: [String]
     /// Enabled services that launchd did not load in the current boot session; they start at the next boot.
     public let notStartedLabels: [String]
+
+    @_spi(NeoSimulator) public init(services: SimulatorBackgroundServices, stillEnabledLabels: [String],
+                                   notStartedLabels: [String]) {
+        self.services = services
+        self.stillEnabledLabels = stillEnabledLabels
+        self.notStartedLabels = notStartedLabels
+    }
 }
 
 /// A failed background service change with the state read after the attempt, including changes already made.
