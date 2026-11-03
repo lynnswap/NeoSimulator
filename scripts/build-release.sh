@@ -71,7 +71,7 @@ xcodebuild \
 app="$staging/NeoSimulator.app"
 ditto "$derived_data/Build/Products/Release/NeoSimulator.app" "$app"
 renderer="$app/Contents/Applications/NeoSimulatorRenderer.app"
-helper="$app/Contents/Helpers/NeoSimulatorGuestSettings"
+helper="$app/Contents/Resources/NeoSimulatorGuestSettings"
 if [[ "$(lipo -archs "$helper")" != arm64 ]]; then
   echo "Expected an arm64 guest settings helper." >&2
   exit 1
@@ -87,12 +87,14 @@ fi
 rm "$guest_entitlements"
 timestamp_option="--timestamp=none"
 if [[ "$signing_identity" != - ]]; then timestamp_option="--timestamp"; fi
+# This is simulator code, not nested macOS code. Keep its ad hoc signature when
+# the containing app receives its Developer ID signature.
 # Simulator executables need DYLD_ROOT_PATH to select their runtime libraries, and
 # iOS 27 runtimes supply them only through a simulator dyld cache that library
 # validation keeps the helper from mapping.
 codesign --force --options runtime --identifier NeoSimulatorGuestSettings \
   --entitlements "$repo_root/App/NeoSimulatorGuestSettings/GuestSettings.entitlements" \
-  --sign "$signing_identity" "$timestamp_option" "$helper"
+  --sign - --timestamp=none "$helper"
 for bundle in "$renderer" "$app"; do
   executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$bundle/Contents/Info.plist")"
   if [[ "$(lipo -archs "$bundle/Contents/MacOS/$executable")" != arm64 ]]; then
