@@ -454,12 +454,16 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
             let previous = self.content.rotationSnapshot
             let rotation = angle - session.displayAngle
             let untouched = self.initialPlacement.map { self.window?.frame == $0.frame } ?? false
-            update()
-            self.displayGeometryChanged()
-            // Rotation is not a user move; keep the pending initial placement eligible for restoration.
-            if untouched, let frame = self.window?.frame { self.initialPlacement?.frame = frame }
-            if self.isEmbedded && rotation != 0 && !session.display.usesNativeCanvas {
-                self.content.animateRotation(from: previous, by: rotation)
+            // AppKit may flush during display layout or magnification. Commit the rotated
+            // content and its compensating animation together so the final pose cannot flash first.
+            NSAnimationContext.runAnimationGroup { _ in
+                update()
+                self.displayGeometryChanged()
+                // Rotation is not a user move; keep the pending initial placement eligible for restoration.
+                if untouched, let frame = self.window?.frame { self.initialPlacement?.frame = frame }
+                if self.isEmbedded && rotation != 0 && !session.display.usesNativeCanvas {
+                    self.content.animateRotation(from: previous, by: rotation)
+                }
             }
         }
         session.display.nativePoseControls?.onError = { [weak self] in self?.present($0) }

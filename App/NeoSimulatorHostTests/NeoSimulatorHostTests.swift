@@ -2208,7 +2208,14 @@ struct InputFocusTests {
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: tool.path)
         let display = TestDisplay()
         display.naturalSize = NSSize(width: 400, height: 800)
-        display.onRotation = { [weak display] _ in display?.takeScreenSize(NSSize(width: 800, height: 400)) }
+        display.onRotation = { [weak display] _ in
+            display?.takeScreenSize(NSSize(width: 800, height: 400))
+            // A flush during AppKit layout must not publish the new orientation before its animation.
+            let key = "rotationTransaction"
+            CATransaction.setValue(true, forKey: key)
+            CATransaction.flush()
+            #expect(CATransaction.value(forKey: key) as? Bool == true)
+        }
         let controller = try makeController(display, devicectl: tool)
         defer { controller.invalidate() }
         let parent = NSViewController()
