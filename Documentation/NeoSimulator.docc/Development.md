@@ -69,7 +69,8 @@ The manager and renderer resolve their private interfaces through ABIBridge.
 CoreSimulator.
 The settings panes have independent previews in
 `GeneralSettingsViewController.swift`, `DevicesSettingsViewController.swift`,
-`CaptureSettingsViewController.swift`, and `ServiceProfilesSettingsViewController.swift`.
+`CaptureSettingsViewController.swift`, `ServiceProfilesSettingsViewController.swift`,
+and `LicensesSettingsViewController.swift`.
 The background-services inspector has previews in `BackgroundServicesViewController.swift`.
 They use sample catalogs and separate preferences domains. Debug builds allow
 Xcode's preview process to run alongside the app and skip application startup
@@ -109,6 +110,10 @@ write. A read failure preserves the existing data and prevents further writes
 until loading succeeds. Profile order is the stored array order; dragging
 profiles in settings changes that order in both settings and the inspector.
 The built-in Default profile remains first and is not stored in the file.
+
+The Licenses pane uses LicenseList's generated dependency notices and license view,
+with an AppKit split view and library list. The simslim notice is loaded from the
+bundled `Credits.rtf`, since its code is ported rather than linked as a package.
 
 ## Tests
 

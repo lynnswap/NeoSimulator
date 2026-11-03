@@ -152,13 +152,17 @@ final class BackgroundServicesModel {
         return change
     }
 
+    func discard(_ change: Change) {
+        pendingChanges.removeAll { $0.id == change.id }
+    }
+
     /// Called by the manager's operation queue, which owns change ordering and quit draining.
     func apply(_ change: Change) async throws {
         let destination = change.destination
         let wasSuspended = readingSuspended
         readingSuspended = true
         defer {
-            pendingChanges.removeAll { $0.id == change.id }
+            discard(change)
             setReadingSuspended(wasSuspended)
         }
         readTask?.cancel()

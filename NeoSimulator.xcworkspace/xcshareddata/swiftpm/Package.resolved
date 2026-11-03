@@ -1,5 +1,5 @@
 {
-  "originHash" : "affeb460b07227ebe1b4f33dd8c15cd44a947de313614d5ad96ac5062338cd00",
+  "originHash" : "6dafd851b8be97221b115287262d905381529617c5b801c8e888a4bf50c82df8",
   "pins" : [
     {
       "identity" : "abibridge",
@@ -8,6 +8,14 @@
       "state" : {
         "revision" : "fb86913e3fe335efef0913e19006c80e8b5b6ac7",
         "version" : "0.16.2"
+      }
+    },
+    {
+      "identity" : "licenselist",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/lynnswap/LicenseList",
+      "state" : {
+        "revision" : "ed35df2d3b90de2e5ba22ee3a808c4e799c1adf0"
       }
     },
     {

@@ -730,7 +730,12 @@ final class SimulatorManagerModel {
     private func enqueueServiceConfiguration(_ binding: DeviceServiceProfile, for device: InventoryDevice) {
         let change = backgroundServices.accept(binding.configuration, for: device)
         perform("Applying service profile…", refreshCatalog: false, waitsForAttach: false) {
-            try self.serviceProfiles.beginApplication(for: device.id, requestID: binding.requestID)
+            do {
+                try self.serviceProfiles.beginApplication(for: device.id, requestID: binding.requestID)
+            } catch {
+                self.backgroundServices.discard(change)
+                throw error
+            }
             try await self.backgroundServices.apply(change)
         }
     }

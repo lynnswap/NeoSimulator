@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import LicenseList
 import Observation
 import SwiftUI
 import Testing
@@ -144,13 +145,14 @@ struct ManagerModelTests {
         let window = try #require(controller.window)
         defer { window.close() }
         #expect(controller.settings.serviceProfiles.model.selectedProfileID == ServiceProfile.default.id)
+        #expect(controller.settings.tabViewItems.last?.label == "Licenses")
         window.makeKeyAndOrderFront(nil)
         window.layoutIfNeeded()
         let samples = SettingsWindowFrameSamples()
         NotificationCenter.default.addObserver(samples, selector: #selector(SettingsWindowFrameSamples.resized(_:)),
                                                 name: NSWindow.didResizeNotification, object: window)
         defer { NotificationCenter.default.removeObserver(samples) }
-        for index in [3, 2, 0] {
+        for index in [4, 2, 3, 0] {
             let before = window.frame
             samples.frames = []
             let item = try #require(window.toolbar?.items.first {
@@ -165,6 +167,32 @@ struct ManagerModelTests {
             #expect(window.contentLayoutRect.height == ceil(controller.settings.selectedContentSize.height))
             #expect(samples.frames.allSatisfy { $0 == after })
         }
+    }
+
+    @Test func licensesIncludePackagesAndPortedCodeAndUseNativeSelection() throws {
+        let model = LicensesSettingsModel()
+        #expect(model.issue == nil)
+        let names = Set(model.libraries.map(\.name))
+        #expect(names.isSuperset(of: ["LicenseList", "ABIBridge", "ObservationBridge", "simslim"]))
+        let simslim = try #require(model.libraries.first { $0.name == "simslim" })
+        #expect(simslim.licenseBody.contains("Copyright (c) 2026 Interlap"))
+        #expect(simslim.licenseBody.contains("Permission is hereby granted"))
+        #expect(model.libraries.allSatisfy { !$0.licenseBody.isEmpty })
+
+        let controller = LicensesSettingsViewController(model: model)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 520),
+                              styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentViewController = controller
+        window.makeKeyAndOrderFront(nil)
+        defer { window.close() }
+        window.layoutIfNeeded()
+        #expect(controller.view.frame.size == NSSize(width: 720, height: 520))
+        let table = try #require(inspectorViews(controller.view).compactMap { $0 as? NSTableView }.first)
+        #expect(table.selectedRow == 0)
+        let row = try #require(model.libraries.firstIndex { $0.id == simslim.id })
+        table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        #expect(model.selectedLibrary?.id == simslim.id)
     }
 
     @Test func settingsRefreshRuntimesAndRememberTheDeviceFamily() async throws {
@@ -2818,6 +2846,41 @@ struct ManagerModelTests {
         #expect(await events.next() == .manage(.remove, [stopped.id]))
         try await awaitServiceOperations(manager)
         #expect(store.binding(for: stopped.id) == nil)
+        try await manager.prepareForQuit()
+    }
+
+    @Test func aPendingProfileWriteFailureReleasesTheAcceptedChange() async throws {
+        let domain = "NeoSimulator.PendingProfileWriteFailure.\(UUID().uuidString)"
+        let fileURL = serviceProfileURL(domain)
+        defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
+        let store = ServiceProfileStore(fileURL: fileURL, legacyDefaults: nil)
+        let stopped = simulator(state: "Shutdown")
+        let source = ManagerModelSource(devices: [stopped])
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source, serviceProfiles: store)
+        let failures = AsyncStream<Void>.makeStream()
+        var errors = failures.stream.makeAsyncIterator()
+        manager.onError = { _ in failures.continuation.yield(()) }
+        let profile = try store.create(name: "Search Off", configuration: ServiceConfiguration(disabledLabels: ["com.apple.searchd"]))
+        await manager.refresh()
+        manager.selectServiceProfile(profile.id, for: stopped.id)
+        try FileManager.default.removeItem(at: fileURL)
+        try FileManager.default.createDirectory(at: fileURL, withIntermediateDirectories: false)
+
+        await source.setDevices([simulator()])
+        manager.manage(.start, devices: [stopped])
+        #expect(await events.next() == .manage(.start, [stopped.id]))
+        #expect(await errors.next() != nil)
+        #expect(manager.backgroundServices.changingDeviceIDs.isEmpty)
+        try await awaitServiceOperations(manager)
+        #expect(store.binding(for: stopped.id)?.pendingApplication == true)
+
+        try FileManager.default.removeItem(at: fileURL)
+        await manager.refresh()
+        #expect(await events.next() == .changeServices(stopped.id))
+        await source.completeServiceChange(disabled: ["com.apple.searchd"])
+        try await awaitServiceOperations(manager)
+        #expect(store.binding(for: stopped.id)?.pendingApplication == false)
         try await manager.prepareForQuit()
     }
 

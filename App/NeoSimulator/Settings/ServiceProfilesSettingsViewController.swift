@@ -340,7 +340,7 @@ private final class ServiceProfileCell: NSTableCellView {
     }
 }
 
-private final class OpaqueSettingsPane: NSView {
+final class OpaqueSettingsPane: NSView {
     override var isOpaque: Bool { true }
     override func draw(_ dirtyRect: NSRect) {
         NSColor.windowBackgroundColor.setFill()

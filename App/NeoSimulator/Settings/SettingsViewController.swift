@@ -7,6 +7,7 @@ final class SettingsViewController: NSTabViewController {
     let devices: DevicesSettingsViewController
     let capture: CaptureSettingsViewController
     let serviceProfiles: ServiceProfilesSettingsViewController
+    let licenses: LicensesSettingsViewController
     var onContentSizeChange: ((NSSize) -> Void)?
 
     init(model: SimulatorManagerModel, restart: @escaping () -> Void,
@@ -17,6 +18,7 @@ final class SettingsViewController: NSTabViewController {
         devices = DevicesSettingsViewController(makeSimulator: makeSimulator, reportFailure: reportFailure)
         capture = CaptureSettingsViewController(preferences: preferences)
         serviceProfiles = ServiceProfilesSettingsViewController(store: model.serviceProfiles)
+        licenses = LicensesSettingsViewController()
         super.init(nibName: nil, bundle: nil)
         general.sizingOptions = [.preferredContentSize]
         devices.sizingOptions = [.preferredContentSize]
@@ -24,7 +26,7 @@ final class SettingsViewController: NSTabViewController {
         transitionOptions = []
         tabStyle = .toolbar
         canPropagateSelectedChildViewControllerTitle = true
-        for (controller, symbol) in [(general as NSViewController, "gear"), (devices, "iphone"), (capture, "camera"), (serviceProfiles, "cpu")] {
+        for (controller, symbol) in [(general as NSViewController, "gear"), (devices, "iphone"), (capture, "camera"), (serviceProfiles, "cpu"), (licenses, "doc.text")] {
             let item = NSTabViewItem(viewController: controller)
             item.identifier = controller.title
             item.label = controller.title ?? ""
