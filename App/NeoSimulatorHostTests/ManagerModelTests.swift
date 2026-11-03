@@ -9,29 +9,22 @@ import Synchronization
 
 @Suite(.serialized, .timeLimit(.minutes(1))) @MainActor
 struct ManagerModelTests {
-    @Test func launchAppliesThePreferenceAndQuitReleasesItAfterTheRenderer() async throws {
+    @Test(arguments: [nil, CocoaError.Code.fileReadNoSuchFile, .fileReadNoPermission])
+    func launchAppliesThePreferenceAndQuitReleasesItAfterTheRenderer(_ accessFailure: CocoaError.Code?) async throws {
         let source = ManagerModelSource(devices: [])
         let manager = SimulatorManagerModel(source: source)
+        let directory = FileManager.default.temporaryDirectory
         var accessRequests = 0
-        manager.requestHostPreferenceAccess = { accessRequests += 1 }
+        let access = HostPreferenceAccess(directory: directory, readDirectory: { url in
+            #expect(url == directory)
+            accessRequests += 1
+            if let accessFailure { throw CocoaError(accessFailure) }
+        })
+        manager.requestHostPreferenceAccess = { access.request() }
         manager.start()
         try await manager.quitRenderer(keepingDevicesRunning: true)
         #expect(accessRequests == 1)
         #expect(await source.sessionEvents == ["begin", "status", "quit", "end"])
-    }
-
-    @Test(arguments: [nil, CocoaError.Code.fileReadNoSuchFile, .fileReadNoPermission])
-    func hostPreferenceAccessUsesTheNativeRequest(_ failure: CocoaError.Code?) throws {
-        let directory = FileManager.default.temporaryDirectory
-        let access = HostPreferenceAccess(directory: directory, readDirectory: { url in
-            #expect(url == directory)
-            if let failure { throw CocoaError(failure) }
-        })
-        if failure == .fileReadNoPermission {
-            #expect(throws: CocoaError(.fileReadNoPermission)) { try access.request() }
-        } else {
-            try access.request()
-        }
     }
 
     @Test func aFailedLaunchStillExposesThePreferredHostForRetry() async throws {

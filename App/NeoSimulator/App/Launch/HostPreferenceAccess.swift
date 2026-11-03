@@ -14,11 +14,8 @@ struct HostPreferenceAccess {
         self.readDirectory = readDirectory
     }
 
-    func request() throws {
-        do {
-            try readDirectory(directory)
-        } catch CocoaError.fileReadNoSuchFile {
-            // Device Hub has not created its container yet.
-        }
+    func request() {
+        // This access triggers consent. The preference transaction determines whether its actual reads and writes succeed.
+        try? readDirectory(directory)
     }
 }
