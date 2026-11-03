@@ -16,6 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }()
     private(set) var mainWindow: ManagerWindowController?
     private let preferences = SimulatorPreferences()
+    private let hostPreferenceAccess = HostPreferenceAccess()
     private var settingsWindow: SettingsWindowController?
     private var newSimulatorWindows: [DeviceInventoryID?: NewSimulatorWindowController] = [:]
     private var preparingNewSimulators: Set<DeviceInventoryID?> = []
@@ -57,6 +58,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillFinishLaunching(_ notification: Notification) {
+        model.requestHostPreferenceAccess = { [hostPreferenceAccess] in try hostPreferenceAccess.request() }
         model.beforeStoppingScreens = { [weak self] in try await self?.stopScreens() }
         model.beforeManagingRemoteDevices = { [weak self] identifiers in
             try await self?.screens.stopRemoteScreens(for: identifiers)

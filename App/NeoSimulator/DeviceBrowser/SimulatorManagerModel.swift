@@ -152,6 +152,7 @@ final class SimulatorManagerModel {
     @ObservationIgnored var onError: ((any Error) -> Void)?
     @ObservationIgnored var onDeviceOpenRequested: ((DeviceInventoryID) -> Void)?
     @ObservationIgnored var onOpenRemoteDevice: ((CoreDeviceDevice) async throws -> Void)?
+    @ObservationIgnored var requestHostPreferenceAccess: (() throws -> Void)?
     @ObservationIgnored var beforeStoppingScreens: (() async throws -> Void)?
     @ObservationIgnored var beforeManagingRemoteDevices: ((Set<DeviceInventoryID>) async throws -> Void)?
     @ObservationIgnored var beforeManagingSimulators: ((DeviceManagementAction, [InventoryDevice]) async throws -> Void)?
@@ -224,7 +225,10 @@ final class SimulatorManagerModel {
 
     func start() {
         perform("Loading devices…") {
-            do { try await self.controller.beginSession() }
+            do {
+                try self.requestHostPreferenceAccess?()
+                try await self.controller.beginSession()
+            }
             catch {
                 self.status = try? await self.controller.status()
                 throw error
@@ -236,6 +240,7 @@ final class SimulatorManagerModel {
 
     func select(_ host: SimulatorHost) {
         perform("Switching simulator app…") {
+            try self.requestHostPreferenceAccess?()
             if host == .deviceHub { try await self.beforeStoppingScreens?() }
             try await self.controller.selectHost(host, xcodeURL: nil)
         }
@@ -533,6 +538,7 @@ final class SimulatorManagerModel {
 
     func restoreDefaults(force: Bool = false) {
         perform("Restoring original settings…") {
+            try self.requestHostPreferenceAccess?()
             try await self.beforeStoppingScreens?()
             try await self.controller.restore(force: force)
         }
