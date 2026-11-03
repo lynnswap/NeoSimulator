@@ -424,6 +424,7 @@ struct ManagerModelTests {
             let item = try #require(menu.items.first { $0.title == title && !$0.isSectionHeader })
             #expect(NSApp.sendAction(try #require(item.action), to: item.target, from: item))
         }
+        try choose("Availability")
         #expect(controller.outlineView(outline, numberOfChildrenOfItem: nil) == 1)
         try choose("Recent")
         controller.selectDevice(.coreDevice("A"))
@@ -515,14 +516,14 @@ struct ManagerModelTests {
         let defaults = try #require(UserDefaults(suiteName: domain))
         defer { defaults.removePersistentDomain(forName: domain) }
         var options = DeviceBrowserPresentation.Options(defaults: defaults)
-        #expect(options.sortOrder == .availability && options.showGroups)
-        options.sortOrder = .recent
+        #expect(options.sortOrder == .recent && options.showGroups)
+        options.sortOrder = .availability
         options.showGroups = false
         options.save(to: defaults)
         let restored = DeviceBrowserPresentation.Options(defaults: defaults)
-        #expect(restored.sortOrder == .recent && !restored.showGroups)
+        #expect(restored.sortOrder == .availability && !restored.showGroups)
         defaults.set(-1, forKey: "SidebarSortOrder")
-        #expect(DeviceBrowserPresentation.Options(defaults: defaults).sortOrder == .availability)
+        #expect(DeviceBrowserPresentation.Options(defaults: defaults).sortOrder == .recent)
     }
 
     @Test(arguments: ["new-selection", "return-selection", "rollback"])

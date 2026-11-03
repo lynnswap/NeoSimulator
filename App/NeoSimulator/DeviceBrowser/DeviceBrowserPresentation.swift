@@ -19,7 +19,7 @@ struct DeviceBrowserPresentation {
     }
 
     struct Options {
-        var sortOrder: SortOrder = .availability
+        var sortOrder: SortOrder = .recent
         var showGroups = true
 
         init() {}
