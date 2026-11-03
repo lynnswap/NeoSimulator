@@ -15,16 +15,16 @@ struct ManagerBackgroundServicesView: View {
     var body: some View {
         if model.selectionCount != 1 || device == nil {
             ContentUnavailableView(model.selectionCount > 1 ? "Multiple Devices Selected" : "Select a Device",
-                                   systemImage: "gearshape.2",
+                                   systemImage: "cpu",
                                    description: Text("Select one simulator to change its background services."))
         } else if let unavailableReason {
-            ContentUnavailableView("Background Services Unavailable", systemImage: "gearshape.2",
+            ContentUnavailableView("Background Services Unavailable", systemImage: "cpu",
                                    description: Text(unavailableReason))
         } else if let services = model.services {
             servicesForm(services)
         } else if let issue = model.issue {
             ContentUnavailableView {
-                Label("Background Services Unavailable", systemImage: "gearshape.2")
+                Label("Background Services Unavailable", systemImage: "cpu")
             } description: {
                 Text(issue)
             } actions: {

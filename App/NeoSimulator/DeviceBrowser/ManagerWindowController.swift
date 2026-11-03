@@ -449,9 +449,9 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         inspectorMode = index
         switch inspectorMode {
         case 0: if let inspectorHost { showInspectorController(inspectorHost) }
-        case 1: if let backgroundServicesHost { showInspectorController(backgroundServicesHost) }
+        case 3: if let backgroundServicesHost { showInspectorController(backgroundServicesHost) }
         default:
-            deviceInspector.setPage(inspectorMode == 2 ? .reports : .info)
+            deviceInspector.setPage(inspectorMode == 1 ? .reports : .info)
             showInspectorController(deviceInspector)
         }
         inspector.animator().isCollapsed = false
@@ -827,8 +827,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         let selection = selectedDevices.count == 1 ? selectedDevices.first : nil
         let showsInspector = !splitController.splitViewItems[2].isCollapsed
         deviceInspector.update(device: selection, isManaging: selection.map { model.managingDeviceIDs.contains($0.id) } == true,
-                               isVisible: showsInspector && inspectorMode >= 2)
-        model.backgroundServices.setVisible(showsInspector && inspectorMode == 1)
+                               isVisible: showsInspector && (inspectorMode == 1 || inspectorMode == 2))
+        model.backgroundServices.setVisible(showsInspector && inspectorMode == 3)
     }
 
     private func presentLocationEditor(for identifier: DeviceInventoryID, latitude: String = "0", longitude: String = "0") {
@@ -1071,8 +1071,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             return item
         }
         if itemIdentifier == inspectorIdentifier {
-            let labels = ["Settings", "Background Services", "Reports", "Info"]
-            let images = zip(["slider.horizontal.3", "gearshape.2", "text.document", "info"], labels).map {
+            let labels = ["Settings", "Reports", "Info", "Background Services"]
+            let images = zip(["slider.horizontal.3", "text.document", "info", "cpu"], labels).map {
                 NSImage(systemSymbolName: $0.0, accessibilityDescription: $0.1)!
             }
             let tabs = NSSegmentedControl(images: images, trackingMode: .selectOne, target: self, action: #selector(changeInspector(_:)))

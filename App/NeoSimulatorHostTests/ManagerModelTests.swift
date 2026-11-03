@@ -1096,6 +1096,7 @@ struct ManagerModelTests {
         let accessory = try #require(inspector.topAlignedAccessoryViewControllers.first)
         let tabs = try #require(window.toolbar?.items.first { $0.itemIdentifier.rawValue == "DeviceInspector" }?.view as? NSSegmentedControl)
         let categories = try #require(inspectorViews(accessory.view).compactMap { $0 as? NSSegmentedControl }.first)
+        #expect((0..<tabs.segmentCount).map { tabs.toolTip(forSegment: $0) } == ["Settings", "Reports", "Info", "Background Services"])
         window.setContentSize(NSSize(width: 1200, height: 800))
         split.view.layoutSubtreeIfNeeded()
         #expect(accessory.isHidden)
@@ -1115,8 +1116,8 @@ struct ManagerModelTests {
             #expect(!tabs.isHidden)
             #expect(inspector.topAlignedAccessoryViewControllers.first === accessory)
             #expect(window.frame == frame, "Tab \(index), collapsed \(collapsed): frame \(window.frame), original \(frame)")
-            #expect(controller.deviceInspector.inspection.isVisible == (!collapsed && index >= 2))
-            #expect(model.backgroundServices.isVisible == (!collapsed && index == 1))
+            #expect(controller.deviceInspector.inspection.isVisible == (!collapsed && (index == 1 || index == 2)))
+            #expect(model.backgroundServices.isVisible == (!collapsed && index == 3))
             if let page { #expect(controller.deviceInspector.inspection.page == page) }
         }
 
@@ -1124,24 +1125,24 @@ struct ManagerModelTests {
         try click(0, collapsed: true)
         try click(0, collapsed: false)
         #expect(!inspector.isCollapsed && tabs.selectedSegment == 0)
-        try click(1, collapsed: false)
-        try click(1, collapsed: true)
-        try click(2, collapsed: false, page: .reports)
-        try click(2, collapsed: true, page: .reports)
-        try click(3, collapsed: false, page: .info)
-        try click(3, collapsed: true, page: .info)
-        try click(3, collapsed: false, page: .info)
+        try click(3, collapsed: false)
+        try click(3, collapsed: true)
+        try click(1, collapsed: false, page: .reports)
+        try click(1, collapsed: true, page: .reports)
+        try click(2, collapsed: false, page: .info)
+        try click(2, collapsed: true, page: .info)
+        try click(2, collapsed: false, page: .info)
 
         inspector.isCollapsed = true
         #expect((0..<tabs.segmentCount).allSatisfy { !tabs.isSelected(forSegment: $0) })
         #expect(!controller.deviceInspector.inspection.isVisible)
         inspector.isCollapsed = false
-        #expect(tabs.selectedSegment == 3 && controller.deviceInspector.inspection.isVisible)
+        #expect(tabs.selectedSegment == 2 && controller.deviceInspector.inspection.isVisible)
         try click(0, collapsed: false)
         #expect(accessory.isHidden)
         let device = simulator()
         controller.deviceInspector.update(device: device, isManaging: false, isVisible: true)
-        try click(3, collapsed: false, page: .info)
+        try click(2, collapsed: false, page: .info)
         controller.deviceInspector.update(device: device, isManaging: false, isVisible: true)
         window.layoutIfNeeded()
         #expect(!accessory.isHidden && accessory.view.frame.height > 0)
@@ -1155,7 +1156,7 @@ struct ManagerModelTests {
         categories.selectedSegment = 1
         #expect(NSApp.sendAction(try #require(categories.action), to: categories.target, from: categories))
         #expect(controller.deviceInspector.inspection.content == .applications)
-        try click(2, collapsed: false, page: .reports)
+        try click(1, collapsed: false, page: .reports)
         #expect(accessory.isHidden)
         controller.stopInspectorReads()
     }
