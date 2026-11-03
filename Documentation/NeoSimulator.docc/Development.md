@@ -49,7 +49,7 @@ The staging layout matches releases:
 ```text
 arm64/NeoSimulator.app/
   Contents/Applications/NeoSimulatorRenderer.app/
-  Contents/Helpers/NeoSimulatorGuestSettings
+  Contents/Resources/NeoSimulatorGuestSettings
 ```
 
 The AppKit manager owns host selection, presents device screens, and launches
@@ -127,8 +127,11 @@ repository's Pages source must be **GitHub Actions**.
 
 ## DMG distribution
 
-`build-release.sh` builds the complete app and signs the guest settings helper
-and renderer before their manager. The manager's signature has
+`build-release.sh` builds the complete app, signs the simulator settings helper
+ad hoc, and signs the renderer before its manager. The helper is stored in
+Resources as simulator code, outside the locations for nested macOS code.
+Its signature stays ad hoc even when the app uses Developer ID signing.
+The manager's signature has
 `com.apple.security.device.camera` from `App/NeoSimulator/NeoSimulator.entitlements`,
 because the hardened runtime blocks AVFoundation capture of a connected
 device's screen without it. The renderer is signed without entitlements. The
@@ -164,10 +167,11 @@ The tag is available immediately. A matching tag and draft are reused when the
 same command is retried; a conflicting tag is never moved. CI tests and builds the
 arm64 DMG. The **release-signing** environment then requires approval before
 Developer ID signing and notarization. Signing uses a temporary keychain,
-signs the guest settings helper and embedded renderer before the outer app
-with the same entitlements as `build-release.sh`, and verifies each signature
-and its entitlements.
-The workflow notarizes and staples the DMG, checks Gatekeeper, then uploads the
+keeps the simulator settings helper's ad hoc signature and signs the embedded
+renderer before the outer app with Developer ID. It uses the same entitlements
+as `build-release.sh` and verifies each signature and its entitlements.
+The workflow notarizes and staples the DMG, checks both the app and DMG with
+Gatekeeper, then uploads the
 DMG, `release-info.json`, and `SHA256SUMS` to the same draft and publishes it.
 Publication verifies that the tag still targets the tested commit. Failed checks
 leave the tag and draft in place. Check Actions before repeating a start command

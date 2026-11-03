@@ -244,7 +244,7 @@ def validate_app(tools: NativeTools, mount: Path, version: str, build_number: st
     }.items():
         if renderer_info.get(name) != expected:
             raise ReleaseError(f"The renderer {name} does not match the release contract.")
-    helper = app / "Contents" / "Helpers" / "NeoSimulatorGuestSettings"
+    helper = app / "Contents" / "Resources" / "NeoSimulatorGuestSettings"
     if set(machos) != {executable, renderer_executable, helper}:
         raise ReleaseError("The app must contain its manager, renderer, and guest settings helper executables.")
     for bundle, binary, entitlements in ((helper, helper, GUEST_SETTINGS_ENTITLEMENTS), (renderer, renderer_executable, ()),
@@ -252,7 +252,10 @@ def validate_app(tools: NativeTools, mount: Path, version: str, build_number: st
         architectures = tools.run(["/usr/bin/lipo", "-archs", str(binary)], "Validate app architecture").stdout.strip()
         if architectures != b"arm64":
             raise ReleaseError("The release app must be arm64-only.")
-        tools.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(bundle)], "Validate app signature")
+        if bundle == helper:
+            verify_guest_settings_signature(tools, helper)
+        else:
+            tools.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(bundle)], "Validate app signature")
         validate_entitlements(tools, bundle, entitlements, guest_helper=bundle == helper)
     return app
 
@@ -390,13 +393,10 @@ def temporary_credentials(tools: NativeTools, parent: Path, configuration: dict[
                     os.environ.pop(name, None)
 
 
-def sign(tools: NativeTools, path: Path, credentials: SigningCredentials, *, app: bool, entitlements: Path | None = None,
-         identifier: str | None = None) -> None:
+def sign(tools: NativeTools, path: Path, credentials: SigningCredentials, *, app: bool, entitlements: Path | None = None) -> None:
     arguments = ["/usr/bin/codesign", "--force", "--timestamp", "--keychain", str(credentials.keychain),
                  "--sign", credentials.certificate_sha1]
     arguments += ["--options", "runtime"] if app else ["--identifier", f"{APP_IDENTIFIER}.dmg"]
-    if identifier:
-        arguments += ["--identifier", identifier]
     if entitlements:
         arguments += ["--entitlements", str(entitlements)]
     tools.run([*arguments, str(path)], "Sign release app" if app else "Sign release DMG")
@@ -418,19 +418,36 @@ def verify_developer_id(tools: NativeTools, path: Path, team: str, *, app: bool,
         raise ReleaseError("The signed product lacks the required identifier, Developer ID team, secure timestamp, or runtime flag.")
 
 
+def verify_guest_settings_signature(tools: NativeTools, helper: Path) -> None:
+    tools.run(["/usr/bin/codesign", "--verify", "--strict", str(helper)], "Verify simulator helper signature")
+    result = tools.run(["/usr/bin/codesign", "--display", "--verbose=4", str(helper)], "Inspect simulator helper signature")
+    text = result.stderr.decode("utf-8", errors="replace")
+    fields = text.splitlines()
+    flags = re.search(r"flags=0x([A-Fa-f0-9]+)", text)
+    if (f"Identifier={GUEST_SETTINGS_NAME}" not in fields or "Signature=adhoc" not in fields
+            or not flags or not int(flags[1], 16) & 0x10000):
+        raise ReleaseError("The simulator helper must retain its ad hoc signature and runtime flag.")
+
+
 def sign_application(tools: NativeTools, app: Path, credentials: SigningCredentials, team: str) -> None:
     renderer = app / "Contents" / "Applications" / f"{RENDERER_NAME}.app"
+    helper = app / "Contents" / "Resources" / GUEST_SETTINGS_NAME
+    # The notary service omits simulator code. Signing it with Developer ID would
+    # require a macOS notarization ticket that it cannot receive.
+    tools.run([
+        "/usr/bin/codesign", "--force", "--options", "runtime", "--identifier", GUEST_SETTINGS_NAME,
+        "--entitlements", str(GUEST_SETTINGS_ENTITLEMENTS_PATH), "--sign", "-", "--timestamp=none", str(helper),
+    ], "Sign simulator settings helper")
+    verify_guest_settings_signature(tools, helper)
+    validate_entitlements(tools, helper, GUEST_SETTINGS_ENTITLEMENTS, guest_helper=True)
     # Seal nested code before its containing bundle; --deep signing can silently
     # apply the manager's signing profile to the renderer.
-    helper = app / "Contents" / "Helpers" / "NeoSimulatorGuestSettings"
     for bundle, identifier, entitlements_path, entitlements in (
-        (helper, "NeoSimulatorGuestSettings", GUEST_SETTINGS_ENTITLEMENTS_PATH, GUEST_SETTINGS_ENTITLEMENTS),
         (renderer, RENDERER_IDENTIFIER, None, ()), (app, APP_IDENTIFIER, MANAGER_ENTITLEMENTS_PATH, MANAGER_ENTITLEMENTS),
     ):
-        sign(tools, bundle, credentials, app=True, entitlements=entitlements_path,
-             identifier=GUEST_SETTINGS_NAME if bundle == helper else None)
+        sign(tools, bundle, credentials, app=True, entitlements=entitlements_path)
         verify_developer_id(tools, bundle, team, app=True, identifier=identifier)
-        validate_entitlements(tools, bundle, entitlements, guest_helper=bundle == helper)
+        validate_entitlements(tools, bundle, entitlements)
 
 
 def parse_json(payload: bytes) -> dict | None:
@@ -526,10 +543,11 @@ def prepare_release(arguments: argparse.Namespace) -> Path:
                     verify_developer_id(tools, app, configuration["APPLE_TEAM_ID"], app=True)
                     verify_developer_id(tools, app / "Contents" / "Applications" / f"{RENDERER_NAME}.app",
                                         configuration["APPLE_TEAM_ID"], app=True, identifier=RENDERER_IDENTIFIER)
-                    verify_developer_id(tools, app / "Contents" / "Helpers" / GUEST_SETTINGS_NAME,
-                                        configuration["APPLE_TEAM_ID"], app=True, identifier=GUEST_SETTINGS_NAME)
                     if layout_contents(mount) != layout:
                         raise ReleaseError("The final image did not preserve the original DMG layout.")
+                    tools.run([
+                        "/usr/sbin/spctl", "--assess", "--verbose=2", "--type", "execute", str(app),
+                    ], "Assess notarized app with Gatekeeper")
                 tools.run([
                     "/usr/sbin/spctl", "--assess", "--verbose=2", "--type", "open",
                     "--context", "context:primary-signature", str(final_image),

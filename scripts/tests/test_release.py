@@ -32,7 +32,7 @@ class ReleaseSigningTests(unittest.TestCase):
                 "CFBundlePackageType": "APPL", "CFBundleShortVersionString": "1.2.3",
                 "CFBundleVersion": "7",
             }))
-        helper = self.app / "Contents/Helpers/NeoSimulatorGuestSettings"
+        helper = self.app / "Contents/Resources/NeoSimulatorGuestSettings"
         helper.parent.mkdir(parents=True)
         helper.write_bytes(bytes.fromhex("cffaedfe") + b"fixture")
         self.helper = helper
@@ -41,13 +41,16 @@ class ReleaseSigningTests(unittest.TestCase):
     @staticmethod
     def native_result(arguments, operation, **kwargs):
         stdout = b"arm64" if arguments[0] == "/usr/bin/lipo" else b""
+        stderr = b""
+        if "--verbose=4" in arguments and Path(arguments[-1]).name == "NeoSimulatorGuestSettings":
+            stderr = b"Identifier=NeoSimulatorGuestSettings\nSignature=adhoc\nflags=0x10002\n"
         if "--entitlements" in arguments and Path(arguments[-1]).name == "NeoSimulatorGuestSettings":
             stdout = plistlib.dumps(dict.fromkeys(sign_release.GUEST_SETTINGS_ENTITLEMENTS, True))
         if "--entitlements" in arguments and Path(arguments[-1]).name == "NeoSimulator.app":
             stdout = plistlib.dumps(dict.fromkeys(sign_release.MANAGER_ENTITLEMENTS, True))
         if arguments[0] == "/usr/bin/segedit":
             Path(arguments[-1]).write_bytes(plistlib.dumps(dict.fromkeys(sign_release.GUEST_SETTINGS_SIMULATOR_ENTITLEMENTS, True)))
-        return sign_release.NativeResult(stdout, b"", 0)
+        return sign_release.NativeResult(stdout, stderr, 0)
 
     def test_validates_the_embedded_renderer_as_part_of_the_app(self):
         with patch.object(self.tools, "run", side_effect=self.native_result):
@@ -88,21 +91,33 @@ class ReleaseSigningTests(unittest.TestCase):
             with self.assertRaisesRegex(sign_release.ReleaseError, "simulator service entitlements"):
                 sign_release.validate_app(self.tools, self.mount, "v1.2.3", "7")
 
+    def test_rejects_developer_id_signing_of_the_simulator_helper(self):
+        def result(arguments, operation, **kwargs):
+            if "--verbose=4" in arguments and Path(arguments[-1]) == self.helper:
+                return sign_release.NativeResult(b"", b"Identifier=NeoSimulatorGuestSettings\nSignature size=9000\nflags=0x10000\n", 0)
+            return self.native_result(arguments, operation, **kwargs)
+        with patch.object(self.tools, "run", side_effect=result):
+            with self.assertRaisesRegex(sign_release.ReleaseError, "ad hoc"):
+                sign_release.validate_app(self.tools, self.mount, "v1.2.3", "7")
+
     def test_resigning_applies_each_signing_profile(self):
         credentials = sign_release.SigningCredentials(Path("fixture.keychain"), "A" * 40, Path("fixture.p8"))
         identifiers = {self.helper: "NeoSimulatorGuestSettings-generated-uuid", self.renderer: sign_release.RENDERER_IDENTIFIER,
                        self.app: sign_release.APP_IDENTIFIER}
         profiles = {}
         flags = {}
+        identities = {}
         def result(arguments, operation, **kwargs):
             path = Path(arguments[-1])
             if "--sign" in arguments:
                 if "--identifier" in arguments:
                     identifiers[path] = arguments[arguments.index("--identifier") + 1]
                 profiles[path] = plistlib.loads(Path(arguments[arguments.index("--entitlements") + 1]).read_bytes()) if "--entitlements" in arguments else {}
+                identities[path] = arguments[arguments.index("--sign") + 1]
                 flags[path] = "0x10000" if "--options" in arguments and arguments[arguments.index("--options") + 1] == "runtime" else "0x0"
             if "--verbose=4" in arguments:
-                metadata = f"Identifier={identifiers[path]}\nTeamIdentifier=ABCDEFGHIJ\nAuthority=Developer ID Application: Fixture (ABCDEFGHIJ)\nTimestamp=2026-10-29\nflags={flags[path]}\n"
+                signature = "Signature=adhoc\n" if identities[path] == "-" else ""
+                metadata = f"Identifier={identifiers[path]}\n{signature}TeamIdentifier=ABCDEFGHIJ\nAuthority=Developer ID Application: Fixture (ABCDEFGHIJ)\nTimestamp=2026-10-29\nflags={flags[path]}\n"
                 return sign_release.NativeResult(b"", metadata.encode(), 0)
             if "--display" in arguments and "--entitlements" in arguments:
                 return sign_release.NativeResult(plistlib.dumps(profiles[path]), b"", 0)
@@ -111,6 +126,8 @@ class ReleaseSigningTests(unittest.TestCase):
             sign_release.sign_application(self.tools, self.app, credentials, "ABCDEFGHIJ")
         signing = [call.args[0] for call in run.call_args_list if "--sign" in call.args[0]]
         self.assertEqual([Path(call[-1]) for call in signing], [self.helper, self.renderer, self.app])
+        self.assertEqual(signing[0][signing[0].index("--sign") + 1], "-")
+        self.assertTrue(all(call[call.index("--sign") + 1] == credentials.certificate_sha1 for call in signing[1:]))
         self.assertEqual(Path(signing[0][signing[0].index("--entitlements") + 1]), sign_release.GUEST_SETTINGS_ENTITLEMENTS_PATH)
         self.assertEqual(signing[0][signing[0].index("--identifier") + 1], sign_release.GUEST_SETTINGS_NAME)
         self.assertEqual(Path(signing[2][signing[2].index("--entitlements") + 1]), sign_release.MANAGER_ENTITLEMENTS_PATH)
@@ -145,7 +162,7 @@ for bundle, name in [(app, "NeoSimulator"), (app / "Contents/Applications/NeoSim
     (bundle / "Contents/MacOS" / name).write_bytes(b"fixture")
     build_number = next(value.split("=", 1)[1] for value in args if value.startswith("CURRENT_PROJECT_VERSION="))
     (bundle / "Contents/Info.plist").write_bytes(plistlib.dumps({"CFBundleExecutable": name, "CFBundleVersion": build_number}))
-helper = app / "Contents/Helpers/NeoSimulatorGuestSettings"
+helper = app / "Contents/Resources/NeoSimulatorGuestSettings"
 helper.parent.mkdir(parents=True)
 # The fake segedit extracts the whole helper as its linked entitlements section.
 shutil.copyfile(os.environ["FIXTURE_GUEST_SECTION"], helper)
@@ -197,11 +214,12 @@ shutil.copyfile(os.environ["FIXTURE_GUEST_SECTION"], helper)
                 self.assertEqual(len(signing), 3)
                 self.assertEqual([Path(call[-1]).name for call in signing],
                                  ["NeoSimulatorGuestSettings", "NeoSimulatorRenderer.app", "NeoSimulator.app"])
-                for call in signing:
-                    self.assertEqual(call[call.index("--sign") + 1], expected_identity)
+                for index, call in enumerate(signing):
+                    identity = "-" if index == 0 else expected_identity
+                    self.assertEqual(call[call.index("--sign") + 1], identity)
                     self.assertEqual(call[call.index("--options") + 1], "runtime")
-                    self.assertIn("--timestamp=none" if expected_identity == "-" else "--timestamp", call)
-                    self.assertNotIn("--timestamp" if expected_identity == "-" else "--timestamp=none", call)
+                    self.assertIn("--timestamp=none" if identity == "-" else "--timestamp", call)
+                    self.assertNotIn("--timestamp" if identity == "-" else "--timestamp=none", call)
                 entitlements = root / "App/NeoSimulatorGuestSettings/GuestSettings.entitlements"
                 self.assertEqual(Path(signing[0][signing[0].index("--entitlements") + 1]), entitlements)
                 self.assertEqual(plistlib.loads(entitlements.read_bytes()), dict.fromkeys(sign_release.GUEST_SETTINGS_ENTITLEMENTS, True))

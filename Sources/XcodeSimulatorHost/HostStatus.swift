@@ -430,8 +430,8 @@ extension SimulatorHostController {
 
     private static func settingsArguments(_ tool: SimulatorSettingsBackend.Tool, _ arguments: [String]) throws -> [String] {
         guard tool == .guestSettings else { return arguments }
-        let helper = Bundle.main.bundleURL.appending(path: "Contents/Helpers/NeoSimulatorGuestSettings")
-        guard FileManager.default.isExecutableFile(atPath: helper.path) else {
+        guard let helper = Bundle.main.url(forResource: "NeoSimulatorGuestSettings", withExtension: nil),
+              FileManager.default.isExecutableFile(atPath: helper.path) else {
             throw CLIError.unavailable("guest-settings-helper", "The app's guest settings helper is unavailable.")
         }
         return ["spawn", arguments[0], helper.path] + arguments.dropFirst()
