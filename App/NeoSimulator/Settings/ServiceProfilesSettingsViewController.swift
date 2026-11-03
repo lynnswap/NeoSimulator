@@ -10,19 +10,13 @@ final class ServiceProfilesSelection {
 
 @MainActor
 final class ServiceProfilesSettingsViewController: NSHostingController<ServiceProfilesSettingsView> {
-    let selection = ServiceProfilesSelection()
-
     init(store: ServiceProfileStore) {
-        super.init(rootView: ServiceProfilesSettingsView(store: store, selection: selection))
+        super.init(rootView: ServiceProfilesSettingsView(store: store, selection: ServiceProfilesSelection()))
         title = "Service Profiles"
         sizingOptions = [.standardBounds, .preferredContentSize]
     }
 
     required init?(coder: NSCoder) { nil }
-
-    func select(_ id: UUID?) {
-        selection.profileID = id
-    }
 }
 
 struct ServiceProfileDraft: Identifiable {

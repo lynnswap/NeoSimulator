@@ -54,11 +54,6 @@ final class SettingsViewController: NSTabViewController {
         if tabViewItem?.viewController === devices { devices.reload() }
     }
 
-    func showServiceProfiles(_ profileID: UUID?) {
-        serviceProfiles.select(profileID)
-        selectedTabViewItemIndex = 3
-    }
-
     func reloadSimulatorIfVisible() {
         if selectedTabViewItemIndex == 1 { devices.reload() }
     }

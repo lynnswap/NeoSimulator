@@ -53,10 +53,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.onOpenRemoteDevice = { [weak self] device in try await self?.openRemoteScreen(device) }
         model.onDeviceOpenRequested = { [weak controller] identifier in controller?.showDevice(identifier) }
         controller.onNewCompanion = { [weak self] device in self?.showNewSimulator(pairingWith: device) }
-        model.onManageServiceProfiles = { [weak self] profileID in
-            self?.showSettings(nil)
-            self?.settingsWindow?.settings.showServiceProfiles(profileID)
-        }
         mainWindow = controller
         return controller
     }

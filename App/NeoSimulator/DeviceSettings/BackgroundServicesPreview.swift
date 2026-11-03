@@ -9,8 +9,6 @@ struct BackgroundServicesPreview: View {
     }
 
     @State private var manager: SimulatorManagerModel
-    @State private var selection = ServiceProfilesSelection()
-    @State private var showsProfiles = false
     @State private var issue: String?
     private let scenario: Scenario
     private let source: BackgroundServicesPreviewSource
@@ -43,10 +41,6 @@ struct BackgroundServicesPreview: View {
             .frame(width: 320, height: 820)
             .task {
                 manager.onError = { [message = $issue] in message.wrappedValue = $0.localizedDescription }
-                manager.onManageServiceProfiles = { [selection, presented = $showsProfiles] id in
-                    selection.profileID = id
-                    presented.wrappedValue = true
-                }
                 do {
                     let store = manager.serviceProfiles
                     if store.profiles.isEmpty {
@@ -78,11 +72,7 @@ struct BackgroundServicesPreview: View {
             .onDisappear {
                 manager.backgroundServices.setVisible(false)
                 manager.onError = nil
-                manager.onManageServiceProfiles = nil
                 UserDefaults.standard.removePersistentDomain(forName: domain)
-            }
-            .sheet(isPresented: $showsProfiles) {
-                ServiceProfilesSettingsView(store: manager.serviceProfiles, selection: selection)
             }
             .alert("Preview Error", isPresented: Binding(get: { issue != nil },
                                                         set: { if !$0 { issue = nil } })) {

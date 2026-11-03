@@ -145,7 +145,6 @@ final class SimulatorManagerModel {
     let settings: DeviceSettingsModel
     let backgroundServices: BackgroundServicesModel
     let serviceProfiles: ServiceProfileStore
-    @ObservationIgnored var onManageServiceProfiles: ((UUID?) -> Void)?
     private(set) var devicePostures: [DeviceInventoryID: DevicePostureModel] = [:]
     @ObservationIgnored private var postureStarts: [DeviceInventoryID: Task<Void, Never>] = [:]
     @ObservationIgnored private var postureStops: [DeviceInventoryID: Task<Void, Never>] = [:]

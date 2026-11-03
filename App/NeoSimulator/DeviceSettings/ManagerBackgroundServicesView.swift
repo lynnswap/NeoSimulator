@@ -128,10 +128,6 @@ private struct ServiceProfileControls: View {
                 .buttonStyle(.borderless)
             }
         }
-        Button("Manage Profiles…") {
-            manager.onManageServiceProfiles?(selectedProfileID == ServiceProfile.default.id ? nil : selectedProfileID)
-        }
-        .buttonStyle(.borderless)
         .sheet(item: $draft) { draft in
             SaveServiceProfileSheet { name in
                 try store.create(name: name, configuration: draft.configuration, assigningTo: device.id)
