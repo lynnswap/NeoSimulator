@@ -207,8 +207,7 @@ struct ManagerModelTests {
         let bravo = try #require(names.firstIndex(of: "Bravo")), beta = try #require(names.firstIndex(of: "Beta"))
         #expect((bravo < beta) == (order != .name))
         if order == .recent {
-            // Full timestamps run Beta -> Alpha; the same-day name order runs Alpha -> Beta.
-            #expect(presentation.sections[1].devices.map(\.name) == ["Alpha", "Beta"])
+            #expect(presentation.sections[1].devices.map(\.name) == ["Beta", "Alpha"])
         }
         if order == .name { #expect(presentation.sections[0].devices[0].name == "Fallback Name") }
     }
@@ -470,6 +469,24 @@ struct ManagerModelTests {
         controller.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: search))
         #expect(controller.outlineView(outline, numberOfChildrenOfItem: nil) == 1)
         #expect(controller.selectedIdentifiers == [.coreDevice("A")])
+
+        func deviceNames() -> [String] {
+            (0..<outline.numberOfRows).compactMap { row in
+                guard let item = outline.item(atRow: row), controller.outlineView(outline, shouldSelectItem: item) else { return nil }
+                return controller.outlineView(outline, typeSelectStringFor: nil, item: item)
+            }
+        }
+        for (date, expected) in [(199_999.0, ["Beta", "Alpha"]), (200_001.0, ["Alpha", "Beta"])] {
+            await source.setDevices(try devices(firstDate: date))
+            await model.inventoryDidChange()
+            let reordered = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                MainActor.assumeIsolated { deviceNames() == expected }
+            }, object: nil)
+            try #require(await XCTWaiter.fulfillment(of: [reordered], timeout: 5) == .completed)
+            #expect(controller.selectedIdentifiers == [.coreDevice("A")])
+            #expect(outline.item(atRow: outline.selectedRow) as? NSObject === selectedRow)
+        }
+
         try choose("Availability")
         try choose("Available")
         let viewScreen = try #require(inspectorViews(content).compactMap { $0 as? NSButton }

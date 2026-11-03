@@ -70,15 +70,10 @@ struct DeviceBrowserPresentation {
         formatter.timeStyle = .none
         formatter.doesRelativeDateFormatting = true
 
-        // DeviceKit files a device being provisioned under the current date.
-        func recentDate(_ device: InventoryDevice) -> Date? {
-            Self.isBeingProvisioned(device) ? now : device.lastConnectionDate
-        }
-
         func key(_ device: InventoryDevice) -> String {
             switch sortOrder {
             case .availability: Self.isAvailable(device) ? "available" : "unavailable"
-            case .recent: recentDate(device).map(formatter.string(from:)) ?? "Other"
+            case .recent: Self.recentDate(device, now: now).map(formatter.string(from:)) ?? "Other"
             case .name: Self.nameGroup(Self.reportedName(device))
             case .fidelity: Self.reality(device)
             case .platform: Self.platform(device)?.raw ?? "unknown"
@@ -93,8 +88,8 @@ struct DeviceBrowserPresentation {
         case .availability: keys.sort { $0 == "available" && $1 != "available" }
         case .recent:
             keys.sort {
-                let lhs = grouped[$0]?.first.flatMap(recentDate) ?? .distantPast
-                let rhs = grouped[$1]?.first.flatMap(recentDate) ?? .distantPast
+                let lhs = grouped[$0]?.first.flatMap { Self.recentDate($0, now: now) } ?? .distantPast
+                let rhs = grouped[$1]?.first.flatMap { Self.recentDate($0, now: now) } ?? .distantPast
                 return lhs > rhs
             }
         case .fidelity: keys.sort { Self.realityTitle($0) < Self.realityTitle($1) }
@@ -149,6 +144,11 @@ struct DeviceBrowserPresentation {
 
     private static func isBeingProvisioned(_ device: InventoryDevice) -> Bool {
         coreDevice(device)?.visibilityClass == "devicesBeingProvisioned"
+    }
+
+    // DeviceKit files a device being provisioned under the current date.
+    private static func recentDate(_ device: InventoryDevice, now: Date) -> Date? {
+        isBeingProvisioned(device) ? now : device.lastConnectionDate
     }
 
     private static func reality(_ device: InventoryDevice) -> String {
@@ -218,6 +218,11 @@ struct DeviceBrowserPresentation {
                                  activeStates: DeviceActiveStates, calendar: Calendar, now: Date) -> Bool {
         let names = (reportedName(lhs) ?? "").localizedCaseInsensitiveCompare(reportedName(rhs) ?? "")
         if order == .name, names != .orderedSame { return names == .orderedAscending }
+        if order == .recent {
+            let a = recentDate(lhs, now: now) ?? .distantPast
+            let b = recentDate(rhs, now: now) ?? .distantPast
+            if a != b { return a > b }
+        }
         if order == .operatingSystem {
             switch (coreDevice(lhs)?.osBuildUpdate, coreDevice(rhs)?.osBuildUpdate) {
             case (.some, nil): return true
