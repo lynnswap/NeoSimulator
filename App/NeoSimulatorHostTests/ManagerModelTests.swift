@@ -12,9 +12,34 @@ struct ManagerModelTests {
     @Test func launchAppliesThePreferenceAndQuitReleasesItAfterTheRenderer() async throws {
         let source = ManagerModelSource(devices: [])
         let manager = SimulatorManagerModel(source: source)
+        var accessRequests = 0
+        manager.requestHostPreferenceAccess = { accessRequests += 1 }
         manager.start()
         try await manager.quitRenderer(keepingDevicesRunning: true)
+        #expect(accessRequests == 1)
         #expect(await source.sessionEvents == ["begin", "status", "quit", "end"])
+    }
+
+    @Test func deniedHostPreferenceAccessCanBeGrantedWithTheFilePicker() throws {
+        let domain = "NeoSimulator.HostPreferenceAccessFixture.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
+        let directory = FileManager.default.temporaryDirectory
+        var allowed = false
+        var requests = 0
+        let access = HostPreferenceAccess(defaults: defaults, directory: directory, readDirectory: { url in
+            #expect(url == directory)
+            if !allowed { throw CocoaError(.fileReadNoPermission) }
+        }, chooseDirectory: { url in
+            #expect(url == directory)
+            requests += 1
+            allowed = true
+            return url
+        })
+        try access.request()
+        try access.request()
+        #expect(requests == 1)
+        #expect(defaults.data(forKey: "DeviceHubPreferencesAccess") != nil)
     }
 
     @Test func aFailedLaunchStillExposesThePreferredHostForRetry() async throws {
