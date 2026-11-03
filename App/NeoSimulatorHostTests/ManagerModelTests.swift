@@ -20,26 +20,18 @@ struct ManagerModelTests {
         #expect(await source.sessionEvents == ["begin", "status", "quit", "end"])
     }
 
-    @Test func deniedHostPreferenceAccessCanBeGrantedWithTheFilePicker() throws {
-        let domain = "NeoSimulator.HostPreferenceAccessFixture.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: domain))
-        defer { defaults.removePersistentDomain(forName: domain) }
+    @Test(arguments: [nil, CocoaError.Code.fileReadNoSuchFile, .fileReadNoPermission])
+    func hostPreferenceAccessUsesTheNativeRequest(_ failure: CocoaError.Code?) throws {
         let directory = FileManager.default.temporaryDirectory
-        var allowed = false
-        var requests = 0
-        let access = HostPreferenceAccess(defaults: defaults, directory: directory, readDirectory: { url in
+        let access = HostPreferenceAccess(directory: directory, readDirectory: { url in
             #expect(url == directory)
-            if !allowed { throw CocoaError(.fileReadNoPermission) }
-        }, chooseDirectory: { url in
-            #expect(url == directory)
-            requests += 1
-            allowed = true
-            return url
+            if let failure { throw CocoaError(failure) }
         })
-        try access.request()
-        try access.request()
-        #expect(requests == 1)
-        #expect(defaults.data(forKey: "DeviceHubPreferencesAccess") != nil)
+        if failure == .fileReadNoPermission {
+            #expect(throws: CocoaError(.fileReadNoPermission)) { try access.request() }
+        } else {
+            try access.request()
+        }
     }
 
     @Test func aFailedLaunchStillExposesThePreferredHostForRetry() async throws {
