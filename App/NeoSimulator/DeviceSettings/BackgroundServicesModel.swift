@@ -33,7 +33,15 @@ final class BackgroundServicesModel {
     private(set) var selectionCount = 0
     /// Whether the Background Services page shows; launchd is read only while it does.
     private(set) var isVisible = false
-    private(set) var services: SimulatorBackgroundServices? { didSet { updateServiceState() } }
+    private(set) var services: SimulatorBackgroundServices? {
+        didSet {
+            if let services {
+                pendingRestartLabels.subtract(services.disabledLabels.union(services.loadedLabels))
+            }
+            updateServiceState()
+        }
+    }
+    private(set) var pendingRestartLabels: Set<String> = []
     private(set) var serviceState: SimulatorBackgroundServices?
     private(set) var outcome: Outcome?
     private(set) var issue: String?
@@ -83,6 +91,7 @@ final class BackgroundServicesModel {
             if self.device?.id != device?.id {
                 generation += 1
                 services = nil
+                pendingRestartLabels.removeAll()
                 outcome = nil
                 issue = nil
                 readTask?.cancel()
@@ -159,6 +168,7 @@ final class BackgroundServicesModel {
         do {
             let (updated, outcome) = try await apply(change.operation, to: destination)
             guard generation == request, device?.id == destination.id else { return }
+            pendingRestartLabels.formUnion(outcome.notStartedLabels)
             services = updated
             issue = nil
             self.outcome = outcome.stillEnabledLabels.isEmpty && outcome.notStartedLabels.isEmpty ? nil : outcome

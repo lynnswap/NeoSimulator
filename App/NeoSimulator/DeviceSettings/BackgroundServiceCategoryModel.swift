@@ -5,7 +5,12 @@ import XcodeSimulatorHost
 @MainActor
 protocol BackgroundServiceEditing: AnyObject {
     var serviceState: SimulatorBackgroundServices? { get }
+    var pendingRestartLabels: Set<String> { get }
     func setServices(_ targets: [SimulatorBackgroundServiceTarget], enabled: Bool)
+}
+
+extension BackgroundServiceEditing {
+    var pendingRestartLabels: Set<String> { [] }
 }
 
 @MainActor @Observable
@@ -49,6 +54,12 @@ final class BackgroundServiceItem {
     }
 
     var isEnabled: Bool { required || source?.serviceState?.isEnabled(label) == true }
+    var help: String {
+        if isEnabled, source?.pendingRestartLabels.contains(label) == true {
+            return detail + "\nStarts after the simulator restarts."
+        }
+        return detail
+    }
     var canChange: Bool {
         guard !required, let state = source?.serviceState else { return false }
         return !state.isEnabled(label) || state.canDisable(label)

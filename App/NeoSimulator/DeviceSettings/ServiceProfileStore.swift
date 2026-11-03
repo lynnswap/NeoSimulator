@@ -229,9 +229,9 @@ final class ServiceProfileStore {
     }
 
     func record(_ targets: [SimulatorBackgroundServiceTarget], enabled: Bool, for device: DeviceInventoryID,
-                productFamily: String) throws {
+                productFamily: String, currentConfiguration: ServiceConfiguration? = nil) throws {
         var binding = state.devices[device] ?? DeviceServiceProfile(profile: .default, pending: false)
-        var configuration = binding.configuration
+        var configuration = currentConfiguration ?? binding.configuration
         let affected = configuration.set(targets, enabled: enabled, productFamily: productFamily)
         for label in affected {
             let enabled = !configuration.disabledLabels.contains(label)

@@ -2830,6 +2830,65 @@ struct ManagerModelTests {
         try #require(await XCTWaiter.fulfillment(of: [idle], timeout: 5) == .completed)
     }
 
+    @Test func serviceOverridesUseTheInspectedStateForSharedServices() async throws {
+        let domain = "NeoSimulator.LiveServiceOverrides.\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(at: serviceProfileURL(domain).deletingLastPathComponent()) }
+        let store = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: nil)
+        let device = simulator()
+        let source = ManagerModelSource(devices: [device])
+        await source.holdServiceReads()
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source, serviceProfiles: store)
+        await manager.refresh()
+        manager.backgroundServices.inspect(device, selectionCount: 1)
+        manager.backgroundServices.setVisible(true)
+        #expect(await events.next() == .readServices(device.id))
+        await source.completeServiceRead(disabled: ["com.apple.bird"])
+        await manager.backgroundServices.finishReading()
+
+        manager.setBackgroundServices([.category("store")], enabled: false, for: device.id)
+        #expect(await events.next() == .changeServices(device.id))
+        await source.completeServiceChange(disabled: ["com.apple.bird", "com.apple.amsaccountsd"])
+        try await awaitServiceOperations(manager)
+        let profile = try store.create(name: "Development", configuration: ServiceConfiguration())
+        let binding = try store.assign(profile.id, to: device.id, pending: false)
+        #expect(binding.configuration.disabledLabels.contains("com.apple.amsaccountsd"))
+        try await manager.prepareForQuit()
+    }
+
+    @Test func aServiceReadFailureReplacesCachedValuesUntilRetrySucceeds() async throws {
+        let domain = "NeoSimulator.ServiceReadFailure.\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(at: serviceProfileURL(domain).deletingLastPathComponent()) }
+        let store = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: nil)
+        let device = simulator()
+        let source = ManagerModelSource(devices: [device])
+        await source.holdServiceReads()
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source, serviceProfiles: store)
+        let inspector = BackgroundServicesInspectorModel(manager: manager, showProfileSettings: { _ in })
+        await manager.refresh()
+        manager.backgroundServices.inspect(device, selectionCount: 1)
+        manager.backgroundServices.setVisible(true)
+        #expect(await events.next() == .readServices(device.id))
+        await source.completeServiceRead(disabled: ["com.apple.searchd"])
+        await manager.backgroundServices.finishReading()
+        #expect(inspector.content == .simulator(.services))
+
+        manager.backgroundServices.requestRefresh()
+        #expect(await events.next() == .readServices(device.id))
+        await source.failServiceRead()
+        await manager.backgroundServices.finishReading()
+        #expect(inspector.content == .simulator(.failure(ManagerModelSource.Failure.unavailable.localizedDescription)))
+        #expect(!inspector.canSaveProfile)
+
+        inspector.requestRefresh()
+        #expect(await events.next() == .readServices(device.id))
+        await source.completeServiceRead(disabled: [])
+        await manager.backgroundServices.finishReading()
+        #expect(inspector.content == .simulator(.services))
+        try await manager.prepareForQuit()
+    }
+
     @Test func backgroundServiceChangesRunInOrderAndQuitWaitsForThem() async throws {
         let domain = "NeoSimulator.ServiceQueue.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: domain))
@@ -2880,6 +2939,9 @@ struct ManagerModelTests {
         #expect(await source.serviceChanges == [.init(targets: [.category("search")], enabled: false),
                                                 .init(targets: [.service("com.apple.searchd")], enabled: true)])
         #expect(manager.backgroundServices.outcome?.notStartedLabels == ["com.apple.searchd"])
+        let inspector = BackgroundServicesInspectorModel(manager: manager, showProfileSettings: { _ in })
+        let item = try #require(inspector.categories.flatMap(\.items).first { $0.label == "com.apple.searchd" })
+        #expect(item.help.contains("Starts after the simulator restarts."))
     }
 
     @Test func backgroundServiceResultsStayWithTheirDevice() async throws {
@@ -3572,6 +3634,11 @@ actor ManagerModelSource: SimulatorManagerSource {
         let waiting = serviceRead
         serviceRead = nil
         waiting?.resume(returning: SimulatorBackgroundServices(disabled: disabled, loaded: [], productFamily: "iPhone"))
+    }
+    func failServiceRead() {
+        let waiting = serviceRead
+        serviceRead = nil
+        waiting?.resume(throwing: Failure.unavailable)
     }
     func setBackgroundServices(_ targets: [SimulatorBackgroundServiceTarget], enabled: Bool,
                                for device: InventoryDevice) async throws -> SimulatorBackgroundServicesUpdate {

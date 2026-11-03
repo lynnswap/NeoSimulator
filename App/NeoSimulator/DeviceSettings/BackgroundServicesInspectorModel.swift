@@ -33,14 +33,14 @@ final class BackgroundServicesInspectorModel: BackgroundServiceEditing {
         guard case .simulator(let simulator) = device else { return .unsupportedDevice }
         guard simulator.isAvailable else { return .simulator(.unavailableRuntime) }
         guard simulator.state == "Booted" else { return .simulator(.stopped) }
-        if services.serviceState != nil { return .simulator(.services) }
         if let issue = services.issue { return .simulator(.failure(issue)) }
+        if services.serviceState != nil { return .simulator(.services) }
         return .simulator(.loading)
     }
     var holdsChanges: Bool { services.device.map { !manager.canEditSettings(for: $0.id) } ?? true }
     var serviceState: SimulatorBackgroundServices? { services.serviceState }
     var issue: String? { services.issue }
-    var outcome: BackgroundServicesModel.Outcome? { services.outcome }
+    var pendingRestartLabels: Set<String> { services.pendingRestartLabels }
     var isLoading: Bool { services.isLoading }
     var showsActionIssue: Bool {
         get { actionIssue != nil }
@@ -76,7 +76,7 @@ final class BackgroundServicesInspectorModel: BackgroundServiceEditing {
     }
     var canSaveProfile: Bool {
         !holdsChanges && services.device?.canInspectBackgroundServices == true && serviceState != nil
-            && profiles.issue == nil && hasProfileChanges
+            && services.issue == nil && profiles.issue == nil && hasProfileChanges
     }
 
     func customizeProfile() { showProfileSettings(selectedProfileID) }

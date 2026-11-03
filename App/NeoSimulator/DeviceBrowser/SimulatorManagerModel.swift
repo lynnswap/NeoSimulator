@@ -693,7 +693,9 @@ final class SimulatorManagerModel {
     func setBackgroundServices(_ targets: [SimulatorBackgroundServiceTarget], enabled: Bool, for identifier: DeviceInventoryID) {
         guard !stopping, !managingDeviceIDs.contains(identifier), let device = inventory.first(where: { $0.id == identifier }) else { return }
         do {
-            try serviceProfiles.record(targets, enabled: enabled, for: identifier, productFamily: device.serviceProductFamily)
+            let current = backgroundServices.device?.id == identifier ? backgroundServices.configuration : nil
+            try serviceProfiles.record(targets, enabled: enabled, for: identifier,
+                productFamily: device.serviceProductFamily, currentConfiguration: current)
             let change = backgroundServices.accept(targets, enabled: enabled, for: device)
             perform("Updating background services…", refreshCatalog: false, waitsForAttach: false) {
                 try await self.backgroundServices.apply(change)

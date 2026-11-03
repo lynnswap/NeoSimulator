@@ -233,7 +233,9 @@ private final class BackgroundServiceCell: NSTableCellView {
             title.stringValue = category.category.name
             title.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
             detail.stringValue = showsDetails ? "When off: " + category.category.consequence : ""
+            toolTip = category.category.consequence
             toggle.setAccessibilityLabel(category.category.name)
+            toggle.setAccessibilityHelp(category.category.consequence)
             change = { [weak category] in category?.setEnabled($0) }
             observation = withPortableContinuousObservation { [weak self, category] _ in
                 self?.toggle.state = category.state
@@ -244,11 +246,12 @@ private final class BackgroundServiceCell: NSTableCellView {
             title.font = .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
             detail.stringValue = showsDetails ? service.detail : ""
             toggle.setAccessibilityLabel(service.label)
-            toolTip = service.detail
             change = { [weak service] in service?.setEnabled($0) }
             observation = withPortableContinuousObservation { [weak self, service] _ in
                 guard let self else { return }
                 toggle.state = service.isEnabled ? .on : .off
+                toolTip = service.help
+                toggle.setAccessibilityHelp(service.help)
                 editable = service.canChange
                 toggle.isEnabled = controlsEnabled && editable
             }
