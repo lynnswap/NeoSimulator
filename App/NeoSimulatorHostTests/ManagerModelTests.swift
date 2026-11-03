@@ -126,7 +126,7 @@ struct ManagerModelTests {
         NotificationCenter.default.addObserver(samples, selector: #selector(SettingsWindowFrameSamples.resized(_:)),
                                                 name: NSWindow.didResizeNotification, object: window)
         defer { NotificationCenter.default.removeObserver(samples) }
-        for index in [2, 0] {
+        for index in [3, 2, 0] {
             let before = window.frame
             samples.frames = []
             let item = try #require(window.toolbar?.items.first {
@@ -2156,6 +2156,146 @@ struct ManagerModelTests {
         await manager.settings.finishReading()
         #expect(manager.settings.settings?.showBorders == true)
         try await manager.quitRenderer(keepingDevicesRunning: true)
+    }
+
+    @Test func serviceProfilesKeepDeviceOverridesAcrossSwitchesAndRelaunch() throws {
+        let domain = "NeoSimulator.ServiceProfiles.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
+        let store = ServiceProfileStore(defaults: defaults)
+        let first = simulator(deviceSet: "/first").id
+        let second = simulator(deviceSet: "/second").id
+        let label = "com.apple.searchd"
+        let slim = try store.create(name: "Slim", configuration: ServiceConfiguration(disabledLabels: [label]))
+        let full = try store.create(name: "Full", configuration: ServiceConfiguration())
+        try store.assign(slim.id, to: first, pending: false)
+        try store.assign(slim.id, to: second, pending: false)
+        try store.record([.service(label)], enabled: true, for: first, productFamily: "iPhone")
+        try store.assign(full.id, to: first, pending: false)
+        // A matching base value must not discard an explicit per-device choice.
+        #expect(store.binding(for: first)?.overrides[label] == true)
+        try store.assign(slim.id, to: first, pending: false)
+        let restored = ServiceProfileStore(defaults: defaults)
+        #expect(restored.profiles == store.profiles)
+        #expect(restored.binding(for: first)?.configuration.disabledLabels == [])
+        #expect(restored.binding(for: second)?.configuration.disabledLabels == [label])
+        try restored.resetOverrides(for: first, pending: false)
+        #expect(restored.binding(for: first)?.configuration.disabledLabels == [label])
+    }
+
+    @Test func editingAndDeletingServiceProfilesDoNotRewriteDeviceIntent() throws {
+        let domain = "NeoSimulator.ServiceProfileUpdates.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
+        let store = ServiceProfileStore(defaults: defaults)
+        let device = simulator().id
+        let profile = try store.create(name: "Development", configuration: ServiceConfiguration())
+        try store.assign(profile.id, to: device, pending: false)
+        try store.update(profile.id, name: "Development", configuration: ServiceConfiguration(disabledLabels: ["com.apple.searchd"]))
+        #expect(store.hasUpdate(for: device))
+        #expect(store.binding(for: device)?.configuration.disabledLabels == [])
+        try store.assign(profile.id, to: device, pending: false)
+        #expect(!store.hasUpdate(for: device))
+        #expect(store.binding(for: device)?.configuration.disabledLabels == ["com.apple.searchd"])
+        try store.delete(profile.id)
+        #expect(store.binding(for: device) == nil && store.profiles.isEmpty)
+    }
+
+    @Test func profileEditsUseTheSameSharedServiceAndPlatformRulesAsLiveControls() throws {
+        let storeCategory = try #require(SimulatorBackgroundServiceCategory.all.first { $0.id == "store" })
+        let shared = "com.apple.amsaccountsd"
+        var configuration = ServiceConfiguration()
+        let affected = configuration.set([.category(storeCategory.id)], enabled: false)
+        #expect(!affected.contains(shared))
+        #expect(!configuration.disabledLabels.contains(shared))
+        configuration.set([.service(shared)], enabled: false)
+        #expect(configuration.disabledLabels.contains(shared))
+        #expect(configuration.set([.service("com.apple.homed")], enabled: false, productFamily: "Apple Watch").isEmpty)
+        #expect(!configuration.disabledLabels.contains("com.apple.homed"))
+    }
+
+    @Test func profileApplyPreservesOverridesAndReportsUnappliedStateAfterFailure() async throws {
+        let domain = "NeoSimulator.ServiceProfileApply.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
+        let store = ServiceProfileStore(defaults: defaults)
+        let device = simulator()
+        let label = "com.apple.searchd"
+        let other = "com.apple.searchtoold"
+        let profile = try store.create(name: "Search Off", configuration: ServiceConfiguration(disabledLabels: [label, other]))
+        try store.assign(profile.id, to: device.id, pending: false)
+        try store.record([.service(label)], enabled: true, for: device.id, productFamily: "iPhone")
+        let source = ManagerModelSource(devices: [device])
+        await source.holdServiceReads()
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source, serviceProfiles: store)
+        var failure: (any Error)?
+        manager.onError = { failure = $0 }
+        await manager.refresh()
+        manager.backgroundServices.inspect(device, selectionCount: 1)
+        manager.selectServiceProfile(profile.id, for: device.id)
+        #expect(await events.next() == .readServices(device.id))
+        await source.completeServiceRead(disabled: [])
+        #expect(await events.next() == .changeServices(device.id))
+        await source.failServiceChange(disabled: [])
+        try await awaitServiceOperations(manager)
+        #expect(failure != nil)
+        #expect(store.binding(for: device.id)?.overrides[label] == true)
+        #expect(manager.backgroundServices.unappliedLabels(for: try #require(store.binding(for: device.id)).configuration) == [other])
+        #expect(await source.serviceChanges == [.init(targets: [.service(other)], enabled: false)])
+        #expect(!store.hasUpdate(for: device.id))
+        manager.resetServiceOverrides(for: device.id, labels: [label])
+        #expect(await events.next() == .readServices(device.id))
+        await source.completeServiceRead(disabled: [])
+        #expect(await events.next() == .changeServices(device.id))
+        await source.completeServiceChange(disabled: [label])
+        try await awaitServiceOperations(manager)
+        #expect(store.binding(for: device.id)?.overrides.isEmpty == true)
+        #expect(await source.serviceChanges.last == .init(targets: [.service(label)], enabled: false))
+        #expect(manager.backgroundServices.unappliedLabels(for: try #require(store.binding(for: device.id)).configuration) == [other])
+        try await manager.prepareForQuit()
+    }
+
+    @Test func serviceProfileFollowsSimulatorStartAndRemoval() async throws {
+        let domain = "NeoSimulator.PendingServiceProfile.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
+        let store = ServiceProfileStore(defaults: defaults)
+        let stopped = simulator(state: "Shutdown")
+        let source = ManagerModelSource(devices: [stopped])
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source, serviceProfiles: store)
+        let profile = try store.create(name: "Search Off", configuration: ServiceConfiguration(disabledLabels: ["com.apple.searchd"]))
+        await manager.refresh()
+        manager.selectServiceProfile(profile.id, for: stopped.id)
+        #expect(store.binding(for: stopped.id)?.pendingApplication == true)
+        #expect(await source.serviceChanges.isEmpty)
+        await source.setDevices([simulator()])
+        manager.manage(.start, devices: [stopped])
+        #expect(await events.next() == .manage(.start, [stopped.id]))
+        #expect(await events.next() == .changeServices(stopped.id))
+        await source.completeServiceChange(disabled: ["com.apple.searchd"])
+        try await awaitServiceOperations(manager)
+        #expect(store.binding(for: stopped.id)?.pendingApplication == false)
+        try store.update(profile.id, name: profile.name, configuration: ServiceConfiguration())
+        await manager.refresh()
+        #expect(await source.serviceChanges.count == 1)
+        #expect(store.hasUpdate(for: stopped.id))
+        manager.manage(.remove, devices: manager.inventory)
+        #expect(await events.next() == .manage(.remove, [stopped.id]))
+        try await awaitServiceOperations(manager)
+        #expect(store.binding(for: stopped.id) == nil)
+        #expect(store.usageCount(profile.id) == 0)
+        try await manager.prepareForQuit()
+    }
+
+    private func awaitServiceOperations(_ manager: SimulatorManagerModel) async throws {
+        let idle = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            MainActor.assumeIsolated {
+                !manager.isBusy && manager.managingDeviceIDs.isEmpty && manager.backgroundServices.changingDeviceIDs.isEmpty
+            }
+        }, object: nil)
+        try #require(await XCTWaiter.fulfillment(of: [idle], timeout: 5) == .completed)
     }
 
     @Test func backgroundServiceChangesRunInOrderAndQuitWaitsForThem() async throws {

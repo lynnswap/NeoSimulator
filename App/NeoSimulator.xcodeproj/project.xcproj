@@ -315,6 +315,18 @@
                 "NeoSimulator/compile-sources",
                 "NeoSimulatorHostTests/compile-sources",
               ],
+            }, {
+              "path": "ServiceProfileStore.swift",
+              "target-membership": [
+                "NeoSimulator/compile-sources",
+                "NeoSimulatorHostTests/compile-sources",
+              ],
+            }, {
+              "path": "BackgroundServiceCategories.swift",
+              "target-membership": [
+                "NeoSimulator/compile-sources",
+                "NeoSimulatorHostTests/compile-sources",
+              ],
             },
           ],
         }, {
@@ -456,6 +468,12 @@
               ],
             }, {
               "path": "DevicesSettingsViewController.swift",
+              "target-membership": [
+                "NeoSimulator/compile-sources",
+                "NeoSimulatorHostTests/compile-sources",
+              ],
+            }, {
+              "path": "ServiceProfilesSettingsViewController.swift",
               "target-membership": [
                 "NeoSimulator/compile-sources",
                 "NeoSimulatorHostTests/compile-sources",

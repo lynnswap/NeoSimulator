@@ -6,6 +6,7 @@ final class SettingsViewController: NSTabViewController {
     let general: GeneralSettingsViewController
     let devices: DevicesSettingsViewController
     let capture: CaptureSettingsViewController
+    let serviceProfiles: ServiceProfilesSettingsViewController
     var onContentSizeChange: ((NSSize) -> Void)?
 
     init(model: SimulatorManagerModel, restart: @escaping () -> Void,
@@ -15,14 +16,16 @@ final class SettingsViewController: NSTabViewController {
                                                frameworks: model.frameworks, restart: restart)
         devices = DevicesSettingsViewController(makeSimulator: makeSimulator, reportFailure: reportFailure)
         capture = CaptureSettingsViewController(preferences: preferences)
+        serviceProfiles = ServiceProfilesSettingsViewController(store: model.serviceProfiles)
         super.init(nibName: nil, bundle: nil)
         general.sizingOptions = [.preferredContentSize]
         devices.sizingOptions = [.preferredContentSize]
         capture.sizingOptions = [.preferredContentSize]
+        serviceProfiles.sizingOptions = [.preferredContentSize]
         transitionOptions = []
         tabStyle = .toolbar
         canPropagateSelectedChildViewControllerTitle = true
-        for (controller, symbol) in [(general as NSViewController, "gear"), (devices, "iphone"), (capture, "camera")] {
+        for (controller, symbol) in [(general as NSViewController, "gear"), (devices, "iphone"), (capture, "camera"), (serviceProfiles, "cpu")] {
             let item = NSTabViewItem(viewController: controller)
             item.identifier = controller.title
             item.label = controller.title ?? ""
@@ -49,6 +52,11 @@ final class SettingsViewController: NSTabViewController {
         super.tabView(tabView, didSelect: tabViewItem)
         onContentSizeChange?(selectedContentSize)
         if tabViewItem?.viewController === devices { devices.reload() }
+    }
+
+    func showServiceProfiles(_ profileID: UUID?) {
+        serviceProfiles.select(profileID)
+        selectedTabViewItemIndex = 3
     }
 
     func reloadSimulatorIfVisible() {

@@ -71,7 +71,7 @@ public struct SimulatorBackgroundServices: Sendable, Equatable {
     /// Labels this simulator's platform keeps enabled although a category lists them.
     public let platformRequiredLabels: Set<String>
 
-    init(disabled: Set<String>, loaded: Set<String>, productFamily: String) {
+    @_spi(NeoSimulator) public init(disabled: Set<String>, loaded: Set<String>, productFamily: String) {
         disabledLabels = disabled.intersection(BackgroundServiceCatalog.managed)
         loadedLabels = loaded.intersection(BackgroundServiceCatalog.managed)
         platformRequiredLabels = BackgroundServiceCatalog.platformRequired(productFamily: productFamily)
@@ -95,6 +95,17 @@ public struct SimulatorBackgroundServices: Sendable, Equatable {
             }
         }
         return settled ? .disabled : .partiallyDisabled
+    }
+
+    /// Shared services stay enabled while another fully enabled category needs them.
+    @_spi(NeoSimulator) public func labelsKeptEnabled(disabling categories: [SimulatorBackgroundServiceCategory],
+                                                    named: [String]) -> Set<String> {
+        let covered = Set(categories.flatMap { $0.services.map(\.label) }).subtracting(named)
+        var kept = Set<String>()
+        for category in SimulatorBackgroundServiceCategory.all where !categories.contains(category) && isFullyEnabled(category) {
+            kept.formUnion(category.services.map(\.label).filter(covered.contains))
+        }
+        return kept
     }
 
     func isFullyEnabled(_ category: SimulatorBackgroundServiceCategory) -> Bool {
@@ -235,7 +246,7 @@ struct SimulatorBackgroundServiceBackend: Sendable {
     private func stop(_ covered: [String], categories: [SimulatorBackgroundServiceCategory],
                       named: [String]) async throws -> SimulatorBackgroundServicesUpdate {
         let before = try await read()
-        let kept = Self.enabledNeighbours(of: categories, named: named, in: before)
+        let kept = before.labelsKeptEnabled(disabling: categories, named: named)
         let stopping = covered.filter { before.canDisable($0) && !kept.contains($0) }
         let stillEnabled = covered.filter { !stopping.contains($0) }
         var pending = Self.stillRunning(stopping, in: before)
@@ -285,18 +296,6 @@ struct SimulatorBackgroundServiceBackend: Sendable {
         }
         let notStarted = pending.filter { !state.loadedLabels.contains($0) && loadable($0) }
         return SimulatorBackgroundServicesUpdate(services: state, stillEnabledLabels: [], notStartedLabels: notStarted)
-    }
-
-    /// Labels another category needs while every one of its services is enabled. Only the live state says
-    /// which features are on. A label named on its own is never kept: naming it asks for that service to stop.
-    static func enabledNeighbours(of disabling: [SimulatorBackgroundServiceCategory], named: [String],
-                                  in state: SimulatorBackgroundServices) -> Set<String> {
-        let covered = Set(disabling.flatMap { $0.services.map(\.label) }).subtracting(named)
-        var kept = Set<String>()
-        for category in SimulatorBackgroundServiceCategory.all where !disabling.contains(category) && state.isFullyEnabled(category) {
-            kept.formUnion(category.services.map(\.label).filter(covered.contains))
-        }
-        return kept
     }
 
     private static func stillRunning(_ labels: [String], in state: SimulatorBackgroundServices) -> [String] {

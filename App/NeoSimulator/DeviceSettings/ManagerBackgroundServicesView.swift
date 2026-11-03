@@ -1,113 +1,136 @@
 import SwiftUI
 @_spi(NeoSimulator) import XcodeSimulatorHost
 
-/// The inspector's Background Services page for the selected simulator. Expanding a category lists its services.
 @MainActor
 struct ManagerBackgroundServicesView: View {
     let manager: SimulatorManagerModel
     let model: BackgroundServicesModel
-    @State private var expandedCategories: Set<String> = []
-    private var device: InventoryDevice? { model.device }
+
     private var holdsChanges: Bool {
-        manager.holdsSettingsEdits || device.map { manager.managingDeviceIDs.contains($0.id) } == true
+        manager.holdsSettingsEdits || model.device.map { manager.managingDeviceIDs.contains($0.id) } == true
     }
 
     var body: some View {
-        if model.selectionCount != 1 || device == nil {
+        if model.selectionCount != 1 || model.device == nil {
             ContentUnavailableView(model.selectionCount > 1 ? "Multiple Devices Selected" : "Select a Device",
                                    systemImage: "cpu",
                                    description: Text("Select one simulator to change its background services."))
-        } else if let unavailableReason {
-            ContentUnavailableView("Background Services Unavailable", systemImage: "cpu",
-                                   description: Text(unavailableReason))
-        } else if let services = model.services {
-            servicesForm(services)
-        } else if let issue = model.issue {
-            ContentUnavailableView {
-                Label("Background Services Unavailable", systemImage: "cpu")
-            } description: {
-                Text(issue)
-            } actions: {
-                Button("Try Again") { model.requestRefresh() }
-                    .disabled(model.isLoading)
+        } else if let device = model.device, case .simulator(let simulator) = device {
+            Form {
+                Section {
+                    ServiceProfileControls(manager: manager, model: model, device: device)
+                }
+                if !simulator.isAvailable {
+                    Section { Text("Install a compatible runtime to use this simulator.") }
+                } else if simulator.state != "Booted" {
+                    Section { Text("Start this simulator to change individual services.") }
+                } else if let configuration = model.configuration {
+                    Section {
+                        BackgroundServiceCategories(
+                            state: SimulatorBackgroundServices(disabled: configuration.disabledLabels,
+                                loaded: model.services?.loadedLabels ?? [], productFamily: simulator.productFamily),
+                            overrides: Set(manager.serviceProfiles.binding(for: device.id)?.overrides.keys.map { $0 } ?? []),
+                            change: { manager.setBackgroundServices($0, enabled: $1, for: device.id) },
+                            reset: { manager.resetServiceOverrides(for: device.id, labels: $0) })
+                    } header: {
+                        HStack(spacing: 6) {
+                            Text("Categories")
+                            if model.isChanging { ProgressView().controlSize(.mini) }
+                        }
+                    } footer: {
+                        BackgroundServiceOutcomeView(outcome: model.outcome, issue: model.issue)
+                    }
+                } else if let issue = model.issue {
+                    Section {
+                        Text(issue)
+                        Button("Try Again") { model.requestRefresh() }.disabled(model.isLoading)
+                    }
+                } else {
+                    Section { ProgressView("Loading background services…") }
+                }
             }
+            .formStyle(.grouped)
+            .disabled(holdsChanges)
         } else {
-            ProgressView("Loading background services…")
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            ContentUnavailableView("Background Services Unavailable", systemImage: "cpu",
+                                   description: Text("Background services can be changed only on simulators."))
         }
     }
+}
 
-    private var unavailableReason: String? {
-        switch device {
-        case .simulator(let simulator):
-            guard simulator.isAvailable else { return "Install a compatible runtime to use this simulator." }
-            guard simulator.state == "Booted" else { return "Start this simulator to change its background services." }
-            return nil
-        case .remote: return "Background services can be changed only on simulators."
-        case nil: return nil
-        }
-    }
+private struct ServiceProfileControls: View {
+    let manager: SimulatorManagerModel
+    let model: BackgroundServicesModel
+    let device: InventoryDevice
+    @State private var draft: ServiceProfileDraft?
 
-    private func servicesForm(_ services: SimulatorBackgroundServices) -> some View {
-        Form {
-            Section {
-                ForEach(SimulatorBackgroundServiceCategory.all) { category in
-                    categoryRow(category, services: services)
-                }
-            } header: {
-                HStack(spacing: 6) {
-                    Text("Categories")
-                    if model.isChanging { ProgressView().controlSize(.mini) }
-                }
-            } footer: {
-                footer
+    private var store: ServiceProfileStore { manager.serviceProfiles }
+    private var binding: DeviceServiceProfile? { store.binding(for: device.id) }
+
+    var body: some View {
+        Picker("Service Profile", selection: Binding(get: { binding?.profileID },
+                                                     set: { manager.selectServiceProfile($0, for: device.id) })) {
+            Text("Custom (No Profile)").tag(UUID?.none)
+            ForEach(store.profiles) { profile in
+                Text(profile.name).tag(Optional(profile.id))
             }
         }
-        .formStyle(.grouped)
-        .disabled(holdsChanges)
-    }
-
-    private func categoryRow(_ category: SimulatorBackgroundServiceCategory, services: SimulatorBackgroundServices) -> some View {
-        DisclosureGroup(isExpanded: Binding(get: { expandedCategories.contains(category.id) }, set: {
-            if $0 { expandedCategories.insert(category.id) } else { expandedCategories.remove(category.id) }
-        })) {
-            ForEach(category.services) { service in
-                let required = model.isEnabled(service.label) && !services.canDisable(service.label)
-                Toggle(isOn: Binding(get: { model.isEnabled(service.label) },
-                                     set: { change([.service(service.label)], enabled: $0) })) {
-                    Text(service.summary)
-                    Text(service.label).monospaced()
-                }
-                .toggleStyle(.switch)
-                .controlSize(.small)
-                .disabled(required)
-                .help(required ? "This platform needs this service." : "")
-            }
-            ForEach(category.requiredServices) { service in
-                LabeledContent {
-                    Text("Always On").foregroundStyle(.secondary)
-                } label: {
-                    Text(service.reason)
-                    Text(service.label).monospaced()
+        .disabled(store.issue != nil)
+        if let binding {
+            if !binding.overrides.isEmpty {
+                LabeledContent("\(binding.overrides.count) custom changes") {
+                    Button("Revert All") { manager.resetServiceOverrides(for: device.id) }
+                        .buttonStyle(.borderless)
                 }
             }
+            if binding.pendingApplication {
+                Text("This configuration will be applied when the simulator starts in NeoSimulator.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if store.hasUpdate(for: device.id) {
+                LabeledContent("Profile update available") {
+                    Button("Apply Update") { manager.applyServiceProfile(for: device.id, latest: true) }
+                        .buttonStyle(.borderless)
+                }
+            }
+            let count = model.unappliedLabels(for: binding.configuration).count
+            if device.canInspectBackgroundServices, count > 0, !model.isChanging {
+                LabeledContent("\(count) unapplied changes") {
+                    Button("Apply") { manager.applyServiceProfile(for: device.id, latest: false) }
+                        .buttonStyle(.borderless)
+                }
+            }
+        }
+        if let issue = store.issue {
+            Text(issue).font(.caption).foregroundStyle(.secondary)
+        }
+        Menu {
+            Button("Save Current Configuration as Profile…") {
+                if let configuration = model.configuration {
+                    draft = ServiceProfileDraft(name: "New Profile", configuration: configuration)
+                }
+            }
+            .disabled(!device.canInspectBackgroundServices || model.configuration == nil || model.isChanging || store.issue != nil)
+            Button("Manage Service Profiles…") { manager.onManageServiceProfiles?(binding?.profileID) }
         } label: {
-            Toggle(isOn: Binding(get: { model.isEnabled(category) }, set: { change([.category(category.id)], enabled: $0) })) {
-                Text(category.name)
-                Text("When off: \(category.consequence)")
-                if !model.isEnabled(category), services.state(of: category) == .partiallyDisabled {
-                    Text("Some of these services are off.")
-                }
-            }
-            .toggleStyle(.switch)
-            .help(category.summary)
+            Label("Profile Actions", systemImage: "ellipsis")
         }
+        .sheet(item: $draft) { draft in
+            ServiceProfileEditor(draft: draft) { name, configuration in
+                try store.create(name: name, configuration: configuration)
+            }
+        }
+        Text("Individual changes affect only this simulator.")
+            .font(.caption).foregroundStyle(.secondary)
     }
+}
 
-    @ViewBuilder
-    private var footer: some View {
-        let outcome = model.outcome
-        if outcome != nil || model.issue != nil {
+private struct BackgroundServiceOutcomeView: View {
+    let outcome: BackgroundServicesModel.Outcome?
+    let issue: String?
+
+    var body: some View {
+        if outcome != nil || issue != nil {
             VStack(alignment: .leading, spacing: 4) {
                 if let labels = outcome?.stillEnabledLabels, !labels.isEmpty {
                     Text("Kept on because another enabled category or the platform needs them: \(labels.joined(separator: ", "))")
@@ -115,17 +138,12 @@ struct ManagerBackgroundServicesView: View {
                 if let labels = outcome?.notStartedLabels, !labels.isEmpty {
                     Text("Starts when the simulator next boots: \(labels.joined(separator: ", "))")
                 }
-                if let issue = model.issue {
+                if let issue {
                     Text("Showing the last state read. \(issue)")
                 }
             }
             .font(.caption)
             .foregroundStyle(.secondary)
         }
-    }
-
-    private func change(_ targets: [SimulatorBackgroundServiceTarget], enabled: Bool) {
-        guard let identifier = device?.id else { return }
-        manager.setBackgroundServices(targets, enabled: enabled, for: identifier)
     }
 }
