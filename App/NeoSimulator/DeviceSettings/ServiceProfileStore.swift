@@ -48,6 +48,9 @@ struct ServiceProfile: Codable, Equatable, Identifiable, Sendable {
     var name: String
     var configuration: ServiceConfiguration
     var revision: Int
+
+    static let `default` = ServiceProfile(id: UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)),
+                                          name: "Default", configuration: ServiceConfiguration(), revision: 1)
 }
 
 struct DeviceServiceProfile: Codable, Equatable, Sendable {
@@ -59,6 +62,15 @@ struct DeviceServiceProfile: Codable, Equatable, Sendable {
     var pendingApplication: Bool
 
     var configuration: ServiceConfiguration { base.applying(overrides) }
+
+    init(profile: ServiceProfile, overrides: [String: Bool] = [:], pending: Bool) {
+        profileID = profile.id
+        base = profile.configuration
+        revision = profile.revision
+        self.overrides = overrides
+        requestID = UUID()
+        pendingApplication = pending
+    }
 }
 
 /// Owns reusable definitions and device-specific intent. Live launchd state stays in BackgroundServicesModel.
@@ -92,7 +104,7 @@ final class ServiceProfileStore {
     }
 
     var profiles: [ServiceProfile] { state.profiles }
-    func profile(_ id: UUID) -> ServiceProfile? { state.profiles.first { $0.id == id } }
+    func profile(_ id: UUID) -> ServiceProfile? { id == ServiceProfile.default.id ? .default : state.profiles.first { $0.id == id } }
     func binding(for device: DeviceInventoryID) -> DeviceServiceProfile? { state.devices[device] }
     func usageCount(_ id: UUID) -> Int { state.devices.values.filter { $0.profileID == id }.count }
 
@@ -114,10 +126,11 @@ final class ServiceProfileStore {
     }
 
     @discardableResult
-    func create(name: String, configuration: ServiceConfiguration) throws -> ServiceProfile {
+    func create(name: String, configuration: ServiceConfiguration, assigningTo device: DeviceInventoryID? = nil) throws -> ServiceProfile {
         let profile = ServiceProfile(id: UUID(), name: try validName(name), configuration: configuration, revision: 1)
         var updated = state
         updated.profiles.append(profile)
+        if let device { updated.devices[device] = DeviceServiceProfile(profile: profile, pending: false) }
         try save(updated)
         return profile
     }
@@ -142,25 +155,25 @@ final class ServiceProfileStore {
     }
 
     @discardableResult
-    func assign(_ profileID: UUID?, to device: DeviceInventoryID, pending: Bool) throws -> DeviceServiceProfile? {
-        var updated = state
-        guard let profileID else {
-            updated.devices.removeValue(forKey: device)
-            try save(updated)
-            return nil
-        }
+    func assign(_ profileID: UUID, to device: DeviceInventoryID, pending: Bool) throws -> DeviceServiceProfile {
         guard let profile = profile(profileID) else { throw Failure.missingProfile }
-        let binding = DeviceServiceProfile(profileID: profileID, base: profile.configuration, revision: profile.revision,
-                                           overrides: updated.devices[device]?.overrides ?? [:],
-                                           requestID: UUID(), pendingApplication: pending)
+        var updated = state
+        let overrides = profileID == ServiceProfile.default.id ? [:] : updated.devices[device]?.overrides ?? [:]
+        let binding = DeviceServiceProfile(profile: profile, overrides: overrides, pending: pending)
         updated.devices[device] = binding
         try save(updated)
         return binding
     }
 
+    func removeBinding(for device: DeviceInventoryID) throws {
+        var updated = state
+        updated.devices.removeValue(forKey: device)
+        try save(updated)
+    }
+
     func record(_ targets: [SimulatorBackgroundServiceTarget], enabled: Bool, for device: DeviceInventoryID,
                 productFamily: String) throws {
-        guard var binding = state.devices[device] else { return }
+        var binding = state.devices[device] ?? DeviceServiceProfile(profile: .default, pending: false)
         var configuration = binding.configuration
         let affected = configuration.set(targets, enabled: enabled, productFamily: productFamily)
         for label in affected {

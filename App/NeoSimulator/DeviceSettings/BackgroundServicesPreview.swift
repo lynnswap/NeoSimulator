@@ -5,7 +5,7 @@ import SwiftUI
 @MainActor
 struct BackgroundServicesPreview: View {
     enum Scenario {
-        case overrides, profileUpdate, unapplied, noProfile, stopped
+        case overrides, profileUpdate, unapplied, defaultProfile, defaultModified, stopped
     }
 
     @State private var manager: SimulatorManagerModel
@@ -24,7 +24,7 @@ struct BackgroundServicesPreview: View {
         var configuration = Self.lightweightConfiguration
         if scenario == .overrides || scenario == .profileUpdate {
             configuration.set([.service("com.apple.searchd")], enabled: true)
-        } else if scenario == .unapplied {
+        } else if scenario == .unapplied || scenario == .defaultProfile {
             configuration = ServiceConfiguration()
         }
         let source = BackgroundServicesPreviewSource(configuration: configuration, stopped: scenario == .stopped)
@@ -51,8 +51,10 @@ struct BackgroundServicesPreview: View {
                     let store = manager.serviceProfiles
                     if store.profiles.isEmpty {
                         let lightweight = try store.create(name: "Lightweight", configuration: Self.lightweightConfiguration)
-                        try store.create(name: "Development", configuration: ServiceConfiguration())
-                        if scenario != .noProfile {
+                        if scenario == .defaultModified {
+                            try store.record([.category("widgets"), .category("siri"), .category("search")], enabled: false,
+                                             for: source.device.id, productFamily: "iPhone")
+                        } else if scenario != .defaultProfile {
                             try store.assign(lightweight.id, to: source.device.id, pending: scenario == .stopped)
                         }
                         if scenario == .overrides || scenario == .profileUpdate {

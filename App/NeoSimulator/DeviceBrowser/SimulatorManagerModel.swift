@@ -484,7 +484,7 @@ final class SimulatorManagerModel {
                 let report = await self.controller.manage(action, devices: targets, preparingDisplay: preparation)
                 if action == .remove {
                     for result in report.results where result.error == nil {
-                        do { try self.serviceProfiles.assign(nil, to: result.deviceID, pending: false) }
+                        do { try self.serviceProfiles.removeBinding(for: result.deviceID) }
                         catch { self.onError?(error) }
                     }
                 }
@@ -702,14 +702,12 @@ final class SimulatorManagerModel {
         } catch { onError?(error) }
     }
 
-    func selectServiceProfile(_ profileID: UUID?, for identifier: DeviceInventoryID) {
+    func selectServiceProfile(_ profileID: UUID, for identifier: DeviceInventoryID) {
         guard !stopping, !managingDeviceIDs.contains(identifier),
               let device = inventory.first(where: { $0.id == identifier }), case .simulator = device else { return }
         do {
-            if let binding = try serviceProfiles.assign(profileID, to: identifier, pending: !device.canInspectBackgroundServices),
-               device.canInspectBackgroundServices {
-                enqueueServiceConfiguration(binding, for: device)
-            }
+            let binding = try serviceProfiles.assign(profileID, to: identifier, pending: !device.canInspectBackgroundServices)
+            if device.canInspectBackgroundServices { enqueueServiceConfiguration(binding, for: device) }
         } catch { onError?(error) }
     }
 
