@@ -178,17 +178,6 @@ struct SimulatorDisplayInterface {
     let disconnect: NativeSwiftMethod<(NativeSwiftClosure<() -> Void>) -> Void>
     let beginResize: NativeSwiftMethod<() -> Void>
     let endResize: NativeSwiftMethod<() -> Void>
-    /// `SimDisplayView.typedResizeRects`, an array of `SimDisplayView.TypedResizeRect`.
-    let resizeRects: NativeSwiftMethod<() -> NativeSwiftValue>
-    /// That array's `count` and subscript.
-    let resizeRectCount: NativeSwiftMethod<() -> Int>
-    let resizeRectAtIndex: NativeSwiftMethod<(Int) -> NativeSwiftValue>
-    /// `SimDisplayView.TypedResizeRect.rect`.
-    let resizeRectFrame: NativeSwiftMethod<() -> CGRect>
-    /// `SimDisplayView.TypedResizeRect.type`, a `SimDeviceChrome.ResizeRectType`.
-    let resizeRectType: NativeSwiftMethod<() -> NativeSwiftValue>
-    /// `SimDeviceChrome.ResizeRectType.rawValue`.
-    let resizeRectTypeName: NativeSwiftMethod<() -> String>
     /// `SimDisplayView.showResizeCursors`.
     let showResizeCursors: NativeSwiftMethod<(Bool) -> Void>
     let chromeState: NativeSwiftType
@@ -315,26 +304,6 @@ struct SimulatorDisplayInterface {
             as: ((NativeSwiftClosure<() -> Void>) -> Void).self)))
         beginResize = try await view.resolve(.swift(.method("beginResize()", as: (() -> Void).self)))
         endResize = try await view.resolve(.swift(.method("endResize()", as: (() -> Void).self)))
-        // The resize corners and their types are resilient, so they are passed
-        // indirectly, and the array's own members read its elements.
-        let typedResizeRect = try await runtime.resolve(.swift(.type("SimulatorKit.SimDisplayView.TypedResizeRect")))
-        let typedResizeRects = try await runtime.resolve(.swift(.type("Swift.Array", genericArguments: [.type(typedResizeRect)])))
-        let resizeRectType = try await runtime.resolve(.swift(.type("SimulatorKit.SimDeviceChrome.ResizeRectType")))
-        resizeRects = try await view.resolve(.swift(.getter(
-            "typedResizeRects.getter : [SimulatorKit.SimDisplayView.TypedResizeRect]",
-            as: (() -> NativeSwiftValue).self)))
-        resizeRectCount = try await typedResizeRects.resolve(.swift(.getter("count", as: (() -> Int).self)))
-        resizeRectAtIndex = try await typedResizeRects.resolve(.swift(.getter(
-            "Swift.Array.subscript.getter : (Swift.Int) -> A", as: ((Int) -> NativeSwiftValue).self)))
-        resizeRectFrame = try await typedResizeRect.resolve(.swift(.getter(
-            "rect.getter : __C.CGRect", as: (() -> CGRect).self, receiverABI: .opaque(named: typedResizeRect.name))))
-        self.resizeRectType = try await typedResizeRect.resolve(.swift(.getter(
-            "type.getter : SimulatorKit.SimDeviceChrome.ResizeRectType", as: (() -> NativeSwiftValue).self,
-            valueABIs: [resizeRectType: try .opaque(named: resizeRectType.name)],
-            receiverABI: .opaque(named: typedResizeRect.name))))
-        resizeRectTypeName = try await resizeRectType.resolve(.swift(.getter(
-            "rawValue.getter : Swift.String", as: (() -> String).self,
-            receiverABI: .opaque(named: resizeRectType.name))))
         showResizeCursors = try await view.resolve(.swift(.setter("showResizeCursors", as: ((Bool) -> Void).self)))
 
         chromeState = try await runtime.resolve(.swift(.type("SimulatorKit.SimDisplayChromeView.State")))
@@ -1508,22 +1477,6 @@ final class HIDMessage {
     deinit { free(UnsafeMutableRawPointer(pointer)) }
 }
 
-/// An area at a corner of the bezel whose drag resizes the window,
-/// `SimDisplayView.TypedResizeRect`.
-struct DisplayResizeRect {
-    /// `SimDeviceChrome.ResizeRectType`, by its raw value: the corner of the
-    /// display that the drag moves.
-    enum Corner: String {
-        case lowerLeft, lowerRight, upperRight, upperLeft
-
-        var isLeft: Bool { self == .lowerLeft || self == .upperLeft }
-        var isLower: Bool { self == .lowerLeft || self == .lowerRight }
-    }
-
-    var corner: Corner
-    var rect: NSRect
-}
-
 @MainActor
 protocol SimulatorDisplay: AnyObject {
     var isBooted: Bool { get }
@@ -1559,11 +1512,7 @@ protocol SimulatorDisplay: AnyObject {
     var displayClass: UInt16? { get }
     /// `SimDeviceChrome.images.padding`, or nil when no bezel is visible.
     var chromePadding: NSSize? { get }
-    /// Scaled bezel-corner resize areas in view coordinates.
-    /// SimulatorKit leaves their clicks for the window to handle.
-    var resizeRects: [DisplayResizeRect] { get }
-    /// `SimDisplayView.showResizeCursors`: whether the view shows resize
-    /// cursors over `resizeRects`.
+    /// Controls SimulatorKit's own bezel resize cursors.
     func setShowsResizeCursors(_ shows: Bool)
     /// Called on the main actor when the screen's properties change, such as
     /// the interface orientation of the guest.
@@ -1893,23 +1842,6 @@ final class SimulatorConnection: SimulatorDisplay {
             guard let chrome = try unsafe display.chrome.unsafeInvoke(on: chromeView)
                 .copyEnumPayloadAndWait(forCase: "some") else { return nil }
             return try unsafe display.chromeImagesPadding.unsafeInvoke(on: display.chromeImages.unsafeInvoke(on: chrome))
-        }
-    }
-
-    var resizeRects: [DisplayResizeRect] {
-        guard nativeCanvas == nil else { return [] }
-        let display = runtime.display
-        return read("read the bezel's resize corners", otherwise: []) {
-            let rects = try unsafe display.resizeRects.unsafeInvoke(on: view)
-            var result: [DisplayResizeRect] = []
-            for index in 0..<(try unsafe display.resizeRectCount.unsafeInvoke(on: rects)) {
-                let rect = try unsafe display.resizeRectAtIndex.unsafeInvoke(on: rects, index)
-                let type = try unsafe display.resizeRectTypeName.unsafeInvoke(on: display.resizeRectType.unsafeInvoke(on: rect))
-                // A corner type that this host does not know resizes nothing.
-                guard let corner = DisplayResizeRect.Corner(rawValue: type) else { continue }
-                result.append(DisplayResizeRect(corner: corner, rect: try unsafe display.resizeRectFrame.unsafeInvoke(on: rect)))
-            }
-            return result
         }
     }
 
