@@ -159,7 +159,9 @@ python3 scripts/prepare_release.py start \
   --notes-file <approved-release-notes>
 ```
 
-This creates a draft and starts **Publish Release**. CI tests and builds the
+This creates the approved version tag and a draft, then starts **Publish Release**.
+The tag is available immediately. A matching tag and draft are reused when the
+same command is retried; a conflicting tag is never moved. CI tests and builds the
 arm64 DMG. The **release-signing** environment then requires approval before
 Developer ID signing and notarization. Signing uses a temporary keychain,
 signs the guest settings helper and embedded renderer before the outer app
@@ -167,7 +169,10 @@ with the same entitlements as `build-release.sh`, and verifies each signature
 and its entitlements.
 The workflow notarizes and staples the DMG, checks Gatekeeper, then uploads the
 DMG, `release-info.json`, and `SHA256SUMS` to the same draft and publishes it.
-The release tag is created at publication and must target the tested commit.
+Publication verifies that the tag still targets the tested commit. Failed checks
+leave the tag and draft in place. Check Actions before repeating a start command
+whose dispatch result is uncertain. A workflow started from an existing draft
+also creates its tag during preparation, before build and validation.
 
 Configure the `release-signing` environment with required reviewers and these
 values before the first public release:
