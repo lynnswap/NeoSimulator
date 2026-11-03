@@ -40,6 +40,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     private let moreIdentifier = NSToolbarItem.Identifier("CanvasMoreActions")
     private var moreItem: NSMenuToolbarItem?
     private var inspectorHost: NSHostingController<ManagerDeviceSettingsView>?
+    private var backgroundServicesHost: NSHostingController<ManagerBackgroundServicesView>?
     private let inspectorContainer = NSViewController()
     private weak var inspectorContent: NSViewController?
     private(set) lazy var deviceInspector: ManagerDeviceInspectorController = {
@@ -405,6 +406,10 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         // AppKit owns the pane size; content-derived bounds must not constrain the window.
         host.sizingOptions = []
         inspectorHost = host
+        let backgroundServices = NSHostingController(rootView: ManagerBackgroundServicesView(manager: model,
+                                                                                             model: model.backgroundServices))
+        backgroundServices.sizingOptions = []
+        backgroundServicesHost = backgroundServices
         inspectorContainer.view = NSView()
         let inspector = NSSplitViewItem(inspectorWithViewController: inspectorContainer)
         inspector.minimumThickness = 280
@@ -442,9 +447,11 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             return
         }
         inspectorMode = index
-        if inspectorMode == 0, let inspectorHost { showInspectorController(inspectorHost) }
-        else {
-            deviceInspector.setPage(inspectorMode == 1 ? .reports : .info)
+        switch inspectorMode {
+        case 0: if let inspectorHost { showInspectorController(inspectorHost) }
+        case 1: if let backgroundServicesHost { showInspectorController(backgroundServicesHost) }
+        default:
+            deviceInspector.setPage(inspectorMode == 2 ? .reports : .info)
             showInspectorController(deviceInspector)
         }
         inspector.animator().isCollapsed = false
@@ -572,7 +579,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         }
         updateDeviceSettings()
         model.settings.inspect(selectedDevice, selectionCount: selections.count)
-        model.backgroundServices.inspect(selectedDevice)
+        model.backgroundServices.inspect(selectedDevice, selectionCount: selections.count)
     }
 
     func selectDevice(_ identifier: DeviceInventoryID) {
@@ -818,8 +825,10 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
 
     func updateDeviceSettings() {
         let selection = selectedDevices.count == 1 ? selectedDevices.first : nil
+        let showsInspector = !splitController.splitViewItems[2].isCollapsed
         deviceInspector.update(device: selection, isManaging: selection.map { model.managingDeviceIDs.contains($0.id) } == true,
-                               isVisible: !splitController.splitViewItems[2].isCollapsed && inspectorMode != 0)
+                               isVisible: showsInspector && inspectorMode >= 2)
+        model.backgroundServices.setVisible(showsInspector && inspectorMode == 1)
     }
 
     private func presentLocationEditor(for identifier: DeviceInventoryID, latitude: String = "0", longitude: String = "0") {
@@ -1062,8 +1071,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             return item
         }
         if itemIdentifier == inspectorIdentifier {
-            let labels = ["Settings", "Reports", "Info"]
-            let images = zip(["slider.horizontal.3", "text.document", "info"], labels).map {
+            let labels = ["Settings", "Background Services", "Reports", "Info"]
+            let images = zip(["slider.horizontal.3", "gearshape.2", "text.document", "info"], labels).map {
                 NSImage(systemSymbolName: $0.0, accessibilityDescription: $0.1)!
             }
             let tabs = NSSegmentedControl(images: images, trackingMode: .selectOne, target: self, action: #selector(changeInspector(_:)))

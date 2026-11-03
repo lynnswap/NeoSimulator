@@ -38,7 +38,7 @@ struct ManagerDeviceSettingsView: View {
         } else if settings == nil, issue == nil {
             ProgressView("Loading settings…")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if hasAvailableSettings || device?.canInspectBackgroundServices == true {
+        } else if hasAvailableSettings {
             settingsForm
         } else {
             unavailableSettings
@@ -69,15 +69,6 @@ struct ManagerDeviceSettingsView: View {
             }
             locationSection
             soundSection
-            if case .simulator = device {
-                BackgroundServicesSection(manager: manager, model: manager.backgroundServices)
-            } else {
-                Section("Background Services") {
-                    Text("Background services can be changed only on simulators.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
             if let message {
                 Section {
                     Text(message)

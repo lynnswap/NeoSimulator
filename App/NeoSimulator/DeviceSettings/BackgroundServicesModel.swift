@@ -28,6 +28,9 @@ final class BackgroundServicesModel {
         let notStartedLabels: [String]
     }
     private(set) var device: InventoryDevice?
+    private(set) var selectionCount = 0
+    /// Whether the Background Services page shows; launchd is read only while it does.
+    private(set) var isVisible = false
     private(set) var services: SimulatorBackgroundServices?
     private(set) var outcome: Outcome?
     private(set) var issue: String?
@@ -61,7 +64,8 @@ final class BackgroundServicesModel {
         return services?.isEnabled(label) == true
     }
 
-    func inspect(_ device: InventoryDevice?) {
+    func inspect(_ device: InventoryDevice?, selectionCount: Int) {
+        self.selectionCount = selectionCount
         if self.device != device {
             if self.device?.id != device?.id {
                 generation += 1
@@ -78,6 +82,13 @@ final class BackgroundServicesModel {
             outcome = nil
         }
         beginReadingIfNeeded()
+    }
+
+    /// Each showing reads the device again, since launchd can change outside NeoSimulator.
+    func setVisible(_ visible: Bool) {
+        guard isVisible != visible else { return }
+        isVisible = visible
+        if visible { requestRefresh() }
     }
 
     func requestRefresh() {
@@ -154,7 +165,7 @@ final class BackgroundServicesModel {
     }
 
     private func beginReadingIfNeeded() {
-        guard !stopped, !readingSuspended, readTask == nil, refreshRequested,
+        guard !stopped, isVisible, !readingSuspended, readTask == nil, refreshRequested,
               device?.canInspectBackgroundServices == true else { return }
         let identifier = UUID()
         readIdentifier = identifier
@@ -169,7 +180,7 @@ final class BackgroundServicesModel {
                     self.beginReadingIfNeeded()
                 }
             }
-            while !self.stopped, !self.readingSuspended, !Task.isCancelled,
+            while !self.stopped, self.isVisible, !self.readingSuspended, !Task.isCancelled,
                   self.refreshRequested, let device = self.device, device.canInspectBackgroundServices {
                 self.refreshRequested = false
                 let request = self.generation

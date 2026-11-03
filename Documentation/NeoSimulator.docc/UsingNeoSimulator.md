@@ -87,6 +87,7 @@ right side of the toolbar:
 | Page | Contents |
 | --- | --- |
 | Settings | The selected device's available appearance, accessibility, location, and sound controls. |
+| Background Services | Switches for a booted simulator's background services, such as Spotlight indexing and iCloud sync. |
 | Reports | Reports from physical devices and VMs that support report access. |
 | Info | Grouped device information and the Info, Apps, and Profiles categories. |
 
@@ -323,9 +324,9 @@ displays, see <doc:InputAndPeripherals>.
 
 ### Background services
 
-**Background Services**, at the end of the inspector, turns off a running
-simulator's background services, such as Spotlight indexing, iCloud sync, and
-Siri, without restarting it. Each category says what stops working while it is
+The inspector's **Background Services** tab turns off a running simulator's
+background services, such as Spotlight indexing, iCloud sync, and Siri,
+without restarting it. Each category says what stops working while it is
 off; expand it to switch its services one at a time. The change stays in effect
 when the simulator restarts or is erased, until you turn the services back on.
 

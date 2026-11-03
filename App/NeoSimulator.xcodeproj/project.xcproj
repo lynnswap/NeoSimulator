@@ -310,7 +310,7 @@
                 "NeoSimulatorHostTests/compile-sources",
               ],
             }, {
-              "path": "BackgroundServicesSection.swift",
+              "path": "ManagerBackgroundServicesView.swift",
               "target-membership": [
                 "NeoSimulator/compile-sources",
                 "NeoSimulatorHostTests/compile-sources",
