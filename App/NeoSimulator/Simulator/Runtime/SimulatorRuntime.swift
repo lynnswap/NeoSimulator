@@ -1508,19 +1508,9 @@ final class HIDMessage {
     deinit { free(UnsafeMutableRawPointer(pointer)) }
 }
 
-/// An area at a corner of the bezel whose drag resizes the window,
-/// `SimDisplayView.TypedResizeRect`.
+/// A resize area supplied by the device bezel, in display-view coordinates.
 struct DisplayResizeRect {
-    /// `SimDeviceChrome.ResizeRectType`, by its raw value: the corner of the
-    /// display that the drag moves.
-    enum Corner: String {
-        case lowerLeft, lowerRight, upperRight, upperLeft
-
-        var isLeft: Bool { self == .lowerLeft || self == .upperLeft }
-        var isLower: Bool { self == .lowerLeft || self == .lowerRight }
-    }
-
-    var corner: Corner
+    var corner: DisplayResizeCorner
     var rect: NSRect
 }
 
@@ -1530,6 +1520,9 @@ protocol SimulatorDisplay: AnyObject {
     var captureDisplayID: UInt32? { get throws }
     func connectAppDisplay(uniqueID: String) async throws -> any SimulatorDisplay
     var view: NSView { get }
+    /// The rendered device's rectangle, including visible chrome, in view coordinates.
+    var deviceFrame: NSRect { get }
+    var resizeRects: [DisplayResizeRect] { get }
     var usesNativeCanvas: Bool { get }
     var nativePoseControls: NativeDevicePoseControls? { get }
     /// The input digitizer, or the loaded plugin's overlay.
@@ -1559,11 +1552,7 @@ protocol SimulatorDisplay: AnyObject {
     var displayClass: UInt16? { get }
     /// `SimDeviceChrome.images.padding`, or nil when no bezel is visible.
     var chromePadding: NSSize? { get }
-    /// Scaled bezel-corner resize areas in view coordinates.
-    /// SimulatorKit leaves their clicks for the window to handle.
-    var resizeRects: [DisplayResizeRect] { get }
-    /// `SimDisplayView.showResizeCursors`: whether the view shows resize
-    /// cursors over `resizeRects`.
+    /// Controls SimulatorKit's own bezel resize cursors.
     func setShowsResizeCursors(_ shows: Bool)
     /// Called on the main actor when the screen's properties change, such as
     /// the interface orientation of the guest.
@@ -1660,6 +1649,8 @@ protocol SimulatorDisplay: AnyObject {
 }
 
 extension SimulatorDisplay {
+    var deviceFrame: NSRect { view.bounds }
+    var resizeRects: [DisplayResizeRect] { [] }
     var usesNativeCanvas: Bool { false }
     var nativePoseControls: NativeDevicePoseControls? { nil }
     func setCanvasMagnification(_ magnification: CGFloat?) {}
@@ -1818,6 +1809,21 @@ final class SimulatorConnection: SimulatorDisplay {
 
     var inputView: NSView { nativeCanvas?.inputView ?? plugin?.overlayView ?? digitizerView ?? view }
 
+    var deviceFrame: NSRect {
+        guard nativeCanvas == nil else { return view.bounds }
+        if chromePadding != nil {
+            // SimDisplayView also reserves space for hardware buttons outside the device artwork.
+            guard let artwork = chromeView?.subviews.first(where: {
+                $0.className == "SimulatorKit.SimDisplayChromeRenderView"
+            }) else { return view.bounds }
+            return view.convert(artwork.bounds, from: artwork)
+        }
+        return read("measure the displayed device", otherwise: view.bounds) {
+            let framebuffer = try unsafe runtime.display.renderableView.unsafeInvoke(on: view)
+            return view.convert(framebuffer.bounds, from: framebuffer)
+        }
+    }
+
     func userInterfacePlugin() throws -> SimulatorUserInterfacePlugin? {
         guard nativeCanvas == nil else { return nil }
         if let plugin { return plugin }
@@ -1897,7 +1903,7 @@ final class SimulatorConnection: SimulatorDisplay {
     }
 
     var resizeRects: [DisplayResizeRect] {
-        guard nativeCanvas == nil else { return [] }
+        guard nativeCanvas == nil, chromePadding != nil else { return [] }
         let display = runtime.display
         return read("read the bezel's resize corners", otherwise: []) {
             let rects = try unsafe display.resizeRects.unsafeInvoke(on: view)
@@ -1906,7 +1912,7 @@ final class SimulatorConnection: SimulatorDisplay {
                 let rect = try unsafe display.resizeRectAtIndex.unsafeInvoke(on: rects, index)
                 let type = try unsafe display.resizeRectTypeName.unsafeInvoke(on: display.resizeRectType.unsafeInvoke(on: rect))
                 // A corner type that this host does not know resizes nothing.
-                guard let corner = DisplayResizeRect.Corner(rawValue: type) else { continue }
+                guard let corner = DisplayResizeCorner(rawValue: type) else { continue }
                 result.append(DisplayResizeRect(corner: corner, rect: try unsafe display.resizeRectFrame.unsafeInvoke(on: rect)))
             }
             return result

@@ -60,11 +60,10 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     private var savedScale: CGFloat?
     /// Initial placement and the frame it produced, until the first orientation reading.
     private var initialPlacement: (place: ((NSWindow) -> Void)?, frame: NSRect)?
-    /// Includes full-screen transitions, when scaling and bezel resizing are unavailable.
+    /// The compact window's full-screen presentation, including transitions.
     private var isFullScreen: Bool { fitting.isFullScreen }
-    /// The drag on a corner of the bezel in progress, and the largest scale it
-    /// may give the display.
-    private var bezelResize: (drag: BezelResize, maximumScale: CGFloat)?
+    /// A corner drag changes only the embedded canvas's display scale.
+    private var canvasResize: CanvasResize?
     /// Injectable window-server drag operation.
     private let performWindowDrag: (NSWindow, NSEvent) -> Void
     private let presentCompactWindow: (NSWindow) -> Void
@@ -192,7 +191,6 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         window.isOpaque = session.display.usesNativeCanvas
         window.hasShadow = true
         window.isReleasedWhenClosed = false
-        // Full screen remains available even when the bezel disables resizing.
         window.collectionBehavior = [.fullScreenPrimary, .fullScreenAllowsTiling]
         window.delegate = self
         window.contentView = compactContainer
@@ -401,6 +399,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     }
 
     private func releasePresentationFocus() {
+        endCanvasResize()
         if let view = presentationWindow?.firstResponder as? NSView, view.isDescendant(of: content) {
             presentationWindow?.makeFirstResponder(nil)
         }
@@ -467,6 +466,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         session.onAppResizeError = { [weak self] in self?.present($0) }
         session.onDisplayWillChange = { [weak self] in
             guard let self else { return }
+            self.endCanvasResize()
             if !self.isFullScreen { self.saveWindowGeometry() }
             self.keyboard.setEnabled(false)
             self.session.display.setTrackpadEnabled(false)
@@ -476,6 +476,9 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         session.onAppResizeGeometryChange = { [weak self] in self?.appGeometryChanged() }
         session.onExternalScreenChange = { [weak self] in self?.syncExternalDisplayWindow() }
         content.canvasZoom = canvasZoom
+        content.deviceFrame = { [weak self] in self?.session.display.deviceFrame ?? .zero }
+        content.displayResizeRects = { [weak self] in self?.session.display.resizeRects ?? [] }
+        content.onCanvasResize = { [weak self] in self?.resizeCanvas(from: $0, with: $1) }
         content.onNativeCanvasMagnification = { [weak self] in self?.session.display.setCanvasMagnification($0) }
         content.canImport = { [weak self] in self?.session.canPerformToolOperation == true }
         content.importFiles = { [weak self] in self?.importFiles($0) }
@@ -505,7 +508,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         } else { attachCompactContent() }
         keyboard.attach(to: presentationWindow)
         observePresentationWindow()
-        showResizeCursors()
+        disableBezelResizeCursors()
         connectTouchPressure()
         showTouchIndicators()
         session.followBacklight()
@@ -786,8 +789,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         else { updateWindowSize() }
     }
 
-    /// Applies bezel padding, background, header shape, and resize behavior.
-    /// Full-screen windows stay resizable until they leave full screen.
+    /// Applies bezel padding, background, and header shape without changing window resizing.
     private func bezelChanged() {
         guard let window = window as? DeviceWindow else { return }
         let padding = session.display.chromePadding
@@ -796,16 +798,12 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         // With a bezel, guest edge gestures must start on it.
         session.display.setWantsEdgeSwipes(padding != nil)
         content.displayGap = isEmbedded ? 0 : WindowScale.displayGap(bezelPadding: padding)
-        window.chromeTopPadding = padding?.height ?? 0
+        window.chromeTopPadding = padding?.height
         updateHeaderShape()
         if canvasControls != nil || session.display.usesNativeCanvas { window.backgroundColor = .windowBackgroundColor }
         else if padding != nil { window.backgroundColor = .clear }
         else if !isFullScreen { window.backgroundColor = .black }
         updateContentMinimumSize()
-        guard !isFullScreen else { return }
-        // Native canvases use AppKit resizing; only SimulatorKit supplies bezel resize handles.
-        if session.display.usesNativeCanvas || padding == nil { window.styleMask.insert(.resizable) }
-        else { window.styleMask.remove(.resizable) }
     }
 
     /// Lays out the toolbar immediately so size calculations use its final header height.
@@ -1477,67 +1475,47 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
 
     // MARK: Bezel dragging
 
-    /// Routes unhandled presses to bezel resizing or window dragging.
+    /// Unhandled bezel presses move compact windows; their frames own resizing.
     private func handleBezelDrag(_ event: NSEvent) -> Bool {
-        switch event.type {
-        case .leftMouseDown: return beginBezelResize(with: event) || moveWindow(with: event)
-        case .leftMouseDragged where bezelResize != nil: continueBezelResize(with: event)
-        case .leftMouseUp where bezelResize != nil: endBezelResize()
-        default: return false
-        }
-        return true
+        guard !isEmbedded, event.type == .leftMouseDown else { return false }
+        return moveWindow(with: event)
     }
 
-    /// Drags outside the bezel corners when enabled. SimulatorKit forwards bezel presses
-    /// while retaining screen input; AppKit may also forward presses outside the display.
+    /// SimulatorKit forwards unconsumed bezel presses while retaining screen input.
+    /// AppKit may also forward presses outside the display.
     private func moveWindow(with event: NSEvent) -> Bool {
         guard !closed, !isFullScreen, preferences.movesWindowByDraggingBezel, let window else { return false }
         performWindowDrag(window, event)
         return true
     }
 
-    /// Begins a corner drag outside full screen, bounded by the visible screen.
-    private func beginBezelResize(with event: NSEvent) -> Bool {
-        guard !closed, !isFullScreen, fitting.scalesDisplay, let window else { return false }
-        let display = session.display
-        let point = display.view.convert(event.locationInWindow, from: nil)
-        guard let corner = display.resizeRects.first(where: { $0.rect.contains(point) })?.corner else { return false }
-        let drag = BezelResize(corner: corner,
-                               start: window.convertToScreen(display.view.convert(display.view.bounds, to: nil)),
-                               pointer: Self.screenLocation(of: event, in: window))
-        let maximumScale = (window.screen ?? NSScreen.main).flatMap { screen in
-            displaySpace(on: screen).map { space in
-                let anchored = drag.largestSize(within: content.displayRect(in: screen.visibleFrame))
-                return display.scale(for: NSSize(width: min(anchored.width, space.width),
-                                                 height: min(anchored.height, space.height)))
-            }
-        } ?? 1000
-        bezelResize = (drag, maximumScale)
-        display.beginResize()
-        return true
+    private func resizeCanvas(from corner: DisplayResizeCorner, with event: NSEvent) {
+        switch event.type {
+        case .leftMouseDown:
+            guard !closed, isEmbedded, fitting.scalesDisplay, session.canPerformCommands,
+                  let window = presentationWindow else { return }
+            let frame = session.display.view.convert(session.display.view.bounds, to: nil)
+            guard frame.width > 0, frame.height > 0 else { return }
+            canvasResize = CanvasResize(corner: corner, size: frame.size,
+                                        pointer: Self.screenLocation(of: event, in: window))
+            session.display.beginResize()
+        case .leftMouseDragged:
+            guard let canvasResize, let window = presentationWindow else { return }
+            let requested = canvasResize.requestedSize(pointerAt: Self.screenLocation(of: event, in: window))
+            let scale = session.display.scale(for: requested)
+            canvasZoom.mode = .fixed(min(canvasScaleRange.upperBound, max(canvasScaleRange.lowerBound, scale)))
+            updateEmbeddedScale()
+        case .leftMouseUp:
+            endCanvasResize()
+        default:
+            break
+        }
     }
 
-    /// Scales between the device minimum and drag maximum, keeping the opposite corner fixed.
-    private func continueBezelResize(with event: NSEvent) {
-        guard let resize = bezelResize, let window else { return }
-        let display = session.display
-        let requested = resize.drag.requestedSize(pointerAt: Self.screenLocation(of: event, in: window))
-        fitting.setScale(min(resize.maximumScale, max(minimumScale, display.scale(for: requested))))
-        updateWindowSize()
-        let frame = window.convertToScreen(display.view.convert(display.view.bounds, to: nil))
-        let origin = resize.drag.origin(for: frame.size)
-        setFrame(NSRect(origin: NSPoint(x: window.frame.minX + origin.x - frame.minX,
-                                       y: window.frame.minY + origin.y - frame.minY), size: window.frame.size))
-    }
-
-    /// After the drag, keep the window within reach of the screen.
-    private func endBezelResize() {
-        bezelResize = nil
+    private func endCanvasResize() {
+        guard canvasResize != nil else { return }
+        canvasResize = nil
         session.display.endResize()
-        guard let window, !window.styleMask.contains(.fullScreen),
-              let visible = (window.screen ?? NSScreen.main)?.visibleFrame else { return }
-        let origin = WindowScale.origin(of: window.frame, reaching: visible)
-        if origin != window.frame.origin { window.setFrameOrigin(origin) }
     }
 
     /// Uses the event's screen coordinates; window-local coordinates can become stale during dragging.
@@ -1545,9 +1523,9 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         event.cgEvent?.unflippedLocation ?? window.convertPoint(toScreen: event.locationInWindow)
     }
 
-    private func showResizeCursors() {
-        session.display.setShowsResizeCursors(!isFullScreen)
-        window?.invalidateCursorRects(for: session.display.view)
+    private func disableBezelResizeCursors() {
+        session.display.setShowsResizeCursors(false)
+        presentationWindow?.invalidateCursorRects(for: session.display.view)
     }
 
     private func resizeDisplay() {
@@ -1596,24 +1574,22 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         }
         resizeDisplay()
     }
-    // AppKit requires resizability to fill the screen during its full-screen transition.
     func windowWillEnterFullScreen(_ notification: Notification) {
         saveWindowGeometry()
         fitting.willEnterFullScreen()
-        showResizeCursors()
+        disableBezelResizeCursors()
         updateHeaderShape()
-        window?.styleMask.insert(.resizable)
     }
     func windowDidFailToEnterFullScreen(_ window: NSWindow) {
         fitting.didFailToEnterFullScreen()
-        showResizeCursors()
+        disableBezelResizeCursors()
         updateHeaderShape()
         bezelChanged()
     }
     /// Restores scale and origin explicitly; AppKit loses the origin of windows taller than the screen.
     func windowDidExitFullScreen(_ notification: Notification) {
         let geometry = fitting.didExitFullScreen(defaultScale: session.primaryDisplay.renderScale)
-        showResizeCursors()
+        disableBezelResizeCursors()
         updateHeaderShape()
         bezelChanged()
         guard let geometry else { return }
@@ -1673,6 +1649,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
                                       forDevice: session.device.identity.preferenceIdentifier, screens: Self.screenFrames)
     }
     private func disconnect() {
+        endCanvasResize()
         guard !closed else { return }
         closed = true
         if let window = presentationWindow, let sheet = window.attachedSheet {
@@ -1723,9 +1700,8 @@ private final class SimulatorPresentationViewController: NSViewController {
 /// Allows bezel padding beyond the screen and handles unconsumed bezel drags.
 @MainActor
 final class DeviceWindow: NSWindow {
-    /// The top padding of the display's bezel at scale 1,
-    /// `SimDeviceChrome.images.padding.height`; 0 without a bezel.
-    var chromeTopPadding: CGFloat = 0
+    /// The top padding of the display's bezel at scale 1; nil without a bezel.
+    var chromeTopPadding: CGFloat?
     /// The display's scale, which the padding scales with.
     var displayScale: () -> CGFloat = { 1 }
     /// Handles mouse events left unconsumed by the window's views.
@@ -1745,7 +1721,7 @@ final class DeviceWindow: NSWindow {
 
     /// Allows top bezel padding beyond the screen; otherwise uses AppKit's frame constraint.
     override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
-        guard let target = screen ?? self.screen, chromeTopPadding > 0 else {
+        guard let target = screen ?? self.screen, let chromeTopPadding else {
             return super.constrainFrameRect(frameRect, to: screen)
         }
         return WindowScale.frame(frameRect, constrainedBelow: target.visibleFrame,
@@ -1843,6 +1819,12 @@ private final class DeviceContentView: NSView, DisplayContentView {
         needsLayout = true
     }
     var canvasZoom: CanvasZoom?
+    var deviceFrame: (() -> NSRect)?
+    var displayResizeRects: (() -> [DisplayResizeRect])?
+    var onCanvasResize: (DisplayResizeCorner, NSEvent) -> Void = { _, _ in }
+    private lazy var resizeHandles = [DisplayResizeCorner.lowerLeft, .lowerRight, .upperRight, .upperLeft].map { corner in
+        DeviceCanvasResizeHandle(corner: corner) { [weak self] in self?.onCanvasResize(corner, $0) }
+    }
     var canvasMagnification: CGFloat { canvasScrollView.magnification }
     /// Renders the current magnification inside a native composition presented in `canvasOverlay`,
     /// or nil when the composition is presented at its own size.
@@ -1953,12 +1935,16 @@ private final class DeviceContentView: NSView, DisplayContentView {
         canvasScrollView.contentView.postsBoundsChangedNotifications = true
         clipBoundsObserver = NotificationCenter.default.addObserver(
             forName: NSView.boundsDidChangeNotification, object: canvasScrollView.contentView, queue: nil) { [weak self] _ in
-                MainActor.assumeIsolated { self?.placeNativeCanvas() }
+                MainActor.assumeIsolated {
+                    self?.placeNativeCanvas()
+                    self?.layoutResizeHandles()
+                }
             }
         addSubview(canvasScrollView)
         needsUpdateConstraints = true
         displayPresentation.setDisplay(display)
         addSubview(displayPresentation)
+        for handle in resizeHandles { addSubview(handle) }
         registerForDraggedTypes([.fileURL])
     }
     isolated deinit {
@@ -2113,10 +2099,42 @@ private final class DeviceContentView: NSView, DisplayContentView {
         onNativeCanvasMagnification(frame.width / canvasDisplayFrame.width)
     }
 
+    private func layoutResizeHandles() {
+        let frame = display.convert(deviceFrame?() ?? display.bounds, to: self)
+        let bezelRects = displayResizeRects?() ?? []
+        for handle in resizeHandles {
+            handle.isHidden = !isEmbedded || scrollsDisplay
+            if let area = bezelRects.first(where: { $0.corner == handle.corner }) {
+                let bezel = display.convert(area.rect, to: self)
+                let size = NSSize(width: max(44, bezel.width + 24), height: max(44, bezel.height + 24))
+                // Keep the bezel's inner boundary so the larger target does not take guest input.
+                handle.frame = NSRect(x: handle.corner.isLeft ? bezel.maxX - size.width : bezel.minX,
+                                      y: handle.corner.isLower ? bezel.maxY - size.height : bezel.minY,
+                                      width: size.width, height: size.height)
+                handle.resizeRects = [handle.bounds]
+            } else {
+                let radius: CGFloat = 24
+                handle.frame = NSRect(x: (handle.corner.isLeft ? frame.minX : frame.maxX) - radius,
+                                      y: (handle.corner.isLower ? frame.minY : frame.maxY) - radius,
+                                      width: radius * 2, height: radius * 2)
+                // Displays without bezel resize areas leave the guest's corners available for input.
+                handle.resizeRects = [
+                    NSRect(x: handle.corner.isLeft ? 0 : radius, y: 0, width: radius, height: radius * 2),
+                    NSRect(x: handle.corner.isLeft ? radius : 0, y: handle.corner.isLower ? 0 : radius,
+                           width: radius, height: radius),
+                ]
+            }
+            window?.invalidateCursorRects(for: handle)
+        }
+    }
+
     override func layout() {
         guard !isLayingOutCanvas else { return }
         isLayingOutCanvas = true
-        defer { isLayingOutCanvas = false }
+        defer {
+            layoutResizeHandles()
+            isLayingOutCanvas = false
+        }
         super.layout()
         if previousDisplaySize != availableDisplaySize {
             previousDisplaySize = availableDisplaySize
@@ -2170,6 +2188,46 @@ private final class DeviceContentView: NSView, DisplayContentView {
                                                        width: size.width, height: size.height))
         }
     }
+}
+
+/// Bezel hit targets scale the embedded device without resizing its window.
+@MainActor
+private final class DeviceCanvasResizeHandle: NSView {
+    let corner: DisplayResizeCorner
+    private let handleEvent: (NSEvent) -> Void
+
+    init(corner: DisplayResizeCorner, handleEvent: @escaping (NSEvent) -> Void) {
+        self.corner = corner
+        self.handleEvent = handleEvent
+        super.init(frame: .zero)
+        identifier = NSUserInterfaceItemIdentifier("DeviceCanvasResize.\(corner.rawValue)")
+        isHidden = true
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    var resizeRects: [NSRect] = []
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard resizeRects.contains(where: { $0.contains(convert(point, from: superview)) }) else { return nil }
+        return super.hitTest(point)
+    }
+
+    override func resetCursorRects() {
+        let position: NSCursor.FrameResizePosition = switch corner {
+        case .lowerLeft: .bottomLeft
+        case .lowerRight: .bottomRight
+        case .upperRight: .topRight
+        case .upperLeft: .topLeft
+        }
+        let cursor = NSCursor.frameResize(position: position, directions: .all)
+        for rect in resizeRects { addCursorRect(rect, cursor: cursor) }
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func mouseDown(with event: NSEvent) { handleEvent(event) }
+    override func mouseDragged(with event: NSEvent) { handleEvent(event) }
+    override func mouseUp(with event: NSEvent) { handleEvent(event) }
 }
 
 /// Leaves events outside its presented composition to the canvas beneath.

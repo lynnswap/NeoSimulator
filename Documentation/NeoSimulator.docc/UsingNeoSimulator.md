@@ -74,8 +74,8 @@ screen before switching windows.
 
 The main toolbar provides the selected screen's supported device actions.
 Simulator controls are also available in **Device**, **I/O**, **Features**, and
-**Debug**. Window scale commands apply to compact simulator windows; the center
-pane fits the screen automatically. Selecting a different device leaves the
+**Debug**. The main and compact windows keep separate display scales.
+Selecting a different device leaves the
 previous connection running. Closing the main window also leaves connections
 running; quitting NeoSimulator applies the app's device lifetime setting.
 
@@ -163,9 +163,10 @@ that are already booted when the manager starts. See <doc:Configuration>.
 
 ## Arrange windows
 
-Drag a device bezel to move its window, or drag its corners to resize it. With
-the bezel hidden, resize from the window edges. **View → Show Device Bezels**
-and **Stay On Top** control its presentation.
+Drag a device bezel to move its compact window. Resize the window from its
+edges or corners, with or without the bezel. In the main window, drag a
+simulator's corner to enlarge or shrink its display without resizing the window.
+**View → Show Device Bezels** and **Stay On Top** control its presentation.
 
 | Window scale | Shortcut |
 | --- | --- |
