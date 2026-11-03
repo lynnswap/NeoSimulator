@@ -24,6 +24,10 @@ NeoSimulator は、iPhone、iPad、Apple Watch、Apple TV、Apple Vision Pro に
 - [CLI 版からの移行](Documentation/MigratingFromCLI.ja.md)
 - [開発ガイド（英語）](Documentation/NeoSimulator.docc/Development.md)
 
+## 謝辞
+
+バックグラウンドサービスの制御は、停止しても安全なサービスの一覧を含めて [simslim](https://github.com/MobAI-App/simslim) から移植しています。Interlap と [simslim のコントリビューター](https://github.com/MobAI-App/simslim/graphs/contributors)に感謝します。simslim は MIT ライセンスで公開されています。NeoSimulator はその許諾表示を [Credits.rtf](App/Credits.rtf) に収録し、About ウインドウに表示します。
+
 ## ライセンス
 
 [MIT](LICENSE)
