@@ -2269,11 +2269,123 @@ struct ManagerModelTests {
         try await manager.quitRenderer(keepingDevicesRunning: true)
     }
 
+    @Test func serviceProfilesMigrateToFileWithoutChangingIDsNamesOrOverrides() throws {
+        let domain = "NeoSimulator.ProfileFileMigration.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        let fileURL = serviceProfileURL(domain)
+        defer {
+            defaults.removePersistentDomain(forName: domain)
+            try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent())
+        }
+        let first = ServiceProfile.Record(id: UUID(), name: "Development", configuration: ServiceConfiguration())
+        let second = ServiceProfile.Record(id: UUID(), name: "Development",
+            configuration: ServiceConfiguration(disabledLabels: ["com.apple.searchd"]))
+        let device = simulator(deviceSet: "/custom-set").id
+        let binding = DeviceServiceProfile(profileID: second.id, base: second.configuration,
+            overrides: ["com.apple.searchd": true], pending: true)
+        let data = try JSONEncoder().encode(LegacyServiceProfiles(profiles: [first, second], devices: [device: binding]))
+        defaults.set(data, forKey: ServiceProfileStore.defaultsKey)
+
+        let store = ServiceProfileStore(fileURL: fileURL, legacyDefaults: defaults)
+        #expect(store.issue == nil)
+        #expect(defaults.data(forKey: ServiceProfileStore.defaultsKey) == nil)
+        #expect(try Data(contentsOf: fileURL) == data)
+        #expect(store.profiles.map(\.id) == [first.id, second.id])
+        #expect(store.profiles.map(\.name) == ["Development", "Development"])
+        #expect(store.binding(for: device) == binding)
+        #expect(store.availableProfiles.first === ServiceProfile.default)
+        defaults.set(Data("obsolete".utf8), forKey: ServiceProfileStore.defaultsKey)
+        let restored = ServiceProfileStore(fileURL: fileURL, legacyDefaults: defaults)
+        #expect(restored.issue == nil && restored.binding(for: device) == binding)
+        #expect(restored.profiles.map(\.id) == [first.id, second.id])
+    }
+
+    @Test(arguments: [false, true])
+    func failedProfileFileMigrationPreservesDataUntilItCanBeRecovered(blockedDirectory: Bool) throws {
+        let domain = "NeoSimulator.ProfileFileFailure.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        let fileURL = serviceProfileURL(domain)
+        let directory = fileURL.deletingLastPathComponent()
+        defer {
+            defaults.removePersistentDomain(forName: domain)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let record = ServiceProfile.Record(id: UUID(), name: "Saved", configuration: ServiceConfiguration())
+        let data = try JSONEncoder().encode(LegacyServiceProfiles(profiles: [record], devices: [:]))
+        defaults.set(data, forKey: ServiceProfileStore.defaultsKey)
+        if blockedDirectory {
+            try Data("not a directory".utf8).write(to: directory)
+        } else {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try Data("corrupt".utf8).write(to: fileURL)
+        }
+        let store = ServiceProfileStore(fileURL: fileURL, legacyDefaults: defaults)
+        #expect(store.issue != nil && store.profiles.isEmpty)
+        do {
+            try store.create(name: "Must Not Replace Saved Data", configuration: ServiceConfiguration())
+            Issue.record("A failed read must prevent overwriting saved profiles")
+        } catch {}
+        #expect(defaults.data(forKey: ServiceProfileStore.defaultsKey) == data)
+        if !blockedDirectory { #expect(try Data(contentsOf: fileURL) == Data("corrupt".utf8)) }
+        try FileManager.default.removeItem(at: directory)
+        store.reload()
+        #expect(store.issue == nil && store.profiles.map(\.id) == [record.id])
+        #expect(defaults.data(forKey: ServiceProfileStore.defaultsKey) == nil)
+    }
+
+    @Test func draggingServiceProfilesPersistsOrderAndKeepsSelectionAndIdentity() async throws {
+        let domain = "NeoSimulator.ProfileOrder.\(UUID().uuidString)"
+        let fileURL = serviceProfileURL(domain)
+        defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
+        let store = ServiceProfileStore(fileURL: fileURL, legacyDefaults: nil)
+        let first = try store.create(name: "First", configuration: ServiceConfiguration())
+        let second = try store.create(name: "Second", configuration: ServiceConfiguration())
+        let third = try store.create(name: "Third", configuration: ServiceConfiguration())
+        let controller = ServiceProfilesSettingsViewController(store: store)
+        controller.model.selectedProfileID = second.id
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 520),
+            styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentViewController = controller
+        defer { window.close() }
+        let table = try #require(inspectorViews(controller.view).compactMap { $0 as? NSTableView }
+            .first { !($0 is NSOutlineView) })
+        #expect(controller.tableView(table, pasteboardWriterForRow: 0) == nil)
+        let writer = try #require(controller.tableView(table, pasteboardWriterForRow: 3))
+        let drag = TestDraggingInfo(item: writer, source: table)
+        defer { drag.draggingPasteboard.releaseGlobally() }
+        #expect(controller.tableView(table, validateDrop: drag, proposedRow: 1, proposedDropOperation: .above) == .move)
+        #expect(!controller.tableView(table, acceptDrop: drag, row: 0, dropOperation: .above))
+        #expect(controller.tableView(table, acceptDrop: drag, row: 1, dropOperation: .above))
+        let selected = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            MainActor.assumeIsolated { table.selectedRow == 3 }
+        }, object: nil)
+        try #require(await XCTWaiter.fulfillment(of: [selected], timeout: 5) == .completed)
+        #expect(store.profiles.map(\.id) == [third.id, first.id, second.id])
+        #expect(controller.model.selectedProfile === second && store.profiles.first === third)
+        let manager = SimulatorManagerModel(source: ManagerModelSource(devices: []), serviceProfiles: store)
+        let inspector = BackgroundServicesInspectorModel(manager: manager, showProfileSettings: { _ in })
+        #expect(inspector.profileChoices.map(\.id) == [ServiceProfile.default.id, third.id, first.id, second.id])
+
+        let downwardWriter = try #require(controller.tableView(table, pasteboardWriterForRow: 2))
+        let downward = TestDraggingInfo(item: downwardWriter, source: table)
+        defer { downward.draggingPasteboard.releaseGlobally() }
+        #expect(controller.tableView(table, acceptDrop: downward, row: 4, dropOperation: .above))
+        let restored = ServiceProfileStore(fileURL: fileURL, legacyDefaults: nil)
+        #expect(restored.profiles.map(\.id) == [third.id, second.id, first.id])
+        #expect(controller.model.selectedProfile === second)
+        drag.draggingSource = nil
+        #expect(controller.tableView(table, validateDrop: drag, proposedRow: 1, proposedDropOperation: .above).isEmpty)
+    }
+
     @Test func serviceProfilesKeepDeviceOverridesAcrossSwitchesAndRelaunch() throws {
         let domain = "NeoSimulator.ServiceProfiles.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: domain))
-        defer { defaults.removePersistentDomain(forName: domain) }
-        let store = ServiceProfileStore(defaults: defaults)
+        defer {
+            defaults.removePersistentDomain(forName: domain)
+            try? FileManager.default.removeItem(at: serviceProfileURL(domain).deletingLastPathComponent())
+        }
+        let store = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: defaults)
         let first = simulator(deviceSet: "/first").id
         let second = simulator(deviceSet: "/second").id
         let label = "com.apple.searchd"
@@ -2286,7 +2398,7 @@ struct ManagerModelTests {
         // A matching base value must not discard an explicit per-device choice.
         #expect(store.binding(for: first)?.overrides[label] == true)
         try store.assign(slim.id, to: first, pending: false)
-        let restored = ServiceProfileStore(defaults: defaults)
+        let restored = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: defaults)
         #expect(restored.profiles.map(\.id) == store.profiles.map(\.id))
         #expect(restored.profiles.map(\.name) == store.profiles.map(\.name))
         #expect(restored.profiles.map(\.configuration) == store.profiles.map(\.configuration))
@@ -2299,8 +2411,11 @@ struct ManagerModelTests {
     @Test func editingAndDeletingServiceProfilesDoNotRewriteDeviceIntent() async throws {
         let domain = "NeoSimulator.ServiceProfileUpdates.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: domain))
-        defer { defaults.removePersistentDomain(forName: domain) }
-        let store = ServiceProfileStore(defaults: defaults)
+        defer {
+            defaults.removePersistentDomain(forName: domain)
+            try? FileManager.default.removeItem(at: serviceProfileURL(domain).deletingLastPathComponent())
+        }
+        let store = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: defaults)
         let device = simulator().id
         let profile = try store.create(name: "Development", configuration: ServiceConfiguration())
         try store.assign(profile.id, to: device, pending: false)
@@ -2325,8 +2440,11 @@ struct ManagerModelTests {
     @Test func defaultProfileTracksChangesAndSavingCreatesANewBase() throws {
         let domain = "NeoSimulator.DefaultServiceProfile.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: domain))
-        defer { defaults.removePersistentDomain(forName: domain) }
-        let store = ServiceProfileStore(defaults: defaults)
+        defer {
+            defaults.removePersistentDomain(forName: domain)
+            try? FileManager.default.removeItem(at: serviceProfileURL(domain).deletingLastPathComponent())
+        }
+        let store = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: defaults)
         let device = simulator().id
         let label = "com.apple.searchd"
         #expect(store.profile(ServiceProfile.default.id)?.configuration.disabledLabels.isEmpty == true)
@@ -2336,7 +2454,7 @@ struct ManagerModelTests {
         #expect(changed.profileID == ServiceProfile.default.id)
         #expect(changed.overrides == [label: false])
         let saved = try store.create(name: "Focused", configuration: changed.configuration, assigningTo: device)
-        let restored = ServiceProfileStore(defaults: defaults)
+        let restored = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: defaults)
         #expect(restored.binding(for: device)?.profileID == saved.id)
         #expect(restored.binding(for: device)?.overrides.isEmpty == true)
         #expect(restored.binding(for: device)?.configuration.disabledLabels == [label])
@@ -2349,8 +2467,11 @@ struct ManagerModelTests {
     @Test func savingAnExistingProfileOverwritesItAndKeepsOtherDevicesUnchanged() throws {
         let domain = "NeoSimulator.OverwriteServiceProfile.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: domain))
-        defer { defaults.removePersistentDomain(forName: domain) }
-        let store = ServiceProfileStore(defaults: defaults)
+        defer {
+            defaults.removePersistentDomain(forName: domain)
+            try? FileManager.default.removeItem(at: serviceProfileURL(domain).deletingLastPathComponent())
+        }
+        let store = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: defaults)
         let first = simulator(deviceSet: "/first").id
         let second = simulator(deviceSet: "/second").id
         let profile = try store.create(name: "Development", configuration: ServiceConfiguration())
@@ -2362,7 +2483,7 @@ struct ManagerModelTests {
         let current = try #require(store.binding(for: first)).configuration
 
         try store.update(profile.id, configuration: current, assigningTo: first)
-        let restored = ServiceProfileStore(defaults: defaults)
+        let restored = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: defaults)
         #expect(restored.profiles.count == 1)
         #expect(restored.profile(profile.id)?.name == "Development")
         #expect(restored.profile(profile.id)?.configuration == current)
@@ -2379,9 +2500,12 @@ struct ManagerModelTests {
     @Test func serviceInspectorKeepsExpandedRowsWhileResizingAndSavesThroughItsModel() async throws {
         let domain = "NeoSimulator.ServiceInspector.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: domain))
-        defer { defaults.removePersistentDomain(forName: domain) }
+        defer {
+            defaults.removePersistentDomain(forName: domain)
+            try? FileManager.default.removeItem(at: serviceProfileURL(domain).deletingLastPathComponent())
+        }
         let device = simulator()
-        let store = ServiceProfileStore(defaults: defaults)
+        let store = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: defaults)
         let source = ManagerModelSource(devices: [device])
         var events = source.events.makeAsyncIterator()
         let manager = SimulatorManagerModel(source: source, serviceProfiles: store)
@@ -2469,13 +2593,19 @@ struct ManagerModelTests {
         view.layoutSubtreeIfNeeded()
         #expect(category.isExpanded && outline.outline.isItemExpanded(category))
         #expect(!item.isEnabled)
+        #expect(model.canSaveProfile)
+        model.saveProfile()
+        #expect(model.profileEditor != nil)
+        let presented = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            MainActor.assumeIsolated { window.attachedSheet != nil }
+        }, object: nil)
+        try #require(await XCTWaiter.fulfillment(of: [presented], timeout: 5) == .completed)
         let expandedWidth = try #require(outline.outline.tableColumns.first).width
         outline.outline.collapseItem(category)
         view.layoutSubtreeIfNeeded()
         #expect(outline.outline.tableColumns.first?.width == expandedWidth)
         await source.completeServiceChange(disabled: [item.label])
         try await awaitServiceOperations(manager)
-        model.saveProfile()
         let editor = try #require(model.profileEditor)
         editor.name = "Development"
         #expect(editor.commit())
@@ -2504,8 +2634,11 @@ struct ManagerModelTests {
     @Test func deletingAnUnselectedServiceProfileKeepsTheSelection() throws {
         let domain = "NeoSimulator.DeleteProfile.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: domain))
-        defer { defaults.removePersistentDomain(forName: domain) }
-        let store = ServiceProfileStore(defaults: defaults)
+        defer {
+            defaults.removePersistentDomain(forName: domain)
+            try? FileManager.default.removeItem(at: serviceProfileURL(domain).deletingLastPathComponent())
+        }
+        let store = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: defaults)
         let selected = try store.create(name: "Selected", configuration: ServiceConfiguration())
         let deleted = try store.create(name: "Deleted", configuration: ServiceConfiguration())
         let model = ServiceProfilesSettingsModel(store: store)
@@ -2521,8 +2654,11 @@ struct ManagerModelTests {
     @Test func addingServiceProfilesFocusesAndSelectsTheirNames() async throws {
         let domain = "NeoSimulator.ProfileNameEditing.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: domain))
-        defer { defaults.removePersistentDomain(forName: domain) }
-        let store = ServiceProfileStore(defaults: defaults)
+        defer {
+            defaults.removePersistentDomain(forName: domain)
+            try? FileManager.default.removeItem(at: serviceProfileURL(domain).deletingLastPathComponent())
+        }
+        let store = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: defaults)
         let controller = ServiceProfilesSettingsViewController(store: store)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 520),
                               styleMask: [.titled, .resizable], backing: .buffered, defer: false)
@@ -2564,8 +2700,11 @@ struct ManagerModelTests {
     @Test func selectingDefaultResetsOverridesAndEnablesAllServices() async throws {
         let domain = "NeoSimulator.ResetDefaultServiceProfile.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: domain))
-        defer { defaults.removePersistentDomain(forName: domain) }
-        let store = ServiceProfileStore(defaults: defaults)
+        defer {
+            defaults.removePersistentDomain(forName: domain)
+            try? FileManager.default.removeItem(at: serviceProfileURL(domain).deletingLastPathComponent())
+        }
+        let store = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: defaults)
         let device = simulator()
         let labels: Set<String> = ["com.apple.searchd", "com.apple.searchtoold"]
         let profile = try store.create(name: "Search Off", configuration: ServiceConfiguration(disabledLabels: labels))
@@ -2606,8 +2745,11 @@ struct ManagerModelTests {
     @Test func profileApplyPreservesOverridesAndReportsUnappliedStateAfterFailure() async throws {
         let domain = "NeoSimulator.ServiceProfileApply.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: domain))
-        defer { defaults.removePersistentDomain(forName: domain) }
-        let store = ServiceProfileStore(defaults: defaults)
+        defer {
+            defaults.removePersistentDomain(forName: domain)
+            try? FileManager.default.removeItem(at: serviceProfileURL(domain).deletingLastPathComponent())
+        }
+        let store = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: defaults)
         let device = simulator()
         let label = "com.apple.searchd"
         let other = "com.apple.searchtoold"
@@ -2647,8 +2789,11 @@ struct ManagerModelTests {
     @Test func serviceProfileFollowsSimulatorStartAndRemoval() async throws {
         let domain = "NeoSimulator.PendingServiceProfile.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: domain))
-        defer { defaults.removePersistentDomain(forName: domain) }
-        let store = ServiceProfileStore(defaults: defaults)
+        defer {
+            defaults.removePersistentDomain(forName: domain)
+            try? FileManager.default.removeItem(at: serviceProfileURL(domain).deletingLastPathComponent())
+        }
+        let store = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: defaults)
         let stopped = simulator(state: "Shutdown")
         let source = ManagerModelSource(devices: [stopped])
         var events = source.events.makeAsyncIterator()
@@ -2688,7 +2833,10 @@ struct ManagerModelTests {
     @Test func backgroundServiceChangesRunInOrderAndQuitWaitsForThem() async throws {
         let domain = "NeoSimulator.ServiceQueue.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: domain))
-        defer { defaults.removePersistentDomain(forName: domain) }
+        defer {
+            defaults.removePersistentDomain(forName: domain)
+            try? FileManager.default.removeItem(at: serviceProfileURL(domain).deletingLastPathComponent())
+        }
         let device = simulator()
         let source = ManagerModelSource(devices: [device])
         await source.holdServiceReads()
@@ -2697,7 +2845,7 @@ struct ManagerModelTests {
         let labels = Set(search.services.map(\.label))
         let reported = AsyncStream<(any Error, SimulatorBackgroundServiceState?)>.makeStream()
         var errors = reported.stream.makeAsyncIterator()
-        let manager = SimulatorManagerModel(source: source, serviceProfiles: ServiceProfileStore(defaults: defaults))
+        let manager = SimulatorManagerModel(source: source, serviceProfiles: ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: defaults))
         manager.onError = { reported.continuation.yield(($0, manager.backgroundServices.services?.state(of: search))) }
         await manager.refresh()
         manager.backgroundServices.setVisible(true)
@@ -2737,13 +2885,16 @@ struct ManagerModelTests {
     @Test func backgroundServiceResultsStayWithTheirDevice() async throws {
         let domain = "NeoSimulator.ServiceResults.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: domain))
-        defer { defaults.removePersistentDomain(forName: domain) }
+        defer {
+            defaults.removePersistentDomain(forName: domain)
+            try? FileManager.default.removeItem(at: serviceProfileURL(domain).deletingLastPathComponent())
+        }
         let first = simulator(deviceSet: "/first")
         let second = simulator(deviceSet: "/second")
         let source = ManagerModelSource(devices: [first, second])
         await source.holdServiceReads()
         var events = source.events.makeAsyncIterator()
-        let manager = SimulatorManagerModel(source: source, serviceProfiles: ServiceProfileStore(defaults: defaults))
+        let manager = SimulatorManagerModel(source: source, serviceProfiles: ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: defaults))
         await manager.refresh()
         let model = manager.backgroundServices
         model.inspect(first, selectionCount: 1)
@@ -3231,6 +3382,16 @@ struct ManagerModelTests {
         let future = try #require(later.fields.first { $0.id == ["future", "revision"] })
         let sibling = try #require(later.fields.first { $0.id == ["hardware", "vendorProperty"] })
         #expect(restored.isVisible(future) == !hidesHardware && restored.isVisible(sibling) == !hidesHardware)
+    }
+
+    private struct LegacyServiceProfiles: Encodable {
+        let profiles: [ServiceProfile.Record]
+        let devices: [DeviceInventoryID: DeviceServiceProfile]
+    }
+
+    private func serviceProfileURL(_ domain: String) -> URL {
+        URL.temporaryDirectory.appending(path: domain, directoryHint: .isDirectory)
+            .appending(path: "ServiceProfiles.json")
     }
 
     private func simulator(deviceSet: String? = nil, name: String = "Test Phone", state: String = "Booted",

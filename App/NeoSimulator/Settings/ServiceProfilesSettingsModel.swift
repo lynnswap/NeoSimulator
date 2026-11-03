@@ -33,6 +33,16 @@ final class ServiceProfilesSettingsModel {
         catch { issue = error.localizedDescription }
     }
 
+    func move(_ id: UUID, before nextID: UUID?) -> Bool {
+        do {
+            try store.move(id, before: nextID)
+            return true
+        } catch {
+            issue = error.localizedDescription
+            return false
+        }
+    }
+
     func delete() {
         guard let deleting else { return }
         do {

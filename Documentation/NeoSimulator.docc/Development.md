@@ -98,7 +98,17 @@ models own presentation state and send device commands through
 owns observable profile instances and per-device overrides. Settings edit the
 selected profile directly. Adding a profile selects its temporary name for inline
 editing. Only saving a simulator's modified Default profile asks for a name in a
-sheet. Saving a profile does not apply it to other simulators.
+sheet. Saving captures accepted service changes without waiting for their application
+to finish. Saving a profile does not apply it to other simulators.
+
+Service profiles and device assignments are stored together in
+`Application Support/<app bundle identifier>/ServiceProfiles.json`. Writes are
+atomic. The first load migrates the former `BackgroundServiceProfiles` defaults
+value only when the file is absent, and removes that value after a successful
+write. A read failure preserves the existing data and prevents further writes
+until loading succeeds. Profile order is the stored array order; dragging
+profiles in settings changes that order in both settings and the inspector.
+The built-in Default profile remains first and is not stored in the file.
 
 ## Tests
 

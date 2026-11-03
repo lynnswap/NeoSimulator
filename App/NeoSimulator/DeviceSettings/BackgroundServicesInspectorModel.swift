@@ -76,7 +76,7 @@ final class BackgroundServicesInspectorModel: BackgroundServiceEditing {
     }
     var canSaveProfile: Bool {
         !holdsChanges && services.device?.canInspectBackgroundServices == true && serviceState != nil
-            && !services.isChanging && profiles.issue == nil && hasProfileChanges
+            && profiles.issue == nil && hasProfileChanges
     }
 
     func customizeProfile() { showProfileSettings(selectedProfileID) }

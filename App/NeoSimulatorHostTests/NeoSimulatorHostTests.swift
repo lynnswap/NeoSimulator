@@ -9727,9 +9727,9 @@ private final class KeyPresentationWindow: NSWindow {
     override var isKeyWindow: Bool { true }
 }
 
-/// A drag of file URLs on a private pasteboard, delivered without a WindowServer drag session.
+/// A drag on a private pasteboard, delivered without a WindowServer drag session.
 @MainActor
-private final class TestDraggingInfo: NSObject, NSDraggingInfo {
+final class TestDraggingInfo: NSObject, NSDraggingInfo {
     let draggingPasteboard = NSPasteboard.withUniqueName()
     var draggingFormation = NSDraggingFormation.default
     var animatesToDestination = false
@@ -9739,13 +9739,19 @@ private final class TestDraggingInfo: NSObject, NSDraggingInfo {
     var draggingLocation: NSPoint { .zero }
     var draggedImageLocation: NSPoint { .zero }
     nonisolated var draggedImage: NSImage? { nil }
-    var draggingSource: Any? { nil }
+    var draggingSource: Any?
     var draggingSequenceNumber: Int { 0 }
     var springLoadingHighlight: NSSpringLoadingHighlight { .none }
 
     init(_ urls: [URL]) {
         super.init()
         draggingPasteboard.writeObjects(urls.map { $0 as NSURL })
+    }
+
+    init(item: any NSPasteboardWriting, source: Any) {
+        draggingSource = source
+        super.init()
+        draggingPasteboard.writeObjects([item])
     }
 
     func slideDraggedImage(to screenPoint: NSPoint) {}

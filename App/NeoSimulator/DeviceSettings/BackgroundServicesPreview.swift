@@ -27,7 +27,9 @@ final class BackgroundServicesPreviewController: NSViewController {
     init(_ scenario: Scenario) {
         self.scenario = scenario
         domain = "NeoSimulator.BackgroundServicesPreview.\(UUID().uuidString)"
-        let store = ServiceProfileStore(defaults: UserDefaults(suiteName: domain)!)
+        let fileURL = URL.temporaryDirectory.appending(path: domain, directoryHint: .isDirectory)
+            .appending(path: "ServiceProfiles.json")
+        let store = ServiceProfileStore(fileURL: fileURL, legacyDefaults: nil)
         var configuration = Self.lightweightConfiguration
         if scenario == .overrides {
             configuration.set([.service("com.apple.searchd")], enabled: true)
@@ -104,7 +106,7 @@ final class BackgroundServicesPreviewController: NSViewController {
 
     isolated deinit {
         loading?.cancel()
-        UserDefaults.standard.removePersistentDomain(forName: domain)
+        try? FileManager.default.removeItem(at: manager.serviceProfiles.fileURL.deletingLastPathComponent())
     }
 }
 

@@ -136,11 +136,19 @@ final class ServiceProfileStore {
     private var devices: [DeviceInventoryID: DeviceServiceProfile] = [:]
     private var state: State { State(profiles: profiles.map(\.record), devices: devices) }
     private(set) var issue: String?
-    @ObservationIgnored private let defaults: UserDefaults
+    let fileURL: URL
+    @ObservationIgnored private let legacyDefaults: UserDefaults?
     @ObservationIgnored private var loadFailure: (any Error)?
 
-    init(defaults: UserDefaults = .standard) {
-        self.defaults = defaults
+    static var defaultFileURL: URL {
+        let identifier = Bundle(for: ServiceProfileStore.self).bundleIdentifier ?? "dev.lynnswap.NeoSimulator"
+        return URL.applicationSupportDirectory.appending(path: identifier, directoryHint: .isDirectory)
+            .appending(path: "ServiceProfiles.json")
+    }
+
+    init(fileURL: URL = ServiceProfileStore.defaultFileURL, legacyDefaults: UserDefaults? = .standard) {
+        self.fileURL = fileURL
+        self.legacyDefaults = legacyDefaults
         reload()
     }
 
@@ -150,7 +158,7 @@ final class ServiceProfileStore {
 
     func reload() {
         do {
-            let loaded = try defaults.data(forKey: Self.defaultsKey).map { try JSONDecoder().decode(State.self, from: $0) } ?? State()
+            let loaded = try readState()
             apply(loaded)
             issue = nil
             loadFailure = nil
@@ -177,6 +185,20 @@ final class ServiceProfileStore {
         if let name { updated.profiles[index].name = try validName(name) }
         updated.profiles[index].configuration = configuration
         if let device { updated.devices[device] = DeviceServiceProfile(profileID: id, base: configuration, pending: false) }
+        try save(updated)
+    }
+
+    func move(_ id: UUID, before nextID: UUID?) throws {
+        var updated = state
+        guard let index = updated.profiles.firstIndex(where: { $0.id == id }) else { throw Failure.missingProfile }
+        if id == nextID { return }
+        let profile = updated.profiles.remove(at: index)
+        if let nextID {
+            guard let destination = updated.profiles.firstIndex(where: { $0.id == nextID }) else { throw Failure.missingProfile }
+            updated.profiles.insert(profile, at: destination)
+        } else {
+            updated.profiles.append(profile)
+        }
         try save(updated)
     }
 
@@ -241,8 +263,26 @@ final class ServiceProfileStore {
         if let loadFailure { throw loadFailure }
         guard updated != state else { return }
         let data = try JSONEncoder().encode(updated)
-        defaults.set(data, forKey: Self.defaultsKey)
+        try write(data)
         apply(updated, adding: profile)
+    }
+
+    private func readState() throws -> State {
+        do {
+            return try JSONDecoder().decode(State.self, from: Data(contentsOf: fileURL))
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+            guard let data = legacyDefaults?.data(forKey: Self.defaultsKey) else { return State() }
+            let migrated = try JSONDecoder().decode(State.self, from: data)
+            try write(data)
+            legacyDefaults?.removeObject(forKey: Self.defaultsKey)
+            return migrated
+        }
+    }
+
+    private func write(_ data: Data) throws {
+        try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(),
+                                                withIntermediateDirectories: true)
+        try data.write(to: fileURL, options: .atomic)
     }
 
     private func apply(_ loaded: State, adding profile: ServiceProfile? = nil) {

@@ -6,6 +6,7 @@ import SwiftUI
 final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate, NSTextFieldDelegate {
     let model: ServiceProfilesSettingsModel
     private let table = NSTableView()
+    private static let profileDragType = NSPasteboard.PasteboardType("dev.lynnswap.NeoSimulator.service-profile")
     private let remove = NSButton(image: NSImage(systemSymbolName: "minus", accessibilityDescription: "Delete Service Profile")!,
                                   target: nil, action: nil)
     private let detailsController = NSViewController()
@@ -41,6 +42,9 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
         table.delegate = self
         table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
         table.setAccessibilityLabel("Service Profiles")
+        table.registerForDraggedTypes([Self.profileDragType])
+        table.setDraggingSourceOperationMask(.move, forLocal: true)
+        table.draggingDestinationFeedbackStyle = .gap
         let menu = NSMenu()
         menu.delegate = self
         table.menu = menu
@@ -125,12 +129,12 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
     }
 
     private func update() {
+        selecting = true
         let updated = model.store.availableProfiles
         if profiles.map(\.id) != updated.map(\.id) {
             profiles = updated
             table.reloadData()
         }
-        selecting = true
         if let index = profiles.firstIndex(where: { $0.id == model.selectedProfile.id }) {
             table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
         }
@@ -189,6 +193,36 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
         cell.configure(profile: profiles[row])
         cell.textField?.delegate = self
         return cell
+    }
+
+    func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> (any NSPasteboardWriting)? {
+        guard profiles.indices.contains(row), profiles[row].id != ServiceProfile.default.id else { return nil }
+        let item = NSPasteboardItem()
+        item.setString(profiles[row].id.uuidString, forType: Self.profileDragType)
+        return item
+    }
+
+    private func draggedProfile(_ info: any NSDraggingInfo) -> UUID? {
+        guard let source = info.draggingSource as? NSTableView, source === table,
+              let value = info.draggingPasteboard.string(forType: Self.profileDragType),
+              let id = UUID(uuidString: value),
+              id != ServiceProfile.default.id,
+              profiles.contains(where: { $0.id == id }) else { return nil }
+        return id
+    }
+
+    func tableView(_ tableView: NSTableView, validateDrop info: any NSDraggingInfo,
+                   proposedRow row: Int, proposedDropOperation dropOperation: NSTableView.DropOperation) -> NSDragOperation {
+        guard draggedProfile(info) != nil else { return [] }
+        tableView.setDropRow(max(1, min(row, profiles.count)), dropOperation: .above)
+        return .move
+    }
+
+    func tableView(_ tableView: NSTableView, acceptDrop info: any NSDraggingInfo,
+                   row: Int, dropOperation: NSTableView.DropOperation) -> Bool {
+        guard dropOperation == .above, row >= 1, row <= profiles.count,
+              let id = draggedProfile(info) else { return false }
+        return model.move(id, before: row < profiles.count ? profiles[row].id : nil)
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
@@ -315,7 +349,9 @@ private final class OpaqueSettingsPane: NSView {
 #if DEBUG
 #Preview("Service Profiles", traits: .sizeThatFitsLayout) {
     PreviewViewController {
-        let store = ServiceProfileStore(defaults: UserDefaults(suiteName: "NeoSimulator.ServiceProfilesPreview")!)
+        let store = ServiceProfileStore(fileURL: URL.temporaryDirectory
+            .appending(path: "NeoSimulator.ServiceProfilesPreview", directoryHint: .isDirectory)
+            .appending(path: "ServiceProfiles.json"), legacyDefaults: nil)
         if store.profiles.isEmpty {
             let _ = try? store.create(name: "Development", configuration: ServiceConfiguration())
             let _ = try? store.create(name: "Lightweight", configuration: ServiceConfiguration(disabledLabels: ["com.apple.searchd"]))
@@ -327,7 +363,9 @@ private final class OpaqueSettingsPane: NSView {
 }
 #Preview("Default Profile", traits: .sizeThatFitsLayout) {
     PreviewViewController {
-        ServiceProfilesSettingsViewController(store: ServiceProfileStore(defaults: UserDefaults(suiteName: "NeoSimulator.DefaultServiceProfilePreview")!))
+        ServiceProfilesSettingsViewController(store: ServiceProfileStore(fileURL: URL.temporaryDirectory
+            .appending(path: "NeoSimulator.DefaultServiceProfilePreview", directoryHint: .isDirectory)
+            .appending(path: "ServiceProfiles.json"), legacyDefaults: nil))
     }.frame(width: 720, height: 520)
 }
 #endif
