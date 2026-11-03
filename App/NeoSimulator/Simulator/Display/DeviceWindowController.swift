@@ -476,6 +476,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         session.onAppResizeGeometryChange = { [weak self] in self?.appGeometryChanged() }
         session.onExternalScreenChange = { [weak self] in self?.syncExternalDisplayWindow() }
         content.canvasZoom = canvasZoom
+        content.deviceFrame = { [weak self] in self?.session.display.deviceFrame ?? .zero }
         content.onCanvasResize = { [weak self] in self?.resizeCanvas(from: $0, with: $1) }
         content.onNativeCanvasMagnification = { [weak self] in self?.session.display.setCanvasMagnification($0) }
         content.canImport = { [weak self] in self?.session.canPerformToolOperation == true }
@@ -1817,6 +1818,7 @@ private final class DeviceContentView: NSView, DisplayContentView {
         needsLayout = true
     }
     var canvasZoom: CanvasZoom?
+    var deviceFrame: (() -> NSRect)?
     var onCanvasResize: (DisplayResizeCorner, NSEvent) -> Void = { _, _ in }
     private lazy var resizeHandles = [DisplayResizeCorner.lowerLeft, .lowerRight, .upperRight, .upperLeft].map { corner in
         DeviceCanvasResizeHandle(corner: corner) { [weak self] in self?.onCanvasResize(corner, $0) }
@@ -2096,7 +2098,7 @@ private final class DeviceContentView: NSView, DisplayContentView {
     }
 
     private func layoutResizeHandles() {
-        let frame = displayPresentation.convert(displayPresentation.bounds, to: self)
+        let frame = display.convert(deviceFrame?() ?? display.bounds, to: self)
         for handle in resizeHandles {
             handle.isHidden = !isEmbedded || scrollsDisplay
             let radius: CGFloat = 16

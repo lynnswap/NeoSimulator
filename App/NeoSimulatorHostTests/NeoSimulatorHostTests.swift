@@ -5940,6 +5940,7 @@ struct InputFocusTests {
     @Test(arguments: [false, true])
     func embeddedDeviceCornersResizeOnlyTheCanvas(native: Bool) throws {
         let display = TestDisplay()
+        display.deviceInsets = NSEdgeInsets(top: 11, left: 9, bottom: 7, right: 13)
         display.usesNativeCanvas = native
         display.naturalSize = NSSize(width: 400, height: 600)
         display.bezel = NSSize(width: 20, height: 20)
@@ -5967,6 +5968,13 @@ struct InputFocusTests {
             let handle = try #require(content.subviews.first {
                 $0.identifier?.rawValue == "DeviceCanvasResize.\(corner.rawValue)"
             })
+            func checkHandleFrame() {
+                let frame = display.view.convert(display.deviceFrame, to: content)
+                let center = NSPoint(x: corner.isLeft ? frame.minX : frame.maxX,
+                                     y: corner.isLower ? frame.minY : frame.maxY)
+                #expect(abs(handle.frame.midX - center.x) < 1 && abs(handle.frame.midY - center.y) < 1)
+            }
+            checkHandleFrame()
             let start = handle.convert(NSPoint(x: handle.bounds.midX + (corner.isLeft ? -4 : 4),
                                                 y: handle.bounds.midY + (corner.isLower ? -4 : 4)), to: nil)
             let hit = try press(window, at: start)
@@ -5982,6 +5990,7 @@ struct InputFocusTests {
             hit.mouseDragged(with: try event(.leftMouseDragged))
             #expect(display.isResizing)
             #expect(WindowScale.matches(controller.canvasZoom.scale, scale * 1.25))
+            checkHandleFrame()
             #expect(WindowScale.matches(scroll.magnification, controller.canvasZoom.scale))
             #expect(display.renderScale == 1 && display.naturalSize == NSSize(width: 400, height: 600))
             #expect(window.frame == mainFrame && controller.window?.frame == compactFrame)
@@ -9917,6 +9926,13 @@ private final class TestDisplay: SimulatorDisplay {
     /// Nil means the device type has no bezel.
     var bezelPadding: NSSize?
     var chromePadding: NSSize? { showsBezel ? bezelPadding : nil }
+    var deviceInsets = NSEdgeInsetsZero
+    var deviceFrame: NSRect {
+        guard chromePadding != nil else { return view.bounds }
+        return NSRect(x: deviceInsets.left * renderScale, y: deviceInsets.bottom * renderScale,
+                      width: view.bounds.width - (deviceInsets.left + deviceInsets.right) * renderScale,
+                      height: view.bounds.height - (deviceInsets.top + deviceInsets.bottom) * renderScale)
+    }
     /// SimDisplayView starts with showDeviceChrome enabled.
     var showsBezel = true
     private var outerSize: NSSize {
