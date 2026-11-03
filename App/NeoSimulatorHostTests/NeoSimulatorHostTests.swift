@@ -5968,15 +5968,38 @@ struct InputFocusTests {
             let handle = try #require(content.subviews.first {
                 $0.identifier?.rawValue == "DeviceCanvasResize.\(corner.rawValue)"
             })
+            func cornerPoint() -> NSPoint {
+                if let area = display.resizeRects.first(where: { $0.corner == corner }) {
+                    return display.view.convert(NSPoint(x: area.rect.midX, y: area.rect.midY), to: nil)
+                }
+                return handle.convert(NSPoint(x: handle.bounds.midX + (corner.isLeft ? -4 : 4),
+                                               y: handle.bounds.midY + (corner.isLower ? -4 : 4)), to: nil)
+            }
             func checkHandleFrame() {
-                let frame = display.view.convert(display.deviceFrame, to: content)
-                let center = NSPoint(x: corner.isLeft ? frame.minX : frame.maxX,
-                                     y: corner.isLower ? frame.minY : frame.maxY)
-                #expect(abs(handle.frame.midX - center.x) < 1 && abs(handle.frame.midY - center.y) < 1)
+                if let area = display.resizeRects.first(where: { $0.corner == corner }) {
+                    let frame = display.view.convert(area.rect, to: content)
+                    #expect(handle.frame.contains(frame))
+                    #expect(handle.frame.width >= 44 && handle.frame.height >= 44)
+                } else {
+                    let frame = display.view.convert(display.deviceFrame, to: content)
+                    let center = NSPoint(x: corner.isLeft ? frame.minX : frame.maxX,
+                                         y: corner.isLower ? frame.minY : frame.maxY)
+                    #expect(abs(handle.frame.midX - center.x) < 1 && abs(handle.frame.midY - center.y) < 1)
+                }
             }
             checkHandleFrame()
-            let start = handle.convert(NSPoint(x: handle.bounds.midX + (corner.isLeft ? -4 : 4),
-                                                y: handle.bounds.midY + (corner.isLower ? -4 : 4)), to: nil)
+            if let area = display.resizeRects.first(where: { $0.corner == corner }) {
+                let frame = display.view.convert(area.rect, to: content)
+                let nearCorner = [
+                    NSPoint(x: corner.isLeft ? frame.minX - 8 : frame.maxX + 8, y: frame.midY),
+                    NSPoint(x: frame.midX, y: corner.isLower ? frame.minY - 8 : frame.maxY + 8),
+                ]
+                for point in nearCorner {
+                    let location = content.convert(point, to: nil)
+                    #expect(window.contentView?.superview?.hitTest(location) === handle)
+                }
+            }
+            let start = cornerPoint()
             let hit = try press(window, at: start)
             #expect(hit === handle)
             let size = display.view.convert(display.view.bounds, to: content).size
@@ -6018,7 +6041,13 @@ struct InputFocusTests {
         controller.setDeviceBezelVisible(true)
         controller.performCanvasZoom(.fit)
         let handle = try #require(content.subviews.first { $0.identifier?.rawValue == "DeviceCanvasResize.lowerRight" })
-        _ = try press(window, at: handle.convert(NSPoint(x: handle.bounds.midX + 4, y: handle.bounds.midY - 4), to: nil))
+        let start: NSPoint
+        if let area = display.resizeRects.first(where: { $0.corner == .lowerRight }) {
+            start = display.view.convert(NSPoint(x: area.rect.midX, y: area.rect.midY), to: nil)
+        } else {
+            start = handle.convert(NSPoint(x: handle.bounds.midX + 4, y: handle.bounds.midY - 4), to: nil)
+        }
+        _ = try press(window, at: start)
         #expect(display.isResizing)
         controller.showCompactWindow()
         #expect(!display.isResizing && display.renderScale == compactScale)
@@ -9932,6 +9961,15 @@ private final class TestDisplay: SimulatorDisplay {
         return NSRect(x: deviceInsets.left * renderScale, y: deviceInsets.bottom * renderScale,
                       width: view.bounds.width - (deviceInsets.left + deviceInsets.right) * renderScale,
                       height: view.bounds.height - (deviceInsets.top + deviceInsets.bottom) * renderScale)
+    }
+    var resizeRects: [DisplayResizeRect] {
+        guard !usesNativeCanvas, chromePadding != nil else { return [] }
+        let frame = deviceFrame
+        return [DisplayResizeCorner.lowerLeft, .lowerRight, .upperRight, .upperLeft].map { corner in
+            DisplayResizeRect(corner: corner, rect: NSRect(
+                x: corner.isLeft ? frame.minX : frame.maxX - 20,
+                y: corner.isLower ? frame.minY : frame.maxY - 20, width: 20, height: 20))
+        }
     }
     /// SimDisplayView starts with showDeviceChrome enabled.
     var showsBezel = true

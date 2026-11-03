@@ -477,6 +477,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         session.onExternalScreenChange = { [weak self] in self?.syncExternalDisplayWindow() }
         content.canvasZoom = canvasZoom
         content.deviceFrame = { [weak self] in self?.session.display.deviceFrame ?? .zero }
+        content.displayResizeRects = { [weak self] in self?.session.display.resizeRects ?? [] }
         content.onCanvasResize = { [weak self] in self?.resizeCanvas(from: $0, with: $1) }
         content.onNativeCanvasMagnification = { [weak self] in self?.session.display.setCanvasMagnification($0) }
         content.canImport = { [weak self] in self?.session.canPerformToolOperation == true }
@@ -1819,6 +1820,7 @@ private final class DeviceContentView: NSView, DisplayContentView {
     }
     var canvasZoom: CanvasZoom?
     var deviceFrame: (() -> NSRect)?
+    var displayResizeRects: (() -> [DisplayResizeRect])?
     var onCanvasResize: (DisplayResizeCorner, NSEvent) -> Void = { _, _ in }
     private lazy var resizeHandles = [DisplayResizeCorner.lowerLeft, .lowerRight, .upperRight, .upperLeft].map { corner in
         DeviceCanvasResizeHandle(corner: corner) { [weak self] in self?.onCanvasResize(corner, $0) }
@@ -2099,12 +2101,29 @@ private final class DeviceContentView: NSView, DisplayContentView {
 
     private func layoutResizeHandles() {
         let frame = display.convert(deviceFrame?() ?? display.bounds, to: self)
+        let bezelRects = displayResizeRects?() ?? []
         for handle in resizeHandles {
             handle.isHidden = !isEmbedded || scrollsDisplay
-            let radius: CGFloat = 16
-            handle.frame = NSRect(x: (handle.corner.isLeft ? frame.minX : frame.maxX) - radius,
-                                  y: (handle.corner.isLower ? frame.minY : frame.maxY) - radius,
-                                  width: radius * 2, height: radius * 2)
+            if let area = bezelRects.first(where: { $0.corner == handle.corner }) {
+                let bezel = display.convert(area.rect, to: self)
+                let size = NSSize(width: max(44, bezel.width + 24), height: max(44, bezel.height + 24))
+                // Keep the bezel's inner boundary so the larger target does not take guest input.
+                handle.frame = NSRect(x: handle.corner.isLeft ? bezel.maxX - size.width : bezel.minX,
+                                      y: handle.corner.isLower ? bezel.maxY - size.height : bezel.minY,
+                                      width: size.width, height: size.height)
+                handle.resizeRects = [handle.bounds]
+            } else {
+                let radius: CGFloat = 24
+                handle.frame = NSRect(x: (handle.corner.isLeft ? frame.minX : frame.maxX) - radius,
+                                      y: (handle.corner.isLower ? frame.minY : frame.maxY) - radius,
+                                      width: radius * 2, height: radius * 2)
+                // Displays without bezel resize areas leave the guest's corners available for input.
+                handle.resizeRects = [
+                    NSRect(x: handle.corner.isLeft ? 0 : radius, y: 0, width: radius, height: radius * 2),
+                    NSRect(x: handle.corner.isLeft ? radius : 0, y: handle.corner.isLower ? 0 : radius,
+                           width: radius, height: radius),
+                ]
+            }
             window?.invalidateCursorRects(for: handle)
         }
     }
@@ -2171,7 +2190,7 @@ private final class DeviceContentView: NSView, DisplayContentView {
     }
 }
 
-/// Fixed-size hit targets keep device scaling separate from window resizing and guest input.
+/// Bezel hit targets scale the embedded device without resizing its window.
 @MainActor
 private final class DeviceCanvasResizeHandle: NSView {
     let corner: DisplayResizeCorner
@@ -2187,14 +2206,7 @@ private final class DeviceCanvasResizeHandle: NSView {
 
     required init?(coder: NSCoder) { nil }
 
-    /// The three quadrants outside the display form an L-shaped target around its corner.
-    private var resizeRects: [NSRect] {
-        let half = bounds.width / 2
-        return [
-            NSRect(x: corner.isLeft ? 0 : half, y: 0, width: half, height: bounds.height),
-            NSRect(x: corner.isLeft ? half : 0, y: corner.isLower ? 0 : half, width: half, height: half),
-        ]
-    }
+    var resizeRects: [NSRect] = []
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard resizeRects.contains(where: { $0.contains(convert(point, from: superview)) }) else { return nil }
