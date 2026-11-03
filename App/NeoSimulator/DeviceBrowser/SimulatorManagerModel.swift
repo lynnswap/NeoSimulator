@@ -144,6 +144,7 @@ final class SimulatorManagerModel {
     private(set) var backgroundIssue: String?
     let settings: DeviceSettingsModel
     let backgroundServices: BackgroundServicesModel
+    let serviceProfiles: ServiceProfileStore
     private(set) var devicePostures: [DeviceInventoryID: DevicePostureModel] = [:]
     @ObservationIgnored private var postureStarts: [DeviceInventoryID: Task<Void, Never>] = [:]
     @ObservationIgnored private var postureStops: [DeviceInventoryID: Task<Void, Never>] = [:]
@@ -208,22 +209,26 @@ final class SimulatorManagerModel {
     }
 
     init(rendererApplicationURL: URL,
-         presentSimulator: (@MainActor @Sendable (SimulatorPresentationContext) async throws -> Void)? = nil) {
+         presentSimulator: (@MainActor @Sendable (SimulatorPresentationContext) async throws -> Void)? = nil,
+         serviceProfiles: ServiceProfileStore = ServiceProfileStore()) {
         let controller = SimulatorHostController(rendererApplicationURL: rendererApplicationURL, presentSimulator: presentSimulator)
         self.controller = controller
         makeDevicePosture = { DevicePostureModel(deviceID: $0) }
         frameworks = UIFrameworkSettings { try await controller.installedXcodes() }
         settings = DeviceSettingsModel(source: controller)
         backgroundServices = BackgroundServicesModel(source: controller)
+        self.serviceProfiles = serviceProfiles
     }
 
     init(source: any SimulatorManagerSource,
-         makeDevicePosture: @escaping @MainActor (DeviceInventoryID) -> DevicePostureModel = { DevicePostureModel(deviceID: $0) }) {
+         makeDevicePosture: @escaping @MainActor (DeviceInventoryID) -> DevicePostureModel = { DevicePostureModel(deviceID: $0) },
+         serviceProfiles: ServiceProfileStore = ServiceProfileStore()) {
         controller = source
         self.makeDevicePosture = makeDevicePosture
         frameworks = UIFrameworkSettings { try await source.installedXcodes() }
         settings = DeviceSettingsModel(source: source)
         backgroundServices = BackgroundServicesModel(source: source)
+        self.serviceProfiles = serviceProfiles
     }
 
     func start() {
@@ -449,6 +454,7 @@ final class SimulatorManagerModel {
             defer {
                 self.managementRequests.removeValue(forKey: request)
                 self.reconcileDevicePostures()
+                self.applyPendingServiceProfiles()
             }
             do {
                 let preparesOwnedShutdown = action == .shutdown && targets.allSatisfy {
@@ -475,6 +481,12 @@ final class SimulatorManagerModel {
                     }
                 } else { preparation = nil }
                 let report = await self.controller.manage(action, devices: targets, preparingDisplay: preparation)
+                if action == .remove {
+                    for result in report.results where result.error == nil {
+                        do { try self.serviceProfiles.removeBinding(for: result.deviceID) }
+                        catch { self.onError?(error) }
+                    }
+                }
                 var presentationError: (any Error)?
                 do { try await self.afterManagingSimulators?(action, targets) }
                 catch { presentationError = error }
@@ -560,7 +572,10 @@ final class SimulatorManagerModel {
         defer {
             settings.requestRefresh()
             backgroundServices.requestRefresh()
-            if refreshWaiters.isEmpty { refreshing = false }
+            if refreshWaiters.isEmpty {
+                refreshing = false
+                applyPendingServiceProfiles()
+            }
             else { refreshWaiters.removeFirst().resume() }
         }
         repeat {
@@ -677,9 +692,61 @@ final class SimulatorManagerModel {
 
     func setBackgroundServices(_ targets: [SimulatorBackgroundServiceTarget], enabled: Bool, for identifier: DeviceInventoryID) {
         guard !stopping, !managingDeviceIDs.contains(identifier), let device = inventory.first(where: { $0.id == identifier }) else { return }
-        let change = backgroundServices.accept(targets, enabled: enabled, for: device)
-        perform("Updating background services…", refreshCatalog: false, waitsForAttach: false) {
+        do {
+            let current = backgroundServices.device?.id == identifier ? backgroundServices.configuration : nil
+            try serviceProfiles.record(targets, enabled: enabled, for: identifier,
+                productFamily: device.serviceProductFamily, currentConfiguration: current)
+            let change = backgroundServices.accept(targets, enabled: enabled, for: device)
+            perform("Updating background services…", refreshCatalog: false, waitsForAttach: false) {
+                try await self.backgroundServices.apply(change)
+            }
+        } catch { onError?(error) }
+    }
+
+    func canEditSettings(for identifier: DeviceInventoryID) -> Bool {
+        !stopping && !holdsSettingsEdits && !managingDeviceIDs.contains(identifier)
+    }
+
+    func selectServiceProfile(_ profileID: UUID, for identifier: DeviceInventoryID) {
+        guard !stopping, !managingDeviceIDs.contains(identifier),
+              let device = inventory.first(where: { $0.id == identifier }), case .simulator = device else { return }
+        do {
+            let binding = try serviceProfiles.assign(profileID, to: identifier, pending: !device.canInspectBackgroundServices)
+            if device.canInspectBackgroundServices { enqueueServiceConfiguration(binding, for: device) }
+        } catch { onError?(error) }
+    }
+
+    func revertServiceProfile(for identifier: DeviceInventoryID) {
+        guard !stopping, !managingDeviceIDs.contains(identifier),
+              let device = inventory.first(where: { $0.id == identifier }) else { return }
+        let profileID = serviceProfiles.binding(for: identifier)?.profileID ?? ServiceProfile.default.id
+        do {
+            let binding = try serviceProfiles.assign(profileID, to: identifier,
+                pending: !device.canInspectBackgroundServices, preservingOverrides: false)
+            if device.canInspectBackgroundServices { enqueueServiceConfiguration(binding, for: device) }
+        } catch { onError?(error) }
+    }
+
+    private func enqueueServiceConfiguration(_ binding: DeviceServiceProfile, for device: InventoryDevice) {
+        let change = backgroundServices.accept(binding.configuration, for: device)
+        perform("Applying service profile…", refreshCatalog: false, waitsForAttach: false) {
+            do {
+                try self.serviceProfiles.beginApplication(for: device.id, requestID: binding.requestID)
+            } catch {
+                self.backgroundServices.discard(change)
+                throw error
+            }
             try await self.backgroundServices.apply(change)
+        }
+    }
+
+    private func applyPendingServiceProfiles() {
+        guard !stopping else { return }
+        for device in inventory where device.canInspectBackgroundServices && !managingDeviceIDs.contains(device.id)
+            && !backgroundServices.changingDeviceIDs.contains(device.id) {
+            if let binding = serviceProfiles.binding(for: device.id), binding.pendingApplication {
+                enqueueServiceConfiguration(binding, for: device)
+            }
         }
     }
 

@@ -4,9 +4,12 @@ import SwiftUI
 
 @MainActor
 final class GeneralSettingsViewController: NSHostingController<GeneralSettingsView> {
+    let model: GeneralSettingsModel
+
     init(model: SimulatorManagerModel, preferences: SimulatorPreferences, frameworks: UIFrameworkSettings,
          restart: @escaping () -> Void) {
-        super.init(rootView: GeneralSettingsView(model: model, preferences: preferences, frameworks: frameworks, restart: restart))
+        self.model = GeneralSettingsModel(manager: model, preferences: preferences, frameworks: frameworks, restart: restart)
+        super.init(rootView: GeneralSettingsView(model: self.model))
         title = "General"
         sizingOptions = [.standardBounds, .preferredContentSize]
     }
@@ -14,45 +17,38 @@ final class GeneralSettingsViewController: NSHostingController<GeneralSettingsVi
 }
 
 struct GeneralSettingsView: View {
-    let model: SimulatorManagerModel
-    @Bindable var preferences: SimulatorPreferences
-    let frameworks: UIFrameworkSettings
-    let restart: () -> Void
-    @State private var confirmsRestore = false
+    @Bindable var model: GeneralSettingsModel
 
     var body: some View {
+        @Bindable var preferences = model.preferences
+        let frameworks = model.frameworks
         Form {
             Section("Display") {
-                Picker("Preferred Display Host", selection: Binding(
-                    get: { model.status?.preferredHost ?? .neo }, set: { model.select($0) }
-                )) {
+                Picker("Preferred Display Host", selection: $model.preferredHost) {
                     Text("NeoSimulator").tag(SimulatorHost.neo)
                     Text("Device Hub").tag(SimulatorHost.deviceHub)
                 }
-                .disabled(model.isBusy || model.status == nil)
+                .disabled(!model.canSelectHost)
                 Text("NeoSimulator displays simulators while it is open. When you quit, Xcode returns to its previous display settings.")
                     .foregroundStyle(.secondary)
-                if model.status?.preferredHost == .neo, model.status?.host != .neo {
-                    Button("Use NeoSimulator") { model.select(.neo) }
-                        .disabled(model.isBusy)
+                if model.offersNeoHost {
+                    Button("Use NeoSimulator", action: model.useNeoHost)
+                        .disabled(!model.canSelectHost)
                 }
-                Picker("UI Frameworks", selection: Binding(
-                    get: { frameworks.selectedXcodeURL }, set: { frameworks.select($0) }
-                )) {
+                Picker("UI Frameworks", selection: $model.selectedXcodeURL) {
                     Text("Default (xcode-select)").tag(URL?.none)
                     ForEach(frameworks.installations, id: \.url) { xcode in
                         Text("\(xcode.name) (\(xcode.version))").tag(Optional(xcode.url))
                     }
-                    if let selected = frameworks.selectedXcodeURL,
-                       !frameworks.installations.contains(where: { $0.url == selected }) {
+                    if let selected = model.missingXcodeURL {
                         Text(selected.deletingPathExtension().lastPathComponent).tag(Optional(selected))
                     }
                 }
-                .disabled(frameworks.isLoading || model.isBusy)
-                Text(frameworkMessage)
+                .disabled(!model.canSelectFrameworks)
+                Text(model.frameworkMessage)
                     .foregroundStyle(.secondary)
                 if frameworks.needsRestart {
-                    Button("Restart to Apply", action: restart).disabled(model.isBusy)
+                    Button("Restart to Apply", action: model.restart).disabled(!model.canRestart)
                 }
             }
             Section("Startup and Windows") {
@@ -65,25 +61,18 @@ struct GeneralSettingsView: View {
                 Toggle("Show pinch gestures", isOn: $preferences.showPinches)
             }
             Section {
-                Button("Restore Original Settings…") { confirmsRestore = true }
-                    .disabled(model.isBusy || model.status?.restorationAvailable != true)
+                Button("Restore Original Settings…", role: .destructive) { model.confirmsRestore = true }
+                    .disabled(!model.canRestore)
             }
         }
         .formStyle(.grouped)
         .frame(width: 560)
         .fixedSize(horizontal: false, vertical: true)
-        .confirmationDialog("Restore original settings?", isPresented: $confirmsRestore) {
+        .confirmationDialog("Restore original settings?", isPresented: $model.confirmsRestore) {
             Button("Restore", role: .destructive) { model.restoreDefaults() }
         } message: {
             Text("Restore the routing settings saved before NeoSimulator first changed them. Your simulator devices are kept.")
         }
-    }
-
-    private var frameworkMessage: String {
-        if let issue = frameworks.issue { return issue }
-        return frameworks.needsRestart
-            ? String(localized: "Restart NeoSimulator to apply this change. Simulators will keep running.")
-            : String(localized: "Uses the selected Xcode's display frameworks. Simulator runtimes are selected independently.")
     }
 }
 

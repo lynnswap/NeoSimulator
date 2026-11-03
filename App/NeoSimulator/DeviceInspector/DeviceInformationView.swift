@@ -4,40 +4,25 @@ import XcodeSimulatorHost
 
 @MainActor
 struct DeviceInformationView: View {
-    let manager: SimulatorManagerModel
-    let inspection: DeviceInspectorModel
-    let visibility: DeviceInfoVisibility
-    let pairingMenu: (SimulatorHostDevice) -> NSMenu
-    let deviceMenu: (SimulatorHostDevice) -> NSMenu
-    let unpair: (_ targetWatch: SimulatorHostDevice) -> Void
-
-    @State private var editsVisibility = false
-    @State private var selectedPairedSimulator: DeviceInventoryID?
+    @Bindable var model: DeviceInformationModel
 
     var body: some View {
-        if let device = inspection.device {
-            let information = DeviceInformation(device: device, properties: inspection.infoProperties)
-            let pairingDevice: SimulatorHostDevice? = if case .simulator(let simulator) = device,
-                simulator.productFamily == "iPhone" || simulator.productFamily == "Apple Watch" {
-                simulator
-            } else { nil }
+        if let information = model.information {
             Group {
-                if editsVisibility {
+                if model.editsVisibility {
                     Form { visibilityEditor(information) }
                         .formStyle(.grouped)
                 } else {
                     Form {
-                        informationCards(information, includesPairing: pairingDevice != nil)
-                        if let simulator = pairingDevice {
-                            pairedSimulators(simulator)
-                        }
+                        informationCards(information, includesPairing: model.pairingDevice != nil)
+                        if model.pairingDevice != nil { pairedSimulators }
                     }
                     .formStyle(InformationFormStyle())
                 }
             }
             .safeAreaBar(edge: .bottom, spacing: 0) {
-                if editsVisibility {
-                    Button("Done") { editsVisibility = false }
+                if model.editsVisibility {
+                    Button("Done") { model.editsVisibility = false }
                         .buttonStyle(.borderedProminent)
                         .buttonBorderShape(.capsule)
                         .buttonSizing(.flexible)
@@ -51,16 +36,14 @@ struct DeviceInformationView: View {
 
     @ViewBuilder
     private func informationCards(_ information: DeviceInformation, includesPairing: Bool) -> some View {
-        let visibleFields = information.fields.filter { visibility.isVisible($0) }
-        let groups = DeviceInformation.Group.allCases.filter { group in visibleFields.contains { $0.group == group } }
-        ForEach(groups) { group in
+        ForEach(model.visibleGroups) { group in
             Section {
-                informationRows(visibleFields.filter { $0.group == group })
+                informationRows(group.fields)
             } footer: {
-                if !includesPairing && group == groups.last { editVisibilityButton }
+                if !includesPairing && group.id == model.visibleGroups.last?.id { editVisibilityButton }
             }
         }
-        if groups.isEmpty && !includesPairing {
+        if model.visibleGroups.isEmpty && !includesPairing {
             Section {} footer: { editVisibilityButton }
         }
     }
@@ -68,7 +51,7 @@ struct DeviceInformationView: View {
     private var editVisibilityButton: some View {
         HStack {
             Spacer()
-            Button { editsVisibility = true } label: {
+            Button { model.editsVisibility = true } label: {
                 Text("Edit Visibility")
                     .font(.caption)
                     .foregroundStyle(Color.secondary)
@@ -104,6 +87,7 @@ struct DeviceInformationView: View {
 
     @ViewBuilder
     private func visibilityEditor(_ information: DeviceInformation) -> some View {
+        @Bindable var visibility = model.visibility
         ForEach(DeviceInformation.Group.allCases) { group in
             let fields = information.fields.filter { $0.group == group }
             if !fields.isEmpty {
@@ -112,10 +96,7 @@ struct DeviceInformationView: View {
                         LabeledContent {
                             fieldValue(field)
                         } label: {
-                            Toggle(field.title, isOn: Binding(
-                                get: { visibility.isVisible(field) },
-                                set: { visibility.setVisible($0, for: field) }
-                            ))
+                            Toggle(field.title, isOn: $visibility[visible: field])
                             .toggleStyle(.checkbox)
                         }
                         .labeledContentStyle(InformationRowStyle())
@@ -125,34 +106,26 @@ struct DeviceInformationView: View {
         }
     }
 
-    private func pairedSimulators(_ device: SimulatorHostDevice) -> some View {
-        let paired = DeviceInformation.pairedSimulators(for: device, in: manager.inventory)
-        let selectedPartner = paired.first { $0.inventoryID == selectedPairedSimulator }
-        let targetWatch = selectedPartner.flatMap { DeviceInformation.watchToUnpair(device: device, partner: $0) }
-        return Section {} header: {
+    private var pairedSimulators: some View {
+        Section {} header: {
             Text("Paired Simulators")
         } footer: {
             GroupBox {
                 VStack(spacing: 0) {
-                    PairedSimulatorsView(devices: paired, selection: $selectedPairedSimulator,
-                        emptyLabel: device.productFamily == "Apple Watch" ? "No Paired iPhone Simulators" : "No Paired Watch Simulators",
-                        menu: deviceMenu)
+                    PairedSimulatorsView(devices: model.pairedSimulators, selection: $model.selectedPairedSimulator,
+                        emptyLabel: model.emptyPairingLabel, menu: model.deviceMenu)
                     .frame(maxWidth: .infinity)
                     Divider()
                     HStack(spacing: 0) {
-                        DeviceMenuButton(menu: pairingMenu(device), symbol: "plus", label: "Add Paired Simulator", isBordered: false)
-                            .disabled(!manager.canAddPairing(for: device) || inspection.isManaging ||
-                                      !manager.canManage(.pair, deviceIDs: [device.inventoryID]))
+                        DeviceMenuButton(menu: model.pairingMenu(), symbol: "plus", label: "Add Paired Simulator", isBordered: false)
+                            .disabled(!model.canAddPairing)
                         Divider()
                             .padding(.vertical, 4)
-                        Button {
-                            if let targetWatch { unpair(targetWatch) }
-                        } label: {
+                        Button(role: .destructive, action: model.removePairing) {
                             PairingAccessoryLabel(symbol: "minus")
                         }
                         .accessibilityLabel("Remove Paired Simulator")
-                        .disabled(targetWatch == nil || inspection.isManaging || manager.isBusy ||
-                                  targetWatch.map { manager.managingDeviceIDs.contains($0.inventoryID) } == true)
+                        .disabled(!model.canRemovePairing)
                         Spacer()
                     }
                     .fixedSize(horizontal: false, vertical: true)

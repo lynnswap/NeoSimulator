@@ -1,7 +1,7 @@
 import Foundation
 import Observation
 import Testing
-@testable import XcodeSimulatorHost
+@_spi(NeoSimulator) @testable import XcodeSimulatorHost
 
 @MainActor
 @Suite struct DeviceInventoryObservationTests {

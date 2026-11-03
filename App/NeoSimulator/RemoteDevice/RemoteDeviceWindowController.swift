@@ -915,7 +915,7 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
             alert.messageText = "Discard the recording?"
             alert.informativeText = "The recording has not been saved. This action cannot be undone."
             alert.addButton(withTitle: "Cancel")
-            alert.addButton(withTitle: "Discard")
+            alert.addButton(withTitle: "Discard").hasDestructiveAction = true
             guard await response(to: alert) == .alertSecondButtonReturn else { throw CancellationError() }
             session.discardCompletedRecording()
             recordingDestination = nil
@@ -955,7 +955,7 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
         alert.informativeText = "Your recording will be lost if you don’t save it."
         alert.addButton(withTitle: "Save…")
         alert.addButton(withTitle: "Cancel")
-        alert.addButton(withTitle: "Don’t Save")
+        alert.addButton(withTitle: "Don’t Save").hasDestructiveAction = true
         switch await response(to: alert) {
         case .alertFirstButtonReturn:
             let destination = try await chooseRecordingDestination()
@@ -1121,7 +1121,7 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
             alert.messageText = "Discard the screenshot?"
             alert.informativeText = "The screenshot has not been saved. This action cannot be undone."
             alert.addButton(withTitle: "Cancel")
-            alert.addButton(withTitle: "Discard")
+            alert.addButton(withTitle: "Discard").hasDestructiveAction = true
             guard await response(to: alert) == .alertSecondButtonReturn else { throw CancellationError() }
             completedScreenshot = nil
         }
@@ -1134,7 +1134,7 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
         alert.informativeText = "Your screenshot will be lost if you don’t save it."
         alert.addButton(withTitle: "Save…")
         alert.addButton(withTitle: "Cancel")
-        alert.addButton(withTitle: "Don’t Save")
+        alert.addButton(withTitle: "Don’t Save").hasDestructiveAction = true
         switch await response(to: alert) {
         case .alertFirstButtonReturn:
             let destination = try await chooseScreenshotDestination()

@@ -82,6 +82,28 @@ final class DeviceBrowserModel {
     private(set) var devices: [AvailableDevice] = []
     private(set) var opening: Set<SimulatorDeviceIdentifier> = []
     var errorMessage: String?
+    var search = "" {
+        didSet { if search != oldValue { updateSections() } }
+    }
+    struct RuntimeSection: Identifiable {
+        let id: String
+        let devices: [AvailableDevice]
+    }
+    private(set) var sections: [RuntimeSection] = []
+    var showsError: Bool {
+        get { errorMessage != nil }
+        set { if !newValue { errorMessage = nil } }
+    }
+
+    private func updateSections() {
+        let matching = devices.filter {
+            search.isEmpty || $0.name.localizedStandardContains(search)
+                || $0.runtimeName.localizedStandardContains(search)
+        }
+        sections = Dictionary(grouping: matching, by: \.runtimeName)
+            .map { RuntimeSection(id: $0.key, devices: $0.value) }
+            .sorted { $0.id.compare($1.id, options: .numeric) == .orderedDescending }
+    }
 
     init(source: any DeviceBrowserSource) {
         self.source = source
@@ -96,6 +118,7 @@ final class DeviceBrowserModel {
                 ? $0.name.localizedStandardCompare($1.name) == .orderedAscending
                 : runtimeOrder == .orderedDescending
             } ?? []
+            updateSections()
         } catch { errorMessage = error.localizedDescription }
     }
 
@@ -113,15 +136,6 @@ final class DeviceBrowserModel {
 
 struct DeviceBrowserView: View {
     @Bindable var model: DeviceBrowserModel
-    @State private var search = ""
-
-    private var devices: [AvailableDevice] {
-        model.devices.filter {
-            search.isEmpty || $0.name.localizedStandardContains(search)
-                || $0.runtimeName.localizedStandardContains(search)
-        }
-    }
-
     var body: some View {
         VStack(spacing: 0) {
             HStack {
@@ -138,10 +152,10 @@ struct DeviceBrowserView: View {
 
             HStack {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                TextField("Search devices or runtimes", text: $search)
+                TextField("Search devices or runtimes", text: $model.search)
                     .textFieldStyle(.plain)
-                if !search.isEmpty {
-                    Button("Clear Search", systemImage: "xmark.circle.fill") { search = "" }
+                if !model.search.isEmpty {
+                    Button("Clear Search", systemImage: "xmark.circle.fill") { model.search = "" }
                         .labelStyle(.iconOnly).buttonStyle(.plain)
                 }
             }
@@ -153,15 +167,13 @@ struct DeviceBrowserView: View {
             if model.devices.isEmpty {
                 ContentUnavailableView("No Simulators", systemImage: "iphone",
                     description: Text("Install a simulator runtime and create a simulator in Xcode, then refresh."))
-            } else if devices.isEmpty {
-                ContentUnavailableView.search(text: search)
+            } else if model.sections.isEmpty {
+                ContentUnavailableView.search(text: model.search)
             } else {
                 List {
-                    ForEach(Array(Set(devices.map(\.runtimeName))).sorted {
-                        $0.compare($1, options: .numeric) == .orderedDescending
-                    }, id: \.self) { runtime in
-                        Section(runtime) {
-                            ForEach(devices.filter { $0.runtimeName == runtime }, id: \.identity) { device in
+                    ForEach(model.sections) { section in
+                        Section(section.id) {
+                            ForEach(section.devices, id: \.identity) { device in
                                 HStack(spacing: 14) {
                                     Image(systemName: device.symbolName)
                                         .font(.title2)
@@ -203,10 +215,7 @@ struct DeviceBrowserView: View {
         }
         .frame(minWidth: 440, minHeight: 380)
         .background(.background)
-        .alert("Could Not Open Simulator", isPresented: Binding(
-            get: { model.errorMessage != nil },
-            set: { if !$0 { model.errorMessage = nil } }
-        )) {
+        .alert("Could Not Open Simulator", isPresented: $model.showsError) {
             Button("OK") { model.errorMessage = nil }
         } message: {
             Text(model.errorMessage ?? "")

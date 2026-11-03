@@ -1,5 +1,6 @@
 import AppKit
 import Observation
+import ObservationBridge
 @_spi(NeoSimulator) import XcodeSimulatorHost
 
 /// The device screens open in the manager, the in-process host that presents each Xcode's simulators, and the
@@ -20,6 +21,7 @@ final class DeviceScreens {
     @ObservationIgnored private var stoppedHosts: [HostApplication] = []
     /// Set while the app quits, until a cancelled quit resumes.
     @ObservationIgnored private(set) var isQuitting = false
+    @ObservationIgnored private var remoteDevicesObservation: PortableObservationTracking.Token?
     @ObservationIgnored private var lastRemoteHost: SimulatorHost?
     @ObservationIgnored private var remoteHostCleanup: Task<Void, Never>?
     @ObservationIgnored var onError: ((any Error) -> Void)?
@@ -272,15 +274,13 @@ final class DeviceScreens {
 
     /// Follows the inventory and the selected host, which can make remote screens unavailable.
     func observeRemoteDevices() {
-        withObservationTracking {
+        remoteDevicesObservation?.cancel()
+        remoteDevicesObservation = withPortableContinuousObservation { [weak self, model] event in
             _ = model.inventory
             _ = model.status?.host
             _ = model.isRemoteInventoryComplete
-        } onChange: { [weak self] in
-            Task { @MainActor in
-                self?.updateRemoteScreens()
-                self?.observeRemoteDevices()
-            }
+            guard event.kind != .initial else { return }
+            Task { @MainActor [weak self] in self?.updateRemoteScreens() }
         }
     }
 

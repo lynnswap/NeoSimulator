@@ -58,6 +58,7 @@ xcodebuild \
   -quiet \
   -workspace "$repo_root/NeoSimulator.xcworkspace" \
   -scheme NeoSimulator \
+  -skipPackagePluginValidation \
   -configuration Release \
   -destination 'generic/platform=macOS' \
   -derivedDataPath "$derived_data" \

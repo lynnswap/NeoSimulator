@@ -40,6 +40,14 @@ public struct SimulatorHostStatus: Sendable {
     public let preferredHost: SimulatorHost
     public let restorationAvailable: Bool
     public let rendererRunning: Bool
+
+    @_spi(NeoSimulator) public init(host: SimulatorHost, preferredHost: SimulatorHost,
+                                   restorationAvailable: Bool, rendererRunning: Bool) {
+        self.host = host
+        self.preferredHost = preferredHost
+        self.restorationAvailable = restorationAvailable
+        self.rendererRunning = rendererRunning
+    }
 }
 
 public struct SimulatorHostDevice: Sendable, Equatable {

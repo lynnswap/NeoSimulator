@@ -6,6 +6,8 @@ final class SettingsViewController: NSTabViewController {
     let general: GeneralSettingsViewController
     let devices: DevicesSettingsViewController
     let capture: CaptureSettingsViewController
+    let serviceProfiles: ServiceProfilesSettingsViewController
+    let licenses: LicensesSettingsViewController
     var onContentSizeChange: ((NSSize) -> Void)?
 
     init(model: SimulatorManagerModel, restart: @escaping () -> Void,
@@ -15,6 +17,8 @@ final class SettingsViewController: NSTabViewController {
                                                frameworks: model.frameworks, restart: restart)
         devices = DevicesSettingsViewController(makeSimulator: makeSimulator, reportFailure: reportFailure)
         capture = CaptureSettingsViewController(preferences: preferences)
+        serviceProfiles = ServiceProfilesSettingsViewController(store: model.serviceProfiles)
+        licenses = LicensesSettingsViewController()
         super.init(nibName: nil, bundle: nil)
         general.sizingOptions = [.preferredContentSize]
         devices.sizingOptions = [.preferredContentSize]
@@ -22,7 +26,7 @@ final class SettingsViewController: NSTabViewController {
         transitionOptions = []
         tabStyle = .toolbar
         canPropagateSelectedChildViewControllerTitle = true
-        for (controller, symbol) in [(general as NSViewController, "gear"), (devices, "iphone"), (capture, "camera")] {
+        for (controller, symbol) in [(general as NSViewController, "gear"), (devices, "iphone"), (capture, "camera"), (serviceProfiles, "cpu"), (licenses, "doc.text")] {
             let item = NSTabViewItem(viewController: controller)
             item.identifier = controller.title
             item.label = controller.title ?? ""
@@ -43,7 +47,12 @@ final class SettingsViewController: NSTabViewController {
         onContentSizeChange?(viewController.preferredContentSize)
     }
 
-    var simulatorLoading: Task<Void, Never>? { devices.loading }
+    func selectServiceProfile(_ id: UUID) {
+        serviceProfiles.model.selectedProfileID = id
+        selectedTabViewItemIndex = 3
+    }
+
+    var simulatorLoading: Task<Void, Never>? { devices.state.loading }
 
     override func tabView(_ tabView: NSTabView, didSelect tabViewItem: NSTabViewItem?) {
         super.tabView(tabView, didSelect: tabViewItem)
@@ -57,6 +66,12 @@ final class SettingsViewController: NSTabViewController {
 }
 
 #if DEBUG
+struct PreviewViewController<Controller: NSViewController>: NSViewControllerRepresentable {
+    let makeController: () -> Controller
+    func makeNSViewController(context: Context) -> Controller { makeController() }
+    func updateNSViewController(_ controller: Controller, context: Context) {}
+}
+
 @MainActor
 enum SettingsPreview {
     static func preferences() -> SimulatorPreferences {

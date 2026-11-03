@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 
-@testable import XcodeSimulatorHost
+@_spi(NeoSimulator) @testable import XcodeSimulatorHost
 
 @Suite
 struct DeviceInventoryTests {

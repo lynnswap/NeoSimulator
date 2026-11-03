@@ -464,6 +464,7 @@ final class CaptureThumbnail: NSObject {
         _ = add("Show in Finder") { thumbnail in
             NSWorkspace.shared.activateFileViewerSelecting([try thumbnail.content.saveToDefaultLocation()])
         }
+        menu.addItem(.separator())
         _ = add("Delete") { try $0.content.delete() }
         menu.addItem(.separator())
         _ = add("Close") { try $0.content.saveToDefaultLocation() }

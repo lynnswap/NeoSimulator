@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import LicenseList
 import Observation
 import SwiftUI
 import Testing
@@ -88,7 +89,7 @@ struct ManagerModelTests {
         controller.selectedTabViewItemIndex = 1
         await controller.simulatorLoading?.value
         #expect(controller.devices.state.issue == "Catalog unavailable")
-        controller.devices.state.retry?()
+        controller.devices.state.reload()
         await controller.simulatorLoading?.value
         let form = try #require(controller.devices.state.form)
         settingsWindow.layoutIfNeeded()
@@ -109,6 +110,29 @@ struct ManagerModelTests {
         #expect(defaults.bool(forKey: HostPreferences.startLastDeviceOnLaunch) && defaults.bool(forKey: HostPreferences.sessionOnLaunch))
     }
 
+    @Test func deviceFilterShowsNativeSelectionWithoutChangingItsSymbol() throws {
+        let domain = "NeoSimulator.DeviceFilter.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
+        let model = SimulatorManagerModel(source: ManagerModelSource(devices: []))
+        let browser = ManagerWindowController(model: model, screens: DeviceScreens(model: model),
+                                              menus: MenuController(application: nil), defaults: defaults)
+        defer { browser.window?.close() }
+        let item = try #require(browser.window?.toolbar?.items.first { $0.itemIdentifier.rawValue == "FilterSimulators" })
+        let button = try #require(item.view as? NSButton)
+        let image = try #require(button.image)
+        let menu = try #require(item.menuFormRepresentation?.submenu)
+        browser.menuNeedsUpdate(menu)
+        #expect(button.state == .off)
+        let simulators = try #require(menu.items.first { $0.title == "Simulators" })
+        #expect(NSApp.sendAction(try #require(simulators.action), to: simulators.target, from: simulators))
+        #expect(button.state == .on && button.image === image)
+        #expect(item.menuFormRepresentation?.state == .on)
+        let all = try #require(menu.items.first { $0.title == "All Devices" })
+        #expect(NSApp.sendAction(try #require(all.action), to: all.target, from: all))
+        #expect(button.state == .off && button.image === image)
+    }
+
     @Test func settingsToolbarResizesWindowWithoutIntermediateFrames() throws {
         let domain = "NeoSimulator.SettingsAnimation.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: domain))
@@ -120,13 +144,15 @@ struct ManagerModelTests {
             reportFailure: { _ in Issue.record("Unexpected failure") })
         let window = try #require(controller.window)
         defer { window.close() }
+        #expect(controller.settings.serviceProfiles.model.selectedProfileID == ServiceProfile.default.id)
+        #expect(controller.settings.tabViewItems.last?.label == "Licenses")
         window.makeKeyAndOrderFront(nil)
         window.layoutIfNeeded()
         let samples = SettingsWindowFrameSamples()
         NotificationCenter.default.addObserver(samples, selector: #selector(SettingsWindowFrameSamples.resized(_:)),
                                                 name: NSWindow.didResizeNotification, object: window)
         defer { NotificationCenter.default.removeObserver(samples) }
-        for index in [2, 0] {
+        for index in [4, 2, 3, 0] {
             let before = window.frame
             samples.frames = []
             let item = try #require(window.toolbar?.items.first {
@@ -141,6 +167,32 @@ struct ManagerModelTests {
             #expect(window.contentLayoutRect.height == ceil(controller.settings.selectedContentSize.height))
             #expect(samples.frames.allSatisfy { $0 == after })
         }
+    }
+
+    @Test func licensesIncludePackagesAndPortedCodeAndUseNativeSelection() throws {
+        let model = LicensesSettingsModel()
+        #expect(model.issue == nil)
+        let names = Set(model.libraries.map(\.name))
+        #expect(names.isSuperset(of: ["LicenseList", "ABIBridge", "ObservationBridge", "simslim"]))
+        let simslim = try #require(model.libraries.first { $0.name == "simslim" })
+        #expect(simslim.licenseBody.contains("Copyright (c) 2026 Interlap"))
+        #expect(simslim.licenseBody.contains("Permission is hereby granted"))
+        #expect(model.libraries.allSatisfy { !$0.licenseBody.isEmpty })
+
+        let controller = LicensesSettingsViewController(model: model)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 520),
+                              styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentViewController = controller
+        window.makeKeyAndOrderFront(nil)
+        defer { window.close() }
+        window.layoutIfNeeded()
+        #expect(controller.view.frame.size == NSSize(width: 720, height: 520))
+        let table = try #require(inspectorViews(controller.view).compactMap { $0 as? NSTableView }.first)
+        #expect(table.selectedRow == 0)
+        let row = try #require(model.libraries.firstIndex { $0.id == simslim.id })
+        table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        #expect(model.selectedLibrary?.id == simslim.id)
     }
 
     @Test func settingsRefreshRuntimesAndRememberTheDeviceFamily() async throws {
@@ -426,8 +478,8 @@ struct ManagerModelTests {
         defer { controller.window?.close() }
         let content = try #require(controller.window?.contentView)
         let outline = try #require(inspectorViews(content).compactMap { $0 as? NSOutlineView }.first)
-        let menu = try #require(controller.window?.toolbar?.items.compactMap { $0 as? NSMenuToolbarItem }
-            .first { $0.itemIdentifier.rawValue == "FilterSimulators" }?.menu)
+        let menu = try #require(controller.window?.toolbar?.items
+            .first { $0.itemIdentifier.rawValue == "FilterSimulators" }?.menuFormRepresentation?.submenu)
         func choose(_ title: String) throws {
             controller.menuNeedsUpdate(menu)
             let item = try #require(menu.items.first { $0.title == title && !$0.isSectionHeader })
@@ -872,6 +924,9 @@ struct ManagerModelTests {
     @Test(arguments: [false, true])
     func automaticPresentationPreservesSelectionAndInitialPresentation(_ initial: Bool) async throws {
         _ = NSApplication.shared
+        let domain = "NeoSimulator.AutomaticPresentation.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
         let devices = try CoreDeviceInventoryDecoder.decode(Data(#"{"result":{"devices":[{"identifier":"A","properties":{"hardware":{"reality":"physical"},"state":{"name":"A"}}},{"identifier":"B","properties":{"hardware":{"reality":"physical"},"state":{"name":"B"}}}]}}"#.utf8))
         let a = try #require(devices.first), b = try #require(devices.last)
         let aID = DeviceInventoryID.coreDevice(a.identifier), bID = DeviceInventoryID.coreDevice(b.identifier)
@@ -880,7 +935,7 @@ struct ManagerModelTests {
         await model.refresh()
         let app = AppDelegate()
         app.model = model
-        app.prepareMainWindow()
+        app.prepareMainWindow(defaults: defaults)
         let main = try #require(app.mainWindow)
         main.window?.setFrameAutosaveName("")
         let pane = main.deviceScreenViewController
@@ -1079,6 +1134,79 @@ struct ManagerModelTests {
         #expect(app.screens.screen(for: aID) == nil && pane.liveDeviceIdentifier == nil)
     }
 
+    @Test func browserRestoresPanesAndSelectionWhenInventoryArrives() async throws {
+        let domain = "NeoSimulator.BrowserRestoration.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
+        let devices = [simulator(state: "Shutdown"), simulator(deviceSet: "/tmp/OtherDeviceSet", state: "Shutdown")]
+        let source = ManagerModelSource(devices: devices)
+        let model = SimulatorManagerModel(source: source)
+        model.settings.setReadingSuspended(true)
+        model.backgroundServices.setReadingSuspended(true)
+        await model.refresh()
+        func browser() -> ManagerWindowController {
+            let controller = ManagerWindowController(model: model, screens: DeviceScreens(model: model),
+                menus: MenuController(application: nil), defaults: defaults)
+            controller.window?.setFrameAutosaveName("")
+            return controller
+        }
+        func split(_ controller: ManagerWindowController) throws -> NSSplitViewController {
+            try #require(controller.window?.contentViewController as? NSSplitViewController)
+        }
+        func tabs(_ controller: ManagerWindowController) throws -> NSSegmentedControl {
+            try #require(controller.window?.toolbar?.items.first { $0.itemIdentifier.rawValue == "DeviceInspector" }?.view as? NSSegmentedControl)
+        }
+        let first = browser()
+        defer { first.window?.close() }
+        let firstSplit = try split(first)
+        let outline = try #require(inspectorViews(firstSplit.splitViewItems[0].viewController.view)
+            .compactMap { $0 as? NSOutlineView }.first)
+        let rows = (0..<outline.numberOfRows).filter {
+            outline.item(atRow: $0).map { first.outlineView(outline, shouldSelectItem: $0) } == true
+        }
+        outline.selectRowIndexes(IndexSet(rows), byExtendingSelection: false)
+        #expect(first.selectedIdentifiers == Set(devices.map(\.id)))
+        let firstTabs = try tabs(first)
+        NSAnimationContext.beginGrouping()
+        NSAnimationContext.current.duration = 0
+        firstTabs.selectedSegment = 3
+        NSApp.sendAction(firstTabs.action!, to: firstTabs.target, from: firstTabs)
+        firstSplit.splitViewItems[0].isCollapsed = true
+        NSAnimationContext.endGrouping()
+        first.window?.close()
+
+        await source.setDevices([])
+        await model.refresh()
+        let second = browser()
+        defer { second.window?.close() }
+        let secondSplit = try split(second)
+        #expect(secondSplit.splitViewItems[0].isCollapsed)
+        #expect(!secondSplit.splitViewItems[2].isCollapsed)
+        #expect(try tabs(second).selectedSegment == 3)
+        #expect(second.selectedIdentifiers.isEmpty)
+        await source.setDevices(devices)
+        await model.refresh()
+        second.update()
+        #expect(second.selectedIdentifiers == Set(devices.map(\.id)))
+        let restoredOutline = try #require(inspectorViews(secondSplit.splitViewItems[0].viewController.view)
+            .compactMap { $0 as? NSOutlineView }.first)
+        #expect(restoredOutline.selectedRowIndexes.count == 2)
+        let secondTabs = try tabs(second)
+        NSAnimationContext.beginGrouping()
+        NSAnimationContext.current.duration = 0
+        secondTabs.selectedSegment = 3
+        NSApp.sendAction(secondTabs.action!, to: secondTabs.target, from: secondTabs)
+        NSAnimationContext.endGrouping()
+        second.window?.close()
+        let third = browser()
+        defer { third.window?.close() }
+        #expect(try split(third).splitViewItems[2].isCollapsed)
+        let thirdTabs = try tabs(third)
+        thirdTabs.selectedSegment = 3
+        NSApp.sendAction(thirdTabs.action!, to: thirdTabs.target, from: thirdTabs)
+        #expect(try !split(third).splitViewItems[2].isCollapsed)
+    }
+
     @Test func inspectorTabsToggleVisibilityAndSwitchPages() throws {
         _ = NSApplication.shared
         let domain = "NeoSimulator.InspectorFixture.\(UUID().uuidString)"
@@ -1096,6 +1224,10 @@ struct ManagerModelTests {
         let accessory = try #require(inspector.topAlignedAccessoryViewControllers.first)
         let tabs = try #require(window.toolbar?.items.first { $0.itemIdentifier.rawValue == "DeviceInspector" }?.view as? NSSegmentedControl)
         let categories = try #require(inspectorViews(accessory.view).compactMap { $0 as? NSSegmentedControl }.first)
+        let servicesAccessory = try #require(inspector.topAlignedAccessoryViewControllers.compactMap { $0 as? BackgroundServicesAccessoryViewController }.first)
+        let searchAccessory = try #require(inspector.topAlignedAccessoryViewControllers.compactMap { $0 as? BackgroundServiceSearchAccessoryViewController }.first)
+        #expect(servicesAccessory.isHidden)
+        #expect((0..<tabs.segmentCount).map { tabs.toolTip(forSegment: $0) } == ["Settings", "Reports", "Info", "Background Services"])
         window.setContentSize(NSSize(width: 1200, height: 800))
         split.view.layoutSubtreeIfNeeded()
         #expect(accessory.isHidden)
@@ -1115,8 +1247,8 @@ struct ManagerModelTests {
             #expect(!tabs.isHidden)
             #expect(inspector.topAlignedAccessoryViewControllers.first === accessory)
             #expect(window.frame == frame, "Tab \(index), collapsed \(collapsed): frame \(window.frame), original \(frame)")
-            #expect(controller.deviceInspector.inspection.isVisible == (!collapsed && index >= 2))
-            #expect(model.backgroundServices.isVisible == (!collapsed && index == 1))
+            #expect(controller.deviceInspector.inspection.isVisible == (!collapsed && (index == 1 || index == 2)))
+            #expect(model.backgroundServices.isVisible == (!collapsed && index == 3))
             if let page { #expect(controller.deviceInspector.inspection.page == page) }
         }
 
@@ -1124,24 +1256,24 @@ struct ManagerModelTests {
         try click(0, collapsed: true)
         try click(0, collapsed: false)
         #expect(!inspector.isCollapsed && tabs.selectedSegment == 0)
-        try click(1, collapsed: false)
-        try click(1, collapsed: true)
-        try click(2, collapsed: false, page: .reports)
-        try click(2, collapsed: true, page: .reports)
-        try click(3, collapsed: false, page: .info)
-        try click(3, collapsed: true, page: .info)
-        try click(3, collapsed: false, page: .info)
+        try click(3, collapsed: false)
+        try click(3, collapsed: true)
+        try click(1, collapsed: false, page: .reports)
+        try click(1, collapsed: true, page: .reports)
+        try click(2, collapsed: false, page: .info)
+        try click(2, collapsed: true, page: .info)
+        try click(2, collapsed: false, page: .info)
 
         inspector.isCollapsed = true
         #expect((0..<tabs.segmentCount).allSatisfy { !tabs.isSelected(forSegment: $0) })
         #expect(!controller.deviceInspector.inspection.isVisible)
         inspector.isCollapsed = false
-        #expect(tabs.selectedSegment == 3 && controller.deviceInspector.inspection.isVisible)
+        #expect(tabs.selectedSegment == 2 && controller.deviceInspector.inspection.isVisible)
         try click(0, collapsed: false)
         #expect(accessory.isHidden)
         let device = simulator()
         controller.deviceInspector.update(device: device, isManaging: false, isVisible: true)
-        try click(3, collapsed: false, page: .info)
+        try click(2, collapsed: false, page: .info)
         controller.deviceInspector.update(device: device, isManaging: false, isVisible: true)
         window.layoutIfNeeded()
         #expect(!accessory.isHidden && accessory.view.frame.height > 0)
@@ -1155,8 +1287,16 @@ struct ManagerModelTests {
         categories.selectedSegment = 1
         #expect(NSApp.sendAction(try #require(categories.action), to: categories.target, from: categories))
         #expect(controller.deviceInspector.inspection.content == .applications)
-        try click(2, collapsed: false, page: .reports)
+        try click(1, collapsed: false, page: .reports)
         #expect(accessory.isHidden)
+        model.backgroundServices.setReadingSuspended(true)
+        model.backgroundServices.inspect(device, selectionCount: 1)
+        try click(3, collapsed: false)
+        window.layoutIfNeeded()
+        #expect(!servicesAccessory.isHidden && !searchAccessory.isHidden)
+        #expect(servicesAccessory.view.convert(servicesAccessory.view.bounds, to: nil).maxY <= window.contentLayoutRect.maxY)
+        try click(0, collapsed: false)
+        #expect(servicesAccessory.isHidden && searchAccessory.isHidden)
         controller.stopInspectorReads()
     }
 
@@ -2157,7 +2297,668 @@ struct ManagerModelTests {
         try await manager.quitRenderer(keepingDevicesRunning: true)
     }
 
+    @Test func serviceProfilesMigrateToFileWithoutChangingIDsNamesOrOverrides() throws {
+        let domain = "NeoSimulator.ProfileFileMigration.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        let fileURL = serviceProfileURL(domain)
+        defer {
+            defaults.removePersistentDomain(forName: domain)
+            try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent())
+        }
+        let first = ServiceProfile.Record(id: UUID(), name: "Development", configuration: ServiceConfiguration())
+        let second = ServiceProfile.Record(id: UUID(), name: "Development",
+            configuration: ServiceConfiguration(disabledLabels: ["com.apple.searchd"]))
+        let device = simulator(deviceSet: "/custom-set").id
+        let binding = DeviceServiceProfile(profileID: second.id, base: second.configuration,
+            overrides: ["com.apple.searchd": true], pending: true)
+        let data = try JSONEncoder().encode(LegacyServiceProfiles(profiles: [first, second], devices: [device: binding]))
+        defaults.set(data, forKey: ServiceProfileStore.defaultsKey)
+
+        let store = ServiceProfileStore(fileURL: fileURL, legacyDefaults: defaults)
+        #expect(store.issue == nil)
+        #expect(defaults.data(forKey: ServiceProfileStore.defaultsKey) == nil)
+        #expect(try Data(contentsOf: fileURL) == data)
+        #expect(store.profiles.map(\.id) == [first.id, second.id])
+        #expect(store.profiles.map(\.name) == ["Development", "Development"])
+        #expect(store.binding(for: device) == binding)
+        #expect(store.availableProfiles.first === ServiceProfile.default)
+        defaults.set(Data("obsolete".utf8), forKey: ServiceProfileStore.defaultsKey)
+        let restored = ServiceProfileStore(fileURL: fileURL, legacyDefaults: defaults)
+        #expect(restored.issue == nil && restored.binding(for: device) == binding)
+        #expect(restored.profiles.map(\.id) == [first.id, second.id])
+    }
+
+    @Test(arguments: [false, true])
+    func failedProfileFileMigrationPreservesDataUntilItCanBeRecovered(blockedDirectory: Bool) throws {
+        let domain = "NeoSimulator.ProfileFileFailure.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        let fileURL = serviceProfileURL(domain)
+        let directory = fileURL.deletingLastPathComponent()
+        defer {
+            defaults.removePersistentDomain(forName: domain)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let record = ServiceProfile.Record(id: UUID(), name: "Saved", configuration: ServiceConfiguration())
+        let data = try JSONEncoder().encode(LegacyServiceProfiles(profiles: [record], devices: [:]))
+        defaults.set(data, forKey: ServiceProfileStore.defaultsKey)
+        if blockedDirectory {
+            try Data("not a directory".utf8).write(to: directory)
+        } else {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try Data("corrupt".utf8).write(to: fileURL)
+        }
+        let store = ServiceProfileStore(fileURL: fileURL, legacyDefaults: defaults)
+        #expect(store.issue != nil && store.profiles.isEmpty)
+        do {
+            try store.create(name: "Must Not Replace Saved Data", configuration: ServiceConfiguration())
+            Issue.record("A failed read must prevent overwriting saved profiles")
+        } catch {}
+        #expect(defaults.data(forKey: ServiceProfileStore.defaultsKey) == data)
+        if !blockedDirectory { #expect(try Data(contentsOf: fileURL) == Data("corrupt".utf8)) }
+        try FileManager.default.removeItem(at: directory)
+        store.reload()
+        #expect(store.issue == nil && store.profiles.map(\.id) == [record.id])
+        #expect(defaults.data(forKey: ServiceProfileStore.defaultsKey) == nil)
+    }
+
+    @Test func draggingServiceProfilesPersistsOrderAndKeepsSelectionAndIdentity() async throws {
+        let domain = "NeoSimulator.ProfileOrder.\(UUID().uuidString)"
+        let fileURL = serviceProfileURL(domain)
+        defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
+        let store = ServiceProfileStore(fileURL: fileURL, legacyDefaults: nil)
+        let first = try store.create(name: "First", configuration: ServiceConfiguration())
+        let second = try store.create(name: "Second", configuration: ServiceConfiguration())
+        let third = try store.create(name: "Third", configuration: ServiceConfiguration())
+        let controller = ServiceProfilesSettingsViewController(store: store)
+        controller.model.selectedProfileID = second.id
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 520),
+            styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentViewController = controller
+        defer { window.close() }
+        let table = try #require(inspectorViews(controller.view).compactMap { $0 as? NSTableView }
+            .first { !($0 is NSOutlineView) })
+        #expect(controller.tableView(table, pasteboardWriterForRow: 0) == nil)
+        let writer = try #require(controller.tableView(table, pasteboardWriterForRow: 3))
+        let drag = TestDraggingInfo(item: writer, source: table)
+        defer { drag.draggingPasteboard.releaseGlobally() }
+        #expect(controller.tableView(table, validateDrop: drag, proposedRow: 1, proposedDropOperation: .above) == .move)
+        #expect(!controller.tableView(table, acceptDrop: drag, row: 0, dropOperation: .above))
+        #expect(controller.tableView(table, acceptDrop: drag, row: 1, dropOperation: .above))
+        let selected = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            MainActor.assumeIsolated { table.selectedRow == 3 }
+        }, object: nil)
+        try #require(await XCTWaiter.fulfillment(of: [selected], timeout: 5) == .completed)
+        #expect(store.profiles.map(\.id) == [third.id, first.id, second.id])
+        #expect(controller.model.selectedProfile === second && store.profiles.first === third)
+        let manager = SimulatorManagerModel(source: ManagerModelSource(devices: []), serviceProfiles: store)
+        let inspector = BackgroundServicesInspectorModel(manager: manager, showProfileSettings: { _ in })
+        #expect(inspector.profileChoices.map(\.id) == [ServiceProfile.default.id, third.id, first.id, second.id])
+
+        let downwardWriter = try #require(controller.tableView(table, pasteboardWriterForRow: 2))
+        let downward = TestDraggingInfo(item: downwardWriter, source: table)
+        defer { downward.draggingPasteboard.releaseGlobally() }
+        #expect(controller.tableView(table, acceptDrop: downward, row: 4, dropOperation: .above))
+        let restored = ServiceProfileStore(fileURL: fileURL, legacyDefaults: nil)
+        #expect(restored.profiles.map(\.id) == [third.id, second.id, first.id])
+        #expect(controller.model.selectedProfile === second)
+        drag.draggingSource = nil
+        #expect(controller.tableView(table, validateDrop: drag, proposedRow: 1, proposedDropOperation: .above).isEmpty)
+    }
+
+    @Test func serviceProfilesKeepDeviceOverridesAcrossSwitchesAndRelaunch() throws {
+        let domain = "NeoSimulator.ServiceProfiles.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer {
+            defaults.removePersistentDomain(forName: domain)
+            try? FileManager.default.removeItem(at: serviceProfileURL(domain).deletingLastPathComponent())
+        }
+        let store = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: defaults)
+        let first = simulator(deviceSet: "/first").id
+        let second = simulator(deviceSet: "/second").id
+        let label = "com.apple.searchd"
+        let slim = try store.create(name: "Slim", configuration: ServiceConfiguration(disabledLabels: [label]))
+        let full = try store.create(name: "Full", configuration: ServiceConfiguration())
+        try store.assign(slim.id, to: first, pending: false)
+        try store.assign(slim.id, to: second, pending: false)
+        try store.record([.service(label)], enabled: true, for: first, productFamily: "iPhone")
+        try store.assign(full.id, to: first, pending: false)
+        // A matching base value must not discard an explicit per-device choice.
+        #expect(store.binding(for: first)?.overrides[label] == true)
+        try store.assign(slim.id, to: first, pending: false)
+        let restored = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: defaults)
+        #expect(restored.profiles.map(\.id) == store.profiles.map(\.id))
+        #expect(restored.profiles.map(\.name) == store.profiles.map(\.name))
+        #expect(restored.profiles.map(\.configuration) == store.profiles.map(\.configuration))
+        #expect(restored.binding(for: first)?.configuration.disabledLabels == [])
+        #expect(restored.binding(for: second)?.configuration.disabledLabels == [label])
+        try restored.assign(slim.id, to: first, pending: false, preservingOverrides: false)
+        #expect(restored.binding(for: first)?.configuration.disabledLabels == [label])
+    }
+
+    @Test func editingAndDeletingServiceProfilesDoNotRewriteDeviceIntent() async throws {
+        let domain = "NeoSimulator.ServiceProfileUpdates.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer {
+            defaults.removePersistentDomain(forName: domain)
+            try? FileManager.default.removeItem(at: serviceProfileURL(domain).deletingLastPathComponent())
+        }
+        let store = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: defaults)
+        let device = simulator().id
+        let profile = try store.create(name: "Development", configuration: ServiceConfiguration())
+        try store.assign(profile.id, to: device, pending: false)
+        let settings = ServiceProfilesSettingsModel(store: store)
+        settings.selectedProfileID = profile.id
+        let changes = AsyncStream<Void>.makeStream()
+        var change = changes.stream.makeAsyncIterator()
+        withObservationTracking { _ = profile.configuration } onChange: { changes.continuation.yield() }
+        profile.setServices([.service("com.apple.searchd")], enabled: false)
+        _ = await change.next()
+        #expect(settings.selectedProfile === profile && store.profile(profile.id) === profile)
+        #expect(profile.configuration.disabledLabels == ["com.apple.searchd"])
+        store.reload()
+        #expect(settings.selectedProfile === profile)
+        #expect(store.binding(for: device)?.configuration.disabledLabels == [])
+        try store.assign(profile.id, to: device, pending: false)
+        #expect(store.binding(for: device)?.configuration.disabledLabels == ["com.apple.searchd"])
+        try store.delete(profile.id)
+        #expect(store.binding(for: device) == nil && store.profiles.isEmpty)
+    }
+
+    @Test func defaultProfileTracksChangesAndSavingCreatesANewBase() throws {
+        let domain = "NeoSimulator.DefaultServiceProfile.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer {
+            defaults.removePersistentDomain(forName: domain)
+            try? FileManager.default.removeItem(at: serviceProfileURL(domain).deletingLastPathComponent())
+        }
+        let store = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: defaults)
+        let device = simulator().id
+        let label = "com.apple.searchd"
+        #expect(store.profile(ServiceProfile.default.id)?.configuration.disabledLabels.isEmpty == true)
+        #expect(store.availableProfiles.count == 1 && store.availableProfiles.first === ServiceProfile.default)
+        try store.record([.service(label)], enabled: false, for: device, productFamily: "iPhone")
+        let changed = try #require(store.binding(for: device))
+        #expect(changed.profileID == ServiceProfile.default.id)
+        #expect(changed.overrides == [label: false])
+        let saved = try store.create(name: "Focused", configuration: changed.configuration, assigningTo: device)
+        let restored = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: defaults)
+        #expect(restored.binding(for: device)?.profileID == saved.id)
+        #expect(restored.binding(for: device)?.overrides.isEmpty == true)
+        #expect(restored.binding(for: device)?.configuration.disabledLabels == [label])
+        try restored.assign(ServiceProfile.default.id, to: device, pending: false)
+        #expect(restored.binding(for: device)?.configuration.disabledLabels.isEmpty == true)
+        #expect(restored.binding(for: device)?.overrides.isEmpty == true)
+        #expect(restored.profile(saved.id)?.configuration.disabledLabels == [label])
+    }
+
+    @Test func savingAnExistingProfileOverwritesItAndKeepsOtherDevicesUnchanged() throws {
+        let domain = "NeoSimulator.OverwriteServiceProfile.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer {
+            defaults.removePersistentDomain(forName: domain)
+            try? FileManager.default.removeItem(at: serviceProfileURL(domain).deletingLastPathComponent())
+        }
+        let store = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: defaults)
+        let first = simulator(deviceSet: "/first").id
+        let second = simulator(deviceSet: "/second").id
+        let profile = try store.create(name: "Development", configuration: ServiceConfiguration())
+        try store.assign(profile.id, to: first, pending: false)
+        try store.assign(profile.id, to: second, pending: false)
+        try store.record([.service("com.apple.searchd")], enabled: false, for: first, productFamily: "iPhone")
+        try store.record([.service("com.apple.searchtoold")], enabled: false, for: second, productFamily: "iPhone")
+        let other = try #require(store.binding(for: second))
+        let current = try #require(store.binding(for: first)).configuration
+
+        try store.update(profile.id, configuration: current, assigningTo: first)
+        let restored = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: defaults)
+        #expect(restored.profiles.count == 1)
+        #expect(restored.profile(profile.id)?.name == "Development")
+        #expect(restored.profile(profile.id)?.configuration == current)
+        #expect(restored.binding(for: first)?.profileID == profile.id)
+        #expect(restored.binding(for: first)?.configuration == current)
+        #expect(restored.binding(for: first)?.overrides.isEmpty == true)
+        #expect(restored.binding(for: second) == other)
+
+        try restored.assign(profile.id, to: second, pending: false, preservingOverrides: false)
+        #expect(restored.binding(for: second)?.configuration == current)
+        #expect(restored.binding(for: second)?.overrides.isEmpty == true)
+    }
+
+    @Test func serviceInspectorKeepsExpandedRowsWhileResizingAndSavesThroughItsModel() async throws {
+        let domain = "NeoSimulator.ServiceInspector.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer {
+            defaults.removePersistentDomain(forName: domain)
+            try? FileManager.default.removeItem(at: serviceProfileURL(domain).deletingLastPathComponent())
+        }
+        let device = simulator()
+        let store = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: defaults)
+        let source = ManagerModelSource(devices: [device])
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source, serviceProfiles: store)
+        await manager.refresh()
+        manager.backgroundServices.inspect(device, selectionCount: 1)
+        manager.backgroundServices.setVisible(true)
+        await manager.backgroundServices.finishReading()
+        let settings = SettingsWindowController(model: manager, restart: {},
+            makeSimulator: { throw HostError.operation("Unused") },
+            preferences: SimulatorPreferences(defaults: defaults, creationDefaults: defaults),
+            reportFailure: { _ in Issue.record("Unexpected failure") })
+        defer { settings.window?.close() }
+        let model = BackgroundServicesInspectorModel(manager: manager, showProfileSettings: {
+            settings.settings.selectServiceProfile($0)
+        })
+        let category = try #require(model.categories.first { $0.id == "search" })
+        let item = try #require(category.items.first { $0.label == "com.apple.searchd" })
+        let controller = BackgroundServicesViewController(model: model)
+        controller.isVisible = true
+        let accessory = BackgroundServicesAccessoryViewController(model: model)
+        accessory.isActive = true
+        let pane = NSSplitViewItem(inspectorWithViewController: controller)
+        pane.minimumThickness = 280
+        pane.maximumThickness = 440
+        pane.addTopAlignedAccessoryViewController(accessory)
+        pane.addTopAlignedAccessoryViewController(controller.searchAccessory)
+        let split = NSSplitViewController()
+        split.splitView.isVertical = true
+        split.addSplitViewItem(pane)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 320, height: 600),
+                              styleMask: .titled, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentViewController = split
+        window.setContentSize(NSSize(width: 320, height: 600))
+        defer { window.close() }
+        let view = split.view
+        view.layoutSubtreeIfNeeded()
+        let outline = try #require(controller.children.compactMap { $0 as? BackgroundServiceOutlineController }.first)
+        #expect(pane.topAlignedAccessoryViewControllers.first === accessory)
+        #expect(!accessory.isHidden && accessory.view.frame.height > 0)
+        #expect(accessory.view.window === window)
+        #expect(!accessory.view.isDescendant(of: controller.view))
+        #expect(outline.view.bounds.height > 100)
+        let columnWidth = try #require(outline.outline.tableColumns.first).width
+        outline.outline.expandItem(category)
+        view.layoutSubtreeIfNeeded()
+        #expect(category.isExpanded)
+        #expect(outline.outline.tableColumns.first?.width == columnWidth)
+        let widgets = try #require(model.categories.first { $0.id == "widgets" })
+        widgets.isExpanded = false
+        let search = controller.searchAccessory.searchField
+        search.stringValue = "COM.APPLE.CHRONOD"
+        #expect(NSApp.sendAction(try #require(search.action), to: search.target, from: search))
+        let filtered = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            MainActor.assumeIsolated { outline.outline.numberOfRows == 2 && outline.outline.isItemExpanded(widgets) }
+        }, object: nil)
+        try #require(await XCTWaiter.fulfillment(of: [filtered], timeout: 5) == .completed)
+        #expect(outline.model.sections.flatMap(\.items).map(\.label) == ["com.apple.chronod"])
+        #expect(!widgets.isExpanded && category.isExpanded)
+        search.stringValue = "no-matching-service"
+        #expect(NSApp.sendAction(try #require(search.action), to: search.target, from: search))
+        #expect(outline.model.sections.isEmpty)
+        search.stringValue = ""
+        #expect(NSApp.sendAction(try #require(search.action), to: search.target, from: search))
+        let restored = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            MainActor.assumeIsolated { outline.outline.isItemExpanded(category) && !outline.outline.isItemExpanded(widgets) }
+        }, object: nil)
+        try #require(await XCTWaiter.fulfillment(of: [restored], timeout: 5) == .completed)
+        #expect(outline.outline.tableColumns.first?.width == columnWidth)
+        let row = outline.outline.row(forItem: item)
+        let cell = try #require(outline.outline.view(atColumn: 0, row: row, makeIfNecessary: true))
+        let label = try #require(inspectorViews(cell).compactMap { $0 as? NSTextField }.first { $0.stringValue == item.label })
+        label.selectText(nil)
+        let text = try #require(label.currentEditor())
+        #expect(text.string == item.label && text.selectedRange == NSRange(location: 0, length: item.label.utf16.count))
+        let toggle = try #require(cell.subviews.compactMap { $0 as? NSSwitch }.first)
+        toggle.state = .off
+        let action = try #require(toggle.action)
+        #expect(NSApp.sendAction(action, to: toggle.target, from: toggle))
+        #expect(await events.next() == .changeServices(device.id))
+
+        view.frame.size.width = 440
+        view.layoutSubtreeIfNeeded()
+        view.frame.size.width = 280
+        view.layoutSubtreeIfNeeded()
+        #expect(category.isExpanded && outline.outline.isItemExpanded(category))
+        #expect(!item.isEnabled)
+        #expect(model.canSaveProfile)
+        model.saveProfile()
+        #expect(model.profileEditor != nil)
+        let presented = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            MainActor.assumeIsolated { window.attachedSheet != nil }
+        }, object: nil)
+        try #require(await XCTWaiter.fulfillment(of: [presented], timeout: 5) == .completed)
+        let expandedWidth = try #require(outline.outline.tableColumns.first).width
+        outline.outline.collapseItem(category)
+        view.layoutSubtreeIfNeeded()
+        #expect(outline.outline.tableColumns.first?.width == expandedWidth)
+        await source.completeServiceChange(disabled: [item.label])
+        try await awaitServiceOperations(manager)
+        let editor = try #require(model.profileEditor)
+        editor.name = "Development"
+        #expect(editor.commit())
+        let saved = try #require(store.profiles.first)
+        #expect(saved.configuration.disabledLabels == [item.label])
+        #expect(!model.hasProfileChanges)
+
+        model.setServices([.service(item.label)], enabled: true)
+        #expect(await events.next() == .changeServices(device.id))
+        await source.completeServiceChange(disabled: [])
+        try await awaitServiceOperations(manager)
+        model.saveProfile()
+        #expect(store.profiles.count == 1 && store.profiles.first?.id == saved.id)
+        #expect(store.profiles.first?.configuration.disabledLabels.isEmpty == true)
+        #expect(!model.hasProfileChanges)
+        let binding = store.binding(for: device.id)
+        model.profileEditor = nil
+        model.customizeProfile()
+        #expect(settings.settings.selectedTabViewItemIndex == 3)
+        #expect(settings.settings.serviceProfiles.model.selectedProfile === saved)
+        #expect(store.binding(for: device.id) == binding)
+        #expect(model.selectedProfileID == saved.id)
+        try await manager.prepareForQuit()
+    }
+
+    @Test func deletingAnUnselectedServiceProfileKeepsTheSelection() throws {
+        let domain = "NeoSimulator.DeleteProfile.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer {
+            defaults.removePersistentDomain(forName: domain)
+            try? FileManager.default.removeItem(at: serviceProfileURL(domain).deletingLastPathComponent())
+        }
+        let store = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: defaults)
+        let selected = try store.create(name: "Selected", configuration: ServiceConfiguration())
+        let deleted = try store.create(name: "Deleted", configuration: ServiceConfiguration())
+        let model = ServiceProfilesSettingsModel(store: store)
+        model.selectedProfileID = selected.id
+        model.deleting = deleted
+        model.delete()
+        #expect(model.selectedProfileID == selected.id && store.profile(deleted.id) == nil)
+        model.duplicate(selected)
+        #expect(model.selectedProfileID != selected.id && store.profiles.count == 2)
+        #expect(model.selectedProfile.name == "Profile (1)" && model.editingProfileID == model.selectedProfileID)
+    }
+
+    @Test func addingServiceProfilesFocusesAndSelectsTheirNames() async throws {
+        let domain = "NeoSimulator.ProfileNameEditing.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer {
+            defaults.removePersistentDomain(forName: domain)
+            try? FileManager.default.removeItem(at: serviceProfileURL(domain).deletingLastPathComponent())
+        }
+        let store = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: defaults)
+        let controller = ServiceProfilesSettingsViewController(store: store)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 520),
+                              styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentViewController = controller
+        window.makeKeyAndOrderFront(nil)
+        defer { window.close() }
+        let search = try #require(inspectorViews(controller.splitViewItems[1].viewController.view).compactMap { $0 as? BackgroundServiceSearchField }.first)
+        search.stringValue = "com.apple.searchd"
+        #expect(NSApp.sendAction(try #require(search.action), to: search.target, from: search))
+        controller.model.create()
+        let focused = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            MainActor.assumeIsolated {
+                guard let field = window.firstResponder as? NSTextView else { return false }
+                return field.string == "Profile (1)" && field.selectedRange() == NSRange(location: 0, length: 11)
+            }
+        }, object: nil)
+        try #require(await XCTWaiter.fulfillment(of: [focused], timeout: 5) == .completed)
+        #expect(window.attachedSheet == nil)
+        let first = controller.model.selectedProfile
+        let field = try #require(window.firstResponder as? NSTextView)
+        field.string = "Focused"
+        let table = try #require(inspectorViews(controller.view).compactMap { $0 as? NSTableView }
+            .first { !($0 is NSOutlineView) })
+        window.makeFirstResponder(table)
+        #expect(first.name == "Focused")
+        #expect(search.stringValue == "com.apple.searchd")
+        let details = try #require(controller.splitViewItems[1].viewController.children.compactMap { $0 as? BackgroundServiceOutlineController }.first)
+        let filtered = try #require(details.model.sections.first?.items.first)
+        filtered.setEnabled(false)
+        #expect(first.configuration.disabledLabels == ["com.apple.searchd"])
+        #expect(ServiceProfile.default.configuration.disabledLabels.isEmpty)
+        controller.model.create()
+        #expect(controller.model.selectedProfile.name == "Profile (1)")
+        controller.model.create()
+        #expect(controller.model.selectedProfile.name == "Profile (2)")
+    }
+
+    @Test func selectingDefaultResetsOverridesAndEnablesAllServices() async throws {
+        let domain = "NeoSimulator.ResetDefaultServiceProfile.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer {
+            defaults.removePersistentDomain(forName: domain)
+            try? FileManager.default.removeItem(at: serviceProfileURL(domain).deletingLastPathComponent())
+        }
+        let store = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: defaults)
+        let device = simulator()
+        let labels: Set<String> = ["com.apple.searchd", "com.apple.searchtoold"]
+        let profile = try store.create(name: "Search Off", configuration: ServiceConfiguration(disabledLabels: labels))
+        try store.assign(profile.id, to: device.id, pending: false)
+        try store.record([.service("com.apple.searchd")], enabled: true, for: device.id, productFamily: "iPhone")
+        let source = ManagerModelSource(devices: [device])
+        await source.holdServiceReads()
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source, serviceProfiles: store)
+        await manager.refresh()
+        manager.backgroundServices.inspect(device, selectionCount: 1)
+        manager.selectServiceProfile(ServiceProfile.default.id, for: device.id)
+        #expect(await events.next() == .readServices(device.id))
+        await source.completeServiceRead(disabled: labels)
+        #expect(await events.next() == .changeServices(device.id))
+        await source.completeServiceChange(disabled: [])
+        try await awaitServiceOperations(manager)
+        #expect(store.binding(for: device.id)?.profileID == ServiceProfile.default.id)
+        #expect(store.binding(for: device.id)?.overrides.isEmpty == true)
+        #expect(manager.backgroundServices.configuration?.disabledLabels.isEmpty == true)
+        #expect(await source.serviceChanges == [.init(targets: labels.sorted().map { .service($0) }, enabled: true)])
+        try await manager.prepareForQuit()
+    }
+
+    @Test func profileEditsUseTheSameSharedServiceAndPlatformRulesAsLiveControls() throws {
+        let storeCategory = try #require(SimulatorBackgroundServiceCategory.all.first { $0.id == "store" })
+        let shared = "com.apple.amsaccountsd"
+        var configuration = ServiceConfiguration()
+        let affected = configuration.set([.category(storeCategory.id)], enabled: false)
+        #expect(!affected.contains(shared))
+        #expect(!configuration.disabledLabels.contains(shared))
+        configuration.set([.service(shared)], enabled: false)
+        #expect(configuration.disabledLabels.contains(shared))
+        #expect(configuration.set([.service("com.apple.homed")], enabled: false, productFamily: "Apple Watch").isEmpty)
+        #expect(!configuration.disabledLabels.contains("com.apple.homed"))
+    }
+
+    @Test func profileApplyPreservesOverridesAndReportsUnappliedStateAfterFailure() async throws {
+        let domain = "NeoSimulator.ServiceProfileApply.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer {
+            defaults.removePersistentDomain(forName: domain)
+            try? FileManager.default.removeItem(at: serviceProfileURL(domain).deletingLastPathComponent())
+        }
+        let store = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: defaults)
+        let device = simulator()
+        let label = "com.apple.searchd"
+        let other = "com.apple.searchtoold"
+        let profile = try store.create(name: "Search Off", configuration: ServiceConfiguration(disabledLabels: [label, other]))
+        try store.assign(profile.id, to: device.id, pending: false)
+        try store.record([.service(label)], enabled: true, for: device.id, productFamily: "iPhone")
+        let source = ManagerModelSource(devices: [device])
+        await source.holdServiceReads()
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source, serviceProfiles: store)
+        var failure: (any Error)?
+        manager.onError = { failure = $0 }
+        await manager.refresh()
+        manager.backgroundServices.inspect(device, selectionCount: 1)
+        manager.selectServiceProfile(profile.id, for: device.id)
+        #expect(await events.next() == .readServices(device.id))
+        await source.completeServiceRead(disabled: [])
+        #expect(await events.next() == .changeServices(device.id))
+        await source.failServiceChange(disabled: [other], loaded: [other])
+        try await awaitServiceOperations(manager)
+        #expect(failure != nil)
+        #expect(store.binding(for: device.id)?.overrides[label] == true)
+        #expect(manager.backgroundServices.configuration?.disabledLabels == [other])
+        #expect(await source.serviceChanges == [.init(targets: [.service(other)], enabled: false)])
+        manager.revertServiceProfile(for: device.id)
+        #expect(await events.next() == .readServices(device.id))
+        await source.completeServiceRead(disabled: [other], loaded: [other])
+        #expect(await events.next() == .changeServices(device.id))
+        await source.completeServiceChange(disabled: [label, other])
+        try await awaitServiceOperations(manager)
+        #expect(store.binding(for: device.id)?.overrides.isEmpty == true)
+        #expect(await source.serviceChanges.last == .init(targets: [label, other].sorted().map { .service($0) }, enabled: false))
+        #expect(manager.backgroundServices.configuration?.disabledLabels == [label, other])
+        try await manager.prepareForQuit()
+    }
+
+    @Test func serviceProfileFollowsSimulatorStartAndRemoval() async throws {
+        let domain = "NeoSimulator.PendingServiceProfile.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer {
+            defaults.removePersistentDomain(forName: domain)
+            try? FileManager.default.removeItem(at: serviceProfileURL(domain).deletingLastPathComponent())
+        }
+        let store = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: defaults)
+        let stopped = simulator(state: "Shutdown")
+        let source = ManagerModelSource(devices: [stopped])
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source, serviceProfiles: store)
+        let profile = try store.create(name: "Search Off", configuration: ServiceConfiguration(disabledLabels: ["com.apple.searchd"]))
+        await manager.refresh()
+        manager.selectServiceProfile(profile.id, for: stopped.id)
+        #expect(store.binding(for: stopped.id)?.pendingApplication == true)
+        #expect(await source.serviceChanges.isEmpty)
+        await source.setDevices([simulator()])
+        manager.manage(.start, devices: [stopped])
+        #expect(await events.next() == .manage(.start, [stopped.id]))
+        #expect(await events.next() == .changeServices(stopped.id))
+        await source.completeServiceChange(disabled: ["com.apple.searchd"])
+        try await awaitServiceOperations(manager)
+        #expect(store.binding(for: stopped.id)?.pendingApplication == false)
+        try store.update(profile.id, name: profile.name, configuration: ServiceConfiguration())
+        await manager.refresh()
+        #expect(await source.serviceChanges.count == 1)
+        #expect(store.binding(for: stopped.id)?.configuration.disabledLabels == ["com.apple.searchd"])
+        manager.manage(.remove, devices: manager.inventory)
+        #expect(await events.next() == .manage(.remove, [stopped.id]))
+        try await awaitServiceOperations(manager)
+        #expect(store.binding(for: stopped.id) == nil)
+        try await manager.prepareForQuit()
+    }
+
+    @Test func aPendingProfileWriteFailureReleasesTheAcceptedChange() async throws {
+        let domain = "NeoSimulator.PendingProfileWriteFailure.\(UUID().uuidString)"
+        let fileURL = serviceProfileURL(domain)
+        defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
+        let store = ServiceProfileStore(fileURL: fileURL, legacyDefaults: nil)
+        let stopped = simulator(state: "Shutdown")
+        let source = ManagerModelSource(devices: [stopped])
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source, serviceProfiles: store)
+        let failures = AsyncStream<Void>.makeStream()
+        var errors = failures.stream.makeAsyncIterator()
+        manager.onError = { _ in failures.continuation.yield(()) }
+        let profile = try store.create(name: "Search Off", configuration: ServiceConfiguration(disabledLabels: ["com.apple.searchd"]))
+        await manager.refresh()
+        manager.selectServiceProfile(profile.id, for: stopped.id)
+        try FileManager.default.removeItem(at: fileURL)
+        try FileManager.default.createDirectory(at: fileURL, withIntermediateDirectories: false)
+
+        await source.setDevices([simulator()])
+        manager.manage(.start, devices: [stopped])
+        #expect(await events.next() == .manage(.start, [stopped.id]))
+        #expect(await errors.next() != nil)
+        #expect(manager.backgroundServices.changingDeviceIDs.isEmpty)
+        try await awaitServiceOperations(manager)
+        #expect(store.binding(for: stopped.id)?.pendingApplication == true)
+
+        try FileManager.default.removeItem(at: fileURL)
+        await manager.refresh()
+        #expect(await events.next() == .changeServices(stopped.id))
+        await source.completeServiceChange(disabled: ["com.apple.searchd"])
+        try await awaitServiceOperations(manager)
+        #expect(store.binding(for: stopped.id)?.pendingApplication == false)
+        try await manager.prepareForQuit()
+    }
+
+    private func awaitServiceOperations(_ manager: SimulatorManagerModel) async throws {
+        let idle = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            MainActor.assumeIsolated {
+                !manager.isBusy && manager.managingDeviceIDs.isEmpty && manager.backgroundServices.changingDeviceIDs.isEmpty
+            }
+        }, object: nil)
+        try #require(await XCTWaiter.fulfillment(of: [idle], timeout: 5) == .completed)
+    }
+
+    @Test func serviceOverridesUseTheInspectedStateForSharedServices() async throws {
+        let domain = "NeoSimulator.LiveServiceOverrides.\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(at: serviceProfileURL(domain).deletingLastPathComponent()) }
+        let store = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: nil)
+        let device = simulator()
+        let source = ManagerModelSource(devices: [device])
+        await source.holdServiceReads()
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source, serviceProfiles: store)
+        await manager.refresh()
+        manager.backgroundServices.inspect(device, selectionCount: 1)
+        manager.backgroundServices.setVisible(true)
+        #expect(await events.next() == .readServices(device.id))
+        await source.completeServiceRead(disabled: ["com.apple.bird"])
+        await manager.backgroundServices.finishReading()
+
+        manager.setBackgroundServices([.category("store")], enabled: false, for: device.id)
+        #expect(await events.next() == .changeServices(device.id))
+        await source.completeServiceChange(disabled: ["com.apple.bird", "com.apple.amsaccountsd"])
+        try await awaitServiceOperations(manager)
+        let profile = try store.create(name: "Development", configuration: ServiceConfiguration())
+        let binding = try store.assign(profile.id, to: device.id, pending: false)
+        #expect(binding.configuration.disabledLabels.contains("com.apple.amsaccountsd"))
+        try await manager.prepareForQuit()
+    }
+
+    @Test func aServiceReadFailureReplacesCachedValuesUntilRetrySucceeds() async throws {
+        let domain = "NeoSimulator.ServiceReadFailure.\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(at: serviceProfileURL(domain).deletingLastPathComponent()) }
+        let store = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: nil)
+        let device = simulator()
+        let source = ManagerModelSource(devices: [device])
+        await source.holdServiceReads()
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source, serviceProfiles: store)
+        let inspector = BackgroundServicesInspectorModel(manager: manager, showProfileSettings: { _ in })
+        await manager.refresh()
+        manager.backgroundServices.inspect(device, selectionCount: 1)
+        manager.backgroundServices.setVisible(true)
+        #expect(await events.next() == .readServices(device.id))
+        await source.completeServiceRead(disabled: ["com.apple.searchd"])
+        await manager.backgroundServices.finishReading()
+        #expect(inspector.content == .simulator(.services))
+
+        manager.backgroundServices.requestRefresh()
+        #expect(await events.next() == .readServices(device.id))
+        await source.failServiceRead()
+        await manager.backgroundServices.finishReading()
+        #expect(inspector.content == .simulator(.failure(ManagerModelSource.Failure.unavailable.localizedDescription)))
+        #expect(!inspector.canSaveProfile)
+
+        inspector.requestRefresh()
+        #expect(await events.next() == .readServices(device.id))
+        await source.completeServiceRead(disabled: [])
+        await manager.backgroundServices.finishReading()
+        #expect(inspector.content == .simulator(.services))
+        try await manager.prepareForQuit()
+    }
+
     @Test func backgroundServiceChangesRunInOrderAndQuitWaitsForThem() async throws {
+        let domain = "NeoSimulator.ServiceQueue.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer {
+            defaults.removePersistentDomain(forName: domain)
+            try? FileManager.default.removeItem(at: serviceProfileURL(domain).deletingLastPathComponent())
+        }
         let device = simulator()
         let source = ManagerModelSource(devices: [device])
         await source.holdServiceReads()
@@ -2166,7 +2967,7 @@ struct ManagerModelTests {
         let labels = Set(search.services.map(\.label))
         let reported = AsyncStream<(any Error, SimulatorBackgroundServiceState?)>.makeStream()
         var errors = reported.stream.makeAsyncIterator()
-        let manager = SimulatorManagerModel(source: source)
+        let manager = SimulatorManagerModel(source: source, serviceProfiles: ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: defaults))
         manager.onError = { reported.continuation.yield(($0, manager.backgroundServices.services?.state(of: search))) }
         await manager.refresh()
         manager.backgroundServices.setVisible(true)
@@ -2201,15 +3002,24 @@ struct ManagerModelTests {
         #expect(await source.serviceChanges == [.init(targets: [.category("search")], enabled: false),
                                                 .init(targets: [.service("com.apple.searchd")], enabled: true)])
         #expect(manager.backgroundServices.outcome?.notStartedLabels == ["com.apple.searchd"])
+        let inspector = BackgroundServicesInspectorModel(manager: manager, showProfileSettings: { _ in })
+        let item = try #require(inspector.categories.flatMap(\.items).first { $0.label == "com.apple.searchd" })
+        #expect(item.help.contains("Starts after the simulator restarts."))
     }
 
     @Test func backgroundServiceResultsStayWithTheirDevice() async throws {
+        let domain = "NeoSimulator.ServiceResults.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer {
+            defaults.removePersistentDomain(forName: domain)
+            try? FileManager.default.removeItem(at: serviceProfileURL(domain).deletingLastPathComponent())
+        }
         let first = simulator(deviceSet: "/first")
         let second = simulator(deviceSet: "/second")
         let source = ManagerModelSource(devices: [first, second])
         await source.holdServiceReads()
         var events = source.events.makeAsyncIterator()
-        let manager = SimulatorManagerModel(source: source)
+        let manager = SimulatorManagerModel(source: source, serviceProfiles: ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: defaults))
         await manager.refresh()
         let model = manager.backgroundServices
         model.inspect(first, selectionCount: 1)
@@ -2490,7 +3300,7 @@ struct ManagerModelTests {
         let suite = "NeoSimulatorTests.PairedInfo.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
-        let controller = NSHostingController(rootView: DeviceInformationView(
+        let controller = NSHostingController(rootView: DeviceInformationView(model: DeviceInformationModel(
             manager: manager, inspection: inspection, visibility: DeviceInfoVisibility(defaults: defaults),
             pairingMenu: { SimulatorPairingMenu.make(for: $0, model: manager, target: target,
                                                     action: #selector(NSApplication.terminate(_:))) },
@@ -2499,7 +3309,7 @@ struct ManagerModelTests {
                 menu.addItem(withTitle: "View Screen", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")
                 return menu
             },
-            unpair: { _ in Issue.record("Unpaired without a user action") }))
+            unpair: { _ in Issue.record("Unpaired without a user action") })))
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 280, height: 800),
                               styleMask: .titled, backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
@@ -2699,6 +3509,16 @@ struct ManagerModelTests {
         #expect(restored.isVisible(future) == !hidesHardware && restored.isVisible(sibling) == !hidesHardware)
     }
 
+    private struct LegacyServiceProfiles: Encodable {
+        let profiles: [ServiceProfile.Record]
+        let devices: [DeviceInventoryID: DeviceServiceProfile]
+    }
+
+    private func serviceProfileURL(_ domain: String) -> URL {
+        URL.temporaryDirectory.appending(path: domain, directoryHint: .isDirectory)
+            .appending(path: "ServiceProfiles.json")
+    }
+
     private func simulator(deviceSet: String? = nil, name: String = "Test Phone", state: String = "Booted",
                            lastUsedAt: Date? = nil) -> InventoryDevice {
         .simulator(SimulatorHostDevice(identifier: "same-udid", name: name, descriptiveName: name,
@@ -2873,10 +3693,15 @@ actor ManagerModelSource: SimulatorManagerSource {
             continuation.yield(.readServices(device.id))
         }
     }
-    func completeServiceRead(disabled: Set<String>) {
+    func completeServiceRead(disabled: Set<String>, loaded: Set<String> = []) {
         let waiting = serviceRead
         serviceRead = nil
-        waiting?.resume(returning: SimulatorBackgroundServices(disabled: disabled, loaded: [], productFamily: "iPhone"))
+        waiting?.resume(returning: SimulatorBackgroundServices(disabled: disabled, loaded: loaded, productFamily: "iPhone"))
+    }
+    func failServiceRead() {
+        let waiting = serviceRead
+        serviceRead = nil
+        waiting?.resume(throwing: Failure.unavailable)
     }
     func setBackgroundServices(_ targets: [SimulatorBackgroundServiceTarget], enabled: Bool,
                                for device: InventoryDevice) async throws -> SimulatorBackgroundServicesUpdate {
@@ -2893,11 +3718,11 @@ actor ManagerModelSource: SimulatorManagerSource {
             services: SimulatorBackgroundServices(disabled: disabled, loaded: [], productFamily: "iPhone"),
             stillEnabledLabels: [], notStartedLabels: notStarted))
     }
-    func failServiceChange(disabled: Set<String>) {
+    func failServiceChange(disabled: Set<String>, loaded: Set<String> = []) {
         let waiting = serviceChange
         serviceChange = nil
         waiting?.resume(throwing: SimulatorBackgroundServicesUpdateFailure(
-            services: SimulatorBackgroundServices(disabled: disabled, loaded: [], productFamily: "iPhone"),
+            services: SimulatorBackgroundServices(disabled: disabled, loaded: loaded, productFamily: "iPhone"),
             underlyingError: SimulatorHostFailure(Failure.unavailable)))
     }
     func quitRenderer(keepingDevicesRunning: Bool?) { sessionEvents.append("quit"); quitCount += 1; continuation.yield(.quit) }

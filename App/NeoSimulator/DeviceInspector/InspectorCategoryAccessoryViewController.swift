@@ -34,10 +34,10 @@ private struct InspectorCategoryPreview: NSViewControllerRepresentable {
             identifier: "A1840638-6397-40C7-8BB8-B8223DE937CC", name: "iPad Pro 11-inch (M5)",
             descriptiveName: "iPad Pro 11-inch (M5)", runtimeIdentifier: "preview",
             runtimeName: "iPadOS 27.2", productFamily: "iPad", state: "Booted"))
-        let info = NSHostingController(rootView: DeviceInformationView(
+        let info = NSHostingController(rootView: DeviceInformationView(model: DeviceInformationModel(
             manager: SettingsPreview.manager(), inspection: inspection,
             visibility: DeviceInfoVisibility(defaults: UserDefaults(suiteName: "dev.lynnswap.NeoSimulator.InspectorPreview")!),
-            pairingMenu: { _ in NSMenu() }, deviceMenu: { _ in NSMenu() }, unpair: { _ in }))
+            pairingMenu: { _ in NSMenu() }, deviceMenu: { _ in NSMenu() }, unpair: { _ in })))
         info.sizingOptions = []
         let accessory = InspectorCategoryAccessoryViewController()
         accessory.picker.selectedSegment = 0

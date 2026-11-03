@@ -1,5 +1,6 @@
 import AppKit
 import Observation
+import ObservationBridge
 @_spi(NeoSimulator) import XcodeSimulatorHost
 
 /// The manager's center pane, which shows the selected device's live screen or its preview.
@@ -16,7 +17,8 @@ final class DeviceScreenViewController: NSViewController {
     let canvasAccessory = DeviceCanvasAccessoryViewController()
     /// The screen in `liveScreenContainer`, until the pane shows the preview again.
     private var displayedScreen: DeviceScreen?
-    private var displayedScreenObservation = 0
+    private var displayedScreenObservation: PortableObservationTracking.Token?
+    private var activityObservation: PortableObservationTracking.Token?
     /// The displayed screen while it is still open; a closed or replaced screen no longer counts as live.
     var liveScreen: DeviceScreen? {
         guard let displayedScreen, screens.screen(for: displayedScreen.id) === displayedScreen else { return nil }
@@ -141,9 +143,7 @@ final class DeviceScreenViewController: NSViewController {
     }
 
     private func observeActivity() {
-        withObservationTracking { updateActivity() } onChange: { [weak self] in
-            Task { @MainActor in self?.observeActivity() }
-        }
+        activityObservation = withPortableContinuousObservation { [weak self] _ in self?.updateActivity() }
     }
 
     private func updateActivity() {
@@ -225,7 +225,8 @@ final class DeviceScreenViewController: NSViewController {
     func showDevicePreview(ifDisplaying identifier: DeviceInventoryID) {
         guard displayedScreen?.id == identifier else { return }
         displayedScreen = nil
-        displayedScreenObservation += 1
+        displayedScreenObservation?.cancel()
+        displayedScreenObservation = nil
         canvasAccessory.setControls(nil)
         liveScreenContainer.view.isHidden = true
         previewStack.isHidden = false
@@ -235,20 +236,19 @@ final class DeviceScreenViewController: NSViewController {
 
     /// Fits the accessory to the screen's updated controls, and shows the preview once the screen closes.
     private func observeDisplayedScreen() {
-        displayedScreenObservation += 1
-        let observation = displayedScreenObservation
+        displayedScreenObservation?.cancel()
         guard let screen = displayedScreen else { return }
-        let isOpen = withObservationTracking {
-            _ = screen.canvasControlsUpdates
-            return screens.screen(for: screen.id) === screen
-        } onChange: { [weak self] in
-            Task { @MainActor in
-                guard let self, self.displayedScreenObservation == observation else { return }
-                self.canvasAccessory.refresh()
-                self.observeDisplayedScreen()
-            }
+        guard screens.screen(for: screen.id) === screen else {
+            showDevicePreview(ifDisplaying: screen.id)
+            return
         }
-        if !isOpen { showDevicePreview(ifDisplaying: screen.id) }
+        displayedScreenObservation = withPortableContinuousObservation { [weak self, screen, screens] _ in
+            _ = screen.canvasControlsUpdates
+            let isOpen = screens.screen(for: screen.id) === screen
+            guard let self else { return }
+            canvasAccessory.refresh()
+            if !isOpen { showDevicePreview(ifDisplaying: screen.id) }
+        }
     }
 
     // MARK: Screen moves

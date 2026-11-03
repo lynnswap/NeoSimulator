@@ -3,7 +3,7 @@ import MachO.dyld.utils
 import XcodeSimulatorHost
 
 /// Presents known device information without replacing the inventory or inspector state.
-struct DeviceInformation {
+struct DeviceInformation: Equatable {
     enum Group: String, CaseIterable, Identifiable {
         case essential, device, hardware, connection, configuration
         var id: Self { self }
@@ -18,7 +18,7 @@ struct DeviceInformation {
         }
     }
 
-    struct Field: Identifiable {
+    struct Field: Identifiable, Hashable {
         let id: [String]
         let title: String
         let value: String

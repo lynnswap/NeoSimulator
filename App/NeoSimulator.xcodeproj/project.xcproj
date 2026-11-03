@@ -18,6 +18,18 @@
         "version": "0.16.2",
       },
     }, {
+      "kind": "remote",
+      "repository": "https://github.com/lynnswap/ObservationBridge.git",
+      "version": {
+        "version": "0.15.7",
+      },
+    }, {
+      "kind": "remote",
+      "repository": "https://github.com/lynnswap/LicenseList",
+      "version": {
+        "revision": "ed35df2d3b90de2e5ba22ee3a808c4e799c1adf0",
+      },
+    }, {
       "kind": "local",
       "path": "..",
     },
@@ -279,6 +291,12 @@
                 "NeoSimulatorRenderer/compile-sources",
                 "NeoSimulatorHostTests/compile-sources",
               ],
+            }, {
+              "path": "DeviceBrowserState.swift",
+              "target-membership": [
+                "NeoSimulator/compile-sources",
+                "NeoSimulatorHostTests/compile-sources",
+              ],
             },
           ],
         }, {
@@ -310,7 +328,61 @@
                 "NeoSimulatorHostTests/compile-sources",
               ],
             }, {
-              "path": "ManagerBackgroundServicesView.swift",
+              "path": "BackgroundServicesViewController.swift",
+              "target-membership": [
+                "NeoSimulator/compile-sources",
+                "NeoSimulatorHostTests/compile-sources",
+              ],
+            }, {
+              "path": "ServiceProfileStore.swift",
+              "target-membership": [
+                "NeoSimulator/compile-sources",
+                "NeoSimulatorHostTests/compile-sources",
+              ],
+            }, {
+              "path": "BackgroundServiceOutlineController.swift",
+              "target-membership": [
+                "NeoSimulator/compile-sources",
+                "NeoSimulatorHostTests/compile-sources",
+              ],
+            }, {
+              "path": "BackgroundServicesPreview.swift",
+              "target-membership": [
+                "NeoSimulator/compile-sources",
+                "NeoSimulatorHostTests/compile-sources",
+              ],
+            }, {
+              "path": "DeviceSettingsPanelModel.swift",
+              "target-membership": [
+                "NeoSimulator/compile-sources",
+                "NeoSimulatorHostTests/compile-sources",
+              ],
+            }, {
+              "path": "BackgroundServicesInspectorModel.swift",
+              "target-membership": [
+                "NeoSimulator/compile-sources",
+                "NeoSimulatorHostTests/compile-sources",
+              ],
+            }, {
+              "path": "BackgroundServiceCategoryModel.swift",
+              "target-membership": [
+                "NeoSimulator/compile-sources",
+                "NeoSimulatorHostTests/compile-sources",
+              ],
+            }, {
+              "path": "BackgroundServicesAccessoryViewController.swift",
+              "target-membership": [
+                "NeoSimulator/compile-sources",
+                "NeoSimulatorHostTests/compile-sources",
+              ],
+            }, {
+              "path": "BackgroundServiceListModel.swift",
+              "target-membership": [
+                "NeoSimulator/compile-sources",
+                "NeoSimulatorHostTests/compile-sources",
+              ],
+            }, {
+              "path": "BackgroundServiceSearchAccessoryViewController.swift",
               "target-membership": [
                 "NeoSimulator/compile-sources",
                 "NeoSimulatorHostTests/compile-sources",
@@ -377,6 +449,12 @@
               ],
             }, {
               "path": "InspectorCategoryAccessoryViewController.swift",
+              "target-membership": [
+                "NeoSimulator/compile-sources",
+                "NeoSimulatorHostTests/compile-sources",
+              ],
+            }, {
+              "path": "DeviceInformationModel.swift",
               "target-membership": [
                 "NeoSimulator/compile-sources",
                 "NeoSimulatorHostTests/compile-sources",
@@ -456,6 +534,48 @@
               ],
             }, {
               "path": "DevicesSettingsViewController.swift",
+              "target-membership": [
+                "NeoSimulator/compile-sources",
+                "NeoSimulatorHostTests/compile-sources",
+              ],
+            }, {
+              "path": "ServiceProfilesSettingsViewController.swift",
+              "target-membership": [
+                "NeoSimulator/compile-sources",
+                "NeoSimulatorHostTests/compile-sources",
+              ],
+            }, {
+              "path": "GeneralSettingsModel.swift",
+              "target-membership": [
+                "NeoSimulator/compile-sources",
+                "NeoSimulatorHostTests/compile-sources",
+              ],
+            }, {
+              "path": "ServiceProfileEditorController.swift",
+              "target-membership": [
+                "NeoSimulator/compile-sources",
+                "NeoSimulatorHostTests/compile-sources",
+              ],
+            }, {
+              "path": "ServiceProfileEditorModel.swift",
+              "target-membership": [
+                "NeoSimulator/compile-sources",
+                "NeoSimulatorHostTests/compile-sources",
+              ],
+            }, {
+              "path": "ServiceProfilesSettingsModel.swift",
+              "target-membership": [
+                "NeoSimulator/compile-sources",
+                "NeoSimulatorHostTests/compile-sources",
+              ],
+            }, {
+              "path": "LicensesSettingsModel.swift",
+              "target-membership": [
+                "NeoSimulator/compile-sources",
+                "NeoSimulatorHostTests/compile-sources",
+              ],
+            }, {
+              "path": "LicensesSettingsViewController.swift",
               "target-membership": [
                 "NeoSimulator/compile-sources",
                 "NeoSimulatorHostTests/compile-sources",
@@ -832,6 +952,7 @@
       "target-membership": [
         "NeoSimulator/resources",
         "NeoSimulatorRenderer/resources",
+        "NeoSimulatorHostTests/resources",
       ],
     },
   ],
@@ -899,6 +1020,14 @@
           "package": "ABIBridge",
           "product-name": "ABIBridge",
           "build-phase": { "build-phase": "frameworks" },
+        }, {
+          "package": "LicenseList",
+          "product-name": "LicenseList",
+          "build-phase": { "build-phase": "frameworks" },
+        }, {
+          "package": "ObservationBridge",
+          "product-name": "ObservationBridge",
+          "build-phase": { "build-phase": "frameworks" },
         },
       ],
       "build-settings": {
@@ -944,6 +1073,10 @@
           "package": "ABIBridge",
           "product-name": "ABIBridge",
           "build-phase": { "build-phase": "frameworks" },
+        }, {
+          "package": "ObservationBridge",
+          "product-name": "ObservationBridge",
+          "build-phase": { "build-phase": "frameworks" },
         },
       ],
       "build-settings": {
@@ -984,6 +1117,14 @@
         }, {
           "package": "ABIBridge",
           "product-name": "ABIBridge",
+          "build-phase": { "build-phase": "frameworks" },
+        }, {
+          "package": "LicenseList",
+          "product-name": "LicenseList",
+          "build-phase": { "build-phase": "frameworks" },
+        }, {
+          "package": "ObservationBridge",
+          "product-name": "ObservationBridge",
           "build-phase": { "build-phase": "frameworks" },
         },
       ],

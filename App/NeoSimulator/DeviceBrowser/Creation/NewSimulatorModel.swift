@@ -27,6 +27,7 @@ final class NewSimulatorModel {
     private(set) var watchType: String?
     private(set) var watchRuntime: String?
     private(set) var availableWatchRuntimes: [SimulatorCatalog.Runtime] = []
+    private var runtimeNames: [String: String] = [:]
     private(set) var addsWatch = false
     private(set) var showsWatchPage = false
     private(set) var isCreating = false
@@ -36,6 +37,17 @@ final class NewSimulatorModel {
     @ObservationIgnored var onFailure: ((Error) -> Void)?
     var onCancel: (() -> Void)?
     @ObservationIgnored private var creation: Task<Void, Never>?
+    @ObservationIgnored private var runtimeNameLoading: Task<Void, Never>?
+
+    var showsError: Bool {
+        get { error != nil }
+        set { if !newValue { error = nil } }
+    }
+
+    func startLoadingRuntimeNames() {
+        guard runtimeNameLoading == nil else { return }
+        runtimeNameLoading = Task { [weak self] in await self?.loadRuntimeNames() }
+    }
 
     init(catalog: SimulatorCatalog, pairingWith existingDevice: ExistingDevice? = nil,
          create: @escaping Create, pair: @escaping Pair, preferences: SimulatorPreferences? = nil) {
@@ -96,6 +108,22 @@ final class NewSimulatorModel {
             return !createsPhone || deviceTypes.contains { simulatorRuntimeSupports(runtime.identifier, type: $0.identifier) }
         }
     }
+    func runtimeName(_ runtime: SimulatorCatalog.Runtime) -> String {
+        guard let build = runtime.buildVersion else { return runtime.name }
+        return "\(runtimeNames[build] ?? runtime.name) (\(build))"
+    }
+
+    func loadRuntimeNames(using load: @Sendable () async throws -> Data = {
+        let url = URL(string: "https://devimages-cdn.apple.com/downloads/xcode/simulators/index2.dvtdownloadableindex")!
+        return try await URLSession.shared.data(from: url).0
+    }) async {
+        guard catalog.runtimes.contains(where: { $0.buildVersion != nil }),
+              let data = try? await load(),
+              let names = try? await SimulatorCatalog.RuntimeNames.decode(data),
+              !Task.isCancelled else { return }
+        runtimeNames = names
+    }
+
     var watchTypes: [SimulatorCatalog.DeviceType] {
         catalog.deviceTypes.filter { type in
             type.productFamily == 4 && (existingDevice == nil || catalog.runtimes.contains {

@@ -4077,7 +4077,7 @@ struct InputFocusTests {
         menus.updateVisibility(in: device, for: controller.session.capabilities)
         let visible = device.items.filter { !$0.isHidden }
         #expect(visible.map { $0.isSeparatorItem ? "-" : $0.title } ==
-            ["Restart", "Erase All Content and Settings…", "Shut Down", "-", "Home", "Re-Center Open Apps", "Lock",
+            ["Restart", "Shut Down", "-", "Erase All Content and Settings…", "-", "Home", "Re-Center Open Apps", "Lock",
              "Shake", "App Switcher", "-", "Trigger Screenshot"])
         controller.perform(.rotateRight)
         #expect(!controller.session.isBusy)
@@ -4144,7 +4144,7 @@ struct InputFocusTests {
                                                                      supportsFeature: { _ in false }))
             return menu.items.filter { !$0.isHidden }.map { $0.isSeparatorItem ? "-" : $0.title }
         }
-        let commands = ["Restart", "Erase All Content and Settings…", "Shut Down", "-", "Home", "Re-Center Open Apps"]
+        let commands = ["Restart", "Shut Down", "-", "Erase All Content and Settings…", "-", "Home", "Re-Center Open Apps"]
         #expect(try visible("Device", .watch) == commands + ["Lock", "Side Button"])
         #expect(try visible("Device", .tv) == commands)
         #expect(try visible("Device", .vision) == commands + [
@@ -4171,7 +4171,7 @@ struct InputFocusTests {
         let gestures = DeviceCapabilities.watchGestures, fall = DeviceCapabilities.fallDetection
         // Wrist Flick requires watchOS 12.
         #expect(try visible("Device", [gestures, DeviceCapabilities.actionButtonSting, DeviceCapabilities.siri])
-            == ["Restart", "Erase All Content and Settings…", "Shut Down", "-", "Home", "Re-Center Open Apps", "Lock",
+            == ["Restart", "Shut Down", "-", "Erase All Content and Settings…", "-", "Home", "Re-Center Open Apps", "Lock",
                 "Side Button", "Action Button", "Gestures", "Siri"])
         #expect(try visible("Device", submenu: "Gestures", [gestures]) == ["Double Tap", "Wrist Flick"])
         #expect(try visible("Device", submenu: "Gestures", runtime: 0x0B_06_00, [gestures]) == ["Double Tap"])
@@ -6322,7 +6322,12 @@ struct InputFocusTests {
         controller.showWindow(nil)
         let window = try #require(controller.window)
         controller.perform(.eraseAllContentAndSettings)
-        window.endSheet(try #require(window.attachedSheet), returnCode: .alertSecondButtonReturn)
+        let sheet = try #require(window.attachedSheet)
+        func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+        let buttons = descendants(try #require(sheet.contentView)).compactMap { $0 as? NSButton }
+        #expect(try #require(buttons.first { $0.title == "Erase" }).hasDestructiveAction)
+        #expect(try #require(buttons.first { $0.title == "Cancel" }).keyEquivalent == "\u{1b}")
+        window.endSheet(sheet, returnCode: .alertSecondButtonReturn)
         #expect(requests.isEmpty)
         controller.perform(.eraseAllContentAndSettings)
         window.endSheet(try #require(window.attachedSheet), returnCode: .alertFirstButtonReturn)
@@ -6353,7 +6358,7 @@ struct InputFocusTests {
         }
         // Open Simulator populates on opening, so its empty submenu must remain visible.
         #expect(try visibleTitles("File").prefix(3) == ["New Simulator…", "Open Simulator", "-"])
-        #expect(try visibleTitles("Device") == ["Restart", "Erase All Content and Settings…", "Shut Down", "-",
+        #expect(try visibleTitles("Device") == ["Restart", "Shut Down", "-", "Erase All Content and Settings…", "-",
                                                  "Home", "Re-Center Open Apps", "Lock", "Action Button", "Siri",
                                                  "Shake", "App Switcher", "-", "Trigger Screenshot"])
         #expect(try visibleTitles("I/O") == ["Keyboard", "-", "Audio Input", "Audio Output", "Increase Volume",
@@ -8604,6 +8609,44 @@ struct InputFocusTests {
         #expect(creation.requests == [["iPhone B", "b", "old"]] && model.error == nil)
     }
 
+    @Test func newSimulatorRuntimeNamesPreserveBuildSelection() async throws {
+        let beta = SimulatorCatalog.Runtime(identifier: "beta", name: "iOS 27.0", buildVersion: "beta-build")
+        let candidate = SimulatorCatalog.Runtime(identifier: "candidate", name: "iOS 27.0", buildVersion: "candidate-build")
+        let source = SimulatorCatalog(
+            deviceTypes: [.init(identifier: "phone", name: "iPhone", productFamily: 1)],
+            runtimes: [beta, candidate],
+            supportedDeviceTypes: [beta.identifier: ["phone"], candidate.identifier: ["phone"]],
+            canPair: { _, _, _, _ in false })
+        let snapshot = try JSONDecoder().decode(SimulatorCatalog.Snapshot.self,
+                                                 from: JSONEncoder().encode(SimulatorCatalog.Snapshot(catalog: source)))
+        let catalog = snapshot.catalog()
+        var createdRuntime: String?
+        let model = NewSimulatorModel(catalog: catalog, create: { _, _, runtime in
+            createdRuntime = runtime
+            return "created-device"
+        }, pair: { _, _ in Issue.record("Paired without a watch") })
+        #expect(model.runtimes.map(\.identifier) == [beta.identifier, candidate.identifier])
+        await model.loadRuntimeNames { throw URLError(.notConnectedToInternet) }
+        #expect(model.runtimeName(beta) == "iOS 27.0 (beta-build)")
+        let metadata = try PropertyListSerialization.data(fromPropertyList: [
+            "downloadables": [
+                ["name": "iOS 27.0 beta 2 Simulator Runtime", "simulatorVersion": ["buildUpdate": "beta-build"]],
+                ["name": "Unrelated Download"],
+            ],
+            "otherDownloadables": [
+                ["name": "iOS 27.0 Release Candidate Simulator Runtime", "simulatorVersion": ["buildUpdate": "candidate-build"]],
+            ],
+        ], format: .xml, options: 0)
+        await model.loadRuntimeNames { metadata }
+        #expect(model.runtimeName(beta) == "iOS 27.0 beta 2 (beta-build)")
+        #expect(model.runtimeName(candidate) == "iOS 27.0 Release Candidate (candidate-build)")
+        #expect(model.runtime == beta.identifier)
+        model.selectRuntime(candidate.identifier)
+        model.forward()
+        await model.waitForCreation()
+        #expect(createdRuntime == candidate.identifier)
+    }
+
     @Test func newSimulatorWithoutRuntimesCannotCreate() {
         let model = NewSimulatorModel(
             catalog: SimulatorCatalog(deviceTypes: [.init(identifier: "a", name: "iPhone A", productFamily: 1)],
@@ -9689,9 +9732,9 @@ private final class KeyPresentationWindow: NSWindow {
     override var isKeyWindow: Bool { true }
 }
 
-/// A drag of file URLs on a private pasteboard, delivered without a WindowServer drag session.
+/// A drag on a private pasteboard, delivered without a WindowServer drag session.
 @MainActor
-private final class TestDraggingInfo: NSObject, NSDraggingInfo {
+final class TestDraggingInfo: NSObject, NSDraggingInfo {
     let draggingPasteboard = NSPasteboard.withUniqueName()
     var draggingFormation = NSDraggingFormation.default
     var animatesToDestination = false
@@ -9701,13 +9744,19 @@ private final class TestDraggingInfo: NSObject, NSDraggingInfo {
     var draggingLocation: NSPoint { .zero }
     var draggedImageLocation: NSPoint { .zero }
     nonisolated var draggedImage: NSImage? { nil }
-    var draggingSource: Any? { nil }
+    var draggingSource: Any?
     var draggingSequenceNumber: Int { 0 }
     var springLoadingHighlight: NSSpringLoadingHighlight { .none }
 
     init(_ urls: [URL]) {
         super.init()
         draggingPasteboard.writeObjects(urls.map { $0 as NSURL })
+    }
+
+    init(item: any NSPasteboardWriting, source: Any) {
+        draggingSource = source
+        super.init()
+        draggingPasteboard.writeObjects([item])
     }
 
     func slideDraggedImage(to screenPoint: NSPoint) {}

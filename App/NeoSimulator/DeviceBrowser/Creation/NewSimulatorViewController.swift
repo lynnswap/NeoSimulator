@@ -8,6 +8,7 @@ final class NewSimulatorViewController: NSHostingController<NewSimulatorView> {
     init(model: NewSimulatorModel) {
         self.model = model
         super.init(rootView: NewSimulatorView(model: model))
+        model.startLoadingRuntimeNames()
         title = model.title
         sizingOptions = [.standardBounds, .preferredContentSize]
     }

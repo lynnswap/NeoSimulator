@@ -46,13 +46,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         try await screens.stopAll()
     }
 
-    @discardableResult func prepareMainWindow() -> ManagerWindowController {
+    @discardableResult func prepareMainWindow(defaults: UserDefaults = .standard) -> ManagerWindowController {
         if let mainWindow { return mainWindow }
-        let controller = ManagerWindowController(model: model, screens: screens, menus: simulatorMenus)
+        let controller = ManagerWindowController(model: model, screens: screens, menus: simulatorMenus, defaults: defaults)
         controller.onError = { [weak self] error in self?.present(error) }
         model.onOpenRemoteDevice = { [weak self] device in try await self?.openRemoteScreen(device) }
         model.onDeviceOpenRequested = { [weak controller] identifier in controller?.showDevice(identifier) }
         controller.onNewCompanion = { [weak self] device in self?.showNewSimulator(pairingWith: device) }
+        controller.onShowServiceProfile = { [weak self] in self?.showSettings(selectingServiceProfile: $0) }
         mainWindow = controller
         return controller
     }
@@ -249,7 +250,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate()
     }
 
-    @objc func showSettings(_ sender: Any?) {
+    @objc func showSettings(_ sender: Any?) { showSettings(selectingServiceProfile: nil) }
+
+    private func showSettings(selectingServiceProfile profileID: UUID?) {
         if settingsWindow == nil {
             settingsWindow = SettingsWindowController(model: model,
                 restart: { [weak self] in self?.restartForFrameworkChange() },
@@ -258,6 +261,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     return try await self.makeNewSimulatorModel(pairingWith: nil)
                 }, preferences: preferences, reportFailure: { [weak self] error in self?.present(error) })
         }
+        if let profileID { settingsWindow?.settings.selectServiceProfile(profileID) }
         model.frameworks.reload()
         settingsWindow?.showWindow(nil)
         settingsWindow?.window?.makeKeyAndOrderFront(nil)
@@ -368,7 +372,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     confirmation.alertStyle = .warning
                     confirmation.messageText = "Restore the saved Xcode settings?"
                     confirmation.informativeText = "Your current simulator routing settings will be replaced with the original values saved by NeoSimulator. Your devices are kept."
-                    confirmation.addButton(withTitle: "Restore")
+                    confirmation.addButton(withTitle: "Restore").hasDestructiveAction = true
                     confirmation.addButton(withTitle: "Cancel")
                     if confirmation.runModal() == .alertFirstButtonReturn { model.restoreDefaults(force: true) }
                 }
@@ -409,7 +413,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         file.addItem(.separator())
         addItem("Save Screenshot…", action: #selector(RemoteDeviceWindowController.saveScreenshot(_:)), key: "s", to: file).target = nil
         simulatorMenus.addScreenshotDestinationCommand(to: file)
-        addItem("Discard Screenshot…", action: #selector(RemoteDeviceWindowController.discardScreenshot(_:)), to: file).target = nil
         addItem("Record Screen", action: #selector(RemoteDeviceWindowController.recordScreen(_:)), key: "r", to: file).target = nil
         let recordTo = addItem("Record Screen…", action: #selector(RemoteDeviceWindowController.recordScreenTo(_:)), key: "r", to: file)
         recordTo.target = nil
@@ -417,6 +420,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         recordTo.isAlternate = true
         addItem("Stop Recording", action: #selector(RemoteDeviceWindowController.stopScreenRecording(_:)), to: file).target = nil
         addItem("Save Recording…", action: #selector(RemoteDeviceWindowController.saveScreenRecording(_:)), to: file).target = nil
+        file.addItem(.separator())
+        addItem("Discard Screenshot…", action: #selector(RemoteDeviceWindowController.discardScreenshot(_:)), to: file).target = nil
         addItem("Discard Recording…", action: #selector(RemoteDeviceWindowController.discardScreenRecording(_:)), to: file).target = nil
         let edit = EditMenu(title: "Edit")
         let editItem = NSMenuItem(title: "Edit", action: nil, keyEquivalent: "")

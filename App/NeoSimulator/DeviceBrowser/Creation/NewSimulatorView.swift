@@ -13,7 +13,7 @@ struct NewSimulatorView: View {
             Section {
                 HStack {
                     if let cancel = model.onCancel {
-                        Button("Cancel", action: cancel).keyboardShortcut(.cancelAction)
+                        Button("Cancel", role: .cancel, action: cancel).keyboardShortcut(.cancelAction)
                     }
                     Spacer()
                     if model.existingDevice == nil, model.showsWatchPage {
@@ -28,9 +28,7 @@ struct NewSimulatorView: View {
         .formStyle(.grouped)
         .frame(width: 560)
         .fixedSize(horizontal: false, vertical: true)
-        .alert("Unable to Create Simulator", isPresented: Binding(
-            get: { model.error != nil }, set: { if !$0 { model.error = nil } }
-        )) {
+        .alert("Unable to Create Simulator", isPresented: $model.showsError) {
             Button("OK") { model.error = nil }
         } message: {
             Text(model.error ?? "")
@@ -54,7 +52,7 @@ struct NewSimulatorView: View {
         Picker("OS Version", selection: Binding(get: { model.runtime }, set: model.selectRuntime)) {
             if model.runtimes.isEmpty { Text("No Runtimes Available").tag(String?.none) }
             ForEach(model.runtimes, id: \.identifier) { runtime in
-                Text(runtime.name).tag(Optional(runtime.identifier))
+                Text(model.runtimeName(runtime)).tag(Optional(runtime.identifier))
             }
         }
         .disabled(model.runtimes.isEmpty)
@@ -73,7 +71,7 @@ struct NewSimulatorView: View {
             Picker("OS Version", selection: Binding(get: { model.watchRuntime }, set: model.selectWatchRuntime)) {
                 if model.availableWatchRuntimes.isEmpty { Text("No Runtimes Available").tag(String?.none) }
                 ForEach(model.availableWatchRuntimes, id: \.identifier) { runtime in
-                    Text(runtime.name).tag(Optional(runtime.identifier))
+                    Text(model.runtimeName(runtime)).tag(Optional(runtime.identifier))
                 }
             }
             .disabled(model.availableWatchRuntimes.isEmpty)

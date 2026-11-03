@@ -30,7 +30,7 @@ restores Xcode's previous display settings. To use Device Hub, choose it under
 
 ## Acknowledgements
 
-Background service control is ported from [simslim](https://github.com/MobAI-App/simslim), including its catalog of services that are safe to stop. Thank you to Interlap and the [simslim contributors](https://github.com/MobAI-App/simslim/graphs/contributors). simslim is available under the MIT License; NeoSimulator includes its notice in [Credits.rtf](App/Credits.rtf), which the About window shows.
+Background service control is ported from [simslim](https://github.com/MobAI-App/simslim), including its catalog of services that are safe to stop. Thank you to Interlap and the [simslim contributors](https://github.com/MobAI-App/simslim/graphs/contributors). simslim is available under the MIT License. Its notice and the licenses of NeoSimulator's package dependencies are available in **Settings → Licenses**.
 
 ## License
 

@@ -1,5 +1,6 @@
 import AppKit
 import Observation
+import ObservationBridge
 @_spi(NeoSimulator) import XcodeSimulatorHost
 
 /// The device window's toolbar, built from the command catalog.
@@ -12,6 +13,7 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
     let toolbar = NSToolbar(identifier: "DeviceToolbar.\(UUID().uuidString)")
     private weak var controller: DeviceWindowController?
     private var pluginDelegate: PluginToolbarDelegate?
+    private var observation: PortableObservationTracking.Token?
     private var showsMainWindowAction = false
     private var usesCanvasControls = false
     private let commands: [DeviceCommand.ID]
@@ -295,8 +297,9 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
     }
 
     private func updateItems() {
-        withObservationTracking {
-            guard let controller else { return }
+        observation?.cancel()
+        observation = withPortableContinuousObservation { [weak self] _ in
+            guard let self, let controller else { return }
             // Read these even before AppKit has asked the delegate to create items.
             _ = controller.session.supportsAppResize
             _ = controller.session.canResizeApp
@@ -310,8 +313,6 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
             _ = controller.capturesKeyboard
             updateNativeRotation()
             configureItems()
-        } onChange: { [weak self] in
-            Task { @MainActor [weak self] in self?.updateItems() }
         }
     }
 

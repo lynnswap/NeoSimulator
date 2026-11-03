@@ -444,12 +444,12 @@ struct CaptureThumbnailTests {
         let screenshot = thumbnail(try capture(in: directory))
         #expect(titles(screenshot.menu()) == [
             "Save to Shots", "Save to Desktop", "Save to Documents", "Copy to Clipboard", "-",
-            "Open in Mail", "Open in Preview", "Open in Photos", "-", "Show in Finder", "Delete", "-", "Close",
+            "Open in Mail", "Open in Preview", "Open in Photos", "-", "Show in Finder", "-", "Delete", "-", "Close",
         ])
         let movie = thumbnail(try capture(.movie, named: "Movie.mov", in: directory)).menu()
         #expect(titles(movie) == [
             "Save to Shots", "Save to Desktop", "Save to Documents", "Save as Animated GIF",
-            "Save Copy as Animated GIF", "-", "Show in Finder", "Delete", "-", "Close",
+            "Save Copy as Animated GIF", "-", "Show in Finder", "-", "Delete", "-", "Close",
         ])
         #expect(movie.items.filter(\.isAlternate).map(\.keyEquivalentModifierMask) == [.option])
         UserDefaults.standard.set(CaptureFile.desktop?.path, forKey: key)
