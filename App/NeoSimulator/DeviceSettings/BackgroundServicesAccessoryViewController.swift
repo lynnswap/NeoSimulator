@@ -50,18 +50,28 @@ private struct BackgroundServicesProfileForm: View {
     var body: some View {
         Form {
             Section {
-                Picker("Profile", selection: $model.selectedProfileID) {
-                    ForEach(model.profileChoices, id: \.id) { choice in
-                        Text(choice.title).tag(choice.id)
+                Picker("Profile", selection: Binding<UUID?>(
+                    get: { model.selectedProfileID },
+                    set: { id in
+                        if let id { model.selectedProfileID = id }
+                        else { model.customizeProfile() }
                     }
+                )) {
+                    ForEach(model.profileChoices, id: \.id) { choice in
+                        Text(choice.title).tag(Optional(choice.id))
+                    }
+                    Divider()
+                    Text("Custom…").tag(UUID?.none)
                 }
+                .pickerStyle(.menu)
                 .disabled(model.holdsChanges || model.profiles.issue != nil)
                 HStack {
-                    Button("Save", action: model.saveProfile)
-                        .disabled(!model.canSaveProfile)
-                    Spacer()
                     Button("Revert", action: model.revertProfile)
                         .disabled(model.holdsChanges || !model.hasProfileChanges)
+                    Spacer()
+                    Button("Save", action: model.saveProfile)
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!model.canSaveProfile)
                 }
             }
         }

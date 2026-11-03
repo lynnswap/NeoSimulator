@@ -2289,7 +2289,14 @@ struct ManagerModelTests {
         manager.backgroundServices.inspect(device, selectionCount: 1)
         manager.backgroundServices.setVisible(true)
         await manager.backgroundServices.finishReading()
-        let model = BackgroundServicesInspectorModel(manager: manager)
+        let settings = SettingsWindowController(model: manager, restart: {},
+            makeSimulator: { throw HostError.operation("Unused") },
+            preferences: SimulatorPreferences(defaults: defaults, creationDefaults: defaults),
+            reportFailure: { _ in Issue.record("Unexpected failure") })
+        defer { settings.window?.close() }
+        let model = BackgroundServicesInspectorModel(manager: manager, showProfileSettings: {
+            settings.settings.selectServiceProfile($0)
+        })
         let category = try #require(model.categories.first { $0.id == "search" })
         let item = try #require(category.items.first { $0.label == "com.apple.searchd" })
         let controller = BackgroundServicesViewController(model: model)
@@ -2357,6 +2364,13 @@ struct ManagerModelTests {
         #expect(store.profiles.count == 1 && store.profiles.first?.id == saved.id)
         #expect(store.profiles.first?.configuration.disabledLabels.isEmpty == true)
         #expect(!model.hasProfileChanges)
+        let binding = store.binding(for: device.id)
+        model.profileEditor = nil
+        model.customizeProfile()
+        #expect(settings.settings.selectedTabViewItemIndex == 3)
+        #expect(settings.settings.serviceProfiles.model.selectedProfile === saved)
+        #expect(store.binding(for: device.id) == binding)
+        #expect(model.selectedProfileID == saved.id)
         try await manager.prepareForQuit()
     }
 

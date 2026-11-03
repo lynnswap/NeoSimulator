@@ -45,6 +45,11 @@ final class SettingsViewController: NSTabViewController {
         onContentSizeChange?(viewController.preferredContentSize)
     }
 
+    func selectServiceProfile(_ id: UUID) {
+        serviceProfiles.model.selectedProfileID = id
+        selectedTabViewItemIndex = 3
+    }
+
     var simulatorLoading: Task<Void, Never>? { devices.state.loading }
 
     override func tabView(_ tabView: NSTabView, didSelect tabViewItem: NSTabViewItem?) {

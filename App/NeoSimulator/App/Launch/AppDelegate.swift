@@ -53,6 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.onOpenRemoteDevice = { [weak self] device in try await self?.openRemoteScreen(device) }
         model.onDeviceOpenRequested = { [weak controller] identifier in controller?.showDevice(identifier) }
         controller.onNewCompanion = { [weak self] device in self?.showNewSimulator(pairingWith: device) }
+        controller.onShowServiceProfile = { [weak self] in self?.showSettings(selectingServiceProfile: $0) }
         mainWindow = controller
         return controller
     }
@@ -249,7 +250,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate()
     }
 
-    @objc func showSettings(_ sender: Any?) {
+    @objc func showSettings(_ sender: Any?) { showSettings(selectingServiceProfile: nil) }
+
+    private func showSettings(selectingServiceProfile profileID: UUID?) {
         if settingsWindow == nil {
             settingsWindow = SettingsWindowController(model: model,
                 restart: { [weak self] in self?.restartForFrameworkChange() },
@@ -258,6 +261,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     return try await self.makeNewSimulatorModel(pairingWith: nil)
                 }, preferences: preferences, reportFailure: { [weak self] error in self?.present(error) })
         }
+        if let profileID { settingsWindow?.settings.selectServiceProfile(profileID) }
         model.frameworks.reload()
         settingsWindow?.showWindow(nil)
         settingsWindow?.window?.makeKeyAndOrderFront(nil)

@@ -25,6 +25,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         return pane
     }()
     var onNewCompanion: ((SimulatorHostDevice) -> Void)?
+    var onShowServiceProfile: ((UUID) -> Void)?
     /// Reports a failed screen move that no caller awaits.
     var onError: ((any Error) -> Void)?
     /// The user's latest placement choice for the selected device's screen. Each choice advances the revision, so
@@ -408,7 +409,9 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         // AppKit owns the pane size; content-derived bounds must not constrain the window.
         host.sizingOptions = []
         inspectorHost = host
-        let servicesModel = BackgroundServicesInspectorModel(manager: model)
+        let servicesModel = BackgroundServicesInspectorModel(manager: model, showProfileSettings: { [weak self] in
+            self?.onShowServiceProfile?($0)
+        })
         let backgroundServices = BackgroundServicesViewController(model: servicesModel)
         let servicesAccessory = BackgroundServicesAccessoryViewController(model: servicesModel)
         backgroundServicesHost = backgroundServices

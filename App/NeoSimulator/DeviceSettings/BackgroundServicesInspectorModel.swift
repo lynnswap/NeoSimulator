@@ -13,14 +13,16 @@ final class BackgroundServicesInspectorModel: BackgroundServiceEditing {
     let profiles: ServiceProfileStore
     @ObservationIgnored private let manager: SimulatorManagerModel
     @ObservationIgnored private let services: BackgroundServicesModel
+    @ObservationIgnored private let showProfileSettings: (UUID) -> Void
     @ObservationIgnored lazy var categories = SimulatorBackgroundServiceCategory.all.map {
         BackgroundServiceCategoryModel($0, source: self)
     }
     var profileEditor: ServiceProfileEditorModel?
     var actionIssue: String?
 
-    init(manager: SimulatorManagerModel) {
+    init(manager: SimulatorManagerModel, showProfileSettings: @escaping (UUID) -> Void) {
         self.manager = manager
+        self.showProfileSettings = showProfileSettings
         services = manager.backgroundServices
         profiles = manager.serviceProfiles
     }
@@ -76,6 +78,8 @@ final class BackgroundServicesInspectorModel: BackgroundServiceEditing {
         !holdsChanges && services.device?.canInspectBackgroundServices == true && serviceState != nil
             && !services.isChanging && profiles.issue == nil && hasProfileChanges
     }
+
+    func customizeProfile() { showProfileSettings(selectedProfileID) }
 
     func saveProfile() {
         guard canSaveProfile, let device = services.device, let configuration = services.configuration else { return }

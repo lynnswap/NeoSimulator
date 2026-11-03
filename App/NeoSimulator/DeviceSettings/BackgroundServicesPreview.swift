@@ -36,7 +36,7 @@ final class BackgroundServicesPreviewController: NSViewController {
         }
         source = BackgroundServicesPreviewSource(configuration: configuration, stopped: scenario == .stopped)
         manager = SimulatorManagerModel(source: source, serviceProfiles: store)
-        inspector = BackgroundServicesInspectorModel(manager: manager)
+        inspector = BackgroundServicesInspectorModel(manager: manager, showProfileSettings: { _ in })
         super.init(nibName: nil, bundle: nil)
         preferredContentSize = NSSize(width: 320, height: 820)
         manager.onError = { [weak model = inspector] error in
