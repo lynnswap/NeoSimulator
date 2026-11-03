@@ -724,7 +724,7 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
         let fixed: [String: (title: String, symbolName: String)] = [
             "home": ("Home", "house"), "lock": ("Lock", "lock"),
             "volumeDown": ("Volume Down", "speaker.minus"), "volumeUp": ("Volume Up", "speaker.plus"),
-            "capture": ("Save Screenshot…", "camera"), "compact": ("Show in Main Window", "arrow.up.left.and.arrow.down.right"),
+            "capture": ("Save Screenshot…", "camera"), "compact": ("Show in Main Window", "arrow.down.backward.and.arrow.up.forward"),
             "reconnect": ("Reconnect", "arrow.clockwise"),
         ]
         return fixed[identifier]
