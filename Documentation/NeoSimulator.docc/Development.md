@@ -95,9 +95,11 @@ These suites do not replace a live check of an affected private API and guest
 runtime.
 
 Device transport tests use fake dependencies and run without communicating
-with simulators, physical devices, or VMs. Run live device checks through
-NeoSimulator.app so macOS attributes device access to the application. Do not
-connect to devices from standalone test or diagnostic programs.
+with simulators, physical devices, or VMs. Check physical devices, VMs, and
+Device Hub settings live through NeoSimulator.app: macOS grants device and
+Device Hub data access to the program that requests it, so a standalone test or
+diagnostic program gets its own prompts and results. Simulators need no such
+access and can also be checked with `simctl`.
 
 UI fixtures must work while the Mac is locked. Disable animations and
 synchronize asynchronous work with explicit events or controlled deadlines;
@@ -151,8 +153,8 @@ PATH="$PWD/.build/release-tools/bin:$PATH" \
   scripts/package-release.sh --version v0.0.0-validation --dist-root dist
 ```
 
-Public releases follow the same approval and signing flow as CodexReviewMonitor.
-After the version, notes, exact main commit, and publication plan are approved:
+After the version, notes, exact main commit, and publication plan of a public
+release are approved:
 
 ```bash
 python3 scripts/prepare_release.py start \
