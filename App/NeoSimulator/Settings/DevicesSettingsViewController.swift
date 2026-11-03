@@ -21,39 +21,24 @@ final class DevicesSettingsState {
     var form: NewSimulatorModel?
     var isLoading = false
     var issue: String?
-    @ObservationIgnored var retry: (() -> Void)?
-}
-
-@MainActor
-final class DevicesSettingsViewController: NSHostingController<DevicesSettingsView> {
-    let state = DevicesSettingsState()
-    private let makeSimulator: () async throws -> NewSimulatorModel
-    private let reportFailure: (Error) -> Void
-    private(set) var loading: Task<Void, Never>?
+    var isVisible = false
+    @ObservationIgnored private let makeSimulator: () async throws -> NewSimulatorModel
+    @ObservationIgnored private let reportFailure: (Error) -> Void
+    @ObservationIgnored private(set) var loading: Task<Void, Never>?
 
     init(makeSimulator: @escaping () async throws -> NewSimulatorModel, reportFailure: @escaping (Error) -> Void) {
         self.makeSimulator = makeSimulator
         self.reportFailure = reportFailure
-        super.init(rootView: DevicesSettingsView(state: state))
-        title = "Devices"
-        sizingOptions = [.standardBounds, .preferredContentSize]
-        state.retry = { [weak self] in self?.reload() }
-    }
-    required init?(coder: NSCoder) { nil }
-
-    override func viewDidAppear() {
-        super.viewDidAppear()
-        reload()
     }
 
     func reload() {
-        let previous = state.form
+        let previous = form
         guard loading == nil, previous?.isCreating != true else { return }
-        state.isLoading = true
-        state.issue = nil
+        isLoading = true
+        issue = nil
         loading = Task { [weak self, makeSimulator, reportFailure] in
             defer {
-                self?.state.isLoading = false
+                self?.isLoading = false
                 self?.loading = nil
             }
             do {
@@ -61,18 +46,46 @@ final class DevicesSettingsViewController: NSHostingController<DevicesSettingsVi
                 try Task.checkCancellation()
                 if let previous { form.restoreInput(from: previous) }
                 form.onFailure = { [weak self, weak form, reportFailure] error in
-                    if self?.view.window?.isVisible == true { form?.error = error.localizedDescription }
+                    if self?.isVisible == true { form?.error = error.localizedDescription }
                     else { reportFailure(error) }
                 }
-                self?.state.form = form
+                form.startLoadingRuntimeNames()
+                self?.form = form
             } catch is CancellationError {
             } catch {
-                self?.state.issue = error.localizedDescription
+                self?.issue = error.localizedDescription
             }
         }
     }
 
+
     isolated deinit { loading?.cancel() }
+}
+
+@MainActor
+final class DevicesSettingsViewController: NSHostingController<DevicesSettingsView> {
+    let state: DevicesSettingsState
+
+    init(makeSimulator: @escaping () async throws -> NewSimulatorModel, reportFailure: @escaping (Error) -> Void) {
+        state = DevicesSettingsState(makeSimulator: makeSimulator, reportFailure: reportFailure)
+        super.init(rootView: DevicesSettingsView(state: state))
+        title = "Devices"
+        sizingOptions = [.standardBounds, .preferredContentSize]
+    }
+    required init?(coder: NSCoder) { nil }
+
+    override func viewDidAppear() {
+        super.viewDidAppear()
+        state.isVisible = true
+        state.reload()
+    }
+
+    override func viewDidDisappear() {
+        super.viewDidDisappear()
+        state.isVisible = false
+    }
+
+    func reload() { state.reload() }
 }
 
 struct DevicesSettingsView: View {
@@ -93,7 +106,7 @@ struct DevicesSettingsView: View {
                 } description: {
                     Text(issue)
                 } actions: {
-                    Button("Retry") { state.retry?() }
+                    Button("Retry", action: state.reload)
                 }
             case .form(let form):
                 NewSimulatorView(model: form)
@@ -113,13 +126,13 @@ struct DevicesSettingsView: View {
 }
 
 #Preview("Devices — Loading", traits: .sizeThatFitsLayout) {
-    let state = DevicesSettingsState()
+    let state = DevicesSettingsState(makeSimulator: { SettingsPreview.simulator() }, reportFailure: { _ in })
     state.isLoading = true
     return DevicesSettingsView(state: state)
 }
 
 #Preview("Devices — Unavailable", traits: .sizeThatFitsLayout) {
-    let state = DevicesSettingsState()
+    let state = DevicesSettingsState(makeSimulator: { SettingsPreview.simulator() }, reportFailure: { _ in })
     state.issue = "The simulator runtime catalog could not be loaded."
     return DevicesSettingsView(state: state)
 }

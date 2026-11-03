@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import Observation
+import ObservationBridge
 @_spi(NeoSimulator) import XcodeSimulatorHost
 
 @MainActor
@@ -29,7 +30,10 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     /// The user's latest placement choice for the selected device's screen. Each choice advances the revision, so
     /// moves accepted for an earlier choice stop.
     private(set) var presentationIntent: (revision: Int, placement: SimulatorScreenRestoration.Presentation) = (0, .main)
-    private var liveScreenToolbarObservation = 0
+    private var inventoryObservation: PortableObservationTracking.Token?
+    private var managementObservation: PortableObservationTracking.Token?
+    private var screensObservation: PortableObservationTracking.Token?
+    private var liveScreenToolbarObservation: PortableObservationTracking.Token?
     private var displayedScreenIDs: Set<DeviceInventoryID> = []
     private var displayedArtworkXcodeURL: URL?
     private var selectionIdentifier: DeviceInventoryID?
@@ -40,7 +44,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     private let moreIdentifier = NSToolbarItem.Identifier("CanvasMoreActions")
     private var moreItem: NSMenuToolbarItem?
     private var inspectorHost: NSHostingController<ManagerDeviceSettingsView>?
-    private var backgroundServicesHost: NSHostingController<ManagerBackgroundServicesView>?
+    private var backgroundServicesHost: BackgroundServicesViewController?
+    private var backgroundServicesAccessory: BackgroundServicesAccessoryViewController?
     private let inspectorContainer = NSViewController()
     private weak var inspectorContent: NSViewController?
     private(set) lazy var deviceInspector: ManagerDeviceInspectorController = {
@@ -200,25 +205,22 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     }
 
     private func observeInventory() {
-        withObservationTracking {
+        inventoryObservation = withPortableContinuousObservation { [weak self, model] event in
             _ = model.inventory
             _ = model.activeStates
-        } onChange: { [weak self] in
-            Task { @MainActor in
-                self?.update()
-                self?.observeInventory()
-            }
+            guard event.kind != .initial else { return }
+            Task { @MainActor [weak self] in self?.update() }
         }
     }
 
     private func observeManagement() {
         displayedManagingIDs = model.managingDeviceIDs
-        withObservationTracking {
+        managementObservation = withPortableContinuousObservation { [weak self, model] event in
             _ = model.managingDeviceIDs
             _ = model.isBusy
             _ = model.openingDeviceIDs
-        } onChange: { [weak self] in
-            Task { @MainActor in
+            guard event.kind != .initial else { return }
+            Task { @MainActor [weak self] in
                 guard let self else { return }
                 let changed = self.displayedManagingIDs.symmetricDifference(self.model.managingDeviceIDs)
                 self.displayedManagingIDs = self.model.managingDeviceIDs
@@ -226,7 +228,6 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
                     if let row = self.rowsByID[identifier] { self.table.reloadItem(row) }
                 }
                 self.updateSelection()
-                self.observeManagement()
             }
         }
     }
@@ -235,11 +236,11 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     private func observeScreens() {
         displayedScreenIDs = screens.identifiers
         displayedArtworkXcodeURL = screens.displayXcodeURL
-        withObservationTracking {
+        screensObservation = withPortableContinuousObservation { [weak self, screens] event in
             _ = screens.identifiers
             _ = screens.displayXcodeURL
-        } onChange: { [weak self] in
-            Task { @MainActor in
+            guard event.kind != .initial else { return }
+            Task { @MainActor [weak self] in
                 guard let self else { return }
                 if self.displayedArtworkXcodeURL != self.screens.displayXcodeURL {
                     for row in self.rows { self.table.reloadItem(row) }
@@ -248,7 +249,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
                         if let row = self.rowsByID[identifier] { self.table.reloadItem(row) }
                     }
                 }
-                self.observeScreens()
+                self.displayedScreenIDs = self.screens.identifiers
+                self.displayedArtworkXcodeURL = self.screens.displayXcodeURL
             }
         }
     }
@@ -406,10 +408,11 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         // AppKit owns the pane size; content-derived bounds must not constrain the window.
         host.sizingOptions = []
         inspectorHost = host
-        let backgroundServices = NSHostingController(rootView: ManagerBackgroundServicesView(manager: model,
-                                                                                             model: model.backgroundServices))
-        backgroundServices.sizingOptions = []
+        let servicesModel = BackgroundServicesInspectorModel(manager: model)
+        let backgroundServices = BackgroundServicesViewController(model: servicesModel)
+        let servicesAccessory = BackgroundServicesAccessoryViewController(model: servicesModel)
         backgroundServicesHost = backgroundServices
+        backgroundServicesAccessory = servicesAccessory
         inspectorContainer.view = NSView()
         let inspector = NSSplitViewItem(inspectorWithViewController: inspectorContainer)
         inspector.minimumThickness = 280
@@ -417,6 +420,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         inspector.canCollapse = true
         inspector.collapseBehavior = .preferResizingSiblingsWithFixedSplitView
         inspector.addTopAlignedAccessoryViewController(deviceInspector.categoryAccessory)
+        inspector.addTopAlignedAccessoryViewController(servicesAccessory)
         splitController.addSplitViewItem(inspector)
         showInspectorController(host)
     }
@@ -465,10 +469,10 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     func applicationsChanged(on deviceID: DeviceInventoryID) { deviceInspector.applicationsChanged(on: deviceID) }
 
     private func makeDeviceSettingsView() -> ManagerDeviceSettingsView {
-        ManagerDeviceSettingsView(manager: model, model: model.settings, screens: screens, customLocation: { [weak self] in
+        ManagerDeviceSettingsView(model: DeviceSettingsPanelModel(manager: model, screens: screens, preferences: SimulatorPreferences(), customLocation: { [weak self] in
             guard let self, let identifier = self.model.settings.device?.id else { return }
             self.presentLocationEditor(for: identifier)
-        })
+        }))
     }
 
     func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
@@ -721,13 +725,9 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
 
     /// Follows the live screen's state for its toolbar items and the device commands' shared shortcuts.
     private func observeLiveScreenToolbar() {
-        liveScreenToolbarObservation += 1
-        let observation = liveScreenToolbarObservation
-        withObservationTracking { updateLiveScreenToolbar() } onChange: { [weak self] in
-            Task { @MainActor in
-                guard let self, self.liveScreenToolbarObservation == observation else { return }
-                self.observeLiveScreenToolbar()
-            }
+        liveScreenToolbarObservation?.cancel()
+        liveScreenToolbarObservation = withPortableContinuousObservation { [weak self] _ in
+            self?.updateLiveScreenToolbar()
         }
     }
 
@@ -829,6 +829,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         deviceInspector.update(device: selection, isManaging: selection.map { model.managingDeviceIDs.contains($0.id) } == true,
                                isVisible: showsInspector && (inspectorMode == 1 || inspectorMode == 2))
         model.backgroundServices.setVisible(showsInspector && inspectorMode == 3)
+        backgroundServicesAccessory?.isActive = showsInspector && inspectorMode == 3
     }
 
     private func presentLocationEditor(for identifier: DeviceInventoryID, latitude: String = "0", longitude: String = "0") {

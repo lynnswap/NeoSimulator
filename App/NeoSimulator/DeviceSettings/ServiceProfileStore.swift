@@ -1,13 +1,11 @@
 import Foundation
 import Observation
-@_spi(NeoSimulator) import XcodeSimulatorHost
+import XcodeSimulatorHost
 
 struct ServiceConfiguration: Codable, Equatable, Sendable {
     var disabledLabels: Set<String> = []
 
-    static var labels: Set<String> {
-        Set(SimulatorBackgroundServiceCategory.all.flatMap { $0.services.map(\.label) })
-    }
+    static let labels = Set(SimulatorBackgroundServiceCategory.all.flatMap { $0.services.map(\.label) })
 
     func state(productFamily: String = "") -> SimulatorBackgroundServices {
         SimulatorBackgroundServices(disabled: disabledLabels, loaded: [], productFamily: productFamily)
@@ -43,30 +41,71 @@ struct ServiceConfiguration: Codable, Equatable, Sendable {
     }
 }
 
-struct ServiceProfile: Codable, Equatable, Identifiable, Sendable {
-    let id: UUID
-    var name: String
-    var configuration: ServiceConfiguration
-    var revision: Int
+@MainActor @Observable
+final class ServiceProfile: Identifiable, BackgroundServiceEditing {
+    struct Record: Codable, Equatable, Sendable {
+        let id: UUID
+        var name: String
+        var configuration: ServiceConfiguration
+    }
 
-    static let `default` = ServiceProfile(id: UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)),
-                                          name: "Default", configuration: ServiceConfiguration(), revision: 1)
+    let id: UUID
+    private(set) var name: String
+    private(set) var configuration: ServiceConfiguration
+    private(set) var serviceState: SimulatorBackgroundServices?
+    var issue: String?
+    @ObservationIgnored fileprivate weak var store: ServiceProfileStore?
+    var canEdit: Bool { store != nil && id != Self.default.id }
+    @ObservationIgnored lazy var categories = SimulatorBackgroundServiceCategory.all.map {
+        BackgroundServiceCategoryModel($0, source: self)
+    }
+
+    static let `default` = ServiceProfile(record: Record(
+        id: UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)),
+        name: "Default", configuration: ServiceConfiguration()))
+
+    fileprivate var record: Record { Record(id: id, name: name, configuration: configuration) }
+
+    fileprivate init(record: Record) {
+        id = record.id
+        name = record.name
+        configuration = record.configuration
+        serviceState = record.configuration.state()
+    }
+
+    func setServices(_ targets: [SimulatorBackgroundServiceTarget], enabled: Bool) {
+        guard canEdit, let store else { return }
+        var updated = configuration
+        updated.set(targets, enabled: enabled)
+        do { try store.update(id, configuration: updated) }
+        catch { issue = error.localizedDescription }
+    }
+
+    fileprivate func update(from record: Record) {
+        if name != record.name { name = record.name }
+        if configuration != record.configuration {
+            configuration = record.configuration
+            serviceState = record.configuration.state()
+        }
+    }
 }
 
 struct DeviceServiceProfile: Codable, Equatable, Sendable {
     let profileID: UUID
     var base: ServiceConfiguration
-    var revision: Int
     var overrides: [String: Bool]
     var requestID: UUID
     var pendingApplication: Bool
 
     var configuration: ServiceConfiguration { base.applying(overrides) }
 
-    init(profile: ServiceProfile, overrides: [String: Bool] = [:], pending: Bool) {
-        profileID = profile.id
-        base = profile.configuration
-        revision = profile.revision
+    @MainActor init(profile: ServiceProfile, overrides: [String: Bool] = [:], pending: Bool) {
+        self.init(profileID: profile.id, base: profile.configuration, overrides: overrides, pending: pending)
+    }
+
+    init(profileID: UUID, base: ServiceConfiguration, overrides: [String: Bool] = [:], pending: Bool) {
+        self.profileID = profileID
+        self.base = base
         self.overrides = overrides
         requestID = UUID()
         pendingApplication = pending
@@ -77,7 +116,7 @@ struct DeviceServiceProfile: Codable, Equatable, Sendable {
 @MainActor @Observable
 final class ServiceProfileStore {
     private struct State: Codable, Equatable {
-        var profiles: [ServiceProfile] = []
+        var profiles: [ServiceProfile.Record] = []
         var devices: [DeviceInventoryID: DeviceServiceProfile] = [:]
     }
 
@@ -93,7 +132,9 @@ final class ServiceProfileStore {
     }
 
     static let defaultsKey = "BackgroundServiceProfiles"
-    private var state = State()
+    private(set) var profiles: [ServiceProfile] = []
+    private var devices: [DeviceInventoryID: DeviceServiceProfile] = [:]
+    private var state: State { State(profiles: profiles.map(\.record), devices: devices) }
     private(set) var issue: String?
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private var loadFailure: (any Error)?
@@ -103,21 +144,14 @@ final class ServiceProfileStore {
         reload()
     }
 
-    var profiles: [ServiceProfile] { state.profiles }
-    var availableProfiles: [ServiceProfile] { [.default] + state.profiles }
-    func profile(_ id: UUID) -> ServiceProfile? { id == ServiceProfile.default.id ? .default : state.profiles.first { $0.id == id } }
-    func binding(for device: DeviceInventoryID) -> DeviceServiceProfile? { state.devices[device] }
-    func usageCount(_ id: UUID) -> Int { state.devices.values.filter { $0.profileID == id }.count }
-
-    func hasUpdate(for device: DeviceInventoryID) -> Bool {
-        guard let binding = binding(for: device), let profile = profile(binding.profileID) else { return false }
-        return profile.revision != binding.revision
-    }
+    var availableProfiles: [ServiceProfile] { [.default] + profiles }
+    func profile(_ id: UUID) -> ServiceProfile? { id == ServiceProfile.default.id ? .default : profiles.first { $0.id == id } }
+    func binding(for device: DeviceInventoryID) -> DeviceServiceProfile? { devices[device] }
 
     func reload() {
         do {
             let loaded = try defaults.data(forKey: Self.defaultsKey).map { try JSONDecoder().decode(State.self, from: $0) } ?? State()
-            state = loaded
+            apply(loaded)
             issue = nil
             loadFailure = nil
         } catch {
@@ -128,22 +162,21 @@ final class ServiceProfileStore {
 
     @discardableResult
     func create(name: String, configuration: ServiceConfiguration, assigningTo device: DeviceInventoryID? = nil) throws -> ServiceProfile {
-        let profile = ServiceProfile(id: UUID(), name: try validName(name), configuration: configuration, revision: 1)
+        let profile = ServiceProfile(record: .init(id: UUID(), name: try validName(name), configuration: configuration))
         var updated = state
-        updated.profiles.append(profile)
+        updated.profiles.append(profile.record)
         if let device { updated.devices[device] = DeviceServiceProfile(profile: profile, pending: false) }
-        try save(updated)
+        try save(updated, adding: profile)
         return profile
     }
 
-    func update(_ id: UUID, name: String, configuration: ServiceConfiguration) throws {
+    func update(_ id: UUID, name: String? = nil, configuration: ServiceConfiguration,
+                assigningTo device: DeviceInventoryID? = nil) throws {
         guard let index = state.profiles.firstIndex(where: { $0.id == id }) else { throw Failure.missingProfile }
         var updated = state
-        updated.profiles[index].name = try validName(name)
-        if updated.profiles[index].configuration != configuration {
-            updated.profiles[index].configuration = configuration
-            updated.profiles[index].revision += 1
-        }
+        if let name { updated.profiles[index].name = try validName(name) }
+        updated.profiles[index].configuration = configuration
+        if let device { updated.devices[device] = DeviceServiceProfile(profileID: id, base: configuration, pending: false) }
         try save(updated)
     }
 
@@ -156,10 +189,11 @@ final class ServiceProfileStore {
     }
 
     @discardableResult
-    func assign(_ profileID: UUID, to device: DeviceInventoryID, pending: Bool) throws -> DeviceServiceProfile {
+    func assign(_ profileID: UUID, to device: DeviceInventoryID, pending: Bool,
+                preservingOverrides: Bool = true) throws -> DeviceServiceProfile {
         guard let profile = profile(profileID) else { throw Failure.missingProfile }
         var updated = state
-        let overrides = profileID == ServiceProfile.default.id ? [:] : updated.devices[device]?.overrides ?? [:]
+        let overrides = !preservingOverrides || profileID == ServiceProfile.default.id ? [:] : updated.devices[device]?.overrides ?? [:]
         let binding = DeviceServiceProfile(profile: profile, overrides: overrides, pending: pending)
         updated.devices[device] = binding
         try save(updated)
@@ -189,19 +223,6 @@ final class ServiceProfileStore {
         try save(updated)
     }
 
-    @discardableResult
-    func resetOverrides(for device: DeviceInventoryID, labels: Set<String>? = nil, pending: Bool) throws -> DeviceServiceProfile? {
-        guard var binding = state.devices[device] else { return nil }
-        if let labels { binding.overrides = binding.overrides.filter { !labels.contains($0.key) } }
-        else { binding.overrides.removeAll() }
-        binding.requestID = UUID()
-        binding.pendingApplication = pending
-        var updated = state
-        updated.devices[device] = binding
-        try save(updated)
-        return binding
-    }
-
     func beginApplication(for device: DeviceInventoryID, requestID: UUID) throws {
         guard var binding = state.devices[device], binding.requestID == requestID, binding.pendingApplication else { return }
         binding.pendingApplication = false
@@ -216,11 +237,24 @@ final class ServiceProfileStore {
         return name
     }
 
-    private func save(_ updated: State) throws {
+    private func save(_ updated: State, adding profile: ServiceProfile? = nil) throws {
         if let loadFailure { throw loadFailure }
         guard updated != state else { return }
         let data = try JSONEncoder().encode(updated)
         defaults.set(data, forKey: Self.defaultsKey)
-        state = updated
+        apply(updated, adding: profile)
+    }
+
+    private func apply(_ loaded: State, adding profile: ServiceProfile? = nil) {
+        var existing = Dictionary(profiles.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        if let profile { existing[profile.id] = profile }
+        let updated = loaded.profiles.map { record in
+            let profile = existing[record.id] ?? ServiceProfile(record: record)
+            profile.store = self
+            profile.update(from: record)
+            return profile
+        }
+        if profiles.map(\.id) != updated.map(\.id) { profiles = updated }
+        if devices != loaded.devices { devices = loaded.devices }
     }
 }

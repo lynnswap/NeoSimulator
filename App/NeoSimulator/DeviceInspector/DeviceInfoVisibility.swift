@@ -42,6 +42,11 @@ final class DeviceInfoVisibility {
         }
     }
 
+    subscript(visible field: DeviceInformation.Field) -> Bool {
+        get { isVisible(field) }
+        set { setVisible(newValue, for: field) }
+    }
+
     func isVisible(_ field: DeviceInformation.Field) -> Bool {
         field.visibilityPaths.contains { path in
             selection.overrides.filter { path.starts(with: $0.key) }

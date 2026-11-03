@@ -71,7 +71,7 @@ public struct SimulatorBackgroundServices: Sendable, Equatable {
     /// Labels this simulator's platform keeps enabled although a category lists them.
     public let platformRequiredLabels: Set<String>
 
-    @_spi(NeoSimulator) public init(disabled: Set<String>, loaded: Set<String>, productFamily: String) {
+    public init(disabled: Set<String>, loaded: Set<String>, productFamily: String) {
         disabledLabels = disabled.intersection(BackgroundServiceCatalog.managed)
         loadedLabels = loaded.intersection(BackgroundServiceCatalog.managed)
         platformRequiredLabels = BackgroundServiceCatalog.platformRequired(productFamily: productFamily)
@@ -98,7 +98,7 @@ public struct SimulatorBackgroundServices: Sendable, Equatable {
     }
 
     /// Shared services stay enabled while another fully enabled category needs them.
-    @_spi(NeoSimulator) public func labelsKeptEnabled(disabling categories: [SimulatorBackgroundServiceCategory],
+    public func labelsKeptEnabled(disabling categories: [SimulatorBackgroundServiceCategory],
                                                     named: [String]) -> Set<String> {
         let covered = Set(categories.flatMap { $0.services.map(\.label) }).subtracting(named)
         var kept = Set<String>()
@@ -121,7 +121,7 @@ public struct SimulatorBackgroundServicesUpdate: Sendable {
     /// Enabled services that launchd did not load in the current boot session; they start at the next boot.
     public let notStartedLabels: [String]
 
-    @_spi(NeoSimulator) public init(services: SimulatorBackgroundServices, stillEnabledLabels: [String],
+    public init(services: SimulatorBackgroundServices, stillEnabledLabels: [String],
                                    notStartedLabels: [String]) {
         self.services = services
         self.stillEnabledLabels = stillEnabledLabels
@@ -130,7 +130,7 @@ public struct SimulatorBackgroundServicesUpdate: Sendable {
 }
 
 /// A failed background service change with the state read after the attempt, including changes already made.
-@_spi(NeoSimulator) public struct SimulatorBackgroundServicesUpdateFailure: Error, LocalizedError, Sendable {
+public struct SimulatorBackgroundServicesUpdateFailure: Error, LocalizedError, Sendable {
     /// Nil when the state could not be read after the failure.
     public let services: SimulatorBackgroundServices?
     public let underlyingError: SimulatorHostFailure

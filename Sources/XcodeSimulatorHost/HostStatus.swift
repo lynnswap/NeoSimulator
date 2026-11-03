@@ -72,7 +72,7 @@ public struct SimulatorDisplayZoomMode: Sendable, Equatable, Decodable {
 }
 
 /// A snapshot of the guest settings. Nil means a value is unavailable; query failures are retained in `issues`.
-public struct SimulatorDeviceSettings: Sendable {
+public struct SimulatorDeviceSettings: Sendable, Equatable {
     public static let contentSizes = ["extra-small", "small", "medium", "large", "extra-large", "extra-extra-large", "extra-extra-extra-large", "accessibility-medium", "accessibility-large", "accessibility-extra-large", "accessibility-extra-extra-large", "accessibility-extra-extra-extra-large"]
     public internal(set) var appearance: String?
     public internal(set) var contentSize: String?

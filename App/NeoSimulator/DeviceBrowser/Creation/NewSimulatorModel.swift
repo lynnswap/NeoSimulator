@@ -37,6 +37,17 @@ final class NewSimulatorModel {
     @ObservationIgnored var onFailure: ((Error) -> Void)?
     var onCancel: (() -> Void)?
     @ObservationIgnored private var creation: Task<Void, Never>?
+    @ObservationIgnored private var runtimeNameLoading: Task<Void, Never>?
+
+    var showsError: Bool {
+        get { error != nil }
+        set { if !newValue { error = nil } }
+    }
+
+    func startLoadingRuntimeNames() {
+        guard runtimeNameLoading == nil else { return }
+        runtimeNameLoading = Task { [weak self] in await self?.loadRuntimeNames() }
+    }
 
     init(catalog: SimulatorCatalog, pairingWith existingDevice: ExistingDevice? = nil,
          create: @escaping Create, pair: @escaping Pair, preferences: SimulatorPreferences? = nil) {

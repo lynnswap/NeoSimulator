@@ -701,6 +701,10 @@ final class SimulatorManagerModel {
         } catch { onError?(error) }
     }
 
+    func canEditSettings(for identifier: DeviceInventoryID) -> Bool {
+        !stopping && !holdsSettingsEdits && !managingDeviceIDs.contains(identifier)
+    }
+
     func selectServiceProfile(_ profileID: UUID, for identifier: DeviceInventoryID) {
         guard !stopping, !managingDeviceIDs.contains(identifier),
               let device = inventory.first(where: { $0.id == identifier }), case .simulator = device else { return }
@@ -710,31 +714,19 @@ final class SimulatorManagerModel {
         } catch { onError?(error) }
     }
 
-    func applyServiceProfile(for identifier: DeviceInventoryID, latest: Bool) {
-        guard let binding = serviceProfiles.binding(for: identifier) else { return }
-        if latest {
-            selectServiceProfile(binding.profileID, for: identifier)
-        } else if !stopping, !managingDeviceIDs.contains(identifier),
-                  let device = inventory.first(where: { $0.id == identifier }), device.canInspectBackgroundServices {
-            enqueueServiceConfiguration(binding, for: device)
-        }
-    }
-
-    func resetServiceOverrides(for identifier: DeviceInventoryID, labels: Set<String>? = nil) {
+    func revertServiceProfile(for identifier: DeviceInventoryID) {
         guard !stopping, !managingDeviceIDs.contains(identifier),
-              let device = inventory.first(where: { $0.id == identifier }),
-              let previous = serviceProfiles.binding(for: identifier) else { return }
-        let reset = labels ?? Set(previous.overrides.keys)
+              let device = inventory.first(where: { $0.id == identifier }) else { return }
+        let profileID = serviceProfiles.binding(for: identifier)?.profileID ?? ServiceProfile.default.id
         do {
-            if let binding = try serviceProfiles.resetOverrides(for: identifier, labels: reset, pending: !device.canInspectBackgroundServices),
-               device.canInspectBackgroundServices {
-                enqueueServiceConfiguration(binding, labels: reset, for: device)
-            }
+            let binding = try serviceProfiles.assign(profileID, to: identifier,
+                pending: !device.canInspectBackgroundServices, preservingOverrides: false)
+            if device.canInspectBackgroundServices { enqueueServiceConfiguration(binding, for: device) }
         } catch { onError?(error) }
     }
 
-    private func enqueueServiceConfiguration(_ binding: DeviceServiceProfile, labels: Set<String>? = nil, for device: InventoryDevice) {
-        let change = backgroundServices.accept(binding.configuration, labels: labels, for: device)
+    private func enqueueServiceConfiguration(_ binding: DeviceServiceProfile, for device: InventoryDevice) {
+        let change = backgroundServices.accept(binding.configuration, for: device)
         perform("Applying service profile…", refreshCatalog: false, waitsForAttach: false) {
             try self.serviceProfiles.beginApplication(for: device.id, requestID: binding.requestID)
             try await self.backgroundServices.apply(change)

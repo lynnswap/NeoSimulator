@@ -1,5 +1,6 @@
 import AppKit
 import Observation
+import ObservationBridge
 @_spi(NeoSimulator) import XcodeSimulatorHost
 
 /// One device screen open in the manager. It keeps the screen's canvas controls current, dispatches their actions,
@@ -18,12 +19,13 @@ final class DeviceScreen {
     let canvasControls = DeviceCanvasControls()
     /// Advances after each update of `canvasControls`, so the pane can fit the accessory that shows them.
     private(set) var canvasControlsUpdates = 0
+    @ObservationIgnored private var canvasControlsRevision = 0
     /// Changes that Observation cannot record: the remote controller's callback, a simulator session replacement,
     /// and dispatched actions. The state accessors read it through `observedController`.
     private var reportedChanges = 0
     @ObservationIgnored private let model: SimulatorManagerModel
     @ObservationIgnored private weak var screens: DeviceScreens?
-    @ObservationIgnored private var isObserving = false
+    @ObservationIgnored private var observation: PortableObservationTracking.Token?
 
     init(id: DeviceInventoryID, controller: Controller, model: SimulatorManagerModel, screens: DeviceScreens) {
         self.id = id
@@ -44,18 +46,18 @@ final class DeviceScreen {
     // MARK: Observation
 
     func startObserving() {
-        isObserving = true
-        observe()
+        observation?.cancel()
+        observation = withPortableContinuousObservation { [weak self] _ in
+            guard let self else { return }
+            updateCanvasControls()
+            canvasControlsRevision += 1
+            canvasControlsUpdates = canvasControlsRevision
+        }
     }
 
-    func stopObserving() { isObserving = false }
-
-    private func observe() {
-        guard isObserving else { return }
-        withObservationTracking { updateCanvasControls() } onChange: { [weak self] in
-            Task { @MainActor in self?.observe() }
-        }
-        canvasControlsUpdates += 1
+    func stopObserving() {
+        observation?.cancel()
+        observation = nil
     }
 
     private func updateCanvasControls() {

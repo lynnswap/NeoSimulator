@@ -20,6 +20,7 @@ final class SimulatorPreferences {
     var keepRunningOnQuit = false { didSet { save(keepRunningOnQuit, forKey: HostPreferences.detachOnAppQuit) } }
     var showSingleTouches = false { didSet { save(showSingleTouches, forKey: HostPreferences.showSingleTouches) } }
     var showPinches = true { didSet { save(showPinches, forKey: HostPreferences.showPinches) } }
+    var slowAnimations = false { didSet { save(slowAnimations, forKey: HostPreferences.slowMotionAnimation) } }
     var includeDeviceMask = false { didSet { save(includeDeviceMask, forKey: HostPreferences.screenShotUseMask) } }
     var gifImageSize = 640 { didSet { save(gifImageSize, forKey: HostPreferences.gifMaxFrameSize) } }
     var gifFrameRate = 10 { didSet { save(gifFrameRate, forKey: HostPreferences.gifMaxFramerate) } }
@@ -46,7 +47,7 @@ final class SimulatorPreferences {
         observations.append(DefaultsObservation(defaults, keys: [
             HostPreferences.startLastDeviceOnLaunch, HostPreferences.sessionOnLaunch,
             HostPreferences.detachOnWindowClose, HostPreferences.detachOnAppQuit,
-            HostPreferences.showSingleTouches, HostPreferences.showPinches,
+            HostPreferences.showSingleTouches, HostPreferences.showPinches, HostPreferences.slowMotionAnimation,
             HostPreferences.screenShotUseMask, HostPreferences.gifMaxFrameSize, HostPreferences.gifMaxFramerate,
         ]) { [weak self] in self?.reload() })
         if let creationDefaults {
@@ -66,6 +67,7 @@ final class SimulatorPreferences {
         keepRunningOnQuit = defaults.bool(forKey: HostPreferences.detachOnAppQuit)
         showSingleTouches = defaults.bool(forKey: HostPreferences.showSingleTouches)
         showPinches = defaults.bool(forKey: HostPreferences.showPinches)
+        slowAnimations = defaults.bool(forKey: HostPreferences.slowMotionAnimation)
         includeDeviceMask = defaults.bool(forKey: HostPreferences.screenShotUseMask)
         gifImageSize = defaults.integer(forKey: HostPreferences.gifMaxFrameSize)
         gifFrameRate = defaults.integer(forKey: HostPreferences.gifMaxFramerate)

@@ -1,34 +1,51 @@
 #if DEBUG
+import AppKit
 import SwiftUI
 @_spi(NeoSimulator) import XcodeSimulatorHost
 
-@MainActor
-struct BackgroundServicesPreview: View {
-    enum Scenario {
-        case overrides, profileUpdate, unapplied, defaultProfile, defaultModified, stopped
+struct BackgroundServicesPreview: NSViewControllerRepresentable {
+    enum Scenario { case overrides, defaultProfile, defaultModified, stopped }
+    let scenario: Scenario
+    init(_ scenario: Scenario) { self.scenario = scenario }
+    func makeNSViewController(context: Context) -> BackgroundServicesPreviewController {
+        BackgroundServicesPreviewController(scenario)
     }
+    func updateNSViewController(_ controller: BackgroundServicesPreviewController, context: Context) {}
+}
 
-    @State private var manager: SimulatorManagerModel
-    @State private var issue: String?
-    private let scenario: Scenario
+@MainActor
+final class BackgroundServicesPreviewController: NSViewController {
+    typealias Scenario = BackgroundServicesPreview.Scenario
+
+    let manager: SimulatorManagerModel
+    let inspector: BackgroundServicesInspectorModel
     private let source: BackgroundServicesPreviewSource
     private let domain: String
+    private let scenario: Scenario
+    private var loading: Task<Void, Never>?
 
     init(_ scenario: Scenario) {
         self.scenario = scenario
-        let domain = "NeoSimulator.BackgroundServicesPreview.\(UUID().uuidString)"
-        self.domain = domain
+        domain = "NeoSimulator.BackgroundServicesPreview.\(UUID().uuidString)"
         let store = ServiceProfileStore(defaults: UserDefaults(suiteName: domain)!)
         var configuration = Self.lightweightConfiguration
-        if scenario == .overrides || scenario == .profileUpdate {
+        if scenario == .overrides {
             configuration.set([.service("com.apple.searchd")], enabled: true)
-        } else if scenario == .unapplied || scenario == .defaultProfile {
+        } else if scenario == .defaultProfile {
             configuration = ServiceConfiguration()
         }
-        let source = BackgroundServicesPreviewSource(configuration: configuration, stopped: scenario == .stopped)
-        self.source = source
-        _manager = State(initialValue: SimulatorManagerModel(source: source, serviceProfiles: store))
+        source = BackgroundServicesPreviewSource(configuration: configuration, stopped: scenario == .stopped)
+        manager = SimulatorManagerModel(source: source, serviceProfiles: store)
+        inspector = BackgroundServicesInspectorModel(manager: manager)
+        super.init(nibName: nil, bundle: nil)
+        preferredContentSize = NSSize(width: 320, height: 820)
+        manager.onError = { [weak model = inspector] error in
+            model?.actionIssue = error.localizedDescription
+        }
+        loading = Task { [weak self] in await self?.loadPreview() }
     }
+
+    required init?(coder: NSCoder) { nil }
 
     private static var lightweightConfiguration: ServiceConfiguration {
         var configuration = ServiceConfiguration()
@@ -36,50 +53,56 @@ struct BackgroundServicesPreview: View {
         return configuration
     }
 
-    var body: some View {
-        ManagerBackgroundServicesView(manager: manager, model: manager.backgroundServices)
-            .frame(width: 320, height: 820)
-            .task {
-                manager.onError = { [message = $issue] in message.wrappedValue = $0.localizedDescription }
-                do {
-                    let store = manager.serviceProfiles
-                    if store.profiles.isEmpty {
-                        let lightweight = try store.create(name: "Lightweight", configuration: Self.lightweightConfiguration)
-                        if scenario == .defaultModified {
-                            try store.record([.category("widgets"), .category("siri"), .category("search")], enabled: false,
-                                             for: source.device.id, productFamily: "iPhone")
-                        } else if scenario != .defaultProfile {
-                            try store.assign(lightweight.id, to: source.device.id, pending: scenario == .stopped)
-                        }
-                        if scenario == .overrides || scenario == .profileUpdate {
-                            try store.record([.service("com.apple.searchd")], enabled: true,
-                                             for: source.device.id, productFamily: "iPhone")
-                        }
-                        if scenario == .profileUpdate {
-                            var updated = lightweight.configuration
-                            updated.set([.category("telemetry")], enabled: false)
-                            try store.update(lightweight.id, name: lightweight.name, configuration: updated)
-                        }
-                    }
-                    await manager.refresh()
-                    manager.backgroundServices.inspect(source.device, selectionCount: 1)
-                    manager.backgroundServices.setVisible(true)
-                    await manager.backgroundServices.finishReading()
-                } catch {
-                    issue = error.localizedDescription
-                }
+    override func loadView() {
+        let split = NSSplitViewController()
+        split.splitView.isVertical = true
+        let controller = BackgroundServicesViewController(model: inspector)
+        let accessory = BackgroundServicesAccessoryViewController(model: inspector)
+        accessory.isActive = true
+        let item = NSSplitViewItem(inspectorWithViewController: controller)
+        item.addTopAlignedAccessoryViewController(accessory)
+        split.addSplitViewItem(item)
+        addChild(split)
+        view = split.view
+        view.frame = NSRect(origin: .zero, size: preferredContentSize)
+    }
+
+    override func viewDidAppear() {
+        super.viewDidAppear()
+        manager.backgroundServices.setVisible(true)
+    }
+
+    override func viewDidDisappear() {
+        super.viewDidDisappear()
+        manager.backgroundServices.setVisible(false)
+    }
+
+    private func loadPreview() async {
+        do {
+            let store = manager.serviceProfiles
+            let lightweight = try store.create(name: "Lightweight", configuration: Self.lightweightConfiguration)
+            if scenario == .defaultModified {
+                try store.record([.category("widgets"), .category("siri"), .category("search")], enabled: false,
+                                 for: source.device.id, productFamily: "iPhone")
+            } else if scenario != .defaultProfile {
+                try store.assign(lightweight.id, to: source.device.id, pending: scenario == .stopped)
             }
-            .onDisappear {
-                manager.backgroundServices.setVisible(false)
-                manager.onError = nil
-                UserDefaults.standard.removePersistentDomain(forName: domain)
+            if scenario == .overrides {
+                try store.record([.service("com.apple.searchd")], enabled: true,
+                                 for: source.device.id, productFamily: "iPhone")
             }
-            .alert("Preview Error", isPresented: Binding(get: { issue != nil },
-                                                        set: { if !$0 { issue = nil } })) {
-                Button("OK") { issue = nil }
-            } message: {
-                Text(issue ?? "")
-            }
+            await manager.refresh()
+            manager.backgroundServices.inspect(source.device, selectionCount: 1)
+            manager.backgroundServices.setVisible(true)
+            await manager.backgroundServices.finishReading()
+        } catch {
+            inspector.actionIssue = error.localizedDescription
+        }
+    }
+
+    isolated deinit {
+        loading?.cancel()
+        UserDefaults.standard.removePersistentDomain(forName: domain)
     }
 }
 

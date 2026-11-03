@@ -26,12 +26,9 @@ struct NewSimulatorView: View {
             }
         }
         .formStyle(.grouped)
-        .task(id: ObjectIdentifier(model)) { await model.loadRuntimeNames() }
         .frame(width: 560)
         .fixedSize(horizontal: false, vertical: true)
-        .alert("Unable to Create Simulator", isPresented: Binding(
-            get: { model.error != nil }, set: { if !$0 { model.error = nil } }
-        )) {
+        .alert("Unable to Create Simulator", isPresented: $model.showsError) {
             Button("OK") { model.error = nil }
         } message: {
             Text(model.error ?? "")

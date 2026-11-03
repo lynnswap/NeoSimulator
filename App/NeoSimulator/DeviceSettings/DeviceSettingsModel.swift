@@ -13,16 +13,18 @@ extension SimulatorHostController: DeviceSettingsSource {}
 
 @MainActor @Observable
 final class DeviceSettingsModel {
-    private(set) var device: InventoryDevice?
+    private(set) var device: InventoryDevice? { didSet { updateSettings() } }
     private(set) var selectionCount = 0
-    private var confirmedSettings: SimulatorDeviceSettings?
-    private var pendingEdits: [Edit] = []
-    var settings: SimulatorDeviceSettings? {
-        guard var values = confirmedSettings else { return nil }
+    private var confirmedSettings: SimulatorDeviceSettings? { didSet { updateSettings() } }
+    private var pendingEdits: [Edit] = [] { didSet { updateSettings() } }
+    private(set) var settings: SimulatorDeviceSettings?
+
+    private func updateSettings() {
+        guard var values = confirmedSettings else { settings = nil; return }
         for edit in pendingEdits where edit.destination.id == device?.id {
             values = values.applying(edit.setting)
         }
-        return values
+        settings = values
     }
     struct Edit {
         fileprivate let id = UUID()

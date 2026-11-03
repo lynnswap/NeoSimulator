@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 import Observation
+import ObservationBridge
 @_spi(NeoSimulator) import XcodeSimulatorHost
 
 @MainActor
@@ -18,6 +19,8 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
     private var isManaging: Bool { get { inspection.isManaging } set { inspection.isManaging = newValue } }
     private var isVisible: Bool { get { inspection.isVisible } set { inspection.isVisible = newValue } }
     private var generation: Int { inspection.generation }
+    private var recordsObservation: PortableObservationTracking.Token?
+    private var stateObservation: PortableObservationTracking.Token?
     private var revealTask: Task<Void, Never>?
     private var iconTask: Task<Void, Never>?
     private var applications: [DeviceApplication] { inspection.applications }
@@ -53,11 +56,12 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
     private let infoVisibility = DeviceInfoVisibility()
     var onPairingMenu: ((SimulatorHostDevice) -> NSMenu)?
     var onDeviceMenu: ((SimulatorHostDevice) -> NSMenu)?
-    private lazy var info = NSHostingController(rootView: DeviceInformationView(
+    private lazy var information = DeviceInformationModel(
         manager: model, inspection: inspection, visibility: infoVisibility,
         pairingMenu: { [weak self] in self?.onPairingMenu?($0) ?? NSMenu() },
         deviceMenu: { [weak self] in self?.onDeviceMenu?($0) ?? NSMenu() },
-        unpair: { [weak self] in self?.model.manage(.unpair, devices: [.simulator($0)]) }))
+        unpair: { [weak self] in self?.model.manage(.unpair, devices: [.simulator($0)]) })
+    private lazy var info = NSHostingController(rootView: DeviceInformationView(model: information))
     private var showingInfo: Bool { page == .info && content == .info }
     private var showingApplications: Bool { page == .info && content == .applications }
     private var showingProfiles: Bool { page == .info && (content == .configuration || content == .provisioning) }
@@ -286,37 +290,23 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
         iconTask = nil
     }
 
-    override func viewWillLayout() {
-        super.viewWillLayout()
-        updateControls()
-    }
-
     private func observeRecords() {
-        withObservationTracking {
+        recordsObservation = withPortableContinuousObservation { [weak self, inspection] event in
             _ = inspection.applications
             _ = inspection.profiles
             _ = inspection.reports
-        } onChange: { [weak self] in
-            Task { @MainActor in
+            guard event.kind != .initial else { return }
+            Task { @MainActor [weak self] in
                 self?.rebuildReportFilter()
                 self?.updateRows()
-                self?.observeRecords()
             }
         }
     }
 
     private func observeInspectionState() {
-        withObservationTracking {
-            _ = inspection.reading
-            _ = inspection.lastIssue
-            _ = inspection.isManaging
-        } onChange: { [weak self] in
-            Task { @MainActor in
-                guard let self else { return }
-                self.updateVisibility()
-                self.updateControls()
-                self.observeInspectionState()
-            }
+        stateObservation = withPortableContinuousObservation { [weak self] _ in
+            self?.updateVisibility()
+            self?.updateControls()
         }
     }
 

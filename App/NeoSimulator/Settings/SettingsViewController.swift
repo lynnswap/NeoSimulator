@@ -21,7 +21,6 @@ final class SettingsViewController: NSTabViewController {
         general.sizingOptions = [.preferredContentSize]
         devices.sizingOptions = [.preferredContentSize]
         capture.sizingOptions = [.preferredContentSize]
-        serviceProfiles.sizingOptions = [.preferredContentSize]
         transitionOptions = []
         tabStyle = .toolbar
         canPropagateSelectedChildViewControllerTitle = true
@@ -46,7 +45,7 @@ final class SettingsViewController: NSTabViewController {
         onContentSizeChange?(viewController.preferredContentSize)
     }
 
-    var simulatorLoading: Task<Void, Never>? { devices.loading }
+    var simulatorLoading: Task<Void, Never>? { devices.state.loading }
 
     override func tabView(_ tabView: NSTabView, didSelect tabViewItem: NSTabViewItem?) {
         super.tabView(tabView, didSelect: tabViewItem)
@@ -60,6 +59,12 @@ final class SettingsViewController: NSTabViewController {
 }
 
 #if DEBUG
+struct PreviewViewController<Controller: NSViewController>: NSViewControllerRepresentable {
+    let makeController: () -> Controller
+    func makeNSViewController(context: Context) -> Controller { makeController() }
+    func updateNSViewController(_ controller: Controller, context: Context) {}
+}
+
 @MainActor
 enum SettingsPreview {
     static func preferences() -> SimulatorPreferences {

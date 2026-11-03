@@ -18,7 +18,7 @@ final class DeviceInspectorModel {
         var profileKind: DeviceProfileKind { self == .provisioning ? .provisioning : .configuration }
     }
     var device: InventoryDevice? {
-        didSet { select(content) }
+        didSet { select(content); updateInformation() }
     }
     var inspector: DeviceInspector?
     var page = Page.info
@@ -29,7 +29,12 @@ final class DeviceInspectorModel {
     private(set) var applications: [DeviceApplication] = []
     var profiles: [DeviceProfile] = []
     private(set) var reports: [DeviceReport] = []
-    private(set) var infoProperties: [String: DeviceInspectorValue] = [:]
+    private(set) var infoProperties: [String: DeviceInspectorValue] = [:] { didSet { updateInformation() } }
+    private(set) var information: DeviceInformation?
+
+    private func updateInformation() {
+        information = device.map { DeviceInformation(device: $0, properties: infoProperties) }
+    }
     var lastIssue: String?
     private(set) var reading = false
     @ObservationIgnored private var readTask: Task<Void, Never>?

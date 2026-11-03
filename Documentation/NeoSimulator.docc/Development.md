@@ -12,9 +12,9 @@ app project and its local Swift package dependency. The application project is
 Its library product remains `XcodeSimulatorHost`.
 
 `App/NeoSimulator` groups app code by domain: `DeviceBrowser`, `DeviceSettings`,
-`DeviceInspector`, `RemoteDevice`, `Settings`, and `Simulator`. Views, view
+`DeviceInspector`, `RemoteDevice`, `Settings`, and `Simulator`. Most views, view
 controllers, and models have separate files named for their types within each
-domain. Application launch, menus, and error presentation live in its `App/`
+domain. Related helper types can remain in the same file. Application launch, menus, and error presentation live in its `App/`
 folder. Keyboard input, display layout, and device symbols belong to
 `DeviceInput`, `DeviceDisplay`, and `DeviceAppearance`, respectively.
 
@@ -67,11 +67,29 @@ Source builds do not replace the app installed in Applications.
 The manager and renderer resolve their private interfaces through ABIBridge.
 `DeviceBrowser.swift` has previews using sample devices without connecting to
 CoreSimulator.
-The three settings panes have independent previews in
+The settings panes have independent previews in
 `GeneralSettingsViewController.swift`, `DevicesSettingsViewController.swift`,
-and `CaptureSettingsViewController.swift`. They use sample catalogs and a
-separate preferences domain. Debug builds allow Xcode's preview process to run
-alongside the app and skip application startup in preview processes.
+`CaptureSettingsViewController.swift`, and `ServiceProfilesSettingsViewController.swift`.
+The background-services inspector has previews in `BackgroundServicesViewController.swift`.
+They use sample catalogs and separate preferences domains. Debug builds allow
+Xcode's preview process to run alongside the app and skip application startup
+in preview processes.
+
+AppKit controllers retain the observable models used by their views. The
+background-services inspector uses an `NSOutlineView`, with a SwiftUI `Form`
+for profile controls in a top-aligned split-view accessory. Profile settings
+use an `NSSplitViewController` with an `NSTableView` for profile selection.
+Their controllers retain the list views when switching to an unavailable-state view.
+`ObservationBridge` subscriptions update controls when model properties change.
+
+`BackgroundServicesModel` and `DeviceSettingsModel` own reads and accepted edits.
+Their displayed snapshots are recomputed when those inputs change. Inspector
+models own presentation state and send device commands through
+`SimulatorManagerModel`, which owns the operation queue. `ServiceProfileStore`
+owns observable profile instances and per-device overrides. Settings edit the
+selected profile directly. Adding a profile selects its temporary name for inline
+editing. Only saving a simulator's modified Default profile asks for a name in a
+sheet. Saving a profile does not apply it to other simulators.
 
 ## Tests
 

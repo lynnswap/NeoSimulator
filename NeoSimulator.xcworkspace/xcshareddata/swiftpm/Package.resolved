@@ -1,5 +1,5 @@
 {
-  "originHash" : "2cb9aebcb87871c81877e98bf9c7f412f00b3e88406283d92b799fc4202318d7",
+  "originHash" : "affeb460b07227ebe1b4f33dd8c15cd44a947de313614d5ad96ac5062338cd00",
   "pins" : [
     {
       "identity" : "abibridge",
@@ -26,6 +26,15 @@
       "state" : {
         "revision" : "96d782a576273b73b277b577943a2a25b00b919e",
         "version" : "0.5.0"
+      }
+    },
+    {
+      "identity" : "observationbridge",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/lynnswap/ObservationBridge.git",
+      "state" : {
+        "revision" : "9a1ccc5682f559c911d42ec547273698df765321",
+        "version" : "0.15.7"
       }
     },
     {
