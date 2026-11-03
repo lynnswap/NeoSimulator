@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import sign_release
+import prepare_release as release
 
 
 class ReleaseSigningTests(unittest.TestCase):
@@ -222,6 +223,77 @@ shutil.copyfile(os.environ["FIXTURE_GUEST_SECTION"], helper)
             self.assertIn("Expected the guest settings helper to embed GuestVirtual.entitlements.", result.stderr)
             self.assertFalse((root / "dist/arm64").exists())
 
+
+
+class ReleaseTagTests(unittest.TestCase):
+    def setUp(self):
+        self.repository = "lynnswap/NeoSimulator"
+        self.sha = "a" * 40
+        self.version = "v1.2.3"
+        self.tag = {"ref": f"refs/tags/{self.version}", "object": {"type": "commit", "sha": self.sha}}
+        self.draft = {"id": 42, "draft": True, "tag_name": self.version,
+                      "target_commitish": self.sha, "body": "Approved notes", "prerelease": False,
+                      "html_url": "https://example.invalid/draft", "assets": []}
+        self.addCleanup(patch.stopall)
+        patch.object(release, "validate_request", return_value=self.repository).start()
+
+    def test_start_creates_tag_before_dispatch_and_reuses_matching_draft(self):
+        with tempfile.TemporaryDirectory() as directory:
+            notes = Path(directory) / "notes.md"
+            notes.write_text(self.draft["body"])
+            for existing in (False, True):
+                responses = [{"object": {"sha": self.sha}}, [[self.draft]] if existing else [[]]]
+                responses += [[self.tag]] if existing else [[], [], [self.tag]]
+                with patch.object(release, "api", side_effect=responses), \
+                        patch.object(release, "run", return_value=self.draft["html_url"]) as run:
+                    release.start_release(self.repository, self.version, self.sha, notes, False)
+                calls = [call.args[0] for call in run.call_args_list]
+                self.assertEqual(calls[-1][:4], ["gh", "workflow", "run", "release.yml"])
+                if existing:
+                    self.assertEqual(len(calls), 1)
+                else:
+                    self.assertEqual(calls[0][:4], ["gh", "release", "create", self.version])
+                    self.assertEqual(json.loads(run.call_args_list[1].kwargs["input"]),
+                                     {"ref": f"refs/tags/{self.version}", "sha": self.sha})
+
+    def test_start_with_uploaded_assets_requires_original_run(self):
+        with tempfile.TemporaryDirectory() as directory:
+            notes = Path(directory) / "notes.md"
+            notes.write_text(self.draft["body"])
+            with patch.object(release, "api", side_effect=[{"object": {"sha": self.sha}}, [[{**self.draft, "assets": [{"name": "previous.dmg"}]}]]]), patch.object(release, "run") as run:
+                with self.assertRaisesRegex(release.ReleaseError, "Rerun the failed publication job"):
+                    release.start_release(self.repository, self.version, self.sha, notes, False)
+                run.assert_not_called()
+
+    def test_prepare_pins_ui_draft_and_creates_tag_before_checks(self):
+        with patch.object(release, "api", side_effect=[[[{**self.draft, "target_commitish": "main"}]], [], [self.tag]]), \
+                patch.object(release, "patch_release", return_value=self.draft) as update, \
+                patch.object(release, "run") as run:
+            self.assertEqual(release.prepare_draft(self.version, self.sha), self.draft)
+        update.assert_called_once_with(self.repository, 42, {"target_commitish": self.sha})
+        self.assertEqual(json.loads(run.call_args.kwargs["input"]),
+                         {"ref": f"refs/tags/{self.version}", "sha": self.sha})
+
+    def test_prepare_reuses_annotated_tag_and_rejects_conflict(self):
+        annotated = {**self.tag, "object": {"type": "tag", "sha": "c" * 40}}
+        with patch.object(release, "run") as run:
+            with patch.object(release, "api", side_effect=[[[self.draft]], [annotated], {"object": self.tag["object"]}]):
+                release.prepare_draft(self.version, self.sha)
+            with patch.object(release, "api", side_effect=[[[{**self.draft, "target_commitish": "main"}]], [{**self.tag, "object": {"type": "commit", "sha": "b" * 40}}]]), patch.object(release, "patch_release") as update:
+                with self.assertRaisesRegex(release.ReleaseError, "differs"):
+                    release.prepare_draft(self.version, self.sha)
+                update.assert_not_called()
+            run.assert_not_called()
+
+    def test_publish_requires_tag_before_upload_and_after_upload(self):
+        with patch.object(release, "validate_artifacts", return_value={}), \
+                patch.object(release, "run") as run, patch.object(release, "patch_release") as update:
+            for responses in ([self.draft, []], [self.draft, [self.tag], self.draft, []]):
+                with patch.object(release, "api", side_effect=responses):
+                    with self.assertRaisesRegex(release.ReleaseError, "missing or differs"):
+                        release.publish_draft(Path("unused"), self.version, self.sha, "unused", 42, False)
+            run.assert_not_called()
+            update.assert_not_called()
 
 
 if __name__ == "__main__":

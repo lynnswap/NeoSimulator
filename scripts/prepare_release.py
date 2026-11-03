@@ -102,10 +102,38 @@ def matching_releases(repository: str, version: str) -> list[dict]:
     return [release for page in pages for release in page if release["tag_name"] == version]
 
 
-def require_absent_tag(repository: str, version: str) -> None:
+def tag_commit(repository: str, version: str) -> str | None:
     refs = api(f"repos/{repository}/git/matching-refs/tags/{version}")
-    if any(ref["ref"] == f"refs/tags/{version}" for ref in refs):
-        raise ReleaseError(f"Tag {version} already exists; it will not be moved or reused.")
+    ref = next((ref for ref in refs if ref["ref"] == f"refs/tags/{version}"), None)
+    if ref is None:
+        return None
+    target = ref["object"]
+    while target["type"] == "tag":
+        target = api(f"repos/{repository}/git/tags/{target['sha']}")["object"]
+    if target["type"] != "commit":
+        raise ReleaseError(f"Tag {version} does not point to a commit.")
+    return target["sha"]
+
+
+def require_tag(repository: str, version: str, source_sha: str) -> None:
+    if tag_commit(repository, version) != source_sha:
+        raise ReleaseError(f"Tag {version} is missing or differs from the approved commit.")
+
+
+def ensure_tag(repository: str, version: str, source_sha: str) -> None:
+    existing = tag_commit(repository, version)
+    if existing is not None:
+        if existing != source_sha:
+            raise ReleaseError(f"Tag {version} differs from the approved commit.")
+        return
+    try:
+        run(["gh", "api", "--method", "POST", f"repos/{repository}/git/refs", "--input", "-"],
+            input=json.dumps({"ref": f"refs/tags/{version}", "sha": source_sha}))
+    except ReleaseError as error:
+        # A concurrent start may have created the same approved tag.
+        if tag_commit(repository, version) != source_sha:
+            raise ReleaseError(f"Could not create tag {version}: {error}") from error
+    require_tag(repository, version, source_sha)
 
 
 def patch_release(repository: str, release_id: int, fields: dict) -> dict:
@@ -137,7 +165,7 @@ def prepare_draft(version: str, source_sha: str) -> dict:
     if target not in ("main", source_sha):
         raise ReleaseError("The draft must target main or this workflow's exact commit.")
     require_draft({**release, "target_commitish": source_sha}, version, source_sha)
-    require_absent_tag(repository, version)
+    ensure_tag(repository, version, source_sha)
     if target != source_sha:
         release = patch_release(repository, release["id"], {"target_commitish": source_sha})
         require_draft(release, version, source_sha)
@@ -169,7 +197,7 @@ def publish_draft(directory: Path, version: str, source_sha: str, dmg_sha256: st
         # A retry may confirm the same artifact, but must never mutate a public release.
         return confirm_publication(repository, release, version, source_sha, checksums, prerelease)
     require_draft(release, version, source_sha, prerelease)
-    require_absent_tag(repository, version)
+    require_tag(repository, version, source_sha)
     for name, checksum in checksums.items():
         existing = [asset for asset in release["assets"] if asset["name"] == name]
         if existing:
@@ -181,7 +209,7 @@ def publish_draft(directory: Path, version: str, source_sha: str, dmg_sha256: st
     release = api(endpoint)
     require_draft(release, version, source_sha, prerelease)
     verify_uploaded_assets(release, checksums)
-    require_absent_tag(repository, version)
+    require_tag(repository, version, source_sha)
     # Reassert the approved identity in the publishing update so intervening draft
     # edits cannot redirect it. Leave the user's title and notes untouched.
     published = patch_release(repository, release_id, {
@@ -215,33 +243,50 @@ def start_release(repository: str, version: str, source_sha: str, notes_file: Pa
         raise ReleaseError("Version must look like v1.2.3 or v1.2.3-beta.1.")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
         raise ReleaseError("Repository must be OWNER/REPO.")
-    if not notes_file.read_text().strip():
+    notes = notes_file.read_text().strip()
+    if not notes:
         raise ReleaseError("Release notes must not be empty.")
-    if matching_releases(repository, version):
-        raise ReleaseError("This release already exists. Use Publish Release to start an existing draft.")
-    require_absent_tag(repository, version)
     main_sha = api(f"repos/{repository}/git/ref/heads/main")["object"]["sha"]
     if not re.fullmatch(r"[0-9a-f]{40}", source_sha) or main_sha != source_sha:
         raise ReleaseError("The approved source SHA must be the current main commit.")
-    url = run([
-        "gh", "release", "create", version, "--repo", repository, "--draft",
-        "--target", source_sha, "--title", version, "--notes-file", str(notes_file),
-        f"--prerelease={'true' if prerelease else 'false'}",
-    ]).strip()
+    releases = matching_releases(repository, version)
+    if releases:
+        if len(releases) != 1:
+            raise ReleaseError("Expected one matching draft release.")
+        draft = releases[0]
+        require_draft(draft, version, source_sha, prerelease)
+        if (draft.get("body") or "").strip() != notes:
+            raise ReleaseError("The existing draft does not match the approved notes.")
+        if draft["assets"]:
+            raise ReleaseError("The draft already has uploaded assets. Rerun the failed publication job to reuse its signed artifacts.")
+        url = draft["html_url"]
+    else:
+        existing = tag_commit(repository, version)
+        if existing is not None and existing != source_sha:
+            raise ReleaseError(f"Tag {version} differs from the approved commit.")
+        url = run([
+            "gh", "release", "create", version, "--repo", repository, "--draft",
+            "--target", source_sha, "--title", version, "--notes-file", str(notes_file),
+            f"--prerelease={'true' if prerelease else 'false'}",
+        ]).strip()
+    try:
+        ensure_tag(repository, version, source_sha)
+    except ReleaseError as error:
+        raise ReleaseError(f"Draft saved at {url}, but tag creation was not confirmed: {error}") from error
     try:
         run(["gh", "workflow", "run", "release.yml", "--repo", repository,
              "--ref", "main", "-f", f"version={version}"])
     except ReleaseError as error:
-        raise ReleaseError(f"Draft saved at {url}, but workflow dispatch was not confirmed. "
+        raise ReleaseError(f"Tag {version} and draft saved at {url}, but workflow dispatch was not confirmed. "
                            f"Check Actions before retrying Publish Release: {error}") from error
-    return (f"Draft: {url}\nActions: https://github.com/{repository}/actions/workflows/release.yml\n"
+    return (f"Tag: {version} ({source_sha})\nDraft: {url}\nActions: https://github.com/{repository}/actions/workflows/release.yml\n"
             "Approve signing in GitHub; CI then uploads assets and publishes. No local wait is needed.")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    start = commands.add_parser("start", help="Save approved notes as a draft and dispatch publication without waiting")
+    start = commands.add_parser("start", help="Create the approved tag and draft, then dispatch publication without waiting")
     start.add_argument("--repo", required=True)
     start.add_argument("--version", required=True)
     start.add_argument("--source-sha", required=True)
