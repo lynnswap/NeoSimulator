@@ -57,6 +57,7 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
                            target: self, action: #selector(addProfile))
         remove.target = self
         remove.action = #selector(removeProfile)
+        remove.hasDestructiveAction = true
         for button in [add, remove] { button.isBordered = false }
         let controls = NSStackView(views: [add, remove, NSView()])
         controls.heightAnchor.constraint(equalToConstant: 36).isActive = true
@@ -242,6 +243,7 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
             rename.target = self
             rename.representedObject = profile
             menu.addItem(rename)
+            menu.addItem(.separator())
             let delete = NSMenuItem(title: "Delete", action: #selector(deleteProfile(_:)), keyEquivalent: "")
             delete.target = self
             delete.representedObject = profile
@@ -267,7 +269,7 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
         let alert = NSAlert()
         alert.messageText = "Delete Service Profile?"
         alert.informativeText = "The simulators keep their current services. Only the profile and its assignments are removed."
-        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Delete").hasDestructiveAction = true
         alert.addButton(withTitle: "Cancel")
         alert.beginSheetModal(for: window) { [weak self] response in
             guard response == .alertFirstButtonReturn, let self else { return }

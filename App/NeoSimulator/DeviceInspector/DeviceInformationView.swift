@@ -121,7 +121,7 @@ struct DeviceInformationView: View {
                             .disabled(!model.canAddPairing)
                         Divider()
                             .padding(.vertical, 4)
-                        Button(action: model.removePairing) {
+                        Button(role: .destructive, action: model.removePairing) {
                             PairingAccessoryLabel(symbol: "minus")
                         }
                         .accessibilityLabel("Remove Paired Simulator")

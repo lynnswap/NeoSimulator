@@ -774,7 +774,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         alert.alertStyle = .warning
         alert.messageText = "Erase all content and settings on \(session.device.name)?"
         alert.informativeText = "The device restarts, and all of its apps, data, and settings are removed."
-        alert.addButton(withTitle: "Erase")
+        alert.addButton(withTitle: "Erase").hasDestructiveAction = true
         alert.addButton(withTitle: "Cancel")
         alert.beginSheetModal(for: window) { [weak self] response in
             guard let self else { return }

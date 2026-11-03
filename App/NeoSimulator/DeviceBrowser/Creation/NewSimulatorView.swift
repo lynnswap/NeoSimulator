@@ -13,7 +13,7 @@ struct NewSimulatorView: View {
             Section {
                 HStack {
                     if let cancel = model.onCancel {
-                        Button("Cancel", action: cancel).keyboardShortcut(.cancelAction)
+                        Button("Cancel", role: .cancel, action: cancel).keyboardShortcut(.cancelAction)
                     }
                     Spacer()
                     if model.existingDevice == nil, model.showsWatchPage {

@@ -186,6 +186,7 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
         reloadButton.action = #selector(refreshInspector(_:))
         addButton.toolTip = "Install…"
         removeButton.toolTip = "Remove…"
+        removeButton.hasDestructiveAction = true
         launchButton.toolTip = "Launch Application"
         reloadButton.toolTip = "Refresh Inspector"
         actions.addItem(withTitle: "Actions")
@@ -193,7 +194,11 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
         actions.image = NSImage(systemSymbolName: "ellipsis", accessibilityDescription: "Application Actions")
         actions.imagePosition = .imageOnly
         actions.setAccessibilityLabel("Application Actions")
-        for button in [addButton, removeButton, launchButton, actions, previewButton, downloadButton, NSView(), reloadButton] {
+        let separator = NSBox()
+        separator.boxType = .separator
+        separator.widthAnchor.constraint(equalToConstant: 1).isActive = true
+        separator.heightAnchor.constraint(equalToConstant: 18).isActive = true
+        for button in [addButton, launchButton, actions, previewButton, downloadButton, NSView(), reloadButton, separator, removeButton] {
             buttons.addArrangedSubview(button)
         }
         buttons.orientation = .horizontal
@@ -755,7 +760,7 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
         alert.alertStyle = .warning
         alert.messageText = "Remove \(app?.name ?? profile!.name) from \(inspector.device.name)?"
         alert.informativeText = app != nil ? "The application and its data will be removed." : "Settings supplied by this profile will be removed."
-        alert.addButton(withTitle: "Remove")
+        alert.addButton(withTitle: "Remove").hasDestructiveAction = true
         alert.addButton(withTitle: "Cancel")
         alert.beginSheetModal(for: window) { [weak self] response in
             guard response == .alertFirstButtonReturn, let self else { return }

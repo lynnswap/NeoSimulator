@@ -1217,9 +1217,15 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             ("Pair Simulators", .pair), ("Unpair", .unpair),
             ("Erase Content and Settings…", .erase), ("Remove…", .remove),
         ]
+        var addedDestructiveSection = false
         for (title, action) in operations where supports(action, devices: devices) {
             if !menu.items.isEmpty, case .rename = action { menu.addItem(.separator()) }
-            if case .erase = action, !menu.items.isEmpty { menu.addItem(.separator()) }
+            switch action {
+            case .unpair, .erase, .remove:
+                if !addedDestructiveSection && !menu.items.isEmpty { menu.addItem(.separator()) }
+                addedDestructiveSection = true
+            default: break
+            }
             let item = NSMenuItem(title: title, action: #selector(performManagement(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = ManagementRequest(action: action, identifiers: identifiers)

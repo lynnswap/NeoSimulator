@@ -107,7 +107,9 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
             device.addItem(item)
             device.addItem(.separator())
         }
-        commands([.restart, .eraseAllContentAndSettings, .shutDown], in: device)
+        commands([.restart, .shutDown], in: device)
+        device.addItem(.separator())
+        commands([.eraseAllContentAndSettings], in: device)
         device.addItem(.separator())
         commands([.rotateLeft, .rotateRight], in: device)
         let orientation = menu("Orientation", in: device)

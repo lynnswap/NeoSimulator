@@ -61,7 +61,7 @@ struct GeneralSettingsView: View {
                 Toggle("Show pinch gestures", isOn: $preferences.showPinches)
             }
             Section {
-                Button("Restore Original Settings…") { model.confirmsRestore = true }
+                Button("Restore Original Settings…", role: .destructive) { model.confirmsRestore = true }
                     .disabled(!model.canRestore)
             }
         }
