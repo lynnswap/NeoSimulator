@@ -1167,12 +1167,12 @@ struct ManagerModelTests {
         outline.selectRowIndexes(IndexSet(rows), byExtendingSelection: false)
         #expect(first.selectedIdentifiers == Set(devices.map(\.id)))
         let firstTabs = try tabs(first)
-        await NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0
-            firstTabs.selectedSegment = 3
-            NSApp.sendAction(firstTabs.action!, to: firstTabs.target, from: firstTabs)
-            firstSplit.splitViewItems[0].isCollapsed = true
-        }
+        NSAnimationContext.beginGrouping()
+        NSAnimationContext.current.duration = 0
+        firstTabs.selectedSegment = 3
+        NSApp.sendAction(firstTabs.action!, to: firstTabs.target, from: firstTabs)
+        firstSplit.splitViewItems[0].isCollapsed = true
+        NSAnimationContext.endGrouping()
         first.window?.close()
 
         await source.setDevices([])
@@ -1192,11 +1192,11 @@ struct ManagerModelTests {
             .compactMap { $0 as? NSOutlineView }.first)
         #expect(restoredOutline.selectedRowIndexes.count == 2)
         let secondTabs = try tabs(second)
-        await NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0
-            secondTabs.selectedSegment = 3
-            NSApp.sendAction(secondTabs.action!, to: secondTabs.target, from: secondTabs)
-        }
+        NSAnimationContext.beginGrouping()
+        NSAnimationContext.current.duration = 0
+        secondTabs.selectedSegment = 3
+        NSApp.sendAction(secondTabs.action!, to: secondTabs.target, from: secondTabs)
+        NSAnimationContext.endGrouping()
         second.window?.close()
         let third = browser()
         defer { third.window?.close() }
@@ -2796,15 +2796,15 @@ struct ManagerModelTests {
         #expect(await events.next() == .readServices(device.id))
         await source.completeServiceRead(disabled: [])
         #expect(await events.next() == .changeServices(device.id))
-        await source.failServiceChange(disabled: [])
+        await source.failServiceChange(disabled: [other], loaded: [other])
         try await awaitServiceOperations(manager)
         #expect(failure != nil)
         #expect(store.binding(for: device.id)?.overrides[label] == true)
-        #expect(manager.backgroundServices.configuration?.disabledLabels.isEmpty == true)
+        #expect(manager.backgroundServices.configuration?.disabledLabels == [other])
         #expect(await source.serviceChanges == [.init(targets: [.service(other)], enabled: false)])
         manager.revertServiceProfile(for: device.id)
         #expect(await events.next() == .readServices(device.id))
-        await source.completeServiceRead(disabled: [])
+        await source.completeServiceRead(disabled: [other], loaded: [other])
         #expect(await events.next() == .changeServices(device.id))
         await source.completeServiceChange(disabled: [label, other])
         try await awaitServiceOperations(manager)
@@ -3693,10 +3693,10 @@ actor ManagerModelSource: SimulatorManagerSource {
             continuation.yield(.readServices(device.id))
         }
     }
-    func completeServiceRead(disabled: Set<String>) {
+    func completeServiceRead(disabled: Set<String>, loaded: Set<String> = []) {
         let waiting = serviceRead
         serviceRead = nil
-        waiting?.resume(returning: SimulatorBackgroundServices(disabled: disabled, loaded: [], productFamily: "iPhone"))
+        waiting?.resume(returning: SimulatorBackgroundServices(disabled: disabled, loaded: loaded, productFamily: "iPhone"))
     }
     func failServiceRead() {
         let waiting = serviceRead
@@ -3718,11 +3718,11 @@ actor ManagerModelSource: SimulatorManagerSource {
             services: SimulatorBackgroundServices(disabled: disabled, loaded: [], productFamily: "iPhone"),
             stillEnabledLabels: [], notStartedLabels: notStarted))
     }
-    func failServiceChange(disabled: Set<String>) {
+    func failServiceChange(disabled: Set<String>, loaded: Set<String> = []) {
         let waiting = serviceChange
         serviceChange = nil
         waiting?.resume(throwing: SimulatorBackgroundServicesUpdateFailure(
-            services: SimulatorBackgroundServices(disabled: disabled, loaded: [], productFamily: "iPhone"),
+            services: SimulatorBackgroundServices(disabled: disabled, loaded: loaded, productFamily: "iPhone"),
             underlyingError: SimulatorHostFailure(Failure.unavailable)))
     }
     func quitRenderer(keepingDevicesRunning: Bool?) { sessionEvents.append("quit"); quitCount += 1; continuation.yield(.quit) }

@@ -203,7 +203,7 @@ final class BackgroundServicesModel {
             let labels = ServiceConfiguration.labels
             let disabled = configuration.disabledLabels.intersection(labels).filter { current.canDisable($0) }
             let enabling = current.disabledLabels.intersection(labels).subtracting(disabled)
-            let disabling = disabled.subtracting(current.disabledLabels)
+            let disabling = disabled.subtracting(current.disabledLabels).union(disabled.intersection(current.loadedLabels))
             var notStarted: [String] = []
             if !enabling.isEmpty {
                 let update = try await source.setBackgroundServices(enabling.sorted().map { .service($0) }, enabled: true, for: destination)
