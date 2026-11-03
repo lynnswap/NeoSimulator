@@ -184,7 +184,7 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
             let item = NSToolbarItem(itemIdentifier: itemIdentifier)
             item.label = "Show in Main Window"
             item.toolTip = "Show this device in the main window"
-            item.image = NSImage(systemSymbolName: "rectangle.inset.filled", accessibilityDescription: item.label)
+            item.image = NSImage(systemSymbolName: "arrow.down.backward.and.arrow.up.forward", accessibilityDescription: item.label)
             item.target = controller
             item.action = #selector(DeviceWindowController.showInMainWindow(_:))
             return item
