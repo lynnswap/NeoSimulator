@@ -181,7 +181,9 @@ Hub mode.
 | `DeviceScreen` | Keep one open screen's canvas controls current from its state, and send their actions to that screen's device. |
 | `SimulatorRuntime` | Load and validate private framework interfaces through ABIBridge. |
 | `CoreSimulator` | Device-set access and simulator model data. |
-| `HostApplication` | Observe device sets. In the manager, own one Xcode's simulator sessions and their presentation controllers; in a headless renderer, boot, restart, and shut down the devices it owns. |
+| `SimulatorContext`, `SimulatorScreen` | Expose the public Kit API for discovery, guest lifetime, and AppKit screen presentation. |
+| `SimulatorScreenHost` | Observe one Xcode's device sets and own its simulator sessions, presentation controllers, and resource cleanup. |
+| `HostApplication` | Compose the renderer's application lifecycle, menus, manager requests, and ownership registration around a `SimulatorScreenHost`. |
 | `DeviceSession` | Device connection, input, pasteboard, audio, external-display state, and device operations. |
 | `DeviceWindowController` | Present the device and forward user actions. |
 | `RemoteDeviceScreenSession` | Own one active physical-device or VM screen transport, its resize assertion and input resources, and unfinished or completed recordings. |

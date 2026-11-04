@@ -65,6 +65,8 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     /// A corner drag changes only the embedded canvas's display scale.
     private var canvasResize: CanvasResize?
     /// Injectable window-server drag operation.
+    private let captureOwner: UUID?
+    private let reportDetachedCapture: (Error) -> Void
     private let offersLifetimeChoice: Bool
     private let performWindowDrag: (NSWindow, NSEvent) -> Void
     private let presentCompactWindow: (NSWindow) -> Void
@@ -99,9 +101,17 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     var onShowInMainWindow: (() -> Void)? {
         didSet { deviceToolbar?.setShowsMainWindowAction(onShowInMainWindow != nil) }
     }
-    var canMovePresentation: Bool {
-        guard !closed, !isFullScreen, let window = presentationWindow else { return false }
+    private var permitsPresentationMove: Bool {
+        guard !closed, !isFullScreen else { return false }
+        guard let window = presentationWindow else { return true }
         return window.attachedSheet == nil && !window.styleMask.contains(.fullScreen)
+    }
+    var canMovePresentation: Bool { presentationWindow != nil && permitsPresentationMove }
+
+    func validatePresentationMove() throws {
+        guard permitsPresentationMove else {
+            throw SimulatorError.operation("Close the device's dialog or leave full screen before moving its screen.")
+        }
     }
     private var canShowInMainWindow: Bool { canMovePresentation && onShowInMainWindow != nil }
     @objc func showInMainWindow(_ sender: Any?) {
@@ -143,6 +153,8 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     init(session: DeviceSession, preferences: any PreferenceStore = HostPreferences.defaults,
          touchPressure: TouchPressure, tvRemote: TVRemoteController,
          offersLifetimeChoice: Bool = true,
+         captureOwner: UUID? = nil,
+         reportDetachedCapture: @escaping (Error) -> Void = { CaptureThumbnail.reportDetached($0) },
          performWindowDrag: @escaping (NSWindow, NSEvent) -> Void = { $0.performDrag(with: $1) },
          presentCompactWindow: @escaping (NSWindow) -> Void = { $0.makeKeyAndOrderFront(nil) },
          makeKeyboardCaptureTap: @escaping @MainActor () -> any KeyboardEventTap = { SystemKeyboardEventTap() },
@@ -156,6 +168,8 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         self.userInterfacePluginLookUp = userInterfacePluginLookUp
         self.preferences = preferences
         self.offersLifetimeChoice = offersLifetimeChoice
+        self.captureOwner = captureOwner
+        self.reportDetachedCapture = reportDetachedCapture
         self.touchPressure = touchPressure
         self.tvRemote = tvRemote
         self.performWindowDrag = performWindowDrag
@@ -991,7 +1005,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         let mask: DeviceTools.ScreenMask = usesDeviceMask ? .alpha : .ignored
         session.run({ [weak self, session] in
             let file = try await session.screenshot(mask: mask)
-            let capture = CapturedContent(.screenshot, file: file, name: name, defaultFolder: folder)
+            let capture = CapturedContent(.screenshot, file: file, name: name, defaultFolder: folder, owner: self?.captureOwner)
             guard let self else {
                 try capture.saveToDefaultLocation()
                 return
@@ -1020,8 +1034,8 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         let thumbnail = CaptureThumbnail(capture, image: image, parent: window, source: source,
                                          rotation: session.isResizingApp ? 0 : session.displayAngle,
                                          cornerRadius: (session.appResizeGeometry?.cornerRadius ?? CGFloat(session.capabilities.screenCornerRadius)) * scale,
-                                         spacing: NSSize(width: horizontal, height: ceil(scale * base))) { [weak self] error in
-            if let self, !self.closed { self.present(error) } else { CaptureThumbnail.reportDetached(error) }
+                                         spacing: NSSize(width: horizontal, height: ceil(scale * base))) { [weak self, reportDetachedCapture] error in
+            if let self, !self.closed { self.present(error) } else { reportDetachedCapture(error) }
         }
         thumbnail.show()
     }
@@ -1080,7 +1094,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         run {
             try session.startRecording(to: .capture { [weak self] file in
                 let capture = CapturedContent(.movie, file: file, name: CaptureFile.recordingName(device: device, date: Date()),
-                                              defaultFolder: desktop, isReserved: isReserved)
+                                              defaultFolder: desktop, owner: self?.captureOwner, isReserved: isReserved)
                 if let self { try self.showThumbnail(of: capture, image: nil) } else { try capture.saveToDefaultLocation() }
             }, mask: usesDeviceMask ? .black : .ignored)
         }

@@ -1742,6 +1742,7 @@ struct InputFocusTests {
         #expect(controls.isDescendant(of: accessory.view))
         controller.detachPresentation()
         #expect(controller.presentationViewController.parent == nil && content.superview == nil)
+        try controller.validatePresentationMove()
         // Moving the screen ends its trackpad gestures, which the next presentation's window takes again.
         #expect(display.disconnectCount == 0 && closes == 0 && display.trackpad.last == false)
         controller.showCompactWindow()
@@ -1809,6 +1810,7 @@ struct InputFocusTests {
             sheetEnded.finish()
         }
         #expect(window.attachedSheet === sheet)
+        #expect(throws: SimulatorError.self) { try controller.validatePresentationMove() }
         replacement.onDisconnect = { #expect(window.attachedSheet == nil) }
         controller.invalidate()
         #expect(window.attachedSheet == nil)
@@ -6774,12 +6776,24 @@ struct InputFocusTests {
         #expect(try await connect().appliedLocations == [.coordinate(12.5, 34.5)])
         let display = TestDisplay()
         display.scenarios = Self.scenarios
-        let session = try makeSession(display, device: identifier)
+        let controller = try makeController(display, device: identifier)
+        defer { controller.invalidate() }
+        let session = controller.session
+        let model = SimulatorManagerModel(source: ManagerModelSource(devices: []))
+        model.settings.setReadingSuspended(true)
+        let screens = DeviceScreens(model: model)
+        defer { withExtendedLifetime(screens) {} }
+        _ = screens.attach(controller, as: .simulator(udid: identifier, deviceSetPath: nil))
         try await session.setCustomLocation(latitude: 45.5, longitude: 67.5)
         #expect(try await connect().appliedLocations == [.coordinate(45.5, 67.5)])
         defaults.set(["mode": "none"], forKey: key)
         #expect(defaults.synchronize())
-        try session.refreshLocationSelection()
+        DistributedNotificationCenter.default().postNotificationName(
+            Notification.Name("dev.lynnswap.NeoSimulator.DeviceLocationChanged"),
+            object: identifier, userInfo: nil, deliverImmediately: true)
+        for _ in 0..<100 where session.location != LocationSelection.none {
+            try await Task.sleep(for: .milliseconds(10))
+        }
         #expect(session.location == LocationSelection.none)
         #expect(display.appliedLocations == [.coordinate(45.5, 67.5)])
         #expect(try await connect().appliedLocations == [.cleared])

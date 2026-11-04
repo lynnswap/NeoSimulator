@@ -47,9 +47,10 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         engine.onError = { [weak self] in self?.report($0) }
         engine.onConflict = { [weak self] name, failure in
             guard let self else { return }
+            self.retireRegistration()
             hostLog("\(name) appeared; simulator presentations have disconnected")
             if let failure {
-                if self.ownerExitRequested || self.handoverRequested { hostLog(failure.localizedDescription) }
+                if self.ownerExitRequested || self.handoverRequested || self.isHeadless { hostLog(failure.localizedDescription) }
                 else { NSAlert(presenting: failure).runModal() }
             }
             Self.requestTermination()
@@ -144,17 +145,19 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     }
 
     private func openRequestedSimulator(_ identifier: SimulatorDeviceIdentifier, requestIdentifier: String? = nil, bootIfNeeded: Bool = true) {
-        guard terminationTask == nil, !isStopped else { return }
+        guard terminationTask == nil, !isStopped else {
+            if let requestIdentifier {
+                acknowledgeOpen(identifier, requestIdentifier: requestIdentifier, failure: "The simulator display is closing.")
+            }
+            return
+        }
         let preservesOwnership = engine.ownedDeviceIdentifiers.contains(identifier) || engine.controller(for: identifier) != nil
         let task = Task {
-            var result = ["udid": identifier.identifier]
-            if let path = identifier.deviceSetPath { result["deviceSetPath"] = path }
+            var failure: String?
             defer {
                 if let requestIdentifier {
                     openRequests.removeValue(forKey: requestIdentifier)
-                    DistributedNotificationCenter.default().postNotificationName(
-                        Notification.Name("dev.lynnswap.NeoSimulator.RendererOpened"), object: requestIdentifier,
-                        userInfo: result, deliverImmediately: true)
+                    acknowledgeOpen(identifier, requestIdentifier: requestIdentifier, failure: failure)
                 }
             }
             do {
@@ -162,14 +165,23 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                     try await self.engine.openSimulatorLocally(withIdentifier: identifier, bootIfNeeded: bootIfNeeded)
                 }, cleanup: { try await self.engine.releaseDevice(identifier) })
             } catch {
-                if !(error is CancellationError) { result["error"] = error.localizedDescription }
+                if !(error is CancellationError) { failure = error.localizedDescription }
                 if requestIdentifier == nil, !(error is CancellationError) {
-                    NSAlert(presenting: error).runModal()
+                    report(error)
                     showDeviceBrowser()
                 }
             }
         }
         if let requestIdentifier { openRequests[requestIdentifier] = (identifier, preservesOwnership, task) }
+    }
+
+    private func acknowledgeOpen(_ identifier: SimulatorDeviceIdentifier, requestIdentifier: String, failure: String?) {
+        var result = ["udid": identifier.identifier]
+        if let path = identifier.deviceSetPath { result["deviceSetPath"] = path }
+        result["error"] = failure
+        DistributedNotificationCenter.default().postNotificationName(
+            Notification.Name("dev.lynnswap.NeoSimulator.RendererOpened"), object: requestIdentifier,
+            userInfo: result, deliverImmediately: true)
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
@@ -435,6 +447,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
 
     private func report(_ error: Error) {
         hostLog(error.localizedDescription)
+        guard !isHeadless else { return }
         if isManaged {
             NSAlert(presenting: error).runModal()
             return
@@ -482,10 +495,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
 
     func shutdown() {
         engine.shutdown()
-        if let requestObserver {
-            DistributedNotificationCenter.default().removeObserver(requestObserver)
-            self.requestObserver = nil
-        }
+        retireRegistration()
         if let locationObserver {
             DistributedNotificationCenter.default().removeObserver(locationObserver)
             self.locationObserver = nil
@@ -495,6 +505,13 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         browser?.close()
         newSimulator?.close()
         browser = nil
+    }
+
+    private func retireRegistration() {
+        if let requestObserver {
+            DistributedNotificationCenter.default().removeObserver(requestObserver)
+            self.requestObserver = nil
+        }
         if isManaged {
             do { try FileManager.default.removeItem(at: registrationURL) }
             catch where (error as NSError).code == NSFileNoSuchFileError {}

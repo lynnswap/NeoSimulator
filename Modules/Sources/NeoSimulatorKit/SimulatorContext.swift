@@ -86,6 +86,12 @@ public final class SimulatorContext {
     public var onError: ((any Error) -> Void)?
     public var xcodeURL: URL { engine.runtime.xcodeURL }
 
+    /// Selects the host's preferences before loading contexts. Device settings use the
+    /// same store when `deviceSettings` is omitted.
+    public static func configurePreferences(defaults: UserDefaults, deviceSettings: UserDefaults? = nil) {
+        HostPreferences.configure(defaults: defaults, deviceSettingsDefaults: deviceSettings ?? defaults)
+    }
+
     /// Chooses the process-wide SimulatorKit installation before the first context is loaded.
     public static func selectDisplayXcode(_ url: URL) throws {
         try CoreDeviceRuntime.configureUIFrameworks(xcodeURL: url)
@@ -172,11 +178,11 @@ public final class SimulatorContext {
     public func openScreen(_ id: SimulatorDeviceIdentifier) async throws -> SimulatorScreen {
         try checkActive()
         if let screen = screens[id] { return screen }
+        let device = SimulatorDeviceSnapshot(try self.device(id))
         let controller = try await engine.openPresentation(for: id)
         try checkActive()
-        try Task.checkCancellation()
         if let screen = screens[id] { return screen }
-        let screen = SimulatorScreen(device: SimulatorDeviceSnapshot(try device(id)), controller: controller, context: self)
+        let screen = SimulatorScreen(device: device, controller: controller, context: self)
         screens[id] = screen
         return screen
     }
@@ -284,18 +290,21 @@ public final class SimulatorScreen {
     /// One simulator screen can be embedded in each window.
     public func embed(in viewController: NSViewController) throws {
         try checkOpen()
+        try controller.validatePresentationMove()
         controller.embed(in: viewController)
     }
 
     /// Moves this screen into its own window and brings it forward.
     public func showWindow() throws {
         try checkOpen()
+        try controller.validatePresentationMove()
         controller.showCompactWindow()
     }
 
     /// Removes the current presentation while keeping the connection available.
-    public func detach() {
-        guard !isClosed else { return }
+    public func detach() throws {
+        try checkOpen()
+        try controller.validatePresentationMove()
         controller.detachPresentation()
     }
 

@@ -11,6 +11,7 @@ final class CapturedContent {
     enum Kind { case screenshot, movie }
 
     let kind: Kind
+    let owner: UUID?
     /// The temporary capture, which saving moves and deleting removes.
     let file: URL
     /// The file name it is saved under.
@@ -24,8 +25,10 @@ final class CapturedContent {
     /// Where it was saved, from which a late drag delivery copies it.
     private var saved: URL?
 
-    init(_ kind: Kind, file: URL, name: String, defaultFolder: URL, isReserved: @escaping (URL) -> Bool = { _ in false }) {
+    init(_ kind: Kind, file: URL, name: String, defaultFolder: URL, owner: UUID? = nil,
+         isReserved: @escaping (URL) -> Bool = { _ in false }) {
         self.kind = kind
+        self.owner = owner
         self.file = file
         self.name = name
         self.defaultFolder = defaultFolder
@@ -374,12 +377,14 @@ final class CaptureThumbnail: NSObject {
 
     /// Saves unresolved captures before quitting, including those awaiting GIF export.
     @discardableResult
-    static func finishAll() -> [Error] {
-        var failures = active.compactMap { $0.finish(reporting: false) }
-        for content in pending where !content.settleIfTaken() {
+    static func finishAll(owner: UUID? = nil) -> [Error] {
+        let thumbnails = active.filter { owner == nil || $0.content.owner == owner }
+        var failures = thumbnails.compactMap { $0.finish(reporting: false) }
+        let captures = pending.filter { owner == nil || $0.owner == owner }
+        for content in captures where !content.settleIfTaken() {
             do { try content.saveToDefaultLocation() } catch { failures.append(error) }
         }
-        pending.removeAll()
+        pending.removeAll { owner == nil || $0.owner == owner }
         return failures
     }
 

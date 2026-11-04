@@ -76,6 +76,8 @@ private final class ApplicationDelegate: NSObject, NSApplicationDelegate {
                 throw SimulatorError.operation("Reopening a screen created a second connection.")
             }
             try await Task.sleep(for: .seconds(2))
+            try screen.detach()
+            try screen.showWindow()
             var end: SimulatorScreenEnd?
             screen.onEnd = { end = $0; print("Screen ended: \($0)") }
             try screen.press(.home) { [weak self] in self?.asynchronousFailures.append($0.localizedDescription) }

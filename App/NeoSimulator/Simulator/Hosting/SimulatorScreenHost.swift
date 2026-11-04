@@ -8,6 +8,7 @@ final class SimulatorScreenHost: NSObject {
     private let conflicts: HostConflictMonitor
     private let deviceSet: SimulatorDeviceSet
     private let recordings = RecordingStore()
+    private let captureOwner = UUID()
     private let isManaged: Bool
     let isHeadless: Bool
     private let isInProcess: Bool
@@ -85,13 +86,6 @@ final class SimulatorScreenHost: NSObject {
             if self.isTerminating || self.stopped { self.recordingTerminationErrors.append(error) }
             else { self.report(error) }
         }
-        if !inProcess {
-            CaptureThumbnail.reportDetached = { [weak self] error in
-                guard let self else { return }
-                if self.isTerminating || self.stopped { self.recordingTerminationErrors.append(error) }
-                else { self.report(error) }
-            }
-        }
         conflicts.onConflict = { [weak self] in self?.handleHostConflict() }
     }
 
@@ -103,20 +97,25 @@ final class SimulatorScreenHost: NSObject {
     }
 
     func start(attachingBootedDevices: Bool = true) throws {
-        try conflicts.check()
-        touchIndicatorObservation = DefaultsObservation(
-            HostPreferences.defaults, keys: TouchIndicator.allCases.map(\.preferenceKey)) {
-            NotificationCenter.default.post(name: TouchIndicator.didChangeNotification, object: HostPreferences.defaults)
+        do {
+            try conflicts.check()
+            touchIndicatorObservation = DefaultsObservation(
+                HostPreferences.defaults, keys: TouchIndicator.allCases.map(\.preferenceKey)) {
+                NotificationCenter.default.post(name: TouchIndicator.didChangeNotification, object: HostPreferences.defaults)
+            }
+            testingDevicesObservation = DefaultsObservation(HostPreferences.defaults, keys: [HostPreferences.showTestingDevices]) { [weak self] in
+                self?.applyTestingDeviceVisibility()
+            }
+            notificationToken = try deviceSet.observe { [weak self] in self?.rescan() }
+            openTestingSet()
+            if !attachingBootedDevices {
+                suppressed.formUnion(try readDevices().filter { $0.state == 3 }.map(\.identity))
+            }
+            if !isManaged && !isInProcess { try scanDevices() }
+        } catch {
+            shutdown()
+            throw error
         }
-        testingDevicesObservation = DefaultsObservation(HostPreferences.defaults, keys: [HostPreferences.showTestingDevices]) { [weak self] in
-            self?.applyTestingDeviceVisibility()
-        }
-        notificationToken = try deviceSet.observe { [weak self] in self?.rescan() }
-        openTestingSet()
-        if !attachingBootedDevices {
-            suppressed.formUnion(try readDevices().filter { $0.state == 3 }.map(\.identity))
-        }
-        try scanDevices()
     }
 
     func releaseDevice(_ identifier: SimulatorDeviceIdentifier,
@@ -151,6 +150,7 @@ final class SimulatorScreenHost: NSObject {
             disconnectedSessions.append(controller.session)
         }
         awaitingReconnect.removeValue(forKey: identifier)
+        presentationRestarts.remove(identifier)
         // Like an unfinished external display, input that was not removed keeps the device for another release.
         let inputFailures = await finishDisconnectedInput(of: identifier)
         guard inputFailures.isEmpty else { throw SimulatorError.operation(inputFailures.joined(separator: "\n")) }
@@ -176,7 +176,7 @@ final class SimulatorScreenHost: NSObject {
         catch {
             if !registrationErrorReported {
                 registrationErrorReported = true
-                report(error)
+                hostLog(error.localizedDescription)
             }
         }
     }
@@ -611,7 +611,12 @@ final class SimulatorScreenHost: NSObject {
                         } : nil
                         let controller = try DeviceWindowController(
                             session: session, touchPressure: touchPressure, tvRemote: tvRemote,
-                            offersLifetimeChoice: offersLifetimeChoice, onClose: { [weak self] in
+                            offersLifetimeChoice: offersLifetimeChoice, captureOwner: captureOwner,
+                            reportDetachedCapture: { [weak self] error in
+                                guard let self else { hostLog(error.localizedDescription); return }
+                                if self.isTerminating || self.stopped { self.recordingTerminationErrors.append(error) }
+                                else { self.report(error) }
+                            }, onClose: { [weak self] in
                                 self?.deviceWindowClosed($0, choice: $1)
                             }, onRestart: { [weak self] controller, erasing in
                                 guard let self else { return }
@@ -779,6 +784,7 @@ final class SimulatorScreenHost: NSObject {
         let identifier = session.device.identity
         sessions.removeValue(forKey: identifier)
         awaitingReconnect.removeValue(forKey: identifier)
+        presentationRestarts.remove(identifier)
         ownedDeviceIdentifiers.remove(identifier)
         // A device left running keeps its window closed until it shuts down.
         suppressed.insert(identifier)
@@ -1018,6 +1024,7 @@ final class SimulatorScreenHost: NSObject {
     func beginStopping(keepingDevicesRunning: Bool? = nil) -> Task<Void, any Error> {
         if let stoppingTask { return stoppingTask }
         isTerminating = true
+        recordingTerminationErrors += CaptureThumbnail.finishAll(owner: captureOwner)
         let retryingCleanup = stopped
         let keepsRunning = isInProcess || (keepingDevicesRunning
             ?? HostPreferences.defaults.bool(forKey: HostPreferences.detachOnAppQuit))
@@ -1052,7 +1059,7 @@ final class SimulatorScreenHost: NSObject {
         let inputFailures = await finishDisconnectedInput()
         let displayFailures = await finishExternalDisplayChanges()
         let failures = inputFailures + displayFailures + (await shutDownForTermination(devices))
-        let captureFailures = recordingTerminationErrors + CaptureThumbnail.finishAll()
+        let captureFailures = recordingTerminationErrors + CaptureThumbnail.finishAll(owner: captureOwner)
         recordingTerminationErrors.removeAll()
         shutdown()
         onChange?()

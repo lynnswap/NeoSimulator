@@ -21,6 +21,7 @@ final class DeviceScreens {
     @ObservationIgnored private var stoppedHosts: [SimulatorScreenHost] = []
     /// Set while the app quits, until a cancelled quit resumes.
     @ObservationIgnored private(set) var isQuitting = false
+    @ObservationIgnored private var locationObserver: (any NSObjectProtocol)?
     @ObservationIgnored private var remoteDevicesObservation: PortableObservationTracking.Token?
     @ObservationIgnored private var lastRemoteHost: SimulatorHost?
     @ObservationIgnored private var remoteHostCleanup: Task<Void, Never>?
@@ -35,6 +36,25 @@ final class DeviceScreens {
 
     init(model: SimulatorManagerModel) {
         self.model = model
+        locationObserver = DistributedNotificationCenter.default().addObserver(
+            forName: Notification.Name("dev.lynnswap.NeoSimulator.DeviceLocationChanged"),
+            object: nil, queue: .main
+        ) { [weak self] notification in
+            let udid = notification.object as? String
+            let path = notification.userInfo?["deviceSetPath"] as? String
+            let identifier = udid.map { SimulatorDeviceIdentifier($0, deviceSetPath: path) }
+            MainActor.assumeIsolated {
+                guard let self, let identifier else { return }
+                do {
+                    try self.simulatorControllers.first { $0.session.device.identity == identifier }?
+                        .session.refreshLocationSelection()
+                } catch { self.onError?(error) }
+            }
+        }
+    }
+
+    isolated deinit {
+        if let locationObserver { DistributedNotificationCenter.default().removeObserver(locationObserver) }
     }
 
     var identifiers: Set<DeviceInventoryID> { Set(entries.keys) }
