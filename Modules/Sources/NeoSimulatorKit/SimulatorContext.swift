@@ -213,19 +213,19 @@ public final class SimulatorContext {
     }
 
     package func prepareForManagedRestart(_ id: SimulatorDeviceIdentifier) async throws {
-        try checkActive()
+        guard !isStopped else { throw CancellationError() }
         while let release = releases[id] {
             try await CoreDeviceRuntime.preparedValue(of: release.task)
-            try checkActive()
+            guard !isStopped else { throw CancellationError() }
         }
         try await engine.preparePresentationForRestart(for: id)
     }
 
     package func finishManagedRestart(_ id: SimulatorDeviceIdentifier) async throws {
-        try checkActive()
+        guard !isStopped else { throw CancellationError() }
         while let release = releases[id] {
             try await CoreDeviceRuntime.preparedValue(of: release.task)
-            try checkActive()
+            guard !isStopped else { throw CancellationError() }
         }
         try await engine.finishPresentationRestart(for: id)
     }
@@ -279,10 +279,6 @@ public final class SimulatorContext {
             try checkActive()
         }
         try Task.checkCancellation()
-        if let screen = screens[id], !engine.needsReconnection(for: id) {
-            engine.didSelectDevice(id)
-            return screen
-        }
         if let opening = openings[id] {
             engine.didSelectDevice(id)
             return try await waitForScreen(opening)

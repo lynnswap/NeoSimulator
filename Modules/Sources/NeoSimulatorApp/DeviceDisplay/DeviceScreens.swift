@@ -255,7 +255,7 @@ final class DeviceScreens {
                 guard case .simulator(let simulator) = device, device.supports(action), entries[device.id] != nil,
                       case .simulator(let udid, let path) = device.id else { continue }
                 let identifier = SimulatorDeviceIdentifier(udid, deviceSetPath: path)
-                guard let context = contexts.values.first(where: { $0.screen(for: identifier) != nil }) else { continue }
+                guard let context = contexts.values.first(where: { !$0.isStopped && $0.screen(for: identifier) != nil }) else { continue }
                 switch action {
                 case .restart, .erase:
                     if simulator.state == "Booted" {
@@ -285,7 +285,7 @@ final class DeviceScreens {
         for device in devices {
             guard case .simulator(let udid, let path) = device.id else { continue }
             let identifier = SimulatorDeviceIdentifier(udid, deviceSetPath: path)
-            guard let context = contexts.values.first(where: { $0.screen(for: identifier) != nil }) else { continue }
+            guard let context = contexts.values.first(where: { !$0.isStopped && $0.screen(for: identifier) != nil }) else { continue }
             do { try await context.finishManagedRestart(identifier) }
             catch { failures.append("\(device.name): \(error.localizedDescription)") }
         }
@@ -397,7 +397,9 @@ final class DeviceScreens {
             }
             remove(simulatorIdentifiers)
             do { try await stopRemoteScreens() }
-            catch { failures.append(error.localizedDescription) }
+            catch is CancellationError {
+                if failures.isEmpty { throw CancellationError() }
+            } catch { failures.append(error.localizedDescription) }
             if !failures.isEmpty { throw SimulatorError.operation(failures.joined(separator: "\n")) }
         } catch {
             publishOpenScreens()

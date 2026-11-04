@@ -727,6 +727,25 @@ struct InputFocusTests {
         try await controller.stopAndClose()
     }
 
+    @Test func stopAllPreservesRemoteCancellationAndCanRetry() async throws {
+        _ = NSApplication.shared
+        let data = Data(#"{"result":{"devices":[{"identifier":"fixture-command","properties":{"hardware":{"reality":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)
+        let device = try #require(CoreDeviceInventoryDecoder.decode(data).first)
+        let transport = TestRemoteScreenTransport()
+        let session = RemoteDeviceScreenSession(device: device) { _, _, _ in transport }
+        try await session.start()
+        let model = SimulatorManagerModel(source: ManagerModelSource(devices: []))
+        model.settings.setReadingSuspended(true)
+        let screens = DeviceScreens(model: model)
+        screens.attach(RemoteDeviceWindowController(device: device, session: session, presentCompactWindow: { _ in }))
+        transport.onReleaseInputs = { throw CancellationError() }
+        await #expect(throws: CancellationError.self) { try await screens.stopAll() }
+        #expect(!screens.identifiers.isEmpty)
+        transport.onReleaseInputs = nil
+        try await screens.stopAll()
+        #expect(screens.identifiers.isEmpty)
+    }
+
     @Test func remoteCaptureSourceChoiceWaitsForTheCurrentConnectionToEnd() async throws {
         _ = NSApplication.shared
         let data = Data(#"{"result":{"devices":[{"identifier":"fixture-command","properties":{"hardware":{"reality":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)

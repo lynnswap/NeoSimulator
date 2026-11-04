@@ -88,10 +88,6 @@ package final class SimulatorScreenHost: NSObject {
     }
 
     package func controller(for identifier: SimulatorDeviceIdentifier) -> DeviceWindowController? { sessions[identifier] }
-    package func needsReconnection(for identifier: SimulatorDeviceIdentifier) -> Bool {
-        awaitingReconnect[identifier] != nil && connectionFailures[identifier] != nil
-    }
-
     package func hasUnfinishedCleanup(for identifier: SimulatorDeviceIdentifier) -> Bool {
         disconnectedSessions.contains { $0.device.identity == identifier }
             || (sessions[identifier] == nil && externalDisplayQueues[identifier] != nil)
@@ -127,7 +123,9 @@ package final class SimulatorScreenHost: NSObject {
     package func releaseDevice(_ identifier: SimulatorDeviceIdentifier) async throws {
         guard ownedDeviceIdentifiers.contains(identifier) || sessions[identifier] != nil
                 || connections[identifier] != nil || closingShutdowns[identifier] != nil
-                || disconnectedSessions.contains(where: { $0.device.identity == identifier }) else { return }
+                || disconnectedSessions.contains(where: { $0.device.identity == identifier })
+                || (externalDisplayQueues[identifier] != nil
+                    && isRunning(identifier.identifier, deviceSetPath: identifier.deviceSetPath)) else { return }
         guard !releasingDevices.contains(identifier) else {
             throw SimulatorError.operation("This simulator is already being handed over.")
         }
@@ -363,9 +361,12 @@ package final class SimulatorScreenHost: NSObject {
     }
 
     package func preparePresentationForRestart(for identifier: SimulatorDeviceIdentifier) async throws {
+        await connections[identifier]?.value
+        try Task.checkCancellation()
         guard !stopped, !isTerminating else { throw CancellationError() }
         guard let controller = sessions[identifier] else { return }
-        guard !presentationRestarts.contains(identifier), controller.session.reserve() else {
+        guard !presentationRestarts.contains(identifier),
+              awaitingReconnect[identifier] != nil || controller.session.reserve() else {
             throw SimulatorError.operation("This simulator already has an operation in progress.")
         }
         presentationRestarts.insert(identifier)
@@ -655,6 +656,8 @@ package final class SimulatorScreenHost: NSObject {
                 }
                 throw SimulatorError.unavailable("No integrated screen became available for \(device.name)")
             } catch is CancellationError {
+            } catch SimulatorError.conflict(_) {
+                handleHostConflict()
             } catch {
                 connectionFailures[identifier] = error
                 if !openingDevices.contains(identifier) { report(error) }
