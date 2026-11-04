@@ -732,6 +732,13 @@
                     "NeoSimulatorRenderer/compile-sources",
                     "NeoSimulatorHostTests/compile-sources",
                   ],
+                }, {
+                  "path": "SimulatorScreenHost.swift",
+                  "target-membership": [
+                    "NeoSimulator/compile-sources",
+                    "NeoSimulatorRenderer/compile-sources",
+                    "NeoSimulatorHostTests/compile-sources",
+                  ],
                 },
               ],
             }, {
