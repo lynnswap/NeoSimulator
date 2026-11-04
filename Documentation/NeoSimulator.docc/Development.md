@@ -206,7 +206,12 @@ python3 scripts/prepare_release.py start \
   --notes-file <approved-release-notes>
 ```
 
-This creates the approved version tag and a draft, then starts **Publish Release**.
+Add `--prerelease` to publish a prerelease with the same signed and notarized
+DMG. The script marks both the draft and the workflow request as a prerelease.
+When starting **Publish Release** manually, set its **prerelease** checkbox to
+match the draft release. A mismatch stops preparation before a tag is created.
+
+The start command creates the approved version tag and a draft, then starts **Publish Release**.
 The tag is available immediately. A matching tag and draft are reused when the
 same command is retried; a conflicting tag is never moved. CI tests and builds the
 arm64 DMG. The **release-signing** environment then requires approval before

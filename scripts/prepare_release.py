@@ -154,7 +154,7 @@ def require_draft(release: dict, version: str, source_sha: str, prerelease: bool
         raise ReleaseError("Register the approved release notes before starting publication.")
 
 
-def prepare_draft(version: str, source_sha: str) -> dict:
+def prepare_draft(version: str, source_sha: str, prerelease: bool) -> dict:
     repository = validate_request(version, source_sha)
     releases = matching_releases(repository, version)
     if len(releases) != 1:
@@ -164,11 +164,11 @@ def prepare_draft(version: str, source_sha: str) -> dict:
     target = release["target_commitish"]
     if target not in ("main", source_sha):
         raise ReleaseError("The draft must target main or this workflow's exact commit.")
-    require_draft({**release, "target_commitish": source_sha}, version, source_sha)
+    require_draft({**release, "target_commitish": source_sha}, version, source_sha, prerelease)
     ensure_tag(repository, version, source_sha)
     if target != source_sha:
         release = patch_release(repository, release["id"], {"target_commitish": source_sha})
-        require_draft(release, version, source_sha)
+        require_draft(release, version, source_sha, prerelease)
     return release
 
 
@@ -275,7 +275,8 @@ def start_release(repository: str, version: str, source_sha: str, notes_file: Pa
         raise ReleaseError(f"Draft saved at {url}, but tag creation was not confirmed: {error}") from error
     try:
         run(["gh", "workflow", "run", "release.yml", "--repo", repository,
-             "--ref", "main", "-f", f"version={version}"])
+             "--ref", "main", "-f", f"version={version}",
+             "-f", f"prerelease={str(prerelease).lower()}"])
     except ReleaseError as error:
         raise ReleaseError(f"Tag {version} and draft saved at {url}, but workflow dispatch was not confirmed. "
                            f"Check Actions before retrying Publish Release: {error}") from error
@@ -296,17 +297,17 @@ def main() -> int:
         command = commands.add_parser(name)
         command.add_argument("--version", required=True)
         command.add_argument("--source-sha", required=True)
+        command.add_argument("--prerelease", choices=("true", "false"), required=True)
         if name == "publish":
             command.add_argument("--directory", type=Path, required=True)
             command.add_argument("--dmg-sha256", required=True)
             command.add_argument("--release-id", type=int, required=True)
-            command.add_argument("--prerelease", choices=("true", "false"), required=True)
     args = parser.parse_args()
     try:
         if args.command == "start":
             print(start_release(args.repo, args.version, args.source_sha, args.notes_file, args.prerelease))
         elif args.command == "prepare":
-            release = prepare_draft(args.version, args.source_sha)
+            release = prepare_draft(args.version, args.source_sha, args.prerelease == "true")
             with open(os.environ["GITHUB_OUTPUT"], "a") as output:
                 output.write(f"release-id={release['id']}\nprerelease={str(release['prerelease']).lower()}\n")
             print(f"Publishing draft {release['id']}: {args.version} at {args.source_sha}")
