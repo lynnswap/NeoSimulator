@@ -84,6 +84,45 @@ private final class ApplicationDelegate: NSObject, NSApplicationDelegate {
         }
         NSApp.activate()
         print("Opened \(screen.device.name)")
+        if arguments.contains("--exercise-external-shutdown") {
+            guard guestToShutDown == id else {
+                throw SimulatorError.operation("The external shutdown exercise requires a shut-down simulator.")
+            }
+            var ended: (SimulatorScreenEnd, Task<SimulatorDeviceState?, any Error>)?
+            screen.onEnd = { reason in
+                ended = (reason, Task.immediate {
+                    try await context.devices().first { $0.id == id }?.state
+                })
+            }
+            let developerDirectory = context.xcodeURL.appending(path: "Contents/Developer").path
+            try await Task.detached {
+                let process = Process()
+                process.executableURL = URL(filePath: "/usr/bin/xcrun")
+                process.arguments = ["simctl", "shutdown", id.identifier]
+                var environment = ProcessInfo.processInfo.environment
+                environment["DEVELOPER_DIR"] = developerDirectory
+                process.environment = environment
+                try process.run()
+                process.waitUntilExit()
+                guard process.terminationStatus == 0 else {
+                    throw SimulatorError.operation("The external simctl shutdown failed.")
+                }
+            }.value
+            let deadline = ContinuousClock.now + .seconds(5)
+            while ended == nil, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+            guard let (reason, observed) = ended else {
+                throw SimulatorError.operation("The external shutdown did not end the screen.")
+            }
+            let state = try await observed.value
+            guard reason == .deviceStopping && (state == .shuttingDown || state == .shutDown)
+                    || reason == .deviceStopped && state == .shutDown else {
+                throw SimulatorError.operation("The screen's end reason did not match the guest state.")
+            }
+            guestToShutDown = nil
+            try await finish()
+            print("External shutdown exercise completed: \(reason)")
+            exit(0)
+        }
         if arguments.contains("--exercise-callback") {
             guard guestToShutDown == id else {
                 throw SimulatorError.operation("The callback exercise requires a shut-down simulator.")

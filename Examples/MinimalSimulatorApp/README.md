@@ -27,5 +27,8 @@ and shutdown. Use a shut-down iPhone or iPad simulator for this check.
 `--exercise-callback` checks that a shutdown requested from the screen's close
 callback stops the guest. It also requires a shut-down simulator.
 
+`--exercise-external-shutdown` stops the guest with `simctl` and checks that the
+screen reports `deviceStopping` or `deviceStopped` consistently with its state.
+
 The package intentionally does not import `XcodeSimulatorHost`, use an SPI import,
 or depend on NeoSimulator's renderer executable.

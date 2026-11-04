@@ -39,7 +39,12 @@ public enum SimulatorBootOutcome: Sendable {
 
 /// Why a screen stopped presenting its device.
 public enum SimulatorScreenEnd: Sendable {
-    case closed, deviceStopped, hostConflict, contextInvalidated
+    case closed
+    /// The guest has begun shutting down, and its display has disconnected.
+    case deviceStopping
+    /// The guest has reached the shut-down state.
+    case deviceStopped
+    case hostConflict, contextInvalidated
 }
 
 /// Hardware buttons available on supported simulator models.
@@ -342,7 +347,12 @@ public final class SimulatorContext {
         catch { report(error); return }
         for id in ended {
             let state = devices.first { $0.identity == id }?.state
-            finishScreen(id, reason: state == 1 ? .deviceStopped : .closed)
+            let reason: SimulatorScreenEnd = switch state {
+            case 1: .deviceStopped
+            case 4: .deviceStopping
+            default: .closed
+            }
+            finishScreen(id, reason: reason)
         }
     }
 
